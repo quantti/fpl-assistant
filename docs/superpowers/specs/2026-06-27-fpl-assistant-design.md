@@ -7,7 +7,8 @@
 
 ## Overview
 
-A general-purpose Fantasy Premier League chatbot that answers questions about players, fixtures, strategy, and game rules. Users interact via a standalone web chat UI. The LLM is backed by three knowledge layers: static rules in the system prompt, strategy docs via RAG, and live/historical FPL data via tool calls against Supabase.
+A general-purpose Fantasy Premier League chatbot that answers questions about players, fixtures, strategy, and game rules. Users interact via a standalone web chat UI. The LLM is backed by three knowledge layers: static rules in the system prompt,
+strategy docs via RAG, and live/historical FPL data via tool calls against Supabase.
 
 ---
 
@@ -41,7 +42,9 @@ A general-purpose Fantasy Premier League chatbot that answers questions about pl
 
 ## Backend — Spring Boot
 
-**Stack:** Java 21, Spring Boot 3.x, Spring AI, Gradle
+**Stack:** Java 25 (LTS), Spring Boot 4.1.x, Spring AI 1.1.7, Gradle
+
+> Spring AI 2.0 (milestone) ships MCP in core — upgrade when it goes GA.
 
 ### Spring AI configuration
 
@@ -58,20 +61,21 @@ Stateless: client sends full message history (`List<Message>`) with each request
 
 All tools query Supabase via JDBC. No external HTTP calls at chat time.
 
-| Tool | Description | Source table |
-|---|---|---|
-| `getPlayersByForm` | Top players by form/xG last N GWs | `player_fixture_stats`, `player` |
-| `getFixtures` | Upcoming fixtures + FDR for a team or GW | `fixture`, `team` |
-| `getPlayerStats` | Season stats for a named player | `player`, `player_gw_stats` |
-| `getLeagueOwnership` | Global ownership % for a player | `player` (selected_by_percent) |
-| `getGameweekInfo` | Current/next GW deadline, avg score | `gameweek` |
-| `getTeamForm` | Last N results for a team, home/away split | `pl_match_result` (synced) |
-| `getHeadToHead` | Historical results between two teams | `pl_match_result` (synced) |
-| `getTeamFixtureDifficulty` | FDR trend across seasons for a team | `pl_match_result`, `team` |
+| Tool                       | Description                                | Source table                     |
+| -------------------------- | ------------------------------------------ | -------------------------------- |
+| `getPlayersByForm`         | Top players by form/xG last N GWs          | `player_fixture_stats`, `player` |
+| `getFixtures`              | Upcoming fixtures + FDR for a team or GW   | `fixture`, `team`                |
+| `getPlayerStats`           | Season stats for a named player            | `player`, `player_gw_stats`      |
+| `getLeagueOwnership`       | Global ownership % for a player            | `player` (selected_by_percent)   |
+| `getGameweekInfo`          | Current/next GW deadline, avg score        | `gameweek`                       |
+| `getTeamForm`              | Last N results for a team, home/away split | `pl_match_result` (synced)       |
+| `getHeadToHead`            | Historical results between two teams       | `pl_match_result` (synced)       |
+| `getTeamFixtureDifficulty` | FDR trend across seasons for a team        | `pl_match_result`, `team`        |
 
 ### System prompt
 
 Located at `resources/prompts/system-prompt.st`. Contains:
+
 - FPL 2025/26 rules (condensed from FPL_RULES.md)
 - Persona: helpful FPL expert, concise, data-driven
 - Instruction to use tools before answering stat questions
@@ -80,6 +84,7 @@ Located at `resources/prompts/system-prompt.st`. Contains:
 ### RAG knowledge base
 
 Markdown files under `resources/docs/`:
+
 - `strategy-captaincy.md`
 - `strategy-transfers.md`
 - `strategy-chips.md`
@@ -120,7 +125,7 @@ CREATE INDEX idx_pmr_away ON pl_match_result(away_team_id, season);
 
 ## Frontend — Vite + React + Mantine
 
-**Stack:** Vite, React 18, TypeScript, Mantine v7, CSS Modules
+**Stack:** Vite 8.1, React 18, TypeScript, Mantine v9, CSS Modules
 
 ### Pages
 
@@ -141,9 +146,9 @@ App
 ### State
 
 ```typescript
-type Message = { role: 'user' | 'assistant'; content: string }
-const [messages, setMessages] = useState<Message[]>([])
-const [streaming, setStreaming] = useState(false)
+type Message = { role: "user" | "assistant"; content: string };
+const [messages, setMessages] = useState<Message[]>([]);
+const [streaming, setStreaming] = useState(false);
 ```
 
 No external state library. `useRef` for auto-scroll. SSE via `EventSource` or `fetch` with `ReadableStream`.
@@ -206,11 +211,11 @@ fpl-assistant/
 
 ## Deployment
 
-| Service | Platform | Notes |
-|---|---|---|
-| Backend (Spring Boot) | Fly.io | ~2-3s cold start on free tier, acceptable for chat |
-| Frontend (React) | Vercel | New standalone project, separate from tapas |
-| Database | Supabase | Shared with tapas, new tables: `fpl_embeddings`, `pl_match_result` |
+| Service               | Platform | Notes                                                              |
+| --------------------- | -------- | ------------------------------------------------------------------ |
+| Backend (Spring Boot) | Fly.io   | ~2-3s cold start on free tier, acceptable for chat                 |
+| Frontend (React)      | Vercel   | New standalone project, separate from tapas                        |
+| Database              | Supabase | Shared with tapas, new tables: `fpl_embeddings`, `pl_match_result` |
 
 **Fly.io config:** `fly.toml` with `SPRING_AI_PROVIDER`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DATABASE_URL`, `FOOTBALL_DATA_API_KEY` secrets.
 
@@ -219,23 +224,27 @@ fpl-assistant/
 ## Build phases
 
 ### Phase 1 — Core chatbot (no RAG, limited tools)
+
 - Spring Boot with `getPlayerStats`, `getFixtures`, `getGameweekInfo` tools
 - System prompt with FPL rules
 - React frontend with streaming chat UI
 - Deployed end-to-end
 
 ### Phase 2 — RAG
+
 - Strategy markdown docs
 - pgvector ingestion pipeline
 - RAG retrieval injected into prompt
 
 ### Phase 3 — Historical data
+
 - `pl_match_result` table
 - Vaastav CSV backfill
 - football-data.org weekly sync
 - `getTeamForm`, `getHeadToHead`, `getTeamFixtureDifficulty` tools
 
 ### Phase 4 — Enrichment
+
 - More tools (price trends, captain differentials)
 - Understat xG per team
 - More strategy docs
