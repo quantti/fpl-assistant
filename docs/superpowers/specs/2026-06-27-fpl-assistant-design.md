@@ -205,7 +205,7 @@ No external state library. Messages loaded from server on mount (current convers
 
 ### Deployment
 
-Vercel (or Fly.io static, TBD). New standalone project, not part of tapas repo.
+Fly.io static hosting. Frontend built with `vite build`, served via nginx sidecar or Spring Boot static resources. New standalone project.
 
 ---
 
@@ -269,7 +269,7 @@ fpl-assistant/
 | Service               | Platform | Notes                                                              |
 | --------------------- | -------- | ------------------------------------------------------------------ |
 | Backend (Spring Boot) | Fly.io   | ~2-3s cold start on free tier, acceptable for chat                 |
-| Frontend (React)      | Vercel   | New standalone project, separate from tapas                        |
+| Frontend (React)      | Fly.io (static) | New standalone project, served as static files from Fly.io  |
 | Database              | Supabase | Shared with tapas, new tables: `fpl_embeddings`, `pl_match_result`, `conversation`, `message`, `user_subscription` |
 
 **Fly.io secrets:** `SPRING_AI_PROVIDER`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DATABASE_URL`, `SUPABASE_JWT_SECRET`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `FOOTBALL_DATA_API_KEY`.
