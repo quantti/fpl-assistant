@@ -42,9 +42,7 @@ strategy docs via RAG, and live/historical FPL data via tool calls against Supab
 
 ## Backend — Spring Boot
 
-**Stack:** Java 25 (LTS), Spring Boot 4.1.x, Spring AI 1.1.7, Gradle
-
-> Spring AI 2.0 (milestone) ships MCP in core — upgrade when it goes GA.
+**Stack:** Java 25 (LTS), Spring Boot 4.1.x, Spring AI 2.0.0 GA, Gradle
 
 ### Spring AI configuration
 
