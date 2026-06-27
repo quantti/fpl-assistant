@@ -278,14 +278,12 @@ fpl-assistant/
 
 ## Build phases
 
-### Phase 1 — Auth + billing + core chatbot
+### Phase 1 — Core chatbot (no auth)
 
-- Supabase auth (login/signup)
-- Stripe subscription gating
 - Spring Boot with `getPlayerStats`, `getFixtures`, `getGameweekInfo` tools
 - System prompt with FPL rules
-- React frontend: login → subscribe → chat flow
-- Server-side conversation history
+- React frontend with streaming chat UI (open access)
+- Stateless conversation (client sends history)
 - Deployed end-to-end
 
 ### Phase 2 — RAG
@@ -306,3 +304,10 @@ fpl-assistant/
 - More tools (price trends, captain differentials)
 - Understat xG per team
 - More strategy docs
+
+### Phase 5 — Auth + billing
+
+- Supabase auth (login/signup)
+- Stripe subscription gating
+- Server-side conversation history (`conversation` + `message` tables, RLS)
+- Login → subscribe → chat flow
