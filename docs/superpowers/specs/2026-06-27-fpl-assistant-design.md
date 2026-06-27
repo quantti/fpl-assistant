@@ -53,9 +53,43 @@ strategy docs via RAG, and live/historical FPL data via tool calls against Supab
 - Configurable LLM provider via `spring.ai.provider` env var: `anthropic` (Claude) or `openai` (GPT-4o)
 - Streaming via `ChatClient.stream()` → SSE
 
+### Auth & billing
+
+- **Auth:** Supabase JWT. Every request to `/chat` requires `Authorization: Bearer <jwt>`. Spring Boot validates JWT signature against Supabase JWT secret.
+- **Billing:** Stripe subscriptions. Active subscription required to use chat. Spring Boot checks `user_subscription.status = 'active'` before serving each request.
+- **Stripe webhook** (`POST /webhooks/stripe`): handles `customer.subscription.created/updated/deleted` → updates `user_subscription` table.
+
 ### Conversation model
 
-Stateless: client sends full message history (`List<Message>`) with each request. No server-side session storage. No auth required.
+Server-side per-user history. Client sends only the new message; backend loads conversation history from DB, appends, queries LLM, persists response.
+
+```sql
+CREATE TABLE conversation (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES auth.users(id),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE message (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    conversation_id UUID NOT NULL REFERENCES conversation(id) ON DELETE CASCADE,
+    role VARCHAR(10) NOT NULL,   -- 'user' | 'assistant'
+    content TEXT NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+RLS enforced: users can only read/write their own conversations and messages.
+
+```sql
+CREATE TABLE user_subscription (
+    user_id UUID PRIMARY KEY REFERENCES auth.users(id),
+    stripe_customer_id VARCHAR(255) NOT NULL,
+    stripe_subscription_id VARCHAR(255),
+    status VARCHAR(20) NOT NULL DEFAULT 'inactive',  -- 'active' | 'inactive' | 'canceled'
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
 
 ### Tools (`@Tool` annotated methods)
 
@@ -129,29 +163,41 @@ CREATE INDEX idx_pmr_away ON pl_match_result(away_team_id, season);
 
 ### Pages
 
-Single page app, single route `/`. No router needed.
+React Router. Routes:
+
+| Route | View | Guard |
+|---|---|---|
+| `/login` | Login (Supabase Auth UI) | — |
+| `/subscribe` | Stripe checkout / plan selection | Auth required |
+| `/chat` | Chat view | Auth + active subscription required |
+
+Unauthenticated → redirect to `/login`. Authenticated but no subscription → redirect to `/subscribe`.
 
 ### Components
 
 ```
-App
-└── ChatView
+App (Router)
+├── LoginView         (Supabase Auth UI embed)
+├── SubscribeView     (plan cards + Stripe Checkout redirect)
+└── ChatView          (protected)
     ├── MessageThread (scrollable)
     │   ├── UserMessage
     │   └── AssistantMessage (markdown rendered, streaming cursor)
     ├── MessageInput (textarea + send button)
-    └── StatusBar (model name, connection status)
+    └── StatusBar (model name, subscription tier)
 ```
+
+### Auth state
+
+Supabase JS client manages session. `useSession()` hook exposes JWT; attached as `Authorization` header on all API calls.
 
 ### State
 
 ```typescript
 type Message = { role: "user" | "assistant"; content: string };
-const [messages, setMessages] = useState<Message[]>([]);
-const [streaming, setStreaming] = useState(false);
 ```
 
-No external state library. `useRef` for auto-scroll. SSE via `EventSource` or `fetch` with `ReadableStream`.
+No external state library. Messages loaded from server on mount (current conversation). `useRef` for auto-scroll. SSE via `fetch` with `ReadableStream`.
 
 ### Streaming
 
@@ -170,35 +216,44 @@ fpl-assistant/
 ├── backend/
 │   ├── src/main/java/fi/karivanttinen/fplassistant/
 │   │   ├── chat/
-│   │   │   ├── ChatController.java      # POST /chat SSE endpoint
+│   │   │   ├── ChatController.java      # POST /chat SSE, GET /conversations
 │   │   │   └── ChatService.java         # Spring AI orchestration
+│   │   ├── auth/
+│   │   │   └── JwtFilter.java           # Validate Supabase JWT on every request
+│   │   ├── billing/
+│   │   │   ├── StripeWebhookController.java  # POST /webhooks/stripe
+│   │   │   └── SubscriptionService.java      # Check active subscription
 │   │   ├── tools/
-│   │   │   ├── PlayerTools.java         # getPlayersByForm, getPlayerStats, etc.
-│   │   │   ├── FixtureTools.java        # getFixtures, getTeamForm, getHeadToHead
-│   │   │   └── GameweekTools.java       # getGameweekInfo, getLeagueOwnership
+│   │   │   ├── PlayerTools.java
+│   │   │   ├── FixtureTools.java
+│   │   │   └── GameweekTools.java
 │   │   ├── rag/
-│   │   │   ├── VectorStoreConfig.java   # pgvector setup
-│   │   │   └── IngestionRunner.java     # CLI doc ingestion
+│   │   │   ├── VectorStoreConfig.java
+│   │   │   └── IngestionRunner.java
 │   │   ├── sync/
-│   │   │   ├── VaastavImporter.java     # One-time CSV backfill
-│   │   │   └── FootballDataSyncJob.java # Weekly scheduled sync
+│   │   │   ├── VaastavImporter.java
+│   │   │   └── FootballDataSyncJob.java
 │   │   └── config/
-│   │       ├── AiConfig.java            # ChatClient, VectorStore beans
-│   │       └── WebConfig.java           # CORS
+│   │       ├── AiConfig.java
+│   │       └── WebConfig.java
 │   ├── src/main/resources/
 │   │   ├── prompts/system-prompt.st
-│   │   └── docs/                        # Strategy markdown files
+│   │   └── docs/
 │   ├── build.gradle
 │   └── fly.toml
 ├── frontend/
 │   ├── src/
+│   │   ├── views/
+│   │   │   ├── LoginView.tsx
+│   │   │   ├── SubscribeView.tsx
+│   │   │   └── ChatView.tsx
 │   │   ├── components/
-│   │   │   ├── ChatView.tsx
 │   │   │   ├── MessageThread.tsx
 │   │   │   ├── AssistantMessage.tsx
 │   │   │   └── MessageInput.tsx
 │   │   ├── hooks/
-│   │   │   └── useChat.ts              # SSE streaming logic
+│   │   │   ├── useChat.ts
+│   │   │   └── useSession.ts
 │   │   └── App.tsx
 │   ├── package.json
 │   └── vite.config.ts
@@ -215,19 +270,22 @@ fpl-assistant/
 | --------------------- | -------- | ------------------------------------------------------------------ |
 | Backend (Spring Boot) | Fly.io   | ~2-3s cold start on free tier, acceptable for chat                 |
 | Frontend (React)      | Vercel   | New standalone project, separate from tapas                        |
-| Database              | Supabase | Shared with tapas, new tables: `fpl_embeddings`, `pl_match_result` |
+| Database              | Supabase | Shared with tapas, new tables: `fpl_embeddings`, `pl_match_result`, `conversation`, `message`, `user_subscription` |
 
-**Fly.io config:** `fly.toml` with `SPRING_AI_PROVIDER`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DATABASE_URL`, `FOOTBALL_DATA_API_KEY` secrets.
+**Fly.io secrets:** `SPRING_AI_PROVIDER`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DATABASE_URL`, `SUPABASE_JWT_SECRET`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `FOOTBALL_DATA_API_KEY`.
 
 ---
 
 ## Build phases
 
-### Phase 1 — Core chatbot (no RAG, limited tools)
+### Phase 1 — Auth + billing + core chatbot
 
+- Supabase auth (login/signup)
+- Stripe subscription gating
 - Spring Boot with `getPlayerStats`, `getFixtures`, `getGameweekInfo` tools
 - System prompt with FPL rules
-- React frontend with streaming chat UI
+- React frontend: login → subscribe → chat flow
+- Server-side conversation history
 - Deployed end-to-end
 
 ### Phase 2 — RAG
