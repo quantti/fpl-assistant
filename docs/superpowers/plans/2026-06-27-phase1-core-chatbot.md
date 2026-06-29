@@ -1,6 +1,10 @@
 # FPL Assistant — Phase 1: Core Chatbot Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task.
+>
+> **Progress tracking:** Do NOT use per-step checkboxes. Track via the single `**PROGRESS:**` line below — update only that one line after each task completes (e.g. `Task 3/14 done`). One small edit per task, not per step.
+
+**PROGRESS:** Task 0/14 done — not started
 
 **Goal:** Build and deploy a working FPL chatbot with streaming chat UI, 3 DB-backed tools, and FPL rules in the system prompt — no auth, open access.
 
@@ -104,13 +108,13 @@ fpl-assistant/
 **Interfaces:**
 - Produces: runnable Spring Boot app skeleton, Gradle build with all dependencies
 
-- [ ] **Step 1: Create `backend/settings.gradle`**
+**Step 1: Create `backend/settings.gradle`**
 
 ```groovy
 rootProject.name = 'fpl-assistant'
 ```
 
-- [ ] **Step 2: Create `backend/build.gradle`**
+**Step 2: Create `backend/build.gradle`**
 
 ```groovy
 plugins {
@@ -143,16 +147,19 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-web'
     implementation 'org.springframework.boot:spring-boot-starter-jdbc'
     implementation 'org.postgresql:postgresql'
-    implementation 'org.springframework.ai:spring-ai-anthropic-spring-boot-starter'
-    implementation 'org.springframework.ai:spring-ai-openai-spring-boot-starter'
+    implementation 'org.springframework.ai:spring-ai-starter-model-anthropic'
+    implementation 'org.springframework.ai:spring-ai-starter-model-openai'
 
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
     testImplementation 'org.springframework.boot:spring-boot-testcontainers'
     testImplementation 'org.testcontainers:postgresql'
+    // WebTestClient (MockMvcWebTestClient) for streaming SSE controller tests
+    testImplementation 'org.springframework:spring-webflux'
+    testImplementation 'io.projectreactor:reactor-test'
 }
 ```
 
-- [ ] **Step 3: Create `FplAssistantApplication.java`**
+**Step 3: Create `FplAssistantApplication.java`**
 
 ```java
 package fi.karivanttinen.fplassistant;
@@ -168,12 +175,14 @@ public class FplAssistantApplication {
 }
 ```
 
-- [ ] **Step 4: Create `backend/src/main/resources/application.yml`**
+**Step 4: Create `backend/src/main/resources/application.yml`**
 
 ```yaml
 spring:
   datasource:
     url: ${DATABASE_URL}
+    username: ${DB_USER}
+    password: ${DB_PASSWORD}
     driver-class-name: org.postgresql.Driver
   ai:
     anthropic:
@@ -195,7 +204,18 @@ server:
   port: 8080
 ```
 
-- [ ] **Step 5: Verify the build compiles**
+**Step 5: Generate the Gradle wrapper**
+
+Requires a system Gradle 9.x (`gradle --version` must show 9.0+; Java 25 + Spring Boot 4 need it). Install via SDKMAN if missing: `sdk install gradle 9.1`.
+
+```bash
+cd backend
+gradle wrapper --gradle-version 9.1
+```
+
+Expected: creates `gradlew`, `gradlew.bat`, `gradle/wrapper/gradle-wrapper.properties` + jar. Commit these — all later tasks use `./gradlew`.
+
+**Step 6: Verify the build compiles**
 
 ```bash
 cd backend
@@ -204,7 +224,7 @@ cd backend
 
 Expected: `BUILD SUCCESSFUL`
 
-- [ ] **Step 6: Commit**
+**Step 7: Commit**
 
 ```bash
 git add backend/
@@ -223,7 +243,7 @@ git commit -m "feat: scaffold Spring Boot project with Spring AI 2.0 dependencie
 - Consumes: `JdbcTemplate` auto-configured by Spring Boot
 - Produces: verified live DB connection; other tasks can trust `JdbcTemplate` works
 
-- [ ] **Step 1: Write the DB connection test**
+**Step 1: Write the DB connection test**
 
 ```java
 package fi.karivanttinen.fplassistant;
@@ -249,10 +269,14 @@ class DbConnectionTest {
 }
 ```
 
-- [ ] **Step 2: Create `backend/.env.test` (gitignored) with your Supabase URL**
+**Step 2: Create `backend/.env.test` (gitignored) with your Supabase credentials**
+
+Credentials are split out so the JDBC URL stays free of `?user=...&password=...` (the `&` breaks shell env loading). Use the Supabase pooler host (port 6543) or direct (5432). SSL required.
 
 ```
-DATABASE_URL=jdbc:postgresql://<host>:5432/<db>?user=postgres&password=<pw>
+DATABASE_URL=jdbc:postgresql://<host>:6543/postgres?sslmode=require
+DB_USER=postgres
+DB_PASSWORD=<your-db-password>
 ANTHROPIC_API_KEY=sk-ant-...
 SPRING_AI_PROVIDER=anthropic
 ```
@@ -263,17 +287,19 @@ backend/.env.test
 backend/.env
 ```
 
-- [ ] **Step 3: Run the test (set env vars first)**
+**Step 3: Run the test (load env safely first)**
+
+`set -a; source` exports every var without word-splitting on `&`. Do NOT use `export $(cat ... | xargs)` — it backgrounds on `&` and mangles URLs.
 
 ```bash
 cd backend
-export $(cat .env.test | xargs)
+set -a; source .env.test; set +a
 ./gradlew test --tests "fi.karivanttinen.fplassistant.DbConnectionTest"
 ```
 
 Expected: `BUILD SUCCESSFUL`, 1 test passed
 
-- [ ] **Step 4: Commit**
+**Step 4: Commit**
 
 ```bash
 git add backend/
@@ -291,7 +317,7 @@ git commit -m "test: verify Supabase DB connection"
 **Interfaces:**
 - Produces: `ChatClient` Spring bean; `ChatService` (Task 6) injects this
 
-- [ ] **Step 1: Create `system-prompt.st`**
+**Step 1: Create `system-prompt.st`**
 
 ```
 You are an expert Fantasy Premier League (FPL) assistant for the 2025/26 season.
@@ -328,7 +354,7 @@ element_type: 1=GK, 2=DEF, 3=MID, 4=FWD
 Prices stored as integers × 10: now_cost=75 means £7.5m
 ```
 
-- [ ] **Step 2: Create `AiConfig.java`**
+**Step 2: Create `AiConfig.java`**
 
 ```java
 package fi.karivanttinen.fplassistant.config;
@@ -358,8 +384,13 @@ public class AiConfig {
     ) throws IOException {
         String prompt = systemPrompt.getContentAsString(StandardCharsets.UTF_8);
         ChatModel model = "openai".equals(provider)
-                ? openAiModel.getObject()
-                : anthropicModel.getObject();
+                ? openAiModel.getIfAvailable()
+                : anthropicModel.getIfAvailable();
+        if (model == null) {
+            throw new IllegalStateException(
+                "No ChatModel for provider '" + provider + "'. "
+                + "Set SPRING_AI_PROVIDER to 'anthropic' or 'openai' and provide the matching API key.");
+        }
         return ChatClient.builder(model)
                 .defaultSystem(prompt)
                 .build();
@@ -367,7 +398,7 @@ public class AiConfig {
 }
 ```
 
-- [ ] **Step 3: Write a smoke test for ChatClient bean creation**
+**Step 3: Write a smoke test for ChatClient bean creation**
 
 ```java
 package fi.karivanttinen.fplassistant.config;
@@ -391,17 +422,17 @@ class AiConfigTest {
 }
 ```
 
-- [ ] **Step 4: Run test**
+**Step 4: Run test**
 
 ```bash
 cd backend
-export $(cat .env.test | xargs)
+set -a; source .env.test; set +a
 ./gradlew test --tests "fi.karivanttinen.fplassistant.config.AiConfigTest"
 ```
 
 Expected: `BUILD SUCCESSFUL`, 1 test passed
 
-- [ ] **Step 5: Commit**
+**Step 5: Commit**
 
 ```bash
 git add backend/
@@ -420,7 +451,7 @@ git commit -m "feat: add Spring AI ChatClient config and FPL system prompt"
 - Consumes: `JdbcTemplate` bean
 - Produces: `GameweekTools` Spring bean with `getGameweekInfo()` method; `ChatService` injects this
 
-- [ ] **Step 1: Write the failing test**
+**Step 1: Write the failing test**
 
 ```java
 package fi.karivanttinen.fplassistant.tools;
@@ -445,16 +476,16 @@ class GameweekToolsTest {
 }
 ```
 
-- [ ] **Step 2: Run to verify failure**
+**Step 2: Run to verify failure**
 
 ```bash
-export $(cat .env.test | xargs)
+set -a; source .env.test; set +a
 ./gradlew test --tests "fi.karivanttinen.fplassistant.tools.GameweekToolsTest"
 ```
 
 Expected: FAIL — `GameweekTools` not found
 
-- [ ] **Step 3: Implement `GameweekTools.java`**
+**Step 3: Implement `GameweekTools.java`**
 
 ```java
 package fi.karivanttinen.fplassistant.tools;
@@ -516,7 +547,7 @@ public class GameweekTools {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+**Step 4: Run test to verify it passes**
 
 ```bash
 ./gradlew test --tests "fi.karivanttinen.fplassistant.tools.GameweekToolsTest"
@@ -524,7 +555,7 @@ public class GameweekTools {
 
 Expected: `BUILD SUCCESSFUL`, 1 test passed
 
-- [ ] **Step 5: Commit**
+**Step 5: Commit**
 
 ```bash
 git add backend/
@@ -543,7 +574,7 @@ git commit -m "feat: add GameweekTools with getGameweekInfo()"
 - Consumes: `JdbcTemplate` bean
 - Produces: `PlayerTools` Spring bean with `getPlayerStats(String playerName)` method
 
-- [ ] **Step 1: Write the failing test**
+**Step 1: Write the failing test**
 
 ```java
 package fi.karivanttinen.fplassistant.tools;
@@ -574,7 +605,7 @@ class PlayerToolsTest {
 }
 ```
 
-- [ ] **Step 2: Run to verify failure**
+**Step 2: Run to verify failure**
 
 ```bash
 ./gradlew test --tests "fi.karivanttinen.fplassistant.tools.PlayerToolsTest"
@@ -582,7 +613,7 @@ class PlayerToolsTest {
 
 Expected: FAIL
 
-- [ ] **Step 3: Implement `PlayerTools.java`**
+**Step 3: Implement `PlayerTools.java`**
 
 ```java
 package fi.karivanttinen.fplassistant.tools;
@@ -664,7 +695,7 @@ public class PlayerTools {
 }
 ```
 
-- [ ] **Step 4: Run test**
+**Step 4: Run test**
 
 ```bash
 ./gradlew test --tests "fi.karivanttinen.fplassistant.tools.PlayerToolsTest"
@@ -672,7 +703,7 @@ public class PlayerTools {
 
 Expected: `BUILD SUCCESSFUL`, 2 tests passed
 
-- [ ] **Step 5: Commit**
+**Step 5: Commit**
 
 ```bash
 git add backend/
@@ -691,7 +722,7 @@ git commit -m "feat: add PlayerTools with getPlayerStats()"
 - Consumes: `JdbcTemplate` bean
 - Produces: `FixtureTools` Spring bean with `getUpcomingFixtures(String teamName, int nextN)` method
 
-- [ ] **Step 1: Write the failing test**
+**Step 1: Write the failing test**
 
 ```java
 package fi.karivanttinen.fplassistant.tools;
@@ -722,7 +753,7 @@ class FixtureToolsTest {
 }
 ```
 
-- [ ] **Step 2: Run to verify failure**
+**Step 2: Run to verify failure**
 
 ```bash
 ./gradlew test --tests "fi.karivanttinen.fplassistant.tools.FixtureToolsTest"
@@ -730,7 +761,7 @@ class FixtureToolsTest {
 
 Expected: FAIL
 
-- [ ] **Step 3: Implement `FixtureTools.java`**
+**Step 3: Implement `FixtureTools.java`**
 
 ```java
 package fi.karivanttinen.fplassistant.tools;
@@ -826,7 +857,7 @@ public class FixtureTools {
 }
 ```
 
-- [ ] **Step 4: Run test**
+**Step 4: Run test**
 
 ```bash
 ./gradlew test --tests "fi.karivanttinen.fplassistant.tools.FixtureToolsTest"
@@ -834,7 +865,7 @@ public class FixtureTools {
 
 Expected: `BUILD SUCCESSFUL`, 2 tests passed
 
-- [ ] **Step 5: Commit**
+**Step 5: Commit**
 
 ```bash
 git add backend/
@@ -854,7 +885,7 @@ git commit -m "feat: add FixtureTools with getUpcomingFixtures()"
 - Consumes: `ChatClient` bean (Task 3), `GameweekTools` (Task 4), `PlayerTools` (Task 5), `FixtureTools` (Task 6)
 - Produces: `ChatService` bean with `stream(ChatRequest)` returning `Flux<String>`; `ChatController` (Task 8) uses this
 
-- [ ] **Step 1: Create `ChatRequest.java`**
+**Step 1: Create `ChatRequest.java`**
 
 ```java
 package fi.karivanttinen.fplassistant.chat;
@@ -867,7 +898,7 @@ public record ChatRequest(List<MessageDto> messages) {
 }
 ```
 
-- [ ] **Step 2: Write the failing test for ChatService**
+**Step 2: Write the failing test for ChatService**
 
 ```java
 package fi.karivanttinen.fplassistant.chat;
@@ -933,7 +964,7 @@ class ChatServiceTest {
 }
 ```
 
-- [ ] **Step 3: Run to verify failure**
+**Step 3: Run to verify failure**
 
 ```bash
 ./gradlew test --tests "fi.karivanttinen.fplassistant.chat.ChatServiceTest"
@@ -941,7 +972,7 @@ class ChatServiceTest {
 
 Expected: FAIL
 
-- [ ] **Step 4: Implement `ChatService.java`**
+**Step 4: Implement `ChatService.java`**
 
 ```java
 package fi.karivanttinen.fplassistant.chat;
@@ -991,7 +1022,7 @@ public class ChatService {
 }
 ```
 
-- [ ] **Step 5: Run test**
+**Step 5: Run test**
 
 ```bash
 ./gradlew test --tests "fi.karivanttinen.fplassistant.chat.ChatServiceTest"
@@ -999,7 +1030,7 @@ public class ChatService {
 
 Expected: `BUILD SUCCESSFUL`, 1 test passed
 
-- [ ] **Step 6: Commit**
+**Step 6: Commit**
 
 ```bash
 git add backend/
@@ -1019,23 +1050,28 @@ git commit -m "feat: add ChatService streaming with all three tools"
 - Consumes: `ChatService.stream(ChatRequest)` returning `Flux<String>`
 - Produces: `POST /api/chat` endpoint returning `text/event-stream`
 
-- [ ] **Step 1: Write the failing controller test**
+**Step 1: Write the failing controller test**
+
+Plain `MockMvc` cannot assert a streaming `Flux` body — async returns before content is written. Use `MockMvcWebTestClient`, which drives the async dispatch and collects the SSE stream.
 
 ```java
 package fi.karivanttinen.fplassistant.chat;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.client.MockMvcWebTestClient;
+import org.springframework.test.web.reactive.server.WebTestClient;
 import reactor.core.publisher.Flux;
+
+import java.util.List;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 @WebMvcTest(ChatController.class)
 class ChatControllerTest {
@@ -1046,22 +1082,37 @@ class ChatControllerTest {
     @MockitoBean
     ChatService chatService;
 
+    WebTestClient client;
+
+    @BeforeEach
+    void setup() {
+        client = MockMvcWebTestClient.bindTo(mockMvc).build();
+    }
+
     @Test
-    void postChatReturnsEventStream() throws Exception {
+    void postChatStreamsTokens() {
         when(chatService.stream(any())).thenReturn(Flux.just("Hello", " world"));
 
-        mockMvc.perform(post("/api/chat")
+        List<String> tokens = client.post().uri("/api/chat")
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("""
+                .bodyValue("""
                         {"messages":[{"role":"user","content":"test"}]}
-                        """))
-                .andExpect(status().isOk())
-                .andExpect(content().contentTypeCompatibleWith(MediaType.TEXT_EVENT_STREAM));
+                        """)
+                .accept(MediaType.TEXT_EVENT_STREAM)
+                .exchange()
+                .expectStatus().isOk()
+                .expectHeader().contentTypeCompatibleWith(MediaType.TEXT_EVENT_STREAM)
+                .returnResult(String.class)
+                .getResponseBody()
+                .collectList()
+                .block();
+
+        org.assertj.core.api.Assertions.assertThat(tokens).containsExactly("Hello", " world");
     }
 }
 ```
 
-- [ ] **Step 2: Run to verify failure**
+**Step 2: Run to verify failure**
 
 ```bash
 ./gradlew test --tests "fi.karivanttinen.fplassistant.chat.ChatControllerTest"
@@ -1069,7 +1120,7 @@ class ChatControllerTest {
 
 Expected: FAIL
 
-- [ ] **Step 3: Implement `ChatController.java`**
+**Step 3: Implement `ChatController.java`**
 
 ```java
 package fi.karivanttinen.fplassistant.chat;
@@ -1095,7 +1146,7 @@ public class ChatController {
 }
 ```
 
-- [ ] **Step 4: Create `WebConfig.java`**
+**Step 4: Create `WebConfig.java`**
 
 ```java
 package fi.karivanttinen.fplassistant.config;
@@ -1127,7 +1178,7 @@ cors:
   allowed-origins: ${CORS_ORIGINS:http://localhost:5173}
 ```
 
-- [ ] **Step 5: Run all backend tests**
+**Step 5: Run all backend tests**
 
 ```bash
 ./gradlew test
@@ -1135,10 +1186,10 @@ cors:
 
 Expected: `BUILD SUCCESSFUL`, all tests pass
 
-- [ ] **Step 6: Smoke test the running server**
+**Step 6: Smoke test the running server**
 
 ```bash
-export $(cat .env.test | xargs)
+set -a; source .env.test; set +a
 ./gradlew bootRun &
 sleep 5
 curl -N -X POST http://localhost:8080/api/chat \
@@ -1152,7 +1203,7 @@ Expected: streaming SSE tokens in terminal
 kill %1  # stop bootRun
 ```
 
-- [ ] **Step 7: Commit**
+**Step 7: Commit**
 
 ```bash
 git add backend/
@@ -1175,7 +1226,7 @@ git commit -m "feat: add ChatController SSE endpoint and CORS config"
 **Interfaces:**
 - Produces: running Vite dev server at `http://localhost:5173` with Mantine provider
 
-- [ ] **Step 1: Create `frontend/package.json`**
+**Step 1: Create `frontend/package.json`**
 
 ```json
 {
@@ -1205,7 +1256,7 @@ git commit -m "feat: add ChatController SSE endpoint and CORS config"
 }
 ```
 
-- [ ] **Step 2: Create `frontend/vite.config.ts`**
+**Step 2: Create `frontend/vite.config.ts`**
 
 ```typescript
 import { defineConfig } from 'vite'
@@ -1221,7 +1272,7 @@ export default defineConfig({
 })
 ```
 
-- [ ] **Step 3: Create `frontend/tsconfig.json`**
+**Step 3: Create `frontend/tsconfig.json`**
 
 ```json
 {
@@ -1243,7 +1294,7 @@ export default defineConfig({
 }
 ```
 
-- [ ] **Step 4: Create `frontend/index.html`**
+**Step 4: Create `frontend/index.html`**
 
 ```html
 <!doctype html>
@@ -1260,7 +1311,7 @@ export default defineConfig({
 </html>
 ```
 
-- [ ] **Step 5: Create `frontend/src/types.ts`**
+**Step 5: Create `frontend/src/types.ts`**
 
 ```typescript
 export interface Message {
@@ -1273,7 +1324,7 @@ export interface ChatRequest {
 }
 ```
 
-- [ ] **Step 6: Create `frontend/src/main.tsx`**
+**Step 6: Create `frontend/src/main.tsx`**
 
 ```typescript
 import { StrictMode } from 'react'
@@ -1291,7 +1342,7 @@ createRoot(document.getElementById('root')!).render(
 )
 ```
 
-- [ ] **Step 7: Create `frontend/src/App.tsx`**
+**Step 7: Create `frontend/src/App.tsx`**
 
 ```typescript
 import ChatView from './components/ChatView/ChatView'
@@ -1301,7 +1352,7 @@ export default function App() {
 }
 ```
 
-- [ ] **Step 8: Install dependencies and verify dev server starts**
+**Step 8: Install dependencies and verify dev server starts**
 
 ```bash
 cd frontend
@@ -1311,7 +1362,7 @@ npm run dev
 
 Expected: dev server at `http://localhost:5173`, no errors in terminal. Open in browser — blank page is fine for now.
 
-- [ ] **Step 9: Commit**
+**Step 9: Commit**
 
 ```bash
 cd ..
@@ -1331,7 +1382,7 @@ git commit -m "feat: scaffold Vite + React + Mantine v9 frontend"
 - Consumes: `onSubmit: (message: string) => void`, `disabled: boolean`
 - Produces: `MessageInput` component; `ChatView` (Task 12) uses this
 
-- [ ] **Step 1: Create `MessageInput.module.css`**
+**Step 1: Create `MessageInput.module.css`**
 
 ```css
 .wrapper {
@@ -1347,7 +1398,7 @@ git commit -m "feat: scaffold Vite + React + Mantine v9 frontend"
 }
 ```
 
-- [ ] **Step 2: Create `MessageInput.tsx`**
+**Step 2: Create `MessageInput.tsx`**
 
 ```typescript
 import { useState, KeyboardEvent } from 'react'
@@ -1403,7 +1454,7 @@ export default function MessageInput({ onSubmit, disabled }: Props) {
 }
 ```
 
-- [ ] **Step 3: Verify component renders**
+**Step 3: Verify component renders**
 
 In `App.tsx`, temporarily render:
 ```typescript
@@ -1415,7 +1466,7 @@ export default function App() {
 
 Run `npm run dev` and confirm textarea + button appear, submit works.
 
-- [ ] **Step 4: Revert `App.tsx` to original**
+**Step 4: Revert `App.tsx` to original**
 
 ```typescript
 import ChatView from './components/ChatView/ChatView'
@@ -1424,7 +1475,7 @@ export default function App() {
 }
 ```
 
-- [ ] **Step 5: Commit**
+**Step 5: Commit**
 
 ```bash
 git add frontend/
@@ -1445,11 +1496,11 @@ git commit -m "feat: add MessageInput component"
 - Consumes: `Message[]` from `types.ts`, `streamingContent: string | null`
 - Produces: `MessageThread` component; `ChatView` (Task 12) uses this
 
-- [ ] **Step 1: Create `AssistantMessage.module.css`**
+**Step 1: Create `AssistantMessage.module.css`**
 
 ```css
 .bubble {
-  background: var(--mantine-color-dark-6);
+  background: light-dark(var(--mantine-color-gray-1), var(--mantine-color-dark-6));
   border-radius: 8px;
   padding: 12px 16px;
   max-width: 85%;
@@ -1475,7 +1526,7 @@ git commit -m "feat: add MessageInput component"
 }
 ```
 
-- [ ] **Step 2: Create `AssistantMessage.tsx`**
+**Step 2: Create `AssistantMessage.tsx`**
 
 ```typescript
 import Markdown from 'react-markdown'
@@ -1495,7 +1546,7 @@ export default function AssistantMessage({ content, isStreaming }: Props) {
 }
 ```
 
-- [ ] **Step 3: Create `MessageThread.module.css`**
+**Step 3: Create `MessageThread.module.css`**
 
 ```css
 .thread {
@@ -1518,7 +1569,7 @@ export default function AssistantMessage({ content, isStreaming }: Props) {
 }
 ```
 
-- [ ] **Step 4: Create `MessageThread.tsx`**
+**Step 4: Create `MessageThread.tsx`**
 
 ```typescript
 import { useEffect, useRef } from 'react'
@@ -1556,7 +1607,7 @@ export default function MessageThread({ messages, streamingContent }: Props) {
 }
 ```
 
-- [ ] **Step 5: Commit**
+**Step 5: Commit**
 
 ```bash
 git add frontend/
@@ -1573,7 +1624,7 @@ git commit -m "feat: add MessageThread and AssistantMessage components with mark
 **Interfaces:**
 - Produces: `useChat()` hook returning `{ messages, streamingContent, isStreaming, sendMessage }`; `ChatView` uses this
 
-- [ ] **Step 1: Create `frontend/src/hooks/useChat.ts`**
+**Step 1: Create `frontend/src/hooks/useChat.ts`**
 
 ```typescript
 import { useState, useCallback } from 'react'
@@ -1612,23 +1663,33 @@ export function useChat(): UseChatReturn {
       const reader = response.body.getReader()
       const decoder = new TextDecoder()
       let accumulated = ''
+      let buffer = ''
+
+      // SSE: events separated by blank line. Within one event, multiple
+      // `data:` lines rejoin with `\n` (a token containing newlines arrives
+      // split across lines). Buffer across reads so events split mid-chunk
+      // aren't lost.
+      const flushEvent = (event: string) => {
+        const dataLines = event
+          .split('\n')
+          .filter(l => l.startsWith('data:'))
+          .map(l => l.slice(5))
+        if (dataLines.length === 0) return
+        accumulated += dataLines.join('\n')
+        setStreamingContent(accumulated)
+      }
 
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
-
-        const chunk = decoder.decode(value, { stream: true })
-        // Spring AI SSE format: "data:token\n\n"
-        const lines = chunk.split('\n')
-        for (const line of lines) {
-          if (line.startsWith('data:')) {
-            const token = line.slice(5)
-            if (token === '[DONE]') continue
-            accumulated += token
-            setStreamingContent(accumulated)
-          }
+        buffer += decoder.decode(value, { stream: true })
+        let sep: number
+        while ((sep = buffer.indexOf('\n\n')) !== -1) {
+          flushEvent(buffer.slice(0, sep))
+          buffer = buffer.slice(sep + 2)
         }
       }
+      if (buffer.trim()) flushEvent(buffer)
 
       setMessages(prev => [...prev, { role: 'assistant', content: accumulated }])
     } catch (err) {
@@ -1646,7 +1707,7 @@ export function useChat(): UseChatReturn {
 }
 ```
 
-- [ ] **Step 2: Commit**
+**Step 2: Commit**
 
 ```bash
 git add frontend/
@@ -1665,7 +1726,7 @@ git commit -m "feat: add useChat hook with SSE streaming"
 - Consumes: `useChat()` hook (Task 12), `MessageThread` (Task 11), `MessageInput` (Task 10)
 - Produces: complete chat UI, wired end-to-end
 
-- [ ] **Step 1: Create `ChatView.module.css`**
+**Step 1: Create `ChatView.module.css`**
 
 ```css
 .root {
@@ -1695,7 +1756,7 @@ git commit -m "feat: add useChat hook with SSE streaming"
 }
 ```
 
-- [ ] **Step 2: Create `ChatView.tsx`**
+**Step 2: Create `ChatView.tsx`**
 
 ```typescript
 import { useChat } from '../../hooks/useChat'
@@ -1722,12 +1783,12 @@ export default function ChatView() {
 }
 ```
 
-- [ ] **Step 3: Manual end-to-end test**
+**Step 3: Manual end-to-end test**
 
 Start backend:
 ```bash
 cd backend
-export $(cat .env.test | xargs)
+set -a; source .env.test; set +a
 ./gradlew bootRun &
 ```
 
@@ -1744,7 +1805,7 @@ Open `http://localhost:5173`. Send these messages and verify:
 
 Verify tokens stream in real-time (text appears progressively).
 
-- [ ] **Step 4: Build frontend production bundle**
+**Step 4: Build frontend production bundle**
 
 ```bash
 cd frontend
@@ -1753,7 +1814,7 @@ npm run build
 
 Expected: `dist/` created with `index.html` and assets. No TypeScript errors.
 
-- [ ] **Step 5: Commit**
+**Step 5: Commit**
 
 ```bash
 cd ..
@@ -1774,7 +1835,7 @@ git commit -m "feat: assemble ChatView, complete frontend end-to-end"
 - Consumes: built frontend (`frontend/dist/`) copied into Spring Boot static resources
 - Produces: single Fly.io app serving both API and frontend
 
-- [ ] **Step 1: Create `Dockerfile` at repo root**
+**Step 1: Create `Dockerfile` at repo root**
 
 ```dockerfile
 # Stage 1: Build frontend
@@ -1800,7 +1861,7 @@ EXPOSE 8080
 ENTRYPOINT ["java", "-jar", "app.jar"]
 ```
 
-- [ ] **Step 2: Create `backend/fly.toml`**
+**Step 2: Create `backend/fly.toml`**
 
 ```toml
 app = "fpl-assistant"
@@ -1840,12 +1901,14 @@ management:
         include: health
 ```
 
-- [ ] **Step 3: Build Docker image locally to verify**
+**Step 3: Build Docker image locally to verify**
 
 ```bash
 docker build -t fpl-assistant:local .
 docker run --rm -p 8080:8080 \
-  -e DATABASE_URL="jdbc:postgresql://..." \
+  -e DATABASE_URL="jdbc:postgresql://<host>:6543/postgres?sslmode=require" \
+  -e DB_USER="postgres" \
+  -e DB_PASSWORD="<your-db-password>" \
   -e ANTHROPIC_API_KEY="sk-ant-..." \
   -e SPRING_AI_PROVIDER="anthropic" \
   fpl-assistant:local
@@ -1853,19 +1916,21 @@ docker run --rm -p 8080:8080 \
 
 Open `http://localhost:8080` — should serve the React app. Test the chat. Kill with `Ctrl+C`.
 
-- [ ] **Step 4: Create Fly.io app and set secrets**
+**Step 4: Create Fly.io app and set secrets**
 
 ```bash
 cd backend
 fly launch --no-deploy --name fpl-assistant --region mad
-fly secrets set DATABASE_URL="jdbc:postgresql://..."
+fly secrets set DATABASE_URL="jdbc:postgresql://<host>:6543/postgres?sslmode=require"
+fly secrets set DB_USER="postgres"
+fly secrets set DB_PASSWORD="<your-db-password>"
 fly secrets set ANTHROPIC_API_KEY="sk-ant-..."
 fly secrets set OPENAI_API_KEY="sk-..."
 fly secrets set SPRING_AI_PROVIDER="anthropic"
 fly secrets set CORS_ORIGINS="https://fpl-assistant.fly.dev"
 ```
 
-- [ ] **Step 5: Deploy**
+**Step 5: Deploy**
 
 ```bash
 fly deploy --dockerfile ../Dockerfile
@@ -1873,7 +1938,7 @@ fly deploy --dockerfile ../Dockerfile
 
 Expected: deploy succeeds. Visit `https://fpl-assistant.fly.dev` — chat UI loads, questions answered.
 
-- [ ] **Step 6: Commit**
+**Step 6: Commit**
 
 ```bash
 cd ..
