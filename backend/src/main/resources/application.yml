@@ -10,10 +10,14 @@ spring:
         # statements under concurrent load; disable statement promotion.
         prepareThreshold: 0
   ai:
-    # Activates only the selected provider's chat autoconfiguration, so the
-    # unused provider's missing API key can't fail context startup.
     model:
+      # Activates only the selected provider's chat autoconfiguration, so the
+      # unused provider's missing API key can't fail context startup.
       chat: ${SPRING_AI_PROVIDER:anthropic}
+      # Gated separately from chat above so provider switching stays predictable: RAG
+      # embeddings always use OpenAI regardless of SPRING_AI_PROVIDER, because Anthropic
+      # has no embeddings API.
+      embedding: openai
     anthropic:
       api-key: ${ANTHROPIC_API_KEY:}
       chat:
@@ -30,6 +34,20 @@ spring:
           max-completion-tokens: ${FPL_MAX_TOKENS:1500}
           # gpt-5.6 on /v1/chat/completions only supports function tools with reasoning off.
           reasoning-effort: none
+      embedding:
+        model: text-embedding-3-small
+    vectorstore:
+      pgvector:
+        table-name: fpl_embeddings
+        # Left unset, dimension resolution makes a live OpenAI call at every context startup.
+        dimensions: 1536
+        # CREATE EXTENSION/CREATE TABLE IF NOT EXISTS — idempotent, safe on every startup.
+        initialize-schema: true
+        # NOT enabled: PgVectorStore.afterPropertiesSet() runs schema validation
+        # unconditionally BEFORE initialize-schema's table creation, so the two together
+        # can never succeed from an empty table — validation always fails first. Verified
+        # against the 2.0.0 bytecode, not merely observed. initialize-schema's own
+        # CREATE TABLE is the only guard in effect.
 
 fpl:
   ai:
