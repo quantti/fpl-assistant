@@ -1,22 +1,31 @@
 # FPL Assistant — Phase 2: RAG Design Spec
 
-**Date:** 2026-08-14
+**Date:** 2026-08-14 (revised same day after architectural review)
 **Status:** Approved
-**Supersedes:** the "RAG knowledge base" section of `docs/superpowers/specs/2026-06-27-fpl-assistant-design.md` (that section describes per-message retrieval; this spec replaces it with tool-based retrieval, decided during brainstorming on 2026-08-14).
+
+**Supersedes** these parts of `docs/superpowers/specs/2026-06-27-fpl-assistant-design.md`:
+- the "RAG knowledge base" section (`:131-144`) — per-message retrieval replaced by tool-based retrieval
+- the data-flow step "Spring Boot builds prompt: system prompt + RAG retrieval on user query" (`:50`)
+- the Phase 2 bullet "RAG retrieval injected into prompt" (`:306`)
+- `rag/VectorStoreConfig.java` in the project structure (`:244`) — named `RagConfig` here; either name is acceptable
 
 ---
 
 ## Idea
 
-Phase 1 gave the assistant three knowledge layers as designed: static FPL rules in the system prompt, and live/historical stats via `GameweekTools`/`PlayerTools`/`FixtureTools`. The third layer — strategy knowledge (captaincy, transfers, chips, differentials, squad building) — does not live anywhere yet. A stats question ("how many goals has Haaland scored") and an advice question ("who should I captain") currently get the same treatment: whatever the model already knows, unsourced.
+Phase 1 delivered two of the three knowledge layers: FPL rules in the system prompt, and live/historical stats through `GameweekTools`/`PlayerTools`/`FixtureTools`. The third — strategy knowledge — exists nowhere. "How many goals has Haaland scored" and "who should I captain" currently get the same treatment: the second one is answered from the model's training-time priors, unsourced and uncheckable.
 
-Phase 2 adds that third layer as a **tool**, not a per-message context injection. The model decides when strategy knowledge is relevant and asks for it explicitly, the same way it already decides when to call `getPlayerStats`. This keeps stat-only questions cheap and unpolluted, and gives advice questions a sourced, current answer instead of the model's static training-time opinion.
+Phase 2 adds that layer as a **tool** the model calls deliberately, not as context injected into every prompt. Stat questions stay cheap and unpolluted; advice questions get sourced answers from a corpus the project controls.
 
 ## Why tool-based, not per-message RAG
 
-The original design spec's data flow injected a `[CONTEXT]` block from the top-3 similarity matches into *every* prompt, regardless of question type. Two problems: it spends a retrieval on every stat question that never needed strategy content, and it has no way to *not* inject when nothing relevant exists (top-3 always returns something, relevant or not).
+The original design injected the top-3 similarity matches into every prompt regardless of question type. Two problems: it spends a retrieval on every stat question that never needed strategy content, and similarity search always returns *something* — there is no natural "nothing relevant here" outcome, so irrelevant chunks get injected into stat answers.
 
-A `@Tool` follows the exact pattern already established by `GameweekTools`/`PlayerTools`/`FixtureTools`: the model calls it when the question calls for it, skips it otherwise. This is architecturally free — Phase 1's `List<FplTool>` registration pattern (Task 7) means adding this tool is exactly as much work as adding any other tool, with no changes to `ChatService`, `ChatController`, or the SSE contract.
+A `@Tool` follows the pattern the three existing tools already established. This is architecturally free: Phase 1's `FplTool` marker + `List<FplTool>` injection (`ChatService` passes `tools.toArray()`) means a new tool class joins the roster with zero changes to `ChatService`, `ChatController`, `AiConfig`, or the SSE contract.
+
+### Acknowledged tradeoff
+
+The corpus is small — seven documents, ~9,300 tokens total. At that size, a tool that returns one or two *whole documents* selected by topic would give strictly better answers than chunk retrieval, with no embedding latency and no ingestion pipeline. Embeddings are chosen anyway because `AGENTS.md` commits the project to pgvector, Phase 4 plans "more strategy docs", and the retrieval machinery is wanted before the corpus outgrows a simple approach. This is a deliberate bet on future size, not a claim that RAG is optimal at today's size. If the corpus is still this small when Phase 4 arrives, revisit it.
 
 ## System design
 
@@ -24,74 +33,108 @@ A `@Tool` follows the exact pattern already established by `GameweekTools`/`Play
 
 ```
 backend/src/main/java/fi/karivanttinen/fplassistant/rag/
-├── RagConfig.java        # VectorStore bean (Spring AI PgVectorStore), embedding model config
-├── IngestionRunner.java  # ApplicationRunner, active behind an --ingest flag
+├── RagConfig.java        # VectorStore bean config (may be pure application.yml + no class)
+├── IngestionRunner.java  # ApplicationRunner behind an --ingest flag
 └── StrategyTools.java    # @Tool searchStrategyDocs(query), implements FplTool
 ```
 
-- **Vector store:** Spring AI's built-in `PgVectorStore` abstraction, not hand-rolled `JdbcTemplate` + pgvector queries. This is a deliberate departure from the existing tools' style (which query Supabase directly): embedding, chunk storage, and cosine-similarity search are exactly what `PgVectorStore` exists to handle, and re-deriving that by hand would be reinventing a well-tested wheel for no benefit. The existing tools stay as they are — this is the one place in the codebase where the framework abstraction earns its keep.
-- **New table:** `fpl_embeddings` in the shared Supabase project, schema owned and initialized by `PgVectorStore` (`initialize-schema: true`). Same "new tables only, never touch tapas tables" convention as the rest of the project.
-- **Embedding provider is always OpenAI**, regardless of `SPRING_AI_PROVIDER`. Anthropic has no embeddings API, so this isn't a real choice — but it has a real consequence: `OPENAI_API_KEY` becomes a mandatory secret for every deployment, including an Anthropic-only chat configuration. This must be stated plainly in `AGENTS.md` and `docs/STATUS.md`/`DEVELOPMENT.md` — Phase 1's review found this undocumented in the original spec, and it should not repeat here.
+- **Vector store:** Spring AI's `PgVectorStore`, not hand-written `JdbcTemplate` SQL. This departs from the existing tools' style deliberately: embedding, chunk storage, and cosine search are exactly what the abstraction exists for. The existing stat tools stay as they are.
+- **New table:** `fpl_embeddings` in the shared Supabase project. Same "new tables only, never touch tapas tables" rule as everywhere else.
+- **Embedding provider is always OpenAI**, regardless of `SPRING_AI_PROVIDER` — Anthropic has no embeddings API. Consequence: `OPENAI_API_KEY` becomes mandatory in every deployment, including Anthropic-only chat. This is a *startup* dependency, not just a deploy-secrets matter (see Configuration below).
+
+### Configuration (binding — do not leave to inference)
+
+These exact settings are required. Every one of them has a wrong default that fails silently:
+
+| Setting | Value | Why it must be explicit |
+|---|---|---|
+| `spring.ai.model.embedding` | `openai` | The OpenAI embedding autoconfiguration is *not* gated by `spring.ai.model.chat`; pin it the same way chat is pinned, so provider switching stays predictable |
+| `spring.ai.openai.embedding.model` | `text-embedding-3-small` | Default is a legacy model at ~5× the cost with *identical* 1536 dimensions — nothing breaks visibly, so nobody notices. **Note:** `spring.ai.openai.embedding.options.model` is deprecated in Spring AI 2.0.0; use the property named here |
+| `spring.ai.vectorstore.pgvector.table-name` | `fpl_embeddings` | Default is `vector_store`. Without this, the table this spec names never gets created |
+| `spring.ai.vectorstore.pgvector.dimensions` | `1536` | Left unset, the store resolves dimensions by making a **live OpenAI call at every context startup** — which would make the whole test suite and every `bootRun` depend on OpenAI reachability |
+| `spring.ai.vectorstore.pgvector.initialize-schema` | `true` | Defaults to `false` in Spring AI 2.0 (changed from earlier versions). The single most likely silent failure in this phase |
+| `spring.ai.vectorstore.pgvector.schema-validation` | `true` | Recommended whenever the table name is overridden |
+| `spring.ai.vectorstore.pgvector.remove-existing-vector-store-table` | **never set it** | It drops and recreates the table on *every application boot*, not on ingest. It looks like the truncate-and-reload switch and is not |
+
+### Database prerequisites — verify before anything else
+
+Probed against the live instance on 2026-08-14:
+
+- `vector` extension: available (0.8.0) but **not installed**
+- `hstore`: **not installed**
+- `uuid-ossp`: installed
+- Connecting role: `postgres`, **not superuser**, but holds `CREATE` on `public`
+
+`PgVectorStore`'s schema initialization issues `CREATE EXTENSION IF NOT EXISTS` for all three (`vector`, `hstore`, `uuid-ossp`), and its generated DDL defaults the id column to `uuid_generate_v4()`. Supabase installs extensions into the `extensions` schema rather than `public`, so that function resolves only if `extensions` is on the role's `search_path` — and this project connects through the *transaction pooler*, which is not Supabase's recommended path for DDL.
+
+This is the only step that can hard-block the phase, and it touches a database shared with `tapas-fpl-app`. If automatic schema init cannot create the extensions, the fallback is: enable them once through the Supabase dashboard SQL editor, then set `initialize-schema: false` and create the table with hand-written DDL. **Creating extensions on the shared database is a decision to confirm with the project owner, not a side effect to discover mid-implementation.**
 
 ### The tool
 
-`StrategyTools.searchStrategyDocs(String query)` — free-text query, same calling convention as `PlayerTools.getPlayerStats(playerName)`: the model passes natural language, the tool embeds it and returns the top-k matching chunks as formatted text.
+`StrategyTools.searchStrategyDocs(String query)` — free text in, matching chunks out, same calling convention as `getPlayerStats(playerName)`.
 
-Two things distinguish it from the other three tools:
+Three requirements distinguish it from the stat tools:
 
-- **No `SeasonContext.provenance()` prefix.** Strategy knowledge is evergreen — "how to think about differentials" doesn't belong to a season the way a player's goal count does. Prefixing it with season provenance would be applying a convention outside the problem it exists to solve.
-- **The tool description states when to use it**, in the same terms as the system prompt instruction below: strategy, transfer, captaincy, chip, and wildcard questions, not stat lookups. Tool descriptions and system prompt should agree, since the model reads both.
+1. **No `SeasonContext.provenance()` prefix**, because that record describes *database rows* resolved through `SeasonResolver` — it has nothing to resolve here. But the corpus is **not** season-agnostic: `strategy-chips.md` and `strategy-wildcard-and-free-hit.md` encode the 2026/27 two-chip-set rules specifically (they were corrected from stale single-set rules during this design phase). So the tool must still open with a static source line — something like `Source: FPL strategy reference documents, written for the 2026/27 rules.` — which satisfies the citation requirement the system prompt already imposes. **`AGENTS.md`'s "every tool prefixes its reply with `SeasonContext.provenance()`" must be amended in the same task**, or a future agent will "fix" this tool back.
+2. **Empty-store behavior must be distinguishable from no-match.** Before first ingestion — the state of every fresh deploy, since ingestion is manual — search returns nothing. A bare "no results" invites the model to answer from training priors while a tool call creates false assurance. Return an explicit instruction instead, e.g. `No strategy documents are loaded — say so rather than improvising strategy advice.`
+3. **The tool description states when to reach for it** — advice, transfer, captaincy, chip and wildcard questions; not stat lookups. Description and system prompt must agree, since the model reads both.
+
+Error handling follows the convention every tool in this codebase now follows: catch `DataAccessException`, log with context, return a plain-text error string rather than letting it escape and kill the SSE stream.
+
+Per-call cost is negligible (~$4×10⁻⁷ per query); the real cost is one extra OpenAI round-trip of **latency** mid-stream. Not worth caching — stated here so nobody builds a cache.
 
 ### System prompt
 
-Add an explicit instruction: for advice-shaped questions (who to captain, who to transfer in, when to play a chip), call **both** a stats tool and `searchStrategyDocs` — don't let good tool descriptions alone carry that responsibility, the way `GameweekTools`'s provenance instruction is spelled out explicitly rather than left implicit.
+Add an explicit instruction: for advice-shaped questions, call **both** a stats tool and `searchStrategyDocs`. Don't rely on tool descriptions alone, the same reasoning that made the seasonal-provenance instruction explicit in Phase 1.
 
-The exact wording is not fixed by this spec — system prompt language is expected to be revised repeatedly as real usage surfaces gaps, the same way Task 3's prompt already went through corrections. What's fixed is the *behavior*: both tool families get consulted for advice questions, and the phrasing should be written so it survives Phase 5 without a rewrite (see below).
+Exact wording is not fixed here — prompt language will be revised repeatedly as real usage exposes gaps. What is fixed: both tool families get consulted for advice questions, and the phrasing must already accommodate a future squad-aware tool (see Phase 5 below) rather than needing restructuring later.
 
-### Data flow — compound question example
+### Data flow
 
-"Who should I transfer in?"
+"Who should I transfer in?" → advice instruction applies → model calls stat tools (form candidates, fixture difficulty) → model calls `searchStrategyDocs("who to transfer in, form vs fixtures")` → Spring AI aggregates both into the streamed answer, unchanged from Phase 1's orchestration.
 
-1. System prompt's advice-question instruction applies.
-2. Model calls stat tools (e.g. `getPlayerStats` for form candidates, `getUpcomingFixtures` for FDR).
-3. Model calls `searchStrategyDocs("who to transfer in, form vs fixtures")`.
-4. Spring AI aggregates both tool results into the final streamed answer, unchanged from Task 7/8's orchestration.
+"How many goals has Haaland scored?" → stat tool only. `searchStrategyDocs` is never called.
 
-"How many goals has Haaland scored?" — stats tool only; `searchStrategyDocs` is never called, because the system prompt scopes it to advice questions and the tool description reinforces that.
+### Documents and ingestion
 
-### Ingestion
+**Location is fixed, not an implementer choice:** the documents must live under `backend/src/main/resources/docs/`. The Dockerfile copies only `backend/` into the build stage, so a Gradle task sourcing the repo-root `strategy_docs/` works locally and produces an empty corpus in the deployed image — passing Task 3's local verification and failing at deploy. Whether the repo-root copy is deleted or kept as the editing source with a documented sync step is an implementer choice; where the app reads from is not.
 
-- **Source docs:** `strategy_docs/` at the repo root already contains seven markdown files (user-supplied, reviewed and corrected for the 2026/27 two-chip-set season during this design phase — see `strategy-chips.md`, `strategy-wildcard-and-free-hit.md`, `strategy-transfers.md`). These need to end up under the backend's classpath (`resources/docs/`, per the original spec's project structure) so `IngestionRunner` can read them as resources; whether that's a move, a copy, or a build-time resource-path addition is an implementation choice, not a design one.
-- **Chunking:** 500 tokens / 50-token overlap — the original spec's numbers, kept as a starting point given the doc count is small (7 files) and there's no evidence yet that they need tuning.
-- **Retrieval:** top-3 chunks per `searchStrategyDocs` call. No similarity threshold — the tool-based gate (model decides whether to call it at all) already does the job a threshold would have done in the per-message design.
-- **Re-ingestion:** `IngestionRunner --ingest` truncates `fpl_embeddings` and reloads from the current doc set on every run. No content-hash dedup, no incremental updates. This is the right amount of complexity for seven infrequently-edited files — dedup logic would be solving a problem this project doesn't have.
-- `IngestionRunner` does not run during normal `bootRun` / production startup — only behind the `--ingest` flag, invoked manually when docs change.
+**Chunk by markdown section, not by token window.** The original 500-token/50-overlap figure cannot be implemented as written — Spring AI 2.0.0's `TokenTextSplitter` has **no overlap parameter** (its builder exposes chunk size, min chunk chars, min length to embed, max chunks, keep-separator, punctuation marks, encoding type — nothing else). More importantly, token windows are wrong for *these specific documents*:
+
+- Three near-identical sections exist ("Common chip mistakes", "Wildcard mistakes", "Free Hit mistakes"). A token window strips the header from the chunk holding the bullets, so a retrieved chunk is ambiguous about which chip it describes — the model will misattribute.
+- Markdown tables get severed from their header rows (`strategy-transfers.md`, `strategy-wildcard-and-free-hit.md`, `captain-selection-and-triple-captain.md` all end in decision tables). Half a table without `| Situation | Chip |` is unreadable.
+- Sections here run 100–250 words: already self-contained and answer-shaped, i.e. already the right retrieval unit.
+
+So: split on markdown sections (`spring-ai-markdown-document-reader` is in the 2.0.0 BOM), prefix each chunk's body with `<doc title> > <section header>` so a retrieved chunk carries its own context, and store `source` and `section` metadata.
+
+**Retrieval:** top-k **5** (`SearchRequest`'s default is 4 — whatever value is chosen must be set explicitly). Five chunks of a ~16–21 chunk corpus is roughly 2.5k tokens, trivially affordable, and gives compound questions enough material. No similarity threshold: the tool-based gate already does the job a threshold would have done.
+
+**Re-ingestion:** `--ingest` deletes the existing rows and reloads from the current doc set. No content-hash dedup — wrong amount of complexity for seven infrequently-edited files. `VectorStore` exposes no truncate operation (only `delete(ids)` / `delete(Filter.Expression)`), so the runner does this itself; a plain `DELETE FROM fpl_embeddings` is acceptable and does not undermine the choice to use the abstraction for search. Note this leaves a window where the deployed app sees an empty corpus — which requirement 2 above makes visible rather than silent.
+
+The runner must not execute during normal `bootRun` or production startup, and **must terminate the process when it finishes** (an `ApplicationRunner` in a web app otherwise leaves a server running after ingestion).
 
 ### Testing
 
-Existing tools test against live Supabase (established project convention, not changed here). RAG ingestion tests should run against a small **fixture** doc set checked into the test resources, not the full user-supplied `strategy_docs/` corpus — the corpus's content isn't something tests should depend on, and it will keep changing independently of the code. `StrategyTools` tests then verify retrieval behavior (a known query returns the known fixture chunk) rather than asserting anything about real strategy content.
+**Ingestion tests must never write to `fpl_embeddings`.** There is one Supabase project, no Testcontainers, and five existing `@SpringBootTest` classes that boot against it. Without isolation, `./gradlew test` truncates the real strategy corpus and refills it with test fixtures — silently, after which the deployed app answers advice questions from fixture junk. Pin a separate table for the test profile (`table-name: fpl_embeddings_test` in `src/test/resources/application.yml`, or a test-only store bean).
 
-### Error handling
+Test against a small **fixture** corpus, not the real documents: their content changes independently of the code, and tests shouldn't depend on it. Cover ingestion mechanics, retrieval of known fixture content, and the error/empty paths.
 
-`StrategyTools.searchStrategyDocs` follows the same convention every other tool in this codebase now follows (Task 5–8 pattern, including the Task 7 review's `GameweekTools` harmonization): catch `DataAccessException`-family failures (vector store queries go through the same JDBC infrastructure), log with context, return a plain-text error string rather than letting the exception escape and kill the SSE stream.
+Mechanics tests cannot tell you whether retrieval is any *good*. That needs a checked-in list of ~8 real questions mapped to the document that should be retrieved — "should I use my wildcard now" → `strategy-wildcard-and-free-hit.md`; "premium or mid-price forward" → `player-archetypes.md`/`strategy-team-building.md`; "is a -4 worth it" → `strategy-transfers.md` — run manually against the real corpus with results recorded in `STATUS.md`. This is what catches chunking failures; a fixture assertion never will.
 
 ### Phase 5 extension point (not built now)
 
-A brainstorming detour surfaced a real future requirement: transfer advice is much better when the model knows the user's *current* 15-player squad (so it doesn't suggest players already owned, and can reason about who to sell). That capability needs a user account (Supabase auth, Phase 5) — building it now is out of scope and was explicitly deferred.
+Transfer advice is much better when the model knows the user's current 15-player squad — it shouldn't suggest players already owned, and should reason about who to sell. That needs a user account (Supabase auth, Phase 5) and is explicitly deferred.
 
-What Phase 2 must not do is design itself into a corner that makes Phase 5 harder:
+Phase 2 must not make Phase 5 harder:
 
-- The `FplTool` marker interface + `List<FplTool>` injection (Task 7) already means a future `getUserSquad()` tool is just another `@Component implements FplTool` — zero changes to `ChatService`, `ChatController`, or this phase's `StrategyTools`.
-- The system prompt's advice-question instruction should be phrased with a conditional that already accommodates a squad tool's future existence (e.g., "if the user's squad is known, factor in what they already own; otherwise ask or proceed with general advice") rather than a phrasing that would need to be restructured when Phase 5 lands. The exact wording is left to whoever writes it, now or later — this is a constraint on shape, not a fixed sentence.
-- Anyone writing or revising the strategy docs going forward should write with "the user's current squad" as a real factor the docs' advice already accounts for (e.g., "avoid transferring in a player you already own in another position") — this is a content-authoring note for the doc owner, not a code task.
+- `FplTool` + `List<FplTool>` injection already means a future `getUserSquad()` is just another `@Component implements FplTool` — no changes to `ChatService`, `ChatController`, or `StrategyTools`.
+- The advice instruction in the system prompt should be phrased with a conditional that already accommodates a squad tool ("if the user's squad is known, factor in what they already own; otherwise ask or proceed with general advice") rather than phrasing that needs restructuring when Phase 5 lands. Constraint on shape, not a fixed sentence.
+- Whoever writes or revises strategy docs should treat "the user's current squad" as a factor the advice already accounts for. Content-authoring note for the doc owner, not a code task.
 
-## Out of scope for Phase 2
+## Out of scope
 
-- Server-side conversation history, auth, billing — Phase 5, unchanged.
-- `pl_match_result` / historical data sync — Phase 3.
-- Any new stat tools (`getTeamForm`, `getHeadToHead`, price trends, etc.) — Phase 3/4.
-- Building `getUserSquad()` or any user-account-backed feature — Phase 5, per above.
+Server-side history, auth, billing (Phase 5). `pl_match_result` and historical sync (Phase 3). New stat tools (Phase 3/4). Building `getUserSquad()` (Phase 5).
 
-## Open questions left to the implementer
+## Left to the implementer
 
-This spec deliberately does not fix: exact package/class shapes beyond the three named components, exact system prompt sentence, whether the 500/50/top-3 numbers need tuning after real use, and how the `strategy_docs/` → classpath resource path is wired. These are implementation judgment calls within the constraints stated above, not open design questions requiring another round of brainstorming.
+Class and method shapes beyond the three named components; the exact system prompt sentence; whether top-k 5 needs tuning after real use; whether the repo-root `strategy_docs/` copy is deleted or kept as an editing source. These are judgment calls inside the constraints above — not open design questions.
