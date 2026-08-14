@@ -3,6 +3,8 @@ package dev.quantti.fplassistant.rag;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDate;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
@@ -61,8 +63,6 @@ public class IngestionService {
 
     private static final Pattern FRONT_MATTER =
             Pattern.compile("^---\\r?\\n(.*?)\\r?\\n---(?:\\r?\\n|$)", Pattern.DOTALL);
-
-    private static final Pattern ISO_DATE = Pattern.compile("\\d{4}-\\d{2}-\\d{2}");
 
     private static final MarkdownDocumentReaderConfig READER_CONFIG =
             MarkdownDocumentReaderConfig.builder().build();
@@ -129,7 +129,7 @@ public class IngestionService {
             log.info("{}: {} chunks", resource.getFilename(), fileChunks.size());
         }
 
-        jdbc.execute("DELETE FROM " + tableName);
+        jdbc.execute("DELETE FROM " + tableName); // tableName is config-injected, not user input
         vectorStore.add(chunks);
         log.info("Ingested {} documents as {} chunks into {} (table truncated first, OpenAI embeddings)",
                 resources.length, chunks.size(), tableName);
@@ -179,17 +179,31 @@ public class IngestionService {
         if (validFrom == null) {
             throw new IllegalStateException(fileName + ": missing required front matter field 'valid_from'");
         }
-        if (!ISO_DATE.matcher(validFrom).matches()) {
-            throw new IllegalStateException(fileName + ": 'valid_from' must be an ISO date (YYYY-MM-DD), was '" + validFrom + "'");
-        }
+        LocalDate from = parseIsoDate(validFrom, "valid_from", fileName);
         if (kind.equals("timely") && validUntil == null) {
             throw new IllegalStateException(fileName + ": timely document requires 'valid_until' —"
                     + " content that never expires must not enter the corpus");
         }
-        if (validUntil != null && !ISO_DATE.matcher(validUntil).matches()) {
-            throw new IllegalStateException(fileName + ": 'valid_until' must be an ISO date (YYYY-MM-DD), was '" + validUntil + "'");
+        LocalDate until = validUntil == null ? null : parseIsoDate(validUntil, "valid_until", fileName);
+        if (until != null && until.isBefore(from)) {
+            throw new IllegalStateException(fileName + ": 'valid_until' (" + validUntil
+                    + ") must not be before 'valid_from' (" + validFrom + ")");
         }
         return new FrontMatter(title, kind, validFrom, validUntil);
+    }
+
+    /**
+     * Semantic date validation: {@code LocalDate.parse} rejects calendar-impossible dates
+     * (2026-02-30) that a shape regex would accept — and that would later crash
+     * {@link StrategyTools#isCurrentlyValid} when it parses the stored metadata.
+     */
+    private static LocalDate parseIsoDate(String value, String field, String fileName) {
+        try {
+            return LocalDate.parse(value);
+        } catch (DateTimeParseException e) {
+            throw new IllegalStateException(fileName + ": '" + field
+                    + "' must be an ISO date (YYYY-MM-DD), was '" + value + "'", e);
+        }
     }
 
     /** Strips the front matter block so the markdown reader never sees it. */
