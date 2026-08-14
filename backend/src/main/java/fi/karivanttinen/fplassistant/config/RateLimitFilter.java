@@ -29,7 +29,7 @@ public class RateLimitFilter extends OncePerRequestFilter {
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response,
                                     FilterChain chain) throws ServletException, IOException {
-        if (!request.getRequestURI().startsWith("/api/chat")) {
+        if (!request.getRequestURI().equals("/api/chat")) {
             chain.doFilter(request, response);
             return;
         }
@@ -56,11 +56,21 @@ public class RateLimitFilter extends OncePerRequestFilter {
         return counter[1] <= MAX_REQUESTS_PER_MINUTE;
     }
 
-    /** Fly's proxy puts the real client address first in X-Forwarded-For. */
-    private static String clientIp(HttpServletRequest request) {
+    /**
+     * The first X-Forwarded-For entry is attacker-controlled: Fly's proxy APPENDS the real
+     * client address to whatever the client already sent, so keying on the first entry hands
+     * out a fresh rate-limit bucket per forged header. Prefer Fly-Client-IP (set by the proxy,
+     * not forgeable through it), then the LAST forwarded entry, then the socket address.
+     */
+    static String clientIp(HttpServletRequest request) {
+        String flyClientIp = request.getHeader("Fly-Client-IP");
+        if (flyClientIp != null && !flyClientIp.isBlank()) {
+            return flyClientIp.trim();
+        }
         String forwarded = request.getHeader("X-Forwarded-For");
         if (forwarded != null && !forwarded.isBlank()) {
-            return forwarded.split(",")[0].trim();
+            String[] entries = forwarded.split(",");
+            return entries[entries.length - 1].trim();
         }
         return request.getRemoteAddr();
     }

@@ -1,9 +1,12 @@
 package fi.karivanttinen.fplassistant.chat;
 
+import fi.karivanttinen.fplassistant.config.RateLimitFilter;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
+import org.springframework.context.annotation.ComponentScan;
+import org.springframework.context.annotation.FilterType;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
@@ -19,7 +22,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 
-@WebMvcTest(ChatController.class)
+// RateLimitFilter is excluded from the slice: it is a @Component Filter, so @WebMvcTest would
+// register it and every test here would spend the shared per-IP budget — a suite-growth time
+// bomb. Its behavior is covered by RateLimitFilterTest.
+@WebMvcTest(value = ChatController.class,
+        excludeFilters = @ComponentScan.Filter(
+                type = FilterType.ASSIGNABLE_TYPE, classes = RateLimitFilter.class))
 class ChatControllerTest {
 
     private static final ParameterizedTypeReference<ServerSentEvent<String>> SSE_TYPE =
@@ -128,6 +136,20 @@ class ChatControllerTest {
     void blankContentIsRejected() {
         expectBadRequest("""
                 {"messages":[{"role":"user","content":"   "}]}
+                """);
+    }
+
+    @Test
+    void missingRoleIsRejected() {
+        expectBadRequest("""
+                {"messages":[{"content":"hello"}]}
+                """);
+    }
+
+    @Test
+    void missingContentFieldIsRejected() {
+        expectBadRequest("""
+                {"messages":[{"role":"user"}]}
                 """);
     }
 }

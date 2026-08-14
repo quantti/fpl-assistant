@@ -1,7 +1,7 @@
 # Status — Phase 1
 
-**Progress:** Task 9/14 done. Tasks 1–7 merged to `master`; Tasks 8–10 on branch
-`tasks8-10-chat-api-frontend` (review checkpoint after Task 10).
+**Progress:** Task 10/14 done. Tasks 1–7 merged to `master`; Tasks 8–10 on branch
+`tasks8-10-chat-api-frontend`, reviewed at the Task 10 checkpoint.
 
 Plan: `docs/superpowers/plans/2026-06-27-phase1-core-chatbot.md`.
 Spec: `docs/superpowers/specs/2026-06-27-fpl-assistant-design.md`.
@@ -23,8 +23,13 @@ Setup and commands: `docs/DEVELOPMENT.md`.
 | 8 — ChatController | `64513a7` | `POST /api/chat` SSE: validation caps (200 msgs / 4000 chars / role whitelist), per-IP rate limit (20/min), per-provider response-token caps, tokens JSON-encoded in `data:` (raw SSE drops leading spaces), `event: error` + terminal `event: done`. Live smoke verified: tool call streams progressively, provenance survives into the answer |
 | 9 — Frontend scaffold | (tasks8-10 branch) | Vite 8.2 + React 19.2 + Mantine 9.5 + TS 6.0; `vite-env.d.ts` added (plan omitted it, CSS imports fail tsc without); `App.tsx` renders a placeholder until Task 13 wires ChatView (plan's version imported a not-yet-existing file) |
 
-Next: **Task 10 — MessageInput**, then review checkpoint. Note for Task 12: token `data:` payloads
-are JSON-encoded strings (see the plan's Task 12 amendment) — `JSON.parse` each token event.
+| 10 — MessageInput | (tasks8-10 branch) | `MessageInput` component; IME composition guard added on review (plan's code submitted mid-composition Enter) |
+
+Next: **Task 11 — message display components**, then 12–14 with a review checkpoint after 14.
+Notes for Task 12: token `data:` payloads are JSON-encoded strings (plan's Task 12 amendment) —
+`JSON.parse` token events only, dispatch on the `event:` line (the `done` event has empty data,
+so a data-presence check would swallow it), and keep the non-OK-response check (a synchronous
+failure before the stream starts is a plain 500, not an SSE error event).
 
 ## The season problem, and the shape of the fix
 
