@@ -171,6 +171,53 @@ class IngestionServiceTest {
                 .hasMessageContaining("not valid YAML");
     }
 
+    @Test
+    void calendarImpossibleDatesFailLoudly() {
+        // 2026-02-30 passes a shape regex but is not a real date — it would crash
+        // LocalDate.parse at retrieval time, so ingestion must reject it.
+        String badValidFrom = """
+                ---
+                title: T
+                kind: reference
+                valid_from: 2026-02-30
+                ---
+                # x
+                """;
+        assertThatThrownBy(() -> IngestionService.parseFrontMatter(badValidFrom, "date.md"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("ISO date");
+
+        String badValidUntil = """
+                ---
+                title: T
+                kind: timely
+                valid_from: 2026-09-01
+                valid_until: 2026-09-31
+                ---
+                # x
+                """;
+        assertThatThrownBy(() -> IngestionService.parseFrontMatter(badValidUntil, "date.md"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("ISO date");
+    }
+
+    @Test
+    void validUntilBeforeValidFromFailsLoudly() {
+        String doc = """
+                ---
+                title: T
+                kind: timely
+                valid_from: 2026-10-01
+                valid_until: 2026-09-15
+                ---
+                # x
+                """;
+        assertThatThrownBy(() -> IngestionService.parseFrontMatter(doc, "inverted.md"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("inverted.md")
+                .hasMessageContaining("must not be before");
+    }
+
     // ------------------------------------------------------------------
     // Section chunking
     // ------------------------------------------------------------------
