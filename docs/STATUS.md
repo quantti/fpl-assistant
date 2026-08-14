@@ -164,7 +164,7 @@ adds routes (needs a forwarding controller).
 
 # Status — Phase 2 (RAG)
 
-**Progress:** Task 6/7 done.
+**Progress:** Task 7/7 done.
 
 Plan: `docs/superpowers/plans/2026-08-14-phase2-rag.md`.
 Spec: `docs/superpowers/specs/2026-08-14-phase2-rag-design.md`.
@@ -177,6 +177,9 @@ Spec: `docs/superpowers/specs/2026-08-14-phase2-rag-design.md`.
 | 2 — Vector store wiring | (phase2-tasks1-4-rag-core branch) | `fpl_embeddings` live in Supabase (`id uuid`, `content text`, `metadata json`, `embedding vector`); `vector`/`hstore`/`uuid-ossp` now actually installed. App starts cleanly under both `SPRING_AI_PROVIDER=openai` and `=anthropic` with a populated OpenAI key. Full Phase 1 suite green with the starter on the classpath |
 | 3 — Ingestion | (this task) | Seven docs moved to `backend/src/main/resources/docs/` with front matter (`kind: reference`, `valid_from: 2026-08-21`); `IngestionRunner` (`--ingest` flag, exits the JVM when done) + `IngestionService` (front matter validation fails the run loudly before anything is deleted, section chunking via `MarkdownDocumentReader`, `<doc title> > <section>` prefixed into every chunk body, metadata carries title/section/kind/valid_from/valid_until, truncate-then-reload). Real run: 7 docs → 61 chunks into `fpl_embeddings`, verified row-by-row. Tests: pure unit (front matter + chunking) + integration against `fpl_embeddings_test` proving the production table is never touched, re-runs don't duplicate, a bad document aborts before truncation |
 | 4 — searchStrategyDocs | (this task) | `StrategyTools` `@Tool` registered via `FplTool`: per-chunk attribution (title, section, kind, validity window), distinguishable empty-store and all-expired messages, catch-`DataAccessException` error string, top-k 5 explicit. Expiry enforced post-retrieval against a widened candidate pool (20) because the spec's `SearchRequest.filterExpression` route is not expressible — see findings below. `AGENTS.md`'s provenance convention amended to exempt the RAG tool. Tests: expiry logic unit-tested with fixed dates, integration retrieval/expiry/empty-store against `fpl_embeddings_test` under a pinned Clock, error path via a stubbed store |
+| 5 — System prompt | `1b155d0` | "Strategy advice" section added to `system-prompt.st`: advice questions consult BOTH stats tools and `searchStrategyDocs`; phrasing carries the Phase 5 squad conditional ("if the user's squad is known, factor in what they already own") so a future `getUserSquad()` needs no prompt restructuring; companion instruction on retrieved-content age mirrors the seasonal-provenance discipline (weigh `timely` by age, say so when citing weeks-old content) |
+| 6 — Retrieval baseline | `93e3e38` | 8 questions run against the live 61-chunk corpus; all 8 retrieve from the expected document (table in STATUS.md above). No chunking/top-k change warranted |
+| 7 — End-to-end | (this task) | Real chat flow verified: advice question fires stats tools + `searchStrategyDocs` and answers from retrieved content; pure stat question does NOT call `searchStrategyDocs` (negative case proven) |
 
 ### Prerequisites gate — findings
 
@@ -332,3 +335,24 @@ section header and doc title (the three near-identical "mistakes" sections never
 misattributed), and decision-summary tables stay intact inside their chunks. The only noise is
 semantic (decision-summary table chunks ranking 3–5 on adjacent questions), which top-k 5
 absorbs without harm; no chunking or top-k change warranted.
+
+## Task 7 — end-to-end verification (real chat flow)
+
+Verified against the running application via `POST /api/chat` (SSE), real Supabase, real
+OpenAI embeddings, claude-sonnet-5:
+
+- **Advice question** ("Who should I captain in Gameweek 1 and should I save my triple captain
+  chip for later?"): the model reported using `getGameweekInfo`, `getPlayerStats` **and**
+  `searchStrategyDocs`, and the answer visibly drew on retrieved content — the DGW guidance
+  ("premium attacker with two favourable fixtures—ideally both at home") and the pre-activation
+  checks (fixture confirmation, team news, minutes/rotation risk, penalty duty) match the
+  captaincy document's "When to play" and "Pre-activation checklist" sections, which the model
+  cannot otherwise see. Provenance discipline held: the 2025/26 stats were explicitly labelled
+  completed-season evidence, not current form.
+- **Pure stat question** ("How many goals and assists did Mohamed Salah get last season, and
+  what is his current price?"): answered purely from `getPlayerStats` (7 goals, 7 assists,
+  £14.0m in 2025/26, flagged historical). The answer mentions no strategy document and no
+  `searchStrategyDocs` — the negative case proves the tool-based design: stat questions never
+  spend a retrieval.
+
+Both question types behave as the spec describes.
