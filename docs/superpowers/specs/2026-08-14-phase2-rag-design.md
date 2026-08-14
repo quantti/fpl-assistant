@@ -23,9 +23,17 @@ The original design injected the top-3 similarity matches into every prompt rega
 
 A `@Tool` follows the pattern the three existing tools already established. This is architecturally free: Phase 1's `FplTool` marker + `List<FplTool>` injection (`ChatService` passes `tools.toArray()`) means a new tool class joins the roster with zero changes to `ChatService`, `ChatController`, `AiConfig`, or the SSE contract.
 
-### Acknowledged tradeoff
+### Corpus growth, and why that settles the approach
 
-The corpus is small — seven documents, ~9,300 tokens total. At that size, a tool that returns one or two *whole documents* selected by topic would give strictly better answers than chunk retrieval, with no embedding latency and no ingestion pipeline. Embeddings are chosen anyway because `AGENTS.md` commits the project to pgvector, Phase 4 plans "more strategy docs", and the retrieval machinery is wanted before the corpus outgrows a simple approach. This is a deliberate bet on future size, not a claim that RAG is optimal at today's size. If the corpus is still this small when Phase 4 arrives, revisit it.
+The corpus starts small — seven documents, ~9,300 tokens. At *that* size a tool returning one or two whole documents by topic would beat chunk retrieval outright: better answers, no embedding latency, no ingestion pipeline.
+
+It will not stay that size. The intent is to add documents throughout the season — press pieces, social-media analysis, community takes — potentially several per week. Over a 38-gameweek season that is a corpus one to two orders of magnitude larger than today's, which is squarely retrieval territory. Embeddings are the right call for where this is going, not for where it is.
+
+Two consequences follow, and the second one is the important one.
+
+**Re-embedding stays cheap.** Even a few hundred documents is well under a dollar to re-embed at `text-embedding-3-small` pricing, so truncate-and-reload (below) remains viable far past the current size. Revisit it if ingestion time becomes annoying, not on cost grounds.
+
+**Document freshness becomes a correctness problem.** Evergreen strategy reference and a dated news article are different kinds of content. An injury report from GW3 retrieved in GW20 is not merely stale — it is actively wrong, and the model has no way to know unless the chunk says so. This is the same failure Phase 1 spent real effort preventing for database rows (`SeasonResolver`, `SeasonContext.provenance()`); RAG must not reintroduce it through the back door. Hence the metadata requirements below, which are cheap to build in now and expensive to retrofit once dozens of undated documents exist.
 
 ## System design
 
@@ -75,7 +83,7 @@ This is the only step that can hard-block the phase, and it touches a database s
 
 Three requirements distinguish it from the stat tools:
 
-1. **No `SeasonContext.provenance()` prefix**, because that record describes *database rows* resolved through `SeasonResolver` — it has nothing to resolve here. But the corpus is **not** season-agnostic: `strategy-chips.md` and `strategy-wildcard-and-free-hit.md` encode the 2026/27 two-chip-set rules specifically (they were corrected from stale single-set rules during this design phase). So the tool must still open with a static source line — something like `Source: FPL strategy reference documents, written for the 2026/27 rules.` — which satisfies the citation requirement the system prompt already imposes. **`AGENTS.md`'s "every tool prefixes its reply with `SeasonContext.provenance()`" must be amended in the same task**, or a future agent will "fix" this tool back.
+1. **No `SeasonContext.provenance()` prefix**, because that record describes *database rows* resolved through `SeasonResolver` — it has nothing to resolve here. But the corpus is **not** timeless (see Document metadata below), so each retrieved chunk must carry its own attribution: document title, section, kind, and validity date. A single static banner line is not sufficient once dated content enters the corpus. **`AGENTS.md`'s "every tool prefixes its reply with `SeasonContext.provenance()`" must be amended in the same task**, or a future agent will "fix" this tool back.
 2. **Empty-store behavior must be distinguishable from no-match.** Before first ingestion — the state of every fresh deploy, since ingestion is manual — search returns nothing. A bare "no results" invites the model to answer from training priors while a tool call creates false assurance. Return an explicit instruction instead, e.g. `No strategy documents are loaded — say so rather than improvising strategy advice.`
 3. **The tool description states when to reach for it** — advice, transfer, captaincy, chip and wildcard questions; not stat lookups. Description and system prompt must agree, since the model reads both.
 
@@ -105,7 +113,36 @@ Exact wording is not fixed here — prompt language will be revised repeatedly a
 - Markdown tables get severed from their header rows (`strategy-transfers.md`, `strategy-wildcard-and-free-hit.md`, `captain-selection-and-triple-captain.md` all end in decision tables). Half a table without `| Situation | Chip |` is unreadable.
 - Sections here run 100–250 words: already self-contained and answer-shaped, i.e. already the right retrieval unit.
 
-So: split on markdown sections (`spring-ai-markdown-document-reader` is in the 2.0.0 BOM), prefix each chunk's body with `<doc title> > <section header>` so a retrieved chunk carries its own context, and store `source` and `section` metadata.
+So: split on markdown sections (`spring-ai-markdown-document-reader` is in the 2.0.0 BOM), prefix each chunk's body with `<doc title> > <section header>` so a retrieved chunk carries its own context, and store the metadata described next.
+
+### Document metadata and shelf life
+
+Documents fall into two lifespans, and the difference is load-bearing:
+
+- **Season-long** — the strategy reference material. Valid until the rules change.
+- **Short-lived** — a gameweek preview, an injury report, a "who to captain this week" take. Valid for a week or two, then not merely stale but wrong.
+
+Every document carries front matter; every chunk inherits it into vector-store metadata:
+
+| Field | Required | Purpose |
+|---|---|---|
+| `title` | yes | Human-readable name, prefixed into chunk text and cited in answers |
+| `kind` | yes | `reference` (season-long) or `timely` (tied to a moment) |
+| `valid_from` | yes | ISO date. For `reference`, the season start it was written for; for `timely`, publication date |
+| `valid_until` | only for `timely` | ISO date after which the content should no longer be treated as live. Absent means no expiry |
+| `section` | — | Populated by the splitter, not the author |
+
+Use ISO dates (`2026-09-15`) rather than gameweek numbers: they sort lexicographically, so no gameweek lookup is needed at query time and nothing couples this to `SeasonResolver`. Authors are free to think in gameweeks and write the corresponding date.
+
+**Expiry is enforced at retrieval, not at ingestion.** `searchStrategyDocs` filters to documents that are currently valid — no `valid_until`, or `valid_until` on or after today. Spring AI supports this natively: `SearchRequest.filterExpression()` with `FilterExpressionBuilder`'s comparison operators, which `PgVectorStore` translates into SQL against the metadata column. Expired documents stay in the store (storage is free, re-ingestion would restore them anyway) but stop competing for the top-k slots, which matters much more once the corpus holds hundreds of documents and a handful of dead previews would otherwise crowd out live reference material.
+
+Retrieval-time enforcement rather than ingestion-time pruning also means an expired document becomes invisible the day it expires, without anyone re-running ingestion.
+
+`searchStrategyDocs` must surface `kind` and the validity window for each retrieved chunk, and the system prompt must instruct the model to weigh `timely` content by age and say when it is citing something written weeks ago. A GW3 injury report must reach the model *labelled as a GW3 injury report* — it cannot infer that from the text.
+
+This is the RAG-side counterpart of the `SeasonContext.provenance()` discipline Phase 1 established for database rows, for the same reason: retrieved content that does not announce its own age gets presented as current.
+
+The seven existing documents are all `kind: reference` with no expiry. Adding their front matter is part of Task 3. Whoever adds documents later owns their front matter; ingestion must fail loudly on a document missing required fields, or on a `timely` document with no `valid_until`, rather than silently ingesting content that will never expire.
 
 **Retrieval:** top-k **5** (`SearchRequest`'s default is 4 — whatever value is chosen must be set explicitly). Five chunks of a ~16–21 chunk corpus is roughly 2.5k tokens, trivially affordable, and gives compound questions enough material. No similarity threshold: the tool-based gate already does the job a threshold would have done.
 
