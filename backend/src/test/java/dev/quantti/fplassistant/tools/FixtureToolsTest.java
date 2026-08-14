@@ -56,6 +56,10 @@ class FixtureToolsTest {
     void nextNBoundsDistinctGameweeksNotFixtureRows() {
         String result = fixtureTools.getUpcomingFixtures("Arsenal", 1);
 
+        // Guard against a vacuous pass: an empty result would also satisfy the size bound.
+        assertThat(result).doesNotContain("not found");
+        assertThat(result).containsPattern("GW\\d+:");
+
         Matcher m = Pattern.compile("GW(\\d+):").matcher(result);
         Set<String> gameweeks = m.results()
                 .map(r -> r.group(1))

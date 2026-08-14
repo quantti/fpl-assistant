@@ -14,6 +14,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 @Component
 public class FixtureTools {
@@ -48,6 +49,7 @@ public class FixtureTools {
                     SELECT id, name, short_name FROM team
                     WHERE season_id = ?
                       AND (LOWER(name) LIKE ? OR LOWER(short_name) = LOWER(?))
+                    ORDER BY name
                     LIMIT 1
                     """, season.seasonId(), pattern, teamName);
 
@@ -84,31 +86,21 @@ public class FixtureTools {
                     ORDER BY f.gameweek NULLS LAST, f.kickoff_time
                     """, teamId, season.seasonId(), teamId, teamId, startGw);
 
-            // Bound by distinct gameweeks, not fixture rows: a double gameweek is two rows in
-            // one round, and "next 5 gameweeks" must always mean five rounds.
-            List<String> scheduled = new ArrayList<>();
-            List<String> postponed = new ArrayList<>();
-            Set<Object> seenGameweeks = new LinkedHashSet<>();
-            for (Map<String, Object> r : rows) {
-                Object gw = r.get("gameweek");
-                if (gw == null) {
-                    postponed.add(formatFixture(r));
-                } else if (seenGameweeks.contains(gw) || seenGameweeks.size() < gwLimit) {
-                    seenGameweeks.add(gw);
-                    scheduled.add(formatFixture(r));
-                }
-            }
+            FixtureWindow window = window(rows, gwLimit);
 
-            if (scheduled.isEmpty() && postponed.isEmpty()) {
+            if (window.scheduled().isEmpty() && window.postponed().isEmpty()) {
                 return season.provenance() + "\nNo upcoming fixtures found for " + resolvedName;
             }
 
+            String header = season.currentSeason() ? "Upcoming fixtures" : "Fixtures";
             StringBuilder out = new StringBuilder(season.provenance())
-                    .append("\n\nUpcoming fixtures for %s (%s):\n".formatted(resolvedName, resolvedShort))
-                    .append(String.join("\n", scheduled));
-            if (!postponed.isEmpty()) {
+                    .append("\n\n%s for %s (%s):\n".formatted(header, resolvedName, resolvedShort))
+                    .append(window.scheduled().stream().map(this::formatFixture)
+                            .collect(Collectors.joining("\n")));
+            if (!window.postponed().isEmpty()) {
                 out.append("\nPostponed, no rescheduled gameweek yet:\n")
-                        .append(String.join("\n", postponed));
+                        .append(window.postponed().stream().map(this::formatFixture)
+                                .collect(Collectors.joining("\n")));
             }
             return out.toString();
         } catch (DataAccessException e) {
@@ -118,19 +110,42 @@ public class FixtureTools {
         }
     }
 
+    record FixtureWindow(List<Map<String, Object>> scheduled, List<Map<String, Object>> postponed) {}
+
+    /**
+     * Bounds by distinct gameweeks, not fixture rows: a double gameweek is two rows in one
+     * round, and "next 5 gameweeks" must always mean five rounds. Postponed fixtures
+     * ({@code gameweek IS NULL}) are set aside and never consume the window. Expects rows
+     * ordered by gameweek with NULLs last.
+     */
+    static FixtureWindow window(List<Map<String, Object>> rows, int gwLimit) {
+        List<Map<String, Object>> scheduled = new ArrayList<>();
+        List<Map<String, Object>> postponed = new ArrayList<>();
+        Set<Object> seenGameweeks = new LinkedHashSet<>();
+        for (Map<String, Object> r : rows) {
+            Object gw = r.get("gameweek");
+            if (gw == null) {
+                postponed.add(r);
+            } else if (seenGameweeks.contains(gw) || seenGameweeks.size() < gwLimit) {
+                seenGameweeks.add(gw);
+                scheduled.add(r);
+            }
+        }
+        return new FixtureWindow(scheduled, postponed);
+    }
+
     private String formatFixture(Map<String, Object> r) {
         boolean isHome = Boolean.TRUE.equals(r.get("is_home"));
         String opponent = isHome ? (String) r.get("away_short") : (String) r.get("home_short");
-        int fdr = isHome
-                ? ((Number) r.get("team_h_difficulty")).intValue()
-                : ((Number) r.get("team_a_difficulty")).intValue();
+        Object rawFdr = isHome ? r.get("team_h_difficulty") : r.get("team_a_difficulty");
+        String fdr = rawFdr == null ? "?" : String.valueOf(((Number) rawFdr).intValue());
         String venue = isHome ? "(H)" : "(A)";
         String score = r.get("team_h_score") != null
                 ? " [%s-%s]".formatted(r.get("team_h_score"), r.get("team_a_score"))
                 : "";
         String gwLabel = r.get("gameweek") == null ? "Postponed" : "GW" + r.get("gameweek");
 
-        return "%s: vs %s %s | FDR: %d | %s%s".formatted(
+        return "%s: vs %s %s | FDR: %s | %s%s".formatted(
                 gwLabel, opponent, venue, fdr,
                 Objects.toString(r.get("kickoff_time"), "kickoff TBD"), score);
     }
