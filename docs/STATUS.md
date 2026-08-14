@@ -164,7 +164,7 @@ adds routes (needs a forwarding controller).
 
 # Status — Phase 2 (RAG)
 
-**Progress:** Task 1/7 done.
+**Progress:** Task 2/7 done.
 
 Plan: `docs/superpowers/plans/2026-08-14-phase2-rag.md`.
 Spec: `docs/superpowers/specs/2026-08-14-phase2-rag-design.md`.
@@ -173,7 +173,8 @@ Spec: `docs/superpowers/specs/2026-08-14-phase2-rag-design.md`.
 
 | Task | Commit | What exists now |
 |---|---|---|
-| 1 — Prerequisites gate | (phase2-tasks1-4-rag-core branch) | `spring-ai-starter-vector-store-pgvector` added. DB prerequisites resolved with evidence (below) — no fallback needed. `OPENAI_API_KEY`-mandatory documented in AGENTS.md and DEVELOPMENT.md |
+| 1 — Prerequisites gate | `815923b` | `spring-ai-starter-vector-store-pgvector` added. DB prerequisites resolved with evidence (below) — no fallback needed. `OPENAI_API_KEY`-mandatory documented in AGENTS.md and DEVELOPMENT.md |
+| 2 — Vector store wiring | (phase2-tasks1-4-rag-core branch) | `fpl_embeddings` live in Supabase (`id uuid`, `content text`, `metadata json`, `embedding vector`); `vector`/`hstore`/`uuid-ossp` now actually installed. App starts cleanly under both `SPRING_AI_PROVIDER=openai` and `=anthropic` with a populated OpenAI key. Full Phase 1 suite green with the starter on the classpath |
 
 ### Prerequisites gate — findings
 
@@ -204,3 +205,31 @@ extension is installed. `initialize-schema` defaults to `false` (confirming the 
 claim), so the log line prints before the flag is checked and no DDL actually runs. No effect on
 the shared database from this task. Explicit `initialize-schema: true` in Task 2 is what will
 make the real schema creation happen, once, deliberately.
+
+## Task 2 findings — `schema-validation` cannot combine with `initialize-schema` from empty
+
+The spec's Configuration table originally said to enable both `initialize-schema: true` and
+`schema-validation: true`. Enabling both together made every `@SpringBootTest` fail with `Table
+fpl_embeddings does not exist in schema public` — against a table that `initialize-schema` should
+have just created.
+
+Decompiled `PgVectorStore.afterPropertiesSet()` (Spring AI 2.0.0) to find out why:
+
+```
+if (schemaValidation) schemaValidator.validateTableSchema(...);   // runs unconditionally, first
+if (!initializeSchema) return;
+jdbcTemplate.execute("CREATE EXTENSION IF NOT EXISTS vector");
+...
+```
+
+Validation runs *before* schema creation, always, with no ordering flag to change it. The two
+settings can never succeed together starting from an empty table — not a race condition, not
+environment-specific, a fixed ordering in the bytecode. Spec and plan corrected to say
+`schema-validation` must not be enabled; `initialize-schema`'s own `CREATE TABLE IF NOT EXISTS` is
+sufficient and idempotent on every subsequent startup.
+
+With that removed: `fpl_embeddings` now exists in Supabase (`id uuid`, `content text`, `metadata
+json`, `embedding vector`), and `vector`/`hstore`/`uuid-ossp` are installed for real (Task 1's
+rolled-back transaction only proved they *could* be). Full suite green under both
+`SPRING_AI_PROVIDER=openai` and `=anthropic`, confirming the embedding autoconfiguration activates
+independently of the chat provider switch as the spec's Configuration table requires.
