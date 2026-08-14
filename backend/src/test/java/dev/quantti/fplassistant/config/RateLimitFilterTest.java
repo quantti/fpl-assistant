@@ -1,10 +1,40 @@
 package dev.quantti.fplassistant.config;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.mock.web.MockHttpServletRequest;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 class RateLimitFilterTest {
+
+    @Test
+    void spoofedForwardedForCannotChooseTheBucket() {
+        // Fly appends the real client to any client-sent X-Forwarded-For, so the last
+        // entry is the trustworthy one — keying on the first would hand a forged header
+        // a fresh rate-limit bucket per request.
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.addHeader("X-Forwarded-For", "6.6.6.6, 203.0.113.9");
+        request.setRemoteAddr("172.16.0.1");
+
+        assertThat(RateLimitFilter.clientIp(request)).isEqualTo("203.0.113.9");
+    }
+
+    @Test
+    void flyClientIpHeaderWinsWhenPresent() {
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.addHeader("Fly-Client-IP", "203.0.113.9");
+        request.addHeader("X-Forwarded-For", "6.6.6.6");
+
+        assertThat(RateLimitFilter.clientIp(request)).isEqualTo("203.0.113.9");
+    }
+
+    @Test
+    void withoutProxyHeadersTheSocketAddressIsUsed() {
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.setRemoteAddr("192.168.1.50");
+
+        assertThat(RateLimitFilter.clientIp(request)).isEqualTo("192.168.1.50");
+    }
 
     @Test
     void allowsUpToTheLimitWithinOneWindow() {
