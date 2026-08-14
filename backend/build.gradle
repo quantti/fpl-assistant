@@ -31,6 +31,8 @@ dependencies {
     implementation 'org.springframework.ai:spring-ai-starter-model-openai'
 
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    // Boot 4 modularization: @WebMvcTest lives in its own test module
+    testImplementation 'org.springframework.boot:spring-boot-starter-webmvc-test'
     // WebTestClient (MockMvcWebTestClient) for streaming SSE controller tests
     testImplementation 'org.springframework:spring-webflux'
     testImplementation 'io.projectreactor:reactor-test'
