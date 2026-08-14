@@ -5,5 +5,9 @@
 backend/build
 backend/.env*
 backend/.gradle
+# Both patterns are root-anchored — Docker's matcher is NOT recursive, so these exclude the
+# repo-root docs/ and top-level *.md only. The RAG corpus at
+# backend/src/main/resources/docs/*.md must keep shipping: writing these as **/docs or **/*.md
+# would silently deploy an image with an empty strategy library.
 docs
 *.md

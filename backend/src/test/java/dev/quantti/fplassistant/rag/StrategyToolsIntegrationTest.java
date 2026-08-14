@@ -1,7 +1,9 @@
 package dev.quantti.fplassistant.rag;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
@@ -33,6 +35,17 @@ class StrategyToolsIntegrationTest {
 
     @Autowired
     JdbcTemplate jdbc;
+
+    @Value("${spring.ai.vectorstore.pgvector.table-name}")
+    String configuredTable;
+
+    /** These tests ingest, which truncates. Refuse to start unless pinned off production. */
+    @BeforeEach
+    void refuseToRunAgainstProduction() {
+        assertThat(configuredTable)
+                .as("retrieval tests ingest fixtures; check @ActiveProfiles(\"test\")")
+                .endsWith("_test");
+    }
 
     @TestConfiguration
     static class FixedClock {
