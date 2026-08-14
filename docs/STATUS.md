@@ -164,7 +164,7 @@ adds routes (needs a forwarding controller).
 
 # Status — Phase 2 (RAG)
 
-**Progress:** Task 7/7 done.
+**Progress:** Task 7/7 done — Phase 2 complete, full-phase review applied (2026-08-14).
 
 Plan: `docs/superpowers/plans/2026-08-14-phase2-rag.md`.
 Spec: `docs/superpowers/specs/2026-08-14-phase2-rag-design.md`.
@@ -356,3 +356,14 @@ OpenAI embeddings, claude-sonnet-5:
   spend a retrieval.
 
 Both question types behave as the spec describes.
+
+## Full-phase review (2026-08-14) — applied
+
+Second review pass over the whole phase found no critical issues. Applied: `formatChunk`
+renders missing metadata as `<unknown>` instead of literal `"null"` strings (guards hand-edited
+rows); the system-prompt squad conditional now says "if you can see the user's squad" — the
+model can only factor in a squad it can observe, which prevents hallucinated squad knowledge
+and over-asking while preserving the Phase 5 extension shape; the tool description is marked as
+synced with the prompt's "Strategy advice" section. Deferred as accepted: `--ingest`'s
+DELETE-then-ADD window (the spec's re-ingestion section explicitly accepts an empty-corpus
+window, made visible by the distinguishable empty-store message).
