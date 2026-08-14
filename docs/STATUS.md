@@ -164,7 +164,7 @@ adds routes (needs a forwarding controller).
 
 # Status — Phase 2 (RAG)
 
-**Progress:** Task 5/7 done.
+**Progress:** Task 6/7 done.
 
 Plan: `docs/superpowers/plans/2026-08-14-phase2-rag.md`.
 Spec: `docs/superpowers/specs/2026-08-14-phase2-rag-design.md`.
@@ -310,3 +310,25 @@ fixture, `fixture-expired.md` (valid until 2026-08-10, permanently in the past).
 Also this task: `AGENTS.md`'s "every tool prefixes its reply with `SeasonContext.provenance()`"
 convention now names `StrategyTools` as the deliberate exception — the corpus carries its own
 per-chunk attribution and a banner line cannot describe a mix of reference and timely content.
+
+## Task 6 — retrieval quality baseline (real corpus)
+
+Eight questions run against the live 61-chunk corpus (2026-08-14) with the default top-k 5.
+All eight retrieved from the expected document; no chunking fix needed.
+
+| # | Question | Expected | Top-5 result |
+|---|---|---|---|
+| 1 | when should I play my wildcard | strategy-wildcard-and-free-hit | ✓ all 5 from the expected doc (WC1/WC2/"When to play" windows) |
+| 2 | should I buy a premium forward or a mid-priced one | player-archetypes / team-building | ✓ mixed: Premium allocation, Mid-priced, Price-point targeting, Premium/talisman, Squad structure implications |
+| 3 | is taking a -4 hit worth it to bring someone in | strategy-transfers | ✓ top-2 (Taking hits: when justified, Decision summary); tail is wildcard/FH decision-summary tables — semantically adjacent, acceptable noise |
+| 4 | who should I captain and should I use my TC chip | captain-selection-and-triple-captain | ✓ top-4 from the expected doc + FPL Chip Strategy TC section |
+| 5 | how should I time my bench boost | strategy-chips | ✓ Bench Boost strategy + Bench Boost interplay + Team Building Bench strategy; 5th is "Common chip mistakes" — minor tail noise |
+| 6 | what ownership percentage counts as a differential | strategy-differentials | ✓ all 5 from the expected doc |
+| 7 | how should I structure my squad formation and budget | strategy-team-building | ✓ all 5 from the expected doc |
+| 8 | free hit in a blank gameweek or wildcard for DGWs | strategy-wildcard-and-free-hit | ✓ all 5 from the expected doc |
+
+Observations: section chunking is doing its job — every retrieved chunk arrives with its own
+section header and doc title (the three near-identical "mistakes" sections never appear
+misattributed), and decision-summary tables stay intact inside their chunks. The only noise is
+semantic (decision-summary table chunks ranking 3–5 on adjacent questions), which top-k 5
+absorbs without harm; no chunking or top-k change warranted.
