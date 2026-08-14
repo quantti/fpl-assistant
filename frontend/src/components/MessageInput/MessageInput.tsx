@@ -18,6 +18,8 @@ export default function MessageInput({ onSubmit, disabled }: Props) {
   }
 
   function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
+    // Enter that confirms an IME composition (CJK input) must not submit.
+    if (e.nativeEvent.isComposing) return
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       handleSubmit()
