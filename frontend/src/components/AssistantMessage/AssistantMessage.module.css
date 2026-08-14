@@ -1,0 +1,25 @@
+.bubble {
+  background: light-dark(var(--mantine-color-gray-1), var(--mantine-color-dark-6));
+  border-radius: 8px;
+  padding: 12px 16px;
+  max-width: 85%;
+  align-self: flex-start;
+  line-height: 1.6;
+}
+
+.bubble p {
+  margin: 0 0 8px 0;
+}
+
+.bubble p:last-child {
+  margin-bottom: 0;
+}
+
+.cursor::after {
+  content: '▋';
+  animation: blink 1s step-end infinite;
+}
+
+@keyframes blink {
+  50% { opacity: 0; }
+}
