@@ -25,7 +25,8 @@ Auth (Supabase JWT) + Stripe billing are deferred to the last phase. Build the c
 
 ## Conventions
 
-- All DB queries filter by current season: `WHERE season_id = (SELECT id FROM season WHERE is_current = true)`.
+- All DB queries filter by a season resolved through `SeasonResolver`, not by `is_current` directly. A season row is created weeks before its data is synced, so `WHERE season_id = (SELECT id FROM season WHERE is_current = true)` returns nothing across the changeover. The resolver prefers the current season once it holds data and otherwise falls back to the most recent season that does.
+- Season data is never interchangeable. Every tool prefixes its reply with `SeasonContext.provenance()`, which names the season and states whether it is the one being played. Fallback data must always be labelled historical — the system prompt instructs the model to attribute it by season and never call it current form. Later phases weight earlier seasons differently, and the current season by how far into it we are; that weighting depends on this provenance being explicit.
 - Do NOT alter existing tapas tables. Only add new tables.
 - Player prices stored as integers ×10 (`now_cost=75` = £7.5m). `element_type`: 1=GK, 2=DEF, 3=MID, 4=FWD.
 - External APIs (vaastav CSVs, football-data.org) are hit only at sync time, never at chat time — everything queries Supabase.
