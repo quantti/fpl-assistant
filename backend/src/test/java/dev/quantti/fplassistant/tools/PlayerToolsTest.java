@@ -32,6 +32,16 @@ class PlayerToolsTest {
     }
 
     @Test
+    void fullNameMatchesPlayer() {
+        // LLMs pass full names despite the description saying "web name or surname";
+        // no single column contains "Mohamed Salah", so this needs the concatenated match.
+        String result = playerTools.getPlayerStats("Mohamed Salah");
+
+        assertThat(result).containsIgnoringCase("salah");
+        assertThat(result).doesNotContain("not found");
+    }
+
+    @Test
     void noMatchReturnsNotFound() {
         String result = playerTools.getPlayerStats("zzznomatch999");
 
