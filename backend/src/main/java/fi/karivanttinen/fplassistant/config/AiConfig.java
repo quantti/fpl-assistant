@@ -32,6 +32,8 @@ public class AiConfig {
                 "No ChatModel for provider '" + provider + "'. "
                 + "Set SPRING_AI_PROVIDER to 'anthropic' or 'openai' and provide the matching API key.");
         }
+        // The response-token cap is set per provider in application.yml: the portable
+        // ChatOptions.maxTokens maps to OpenAI's legacy max_tokens, which gpt-5.x rejects.
         return ChatClient.builder(model)
                 .defaultSystem(prompt)
                 .build();
