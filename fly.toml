@@ -12,6 +12,11 @@ primary_region = "mad"
 [http_service]
   internal_port = 8080
   force_https = true
+  # Pinned explicitly — flyctl defaults have shifted between versions. Machines stop when
+  # idle; the first request after idle pays a JVM cold start (tens of seconds on 512MB).
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
 
   [[http_service.checks]]
     # Spring Boot cold start comfortably exceeds the plan's original 10s.
