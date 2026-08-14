@@ -1,7 +1,22 @@
 # FPL Assistant — Design Spec
 
 **Date:** 2026-06-27
-**Status:** Approved
+**Status:** Approved — partially superseded, see note below
+
+> **Superseded decisions (2026-08-14):** implementation has moved on from this spec in places;
+> `docs/STATUS.md` and `AGENTS.md` are authoritative where they differ. In particular:
+> - Chat endpoint is `POST /api/chat`, not `POST /chat`.
+> - Single Fly.io app: the frontend is served from Spring Boot `static/`, not as a standalone
+>   static site (and there is no `[DONE]` SSE event — see the plan's Task 8/12 amendments for the
+>   actual stream contract).
+> - Provider env var is `SPRING_AI_PROVIDER` (mapped to `fpl.ai.provider` + `spring.ai.model.chat`),
+>   not `spring.ai.provider`; the OpenAI fallback model is no longer GPT-4o.
+> - Phase 1 conversation model is stateless — the client sends full history; the server-side
+>   history described under "Conversation model" is the Phase 5 design.
+> - Season filtering goes through `SeasonResolver` with mandatory provenance labelling (AGENTS.md
+>   conventions) — direct `is_current` filters match nothing across a season changeover.
+> - Frontend is React 19: Mantine v9 requires React ≥19.2, so the React 18 in the original stack
+>   cannot install.
 
 ---
 

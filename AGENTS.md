@@ -11,7 +11,7 @@ Auth (Supabase JWT) + Stripe billing are deferred to the last phase. Build the c
 ## Architecture
 
 - **Backend:** Spring Boot 4.1, Java 25, Spring AI 2.0.0, Gradle. Serves both REST API and the built frontend as static resources from a single Fly.io app.
-- **Frontend:** Vite 8.1 + React 18 + TypeScript + Mantine v9 + CSS Modules. No Tailwind.
+- **Frontend:** Vite 8.1 + React 19 + TypeScript + Mantine v9 + CSS Modules. No Tailwind. (Mantine v9 requires React ≥19.2 — React 18 will not install.)
 - **DB:** Supabase PostgreSQL — shared with the `tapas-fpl-app` project (`~/dev/tapas-fpl-app`). FPL stats (players, fixtures, gw stats, ownership, xG/xA) already live there. New tables added by this project: `fpl_embeddings`, `pl_match_result`, `conversation`, `message`, `user_subscription`.
 - **LLM provider:** swappable via `SPRING_AI_PROVIDER` env var (`anthropic` default, or `openai`).
 - **Chat transport:** `POST /api/chat` returns `text/event-stream` (SSE). Frontend reads via `fetch` + `ReadableStream`.

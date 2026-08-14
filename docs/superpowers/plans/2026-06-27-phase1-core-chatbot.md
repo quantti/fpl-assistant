@@ -10,12 +10,15 @@
 > Gradle version, the Testcontainers dependencies, the `.env.test` credentials, the system prompt's
 > season and scoring facts, and — affecting every remaining tool — the `is_current` season filter,
 > which matches no rows at all and is replaced by `SeasonResolver`.
+>
+> Tasks 5–8, 12 and 14 additionally carry inline **Amended 2026-08-14** blockquotes (from the
+> 2026-08-14 design review) — where present, they override the original steps below them.
 
 **Goal:** Build and deploy a working FPL chatbot with streaming chat UI, 3 DB-backed tools, and FPL rules in the system prompt — no auth, open access.
 
 **Architecture:** Spring Boot 4.1 backend serves both the REST API and built frontend static files from a single Fly.io app. Spring AI 2.0 ChatClient with `@Tool` methods queries the existing Supabase PostgreSQL DB (tapas schema). React frontend streams responses via `fetch` + `ReadableStream`.
 
-**Tech Stack:** Java 25, Spring Boot 4.1.x, Spring AI 2.0.0, Gradle (Groovy DSL), Vite 8.1, React 18, TypeScript, Mantine v9, CSS Modules, Supabase PostgreSQL (existing), Fly.io
+**Tech Stack:** Java 25, Spring Boot 4.1.x, Spring AI 2.0.0, Gradle (Groovy DSL), Vite 8.1, React 19, TypeScript, Mantine v9, CSS Modules, Supabase PostgreSQL (existing), Fly.io
 
 ## Global Constraints
 
@@ -24,8 +27,13 @@
 - Spring AI: 2.0.0
 - Mantine: v9 (not v7 or v8)
 - Vite: 8.x
-- No auth on any endpoint (Phase 1)
-- All DB queries filter by `season_id = (SELECT id FROM season WHERE is_current = true)`
+- React: 19 — Mantine v9 requires React ≥19.2 and does not install against React 18
+- No auth on any endpoint (Phase 1) — but the public deploy still needs abuse caps: bounded
+  `messages` array and message length, `max_tokens` set on chat options, per-IP rate limit (Task 8)
+- All DB queries select their season via `SeasonResolver` and every tool prefixes its output with
+  `SeasonContext.provenance()`. The original filter here —
+  `season_id = (SELECT id FROM season WHERE is_current = true)` — matches nothing across a season
+  changeover and must not be used (see `docs/STATUS.md`)
 - DB tables live in existing Supabase project — do not alter existing tapas tables
 - LLM provider configurable via `SPRING_AI_PROVIDER` env var: `anthropic` (default) or `openai`
 - Frontend served from Spring Boot static resources (`src/main/resources/static/`)
@@ -37,11 +45,11 @@
 
 ```
 fpl-assistant/
+├── Dockerfile          # multi-stage build — repo root is the Docker build context
+├── fly.toml            # at root so `fly deploy` sees both backend/ and frontend/
 ├── backend/
 │   ├── build.gradle
 │   ├── settings.gradle
-│   ├── fly.toml
-│   ├── Dockerfile
 │   └── src/
 │       ├── main/
 │       │   ├── java/fi/karivanttinen/fplassistant/
@@ -571,6 +579,12 @@ git commit -m "feat: add GameweekTools with getGameweekInfo()"
 
 ### Task 5: PlayerTools
 
+> **Amended 2026-08-14:** The SQL below is stale. Replace the `is_current` season subquery with
+> `SeasonResolver`, and prefix the returned string with `SeasonContext.provenance()` — follow
+> Task 4's committed `GameweekTools` as the template. Also escape `%` and `_` in `playerName`
+> before building the LIKE pattern, so a literal `%` cannot match every player. Catch
+> `DataAccessException` and return an error string instead of throwing (see Task 7 amendment).
+
 **Files:**
 - Create: `backend/src/main/java/fi/karivanttinen/fplassistant/tools/PlayerTools.java`
 - Create: `backend/src/test/java/fi/karivanttinen/fplassistant/tools/PlayerToolsTest.java`
@@ -718,6 +732,16 @@ git commit -m "feat: add PlayerTools with getPlayerStats()"
 ---
 
 ### Task 6: FixtureTools
+
+> **Amended 2026-08-14:** The SQL below is stale and hides several data bugs. When implementing:
+> 1. Use `SeasonResolver` + `SeasonContext.provenance()` instead of the `is_current` season subquery.
+> 2. The current-gameweek subquery yields NULL when no gameweek is flagged current (true between
+>    seasons); `COALESCE` to the `is_next` gameweek, otherwise the tool silently reports no fixtures.
+> 3. `LIMIT ?` counts *fixtures*, not gameweeks — during a double gameweek "next 5 gameweeks"
+>    returns too few rounds. Bound by distinct gameweek numbers instead of a row limit.
+> 4. Postponed fixtures have `gameweek IS NULL` and silently fall out of `f.gameweek >= …`; either
+>    include them labelled "postponed" or state the exclusion in the tool description.
+> 5. Escape LIKE wildcards in `teamName` and catch `DataAccessException`, as in Task 5.
 
 **Files:**
 - Create: `backend/src/main/java/fi/karivanttinen/fplassistant/tools/FixtureTools.java`
@@ -880,6 +904,18 @@ git commit -m "feat: add FixtureTools with getUpcomingFixtures()"
 ---
 
 ### Task 7: ChatService + request DTO
+
+> **Amended 2026-08-14:**
+> - Window the history: take only the last ~20 entries of `request.messages()`. The client sends
+>   the full history every turn and nothing else bounds per-request cost or context growth.
+> - Tool failures: every `@Tool` method catches `DataAccessException` and returns an error string
+>   ("Data temporarily unavailable, tell the user") — a propagated exception kills the SSE stream.
+> - Register tools by injecting all tool beans as a collection (e.g. a marker interface picked up
+>   as `List<FplTool>`) instead of naming each in `.tools(...)`; a forgotten entry is a silent
+>   failure the model cannot report.
+> - `@Tool` methods run blocking JDBC on Reactor threads during streaming. Verify tokens still
+>   stream progressively across a tool call against the real server (Task 8 smoke test), and move
+>   tool execution to `boundedElastic` if the stream stalls.
 
 **Files:**
 - Create: `backend/src/main/java/fi/karivanttinen/fplassistant/chat/ChatRequest.java`
@@ -1045,6 +1081,16 @@ git commit -m "feat: add ChatService streaming with all three tools"
 ---
 
 ### Task 8: ChatController + CORS
+
+> **Amended 2026-08-14:** The endpoint is public with no auth, so this task also owns the abuse
+> caps and the SSE error contract:
+> - Validate `ChatRequest`: reject more than 20 messages or more than 4,000 chars per message
+>   with a 400 before any LLM call.
+> - Set `maxTokens` on the chat options and add a simple per-IP rate limit (a servlet filter with
+>   an in-memory counter is enough at this scale).
+> - Error contract: `onErrorResume` emits a typed `event: error` payload, and every stream ends
+>   with a terminal `event: done`. Without these, a mid-stream provider/DB failure truncates
+>   silently and the frontend commits the partial text as a normal answer (see Task 12).
 
 **Files:**
 - Create: `backend/src/main/java/fi/karivanttinen/fplassistant/chat/ChatController.java`
@@ -1247,13 +1293,13 @@ git commit -m "feat: add ChatController SSE endpoint and CORS config"
   "dependencies": {
     "@mantine/core": "^9.0.0",
     "@mantine/hooks": "^9.0.0",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
     "react-markdown": "^9.0.0"
   },
   "devDependencies": {
-    "@types/react": "^18.3.12",
-    "@types/react-dom": "^18.3.1",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^4.3.4",
     "typescript": "^5.6.3",
     "vite": "^8.1.0"
@@ -1623,6 +1669,12 @@ git commit -m "feat: add MessageThread and AssistantMessage components with mark
 
 ### Task 12: useChat hook (SSE streaming)
 
+> **Amended 2026-08-14:** Pair this with Task 8's error contract — handle `event: error` by
+> surfacing an error message instead of committing the accumulated partial text, and treat
+> `event: done` as the completion signal rather than stream close. Also strip the single optional
+> space after `data:` — `l.slice(5)` keeps it, prepending a stray space to every token whose
+> serializer emits `data: token`.
+
 **Files:**
 - Create: `frontend/src/hooks/useChat.ts`
 
@@ -1831,9 +1883,17 @@ git commit -m "feat: assemble ChatView, complete frontend end-to-end"
 
 ### Task 14: Dockerfile + Fly.io deployment
 
+> **Amended 2026-08-14:** As originally written this task could not deploy: `fly.toml` sat in
+> `backend/`, making `backend/` the Docker build context while the Dockerfile COPYs paths from the
+> repo root. Both `fly.toml` and `Dockerfile` now live at the repo root and every command below
+> runs from the root. Also fixed: the invalid `dockerfile_path` key, and JVM memory on the 512MB
+> VM (default heap is ~25% of RAM; `-XX:MaxRAMPercentage=75` added to the ENTRYPOINT). Note the
+> default `/actuator/health` includes the DB indicator — a brief Supabase pooler blip fails the
+> Fly check; set `management.health.db.enabled: false` if restarts prove noisy.
+
 **Files:**
 - Create: `Dockerfile` (repo root — multi-stage build)
-- Create: `backend/fly.toml`
+- Create: `fly.toml` (repo root)
 - Modify: `backend/build.gradle` (add processResources task to include frontend build)
 
 **Interfaces:**
@@ -1863,18 +1923,17 @@ FROM eclipse-temurin:25-jre
 WORKDIR /app
 COPY --from=backend-build /app/build/libs/*.jar app.jar
 EXPOSE 8080
-ENTRYPOINT ["java", "-jar", "app.jar"]
+ENTRYPOINT ["java", "-XX:MaxRAMPercentage=75", "-jar", "app.jar"]
 ```
 
-**Step 2: Create `backend/fly.toml`**
+**Step 2: Create `fly.toml` at repo root**
 
 ```toml
 app = "fpl-assistant"
 primary_region = "mad"
 
 [build]
-  dockerfile = "../Dockerfile"
-  dockerfile_path = "../Dockerfile"
+  dockerfile = "Dockerfile"
 
 [[vm]]
   memory = "512mb"
@@ -1921,10 +1980,9 @@ docker run --rm -p 8080:8080 \
 
 Open `http://localhost:8080` — should serve the React app. Test the chat. Kill with `Ctrl+C`.
 
-**Step 4: Create Fly.io app and set secrets**
+**Step 4: Create Fly.io app and set secrets (from repo root, where fly.toml lives)**
 
 ```bash
-cd backend
 fly launch --no-deploy --name fpl-assistant --region mad
 fly secrets set DATABASE_URL="jdbc:postgresql://<host>:6543/postgres?sslmode=require"
 fly secrets set DB_USER="postgres"
@@ -1938,7 +1996,7 @@ fly secrets set CORS_ORIGINS="https://fpl-assistant.fly.dev"
 **Step 5: Deploy**
 
 ```bash
-fly deploy --dockerfile ../Dockerfile
+fly deploy
 ```
 
 Expected: deploy succeeds. Visit `https://fpl-assistant.fly.dev` — chat UI loads, questions answered.
@@ -1946,8 +2004,7 @@ Expected: deploy succeeds. Visit `https://fpl-assistant.fly.dev` — chat UI loa
 **Step 6: Commit**
 
 ```bash
-cd ..
-git add Dockerfile backend/fly.toml backend/build.gradle backend/src/
+git add Dockerfile fly.toml backend/build.gradle backend/src/
 git commit -m "feat: add Dockerfile and Fly.io deployment config"
 ```
 
@@ -1966,12 +2023,12 @@ git commit -m "feat: add Dockerfile and Fly.io deployment config"
 | `getUpcomingFixtures` tool | Task 6 |
 | ChatClient with configurable LLM provider | Task 3, 7 |
 | SSE streaming via `POST /api/chat` | Task 8 |
-| Vite 8.1, React 18, Mantine v9 | Task 9 |
+| Vite 8.1, React 19, Mantine v9 | Task 9 |
 | SSE via `fetch` + ReadableStream | Task 12 |
 | Stateless conversation (client sends history) | Task 7 |
 | CORS config | Task 8 |
 | Single Fly.io app (backend + frontend) | Task 14 |
-| Season filter: `WHERE season_id = (SELECT id FROM season WHERE is_current = true)` | Tasks 4, 5, 6 |
+| Season selection via `SeasonResolver`, output prefixed with `SeasonContext.provenance()` | Tasks 4, 5, 6 |
 
 All Phase 1 spec requirements covered. Phase 2-5 requirements are out of scope for this plan.
 

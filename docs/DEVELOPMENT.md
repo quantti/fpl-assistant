@@ -73,7 +73,7 @@ grep -oE "Caused by: [^<]{0,200}" build/test-results/test/TEST-<fqcn>.xml
 Supabase project **tapas-and-tackles** (`itmykooxrbrdbgqwsesb`, eu-west-1), shared with
 `~/dev/tapas-fpl-app`. This project only reads the FPL tables; it must not alter them.
 
-Two connection details cost time to rediscover:
+Connection details that cost time to rediscover:
 
 - **Use the transaction pooler, not the direct host.** `db.itmykooxrbrdbgqwsesb.supabase.co`
   publishes only an AAAA record, and WSL2 generally cannot reach it. The pooler is
@@ -82,6 +82,12 @@ Two connection details cost time to rediscover:
   fails as `FATAL: (ENOTFOUND) tenant/user ... not found`, which reads like a wrong password but
   is not. The same error appears when the project is on a different pooler — this project answers
   on `aws-1`, not `aws-0`.
+- **`prepareThreshold=0` is required and set in `application.yml`** (Hikari
+  `data-source-properties`), not in the JDBC URL: pgjdbc promotes a query to a named server-side
+  prepared statement after 5 executions, and the transaction-mode pooler breaks those under
+  concurrent load (`prepared statement "S_1" does not exist`). Single-threaded tests never hit
+  it; concurrent chat requests in production will. It stays out of the URL because an unquoted
+  `&` breaks `set -a; source .env.test`.
 
 Neither the Supabase CLI nor `fly secrets` will reveal the database password; it comes from the
 Supabase dashboard (Project Settings → Database). Resetting it there rotates the password and
