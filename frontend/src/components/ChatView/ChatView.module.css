@@ -1,0 +1,25 @@
+.root {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  max-width: 800px;
+  margin: 0 auto;
+}
+
+.header {
+  padding: 16px;
+  border-bottom: 1px solid var(--mantine-color-default-border);
+  font-weight: 600;
+  font-size: 1.1rem;
+}
+
+.empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--mantine-color-dimmed);
+  font-size: 0.95rem;
+  text-align: center;
+  padding: 32px;
+}
