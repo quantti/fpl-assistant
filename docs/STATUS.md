@@ -1,9 +1,9 @@
 # Status — Phase 1
 
-**Progress:** Task 14/14 done — Phase 1 code complete. Tasks 1–10 merged to `master`;
-Tasks 11–14 on branch `tasks11-14-frontend-deploy`, reviewed at the Task 14 checkpoint.
-**The only unfinished step is the Fly.io deploy itself:** `flyctl` is not installed and
-`fly launch`/`fly secrets set`/`fly deploy` need the account owner (see Deployment below).
+**Progress:** Task 14/14 done — Phase 1 code complete, reviewed at two checkpoints (after
+Task 10 and after Task 14), fixes applied both times. **The only unfinished step is the
+Fly.io deploy itself:** `flyctl` is not installed and `fly launch`/`fly secrets
+set`/`fly deploy` need the account owner (see Deployment below).
 
 Plan: `docs/superpowers/plans/2026-06-27-phase1-core-chatbot.md`.
 Spec: `docs/superpowers/specs/2026-06-27-fpl-assistant-design.md`.
@@ -28,8 +28,8 @@ Setup and commands: `docs/DEVELOPMENT.md`.
 | 10 — MessageInput | `09d9899` | `MessageInput` component; IME composition guard added on review (plan's code submitted mid-composition Enter) |
 | 11 — Message display | `b819c56` | `MessageThread` + `AssistantMessage` (react-markdown, streaming cursor) |
 | 12 — useChat | `cea3fa6` | Speaks the Task 8 SSE contract: dispatches on the `event:` line, `JSON.parse`s token payloads, surfaces `event: error` instead of committing partial text, close without `event: done` = interrupted |
-| 13 — ChatView | `8dc9d7f` | Full UI assembled; e2e-verified against the real backend through the Vite proxy (streamed tokens, done event, tool call with provenance intact) |
-| 14 — Docker + Fly | (tasks11-14 branch) | Root `Dockerfile` (3-stage, `-XX:MaxRAMPercentage=75`) + root `fly.toml` + `.dockerignore` + actuator health endpoint; image built and smoke-tested locally |
+| 13 — ChatView | `8dc9d7f` | Full UI assembled; browser-verified headless (Chromium via Puppeteer) against the real backend through the Vite proxy — all three plan questions (gameweek, player stats, fixtures) answered correctly, provenance visible in the UI, markdown rendered, no console errors |
+| 14 — Docker + Fly | (tasks11-14 branch) | Root `Dockerfile` (3-stage, `-XX:MaxRAMPercentage=75`) + root `fly.toml` (health check, pinned machine lifecycle) + `.dockerignore` + actuator health endpoint; image built and smoke-tested locally (container health UP, static frontend served, chat streams to `done`) |
 
 ## Deployment — the remaining manual steps
 
@@ -42,8 +42,14 @@ fly secrets set DATABASE_URL="jdbc:postgresql://aws-1-eu-west-1.pooler.supabase.
 fly secrets set DB_USER="postgres.<project-ref>" DB_PASSWORD="<db-password>"
 fly secrets set ANTHROPIC_API_KEY="sk-ant-..." OPENAI_API_KEY="sk-..."
 fly secrets set SPRING_AI_PROVIDER="anthropic" CORS_ORIGINS="https://fpl-assistant.fly.dev"
-fly deploy
+fly deploy --ha=false
 ```
+
+`--ha=false` matters: a first deploy otherwise creates two machines, and the in-memory
+`RateLimitFilter` assumes one (two machines silently double the per-IP budget). Machines
+auto-stop when idle (pinned in `fly.toml`), so the first request after idle pays a JVM cold
+start — tens of seconds on the 512MB VM. If Supabase pooler blips ever flap the health check,
+the knob is `management.health.db.enabled: false` (plan Task 14 amendment).
 
 ## The season problem, and the shape of the fix
 

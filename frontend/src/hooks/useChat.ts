@@ -17,6 +17,7 @@ export function useChat(): UseChatReturn {
   const [isStreaming, setIsStreaming] = useState(false)
 
   const sendMessage = useCallback(async (content: string) => {
+    if (isStreaming) return // single-flight: the hook does not support overlapping sends
     const userMessage: Message = { role: 'user', content }
     const nextMessages = [...messages, userMessage]
     setMessages(nextMessages)
@@ -63,6 +64,13 @@ export function useChat(): UseChatReturn {
         body: JSON.stringify({ messages: nextMessages }),
       })
 
+      if (response.status === 429) {
+        setMessages(prev => [...prev, {
+          role: 'assistant',
+          content: 'You are sending messages too quickly — wait a minute and try again.',
+        }])
+        return
+      }
       if (!response.ok || !response.body) {
         throw new Error(`Request failed: ${response.status}`)
       }
@@ -74,7 +82,8 @@ export function useChat(): UseChatReturn {
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
-        buffer += decoder.decode(value, { stream: true })
+        // Normalize CRLF so a proxy that rewrites line endings cannot break event framing.
+        buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n')
         let sep: number
         while ((sep = buffer.indexOf('\n\n')) !== -1) {
           flushEvent(buffer.slice(0, sep))
@@ -98,7 +107,7 @@ export function useChat(): UseChatReturn {
       setStreamingContent(null)
       setIsStreaming(false)
     }
-  }, [messages])
+  }, [messages, isStreaming])
 
   return { messages, streamingContent, isStreaming, sendMessage }
 }
