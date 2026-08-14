@@ -4,7 +4,7 @@
 >
 > **Progress tracking:** Do NOT use per-step checkboxes. Track via the single `**PROGRESS:**` line below — update only that one line after each task completes (e.g. `Task 3/14 done`). One small edit per task, not per step.
 
-**PROGRESS:** Task 12/14 done
+**PROGRESS:** Task 14/14 done (Fly.io deploy itself pending — flyctl not installed; see STATUS.md)
 
 > **Before following any step below, read `docs/STATUS.md`.** Several steps are stale: the
 > Gradle version, the Testcontainers dependencies, the `.env.test` credentials, the system prompt's

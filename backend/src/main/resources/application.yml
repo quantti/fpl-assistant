@@ -38,5 +38,11 @@ fpl:
 cors:
   allowed-origins: ${CORS_ORIGINS:http://localhost:5173}
 
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+
 server:
   port: 8080

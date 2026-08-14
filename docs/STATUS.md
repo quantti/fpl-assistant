@@ -1,7 +1,9 @@
 # Status — Phase 1
 
-**Progress:** Task 10/14 done. Tasks 1–7 merged to `master`; Tasks 8–10 on branch
-`tasks8-10-chat-api-frontend`, reviewed at the Task 10 checkpoint.
+**Progress:** Task 14/14 done — Phase 1 code complete. Tasks 1–10 merged to `master`;
+Tasks 11–14 on branch `tasks11-14-frontend-deploy`, reviewed at the Task 14 checkpoint.
+**The only unfinished step is the Fly.io deploy itself:** `flyctl` is not installed and
+`fly launch`/`fly secrets set`/`fly deploy` need the account owner (see Deployment below).
 
 Plan: `docs/superpowers/plans/2026-06-27-phase1-core-chatbot.md`.
 Spec: `docs/superpowers/specs/2026-06-27-fpl-assistant-design.md`.
@@ -23,13 +25,25 @@ Setup and commands: `docs/DEVELOPMENT.md`.
 | 8 — ChatController | `64513a7` | `POST /api/chat` SSE: validation caps (200 msgs / 4000 chars / role whitelist), per-IP rate limit (20/min), per-provider response-token caps, tokens JSON-encoded in `data:` (raw SSE drops leading spaces), `event: error` + terminal `event: done`. Live smoke verified: tool call streams progressively, provenance survives into the answer |
 | 9 — Frontend scaffold | (tasks8-10 branch) | Vite 8.2 + React 19.2 + Mantine 9.5 + TS 6.0; `vite-env.d.ts` added (plan omitted it, CSS imports fail tsc without); `App.tsx` renders a placeholder until Task 13 wires ChatView (plan's version imported a not-yet-existing file) |
 
-| 10 — MessageInput | (tasks8-10 branch) | `MessageInput` component; IME composition guard added on review (plan's code submitted mid-composition Enter) |
+| 10 — MessageInput | `09d9899` | `MessageInput` component; IME composition guard added on review (plan's code submitted mid-composition Enter) |
+| 11 — Message display | `b819c56` | `MessageThread` + `AssistantMessage` (react-markdown, streaming cursor) |
+| 12 — useChat | `cea3fa6` | Speaks the Task 8 SSE contract: dispatches on the `event:` line, `JSON.parse`s token payloads, surfaces `event: error` instead of committing partial text, close without `event: done` = interrupted |
+| 13 — ChatView | `8dc9d7f` | Full UI assembled; e2e-verified against the real backend through the Vite proxy (streamed tokens, done event, tool call with provenance intact) |
+| 14 — Docker + Fly | (tasks11-14 branch) | Root `Dockerfile` (3-stage, `-XX:MaxRAMPercentage=75`) + root `fly.toml` + `.dockerignore` + actuator health endpoint; image built and smoke-tested locally |
 
-Next: **Task 11 — message display components**, then 12–14 with a review checkpoint after 14.
-Notes for Task 12: token `data:` payloads are JSON-encoded strings (plan's Task 12 amendment) —
-`JSON.parse` token events only, dispatch on the `event:` line (the `done` event has empty data,
-so a data-presence check would swallow it), and keep the non-OK-response check (a synchronous
-failure before the stream starts is a plain 500, not an SSE error event).
+## Deployment — the remaining manual steps
+
+`flyctl` is not installed, so from a machine with it (`curl -L https://fly.io/install.sh | sh`,
+then `fly auth login`), run from the repo root:
+
+```bash
+fly launch --no-deploy --name fpl-assistant --region mad   # accepts the existing fly.toml
+fly secrets set DATABASE_URL="jdbc:postgresql://aws-1-eu-west-1.pooler.supabase.com:6543/postgres?sslmode=require"
+fly secrets set DB_USER="postgres.<project-ref>" DB_PASSWORD="<db-password>"
+fly secrets set ANTHROPIC_API_KEY="sk-ant-..." OPENAI_API_KEY="sk-..."
+fly secrets set SPRING_AI_PROVIDER="anthropic" CORS_ORIGINS="https://fpl-assistant.fly.dev"
+fly deploy
+```
 
 ## The season problem, and the shape of the fix
 

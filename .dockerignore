@@ -1,0 +1,9 @@
+.git
+.gradle
+**/node_modules
+**/dist
+backend/build
+backend/.env*
+backend/.gradle
+docs
+*.md
