@@ -4,7 +4,7 @@
 >
 > **Progress tracking:** Do NOT use per-step checkboxes. Track via the single `**PROGRESS:**` line below — update only that one line after each task completes (e.g. `Task 3/14 done`). One small edit per task, not per step.
 
-**PROGRESS:** Task 1/14 done
+**PROGRESS:** Task 2/14 done
 
 **Goal:** Build and deploy a working FPL chatbot with streaming chat UI, 3 DB-backed tools, and FPL rules in the system prompt — no auth, open access.
 

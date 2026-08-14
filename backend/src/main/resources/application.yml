@@ -5,6 +5,10 @@ spring:
     password: ${DB_PASSWORD}
     driver-class-name: org.postgresql.Driver
   ai:
+    # Activates only the selected provider's chat autoconfiguration, so the
+    # unused provider's missing API key can't fail context startup.
+    model:
+      chat: ${SPRING_AI_PROVIDER:anthropic}
     anthropic:
       api-key: ${ANTHROPIC_API_KEY:}
       chat:
