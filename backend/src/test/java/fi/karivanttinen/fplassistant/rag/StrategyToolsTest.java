@@ -35,4 +35,10 @@ class StrategyToolsTest {
         assertThat(StrategyTools.isCurrentlyValid(Map.of("valid_until", "2026-08-10"), TODAY)).isFalse();
         assertThat(StrategyTools.isCurrentlyValid(Map.of("valid_until", "2026-08-13"), TODAY)).isFalse();
     }
+
+    @Test
+    void undatableValidUntilIsExcludedRatherThanCrashing() {
+        // Ingestion rejects malformed dates, but a hand-edited row must not kill the stream.
+        assertThat(StrategyTools.isCurrentlyValid(Map.of("valid_until", "not-a-date"), TODAY)).isFalse();
+    }
 }

@@ -2,6 +2,7 @@ package fi.karivanttinen.fplassistant.rag;
 
 import java.time.Clock;
 import java.time.LocalDate;
+import java.time.format.DateTimeParseException;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -100,7 +101,14 @@ public class StrategyTools implements FplTool {
         if (until == null || until.toString().isBlank()) {
             return true;
         }
-        return !LocalDate.parse(until.toString()).isBefore(today);
+        try {
+            return !LocalDate.parse(until.toString()).isBefore(today);
+        } catch (DateTimeParseException e) {
+            // Undatable content cannot be trusted as live — exclude it rather than crash
+            // the stream. Ingestion rejects malformed dates, so this only guards against
+            // hand-edited rows.
+            return false;
+        }
     }
 
     private String formatChunk(Document chunk) {

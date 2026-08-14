@@ -87,6 +87,17 @@ class StrategyToolsIntegrationTest {
         assertThat(result).contains("No strategy documents are loaded");
     }
 
+    @Test
+    void corpusWhoseEveryMatchIsExpiredIsDistinguishable() {
+        ingestionService.ingest("classpath:docs-fixtures-expired/*.md");
+
+        // Every chunk in the store is expired, so the widened candidate pool contains
+        // nothing live — the all-expired message must come back, not an empty answer.
+        String result = strategyTools.searchStrategyDocs("violet zebra paddle");
+
+        assertThat(result).contains("No strategy documents are currently valid");
+    }
+
     private void ingestFixtures() {
         ingestionService.ingest("classpath:docs-fixtures/*.md");
     }
