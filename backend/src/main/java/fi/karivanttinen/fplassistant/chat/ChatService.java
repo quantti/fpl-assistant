@@ -27,9 +27,14 @@ public class ChatService {
 
     public Flux<String> stream(ChatRequest request) {
         List<ChatRequest.MessageDto> messages = request.messages();
-        List<Message> history = messages
-                .subList(Math.max(0, messages.size() - HISTORY_WINDOW), messages.size())
-                .stream()
+        List<ChatRequest.MessageDto> window =
+                messages.subList(Math.max(0, messages.size() - HISTORY_WINDOW), messages.size());
+        // The Anthropic API rejects a history that opens on an assistant turn, and an
+        // even-sized window over an odd-length alternating conversation always does.
+        while (!window.isEmpty() && !"user".equals(window.getFirst().role())) {
+            window = window.subList(1, window.size());
+        }
+        List<Message> history = window.stream()
                 .map(m -> (Message) switch (m.role()) {
                     case "user" -> new UserMessage(m.content());
                     default -> new AssistantMessage(m.content());

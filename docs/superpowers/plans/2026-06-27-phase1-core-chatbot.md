@@ -1084,8 +1084,12 @@ git commit -m "feat: add ChatService streaming with all three tools"
 
 > **Amended 2026-08-14:** The endpoint is public with no auth, so this task also owns the abuse
 > caps and the SSE error contract:
-> - Validate `ChatRequest`: reject more than 20 messages or more than 4,000 chars per message
->   with a 400 before any LLM call.
+> - Validate `ChatRequest`: reject more than 200 messages or more than 4,000 chars per message
+>   with a 400 before any LLM call. (200, not 20: the controller cap is the *abuse* bound; the
+>   *cost* bound is ChatService's 20-message window — a 20-message cap here would hard-fail every
+>   conversation at message 21.) Also reject: null/empty `messages`, null/blank `content`, and
+>   any role other than `user`/`assistant` — ChatService maps unknown roles to assistant and
+>   NPEs on nulls, deliberately relying on this validation.
 > - Set `maxTokens` on the chat options and add a simple per-IP rate limit (a servlet filter with
 >   an in-memory counter is enough at this scale).
 > - Error contract: `onErrorResume` emits a typed `event: error` payload, and every stream ends
