@@ -1,6 +1,6 @@
 # Status — Phase 1
 
-**Progress:** Task 5/14 done. Phase 1 work merged to `master`; Task 5 on branch `task5-player-tools`.
+**Progress:** Task 6/14 done. Tasks 1–5 merged to `master`; Task 6 on branch `task6-fixture-tools`.
 
 Plan: `docs/superpowers/plans/2026-06-27-phase1-core-chatbot.md`.
 Spec: `docs/superpowers/specs/2026-06-27-fpl-assistant-design.md`.
@@ -15,10 +15,11 @@ Setup and commands: `docs/DEVELOPMENT.md`.
 | 3 — System prompt + AI config | `d25586e` | `AiConfig` builds a `ChatClient` from the selected provider, `prompts/system-prompt.st` holds the FPL rules |
 | — | `1c431d5` | Project instructions moved to `AGENTS.md`; `CLAUDE.md` is a one-line `@AGENTS.md` import |
 | 4 — GameweekTools | `9ef1ef3` | `getGameweekInfo()` `@Tool`, plus `SeasonResolver` / `SeasonContext` used by every later tool |
-| 5 — PlayerTools | (task5-player-tools) | `getPlayerStats(playerName)` `@Tool`: SeasonResolver + provenance prefix, LIKE wildcards escaped, `DataAccessException` returned as an error string |
+| 5 — PlayerTools | `7711fc8` | `getPlayerStats(playerName)` `@Tool`: SeasonResolver + provenance prefix, LIKE wildcards escaped, `DataAccessException` returned as an error string |
+| 6 — FixtureTools | (task6-fixture-tools) | `getUpcomingFixtures(teamName, nextN)` `@Tool`: all Amended 2026-08-14 guards — start GW `COALESCE(is_current, is_next, MIN)`, bound by distinct gameweeks (DGW-safe), postponed `gameweek IS NULL` fixtures listed separately. LIKE escape shared as `LikePatterns` |
 
-Next: **Task 6 — FixtureTools** (`getUpcomingFixtures(teamName, nextN)`) — read the plan's
-Amended 2026-08-14 blockquote first (gameweek NULL guard, DGW-safe bound, postponed fixtures).
+Next: **Task 7 — ChatService + request DTO** — read the plan's Amended 2026-08-14 blockquote
+first (history window, tool errors as strings, tool registration as a collection, blocking JDBC).
 
 ## The season problem, and the shape of the fix
 

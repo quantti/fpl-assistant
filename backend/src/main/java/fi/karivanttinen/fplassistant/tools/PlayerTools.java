@@ -36,7 +36,7 @@ public class PlayerTools {
     public String getPlayerStats(String playerName) {
         try {
             SeasonContext season = seasonResolver.resolve();
-            String pattern = "%" + escapeLike(playerName.toLowerCase(Locale.ROOT)) + "%";
+            String pattern = "%" + LikePatterns.escape(playerName.toLowerCase(Locale.ROOT)) + "%";
 
             List<Map<String, Object>> rows = jdbc.queryForList("""
                     SELECT p.web_name, p.first_name, p.second_name,
@@ -68,14 +68,6 @@ public class PlayerTools {
             return "Player data is temporarily unavailable (database error)."
                     + " Tell the user and suggest asking again shortly.";
         }
-    }
-
-    /**
-     * LIKE treats {@code %}, {@code _} and {@code \} as metacharacters even inside a bound
-     * parameter; unescaped, a literal "%" would match every player in the season.
-     */
-    private static String escapeLike(String s) {
-        return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_");
     }
 
     private String formatPlayer(Map<String, Object> r) {
