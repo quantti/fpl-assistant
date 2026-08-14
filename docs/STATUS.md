@@ -1,6 +1,7 @@
 # Status — Phase 1
 
-**Progress:** Task 7/14 done. Tasks 1–6 merged to `master`; Task 7 on branch `task7-chat-service`.
+**Progress:** Task 9/14 done. Tasks 1–7 merged to `master`; Tasks 8–10 on branch
+`tasks8-10-chat-api-frontend` (review checkpoint after Task 10).
 
 Plan: `docs/superpowers/plans/2026-06-27-phase1-core-chatbot.md`.
 Spec: `docs/superpowers/specs/2026-06-27-fpl-assistant-design.md`.
@@ -19,10 +20,11 @@ Setup and commands: `docs/DEVELOPMENT.md`.
 | 6 — FixtureTools | `0422e1a` | `getUpcomingFixtures(teamName, nextN)` `@Tool`: all Amended 2026-08-14 guards — start GW `COALESCE(is_current, is_next, MIN)`, bound by distinct gameweeks (DGW-safe, unit-tested via extracted `window()`), postponed `gameweek IS NULL` fixtures listed separately. LIKE escape shared as `LikePatterns` |
 | 7 — ChatService | (task7-chat-service) | `ChatService.stream(ChatRequest)` → `Flux<String>`: history windowed to last 20 messages and trimmed to open on a `user` turn (Anthropic 400s an assistant-first history — review catch), tools injected as `List<FplTool>` (marker interface — adding a tool class is registration-complete). `GameweekTools` harmonized to catch `DataAccessException` like the others |
 
-Next: **Task 8 — ChatController + CORS** — read the plan's Amended 2026-08-14 blockquote first
-(request validation caps, `max_tokens`, per-IP rate limit, SSE `event: error` / `event: done`
-contract). The amendment's boundedElastic check belongs to Task 8's live smoke test: verify
-tokens still stream progressively across a tool call.
+| 8 — ChatController | `64513a7` | `POST /api/chat` SSE: validation caps (200 msgs / 4000 chars / role whitelist), per-IP rate limit (20/min), per-provider response-token caps, tokens JSON-encoded in `data:` (raw SSE drops leading spaces), `event: error` + terminal `event: done`. Live smoke verified: tool call streams progressively, provenance survives into the answer |
+| 9 — Frontend scaffold | (tasks8-10 branch) | Vite 8.2 + React 19.2 + Mantine 9.5 + TS 6.0; `vite-env.d.ts` added (plan omitted it, CSS imports fail tsc without); `App.tsx` renders a placeholder until Task 13 wires ChatView (plan's version imported a not-yet-existing file) |
+
+Next: **Task 10 — MessageInput**, then review checkpoint. Note for Task 12: token `data:` payloads
+are JSON-encoded strings (see the plan's Task 12 amendment) — `JSON.parse` each token event.
 
 ## The season problem, and the shape of the fix
 

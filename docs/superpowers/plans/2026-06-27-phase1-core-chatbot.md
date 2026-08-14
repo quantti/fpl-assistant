@@ -4,7 +4,7 @@
 >
 > **Progress tracking:** Do NOT use per-step checkboxes. Track via the single `**PROGRESS:**` line below — update only that one line after each task completes (e.g. `Task 3/14 done`). One small edit per task, not per step.
 
-**PROGRESS:** Task 7/14 done
+**PROGRESS:** Task 9/14 done
 
 > **Before following any step below, read `docs/STATUS.md`.** Several steps are stale: the
 > Gradle version, the Testcontainers dependencies, the `.env.test` credentials, the system prompt's
@@ -1675,9 +1675,12 @@ git commit -m "feat: add MessageThread and AssistantMessage components with mark
 
 > **Amended 2026-08-14:** Pair this with Task 8's error contract — handle `event: error` by
 > surfacing an error message instead of committing the accumulated partial text, and treat
-> `event: done` as the completion signal rather than stream close. Also strip the single optional
-> space after `data:` — `l.slice(5)` keeps it, prepending a stray space to every token whose
-> serializer emits `data: token`.
+> `event: done` as the completion signal rather than stream close.
+>
+> **Token encoding (decided in Task 8):** each token event's `data:` is a JSON-encoded string
+> (`data: " world"` arrives as `data: "\" world\""`) because raw SSE cannot round-trip a token's
+> leading space or newlines. `JSON.parse` each token event's data instead of the manual
+> multi-line `data:` rejoin below; the error event's data stays plain text.
 
 **Files:**
 - Create: `frontend/src/hooks/useChat.ts`
