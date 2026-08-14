@@ -164,7 +164,7 @@ adds routes (needs a forwarding controller).
 
 # Status — Phase 2 (RAG)
 
-**Progress:** Task 2/7 done.
+**Progress:** Task 3/7 done.
 
 Plan: `docs/superpowers/plans/2026-08-14-phase2-rag.md`.
 Spec: `docs/superpowers/specs/2026-08-14-phase2-rag-design.md`.
@@ -175,6 +175,7 @@ Spec: `docs/superpowers/specs/2026-08-14-phase2-rag-design.md`.
 |---|---|---|
 | 1 — Prerequisites gate | `815923b` | `spring-ai-starter-vector-store-pgvector` added. DB prerequisites resolved with evidence (below) — no fallback needed. `OPENAI_API_KEY`-mandatory documented in AGENTS.md and DEVELOPMENT.md |
 | 2 — Vector store wiring | (phase2-tasks1-4-rag-core branch) | `fpl_embeddings` live in Supabase (`id uuid`, `content text`, `metadata json`, `embedding vector`); `vector`/`hstore`/`uuid-ossp` now actually installed. App starts cleanly under both `SPRING_AI_PROVIDER=openai` and `=anthropic` with a populated OpenAI key. Full Phase 1 suite green with the starter on the classpath |
+| 3 — Ingestion | (this task) | Seven docs moved to `backend/src/main/resources/docs/` with front matter (`kind: reference`, `valid_from: 2026-08-21`); `IngestionRunner` (`--ingest` flag, exits the JVM when done) + `IngestionService` (front matter validation fails the run loudly before anything is deleted, section chunking via `MarkdownDocumentReader`, `<doc title> > <section>` prefixed into every chunk body, metadata carries title/section/kind/valid_from/valid_until, truncate-then-reload). Real run: 7 docs → 61 chunks into `fpl_embeddings`, verified row-by-row. Tests: pure unit (front matter + chunking) + integration against `fpl_embeddings_test` proving the production table is never touched, re-runs don't duplicate, a bad document aborts before truncation |
 
 ### Prerequisites gate — findings
 
@@ -233,3 +234,47 @@ json`, `embedding vector`), and `vector`/`hstore`/`uuid-ossp` are installed for 
 rolled-back transaction only proved they *could* be). Full suite green under both
 `SPRING_AI_PROVIDER=openai` and `=anthropic`, confirming the embedding autoconfiguration activates
 independently of the chat provider switch as the spec's Configuration table requires.
+
+## Task 3 findings — the markdown reader's real API, and two config traps
+
+Checked against the actual `spring-ai-markdown-document-reader` 2.0.0 sources before
+implementing (the caution the plan's TokenTextSplitter note established):
+
+- **The reader splits by heading, one `Document` per section** — the spec's "split on markdown
+  sections" is exactly what the library does. `visit(Heading)` flushes the previous section.
+- **Heading text goes into `metadata.title`, NOT into the chunk body.** The spec's "prefix each
+  chunk's body with `<doc title> > <section header>`" therefore had to be implemented by
+  `IngestionService` itself; the reader cannot be configured to do it. The service reads the
+  reader's `title`, moves it to a `section` metadata key, and rewrites the body with the prefix.
+- **A heading with no body below it produces no chunk** (the visitor only flushes non-empty
+  paragraph buffers). In the real docs this drops `## The archetypes` and `## Wildcard strategy`
+  (pure heading parents) and keeps the leaf sections — the leaf headings are self-describing and
+  the `<doc title> > <section>` prefix disambiguates the three near-identical chip-mistake
+  sections, which was the whole point.
+- **The reader builds a plain commonmark parser (no GFM extensions)** — tables stay inside their
+  section as flattened text (pipe characters intact). That is acceptable and actually the
+  requirement: a retrieved chunk keeps its table header row, which token-window chunking severed.
+- **Front matter must be stripped before the reader sees it.** commonmark parses the `---`
+  delimiters as thematic breaks and the YAML lines as a paragraph, so the front matter would leak
+  into the first chunk's body. `IngestionService` parses and removes it first.
+
+Two config traps hit during Task 3, both now fixed and covered by tests:
+
+- **SnakeYAML resolves bare `YYYY-MM-DD` scalars into `java.util.Date` objects.** A front matter
+  date `2026-09-15` arrived at validation as `"Tue Sep 15 02:00:00 CEST 2026"` and failed the ISO
+  regex. Fixed with a custom `Resolver` that downgrades `Tag.TIMESTAMP` to `Tag.STR` — dates stay
+  the literal strings the spec writes. (Note: this is why `valid_from: 2026-08-21` — the season
+  start, which is in the future relative to today — must not be rejected; nothing checks
+  past/future, only format.)
+- **Spring Boot 4.1 treats a same-named `application.yml` on the test classpath as REPLACING the
+  main one.** The spec's suggested `src/test/resources/application.yml` (table-name override)
+  silently dropped `spring.datasource.url` and every other main-config key, so every
+  `@SpringBootTest` failed with "Failed to determine a suitable driver class". The override now
+  lives in `src/test/resources/application-test.yml`, activated with `@ActiveProfiles("test")` on
+  the ingestion integration test — profile-specific config merges with the base file instead of
+  shadowing it. Isolation is unchanged: ingestion tests can only ever touch `fpl_embeddings_test`.
+
+Other Task 3 decisions: the repo-root `strategy_docs/` copy was deleted rather than kept as an
+editing source — one canonical location (`backend/src/main/resources/docs/`), no drift-prone sync
+step. Real ingestion run: 7 docs → 61 chunks into `fpl_embeddings`, row-by-row verified (content
+prefixes, `title`/`section`/`kind`/`valid_from` metadata, no `valid_until` on reference docs).

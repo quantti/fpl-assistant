@@ -1,0 +1,14 @@
+# Test profile: pin the vector store to an isolated table so the ingestion tests can
+# never truncate or refill the production fpl_embeddings corpus. This is a
+# profile-specific file (activated via @ActiveProfiles("test")), NOT a second
+# application.yml — Spring Boot 4.1 treats a same-named application.yml on the test
+# classpath as REPLACING the main one, which silently drops spring.datasource.url and
+# everything else. Profile-specific config merges with the base file instead.
+#
+# initialize-schema: true (inherited from application.yml) creates fpl_embeddings_test
+# on first test boot, which is intended.
+spring:
+  ai:
+    vectorstore:
+      pgvector:
+        table-name: fpl_embeddings_test
