@@ -1,3 +1,9 @@
+---
+title: FPL Team Building
+kind: reference
+valid_from: 2026-08-21
+---
+
 # FPL Team Building
 
 Reference document on constructing an FPL squad: squad composition, formations, premium allocation, price-point targeting, budget players, bench strategy, and structure planning.
