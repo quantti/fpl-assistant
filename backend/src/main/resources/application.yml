@@ -4,6 +4,11 @@ spring:
     username: ${DB_USER}
     password: ${DB_PASSWORD}
     driver-class-name: org.postgresql.Driver
+    hikari:
+      data-source-properties:
+        # Supabase transaction pooler breaks pgjdbc's named server-side prepared
+        # statements under concurrent load; disable statement promotion.
+        prepareThreshold: 0
   ai:
     # Activates only the selected provider's chat autoconfiguration, so the
     # unused provider's missing API key can't fail context startup.
@@ -18,7 +23,7 @@ spring:
       api-key: ${OPENAI_API_KEY:}
       chat:
         options:
-          model: gpt-4o
+          model: gpt-5.6-terra
 
 fpl:
   ai:
