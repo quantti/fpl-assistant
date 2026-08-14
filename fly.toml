@@ -1,0 +1,22 @@
+# Lives at the repo root so the Docker build context contains both backend/ and frontend/.
+app = "fpl-assistant"
+primary_region = "mad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[[vm]]
+  memory = "512mb"
+  cpus = 1
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+
+  [[http_service.checks]]
+    # Spring Boot cold start comfortably exceeds the plan's original 10s.
+    grace_period = "20s"
+    interval = "15s"
+    method = "GET"
+    path = "/actuator/health"
+    timeout = "5s"
