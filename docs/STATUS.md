@@ -367,3 +367,53 @@ and over-asking while preserving the Phase 5 extension shape; the tool descripti
 synced with the prompt's "Strategy advice" section. Deferred as accepted: `--ingest`'s
 DELETE-then-ADD window (the spec's re-ingestion section explicitly accepts an empty-corpus
 window, made visible by the distinguishable empty-store message).
+
+## Independent second review (2026-08-15) — applied
+
+A second, independent full-phase review ran against the branch before merge. It confirmed test
+isolation was correct as built and found no critical defects. Applied:
+
+- **Expiry filtering moved into the database, as the spec always asked.** The previous code
+  filtered expired chunks in Java over a widened candidate pool, with a javadoc claiming the
+  spec's `SearchRequest.filterExpression` route was "not expressible". That claim was wrong in a
+  way that mattered: the naive `valid_until >= today` really is unusable (a jsonpath comparison
+  against a missing key is false, so it drops every reference document — verified live: **0 of 61
+  chunks**), but `kind == "reference" || valid_until >= today` is equivalent, uses only operators
+  the pgvector converter implements, and returns **61 of 61**. The Java pass is kept as a second
+  filter, because a `reference` document is permitted to carry a `valid_until` and would pass the
+  SQL filter on its `kind` alone. This closes a real quality cliff: with several `timely`
+  documents added weekly, a query near old previews could have had most of its candidate pool
+  expired, returning fewer than five chunks — or none — while the whole reference corpus sat
+  unretrieved. The filter expression is now pinned by a unit test, since its failure mode is a
+  silently empty corpus rather than an error.
+- **Isolation gained defence in depth.** `src/test/resources/application.properties` activates
+  the `test` profile for the entire test source set, so every `@SpringBootTest` — including the
+  Phase 1 ones that have nothing to do with RAG — points at `fpl_embeddings_test`. Those tests
+  were previously re-issuing `CREATE EXTENSION`/`CREATE TABLE`/`CREATE INDEX` against the
+  production table on the database shared with `tapas-fpl-app`; harmless (`IF NOT EXISTS`) but
+  unasked-for DDL. Both integration tests also gained a `@BeforeEach` asserting the configured
+  table ends in `_test`, which fails *before* any `DELETE` — the existing production-row-count
+  check runs after the ingest and so detects damage rather than preventing it. (A `.properties`
+  file, not `application.yml`: a same-named YAML on the test classpath replaces the main config
+  entirely. Verified by running the suite.)
+- **`searchStrategyDocs` now catches more than `DataAccessException`.** It is the first tool that
+  makes an outbound call — the query is embedded by OpenAI before the search — so a 429/5xx
+  surfaces as a REST/AI exception the DB-only catch missed, leaving the model to relay a raw
+  exception message. Second catch added with its own message.
+- **Expiry rolls over at UK midnight**, not the container's zone (`Europe/London` via
+  `ObjectProvider<Clock>`, which also replaces the deprecated `org.springframework.lang.Nullable`).
+  On Fly the container runs UTC, which during British Summer Time would end a `valid_until` day an
+  hour early.
+- **System prompt covers future-dated content.** It instructed the model about *old* timely
+  content only; a preview ingested ahead of its gameweek would have been presented as something
+  that already happened.
+- **Corpus reload documented in `docs/DEVELOPMENT.md`.** `AGENTS.md` points there for commands and
+  `--ingest` appeared only in a javadoc; the plan requires ingestion be runnable by whoever adds
+  documents.
+- **`.dockerignore` comment** explaining that `docs`/`*.md` are root-anchored and must not become
+  `**/docs`/`**/*.md`, which would silently ship an image with an empty strategy library.
+
+Reviewed and dismissed: the review flagged that `## Historical TC outcomes` was removed from
+`captain-selection-and-triple-captain.md` during the Task 3 move without documentation. The
+removal was an intentional editorial decision by the corpus owner — the section carried no
+practical value. Recorded here so it is not re-flagged as content loss.

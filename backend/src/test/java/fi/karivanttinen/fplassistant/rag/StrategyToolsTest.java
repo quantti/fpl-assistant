@@ -16,6 +16,19 @@ class StrategyToolsTest {
     private static final LocalDate TODAY = LocalDate.of(2026, 8, 14);
 
     @Test
+    void databaseFilterKeepsReferenceDocsThatCarryNoValidUntil() {
+        // The naive `valid_until >= today` matches 0 of 61 production chunks, because a
+        // jsonpath comparison against a missing key is false and reference documents have no
+        // valid_until. Only the OR form retains them. Verified live before it was written;
+        // pinned here because the failure is silent — an empty corpus, not an error.
+        String expression = StrategyTools.unexpiredFilter(TODAY).toString();
+
+        assertThat(expression).contains("kind").contains("reference");
+        assertThat(expression).contains("valid_until").contains("2026-08-14");
+        assertThat(expression).containsIgnoringCase("or");
+    }
+
+    @Test
     void absentValidUntilNeverExpires() {
         assertThat(StrategyTools.isCurrentlyValid(Map.of(), TODAY)).isTrue();
     }

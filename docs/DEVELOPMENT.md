@@ -56,10 +56,27 @@ set -a; source .env.test; set +a
 ./gradlew test --tests "*GameweekToolsTest"       # one test class
 ./gradlew compileJava
 ./gradlew bootRun                                 # serves on :8080
+./gradlew bootRun --args="--ingest"               # reload the RAG corpus, then exit
 ```
 
 Tests hit the real Supabase database — there is no Testcontainers setup and no local Postgres, so
-the env file must be loaded or every `@SpringBootTest` fails on datasource creation.
+the env file must be loaded or every `@SpringBootTest` fails on datasource creation. Tests are
+pinned to `fpl_embeddings_test` (`src/test/resources/application.properties` activates the `test`
+profile for the whole source set), so they never touch the production corpus.
+
+## Reloading the strategy corpus
+
+The RAG documents live in `backend/src/main/resources/docs/`. After adding or editing one:
+
+```bash
+./gradlew bootRun --args="--ingest"
+```
+
+This **deletes every row in `fpl_embeddings` and reloads from the documents on the classpath**,
+then exits. It is the only supported way to update the corpus — there is no incremental path.
+Every document needs YAML front matter (`title`, `kind`, `valid_from`, plus `valid_until` when
+`kind: timely`); a document missing it aborts the run *before* anything is deleted, so a bad file
+cannot leave the corpus empty. See the Phase 2 spec for the metadata contract.
 
 Gradle writes JUnit XML to `build/test-results/test/`. When a test fails, the exception message
 lives there rather than in console output, which only prints the exception type:

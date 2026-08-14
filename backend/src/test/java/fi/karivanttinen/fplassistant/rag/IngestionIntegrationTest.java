@@ -1,7 +1,9 @@
 package fi.karivanttinen.fplassistant.rag;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
@@ -27,6 +29,22 @@ class IngestionIntegrationTest {
 
     @Autowired
     JdbcTemplate jdbc;
+
+    @Value("${spring.ai.vectorstore.pgvector.table-name}")
+    String configuredTable;
+
+    /**
+     * Ingestion truncates whatever table it is pointed at. The other isolation check in this
+     * class compares production row counts *after* the run, which detects damage rather than
+     * preventing it — if the profile ever fails to activate, the real corpus is already gone by
+     * then. This fails first, before any DELETE runs.
+     */
+    @BeforeEach
+    void refuseToRunAgainstProduction() {
+        assertThat(configuredTable)
+                .as("ingestion tests must be pinned to the isolated table; check @ActiveProfiles(\"test\")")
+                .endsWith("_test");
+    }
 
     @Test
     void ingestionWritesChunksWithMetadataIntactAndNeverTouchesProduction() {
