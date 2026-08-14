@@ -30,6 +30,7 @@ dependencies {
     implementation 'org.postgresql:postgresql'
     implementation 'org.springframework.ai:spring-ai-starter-model-anthropic'
     implementation 'org.springframework.ai:spring-ai-starter-model-openai'
+    implementation 'org.springframework.ai:spring-ai-starter-vector-store-pgvector'
 
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
     // Boot 4 modularization: @WebMvcTest lives in its own test module

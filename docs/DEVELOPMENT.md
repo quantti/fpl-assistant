@@ -111,3 +111,9 @@ Season 2026/27 starts 2026-08-21; tapas creates the season row well before synci
 `openai` in `.env.test`. `application.yml` maps it to `spring.ai.model.chat`, which activates only
 that provider's autoconfiguration — without it, the unused provider's blank API key fails context
 startup.
+
+**`OPENAI_API_KEY` is mandatory regardless of `SPRING_AI_PROVIDER`, from Phase 2 onward.** RAG
+embeddings always go through OpenAI (`text-embedding-3-small`) because Anthropic has no embeddings
+API. The OpenAI embedding autoconfiguration is gated by `spring.ai.model.embedding`, a separate
+switch from `spring.ai.model.chat` — an Anthropic-only chat deployment still needs a populated
+OpenAI key or the application fails to start.

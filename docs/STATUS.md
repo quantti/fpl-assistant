@@ -159,3 +159,48 @@ adds routes (needs a forwarding controller).
 - **Plan tests that assume live 2026/27 data** (`getPlayerStats("Salah")`, Arsenal fixtures) pass
   today only because the resolver falls back to 2025-26, where `M.Salah` exists with 123 points at
   `now_cost=140`. Assertions should stay season-agnostic so they survive the sync.
+
+---
+
+# Status — Phase 2 (RAG)
+
+**Progress:** Task 1/7 done.
+
+Plan: `docs/superpowers/plans/2026-08-14-phase2-rag.md`.
+Spec: `docs/superpowers/specs/2026-08-14-phase2-rag-design.md`.
+
+## Done
+
+| Task | Commit | What exists now |
+|---|---|---|
+| 1 — Prerequisites gate | (phase2-tasks1-4-rag-core branch) | `spring-ai-starter-vector-store-pgvector` added. DB prerequisites resolved with evidence (below) — no fallback needed. `OPENAI_API_KEY`-mandatory documented in AGENTS.md and DEVELOPMENT.md |
+
+### Prerequisites gate — findings
+
+Probed 2026-08-14 in a rolled-back transaction (no persisted change) against the live Supabase
+instance:
+
+- `CREATE EXTENSION IF NOT EXISTS vector` — **succeeds**
+- `CREATE EXTENSION IF NOT EXISTS hstore` — **succeeds**
+- `search_path` on the pooler connection: `"$user", public, extensions`
+- `uuid-ossp` already installed in the `extensions` schema, and `uuid_generate_v4()` resolves
+  without schema-qualifying because `extensions` is on the search path
+
+The spec's Database prerequisites section flagged this as "the only step that can hard-block the
+phase" and correctly required verifying before assuming. It does not block: `initialize-schema:
+true` will succeed on first run with no manual dashboard step and no fallback DDL. The connecting
+role is not superuser but evidently has the grants Supabase provides for trusted extensions.
+
+The transaction was rolled back rather than committed, so the extensions are not actually
+installed yet — that happens for real in Task 2 when the `VectorStore` bean initializes against
+the live database, which is expected and is what "done" for Task 2 requires.
+
+**Side-effect check.** Adding the starter dependency alone (before any `application.yml`
+configuration) does autoconfigure a `PgVectorStore` bean, and every existing `@SpringBootTest`
+now constructs one. Its log prints `Initializing PGVectorStore schema for table: vector_store in
+schema: public` unconditionally — this looked alarming, so it was verified directly: querying
+Supabase afterward shows neither `vector_store` nor `fpl_embeddings` exists, and neither
+extension is installed. `initialize-schema` defaults to `false` (confirming the design review's
+claim), so the log line prints before the flag is checked and no DDL actually runs. No effect on
+the shared database from this task. Explicit `initialize-schema: true` in Task 2 is what will
+make the real schema creation happen, once, deliberately.
