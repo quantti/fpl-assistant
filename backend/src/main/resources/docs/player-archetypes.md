@@ -1,3 +1,9 @@
+---
+title: FPL Player Archetypes
+kind: reference
+valid_from: 2026-08-21
+---
+
 # FPL Player Archetypes
 
 Reference document on recurring player categories ("archetypes") in FPL squad building. The term archetype is borrowed from psychology/game design (a recurring role template); in FPL sources the same idea appears as player profiles, price tiers and roles. This document defines the standard categories used to evaluate and structure a squad.

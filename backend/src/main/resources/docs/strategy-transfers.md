@@ -1,3 +1,9 @@
+---
+title: FPL Transfer Strategy
+kind: reference
+valid_from: 2026-08-21
+---
+
 # FPL Transfer Strategy
 
 Reference document on FPL transfer management: free transfer rules, when to roll, when to take hits, and long-term planning.

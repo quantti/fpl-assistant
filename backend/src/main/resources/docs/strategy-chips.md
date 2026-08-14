@@ -1,3 +1,9 @@
+---
+title: FPL Chip Strategy
+kind: reference
+valid_from: 2026-08-21
+---
+
 # FPL Chip Strategy
 
 Reference document on the four FPL chips: function, optimal timing, Double Gameweek interplay, and season-long planning.

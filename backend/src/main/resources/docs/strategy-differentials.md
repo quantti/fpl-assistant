@@ -1,3 +1,9 @@
+---
+title: FPL Differentials
+kind: reference
+valid_from: 2026-08-21
+---
+
 # FPL Differentials
 
 Reference document on differential players: definition, ownership tiers, why they matter, how to find them, and when they are worth owning.

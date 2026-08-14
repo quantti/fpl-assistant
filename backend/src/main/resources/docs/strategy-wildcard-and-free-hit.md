@@ -1,3 +1,9 @@
+---
+title: FPL Wildcard and Free Hit Strategy
+kind: reference
+valid_from: 2026-08-21
+---
+
 # FPL Wildcard and Free Hit Strategy
 
 Reference document on the Wildcard (WC) and Free Hit (FH) chips: when and how to play them, and how they combine with Double Gameweeks (DGW), Blank Gameweeks (BGW) and Bench Boost (BB).
