@@ -2,9 +2,9 @@
 backend/.gradle/
 backend/build/
 
-# Env / secrets
-backend/.env
-backend/.env.test
+# Env / secrets — any .env variant anywhere, but keep committed *.example templates
+**/.env*
+!**/.env*.example
 
 # Node
 frontend/node_modules/
