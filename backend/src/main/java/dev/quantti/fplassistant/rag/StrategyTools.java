@@ -2,6 +2,7 @@ package dev.quantti.fplassistant.rag;
 
 import java.time.Clock;
 import java.time.LocalDate;
+import java.time.ZoneId;
 import java.time.format.DateTimeParseException;
 import java.util.List;
 import java.util.Map;
@@ -14,8 +15,10 @@ import org.springframework.ai.document.Document;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.ai.vectorstore.filter.Filter;
+import org.springframework.ai.vectorstore.filter.FilterExpressionBuilder;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.dao.DataAccessException;
-import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
 
 import dev.quantti.fplassistant.tools.FplTool;
@@ -29,18 +32,20 @@ import dev.quantti.fplassistant.tools.FplTool;
  * the validity window, so the model can weigh dated content by age. That is the RAG-side
  * counterpart of the seasonal-provenance discipline for database rows.
  *
- * <p><b>Expiry filtering.</b> The spec asks for query-time expiry filtering via
- * {@code SearchRequest.filterExpression}. That is not expressible with this library: the
- * pgvector filter converter supports only comparison operators (and/or/eq/ne/gt/gte/lt/lte),
- * and a jsonpath comparison against a missing metadata key evaluates to false — so
- * {@code valid_until >= today} alone silently excludes every reference document (no
- * {@code valid_until}), and there is no supported existence/null operator to OR it with.
- * Verified against the live database before choosing the fallback: the tool instead searches a
- * widened candidate pool ({@code TOP_K_CANDIDATES}) and filters expired chunks in Java,
- * trimming to {@code TOP_K} live results. From the model's point of view the behaviour is the
- * same — expired content never reaches it, and dead previews cannot crowd live material out of
- * the final five as long as fewer than {@code TOP_K_CANDIDATES - TOP_K} of the top matches are
- * expired.
+ * <p><b>Expiry filtering.</b> Enforced in the database, as the spec requires, so expired
+ * documents never occupy a top-k slot. The naive expression {@code valid_until >= today} cannot
+ * be used on its own: a jsonpath comparison against a missing metadata key evaluates to false,
+ * so it would silently exclude every reference document (which has no {@code valid_until}), and
+ * the pgvector filter converter rejects {@code isNull}/{@code isNotNull} — it implements only
+ * and/or/eq/ne/gt/gte/lt/lte. The equivalent expression below uses only supported operators and
+ * leans on an invariant {@code IngestionService} enforces: {@code kind: timely} always carries a
+ * {@code valid_until}, and {@code kind} is always one of {@code reference}/{@code timely}.
+ *
+ * <p>{@link #isCurrentlyValid} still runs afterwards as a second pass. It is not redundant: a
+ * {@code reference} document is *permitted* to carry a {@code valid_until}, and such a row would
+ * pass the SQL filter on its {@code kind} alone. The Java pass also guards hand-edited rows with
+ * unparseable dates. A small candidate widening ({@code TOP_K_CANDIDATES}) absorbs whatever that
+ * second pass removes.
  */
 @Component
 public class StrategyTools implements FplTool {
@@ -50,15 +55,22 @@ public class StrategyTools implements FplTool {
     /** Final answer size — the spec's top-k 5, set explicitly. */
     static final int TOP_K = 5;
 
-    /** Widened candidate pool so Java-side expiry filtering cannot starve the result. */
-    static final int TOP_K_CANDIDATES = 20;
+    /**
+     * Small widening so the second-pass Java filter cannot leave fewer than {@link #TOP_K}
+     * results. The database filter already removes expired rows, so this only has to absorb
+     * the rare reference-document-with-an-expired-window case.
+     */
+    static final int TOP_K_CANDIDATES = 10;
 
     private final VectorStore vectorStore;
     private final Clock clock;
 
-    public StrategyTools(VectorStore vectorStore, @Nullable Clock clock) {
+    public StrategyTools(VectorStore vectorStore, ObjectProvider<Clock> clock) {
         this.vectorStore = vectorStore;
-        this.clock = clock != null ? clock : Clock.systemDefaultZone();
+        // Expiry is a calendar-day decision about UK football content, so it must roll over at
+        // UK midnight — not the container's zone, which on Fly is UTC and would end a
+        // valid_until day an hour early during British Summer Time.
+        this.clock = clock.getIfAvailable(() -> Clock.system(ZoneId.of("Europe/London")));
     }
 
     // Keep this description in sync with the "Strategy advice" section of system-prompt.st —
@@ -73,25 +85,56 @@ public class StrategyTools implements FplTool {
             """)
     public String searchStrategyDocs(String query) {
         try {
-            List<Document> matches = vectorStore.similaritySearch(
-                    SearchRequest.builder().query(query).topK(TOP_K_CANDIDATES).build());
-            if (matches.isEmpty()) {
-                return "No strategy documents are loaded — say so rather than improvising strategy advice.";
-            }
             LocalDate today = LocalDate.now(clock);
+            List<Document> matches = vectorStore.similaritySearch(
+                    SearchRequest.builder()
+                            .query(query)
+                            .topK(TOP_K_CANDIDATES)
+                            .filterExpression(unexpiredFilter(today))
+                            .build());
             List<Document> valid = matches.stream()
                     .filter(doc -> isCurrentlyValid(doc.getMetadata(), today))
                     .limit(TOP_K)
                     .toList();
             if (valid.isEmpty()) {
-                return "No strategy documents are currently valid — say so rather than improvising strategy advice.";
+                // The database filter already dropped expired rows, so an empty result is
+                // either an unloaded corpus or one where everything has expired. They are
+                // different operational problems (failed deploy vs stale content), so probe
+                // once to say which — only on this rare path.
+                return storeIsEmpty()
+                        ? "No strategy documents are loaded — say so rather than improvising strategy advice."
+                        : "No strategy documents are currently valid — say so rather than improvising strategy advice.";
             }
             return valid.stream().map(this::formatChunk).collect(Collectors.joining("\n\n---\n\n"));
         } catch (DataAccessException e) {
-            log.error("searchStrategyDocs(\"{}\") failed", query, e);
+            log.error("searchStrategyDocs(\"{}\") failed on the vector store", query, e);
             return "The strategy document library is temporarily unavailable (database error)."
                     + " Tell the user and suggest asking again shortly.";
+        } catch (RuntimeException e) {
+            // Unlike the stat tools, this one makes an outbound call: the query has to be
+            // embedded by OpenAI before the search runs. A 429/5xx there surfaces as a
+            // RestClientException/AI exception, which the DataAccessException catch would
+            // miss — leaving the model to relay a raw stack-trace message to the user.
+            log.error("searchStrategyDocs(\"{}\") failed while embedding the query", query, e);
+            return "The strategy document library is temporarily unavailable (embedding error)."
+                    + " Tell the user and suggest asking again shortly.";
         }
+    }
+
+    /**
+     * {@code kind == "reference" || valid_until >= today}. Equivalent to "not expired" given
+     * the ingestion invariant that every {@code timely} document carries a {@code valid_until},
+     * and expressible with the operators the pgvector filter converter actually supports.
+     */
+    static Filter.Expression unexpiredFilter(LocalDate today) {
+        FilterExpressionBuilder b = new FilterExpressionBuilder();
+        return b.or(b.eq("kind", "reference"), b.gte("valid_until", today.toString())).build();
+    }
+
+    /** Distinguishes an unloaded corpus from one where every match has expired. */
+    private boolean storeIsEmpty() {
+        return vectorStore.similaritySearch(SearchRequest.builder().query("fpl").topK(1).build())
+                .isEmpty();
     }
 
     /**
