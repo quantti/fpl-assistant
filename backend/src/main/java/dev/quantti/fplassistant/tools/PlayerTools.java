@@ -1,16 +1,21 @@
 package dev.quantti.fplassistant.tools;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.stream.Collectors;
 
 @Component
 public class PlayerTools {
+
+    private static final Logger log = LoggerFactory.getLogger(PlayerTools.class);
 
     private final JdbcTemplate jdbc;
     private final SeasonResolver seasonResolver;
@@ -31,7 +36,7 @@ public class PlayerTools {
     public String getPlayerStats(String playerName) {
         try {
             SeasonContext season = seasonResolver.resolve();
-            String pattern = "%" + escapeLike(playerName.toLowerCase()) + "%";
+            String pattern = "%" + escapeLike(playerName.toLowerCase(Locale.ROOT)) + "%";
 
             List<Map<String, Object>> rows = jdbc.queryForList("""
                     SELECT p.web_name, p.first_name, p.second_name,
@@ -45,10 +50,11 @@ public class PlayerTools {
                     WHERE p.season_id = ?
                       AND (LOWER(p.web_name) LIKE ?
                            OR LOWER(p.second_name) LIKE ?
-                           OR LOWER(p.first_name) LIKE ?)
+                           OR LOWER(p.first_name) LIKE ?
+                           OR LOWER(p.first_name || ' ' || p.second_name) LIKE ?)
                     ORDER BY p.total_points DESC
                     LIMIT 5
-                    """, season.seasonId(), pattern, pattern, pattern);
+                    """, season.seasonId(), pattern, pattern, pattern, pattern);
 
             if (rows.isEmpty()) {
                 return season.provenance() + "\nPlayer not found: " + playerName;
@@ -58,6 +64,7 @@ public class PlayerTools {
                     .map(this::formatPlayer)
                     .collect(Collectors.joining("\n---\n"));
         } catch (DataAccessException e) {
+            log.error("getPlayerStats(\"{}\") failed", playerName, e);
             return "Player data is temporarily unavailable (database error)."
                     + " Tell the user and suggest asking again shortly.";
         }
@@ -80,7 +87,14 @@ public class PlayerTools {
             default -> "?";
         };
         double price = ((Number) r.get("now_cost")).doubleValue() / 10.0;
-        String status = "a".equals(r.get("status")) ? "Available" : "Unavailable (" + r.get("news") + ")";
+        // FPL status codes: a=available, d=doubtful, i/s/u/n = out for some reason. news is nullable.
+        Object news = r.get("news");
+        String detail = (news == null || news.toString().isBlank()) ? "" : " (" + news + ")";
+        String status = switch (String.valueOf(r.get("status"))) {
+            case "a" -> "Available";
+            case "d" -> "Doubtful" + detail;
+            default -> "Unavailable" + detail;
+        };
 
         return """
                 %s %s (%s) [%s]
