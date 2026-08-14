@@ -1,0 +1,8 @@
+# Gradle
+.gradle/
+build/
+
+# Local environment files (commit only *.example templates)
+.env
+.env.*
+!.env*.example
