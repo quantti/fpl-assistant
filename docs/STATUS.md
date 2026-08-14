@@ -1,6 +1,6 @@
 # Status — Phase 1
 
-**Progress:** Task 4/14 done. Branch `phase1-core-chatbot`, working tree clean, nothing pushed.
+**Progress:** Task 5/14 done. Phase 1 work merged to `master`; Task 5 on branch `task5-player-tools`.
 
 Plan: `docs/superpowers/plans/2026-06-27-phase1-core-chatbot.md`.
 Spec: `docs/superpowers/specs/2026-06-27-fpl-assistant-design.md`.
@@ -15,8 +15,10 @@ Setup and commands: `docs/DEVELOPMENT.md`.
 | 3 — System prompt + AI config | `d25586e` | `AiConfig` builds a `ChatClient` from the selected provider, `prompts/system-prompt.st` holds the FPL rules |
 | — | `1c431d5` | Project instructions moved to `AGENTS.md`; `CLAUDE.md` is a one-line `@AGENTS.md` import |
 | 4 — GameweekTools | `9ef1ef3` | `getGameweekInfo()` `@Tool`, plus `SeasonResolver` / `SeasonContext` used by every later tool |
+| 5 — PlayerTools | (task5-player-tools) | `getPlayerStats(playerName)` `@Tool`: SeasonResolver + provenance prefix, LIKE wildcards escaped, `DataAccessException` returned as an error string |
 
-Next: **Task 5 — PlayerTools** (`getPlayerStats(playerName)`), then Task 6 FixtureTools.
+Next: **Task 6 — FixtureTools** (`getUpcomingFixtures(teamName, nextN)`) — read the plan's
+Amended 2026-08-14 blockquote first (gameweek NULL guard, DGW-safe bound, postponed fixtures).
 
 ## The season problem, and the shape of the fix
 
