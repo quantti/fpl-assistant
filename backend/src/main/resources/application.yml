@@ -19,15 +19,24 @@ spring:
       chat:
         options:
           model: claude-sonnet-5
+          # Response cap on the open endpoint — request caps live in ChatController.
+          max-tokens: ${FPL_MAX_TOKENS:1500}
     openai:
       api-key: ${OPENAI_API_KEY:}
       chat:
         options:
           model: gpt-5.6-terra
+          # gpt-5.x rejects the legacy max_tokens parameter.
+          max-completion-tokens: ${FPL_MAX_TOKENS:1500}
+          # gpt-5.6 on /v1/chat/completions only supports function tools with reasoning off.
+          reasoning-effort: none
 
 fpl:
   ai:
     provider: ${SPRING_AI_PROVIDER:anthropic}
+
+cors:
+  allowed-origins: ${CORS_ORIGINS:http://localhost:5173}
 
 server:
   port: 8080
