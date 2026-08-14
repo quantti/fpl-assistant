@@ -7,7 +7,9 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.UserMessage;
 import reactor.core.publisher.Flux;
 import reactor.test.StepVerifier;
 
@@ -54,8 +56,10 @@ class ChatServiceTest {
     }
 
     @Test
-    void historyIsWindowedToTheLastTwentyMessages() {
+    void historyIsWindowedAndAlwaysOpensOnAUserMessage() {
         ChatService service = service(List.of(), Flux.empty());
+        // 25 alternating messages: the raw 20-message window would open on assistant msg-5,
+        // which the Anthropic API rejects — the window must trim itself to user msg-6.
         List<ChatRequest.MessageDto> messages = IntStream.range(0, 25)
                 .mapToObj(i -> new ChatRequest.MessageDto(i % 2 == 0 ? "user" : "assistant", "msg-" + i))
                 .toList();
@@ -65,9 +69,13 @@ class ChatServiceTest {
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<Message>> captor = ArgumentCaptor.forClass(List.class);
         verify(requestSpec).messages(captor.capture());
-        assertThat(captor.getValue()).hasSize(20);
-        assertThat(captor.getValue().getFirst().getText()).isEqualTo("msg-5");
-        assertThat(captor.getValue().getLast().getText()).isEqualTo("msg-24");
+        List<Message> sent = captor.getValue();
+        assertThat(sent).hasSize(19);
+        assertThat(sent.getFirst().getText()).isEqualTo("msg-6");
+        assertThat(sent.getFirst()).isInstanceOf(UserMessage.class);
+        assertThat(sent.getLast().getText()).isEqualTo("msg-24");
+        assertThat(sent.getLast()).isInstanceOf(UserMessage.class);
+        assertThat(sent.get(1)).isInstanceOf(AssistantMessage.class);
     }
 
     @Test
@@ -79,6 +87,6 @@ class ChatServiceTest {
 
         ArgumentCaptor<Object[]> captor = ArgumentCaptor.forClass(Object[].class);
         verify(requestSpec).tools(captor.capture());
-        assertThat(captor.getValue()).hasSize(3);
+        assertThat(captor.getValue()).containsExactlyElementsOf(tools);
     }
 }
