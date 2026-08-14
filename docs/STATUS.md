@@ -164,7 +164,8 @@ adds routes (needs a forwarding controller).
 
 # Status — Phase 2 (RAG)
 
-**Progress:** Task 7/7 done — Phase 2 complete, full-phase review applied (2026-08-14).
+**Progress:** Task 7/7 done — Phase 2 complete, merged to `master`. Two full-phase reviews
+applied (2026-08-14 and an independent second pass 2026-08-15).
 
 Plan: `docs/superpowers/plans/2026-08-14-phase2-rag.md`.
 Spec: `docs/superpowers/specs/2026-08-14-phase2-rag-design.md`.
@@ -174,12 +175,12 @@ Spec: `docs/superpowers/specs/2026-08-14-phase2-rag-design.md`.
 | Task | Commit | What exists now |
 |---|---|---|
 | 1 — Prerequisites gate | `815923b` | `spring-ai-starter-vector-store-pgvector` added. DB prerequisites resolved with evidence (below) — no fallback needed. `OPENAI_API_KEY`-mandatory documented in AGENTS.md and DEVELOPMENT.md |
-| 2 — Vector store wiring | (phase2-tasks1-4-rag-core branch) | `fpl_embeddings` live in Supabase (`id uuid`, `content text`, `metadata json`, `embedding vector`); `vector`/`hstore`/`uuid-ossp` now actually installed. App starts cleanly under both `SPRING_AI_PROVIDER=openai` and `=anthropic` with a populated OpenAI key. Full Phase 1 suite green with the starter on the classpath |
-| 3 — Ingestion | (this task) | Seven docs moved to `backend/src/main/resources/docs/` with front matter (`kind: reference`, `valid_from: 2026-08-21`); `IngestionRunner` (`--ingest` flag, exits the JVM when done) + `IngestionService` (front matter validation fails the run loudly before anything is deleted, section chunking via `MarkdownDocumentReader`, `<doc title> > <section>` prefixed into every chunk body, metadata carries title/section/kind/valid_from/valid_until, truncate-then-reload). Real run: 7 docs → 61 chunks into `fpl_embeddings`, verified row-by-row. Tests: pure unit (front matter + chunking) + integration against `fpl_embeddings_test` proving the production table is never touched, re-runs don't duplicate, a bad document aborts before truncation |
-| 4 — searchStrategyDocs | (this task) | `StrategyTools` `@Tool` registered via `FplTool`: per-chunk attribution (title, section, kind, validity window), distinguishable empty-store and all-expired messages, catch-`DataAccessException` error string, top-k 5 explicit. Expiry enforced post-retrieval against a widened candidate pool (20) because the spec's `SearchRequest.filterExpression` route is not expressible — see findings below. `AGENTS.md`'s provenance convention amended to exempt the RAG tool. Tests: expiry logic unit-tested with fixed dates, integration retrieval/expiry/empty-store against `fpl_embeddings_test` under a pinned Clock, error path via a stubbed store |
+| 2 — Vector store wiring | `ab98e78` | `fpl_embeddings` live in Supabase (`id uuid`, `content text`, `metadata json`, `embedding vector`); `vector`/`hstore`/`uuid-ossp` now actually installed. App starts cleanly under both `SPRING_AI_PROVIDER=openai` and `=anthropic` with a populated OpenAI key. Full Phase 1 suite green with the starter on the classpath |
+| 3 — Ingestion | `b3eb452` | Seven docs moved to `backend/src/main/resources/docs/` with front matter (`kind: reference`, `valid_from: 2026-08-21`); `IngestionRunner` (`--ingest` flag, exits the JVM when done) + `IngestionService` (front matter validation fails the run loudly before anything is deleted, section chunking via `MarkdownDocumentReader`, `<doc title> > <section>` prefixed into every chunk body, metadata carries title/section/kind/valid_from/valid_until, truncate-then-reload). Real run: 7 docs → 61 chunks into `fpl_embeddings`, verified row-by-row. Tests: pure unit (front matter + chunking) + integration against `fpl_embeddings_test` proving the production table is never touched, re-runs don't duplicate, a bad document aborts before truncation |
+| 4 — searchStrategyDocs | `b355d8a` | `StrategyTools` `@Tool` registered via `FplTool`: per-chunk attribution (title, section, kind, validity window), distinguishable empty-store and all-expired messages, error strings for both database and embedding failures, top-k 5 explicit. Expiry filtered in the database via `SearchRequest.filterExpression` (`kind == "reference" || valid_until >= today`), with the Java check kept as a second pass — see the 2026-08-15 review section for why the naive expression fails and this one does not. `AGENTS.md`'s provenance convention amended to exempt the RAG tool. Tests: expiry logic unit-tested with fixed dates, integration retrieval/expiry/empty-store against `fpl_embeddings_test` under a pinned Clock, error path via a stubbed store |
 | 5 — System prompt | `1b155d0` | "Strategy advice" section added to `system-prompt.st`: advice questions consult BOTH stats tools and `searchStrategyDocs`; phrasing carries the Phase 5 squad conditional ("if the user's squad is known, factor in what they already own") so a future `getUserSquad()` needs no prompt restructuring; companion instruction on retrieved-content age mirrors the seasonal-provenance discipline (weigh `timely` by age, say so when citing weeks-old content) |
 | 6 — Retrieval baseline | `93e3e38` | 8 questions run against the live 61-chunk corpus; all 8 retrieve from the expected document (table in STATUS.md above). No chunking/top-k change warranted |
-| 7 — End-to-end | (this task) | Real chat flow verified: advice question fires stats tools + `searchStrategyDocs` and answers from retrieved content; pure stat question does NOT call `searchStrategyDocs` (negative case proven) |
+| 7 — End-to-end | `3b98b3c` | Real chat flow verified: advice question fires stats tools + `searchStrategyDocs` and answers from retrieved content; pure stat question does NOT call `searchStrategyDocs` (negative case proven) |
 
 ### Prerequisites gate — findings
 
@@ -283,12 +284,16 @@ editing source — one canonical location (`backend/src/main/resources/docs/`), 
 step. Real ingestion run: 7 docs → 61 chunks into `fpl_embeddings`, row-by-row verified (content
 prefixes, `title`/`section`/`kind`/`valid_from` metadata, no `valid_until` on reference docs).
 
-## Task 4 findings — the spec's `filterExpression` expiry route is not expressible
+## Task 4 findings — why the obvious expiry filter fails, and what works instead
+
+> **Superseded in part on 2026-08-15.** The analysis below of *why* the naive expression fails is
+> correct and worth keeping. Its conclusion was not: the filter is expressible after all, and the
+> code now does it in the database. See the resolution at the end of this section.
 
 The spec requires expiry filtering at query time via `SearchRequest.filterExpression`
 (``FilterExpressionBuilder``), so expired `timely` documents never reach the model. Verified
-against the real 2.0.0 converter and the live database that this exact mechanism cannot express
-"no `valid_until`, or `valid_until` >= today":
+against the real 2.0.0 converter and the live database that the *obvious* form of this cannot
+express "no `valid_until`, or `valid_until` >= today":
 
 - The pgvector filter converter emits a jsonpath predicate (`metadata::jsonb @@ '...'::jsonpath`)
   and supports only the comparison operators (and/or/eq/ne/gt/gte/lt/lte/in/nin). The
@@ -300,11 +305,22 @@ against the real 2.0.0 converter and the live database that this exact mechanism
   supported operator to OR the missing-key case in.
 - `exists($.valid_until)` is valid jsonpath but the converter cannot emit it.
 
-**Resolution:** `StrategyTools` fetches a widened candidate pool (`topK` 20 — the spec's "top-k 5
-set explicitly" still applies to the final answer) and filters expired chunks in Java,
-trimming to 5. From the model's point of view this is equivalent to SQL-side filtering — expired
-content never reaches it, and dead previews cannot crowd live material out of the final five as
-long as fewer than 15 of the top 20 matches are expired. The expiry logic itself is a pure static
+**Resolution (corrected 2026-08-15):** the missing-key case does not need an existence operator —
+it can be reached through `kind`, because ingestion enforces that every `timely` document carries
+a `valid_until` and every document is one of `reference`/`timely`. So
+`kind == "reference" || valid_until >= today` is equivalent to "not expired", uses only supported
+operators, and matches 61 of 61 production chunks where the naive form matched 0. That is what
+`StrategyTools` sends to the database.
+
+The Java check runs afterwards as a second pass rather than as the mechanism: a `reference`
+document is *permitted* to carry a `valid_until`, and such a row would pass the SQL filter on its
+`kind` alone. A small candidate widening (10) absorbs whatever the second pass removes.
+
+The original Java-only resolution was not merely inelegant — it had a failure mode. Filtering a
+fixed candidate pool means that once several `timely` documents are added weekly, a query
+semantically close to old previews could have most of its pool expired, returning fewer than five
+chunks or none at all while the entire reference corpus went unretrieved. Filtering in the
+database removes that at the source. The expiry logic itself is a pure static
 method (`StrategyTools.isCurrentlyValid`), unit-tested with fixed dates so it cannot rot as real
 time passes; the integration test pins a fixed `Clock` (2026-08-14) so the fixture corpus's
 expiry assertions are deterministic forever, and the `docs-fixtures` corpus gained a third
