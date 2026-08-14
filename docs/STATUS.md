@@ -164,7 +164,7 @@ adds routes (needs a forwarding controller).
 
 # Status — Phase 2 (RAG)
 
-**Progress:** Task 4/7 done.
+**Progress:** Task 5/7 done.
 
 Plan: `docs/superpowers/plans/2026-08-14-phase2-rag.md`.
 Spec: `docs/superpowers/specs/2026-08-14-phase2-rag-design.md`.
