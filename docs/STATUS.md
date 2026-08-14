@@ -33,11 +33,23 @@ Setup and commands: `docs/DEVELOPMENT.md`.
 
 ## Deployment — the remaining manual steps
 
-`flyctl` is not installed, so from a machine with it (`curl -L https://fly.io/install.sh | sh`,
-then `fly auth login`), run from the repo root:
+`flyctl` is installed at `~/.fly/bin/flyctl` (not on PATH by default — `export
+PATH="$HOME/.fly/bin:$PATH"`), logged in as `kvanttinen@gmail.com`. The app is registered:
+
+```
+fly launch --no-deploy --name fpl-assistant --region mad --copy-config --yes
+```
+
+ran successfully — `fpl-assistant.fly.dev` exists in org `kari-vanttinen`, `fly.toml` at the
+repo root is accepted, no machines exist yet (nothing deployed, no cost incurred). One
+gotcha: `flyctl launch` ignored `--region mad` and registered the app at `cdg` (Paris) —
+harmless since no machine had deployed yet, but `fly.toml`'s `primary_region` was corrected
+back to `mad` by hand afterward (that field is what actually places the first machine).
+
+Remaining, deliberately not run without the account owner present — needs real secrets and
+is the point where the app goes live and can start costing money:
 
 ```bash
-fly launch --no-deploy --name fpl-assistant --region mad   # accepts the existing fly.toml
 fly secrets set DATABASE_URL="jdbc:postgresql://aws-1-eu-west-1.pooler.supabase.com:6543/postgres?sslmode=require"
 fly secrets set DB_USER="postgres.<project-ref>" DB_PASSWORD="<db-password>"
 fly secrets set ANTHROPIC_API_KEY="sk-ant-..." OPENAI_API_KEY="sk-..."
