@@ -34,11 +34,12 @@ class IngestionIntegrationTest {
 
         ingestionService.ingest("classpath:docs-fixtures/*.md");
 
-        // fixture-reference.md: intro + 3 sections = 4; fixture-timely.md: intro + 2 sections = 3
-        assertThat(countRows("fpl_embeddings_test")).isEqualTo(7);
+        // fixture-reference.md: intro + 3 sections = 4; fixture-timely.md: intro + 2 sections = 3;
+        // fixture-expired.md: intro + 1 section = 2 → 9 total
+        assertThat(countRows("fpl_embeddings_test")).isEqualTo(9);
 
         List<Map<String, Object>> rows = allRows();
-        assertThat(rows).hasSize(7);
+        assertThat(rows).hasSize(9);
 
         Map<String, Object> section = row(rows, "When to bench boost");
         assertThat(section.get("title")).isEqualTo("Bench Boost Playbook");
@@ -65,16 +66,16 @@ class IngestionIntegrationTest {
     @Test
     void reIngestingTheSameCorpusDoesNotDuplicateRows() {
         ingestionService.ingest("classpath:docs-fixtures/*.md");
-        assertThat(countRows("fpl_embeddings_test")).isEqualTo(7);
+        assertThat(countRows("fpl_embeddings_test")).isEqualTo(9);
 
         ingestionService.ingest("classpath:docs-fixtures/*.md");
-        assertThat(countRows("fpl_embeddings_test")).isEqualTo(7);
+        assertThat(countRows("fpl_embeddings_test")).isEqualTo(9);
     }
 
     @Test
     void ingestingADifferentCorpusReplacesThePreviousOne() {
         ingestionService.ingest("classpath:docs-fixtures/*.md");
-        assertThat(countRows("fpl_embeddings_test")).isEqualTo(7);
+        assertThat(countRows("fpl_embeddings_test")).isEqualTo(9);
 
         ingestionService.ingest("classpath:docs-fixtures-alt/*.md");
 
@@ -89,7 +90,7 @@ class IngestionIntegrationTest {
     @Test
     void documentMissingFrontMatterFailsBeforeDeletingAnything() {
         ingestionService.ingest("classpath:docs-fixtures/*.md");
-        assertThat(countRows("fpl_embeddings_test")).isEqualTo(7);
+        assertThat(countRows("fpl_embeddings_test")).isEqualTo(9);
 
         assertThatThrownBy(() -> ingestionService.ingest("classpath:docs-fixtures-bad/*.md"))
                 .isInstanceOf(IllegalStateException.class)
@@ -97,7 +98,7 @@ class IngestionIntegrationTest {
                 .hasMessageContaining("missing YAML front matter");
 
         // Validation happens before truncation: the previous corpus is still there.
-        assertThat(countRows("fpl_embeddings_test")).isEqualTo(7);
+        assertThat(countRows("fpl_embeddings_test")).isEqualTo(9);
     }
 
     private int countRows(String table) {
