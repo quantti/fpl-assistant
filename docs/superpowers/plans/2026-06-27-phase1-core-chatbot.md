@@ -6,6 +6,11 @@
 
 **PROGRESS:** Task 4/14 done
 
+> **Before following any step below, read `docs/STATUS.md`.** Several steps are stale: the
+> Gradle version, the Testcontainers dependencies, the `.env.test` credentials, the system prompt's
+> season and scoring facts, and — affecting every remaining tool — the `is_current` season filter,
+> which matches no rows at all and is replaced by `SeasonResolver`.
+
 **Goal:** Build and deploy a working FPL chatbot with streaming chat UI, 3 DB-backed tools, and FPL rules in the system prompt — no auth, open access.
 
 **Architecture:** Spring Boot 4.1 backend serves both the REST API and built frontend static files from a single Fly.io app. Spring AI 2.0 ChatClient with `@Tool` methods queries the existing Supabase PostgreSQL DB (tapas schema). React frontend streams responses via `fetch` + `ReadableStream`.

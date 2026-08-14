@@ -18,8 +18,10 @@ Auth (Supabase JWT) + Stripe billing are deferred to the last phase. Build the c
 
 ## Key references
 
+- **Current status, deviations from the plan, known issues: `docs/STATUS.md`** — read this first when picking the work back up
+- **Setup, commands, DB connection details: `docs/DEVELOPMENT.md`**
 - Design spec: `docs/superpowers/specs/2026-06-27-fpl-assistant-design.md`
-- Phase 1 plan: `docs/superpowers/plans/2026-06-27-phase1-core-chatbot.md`
+- Phase 1 plan: `docs/superpowers/plans/2026-06-27-phase1-core-chatbot.md` — several steps are stale; check `docs/STATUS.md` before following one
 - Source DB schema (tapas): `~/dev/tapas-fpl-app/backend/DB.md`
 - FPL game rules: `~/dev/tapas-fpl-app/backend/FPL_RULES.md`
 
