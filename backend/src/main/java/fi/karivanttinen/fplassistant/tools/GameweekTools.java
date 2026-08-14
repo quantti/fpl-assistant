@@ -1,6 +1,9 @@
 package fi.karivanttinen.fplassistant.tools;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
@@ -9,7 +12,9 @@ import java.util.Map;
 import java.util.stream.Collectors;
 
 @Component
-public class GameweekTools {
+public class GameweekTools implements FplTool {
+
+    private static final Logger log = LoggerFactory.getLogger(GameweekTools.class);
 
     private final JdbcTemplate jdbc;
     private final SeasonResolver seasonResolver;
@@ -26,25 +31,31 @@ public class GameweekTools {
             currently being played, tell the user the figures are historical.
             """)
     public String getGameweekInfo() {
-        SeasonContext season = seasonResolver.resolve();
+        try {
+            SeasonContext season = seasonResolver.resolve();
 
-        List<Map<String, Object>> rows = jdbc.queryForList("""
-                SELECT id, name, deadline_time, finished, is_current, is_next,
-                       average_entry_score, highest_score,
-                       most_captained, most_transferred_in, most_selected
-                FROM gameweek
-                WHERE season_id = ?
-                  AND (is_current = true OR is_next = true)
-                ORDER BY id
-                """, season.seasonId());
+            List<Map<String, Object>> rows = jdbc.queryForList("""
+                    SELECT id, name, deadline_time, finished, is_current, is_next,
+                           average_entry_score, highest_score,
+                           most_captained, most_transferred_in, most_selected
+                    FROM gameweek
+                    WHERE season_id = ?
+                      AND (is_current = true OR is_next = true)
+                    ORDER BY id
+                    """, season.seasonId());
 
-        if (rows.isEmpty()) {
-            return season.provenance() + "\nNo gameweek data available for this season.";
+            if (rows.isEmpty()) {
+                return season.provenance() + "\nNo gameweek data available for this season.";
+            }
+
+            return season.provenance() + "\n\n" + rows.stream()
+                    .map(this::formatGameweek)
+                    .collect(Collectors.joining("\n---\n"));
+        } catch (DataAccessException e) {
+            log.error("getGameweekInfo() failed", e);
+            return "Gameweek data is temporarily unavailable (database error)."
+                    + " Tell the user and suggest asking again shortly.";
         }
-
-        return season.provenance() + "\n\n" + rows.stream()
-                .map(this::formatGameweek)
-                .collect(Collectors.joining("\n---\n"));
     }
 
     private String formatGameweek(Map<String, Object> r) {

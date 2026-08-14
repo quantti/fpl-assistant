@@ -13,7 +13,7 @@ import java.util.Map;
 import java.util.stream.Collectors;
 
 @Component
-public class PlayerTools {
+public class PlayerTools implements FplTool {
 
     private static final Logger log = LoggerFactory.getLogger(PlayerTools.class);
 

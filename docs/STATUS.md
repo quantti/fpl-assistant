@@ -1,6 +1,6 @@
 # Status — Phase 1
 
-**Progress:** Task 6/14 done. Tasks 1–5 merged to `master`; Task 6 on branch `task6-fixture-tools`.
+**Progress:** Task 7/14 done. Tasks 1–6 merged to `master`; Task 7 on branch `task7-chat-service`.
 
 Plan: `docs/superpowers/plans/2026-06-27-phase1-core-chatbot.md`.
 Spec: `docs/superpowers/specs/2026-06-27-fpl-assistant-design.md`.
@@ -16,10 +16,13 @@ Setup and commands: `docs/DEVELOPMENT.md`.
 | — | `1c431d5` | Project instructions moved to `AGENTS.md`; `CLAUDE.md` is a one-line `@AGENTS.md` import |
 | 4 — GameweekTools | `9ef1ef3` | `getGameweekInfo()` `@Tool`, plus `SeasonResolver` / `SeasonContext` used by every later tool |
 | 5 — PlayerTools | `7711fc8` | `getPlayerStats(playerName)` `@Tool`: SeasonResolver + provenance prefix, LIKE wildcards escaped, `DataAccessException` returned as an error string |
-| 6 — FixtureTools | (task6-fixture-tools) | `getUpcomingFixtures(teamName, nextN)` `@Tool`: all Amended 2026-08-14 guards — start GW `COALESCE(is_current, is_next, MIN)`, bound by distinct gameweeks (DGW-safe), postponed `gameweek IS NULL` fixtures listed separately. LIKE escape shared as `LikePatterns` |
+| 6 — FixtureTools | `0422e1a` | `getUpcomingFixtures(teamName, nextN)` `@Tool`: all Amended 2026-08-14 guards — start GW `COALESCE(is_current, is_next, MIN)`, bound by distinct gameweeks (DGW-safe, unit-tested via extracted `window()`), postponed `gameweek IS NULL` fixtures listed separately. LIKE escape shared as `LikePatterns` |
+| 7 — ChatService | (task7-chat-service) | `ChatService.stream(ChatRequest)` → `Flux<String>`: history windowed to last 20 messages, tools injected as `List<FplTool>` (marker interface — adding a tool class is registration-complete). `GameweekTools` harmonized to catch `DataAccessException` like the others |
 
-Next: **Task 7 — ChatService + request DTO** — read the plan's Amended 2026-08-14 blockquote
-first (history window, tool errors as strings, tool registration as a collection, blocking JDBC).
+Next: **Task 8 — ChatController + CORS** — read the plan's Amended 2026-08-14 blockquote first
+(request validation caps, `max_tokens`, per-IP rate limit, SSE `event: error` / `event: done`
+contract). The amendment's boundedElastic check belongs to Task 8's live smoke test: verify
+tokens still stream progressively across a tool call.
 
 ## The season problem, and the shape of the fix
 

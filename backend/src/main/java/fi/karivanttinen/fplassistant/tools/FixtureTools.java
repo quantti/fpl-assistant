@@ -17,7 +17,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 @Component
-public class FixtureTools {
+public class FixtureTools implements FplTool {
 
     private static final Logger log = LoggerFactory.getLogger(FixtureTools.class);
 
