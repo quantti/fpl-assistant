@@ -5,6 +5,7 @@ import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.stream.Collectors;
 
 import org.slf4j.Logger;
@@ -60,6 +61,8 @@ public class StrategyTools implements FplTool {
         this.clock = clock != null ? clock : Clock.systemDefaultZone();
     }
 
+    // Keep this description in sync with the "Strategy advice" section of system-prompt.st —
+    // the model reads both and they must agree on when the tool applies.
     @Tool(description = """
             Search the FPL strategy document library for advice on transfers, captaincy, chips
             (wildcard, free hit, bench boost, triple captain), team building, differentials and
@@ -113,10 +116,12 @@ public class StrategyTools implements FplTool {
 
     private String formatChunk(Document chunk) {
         Map<String, Object> metadata = chunk.getMetadata();
-        String title = String.valueOf(metadata.get("title"));
-        String section = String.valueOf(metadata.get("section"));
-        String kind = String.valueOf(metadata.get("kind"));
-        String window = String.valueOf(metadata.get("valid_from"));
+        // Metadata keys are set by ingestion; the fallbacks only make a hand-edited row
+        // visible as <unknown> instead of literal "null" strings inside answers.
+        String title = Objects.requireNonNullElse(metadata.get("title"), "<unknown>").toString();
+        String section = Objects.requireNonNullElse(metadata.get("section"), "<unknown>").toString();
+        String kind = Objects.requireNonNullElse(metadata.get("kind"), "<unknown>").toString();
+        String window = Objects.requireNonNullElse(metadata.get("valid_from"), "<unknown>").toString();
         Object until = metadata.get("valid_until");
         window += until == null ? " (no expiry)" : " to " + until;
         return "From \"" + title + "\" > " + section + " (" + kind + ", valid " + window + "):\n" + chunk.getText();
