@@ -438,7 +438,7 @@ practical value. Recorded here so it is not re-flagged as content loss.
 
 # Status — Phase 3 (Historical Data)
 
-**Progress:** Task 6/7 done. On to Task 7 (end-to-end verification).
+**Progress:** Task 7/7 done — Phase 3 complete. Full-phase review applied (see below).
 
 Plan: `docs/superpowers/plans/2026-08-15-phase3-historical-data.md`.
 Spec: `docs/superpowers/specs/2026-08-15-phase3-historical-data-design.md`.
@@ -455,6 +455,7 @@ sync on startup behind a persisted staleness marker.
 | 4 — getTeamForm / getHeadToHead | `e190b37` | `HistoricalTeamResolver` resolves names to codes against clubs actually present in `pl_match_result` (not `FixtureTools`' resolver, which would miss relegated clubs). `HistoricalTools` implements `FplTool`; neither method filters through `SeasonResolver` or prefixes with `SeasonContext.provenance()` — every match names its own season instead, and `getTeamForm` reports the date of its most recent known match so a stalled Task 5 sync becomes visible in an answer rather than silent |
 | 5 — football-data.org sync | (task5-fd-sync) | `StartupSyncRunner` (ApplicationReadyEvent behind a **persisted** staleness marker — `MAX(ingested_at) WHERE source = 'football-data'` in `pl_match_result` itself, no separate table) + `AsyncConfig` (`@EnableAsync`) so the sync runs off the request path; `FootballDataSyncService` upserts on the natural key with the spec's precedence guard (writes only when `SeasonResolver`'s resolved season is the one in progress — vaastav stays authoritative for completed seasons); `FootballDataSource`/`HttpFootballDataSource` (explicit 10s connect/read timeouts, per the Task 4 review note about not inheriting `HttpVaastavSource`'s unbounded client; 429 gets its own "rate limit exceeded" message per the plan); `FootballDataResponseParser` + `FootballDataTeamAliases` (own alias set — football-data's "Wolverhampton Wanderers FC" vs vaastav's "Wolves"); `FOOTBALL_DATA_API_KEY` in `.env.test.example` + `DEVELOPMENT.md`; `fpl.historical.sync-stale-after-hours: 20`. **Open item (pre-GW1): parser + aliases unverified against the live API** — no key has ever been registered; see below |
 | 6 — Prompt and conventions | (task6-prompt-conventions) | `system-prompt.st` "Historical results" section; both `AGENTS.md` season conventions amended, RAG exception + provenance bullet consolidated into one three-scheme attribution rule |
+| 7 — End-to-end verification | (task7-e2e) | Verified through the real chat flow against the running app (below); STATUS.md reflects what exists |
 
 ## Shared-database change
 
@@ -539,6 +540,44 @@ exactly the failure mode that surfaces once a key exists and the sync runs for r
 first real GW1 sync is the live verification. Until then: sync is a no-op (resolved season is
 a completed fallback, and without a key it logs and skips), so nothing corrupts data. If the
 account owner registers a key, the remaining gap is one boot's log output.
+
+## Task 7 — end-to-end verification (real chat flow)
+
+Verified against the running application via `POST /api/chat` (SSE), real Supabase,
+claude-sonnet-5:
+
+- **Form question** ("How have Liverpool been playing recently?"): the model used
+  `getTeamForm`, presented the last 8 league matches with scores/outcomes, attributed them
+  to the completed **2025/26 season** and explicitly flagged them as historical form, not a
+  measure of 2026/27 performance — and surfaced the freshness line (most recent known
+  result: Brentford 1–1 Liverpool, 24 May 2026), which is exactly the stalled-sync
+  visibility the spec asked for.
+- **Head-to-head question** ("What is the head-to-head record between Manchester City and
+  Arsenal?"): used `getHeadToHead`, returned the last 10 meetings as a season-by-season
+  table (2021/22–2025/26), every row attributed to its season, order-insensitive resolution
+  confirmed. The answer's own closing line cites the tool and the range covered.
+- **Negative case** ("What are Arsenal's next 3 fixtures?"): went to `getUpcomingFixtures`
+  only — no historical tool was touched. The answer correctly explains 2026/27 fixtures are
+  unpublished yet and surfaces the fallback 2025/26 data labelled as such (GW38 Crystal
+  Palace (A), FDR 3). Upcoming-fixture questions do not drag in history.
+
+## Full-phase review (2026-08-15) — applied
+
+One finding, same bug class as the Tasks 1–4 review's vaastav fix, in the one piece of
+code that review could not reach (it did not exist yet):
+
+- **`FootballDataResponseParser.intOrNull` silently truncated non-integral scores.**
+  `JsonNode.asInt()` returns 3 for `3.5` and 0 for `"abc"` — the exact silent-corruption
+  class the Tasks 1–4 review fixed in `VaastavFixtureParser`, and this parser is the
+  unverified-against-live-API one. Now strict: integral numbers pass, textual values are
+  `Integer.parseInt`-ed, anything else fails loudly naming the offending value. Covered by
+  `fractionalOrNonNumericScoreFailsLoudlyInsteadOfTruncating`.
+
+Reviewed and dismissed: the `sync()` write path remains unexercised in production until GW1
+(the resolved season is a completed fallback, so the precedence guard no-ops — verified in
+real boot logs twice), which is why both branches of that guard are pinned by the mocked-
+resolver integration test instead; the free tier's 10 req/min limit is structurally a
+non-issue (one sync = one request), and the 429 message is a belt-and-braces measure.
 
 ## Task 6 — prompt and conventions
 

@@ -93,4 +93,29 @@ class FootballDataResponseParserTest {
         assertThatThrownBy(() -> FootballDataResponseParser.parse("not json"))
                 .isInstanceOf(IllegalStateException.class);
     }
+
+    @Test
+    void fractionalOrNonNumericScoreFailsLoudlyInsteadOfTruncating() {
+        // Same fail-loud class as VaastavFixtureParser's strict score parsing: a fractional
+        // score must never silently truncate to a wrong number that would be stored as fact.
+        String fractional = """
+                { "matches": [ { "status": "FINISHED",
+                  "homeTeam": { "name": "Arsenal FC" },
+                  "awayTeam": { "name": "Chelsea FC" },
+                  "score": { "fullTime": { "home": 3.5, "away": 1 } } } ] }
+                """;
+        assertThatThrownBy(() -> FootballDataResponseParser.parse(fractional))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("not an integer");
+
+        String textual = """
+                { "matches": [ { "status": "FINISHED",
+                  "homeTeam": { "name": "Arsenal FC" },
+                  "awayTeam": { "name": "Chelsea FC" },
+                  "score": { "fullTime": { "home": "abc", "away": 1 } } } ] }
+                """;
+        assertThatThrownBy(() -> FootballDataResponseParser.parse(textual))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("not an integer");
+    }
 }
