@@ -18,3 +18,5 @@ spring:
 fpl:
   historical:
     table-name: pl_match_result_test
+  price:
+    table-name: fpl_player_price_test
