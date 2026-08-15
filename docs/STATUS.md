@@ -624,7 +624,7 @@ historical attribution — instead of accumulating a third per-tool exception.
 
 # Status — Phase 4 (Enrichment)
 
-**Progress:** Task 7/7 done — Phase 4 complete, merged to `master`. Full-phase review applied (see below).
+**Progress:** Task 7/7 done — Phase 4 complete, merged to `master`. Two full-phase reviews applied (see below).
 
 Plan: `docs/superpowers/plans/2026-08-15-phase4-enrichment.md`.
 Spec: `docs/superpowers/specs/2026-08-15-phase4-enrichment-design.md`.
@@ -701,3 +701,110 @@ Reviewed and dismissed: the price-sync `currentSeason()` guard means no price ro
 production — both the snapshot and vaastav paths are no-ops until 2026-27 holds data, exactly as
 the historical football-data sync was pre-GW1. The integration tests cover both write branches
 with a mocked resolver; the live write path is an open item until the new season, recorded above.
+
+## Second full-phase review (2026-08-15) — all findings fixed
+
+An independent review of all seven tasks re-verified the phase against the live database rather
+than against this file, and found thirteen issues. All are fixed. Suite: **171 tests, 0 failures**
+(was 141).
+
+**What the review verified first, so the findings rest on evidence:** `fpl_player_price` exists in
+production with the right columns and unique constraint and is empty (correct — the
+`currentSeason()` guard); `fpl_player_price_test` is clean; the corpus really is 9 docs / 76
+chunks; the Fly deploy (v5, 11:33Z) postdates the Task 7 commit, so Phase 4 is live; vaastav's
+2026-27 `merged_gw.csv` really does 404. Two code paths that **no test can reach** — no season in
+the database has a single `finished = false` fixture — were exercised by hand against real rows
+with the predicate flipped: the FDR SQL binds correctly and picks the team's own side of the
+fixture, and `getTeamExpectedGoals`' aggregation matches the `fixture` scoreline 5/5.
+
+### Correctness and safety
+
+- **The pick tools recommended injured players.** `getDifferentialPicks`/`getCaptainCandidates`
+  never read `player.status` or `news` — 19 of the 406 players with form > 0 in 2025-26 are
+  injured, suspended or otherwise out, and `form` is a rolling average that stays high for weeks
+  after an injury. `PlayerTools` has handled this correctly since Phase 1; the tools whose whole
+  job is *recommending* did not. Both now filter to `status IN ('a','d')` and flag doubtful
+  players with their news line, which the prompt tells the model to relay.
+- **`getDifferentialPicks`' description contradicted its SQL.** It promised "ordered by form, then
+  fixture ease, then ownership"; the SQL ordered by form, ownership and points, and the FDR was
+  computed afterwards for display only — it never affected the ranking, which is also why the
+  query fetched 60 rows to show 10. The composite the plan asked for is now real: a `rank()`
+  method orders on form, then average FDR of the next N fixtures, then ownership (differentials)
+  or total points (captains). Unit-tested, because an integration run always resolves an empty FDR
+  map and so cannot see the composite at all.
+- **The prompt claimed a tool reported xGA when it did not.** It told the model
+  `getTeamExpectedGoals` gives "team xGA implicitly via goals conceded", while the tool returned
+  neither — and the new strategy doc tells the model xGA is *the* clean-sheet signal for
+  defenders and keepers. `getTeamExpectedGoals` now genuinely reports xGA and goals conceded per
+  fixture. The aggregation is the subtle part: FPL writes the team's `expected_goals_conceded` and
+  `goals_conceded` onto **every** player who was on the pitch, so `SUM` would multiply the team's
+  xGA by its squad size (24.86 instead of 2.26 in a checked fixture). The tool uses `MAX`, and a
+  test pins `MAX(goals_conceded)` against the `fixture` scoreline over ten fixtures.
+- **`getPriceHistory` spent one of `lastN` on the live snapshot** (asking for 5 gameweeks returned
+  4 and the snapshot), and with only the snapshot stored it compared that row to itself and
+  printed "price has held steady between live snapshot and live snapshot". That lone-snapshot state
+  is the normal one between the first sync of 2026-27 and the first played gameweek — i.e. the
+  first thing users would have seen. The snapshot and the gameweeks are now fetched separately, and
+  a single data point is reported as a price, not a trend.
+- **`getFixtureDifficulty` counted an unrated fixture as FDR 0**, printing a value outside the
+  documented 1–5 range and dragging the average down. Unrated fixtures now print "FDR unknown" and
+  are excluded from the average, which names how many fixtures it covers. Kickoff times render in
+  UK time and say so (the container runs UTC on Fly, so an unlabelled hour misleads during BST),
+  and postponed fixtures — `gameweek IS NULL`, previously dropped silently by the `gameweek >=`
+  bound — are listed in their own section, as `FixtureTools` already did.
+
+### Test coverage that did not cover what it claimed
+
+- **Task 5's acceptance criterion was met by no test.** `FixtureDifficultyToolsIntegrationTest`
+  asserted `containsAnyOf("Fixture difficulty for", "No upcoming fixtures found")` — which passes
+  on the empty branch, and since no season has an unfinished fixture it *always* took the empty
+  branch. That is the same always-green assertion Phase 1's `GameweekToolsTest` was corrected for.
+  `format()` is now a database-free package-private method with six unit tests covering home/away
+  rating selection, the average, unrated fixtures, UK kickoff rendering, missing kickoffs and the
+  postponed section; the integration test now asserts the empty branch *specifically*, and first
+  asserts that the branch is the one actually being taken.
+- **The snapshot writer had zero coverage.** Every `PriceSyncServiceIntegrationTest` case used a
+  fictitious season id with no tapas `player` rows, so `snapshot()` always wrote nothing — Task 1's
+  "the snapshot sync is idempotent" was never demonstrated. Three tests now pair a **real** season
+  id (so real players are copied) with a **fictitious** season label (so nothing real is written):
+  one row per player, the price and denormalised name match the `player` table, and re-running
+  updates in place instead of accumulating.
+
+### Efficiency
+
+- **The price sync did ~30,000 single-statement round-trips per run, every 6 hours.** A full
+  season's `merged_gw.csv` is 29,757 data rows (measured against the live file), each upserted with
+  its own `jdbc.update`, re-writing every historical gameweek every time — on the pooled database
+  shared with `tapas-fpl-app`. Phase 3's backfill survived this shape only because it wrote 2,660
+  rows once. Writes are now batched (1,000 per statement) and the vaastav path is incremental:
+  gameweeks below the highest already stored are frozen and skipped, so steady-state cost is one
+  gameweek's rows rather than the season's. The highest stored gameweek is still rewritten, since
+  it may have been captured mid-gameweek.
+- **N+1 queries at chat time are gone.** `getTeamExpectedGoals` issued one aggregate plus one
+  opponent-name lookup per fixture (~21 round-trips at `lastN=10`) and now answers from one query;
+  `getPlayerExpectedStats` joins the opponent name instead of looking it up per row; the pick tools
+  resolved FDR once per displayed player — repeating the request for team-mates — and now resolve
+  every team's FDR in a single windowed query.
+
+### Consistency and hygiene
+
+- **Ambiguous name matches are no longer silent.** `web_name` is not unique (2025-26 has two
+  Andersons, two Onanas, two Barneses) and "man" matches both Manchester clubs. Every Phase 4 tool
+  took `LIMIT 1` and answered as though it were the only reading. They now fetch up to four matches
+  and append a note naming the alternatives. The Phase 1 tools keep their existing behaviour —
+  changing them was outside this review's scope.
+- **`FictitiousTestData` now reaches every phase.** Phase 3's review introduced it precisely to stop
+  test data colliding with real data, but it was package-private in the `historical` package, so
+  Phase 4's tests could not use it and `PriceToolsIntegrationTest` wrote rows under the real season
+  label `2025-26`. Moved to a `testsupport` package and applied. It also gained a length check:
+  both `season` columns are `VARCHAR(10)`, and an over-long fictitious label has now broken a test
+  run in two separate phases, so the guard catches it at class-load time instead.
+- **`parsePosition` no longer widens a typo into "any".** "striker" or "7" silently returned every
+  position; they now return a message naming the valid values. "GKP", "goalkeeper", "defender" and
+  friends are accepted.
+- **Documentation matches the code.** The Phase 4 spec said "draft pending review — do not
+  implement" on a phase that had shipped, still posed its two settled decisions as open, and still
+  listed the dropped risers/fallers view as a gap; the plan's pre-implementation checklist was four
+  unticked `- [ ]` boxes, which is also the checkbox style `AGENTS.md` forbids. All corrected, with
+  the checklist rewritten as a table of outcomes and evidence. `HttpVaastavSource.fetch` and
+  `fetchIfPresent` were near-identical copies and now share one private method.

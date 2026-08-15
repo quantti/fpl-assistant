@@ -1,5 +1,7 @@
 package fi.karivanttinen.fplassistant.historical;
 
+import fi.karivanttinen.fplassistant.testsupport.FictitiousTestData;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;

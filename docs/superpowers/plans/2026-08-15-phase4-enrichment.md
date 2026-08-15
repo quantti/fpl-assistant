@@ -2,7 +2,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-08-15-phase4-enrichment-design.md` — read it fully first. Its data-source findings, schema, sync rules, tool boundaries, and out-of-scope list are binding.
 
-**PROGRESS:** Task 7/7 done — Phase 4 complete, merged to `master`. Full-phase review applied.
+**PROGRESS:** Task 7/7 done — Phase 4 complete, merged to `master`. Two full-phase reviews applied (see `docs/STATUS.md`).
 
 Design altitude: each task states what it must achieve and how you know it is done. Class shapes, SQL, and test layout are yours within the spec's constraints.
 
@@ -105,9 +105,14 @@ Deploy the new version to Fly.io (`fly deploy --ha=false --remote-only`). Update
 
 > **Review checkpoint.** Request a full-phase review before considering Phase 4 complete.
 
-## Pre-implementation verification checklist
+## Pre-implementation verification — outcomes
 
-- [ ] `SeasonResolver.currentSeason()` guard prevents writing 2025-26 fallback data into `fpl_player_price` before 2026-27 holds data.
-- [ ] vaastav current-season `gws/merged_gw.csv` 404 is handled as a no-op, not a boot failure.
-- [ ] `player_fixture_stats` expected-stats columns exist and are non-null for 2025-26 fixtures (verify with a quick query before Task 3).
-- [ ] New strategy docs do not duplicate the existing `captain-selection-and-triple-captain.md`.
+All four checks were run against the live database and the live vaastav repository. Recorded as
+prose rather than checkboxes, per the progress-tracking convention in `AGENTS.md`.
+
+| Check | Outcome |
+|---|---|
+| `SeasonResolver.currentSeason()` guard prevents writing 2025-26 fallback data into `fpl_player_price` before 2026-27 holds data | **Holds.** `PriceSyncService.sync()` returns 0 and logs the skip; production `fpl_player_price` is empty, confirmed by direct query. Both branches pinned by `PriceSyncServiceIntegrationTest` with a mocked resolver |
+| vaastav current-season `gws/merged_gw.csv` 404 is handled as a no-op, not a boot failure | **Holds.** `GET .../data/2026-27/gws/merged_gw.csv` returns 404 (verified live); `VaastavSource.fetchIfPresent` maps it to null and the sync logs "snapshot only" |
+| `player_fixture_stats` expected-stats columns exist and are non-null for 2025-26 fixtures | **Holds.** 29,747 rows for 2025-26, zero null `expected_goal_involvements`, zero null `kickoff_time` |
+| New strategy docs do not duplicate `captain-selection-and-triple-captain.md` | **Holds.** Price mechanics and expected stats are both new subjects; captaincy is referenced, not restated. Corpus is 9 docs / 76 chunks |

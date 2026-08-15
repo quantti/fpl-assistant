@@ -116,9 +116,17 @@ No manual command is needed for the ongoing price sync. The table is keyed on th
 season-scoped `element_id` (== vaastav `element` == tapas `player.id`) — the tapas `player`
 table has no `code` column, and single-season storage needs no cross-season identity.
 
-Phase 4 also adds six enrichment tools (xG/xA/xGI, differential and captain picks, fixture
-difficulty, price history) and two new strategy docs. Re-ingest the RAG corpus after adding or
-changing strategy docs:
+**The vaastav write is batched and incremental.** A full season's `merged_gw.csv` is about
+30,000 rows (one per player per gameweek), so the sync writes in batches of 1,000 and skips
+every gameweek below the highest already stored — an earlier gameweek's price is frozen and
+cannot change. The highest stored gameweek is rewritten because it may have been captured
+while that gameweek was still in progress. Steady-state cost is therefore roughly one
+gameweek's worth of rows, not the whole season, which matters because this database is shared
+with `tapas-fpl-app`.
+
+Phase 4 also adds six enrichment tools (xG/xA/xGI plus team xGA, differential and captain
+picks, fixture difficulty, price history) and two new strategy docs. Re-ingest the RAG corpus
+after adding or changing strategy docs:
 
 ```bash
 ./gradlew bootRun --args="--ingest"

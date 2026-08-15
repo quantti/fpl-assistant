@@ -2,7 +2,7 @@
 
 **Supersedes:** Where this spec differs from `docs/superpowers/specs/2026-06-27-fpl-assistant-design.md`, this document wins.
 
-**Status:** draft pending review — do not implement before the owner has signed off on both this spec and `docs/superpowers/plans/2026-08-15-phase4-enrichment.md`.
+**Status:** Approved — implemented and merged 2026-08-15. Both "Decisions to settle" at the foot of this document were settled before implementation (see that section). Where the shipped code deviates, `docs/STATUS.md` (Phase 4 section) wins and records why.
 
 ---
 
@@ -31,7 +31,7 @@ The shared Supabase project already contains:
 What does **not** exist:
 
 - **Per-GW player price history for the current season.** `player.now_cost` is overwritten on every tapas sync. The FPL API exposes cumulative `cost_change_start`/`cost_change_event` and per-GW `value` inside `element-summary/{id}/history`, but only for the in-progress season. A persistent snapshot is needed so the assistant can answer "has this player's price been rising or falling?" without relying on a single overwritten column.
-- **Price risers/fallers view.** Not a separate table, but a query over price snapshots that surfaces momentum.
+- ~~**Price risers/fallers view.** Not a separate table, but a query over price snapshots that surfaces momentum.~~ **Dropped before implementation** (owner decision): it describes past weeks without predicting anything, and `getPriceHistory` already carries the trend for the player being asked about. Competing with dedicated price-prediction sites is not this project's goal.
 
 ## Why price history matters
 
@@ -133,7 +133,7 @@ The system prompt gains a short "Enrichment tools" section telling the model:
 - Real-time price alerts or webhooks.
 - Modifying any tapas table.
 
-## Decisions to settle before implementation
+## Decisions settled before implementation
 
-- **Should the snapshot also capture `selected_by_percent` and `form`?** If yes, the table widens from a pure price table to a player-snapshot table. Recommendation: keep it price-only for Phase 4; `player` already exposes current ownership/form via `getPlayerStats`.
-- **Should `getCaptainCandidates` and `getDifferentialPicks` be one tool or two?** Two keeps the tool descriptions focused and the SQL simple; one combined "pick advice" tool risks becoming a kitchen sink.
+- **Should the snapshot also capture `selected_by_percent` and `form`?** **No.** `fpl_player_price` stays a pure price table; `player` already exposes current ownership and form through `getPlayerStats`, and widening the table would duplicate a column that is already kept current elsewhere.
+- **Should `getCaptainCandidates` and `getDifferentialPicks` be one tool or two?** **Two.** Focused tool descriptions and simpler SQL; a combined "pick advice" tool becomes a kitchen sink. Both share the same ranking composite and availability filter internally.
