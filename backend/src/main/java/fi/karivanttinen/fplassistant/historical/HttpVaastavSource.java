@@ -1,6 +1,7 @@
 package fi.karivanttinen.fplassistant.historical;
 
 import org.springframework.stereotype.Component;
+import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 
@@ -26,6 +27,22 @@ public class HttpVaastavSource implements VaastavSource {
                 throw new IllegalStateException(season + "/" + fileName + ": empty response from " + url);
             }
             return body;
+        } catch (RestClientException e) {
+            throw new IllegalStateException(season + "/" + fileName + ": failed to fetch " + url, e);
+        }
+    }
+
+    @Override
+    public String fetchIfPresent(String season, String fileName) {
+        String url = BASE_URL + "/" + season + "/" + fileName;
+        try {
+            String body = restClient.get().uri(url).retrieve().body(String.class);
+            if (body == null || body.isBlank()) {
+                return null; // absent or empty — e.g. current-season gws/merged_gw.csv before GW1
+            }
+            return body;
+        } catch (HttpClientErrorException.NotFound e) {
+            return null; // 404 is the expected pre-season state, not a failure
         } catch (RestClientException e) {
             throw new IllegalStateException(season + "/" + fileName + ": failed to fetch " + url, e);
         }

@@ -59,6 +59,12 @@ fpl:
     # football-data row is older than this. 20h keeps a daily-ish cadence without syncing on
     # every restart during active development.
     sync-stale-after-hours: 20
+  price:
+    table-name: fpl_player_price
+    # Startup price sync (StartupPriceSyncRunner) snapshots player.now_cost and pulls the
+    # current-season vaastav merged_gw.csv when the last snapshot is older than this. 6h keeps
+    # roughly twice-daily cadence during the season without hitting vaastav on every boot.
+    sync-stale-after-hours: 6
 
 cors:
   allowed-origins: ${CORS_ORIGINS:http://localhost:5173}
