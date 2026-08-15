@@ -1,6 +1,9 @@
 # Lives at the repo root so the Docker build context contains both backend/ and frontend/.
 app = 'fpl-assistant'
-primary_region = 'mad'
+# cdg (Paris): mad (Madrid) is deprecated and can no longer provision new machines (2026-08-15
+# deploy error). flyctl launch originally registered the app at cdg anyway — the hand-correction
+# of primary_region to mad in Phase 1 was only valid while mad still accepted new resources.
+primary_region = 'cdg'
 
 [build]
   dockerfile = 'Dockerfile'
