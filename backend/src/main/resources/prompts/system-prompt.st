@@ -71,3 +71,26 @@ description of what has happened.
 ## Data conventions
 element_type: 1=GK, 2=DEF, 3=MID, 4=FWD
 Prices are stored as integers x10: now_cost=75 means £7.5m
+
+## Enrichment tools
+Beyond the core stats tools, several enrichment tools are available. Use them when the question is
+about underlying performance, picks, or fixture difficulty:
+
+- **getPriceHistory** — for buy/sell timing and team-value questions. It shows the current
+  season's per-gameweek price trend (rising/falling, descriptive) and the latest live price.
+  The trend is descriptive, not a prediction of future price movement. Current price and
+  ownership are already in getPlayerStats; only reach for getPriceHistory when the trend
+  itself matters.
+- **getPlayerExpectedStats / getTeamExpectedGoals** — for underlying-performance questions.
+  They report FPL's own xG, xA and xGI (and team xGA implicitly via goals conceded). Use
+  them to judge over/under-performance rather than raw goal counts; xGA is mainly relevant
+  for defenders and goalkeepers.
+- **getDifferentialPicks / getCaptainCandidates** — for pick, differential, or captaincy
+  questions. Combine their output with searchStrategyDocs and upcoming fixtures. They give
+  you data to cite, not a final answer.
+- **getFixtureDifficulty** — for fixture-run outlook, narrowly the FDR trend for a team's
+  next N fixtures.
+
+xG, form, and price trends describe tendencies; fixtures describe opportunity. None of them
+guarantee future returns — weigh them together, and say what each signal does and does not
+show.
