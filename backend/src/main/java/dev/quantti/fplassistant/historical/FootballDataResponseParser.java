@@ -68,7 +68,24 @@ public final class FootballDataResponseParser {
 
     private static Integer intOrNull(JsonNode node, String... path) {
         JsonNode n = navigate(node, path);
-        return (n == null || n.isNull()) ? null : n.asInt();
+        if (n == null || n.isNull()) {
+            return null;
+        }
+        if (n.isIntegralNumber()) {
+            return n.intValue();
+        }
+        if (n.isTextual()) {
+            try {
+                return Integer.parseInt(n.asText());
+            } catch (NumberFormatException e) {
+                // Same fail-loud class as VaastavFixtureParser's strict score parsing: a
+                // fractional or non-numeric score must surface as an error, never silently
+                // truncate to a wrong number that would then be stored as fact.
+                throw new IllegalStateException("football-data score is not an integer: '"
+                        + n.asText() + "' in " + n);
+            }
+        }
+        throw new IllegalStateException("football-data score is not an integer: " + n);
     }
 
     private static JsonNode navigate(JsonNode node, String... path) {
