@@ -77,15 +77,17 @@ Note the tools are not as cleanly split as "past vs future" suggests: `FixtureTo
 
 ## Data sources, and how far back is actually reachable
 
+**Decided: 2019-20 onward.** Seven seasons (2019-20 … 2025-26), each with both `fixtures.csv` and `teams.csv` present — verified for every one. One parser, no hand-curated codes, no fallback mapping. The seasons below that floor were considered and rejected as not worth their cost.
+
 The original spec says "2016/17–2024/25". That range is not a matter of judgement — it is a cliff, verified against the repository:
 
 | Seasons | What exists | Cost |
 |---|---|---|
-| **2019-20 onward** | `fixtures.csv` **and** `teams.csv` per season. `teams.csv` gives `code`,`id`,`name` directly | One parser, no hand-curation. **The cheap floor** |
+| **2019-20 onward** ← **chosen** | `fixtures.csv` **and** `teams.csv` per season. `teams.csv` gives `code`,`id`,`name` directly | One parser, no hand-curation. **The cheap floor** |
 | **2018-19** | `fixtures.csv` yes, `teams.csv` **no** | Needs `master_team_list.csv` (`season,team,team_name`, covers 2016-17..2023-24) for id→name, then name→code hand-sourced for clubs appearing in no `teams.csv` (Cardiff, Huddersfield) |
 | **2016-17, 2017-18** | **No `fixtures.csv` at all** | Results exist only as per-player rows in `gws/merged_gw.csv` and must be de-duplicated into matches — a second, structurally different importer |
 
-The vaastav mapping the importer needs is therefore **`(season, vaastav team id) → code`**, taken from each season's `teams.csv` — *not* a name→code table. Names only enter the picture for seasons without `teams.csv`.
+The vaastav mapping the importer needs is therefore **`(season, vaastav team id) → code`**, taken from each season's `teams.csv` — *not* a name→code table. With the 2019-20 floor every season in scope has one, so no name-based fallback is needed at all.
 
 Two parsing constraints, both verified:
 
@@ -153,6 +155,6 @@ Per-player historical stats (see above). Understat xG, price trends, captain dif
 
 ## Open decision for the project owner
 
-**How far back to backfill**, framed as the cost ladder above rather than a relevance judgement: 2019-20 is the clean floor, 2018-19 costs a fallback mapping and a few hand-sourced codes, and 2016-17 costs a second importer.
+**The scheduling shape** — the four options above. It gates only the ongoing sync, not the schema, the backfill, or the tools, so implementation can start without it.
 
-The scheduling shape is a second decision, but it gates only the ongoing sync — not the schema, not the backfill, not the tools.
+Backfill depth is settled: 2019-20 onward.

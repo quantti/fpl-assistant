@@ -10,23 +10,23 @@ Design altitude, as Phase 2's plan was: each task states what it must achieve an
 
 ---
 
-### Task 1 — Backfill depth decision, and the schema
+### Task 1 — Schema
 
-One decision is the project owner's and changes what you build: **how far back to backfill**. The spec frames it as a three-step cost ladder (2019-20 clean floor / 2018-19 fallback mapping / 2016-17 second importer). Raise it; do not pick silently. The *scheduling* decision is not needed yet — it gates Task 5 only.
+Backfill depth is decided: **2019-20 onward**, seven seasons through 2025-26. Every one has both `fixtures.csv` and `teams.csv`, so there is no fallback mapping and no hand-sourced code in this phase. Do not widen the range without asking. The *scheduling* decision is still open but gates Task 5 only.
 
-Then create `pl_match_result` to the spec's Schema section: keyed on team **code**, carrying both club names, `season` as `VARCHAR(10)` and not a foreign key, the difficulty columns, an ingestion timestamp, and the `UNIQUE (season, home_team_code, away_team_code)` constraint the upserts depend on.
+Create `pl_match_result` to the spec's Schema section: keyed on team **code**, carrying both club names, `season` as `VARCHAR(10)` and not a foreign key, the difficulty columns, an ingestion timestamp, and the `UNIQUE (season, home_team_code, away_team_code)` constraint the upserts depend on.
 
 This adds a table to the database shared with `tapas-fpl-app` — additive and allowed, but state plainly in `STATUS.md` what was created.
 
-**Done when:** the depth decision is recorded with its answer; the table, unique constraint and indexes exist; `STATUS.md` documents the shared-database change.
+**Done when:** the table, unique constraint and indexes exist; `STATUS.md` documents the shared-database change.
 
 ### Task 2 — vaastav team identity mapping
 
-Build `(season, vaastav team id) → FPL team code` from each season's `teams.csv`, plus the club name for that season. For any season in scope without a `teams.csv`, fall back as the spec describes and hand-source the remaining codes.
+Build `(season, vaastav team id) → FPL team code` from each season's `teams.csv`, plus the club name for that season. All seven seasons in scope have one, so no name-based fallback is needed — if you find yourself needing one, something is wrong with the season range.
 
 It must fail loudly on an unresolvable club rather than dropping the match or inventing a code. Promoted and relegated clubs mean every historical season contains clubs the current one does not; a silent miss corrupts history quietly, which is the worst way for this phase to fail.
 
-**Done when:** every club in the chosen seasons resolves to a code and a name; an unknown id or club fails with a message naming it and the file; unit-tested with no database.
+**Done when:** every club across 2019-20…2025-26 resolves to a code and a name; an unknown id fails with a message naming it and the file; unit-tested with no database.
 
 ### Task 3 — vaastav backfill importer
 
@@ -36,7 +36,7 @@ Constraints that will bite if ignored, all in the spec: parse by header name (th
 
 Tests use **real CSV fixtures** checked into test resources.
 
-**Done when:** the chosen seasons are in the table with correct codes, names and scores; **the 2025-26 rows match `fixture` on both scores, 380/380** (the spec's oracle — no hand-curated expectations needed); a second run leaves the table unchanged; test writes never touch production data.
+**Done when:** all seven seasons are in the table with correct codes, names and scores (a full season is 380 matches, so expect ~2,660 rows once complete — 2019-20 and 2020-21 were COVID-disrupted in scheduling but still played 380); **the 2025-26 rows match `fixture` on both scores, 380/380** (the spec's oracle — no hand-curated expectations needed); a second run leaves the table unchanged; test writes never touch production data.
 
 ### Task 4 — `getTeamForm` and `getHeadToHead`
 
