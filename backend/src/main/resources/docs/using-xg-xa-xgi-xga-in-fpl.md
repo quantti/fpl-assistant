@@ -15,7 +15,7 @@ These are FPL's own expected-stats figures (derived from the same data provider 
 - **xG (expected goals)** — the likelihood a given shot becomes a goal, summed over a player's shots. Measures chance quality, not just shot count.
 - **xA (expected assists)** — the likelihood a pass leads to a goal, summed over a player's passes. Measures chance creation.
 - **xGI (expected goal involvements)** — xG + xA combined. A single number for a player's total attacking involvement.
-- **xGA (expected goals against)** — the xG a team concedes (aggregated across the team's players). Measures defensive pressure faced.
+- **xGA (expected goals against)** — the xG a team concedes over a match. FPL records it against each individual player for the period they were on the pitch, so a player who played the full match carries the team's whole figure. Measures defensive pressure faced.
 
 ## Which stat matters for which position
 
