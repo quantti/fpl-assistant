@@ -38,23 +38,30 @@ class HistoricalSchemaTest {
         assertThat(columnCount).isGreaterThanOrEqualTo(13);
     }
 
+    // Codes below the highest real FPL team code (127) are used everywhere else in this
+    // package, since other tests in this table populate real historical seasons — a
+    // fictitious pair avoids colliding with a real fixture on the shared natural key, which
+    // does not distinguish by `source`.
+    private static final int FICTITIOUS_HOME = 9001;
+    private static final int FICTITIOUS_AWAY = 9002;
+
     @Test
     void naturalKeyRejectsADuplicateSeasonAndTeamPair() {
-        insertMatch(3, 8); // Arsenal vs Chelsea, by code
+        insertMatch(FICTITIOUS_HOME, FICTITIOUS_AWAY);
 
-        assertThatThrownBy(() -> insertMatch(3, 8))
+        assertThatThrownBy(() -> insertMatch(FICTITIOUS_HOME, FICTITIOUS_AWAY))
                 .isInstanceOf(DuplicateKeyException.class);
     }
 
     @Test
     void sameTeamsInDifferentSeasonsAreBothAllowed() {
-        insertMatch(3, 8);
+        insertMatch(FICTITIOUS_HOME, FICTITIOUS_AWAY);
 
         jdbc.update("""
                 INSERT INTO %s (season, home_team_code, away_team_code, home_team_name, away_team_name,
                                  home_goals, away_goals, source)
-                VALUES ('2020-21', ?, ?, 'Arsenal', 'Chelsea', 1, 1, 'schema-test')
-                """.formatted(tableName), 3, 8);
+                VALUES ('2099-00', ?, ?, 'Test Home FC', 'Test Away FC', 1, 1, 'schema-test')
+                """.formatted(tableName), FICTITIOUS_HOME, FICTITIOUS_AWAY);
 
         Integer count = jdbc.queryForObject(
                 "SELECT COUNT(*) FROM " + tableName + " WHERE source = 'schema-test'", Integer.class);
@@ -65,7 +72,7 @@ class HistoricalSchemaTest {
         jdbc.update("""
                 INSERT INTO %s (season, home_team_code, away_team_code, home_team_name, away_team_name,
                                  home_goals, away_goals, kickoff_time, source)
-                VALUES ('2019-20', ?, ?, 'Arsenal', 'Chelsea', 2, 1, ?, 'schema-test')
+                VALUES ('2098-99', ?, ?, 'Test Home FC', 'Test Away FC', 2, 1, ?, 'schema-test')
                 """.formatted(tableName), homeCode, awayCode, Timestamp.from(java.time.Instant.now()));
     }
 }
