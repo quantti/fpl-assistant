@@ -175,14 +175,18 @@ driver**; only reducing `HISTORY_WINDOW` does.
 
 ### Budget
 
-Price point **€9.99/month**, quota **100 messages per rolling seven days**, the same during trial
+Price point **€9.99/month**, quota **50 messages per rolling seven days**, the same during trial
 and after conversion.
 
 With caching, using the midpoint of the average and worst cases (€0.0146/message) as the planning
-value, a subscriber who maxes the quota every week costs €6.30/month against €9.45 net of Stripe
-fees — 67% of revenue. This is a deliberate opening position for a small invited group, not a
-steady-state margin: it is generous on purpose so the real usage distribution can be measured
-before the number is tuned. A median user asking ~25 messages a week costs €1.58/month, or 17%.
+value, a subscriber who maxes the quota every week costs **€3.15/month against €9.45 net** of
+Stripe fees — 33% of revenue, and that is the ceiling rather than the expectation. A user asking
+half the quota costs €1.58/month, or 17%.
+
+The figure holds even under the pessimistic reading. If prompt caching turns out not to be
+applied, the same 50 messages cost €5.91/month — 63% of net, uncomfortable but not loss-making.
+Sizing at 50 rather than 100 is what buys that headroom, and it is why the caching assumption
+does not have to be verified before the first users are invited.
 
 **The quota must therefore be a configuration property, not a constant.** Changing it must not
 require a code change or a deploy, and trial and paid budgets must be separately settable even
