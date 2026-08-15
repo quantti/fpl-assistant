@@ -438,7 +438,7 @@ practical value. Recorded here so it is not re-flagged as content loss.
 
 # Status — Phase 3 (Historical Data)
 
-**Progress:** Task 5/7 done. On to Task 6 (prompt + conventions).
+**Progress:** Task 6/7 done. On to Task 7 (end-to-end verification).
 
 Plan: `docs/superpowers/plans/2026-08-15-phase3-historical-data.md`.
 Spec: `docs/superpowers/specs/2026-08-15-phase3-historical-data-design.md`.
@@ -454,6 +454,7 @@ sync on startup behind a persisted staleness marker.
 | 3 — vaastav backfill | `513a6c8` | `VaastavBackfillService` upserts on `(season, home_team_code, away_team_code)` so re-runs don't duplicate; only finished matches with both scores are written. `VaastavSource` abstracts the fetch so tests read checked-in CSVs, not the network; `HttpVaastavSource` is the only thing that ever hits GitHub, and only at sync time. **Ran for real against production Supabase: 2660 matches across all 7 seasons (380 each).** The spec's oracle passes — every 2025-26 row matches the pre-existing `fixture` table exactly on both scores, 380/380, joined through `team.code`. Idempotency proven by running it twice in a test, not assumed |
 | 4 — getTeamForm / getHeadToHead | `e190b37` | `HistoricalTeamResolver` resolves names to codes against clubs actually present in `pl_match_result` (not `FixtureTools`' resolver, which would miss relegated clubs). `HistoricalTools` implements `FplTool`; neither method filters through `SeasonResolver` or prefixes with `SeasonContext.provenance()` — every match names its own season instead, and `getTeamForm` reports the date of its most recent known match so a stalled Task 5 sync becomes visible in an answer rather than silent |
 | 5 — football-data.org sync | (task5-fd-sync) | `StartupSyncRunner` (ApplicationReadyEvent behind a **persisted** staleness marker — `MAX(ingested_at) WHERE source = 'football-data'` in `pl_match_result` itself, no separate table) + `AsyncConfig` (`@EnableAsync`) so the sync runs off the request path; `FootballDataSyncService` upserts on the natural key with the spec's precedence guard (writes only when `SeasonResolver`'s resolved season is the one in progress — vaastav stays authoritative for completed seasons); `FootballDataSource`/`HttpFootballDataSource` (explicit 10s connect/read timeouts, per the Task 4 review note about not inheriting `HttpVaastavSource`'s unbounded client; 429 gets its own "rate limit exceeded" message per the plan); `FootballDataResponseParser` + `FootballDataTeamAliases` (own alias set — football-data's "Wolverhampton Wanderers FC" vs vaastav's "Wolves"); `FOOTBALL_DATA_API_KEY` in `.env.test.example` + `DEVELOPMENT.md`; `fpl.historical.sync-stale-after-hours: 20`. **Open item (pre-GW1): parser + aliases unverified against the live API** — no key has ever been registered; see below |
+| 6 — Prompt and conventions | (task6-prompt-conventions) | `system-prompt.st` "Historical results" section; both `AGENTS.md` season conventions amended, RAG exception + provenance bullet consolidated into one three-scheme attribution rule |
 
 ## Shared-database change
 
@@ -538,3 +539,15 @@ exactly the failure mode that surfaces once a key exists and the sync runs for r
 first real GW1 sync is the live verification. Until then: sync is a no-op (resolved season is
 a completed fallback, and without a key it logs and skips), so nothing corrupts data. If the
 account owner registers a key, the remaining gap is one boot's log output.
+
+## Task 6 — prompt and conventions
+
+`system-prompt.st` gained a "Historical results" section (when to consult `getTeamForm`/
+`getHeadToHead` — actual-record questions, never the upcoming schedule; old results are
+evidence about tendencies, not current form; surface a visibly stale most-recent-match date).
+Both affected `AGENTS.md` conventions were amended: the "all DB queries filter through
+`SeasonResolver`" bullet now names `HistoricalTools` as the one deliberate exception (bolting
+season filtering onto cross-season tools would destroy the behaviour), and the separate RAG
+"Exception" bullet plus the provenance bullet were consolidated into one attribution rule
+listing the three schemes — stats-tool banner, per-chunk RAG attribution, per-match
+historical attribution — instead of accumulating a third per-tool exception.
