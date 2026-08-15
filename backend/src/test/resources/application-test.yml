@@ -12,3 +12,9 @@ spring:
     vectorstore:
       pgvector:
         table-name: fpl_embeddings_test
+
+# Same reasoning as the vector store above: pl_match_result is never truncated, but a test
+# writing to the production table would pollute it with fictitious matches permanently.
+fpl:
+  historical:
+    table-name: pl_match_result_test
