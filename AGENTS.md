@@ -45,4 +45,8 @@ Plans use a single `**PROGRESS:**` line (e.g. `Task 3/14 done`), updated once pe
 
 ## Deployment
 
-Single Fly.io app (region `mad`) serving API + frontend. Frontend built in a Docker multi-stage build, copied into Spring Boot `static/`. Secrets via `fly secrets set`. No CI yet — deploy manually with `fly deploy` for now.
+Single Fly.io app (region `cdg` — `mad` is deprecated and can no longer provision machines)
+serving API + frontend. Frontend built in a Docker multi-stage build, copied into Spring Boot
+`static/`. Secrets via `fly secrets set`. Remote: `origin` → `github.com/quantti/fpl-assistant`
+(private). No CI yet — deploy manually with `fly deploy --ha=false --remote-only` for now.
+`.env.test` is gitignored; only `.env.test.example` templates are tracked.

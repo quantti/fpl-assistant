@@ -1,9 +1,8 @@
 # Status — Phase 1
 
 **Progress:** Task 14/14 done — Phase 1 code complete, reviewed at two checkpoints (after
-Task 10 and after Task 14), fixes applied both times. **The only unfinished step is the
-Fly.io deploy itself:** `flyctl` is not installed and `fly launch`/`fly secrets
-set`/`fly deploy` need the account owner (see Deployment below).
+Task 10 and after Task 14), fixes applied both times. **Deployed 2026-08-15** — see Deployment
+below.
 
 Plan: `docs/superpowers/plans/2026-06-27-phase1-core-chatbot.md`.
 Spec: `docs/superpowers/specs/2026-06-27-fpl-assistant-design.md`.
@@ -31,31 +30,34 @@ Setup and commands: `docs/DEVELOPMENT.md`.
 | 13 — ChatView | `8dc9d7f` | Full UI assembled; browser-verified headless (Chromium via Puppeteer) against the real backend through the Vite proxy — all three plan questions (gameweek, player stats, fixtures) answered correctly, provenance visible in the UI, markdown rendered, no console errors |
 | 14 — Docker + Fly | (tasks11-14 branch) | Root `Dockerfile` (3-stage, `-XX:MaxRAMPercentage=75`) + root `fly.toml` (health check, pinned machine lifecycle) + `.dockerignore` + actuator health endpoint; image built and smoke-tested locally (container health UP, static frontend served, chat streams to `done`) |
 
-## Deployment — the remaining manual steps
+## Deployment — done (2026-08-15)
 
-`flyctl` is installed at `~/.fly/bin/flyctl` (not on PATH by default — `export
-PATH="$HOME/.fly/bin:$PATH"`), logged in as `kvanttinen@gmail.com`. The app is registered:
+Live at **https://fpl-assistant.fly.dev** (org `kari-vanttinen`, region `cdg`). `flyctl` lives
+at `~/.fly/bin/flyctl` (not on PATH — `export PATH="$HOME/.fly/bin:$PATH"`), logged in as
+`kvanttinen@gmail.com`.
 
 ```
-fly launch --no-deploy --name fpl-assistant --region mad --copy-config --yes
+fly secrets set DATABASE_URL=... DB_USER=... DB_PASSWORD=... OPENAI_API_KEY=... \
+    FOOTBALL_DATA_API_KEY=... SPRING_AI_PROVIDER=openai CORS_ORIGINS=https://fpl-assistant.fly.dev
+fly deploy --ha=false --remote-only
 ```
 
-ran successfully — `fpl-assistant.fly.dev` exists in org `kari-vanttinen`, `fly.toml` at the
-repo root is accepted, no machines exist yet (nothing deployed, no cost incurred). One
-gotcha: `flyctl launch` ignored `--region mad` and registered the app at `cdg` (Paris) —
-harmless since no machine had deployed yet, but `fly.toml`'s `primary_region` was corrected
-back to `mad` by hand afterward (that field is what actually places the first machine).
+Verification after deploy: `/actuator/health` UP, Vite frontend served at `/`, and a live
+chat smoke (`POST /api/chat`) answered using `getGameweekInfo` + `getPlayerStats` with
+provenance intact (2025/26 completed season labelled as such).
 
-Remaining, deliberately not run without the account owner present — needs real secrets and
-is the point where the app goes live and can start costing money:
+Two deploy-time corrections to the Phase 1 plan, both now reflected in `fly.toml`:
 
-```bash
-fly secrets set DATABASE_URL="jdbc:postgresql://aws-1-eu-west-1.pooler.supabase.com:6543/postgres?sslmode=require"
-fly secrets set DB_USER="postgres.<project-ref>" DB_PASSWORD="<db-password>"
-fly secrets set ANTHROPIC_API_KEY="sk-ant-..." OPENAI_API_KEY="sk-..."
-fly secrets set SPRING_AI_PROVIDER="anthropic" CORS_ORIGINS="https://fpl-assistant.fly.dev"
-fly deploy --ha=false
-```
+- **`mad` (Madrid) is deprecated and can no longer provision new machines.** The first
+  `fly deploy` built the image fine and failed at machine creation with "Region mad is
+deprecated… consider cdg". `primary_region` was set to `cdg` — which is where `flyctl
+launch` had originally registered the app anyway (the Phase 1 "gotcha" note below).
+- **`SPRING_AI_PROVIDER=anthropic` from the original plan command was wrong for this
+  project.** The project uses OpenAI for chat (`SPRING_AI_PROVIDER=openai` in `.env.test`;
+  no Anthropic key exists). The first chat smoke failed with Anthropic `401: x-api-key
+  header is required`. With `openai` set, the Anthropic autoconfiguration is gated off by
+  `spring.ai.model.chat` and no Anthropic key is needed at all — the empty
+  `${ANTHROPIC_API_KEY:}` slot in `application.yml` is inert under the `openai` gate.
 
 `--ha=false` matters: a first deploy otherwise creates two machines, and the in-memory
 `RateLimitFilter` assumes one (two machines silently double the per-IP budget). Machines
@@ -152,10 +154,15 @@ adds routes (needs a forwarding controller).
 - **A finished season keeps its last gameweek flagged `is_current`.** `GameweekTools` derives
   status from `finished` first for this reason; anything else reading that flag needs the same
   care.
-- **`flyctl` is not installed** and will be needed for Task 14.
+- **Deployed 2026-08-15 to `fpl-assistant.fly.dev` (cdg); pushed to private repo
+  `github.com/quantti/fpl-assistant`** (all 9 branches; master is the default). Both supersede
+the older notes below.
+- **`flyctl` is not installed** and will be needed for Task 14. — *Resolved: installed and
+  deploy completed.*
 - **The frontend has not been started.** Tasks 9–13 are untouched; there is no `frontend/`
-  directory yet.
-- **Nothing is pushed.** No remote branch, no PR.
+  directory yet. — *Resolved: Tasks 9–13 shipped and the built frontend is served in
+  production.*
+- **Nothing is pushed.** No remote branch, no PR. — *Resolved: see above.*
 - **Plan tests that assume live 2026/27 data** (`getPlayerStats("Salah")`, Arsenal fixtures) pass
   today only because the resolver falls back to 2025-26, where `M.Salah` exists with 123 points at
   `now_cost=140`. Assertions should stay season-agnostic so they survive the sync.
