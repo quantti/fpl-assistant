@@ -95,10 +95,12 @@ Imports 2019-20 through 2025-26 from vaastav's public CSVs (no key needed), upse
 `(season, home_team_code, away_team_code)` so re-running is safe, and exits when done.
 
 **Football-data.org sync requires `FOOTBALL_DATA_API_KEY`** — free registration at
-https://www.football-data.org/client/register. This project has never registered one; without
-it, `StartupSyncRunner` logs and does nothing (does not fail startup). `FootballDataTeamAliases`
-(football-data's team names → FPL codes) is built from the API's public documentation and has
-**not been verified against a real response** — see `docs/STATUS.md` for the open item.
+https://www.football-data.org/client/register; the key lives in `.env.test` (or `fly secrets
+set` in production). Without it, `StartupSyncRunner` logs and does nothing (does not fail
+startup). `FootballDataTeamAliases` (football-data's team names → FPL codes) and the response
+parser were verified against a real captured response on 2026-08-15 — the check-in fixture
+lives in `backend/src/test/resources/football-data-fixtures/` and is proven by
+`FootballDataCapturedResponseTest`.
 
 Gradle writes JUnit XML to `build/test-results/test/`. When a test fails, the exception message
 lives there rather than in console output, which only prints the exception type:

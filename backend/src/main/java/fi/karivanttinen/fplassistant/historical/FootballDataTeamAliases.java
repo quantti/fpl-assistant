@@ -8,15 +8,17 @@ import java.util.Map;
  * Wanderers FC" where vaastav's {@code teams.csv} says "Wolves" — no substring or fuzzy match
  * bridges the two, so this is its own explicit table, covering every club that appeared in the
  * real 2019-20..2025-26 backfill (28 clubs — verified by querying the distinct names actually
- * in {@code pl_match_result} after Task 3's backfill, not guessed at).
+ * in {@code pl_match_result} after Task 3's backfill, not guessed at) plus the two clubs
+ * promoted for 2026-27 (Coventry City, Hull City — added 2026-08-15 after the live-API check
+ * below flagged them missing).
  *
- * <p><b>Not verified against the live football-data.org API.</b> This project has no API key
- * and cannot register for one autonomously (see the Phase 3 spec/STATUS.md). The names below
- * follow football-data.org's publicly documented naming convention ("&lt;Club&gt; FC"/"AFC
- * &lt;Club&gt;") but have not been confirmed against a real response. {@link #resolve} fails
- * loudly on an unrecognised name rather than silently dropping the match — if the sync ever
- * throws "unknown football-data team name", that is this table needing a correction, and
- * exactly the failure mode this design is meant to surface rather than hide.
+ * <p><b>Verified against the live API 2026-08-15.</b> A real captured {@code /v4/competitions/PL/matches}
+ * response (checked into {@code src/test/resources/football-data-fixtures/}) was parsed and every
+ * distinct team name resolved through this table — all 20 of the 2026-27 clubs pass, including the
+ * two promoted ones that were missing until this check. {@link #resolve} fails loudly on an
+ * unrecognised name rather than silently dropping the match — if the sync ever throws "unknown
+ * football-data team name", that is this table needing a correction, and exactly the failure
+ * mode this design is meant to surface rather than hide.
  */
 final class FootballDataTeamAliases {
 
@@ -28,6 +30,7 @@ final class FootballDataTeamAliases {
             Map.entry("Tottenham Hotspur FC", 6),
             Map.entry("Aston Villa FC", 7),
             Map.entry("Chelsea FC", 8),
+            Map.entry("Coventry City FC", 9),
             Map.entry("Everton FC", 11),
             Map.entry("Leicester City FC", 13),
             Map.entry("Liverpool FC", 14),
@@ -45,6 +48,7 @@ final class FootballDataTeamAliases {
             Map.entry("Fulham FC", 54),
             Map.entry("Sunderland AFC", 56),
             Map.entry("Watford FC", 57),
+            Map.entry("Hull City AFC", 88),
             Map.entry("Burnley FC", 90),
             Map.entry("AFC Bournemouth", 91),
             Map.entry("Brentford FC", 94),
@@ -58,8 +62,9 @@ final class FootballDataTeamAliases {
         Integer code = CODE_BY_NAME.get(footballDataName);
         if (code == null) {
             throw new IllegalStateException("Unknown football-data team name: '" + footballDataName
-                    + "' — add it to FootballDataTeamAliases (unverified against the live API;"
-                    + " this is exactly the kind of gap that surfaces once the sync runs for real)");
+                    + "' — add it to FootballDataTeamAliases;"
+                    + " the table is verified against the live API's 2026-27 clubs, so an unknown"
+                    + " name means a promotion or a renamed club since that check");
         }
         return code;
     }

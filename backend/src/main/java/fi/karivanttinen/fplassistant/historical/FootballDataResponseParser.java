@@ -14,10 +14,11 @@ import com.fasterxml.jackson.core.JsonProcessingException;
  * carrying {@code status}, {@code matchday}, {@code utcDate}, {@code homeTeam.name},
  * {@code awayTeam.name}, {@code score.fullTime.home}/{@code .away}.
  *
- * <p>No real captured response was available to verify this against — this project has no
- * football-data.org API key and cannot register for one autonomously. Built from the API's
- * public documentation only. <b>Treat this parser as unverified against the live API until
- * Task 7's live check runs</b>; see the Phase 3 spec/STATUS.md for the open item.
+ * <p>Verified 2026-08-15 against a real captured {@code GET /v4/competitions/PL/matches}
+ * response body (checked into {@code src/test/resources/football-data-fixtures/pl-matches-2026-27.json})
+ * — the parser shape below matches the live API, including the {@code score.winner}/{@code duration}/
+ * {@code halfTime} fields this parser ignores. The strict integer handling and fail-loud
+ * behaviour are pinned by unit tests.
  */
 public final class FootballDataResponseParser {
 

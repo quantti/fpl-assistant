@@ -453,7 +453,7 @@ sync on startup behind a persisted staleness marker.
 | 2 — vaastav team mapping | `0cab241` | `VaastavTeamMapper.resolve(season, vaastavId)` → `TeamIdentity(code, name)`, parsed from each season's `teams.csv` via Apache Commons CSV (RFC 4180 — `fixtures.csv`'s upcoming `stats` column defeats a hand-rolled split). Pure logic, no database. Fails loudly naming the season and id on an unresolved club, or the season on one never loaded. Tested against the real `teams.csv` for 2019-20 and 2025-26 (checked into `src/test/resources/vaastav-fixtures/`): resolves clubs present in both seasons, resolves Watford/Norwich (relegated after 2019-20, absent from 2025-26 — exactly what `FixtureTools`' resolver cannot do), and proves id-reassignment doesn't cross-talk (vaastav id 3 is Bournemouth in 2019-20, Burnley in 2025-26 — kept in separate per-season maps, not merged) |
 | 3 — vaastav backfill | `513a6c8` | `VaastavBackfillService` upserts on `(season, home_team_code, away_team_code)` so re-runs don't duplicate; only finished matches with both scores are written. `VaastavSource` abstracts the fetch so tests read checked-in CSVs, not the network; `HttpVaastavSource` is the only thing that ever hits GitHub, and only at sync time. **Ran for real against production Supabase: 2660 matches across all 7 seasons (380 each).** The spec's oracle passes — every 2025-26 row matches the pre-existing `fixture` table exactly on both scores, 380/380, joined through `team.code`. Idempotency proven by running it twice in a test, not assumed |
 | 4 — getTeamForm / getHeadToHead | `e190b37` | `HistoricalTeamResolver` resolves names to codes against clubs actually present in `pl_match_result` (not `FixtureTools`' resolver, which would miss relegated clubs). `HistoricalTools` implements `FplTool`; neither method filters through `SeasonResolver` or prefixes with `SeasonContext.provenance()` — every match names its own season instead, and `getTeamForm` reports the date of its most recent known match so a stalled Task 5 sync becomes visible in an answer rather than silent |
-| 5 — football-data.org sync | `36173c3` | `StartupSyncRunner` (ApplicationReadyEvent behind a **persisted** staleness marker — `MAX(ingested_at) WHERE source = 'football-data'` in `pl_match_result` itself, no separate table) + `AsyncConfig` (`@EnableAsync`) so the sync runs off the request path; `FootballDataSyncService` upserts on the natural key with the spec's precedence guard (writes only when `SeasonResolver`'s resolved season is the one in progress — vaastav stays authoritative for completed seasons); `FootballDataSource`/`HttpFootballDataSource` (explicit 10s connect/read timeouts, per the Task 4 review note about not inheriting `HttpVaastavSource`'s unbounded client; 429 gets its own "rate limit exceeded" message per the plan); `FootballDataResponseParser` + `FootballDataTeamAliases` (own alias set — football-data's "Wolverhampton Wanderers FC" vs vaastav's "Wolves"); `FOOTBALL_DATA_API_KEY` in `.env.test.example` + `DEVELOPMENT.md`; `fpl.historical.sync-stale-after-hours: 20`. **Open item (pre-GW1): parser + aliases unverified against the live API** — no key has ever been registered; see below |
+| 5 — football-data.org sync | `36173c3` | `StartupSyncRunner` (ApplicationReadyEvent behind a **persisted** staleness marker — `MAX(ingested_at) WHERE source = 'football-data'` in `pl_match_result` itself, no separate table) + `AsyncConfig` (`@EnableAsync`) so the sync runs off the request path; `FootballDataSyncService` upserts on the natural key with the spec's precedence guard (writes only when `SeasonResolver`'s resolved season is the one in progress — vaastav stays authoritative for completed seasons); `FootballDataSource`/`HttpFootballDataSource` (explicit 10s connect/read timeouts, per the Task 4 review note about not inheriting `HttpVaastavSource`'s unbounded client; 429 gets its own "rate limit exceeded" message per the plan); `FootballDataResponseParser` + `FootballDataTeamAliases` (own alias set — football-data's "Wolverhampton Wanderers FC" vs vaastav's "Wolves"); `FOOTBALL_DATA_API_KEY` in `.env.test.example` + `DEVELOPMENT.md`; `fpl.historical.sync-stale-after-hours: 20`. Parser + aliases **verified against a real captured response 2026-08-15** (see Task 5 findings below — the check found and fixed the two promoted clubs missing from the alias table) |
 | 6 — Prompt and conventions | `7721118` | `system-prompt.st` "Historical results" section; both `AGENTS.md` season conventions amended, RAG exception + provenance bullet consolidated into one three-scheme attribution rule |
 | 7 — End-to-end verification | `6ad7891` | Verified through the real chat flow against the running app (below); STATUS.md reflects what exists |
 
@@ -529,17 +529,20 @@ claims of the design were verified rather than assumed:
   `HttpClientErrorException.TooManyRequests` is now caught separately with an explicit
   "football-data.org rate limit exceeded (429)" message.
 
-**Open item until GW1 (2026-08-21), recorded here as the plan requires:** the parser and the
-name→code alias table are **unverified against the live API**. This project has never
-registered a football-data.org key (free tier; registration needs an email address a
-non-human cannot complete), so the parser test uses a hand-built response body shaped per the
-API's public documentation rather than a captured real one, and `FootballDataTeamAliases`
-follows the documented "<Club> FC"/"AFC <Club>" naming convention without confirmation. Both
-fail loudly on unexpected shapes/names (missing `matches` array, unknown team name), which is
-exactly the failure mode that surfaces once a key exists and the sync runs for real — the
-first real GW1 sync is the live verification. Until then: sync is a no-op (resolved season is
-a completed fallback, and without a key it logs and skips), so nothing corrupts data. If the
-account owner registers a key, the remaining gap is one boot's log output.
+**Open item resolved 2026-08-15:** the plan required the parser be proven against a captured
+real response body; this project had no football-data.org key when Task 5 landed, so the first
+cut used a hand-built body and recorded the gap as an open item. The account owner registered
+a free key, and the live check ran: a real `GET /v4/competitions/PL/matches` response (380
+matches, season 2026, all SCHEDULED/TIMED — GW1 unplayed, as expected) was captured into
+`src/test/resources/football-data-fixtures/pl-matches-2026-27.json` and a new
+`FootballDataCapturedResponseTest` proves the parser parses all 380 and every distinct team
+name resolves through the alias table. <b>The check found a real gap</b>: Coventry City and
+Hull City — promoted for 2026-27, absent from the 2019-20..2025-26 backfill the table was
+built from — did not resolve. Their codes (9 and 88, from vaastav's 2026-27 `teams.csv`, the
+same code source the 380/380 oracle validated) were added; all 20 of the 2026-27 clubs now
+resolve. What remains genuinely open until GW1 is only the <i>write path</i>: the sync
+upserts only finished matches, and there are none before 2026-08-21. The parser, the alias
+table and the precedence guard are all now verified against the real API or real data.
 
 ## Task 7 — end-to-end verification (real chat flow)
 
@@ -578,6 +581,26 @@ Reviewed and dismissed: the `sync()` write path remains unexercised in productio
 real boot logs twice), which is why both branches of that guard are pinned by the mocked-
 resolver integration test instead; the free tier's 10 req/min limit is structurally a
 non-issue (one sync = one request), and the 429 message is a belt-and-braces measure.
+
+## 2026-08-15 live-API verification (post-review, key registered)
+
+The account owner registered a free football-data.org key and set it in `.env.test`; the
+plan's "captured real response body" criterion is now met:
+
+- A live `GET /v4/competitions/PL/matches` returned 200 with all 380 matches of season 2026
+  (all SCHEDULED/TIMED — played: 0, GW1 is 2026-08-21, exactly as the plan anticipated).
+  Response saved unmodified to `backend/src/test/resources/football-data-fixtures/pl-matches-2026-27.json`.
+- `FootballDataCapturedResponseTest` (3 tests) parses all 380, asserts no finished match
+  carries a score, all 38 matchdays present, and — the point of the exercise — that all 20
+  distinct team names resolve through `FootballDataTeamAliases`.
+- **The check found a real bug that only a real response could surface:** the two clubs
+  promoted for 2026-27 — Coventry City (code 9) and Hull City (code 88) — were missing from
+  the alias table, which had been built from the 2019-20..2025-26 backfill only. The sync
+  would have failed loudly with "Unknown football-data team name" on its first real run.
+  Both added; the fail-loud design surfaced the gap exactly as intended.
+- Docs updated: STATUS.md, DEVELOPMENT.md (key now exists; captured-response test replaces
+  the "never registered one" caveat), `.env.test.example` comment, and the two class
+  javadocs that still said "unverified".
 
 ## Task 6 — prompt and conventions
 
