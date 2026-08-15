@@ -82,12 +82,16 @@ about underlying performance, picks, or fixture difficulty:
   ownership are already in getPlayerStats; only reach for getPriceHistory when the trend
   itself matters.
 - **getPlayerExpectedStats / getTeamExpectedGoals** — for underlying-performance questions.
-  They report FPL's own xG, xA and xGI (and team xGA implicitly via goals conceded). Use
-  them to judge over/under-performance rather than raw goal counts; xGA is mainly relevant
-  for defenders and goalkeepers.
+  getPlayerExpectedStats reports FPL's own xG, xA and xGI for one player alongside their
+  actual goals, assists and minutes. getTeamExpectedGoals reports a team's attacking xG/xA/xGI
+  and goals scored, and its defensive xGA and goals conceded, per fixture — xGA is the
+  clean-sheet signal for that team's defenders and goalkeeper. Use these to judge
+  over/under-performance rather than raw goal counts.
 - **getDifferentialPicks / getCaptainCandidates** — for pick, differential, or captaincy
-  questions. Combine their output with searchStrategyDocs and upcoming fixtures. They give
-  you data to cite, not a final answer.
+  questions. Both rank on form, then the average difficulty of the next N fixtures, then
+  ownership or points; both exclude injured and suspended players and flag doubtful ones, so
+  relay any DOUBTFUL note you see. Combine their output with searchStrategyDocs and upcoming
+  fixtures. They give you data to cite, not a final answer.
 - **getFixtureDifficulty** — for fixture-run outlook, narrowly the FDR trend for a team's
   next N fixtures.
 

@@ -3,14 +3,17 @@ package dev.quantti.fplassistant.tools;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * {@link FixtureDifficultyTools} against real 2025-26 data. The fixtures for 2025-26 are all
- * finished, so with no upcoming (finished=false) fixtures the tool reports none — which is the
- * correct behaviour for a completed season and what these tests exercise.
+ * {@link FixtureDifficultyTools} against real data — team resolution, the season guard and the
+ * empty path. The rendering itself is pinned by {@link FixtureDifficultyToolsFormatTest}: no
+ * season in the shared database has a {@code finished = false} fixture, so an integration test
+ * can only ever reach the empty branch. Asserting {@code containsAnyOf(...)} across both
+ * branches would pass without exercising either.
  */
 @SpringBootTest
 @ActiveProfiles("test")
@@ -19,6 +22,12 @@ class FixtureDifficultyToolsIntegrationTest {
     @Autowired
     FixtureDifficultyTools tools;
 
+    @Autowired
+    JdbcTemplate jdbc;
+
+    @Autowired
+    SeasonResolver seasonResolver;
+
     @Test
     void unknownTeamReturnsNotFound() {
         assertThat(tools.getFixtureDifficulty("Definitely Not A Real Club", 5))
@@ -26,11 +35,26 @@ class FixtureDifficultyToolsIntegrationTest {
     }
 
     @Test
-    void knownTeamEitherReturnsFixturesOrNoUpcomingMessage() {
-        // 2025-26 is a completed season: every fixture is finished, so there are no upcoming
-        // (finished=false) fixtures. The tool must say so cleanly, with provenance.
+    void aCompletedSeasonWithNoUnfinishedFixturesSaysSoExplicitly() {
+        int seasonId = seasonResolver.resolve().seasonId();
+        Integer unfinished = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM fixture WHERE season_id = ? AND finished = false",
+                Integer.class, seasonId);
+        assertThat(unfinished)
+                .as("this assertion is only valid while the resolved season has no upcoming fixtures")
+                .isZero();
+
         String result = tools.getFixtureDifficulty("Arsenal", 5);
-        assertThat(result).contains("Data source: season 2025-26");
-        assertThat(result).containsAnyOf("Fixture difficulty for", "No upcoming fixtures found");
+
+        assertThat(result).contains("Data source: season");
+        assertThat(result).contains("No upcoming fixtures found for Arsenal");
+        assertThat(result).doesNotContain("Average FDR");
+    }
+
+    @Test
+    void anAmbiguousTeamNameSaysWhichOtherClubsItMatched() {
+        String result = tools.getFixtureDifficulty("man", 5);
+
+        assertThat(result).contains("The name also matched:");
     }
 }

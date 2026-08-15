@@ -20,31 +20,36 @@ public class HttpVaastavSource implements VaastavSource {
 
     @Override
     public String fetch(String season, String fileName) {
-        String url = BASE_URL + "/" + season + "/" + fileName;
+        String body = get(season, fileName);
+        if (body == null) {
+            throw new IllegalStateException(
+                    season + "/" + fileName + ": empty or missing at " + url(season, fileName));
+        }
+        return body;
+    }
+
+    @Override
+    public String fetchIfPresent(String season, String fileName) {
+        return get(season, fileName);
+    }
+
+    /**
+     * @return the body, or null when the file is absent (404) or empty — e.g. the current
+     *         season's {@code gws/merged_gw.csv} before GW1. Any other failure throws.
+     */
+    private String get(String season, String fileName) {
+        String url = url(season, fileName);
         try {
             String body = restClient.get().uri(url).retrieve().body(String.class);
-            if (body == null || body.isBlank()) {
-                throw new IllegalStateException(season + "/" + fileName + ": empty response from " + url);
-            }
-            return body;
+            return (body == null || body.isBlank()) ? null : body;
+        } catch (HttpClientErrorException.NotFound e) {
+            return null;
         } catch (RestClientException e) {
             throw new IllegalStateException(season + "/" + fileName + ": failed to fetch " + url, e);
         }
     }
 
-    @Override
-    public String fetchIfPresent(String season, String fileName) {
-        String url = BASE_URL + "/" + season + "/" + fileName;
-        try {
-            String body = restClient.get().uri(url).retrieve().body(String.class);
-            if (body == null || body.isBlank()) {
-                return null; // absent or empty — e.g. current-season gws/merged_gw.csv before GW1
-            }
-            return body;
-        } catch (HttpClientErrorException.NotFound e) {
-            return null; // 404 is the expected pre-season state, not a failure
-        } catch (RestClientException e) {
-            throw new IllegalStateException(season + "/" + fileName + ": failed to fetch " + url, e);
-        }
+    private static String url(String season, String fileName) {
+        return BASE_URL + "/" + season + "/" + fileName;
     }
 }

@@ -12,16 +12,25 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
 /**
- * Phase 4 expected-stats (xG / xA / xGI) tools. Both read FPL's own expected-stats columns in
- * {@code player_fixture_stats} — these are FPL's data, not a third-party model — and aggregate
+ * Phase 4 expected-stats (xG / xA / xGI / xGA) tools. Both read FPL's own expected-stats columns
+ * in {@code player_fixture_stats} — these are FPL's data, not a third-party model — and aggregate
  * over the last N fixtures in the resolved season. Every reply is prefixed with
  * {@link SeasonContext#provenance()}.
+ *
+ * <p>Each tool answers from a single query. {@code expected_goals}/{@code expected_assists} are
+ * per-player and sum across a team; {@code expected_goals_conceded} and {@code goals_conceded}
+ * are <b>not</b> — FPL records the team's figure on every player who was on the pitch, so summing
+ * them would multiply the team's xGA by its squad size. They are aggregated with {@code MAX},
+ * which is the value carried by anyone who played the full match. Verified against the
+ * {@code fixture} scoreline: {@code MAX(goals_conceded)} matches the goals the team actually
+ * conceded in every checked fixture.
  */
 @Component
 public class ExpectedStatsTools implements FplTool {
 
     private static final Logger log = LoggerFactory.getLogger(ExpectedStatsTools.class);
     private static final int MAX_FIXTURES = 10;
+    private static final int MAX_NAME_MATCHES = 4;
 
     private final JdbcTemplate jdbc;
     private final SeasonResolver seasonResolver;
@@ -53,8 +62,8 @@ public class ExpectedStatsTools implements FplTool {
                            OR LOWER(second_name) LIKE ?
                            OR LOWER(first_name || ' ' || second_name) LIKE ?)
                     ORDER BY total_points DESC
-                    LIMIT 1
-                    """, season.seasonId(), pattern, pattern, pattern);
+                    LIMIT ?
+                    """, season.seasonId(), pattern, pattern, pattern, MAX_NAME_MATCHES);
 
             if (players.isEmpty()) {
                 return season.provenance() + "\nPlayer not found: " + playerName;
@@ -62,23 +71,27 @@ public class ExpectedStatsTools implements FplTool {
 
             int playerId = ((Number) players.getFirst().get("id")).intValue();
             String webName = (String) players.getFirst().get("web_name");
+            String ambiguity = NameMatch.ambiguityNote(
+                    players.stream().map(p -> String.valueOf(p.get("web_name"))).toList());
 
             List<Map<String, Object>> rows = jdbc.queryForList("""
-                    SELECT gameweek, opponent_team_id, was_home, minutes,
-                           goals_scored, assists,
-                           expected_goals, expected_assists, expected_goal_involvements
-                    FROM player_fixture_stats
-                    WHERE season_id = ? AND player_id = ?
-                    ORDER BY kickoff_time DESC NULLS LAST
+                    SELECT pfs.gameweek, pfs.was_home, pfs.minutes,
+                           pfs.goals_scored, pfs.assists,
+                           pfs.expected_goals, pfs.expected_assists, pfs.expected_goal_involvements,
+                           opp.short_name AS opponent
+                    FROM player_fixture_stats pfs
+                    LEFT JOIN team opp ON opp.id = pfs.opponent_team_id AND opp.season_id = pfs.season_id
+                    WHERE pfs.season_id = ? AND pfs.player_id = ?
+                    ORDER BY pfs.kickoff_time DESC NULLS LAST
                     LIMIT ?
                     """, season.seasonId(), playerId, limit);
 
             if (rows.isEmpty()) {
                 return season.provenance() + "\nNo fixture-level expected stats yet for " + webName
-                        + " in " + season.code() + ".";
+                        + " in " + season.code() + "." + ambiguity;
             }
 
-            return season.provenance() + "\n\n" + formatPlayer(webName, rows, season.seasonId());
+            return season.provenance() + "\n\n" + formatPlayer(webName, rows) + ambiguity;
         } catch (DataAccessException e) {
             log.error("getPlayerExpectedStats(\"{}\", {}) failed", playerName, lastN, e);
             return "Expected-stats data is temporarily unavailable (database error)."
@@ -87,13 +100,15 @@ public class ExpectedStatsTools implements FplTool {
     }
 
     @Tool(description = """
-            Get a team's attacking expected output over their last N fixtures in the
-            current season — expected goals (xG), expected assists (xA) and expected goal
+            Get a team's expected output over their last N fixtures in the current season —
+            attacking expected goals (xG), expected assists (xA) and expected goal
             involvements (xGI) aggregated across the team's players per fixture, plus actual
-            goals. Use this to judge whether a team's attack is threatening regardless of
-            whether goals have actually gone in. N is capped at 10. The reply begins with the
-            season the numbers come from; if that is not the season currently being played,
-            tell the user the figures are historical.
+            goals scored, and defensively the expected goals against (xGA) and actual goals
+            conceded per fixture. Use this to judge whether a team's attack is threatening
+            regardless of whether goals have gone in, and whether its defence is under
+            sustained pressure (xGA is the clean-sheet signal for its defenders and keeper).
+            N is capped at 10. The reply begins with the season the numbers come from; if that
+            is not the season currently being played, tell the user the figures are historical.
             """)
     public String getTeamExpectedGoals(String teamName, int lastN) {
         try {
@@ -102,12 +117,12 @@ public class ExpectedStatsTools implements FplTool {
             String pattern = "%" + LikePatterns.escape(teamName.toLowerCase(Locale.ROOT)) + "%";
 
             List<Map<String, Object>> teams = jdbc.queryForList("""
-                    SELECT id, name, short_name FROM team
+                    SELECT id, name FROM team
                     WHERE season_id = ?
                       AND (LOWER(name) LIKE ? OR LOWER(short_name) = LOWER(?))
                     ORDER BY name
-                    LIMIT 1
-                    """, season.seasonId(), pattern, teamName);
+                    LIMIT ?
+                    """, season.seasonId(), pattern, teamName, MAX_NAME_MATCHES);
 
             if (teams.isEmpty()) {
                 return season.provenance() + "\nTeam not found: " + teamName;
@@ -115,23 +130,34 @@ public class ExpectedStatsTools implements FplTool {
 
             int teamId = ((Number) teams.getFirst().get("id")).intValue();
             String name = (String) teams.getFirst().get("name");
+            String ambiguity = NameMatch.ambiguityNote(
+                    teams.stream().map(t -> String.valueOf(t.get("name"))).toList());
 
-            // Last N distinct fixtures the team played, newest first.
+            // One query for the whole window: attacking figures sum across the team's players,
+            // the conceded figures are per-team values repeated on every player (see class javadoc).
             List<Map<String, Object>> fixtures = jdbc.queryForList("""
-                    SELECT fixture_id, gameweek, opponent_team_id, was_home
-                    FROM player_fixture_stats
-                    WHERE season_id = ? AND player_team_id = ?
-                    GROUP BY fixture_id, gameweek, opponent_team_id, was_home, kickoff_time
-                    ORDER BY kickoff_time DESC NULLS LAST
+                    SELECT pfs.gameweek, pfs.was_home,
+                           opp.short_name AS opponent,
+                           COALESCE(SUM(pfs.expected_goals), 0) AS xg,
+                           COALESCE(SUM(pfs.expected_assists), 0) AS xa,
+                           COALESCE(SUM(pfs.expected_goal_involvements), 0) AS xgi,
+                           COALESCE(SUM(pfs.goals_scored), 0) AS goals,
+                           COALESCE(MAX(pfs.expected_goals_conceded), 0) AS xga,
+                           COALESCE(MAX(pfs.goals_conceded), 0) AS conceded
+                    FROM player_fixture_stats pfs
+                    LEFT JOIN team opp ON opp.id = pfs.opponent_team_id AND opp.season_id = pfs.season_id
+                    WHERE pfs.season_id = ? AND pfs.player_team_id = ?
+                    GROUP BY pfs.fixture_id, pfs.gameweek, pfs.was_home, opp.short_name
+                    ORDER BY MAX(pfs.kickoff_time) DESC NULLS LAST
                     LIMIT ?
                     """, season.seasonId(), teamId, limit);
 
             if (fixtures.isEmpty()) {
                 return season.provenance() + "\nNo fixture-level expected stats yet for " + name
-                        + " in " + season.code() + ".";
+                        + " in " + season.code() + "." + ambiguity;
             }
 
-            return season.provenance() + "\n\n" + formatTeam(name, teamId, fixtures, season.seasonId());
+            return season.provenance() + "\n\n" + formatTeam(name, fixtures) + ambiguity;
         } catch (DataAccessException e) {
             log.error("getTeamExpectedGoals(\"{}\", {}) failed", teamName, lastN, e);
             return "Expected-stats data is temporarily unavailable (database error)."
@@ -139,76 +165,66 @@ public class ExpectedStatsTools implements FplTool {
         }
     }
 
-    private String formatPlayer(String webName, List<Map<String, Object>> rows, int seasonId) {
+    static String formatPlayer(String webName, List<Map<String, Object>> rows) {
         double xg = 0, xa = 0, xgi = 0;
         int goals = 0, assists = 0, minutes = 0;
-        StringBuilder perFixture = new StringBuilder("Expected stats for ").append(webName)
+        StringBuilder out = new StringBuilder("Expected stats for ").append(webName)
                 .append(" (last ").append(rows.size()).append(" fixtures):\n");
         for (Map<String, Object> r : rows) {
             xg += num(r, "expected_goals");
             xa += num(r, "expected_assists");
             xgi += num(r, "expected_goal_involvements");
-            goals += ((Number) r.get("goals_scored")).intValue();
-            assists += ((Number) r.get("assists")).intValue();
-            minutes += ((Number) r.get("minutes")).intValue();
-            perFixture.append("  GW%s vs %s %s: %d min, xG %.2f xA %.2f (G%d A%d)\n".formatted(
-                    r.get("gameweek"),
-                    opponentName(((Number) r.get("opponent_team_id")).intValue(), seasonId),
+            goals += (int) num(r, "goals_scored");
+            assists += (int) num(r, "assists");
+            minutes += (int) num(r, "minutes");
+            out.append("  GW%s vs %s %s: %d min, xG %.2f xA %.2f (G%d A%d)\n".formatted(
+                    r.get("gameweek"), opponent(r),
                     Boolean.TRUE.equals(r.get("was_home")) ? "(H)" : "(A)",
-                    ((Number) r.get("minutes")).intValue(),
+                    (int) num(r, "minutes"),
                     num(r, "expected_goals"), num(r, "expected_assists"),
-                    ((Number) r.get("goals_scored")).intValue(),
-                    ((Number) r.get("assists")).intValue()));
+                    (int) num(r, "goals_scored"), (int) num(r, "assists")));
         }
-        perFixture.append("\nTotals over window: xG %.2f | xA %.2f | xGI %.2f | Goals %d | Assists %d | Minutes %d\n"
+        out.append("\nTotals over window: xG %.2f | xA %.2f | xGI %.2f | Goals %d | Assists %d | Minutes %d\n"
                 .formatted(xg, xa, xgi, goals, assists, minutes));
-        perFixture.append("Actual vs expected goal involvements: %d actual vs %.2f expected.\n"
+        out.append("Actual vs expected goal involvements: %d actual vs %.2f expected.\n"
                 .formatted(goals + assists, xgi));
-        return perFixture.toString();
+        return out.toString();
     }
 
-    private String formatTeam(String name, int teamId, List<Map<String, Object>> fixtures, int seasonId) {
-        double totalXg = 0, totalXa = 0, totalXgi = 0;
-        int totalGoals = 0;
-        StringBuilder perFixture = new StringBuilder("Attacking expected output for ").append(name)
+    static String formatTeam(String name, List<Map<String, Object>> fixtures) {
+        double totalXg = 0, totalXa = 0, totalXgi = 0, totalXga = 0;
+        int totalGoals = 0, totalConceded = 0;
+        StringBuilder out = new StringBuilder("Expected output for ").append(name)
                 .append(" (last ").append(fixtures.size()).append(" fixtures):\n");
         for (Map<String, Object> f : fixtures) {
-            int fixtureId = ((Number) f.get("fixture_id")).intValue();
-            Map<String, Object> agg = jdbc.queryForMap("""
-                    SELECT COALESCE(SUM(expected_goals),0) as xg,
-                           COALESCE(SUM(expected_assists),0) as xa,
-                           COALESCE(SUM(expected_goal_involvements),0) as xgi,
-                           COALESCE(SUM(goals_scored),0) as goals
-                    FROM player_fixture_stats
-                    WHERE season_id = ? AND fixture_id = ? AND player_team_id = ?
-                    """, seasonId, fixtureId, teamId);
-            double xg = num(agg, "xg");
-            double xa = num(agg, "xa");
-            double xgi = num(agg, "xgi");
-            int goals = ((Number) agg.get("goals")).intValue();
+            double xg = num(f, "xg");
+            double xa = num(f, "xa");
+            double xgi = num(f, "xgi");
+            double xga = num(f, "xga");
+            int goals = (int) num(f, "goals");
+            int conceded = (int) num(f, "conceded");
             totalXg += xg;
             totalXa += xa;
             totalXgi += xgi;
+            totalXga += xga;
             totalGoals += goals;
-            perFixture.append("  GW%s vs %s %s: xG %.2f xA %.2f xGI %.2f (G%d)\n".formatted(
-                    f.get("gameweek"),
-                    opponentName(((Number) f.get("opponent_team_id")).intValue(), seasonId),
-                    Boolean.TRUE.equals(f.get("was_home")) ? "(H)" : "(A)",
-                    xg, xa, xgi, goals));
+            totalConceded += conceded;
+            out.append("  GW%s vs %s %s: xG %.2f xA %.2f xGI %.2f (scored %d) | xGA %.2f (conceded %d)\n"
+                    .formatted(f.get("gameweek"), opponent(f),
+                            Boolean.TRUE.equals(f.get("was_home")) ? "(H)" : "(A)",
+                            xg, xa, xgi, goals, xga, conceded));
         }
-        perFixture.append("\nTotals over window: xG %.2f | xA %.2f | xGI %.2f | Goals %d\n"
+        out.append("\nAttack over window: xG %.2f | xA %.2f | xGI %.2f | Goals %d\n"
                 .formatted(totalXg, totalXa, totalXgi, totalGoals));
-        return perFixture.toString();
+        out.append("Defence over window: xGA %.2f | Goals conceded %d\n"
+                .formatted(totalXga, totalConceded));
+        return out.toString();
     }
 
-    private String opponentName(int opponentTeamId, int seasonId) {
-        try {
-            return jdbc.queryForObject(
-                    "SELECT short_name FROM team WHERE id = ? AND season_id = ?",
-                    String.class, opponentTeamId, seasonId);
-        } catch (DataAccessException e) {
-            return "?";
-        }
+    /** A team that played in a season the {@code team} table no longer covers joins to null. */
+    private static String opponent(Map<String, Object> row) {
+        Object opponent = row.get("opponent");
+        return opponent == null ? "?" : opponent.toString();
     }
 
     private static double num(Map<String, Object> r, String key) {
