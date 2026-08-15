@@ -137,10 +137,12 @@ public class HistoricalTools implements FplTool {
         String outcome = outcome(((Number) teamGoals).intValue(), ((Number) oppGoals).intValue());
         Object gw = r.get("gameweek");
         String gwLabel = gw == null ? "" : " GW" + gw;
+        Object kickoff = r.get("kickoff_time");
+        String kickoffLabel = kickoff == null ? "kickoff unknown" : kickoff.toString();
 
         return "%s%s: %s %s vs %s %s | %s-%s (%s) | %s".formatted(
                 r.get("season"), gwLabel, team, isHome ? "(H)" : "(A)", opponent,
-                isHome ? "(A)" : "(H)", teamGoals, oppGoals, outcome, r.get("kickoff_time"));
+                isHome ? "(A)" : "(H)", teamGoals, oppGoals, outcome, kickoffLabel);
     }
 
     static String outcome(int forGoals, int againstGoals) {

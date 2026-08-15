@@ -9,6 +9,7 @@ import java.nio.file.Path;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Pure unit tests against real {@code fixtures.csv} fixtures. Both real files have a different
@@ -51,6 +52,31 @@ class VaastavFixtureParserTest {
         assertThat(first.teamHScore()).isEqualTo(4);
         assertThat(first.teamAScore()).isEqualTo(1);
         assertThat(first.gameweek()).isEqualTo(1);
+    }
+
+    @Test
+    void wholeNumberFloatsAreAcceptedInNumericColumns() {
+        // vaastav sometimes writes "1.0" instead of "1" in numeric columns.
+        String csv = "team_h,team_a,finished,team_h_score,team_a_score,event\n1.0,2.0,True,3.0,1.0,5.0\n";
+
+        List<VaastavFixtureRow> rows = VaastavFixtureParser.parse(csv, "test");
+
+        assertThat(rows).hasSize(1);
+        assertThat(rows.getFirst().teamHId()).isEqualTo(1);
+        assertThat(rows.getFirst().teamAId()).isEqualTo(2);
+        assertThat(rows.getFirst().teamHScore()).isEqualTo(3);
+    }
+
+    @Test
+    void aRealFractionalValueFailsLoudlyRatherThanBeingSilentlyTruncated() {
+        // Truncating "1.5" to 1 for team_h would resolve to the wrong team with no error —
+        // exactly the silent-corruption failure this phase's fail-loud design exists to prevent.
+        String csv = "team_h,team_a,finished\n1.5,2,True\n";
+
+        assertThatThrownBy(() -> VaastavFixtureParser.parse(csv, "test"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("team_h")
+                .hasMessageContaining("1.5");
     }
 
     @Test
