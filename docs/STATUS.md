@@ -433,3 +433,25 @@ Reviewed and dismissed: the review flagged that `## Historical TC outcomes` was 
 `captain-selection-and-triple-captain.md` during the Task 3 move without documentation. The
 removal was an intentional editorial decision by the corpus owner — the section carried no
 practical value. Recorded here so it is not re-flagged as content loss.
+
+---
+
+# Status — Phase 3 (Historical Data)
+
+**Progress:** Task 1/7 done.
+
+Plan: `docs/superpowers/plans/2026-08-15-phase3-historical-data.md`.
+Spec: `docs/superpowers/specs/2026-08-15-phase3-historical-data-design.md`.
+Both owner decisions are settled before implementation started: backfill 2019-20 onward,
+sync on startup behind a persisted staleness marker.
+
+## Done
+
+| Task | Commit | What exists now |
+|---|---|---|
+| 1 — Schema | (phase3-tasks1-4-historical-core branch) | New table `pl_match_result` in the shared Supabase project, created idempotently at startup (`HistoricalSchema`, `@PostConstruct`, same pattern as `PgVectorStore`'s schema init) — no migration tool in this project. Keyed on team `code` (not `team.id`, which is season-scoped and reassigned on promotion/relegation), club names denormalised onto the row (no `team` row exists for historical seasons to join against), `season` as `VARCHAR(10)` and explicitly not a foreign key. `UNIQUE (season, home_team_code, away_team_code)` is the natural key both importers will upsert on. Table name parameterised (`fpl.historical.table-name`) and pinned to `pl_match_result_test` under the `test` profile — this table is never truncated, so an unpinned test would permanently pollute production with fictitious matches, the same reasoning Phase 2 applied to `fpl_embeddings`. Verified both the test table (via the test suite) and the production table (a real `bootRun`, then queried directly) get created |
+
+## Shared-database change
+
+`pl_match_result` was added to the Supabase project shared with `tapas-fpl-app`. Additive only —
+no existing tapas table touched, per convention.

@@ -52,6 +52,8 @@ spring:
 fpl:
   ai:
     provider: ${SPRING_AI_PROVIDER:anthropic}
+  historical:
+    table-name: pl_match_result
 
 cors:
   allowed-origins: ${CORS_ORIGINS:http://localhost:5173}
