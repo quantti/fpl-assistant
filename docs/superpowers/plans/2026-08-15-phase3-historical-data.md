@@ -12,7 +12,7 @@ Design altitude, as Phase 2's plan was: each task states what it must achieve an
 
 ### Task 1 — Schema
 
-Backfill depth is decided: **2019-20 onward**, seven seasons through 2025-26. Every one has both `fixtures.csv` and `teams.csv`, so there is no fallback mapping and no hand-sourced code in this phase. Do not widen the range without asking. The *scheduling* decision is still open but gates Task 5 only.
+Both owner decisions are settled — nothing in this phase is blocked. Backfill depth is **2019-20 onward**, seven seasons through 2025-26; every one has both `fixtures.csv` and `teams.csv`, so there is no fallback mapping and no hand-sourced code here. Do not widen the range without asking. Sync scheduling is **startup behind a persisted staleness marker** (Task 5).
 
 Create `pl_match_result` to the spec's Schema section: keyed on team **code**, carrying both club names, `season` as `VARCHAR(10)` and not a foreign key, the difficulty columns, an ingestion timestamp, and the `UNIQUE (season, home_team_code, away_team_code)` constraint the upserts depend on.
 
@@ -54,15 +54,13 @@ These tools must **not** filter through `SeasonResolver`; spanning seasons is th
 
 ### Task 5 — football-data.org sync
 
-Now raise the **scheduling decision** — the spec lays out four shapes and recommends startup-with-staleness-marker. It carries an operational commitment, so it is the owner's call.
+Triggered on `ApplicationReadyEvent` behind a **persisted** staleness marker (decided; see the spec for why the alternatives lost). Three properties the spec calls out because they are where this shape fails: the marker lives in the database, not a field — a stopped machine loses memory and would re-sync every cold start; the sync runs **off the request path**, so the chat request that woke the machine is answered from stored data rather than waiting; and a failure (API down, key missing) must log and let the application start, never poison the boot.
 
 Keep the current season current, upserting on the same natural key with the spec's source precedence (vaastav authoritative for completed seasons; this writer only touches the season in progress). Needs its own name→code alias set — football-data's names differ from both FPL's and vaastav's.
 
 Respect the free tier's rate limit and fail in a way that says so rather than looking like a network error. `FOOTBALL_DATA_API_KEY` needs adding to `.env.test.example` and `DEVELOPMENT.md`.
 
-If the chosen shape is an HTTP endpoint, it is unauthenticated by default: `RateLimitFilter` short-circuits everything that is not `/api/chat`, and Spring Security is not on the classpath. Protecting it is part of this task, not a follow-up.
-
-**Done when:** the parser is proven against a captured real response body checked into test resources; a second run changes nothing; the trigger is documented where an operator will find it, and protected if it is an endpoint; **live end-to-end verification is recorded in `STATUS.md` as an open item until GW1** — 2026-27 has no completed matches before 2026-08-21 and the free tier serves no older season.
+**Done when:** the parser is proven against a captured real response body checked into test resources; a second run changes nothing; a boot with the sync failing still starts and serves chat; the staleness marker survives a restart (a second boot inside the threshold does not re-sync); the trigger and its threshold are documented where an operator will find it; **live end-to-end verification is recorded in `STATUS.md` as an open item until GW1** — 2026-27 has no completed matches before 2026-08-21 and the free tier serves no older season.
 
 ### Task 6 — Prompt and conventions
 

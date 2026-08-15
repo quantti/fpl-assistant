@@ -104,14 +104,19 @@ Both sources are hit **only at sync time, never at chat time** — the existing 
 
 "Weekly scheduled task" cannot work on the deployment Phase 1 shipped: `fly.toml` sets `auto_stop_machines = 'stop'` and `min_machines_running = 0`, so the machine is stopped whenever nobody is chatting. A Spring `@Scheduled` method never fires on a stopped machine, and a low-traffic hobby app is stopped most of the week. It would work in development and silently never run in production — the same failure class as Phase 1's Docker build context and Phase 2's corpus path.
 
-Four shapes, recommendation first:
+Four shapes. **Decided: option 1, sync on startup behind a staleness marker.**
 
-1. **Sync on startup behind a staleness marker.** On `ApplicationReadyEvent`, if the last successful sync is older than a threshold, run it. The machine only matters when it is awake; if nobody chats for a month, nobody needed fresher data. No endpoint, no secret, no second deployable, no external service, nothing to disable itself after 60 days. Cost: work on an already-slow cold start, so it must not block serving the request that woke the machine.
+1. **Sync on startup behind a staleness marker** ← **chosen.** On `ApplicationReadyEvent`, if the last successful sync is older than a threshold, run it. The machine only matters when it is awake; if nobody chats for a month, nobody needed fresher data. No endpoint, no secret, no second deployable, no external service, nothing to disable itself after 60 days. Cost: work on an already-slow cold start, so it **must not block serving the request that woke the machine** — run it off the request path and let the first chat answer from whatever is already stored.
 2. **External scheduler calling a protected endpoint.** GitHub Actions cron wakes the machine (`auto_start_machines = true` handles the wake). Note the prerequisites this project has not met: **there is no git remote and the app has never been deployed**. Also, GitHub disables scheduled workflows after 60 days of repository inactivity — a silent-stop failure identical to the one this section exists to prevent.
 3. **Fly scheduled machines.** Native, but accepts only fixed intervals (`hourly`/`daily`/`weekly`/`monthly`), not cron expressions, and adds a second deployable to keep in step with the main image.
 4. **Manual CLI flag**, like Phase 2's `--ingest`. Trivially correct, relies on someone remembering.
 
-Whichever is chosen, the sync must be idempotent — every one of these can fire twice.
+The sync must be idempotent regardless — and startup-triggered especially so, since every cold start is a potential trigger and Fly can restart a machine for its own reasons.
+
+Two consequences of this choice worth stating, because they are where it can go wrong:
+
+- **The staleness marker must be persisted, not in memory.** A stopped machine loses everything; a marker held in a field would make every cold start re-sync. Store the last successful sync time in the database.
+- **A failed sync must not poison the boot.** If football-data.org is down or the key is missing, the application still has to start and serve chat from the data it already has. Log it and carry on.
 
 ### Making staleness visible
 
@@ -153,8 +158,9 @@ Phase 3 specifics:
 
 Per-player historical stats (see above). Understat xG, price trends, captain differentials, historical-FDR tooling (Phase 4). Anything requiring auth (Phase 5).
 
-## Open decision for the project owner
+## Decisions settled
 
-**The scheduling shape** — the four options above. It gates only the ongoing sync, not the schema, the backfill, or the tools, so implementation can start without it.
+- **Backfill depth:** 2019-20 onward, seven seasons through 2025-26.
+- **Scheduling:** sync on startup behind a persisted staleness marker, off the request path.
 
-Backfill depth is settled: 2019-20 onward.
+No open decisions remain; the phase is ready to implement.
