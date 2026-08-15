@@ -211,11 +211,30 @@ Responsive to 320px, visible keyboard focus on every interactive element, `prefe
 respected (the streaming cursor is the only animation), and every colour pairing above at its
 stated WCAG level.
 
+## Amendment 2026-08-15 — Phase 5 adds a conversation list
+
+Written after this spec was approved, during Phase 5 design
+(`2026-08-15-phase5-auth-billing-design.md`). Recorded here rather than silently left stale.
+
+The owner chose **multiple conversations with a list**, not the single continuous conversation
+this spec was drawn around. The layout above therefore describes the *thread* correctly but is
+incomplete: there is a navigation surface it does not cover.
+
+What holds unchanged: the palette, the type roles, the spacing scale, the 640px breakpoint, the
+reading measure, and the no-bubbles thread. What needs designing when Phase 5 starts:
+
+- **Desktop** — a list beside the 660px column. The reading measure must survive it; the list
+  takes its width from the viewport, not from the column.
+- **Mobile** — a drawer, since a permanent sidebar would spend the width this spec just spent
+  three sections recovering. It must not reintroduce the chrome the bubble removal eliminated.
+- The list's own typography (interface face, truncated titles) and its empty state.
+
 ## Out of scope
 
 - Backend behaviour, tools, prompts, and RAG — untouched.
 - Auth, billing, and history screens themselves — Phase 5. This spec sizes the system so they
-  fit; it does not design them.
+  fit; it does not design them. See the amendment above for the one place that sizing turned out
+  to be incomplete.
 - Charts. The palette reserves two data-series colours (floodlight, kit) against the day price
   history or xG is plotted, but nothing is built now.
 - A logo or wordmark beyond setting the product name in the interface face.
