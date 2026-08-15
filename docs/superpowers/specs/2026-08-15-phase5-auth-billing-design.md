@@ -131,15 +131,66 @@ would erase the user's usage history and refill their quota. Billing-critical co
 read a table the user controls, so `usage_event` is append-only and untouched by any user action.
 It also gives a place to record tokens and cost later without changing `message`.
 
-### Cost basis
+### Cost basis — measured, not estimated
 
-Measured 2026-08-15: the system prompt is ~1,548 tokens and the thirteen tool definitions ~1,777,
-so **every LLM call carries ~3,300 tokens of fixed overhead** before any conversation history. A
-user turn is typically two calls — one to choose tools, one to answer with their results — so
-roughly 10,000–20,000 input tokens and ~1,000 output per message.
+Measured 2026-08-15 against the running application on `gpt-5.6-terra`, reading Spring AI's
+`gen_ai.client.token.usage` meter. That meter counts **every** model call including the internal
+tool round trips; the final `ChatResponse` metadata alone reports only the last one and would
+have undercounted by roughly half.
 
-Starting budgets, **to be confirmed by measuring real cost against the configured provider before
-a price is set**: 60 messages per rolling seven days on trial, 500 on a paid subscription.
+| Question type | Input | Output | Total |
+|---|---|---|---|
+| Trivial (rules answered from the system prompt, no tool) | 3,194 | 28 | 3,222 |
+| One database lookup | 6,569 | 75 | 6,644 |
+| Complex — several lookups plus strategy docs | 9,067 | 666 | 9,733 |
+| Mid-conversation, 10 messages of history | 11,600 | 280 | 11,880 |
+
+Two findings shape the design:
+
+- **The static prefix is ~3,200 tokens** — system prompt plus thirteen tool definitions — and it
+  is byte-identical on every call. It matches the figure derived from character counts, so the
+  measurement and the estimate agree.
+- **History costs more than complexity.** A simple question ten messages into a conversation
+  (11,880 tokens) is dearer than a complex multi-tool question asked cold (9,733). `HISTORY_WINDOW`
+  is 20, so a full window adds roughly 5,000 tokens beyond what was measured.
+
+At $2.00/M input and $12.00/M output, the weighted average is **€0.0155 per message** and the
+worst case — full history window, several tools — is **€0.039**.
+
+### Prompt caching
+
+OpenAI's prompt caching is automatic above a 1,024-token prefix, so the ~3,200-token static
+prefix is already eligible and is probably already being discounted; the meter reports input
+tokens, not billed cost, so this needs confirming by reading `cached_tokens`. On GPT-5.x cached
+input is around 90% cheaper, while cache *writes* cost 1.25× on 5.6 — amortised to nothing across
+a shared prefix, since every user sends the identical one.
+
+Caching must be preserved deliberately: anything that makes the prefix vary per request — a
+user's name in the system prompt, tools registered in a non-deterministic order — silently
+destroys the discount. The prefix must stay byte-identical and first.
+
+It is worth 61% on the average message but only 41% on the worst, because an expensive turn is
+dominated by history, which is never the same twice. **Caching does not address the largest cost
+driver**; only reducing `HISTORY_WINDOW` does.
+
+### Budget
+
+Price point **€9.99/month**, quota **100 messages per rolling seven days**, the same during trial
+and after conversion.
+
+With caching, using the midpoint of the average and worst cases (€0.0146/message) as the planning
+value, a subscriber who maxes the quota every week costs €6.30/month against €9.45 net of Stripe
+fees — 67% of revenue. This is a deliberate opening position for a small invited group, not a
+steady-state margin: it is generous on purpose so the real usage distribution can be measured
+before the number is tuned. A median user asking ~25 messages a week costs €1.58/month, or 17%.
+
+**The quota must therefore be a configuration property, not a constant.** Changing it must not
+require a code change or a deploy, and trial and paid budgets must be separately settable even
+though they start equal.
+
+To make tuning possible from data rather than guesswork, `usage_event` records the input, cached
+and output token counts of each turn. Without them the only answerable question is how many
+messages were sent, not what they cost.
 
 ## Data model
 
@@ -150,7 +201,9 @@ conversation      (id, user_id, title, created_at, updated_at, archived_at)
 message           (id, conversation_id -> ON DELETE CASCADE, role, content, created_at)
 user_subscription (user_id PK, stripe_customer_id, stripe_subscription_id,
                    status, current_period_end, updated_at)
-usage_event       (id, user_id, created_at)      -- append-only, never user-deletable
+usage_event       (id, user_id, created_at,
+                   input_tokens, cached_tokens, output_tokens)
+                                                 -- append-only, never user-deletable
 stripe_event      (id PK, received_at)           -- webhook idempotency
 ```
 
@@ -205,5 +258,15 @@ Two known consequences:
 
 ## Open
 
-Only the budget numbers, and they are blocked on measuring real per-message cost against the
-configured provider rather than on any design question.
+Nothing blocking. The budget was the last open question and is settled above, from measurement
+rather than estimate.
+
+Two things are deliberately deferred rather than unresolved:
+
+- **Confirming that prompt caching is actually being applied**, by reading `cached_tokens` from
+  the provider response. The pricing above assumes it is. If it turns out not to be, the cost per
+  message roughly doubles and the quota needs revisiting before the group grows.
+- **Reducing `HISTORY_WINDOW` from 20.** The measurement shows it is the largest cost driver and
+  that 20 was a Phase 1 guess, never a measured choice. It is left alone here because changing it
+  changes answer quality, which is a product decision that deserves its own evidence rather than
+  being smuggled in as a billing optimisation.
