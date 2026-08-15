@@ -639,7 +639,7 @@ Spec: `docs/superpowers/specs/2026-08-15-phase4-enrichment-design.md`.
 | 4 — Differential + captain | `6fc2d01` | `PickTools`: `getDifferentialPicks` (low-ownership, form + fixture-ease ordered) and `getCaptainCandidates` (high-form MID/FWD with ownership and avg FDR of next N fixtures). Position "any" uses a 0 sentinel to avoid null SQL binding |
 | 5 — Fixture difficulty | `7aad173` | `FixtureDifficultyTools.getFixtureDifficulty` — team-scoped upcoming FDR outlook (next N, FDR 1-5, opponent, venue, kickoff, average FDR); does not duplicate `getUpcomingFixtures` |
 | 6 — Docs + prompt + conventions | `c8d7805` | Two new reference docs ingested (9 docs → 76 chunks in `fpl_embeddings`): `price-change-mechanics-and-team-value.md`, `using-xg-xa-xgi-xga-in-fpl.md`. `system-prompt.st` "Enrichment tools" section. `AGENTS.md` stats-tools list updated to name all Phase 4 tools under the SeasonResolver/provenance convention |
-| 7 — E2E + deploy + docs | (task7-e2e) | Verified through the real chat flow (below); STATUS.md updated |
+| 7 — E2E + deploy + docs | `613ee62` | Verified through the real chat flow (below); STATUS.md updated |
 
 ## Task 7 — end-to-end verification (real chat flow)
 

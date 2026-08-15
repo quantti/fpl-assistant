@@ -318,6 +318,8 @@ fpl-assistant/
 - Understat xG per team
 - More strategy docs
 
+> Implemented 2026-08-15; see `docs/STATUS.md` (Phase 4 section) and `docs/superpowers/specs/2026-08-15-phase4-enrichment-design.md` for what was actually built (xG/xA/xGI tools, differential and captain pick tools, fixture-difficulty tool, current-season price history, two strategy docs).
+
 ### Phase 5 — Auth + billing
 
 - Supabase auth (login/signup)

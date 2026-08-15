@@ -2,7 +2,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-08-15-phase4-enrichment-design.md` — read it fully first. Its data-source findings, schema, sync rules, tool boundaries, and out-of-scope list are binding.
 
-**PROGRESS:** Task 0/7 done
+**PROGRESS:** Task 7/7 done — Phase 4 complete, merged to `master`. Full-phase review applied.
 
 Design altitude: each task states what it must achieve and how you know it is done. Class shapes, SQL, and test layout are yours within the spec's constraints.
 

@@ -102,6 +102,28 @@ parser were verified against a real captured response on 2026-08-15 — the chec
 lives in `backend/src/test/resources/football-data-fixtures/` and is proven by
 `FootballDataCapturedResponseTest`.
 
+## Price history and enrichment tools (Phase 4)
+
+`fpl_player_price` (current season only) is populated by `StartupPriceSyncRunner`, which
+on application startup snapshots `player.now_cost` (`gameweek=0`, `source=snapshot`) and pulls
+vaastav's `gws/merged_gw.csv` for played GWs (`source=vaastav`), when the last snapshot is
+older than `fpl.price.sync-stale-after-hours` (default 6h). Both are gated by
+`SeasonContext.currentSeason()` — during the pre-season changeover the sync is a no-op, so
+no fallback-season data is written. The current-season `gws/merged_gw.csv` does not exist
+before GW1; `VaastavSource.fetchIfPresent` handles that as a no-op, not a failure.
+
+No manual command is needed for the ongoing price sync. The table is keyed on the
+season-scoped `element_id` (== vaastav `element` == tapas `player.id`) — the tapas `player`
+table has no `code` column, and single-season storage needs no cross-season identity.
+
+Phase 4 also adds six enrichment tools (xG/xA/xGI, differential and captain picks, fixture
+difficulty, price history) and two new strategy docs. Re-ingest the RAG corpus after adding or
+changing strategy docs:
+
+```bash
+./gradlew bootRun --args="--ingest"
+```
+
 Gradle writes JUnit XML to `build/test-results/test/`. When a test fails, the exception message
 lives there rather than in console output, which only prints the exception type:
 
