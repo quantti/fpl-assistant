@@ -1,0 +1,67 @@
+/*
+ * Design tokens — the single source of colour, spacing and type-role values
+ * for the app. No literal hex colour may appear outside this file; every
+ * other stylesheet and theme.ts reference these custom properties instead.
+ *
+ * Contrast numbers below are documented in
+ * docs/superpowers/specs/2026-08-15-frontend-design-system.md and enforced
+ * by `npm run check-contrast` (frontend/scripts/check-contrast.mjs), which
+ * parses this file rather than duplicating the values.
+ *
+ * Dark mode: selected by `prefers-color-scheme`, overridden by a
+ * `data-theme` attribute on the root so a future toggle can force either
+ * theme regardless of OS setting. The complete light palette lives on the
+ * bare `:root`; the dark blocks below redefine only the tokens whose value
+ * actually changes.
+ */
+
+:root {
+  /* Light palette */
+  --paper: #F7F9F7;
+  --ink: #171E2E;
+  --muted: #414D66;
+  --rule-row: #C4CBD8;
+  --rule-section: #8792A8;
+  --pitch: #18811C;
+  --card: #F0D04C;
+  --redcard: #9A261D;
+  --flood: #1D819A;
+  --kit: #9A531D;
+
+  /* Invariant across themes. Not part of the seven-colour palette itself —
+     added so Mantine's theme.white (used for the "white label on pitch/
+     redcard" pairings the spec measures) can reference a token instead of
+     a literal hex, per the project rule that hex lives only in this file. */
+  --white: #FFFFFF;
+
+  /* Spacing scale — exactly 4 8 12 16 24 32 48, no other values. */
+  --space-4: 4px;
+  --space-8: 8px;
+  --space-12: 12px;
+  --space-16: 16px;
+  --space-24: 24px;
+  --space-32: 32px;
+  --space-48: 48px;
+
+  /* Type roles. Reading: Newsreader (assistant answers, prose). Interface:
+     Archivo (user messages, labels, chrome, buttons). Fonts loaded in
+     ./fonts.css. */
+  --font-reading: 'Newsreader Variable', ui-serif, Georgia, 'Times New Roman', serif;
+  --font-ui: 'Archivo Variable', ui-sans-serif, system-ui, -apple-system, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #10151F;
+    --ink: #E9ECF2;
+    --pitch: #8DEC90;
+    --redcard: #EC938D;
+  }
+}
+
+:root[data-theme="dark"] {
+  --paper: #10151F;
+  --ink: #E9ECF2;
+  --pitch: #8DEC90;
+  --redcard: #EC938D;
+}
