@@ -620,3 +620,84 @@ season filtering onto cross-season tools would destroy the behaviour), and the s
 "Exception" bullet plus the provenance bullet were consolidated into one attribution rule
 listing the three schemes — stats-tool banner, per-chunk RAG attribution, per-match
 historical attribution — instead of accumulating a third per-tool exception.
+---
+
+# Status — Phase 4 (Enrichment)
+
+**Progress:** Task 7/7 done — Phase 4 complete, merged to `master`. Full-phase review applied (see below).
+
+Plan: `docs/superpowers/plans/2026-08-15-phase4-enrichment.md`.
+Spec: `docs/superpowers/specs/2026-08-15-phase4-enrichment-design.md`.
+
+## Done
+
+| Task | Commit | What exists now |
+|---|---|---|
+| 1 — Schema + price sync | `9f729fe` | `fpl_player_price` table (current season only, keyed on season-scoped `element_id` — the tapas `player` table has no `code` column, and single-season storage needs no cross-season identity). `PriceSyncService` writes two sources gated by `SeasonContext.currentSeason()`: a startup snapshot of `player.now_cost` (`gameweek=0`, `source=snapshot`) and a vaastav `gws/merged_gw.csv` pull for played GWs (`source=vaastav`). `StartupPriceSyncRunner` (`ApplicationReadyEvent`, `@Async`, persisted staleness marker `MAX(ingested_at) WHERE source='snapshot'`). `VaastavSource.fetchIfPresent` (404 → null) so the missing pre-season `merged_gw.csv` is a no-op, not a boot failure. Table pinned to `fpl_player_price_test` under the test profile |
+| 2 — getPriceHistory | `0cf3a0f` | `PriceTools.getPriceHistory` — current-season per-GW prices (vaastav) + latest live snapshot, descriptive trend (risen/fallen by X, never a prediction). Live snapshot sorts as the most recent row |
+| 3 — xG tools | `55f94d4` | `ExpectedStatsTools`: `getPlayerExpectedStats` and `getTeamExpectedGoals` aggregate FPL's own `expected_goals`/`expected_assists`/`expected_goal_involvements` in `player_fixture_stats` over the last N fixtures (max 10), with actuals and per-fixture breakdown |
+| 4 — Differential + captain | `6fc2d01` | `PickTools`: `getDifferentialPicks` (low-ownership, form + fixture-ease ordered) and `getCaptainCandidates` (high-form MID/FWD with ownership and avg FDR of next N fixtures). Position "any" uses a 0 sentinel to avoid null SQL binding |
+| 5 — Fixture difficulty | `7aad173` | `FixtureDifficultyTools.getFixtureDifficulty` — team-scoped upcoming FDR outlook (next N, FDR 1-5, opponent, venue, kickoff, average FDR); does not duplicate `getUpcomingFixtures` |
+| 6 — Docs + prompt + conventions | `c8d7805` | Two new reference docs ingested (9 docs → 76 chunks in `fpl_embeddings`): `price-change-mechanics-and-team-value.md`, `using-xg-xa-xgi-xga-in-fpl.md`. `system-prompt.st` "Enrichment tools" section. `AGENTS.md` stats-tools list updated to name all Phase 4 tools under the SeasonResolver/provenance convention |
+| 7 — E2E + deploy + docs | (task7-e2e) | Verified through the real chat flow (below); STATUS.md updated |
+
+## Task 7 — end-to-end verification (real chat flow)
+
+Verified against the running application via `POST /api/chat` (SSE), real Supabase, OpenAI chat
+provider. The real `SeasonResolver` resolves to 2025-26 (a completed fallback, since 2026-27
+has no data yet), so every answer is correctly attributed as historical — which is the right
+behaviour at this point in the calendar and what these tests exercise:
+
+- **xG question** ("Is Salah overperforming/underperforming his xG?"): used
+  `getPlayerExpectedStats`, reported xG vs actual goals, attributed to 2025/26 historical data.
+- **Captain question**: used `getCaptainCandidates` + `getGameweekInfo` + `searchStrategyDocs`.
+- **Differential question**: used `getDifferentialPicks` + `searchStrategyDocs`
+  (differential-selection framework).
+- **FDR question** ("Arsenal's fixture difficulty outlook"): used `getFixtureDifficulty`,
+  correctly reported no 2026/27 data and only completed 2025/26.
+- **Price question** ("has Salah's price risen/fallen?"): used `getPriceHistory`, correctly
+  reported no 2026/27 price data yet (the sync skips until the current season holds data).
+- **Negative case** ("how many goals/assists did Salah get last season?"): used `getPlayerStats`
+  only — no enrichment tool was dragged in.
+
+All six question types behave correctly.
+
+## Deviations from the spec/plan
+
+| Spec/plan says | What was done | Why |
+|---|---|---|
+| `fpl_player_price` keyed on persistent FPL `code` | Keyed on season-scoped `element_id` instead | The tapas `player` table has no `code` column (verified against the live DB). Since the table only holds the current season, cross-season identity is unnecessary; `element_id` (== vaastav `element` == tapas `player.id`) joins directly with no mapping |
+| Plan Task 1 "open design question: `(season, element) → code` mapping" | Resolved by not needing `code` at all | Same reason — using `element_id` removes the mapping step entirely |
+| Past-season price backfill (2019-20..2025-26) | Not done | Owner decision: price history is wanted only for the current season; old seasons are out of scope |
+| `getPriceRisersFallers` tool | Removed | Owner decision: it is descriptive of past weeks and not predictive, and `getPriceHistory` already carries the trend. Competing with dedicated price-prediction tools is not the goal |
+| "Understat-derived xG" | "FPL's own expected-stats columns" | The data in `player_fixture_stats` is FPL's, not Understat's |
+| "Captain differentials" strategy doc | Not added | Captaincy is already covered by the existing Phase 2 `captain-selection-and-triple-captain.md` |
+
+## Open items
+
+- **Current-season price data is empty until 2026-27 holds data.** `SeasonResolver` falls back to
+  2025-26 (completed), so `PriceSyncService.sync()` skips (the `currentSeason()` guard) and
+  `getPriceHistory` returns "No price history yet". This is correct behaviour, not a bug — the
+  first real price snapshots appear once tapas syncs 2026-27 and the resolver moves to it. Until
+  then the xG, differential, captain and FDR tools work against real 2025-26 data; only price
+  history is genuinely awaiting the new season.
+- **vaastav current-season `gws/merged_gw.csv` does not exist before GW1** (verified: 404). The
+  sync handles this as a no-op via `fetchIfPresent`. Once GW1 is played, vaastav publishes the
+  file and the vaastav sync populates `gameweek=1..38` rows.
+
+## Full-phase review (2026-08-15) — applied
+
+Review pass over the whole phase found two issues, both fixed:
+
+- **`ExpectedStatsTools.formatTeam` had a broken `teamIdFromFixture` helper** that returned 0 and
+  a confused `player_team_id` filter (it queried with the opponent id in one branch). Rewritten to
+  pass the resolved `teamId` directly into the per-fixture aggregation query — the team's attack
+  is the sum of its own players' xG in each fixture, filtered by `player_team_id = teamId`.
+- **`PickTools` "any" position passed `null` into `(? IS NULL OR p.element_type = ?)`, which pgjdbc
+  binding of null rejected as a DataAccessException.** Replaced the null sentinel with `0`: the SQL
+  is now `(? = 0 OR p.element_type = ?)`, so "any" matches all rows without any null binding.
+
+Reviewed and dismissed: the price-sync `currentSeason()` guard means no price rows exist yet in
+production — both the snapshot and vaastav paths are no-ops until 2026-27 holds data, exactly as
+the historical football-data sync was pre-GW1. The integration tests cover both write branches
+with a mocked resolver; the live write path is an open item until the new season, recorded above.

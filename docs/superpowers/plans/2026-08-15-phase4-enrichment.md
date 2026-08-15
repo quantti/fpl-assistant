@@ -20,18 +20,18 @@ Design altitude: each task states what it must achieve and how you know it is do
 
 ### Task 1 — Schema and current-season price sync
 
-Create `fpl_player_price` to the spec's Schema section: keyed on the in-progress season, `gameweek` (1..38 or 0 for live snapshot), persistent FPL `code`, denormalised name, price in 0.1m units, `source`, and a unique key that keeps vaastav and snapshot rows apart.
+Create `fpl_player_price` to the spec's Schema section: keyed on the in-progress season, `gameweek` (1..38 or 0 for live snapshot), season-scoped FPL `element_id` (== vaastav `element` == tapas `player.id` — the tapas `player` table has no `code` column, and single-season storage needs no cross-season identity), denormalised name, price in 0.1m units, `source`, and a unique key that keeps vaastav and snapshot rows apart.
 
 Build two sync paths, both gated by `SeasonContext.currentSeason()` so they only run for the season actually being played (not a completed fallback):
 
-1. **vaastav current-season `gws/merged_gw.csv`** — read the `value` column for each GW, resolve the vaastav player id (`element`) to the persistent `code` by joining against the tapas `player` table for the resolved season, and upsert on the unique key so re-runs don't duplicate. The file is absent before GW1; handle 404/empty directory as a no-op rather than a failure.
+1. **vaastav current-season `gws/merged_gw.csv`** — read the `value` column for each GW; the `element` column is already the season-scoped id that matches tapas `player.id`, so no `(season, element) → code` mapping is needed. Upsert on the unique key so re-runs don't duplicate. The file is absent before GW1; handle 404/empty directory as a no-op rather than a failure.
 2. **Startup price snapshot** — on `ApplicationReadyEvent`, off the request path, behind a persisted staleness marker (`MAX(ingested_at) WHERE source = 'snapshot'`), snapshot `player.now_cost` for every player into `gameweek = 0`, `source = 'snapshot'`. Reuse the pattern from `StartupSyncRunner` / `FootballDataSyncService`.
 
 Both run only for the season resolved by `SeasonResolver` once it holds data. Past seasons are intentionally not backfilled.
 
-**Done when:** the table exists; the vaastav sync is idempotent and handles a missing current-season file gracefully; the snapshot sync is idempotent and skips when the resolved season is a completed fallback; unknown player ids fail loudly naming the season/id; tests never touch production data.
+**Done when:** the table exists; the vaastav sync is idempotent and handles a missing current-season file gracefully; the snapshot sync is idempotent and skips when the resolved season is a completed fallback; tests never touch production data.
 
-> **Design note:** vaastav's `merged_gw.csv` uses `element` (FPL player id, season-scoped), not `code`. The simplest mapping is to join against tapas `player(id, season_id)` at sync time. This keeps the player resolution in one place and does not require altering tapas tables.
+> **Design note:** vaastav's `merged_gw.csv` uses `element` (the season-scoped FPL id, == tapas `player.id`), so it joins directly with no mapping. The original plan's `(season, element) → code` mapping is unnecessary because the tapas `player` table has no `code` column and the table only holds one season.
 
 ### Task 2 — `getPriceHistory`
 

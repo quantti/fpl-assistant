@@ -12,8 +12,6 @@ import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
-import fi.karivanttinen.fplassistant.tools.FplTool;
-
 /**
  * Phase 4 price-trend tool. {@link #getPriceHistory} reads the current season's per-GW prices
  * from {@code fpl_player_price} (vaastav rows for played GWs plus the latest live snapshot) and

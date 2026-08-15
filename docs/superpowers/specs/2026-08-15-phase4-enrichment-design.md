@@ -47,18 +47,20 @@ The assistant must therefore expose **trend** (rising/falling), **magnitude**, a
 
 Additive only — no tapas table is modified. Tracks only the season currently being played (the one resolved by `SeasonResolver`).
 
+The key is the season-scoped FPL element id (vaastav's `element` / tapas `player.id`), **not** the persistent FPL `code`: the tapas `player` table does not carry `code`, and since this table only ever holds one season, cross-season identity is not needed.
+
 ```text
 season            VARCHAR(10) NOT NULL    -- the in-progress season, e.g. '2026-27'
 gameweek          INTEGER NOT NULL        -- 1..38; 0 for the latest snapshot before the GW is locked
-player_code       INTEGER NOT NULL        -- persistent FPL code
+element_id        INTEGER NOT NULL        -- season-scoped FPL element id (== tapas player.id == vaastav element)
 player_name       VARCHAR(100) NOT NULL   -- denormalised, same rationale as pl_match_result
 price             INTEGER NOT NULL        -- in 0.1m units, e.g. 140 = £14.0m
 source            VARCHAR(20) NOT NULL    -- 'vaastav' or 'snapshot'
 ingested_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
-UNIQUE (season, gameweek, player_code, source)
+UNIQUE (season, gameweek, element_id, source)
 ```
 
-`gameweek = 0` is reserved for the latest startup snapshot of `player.now_cost`. It is updated in place (upsert on `(season, 0, code, 'snapshot')`) so there is always one current "live" price row between GWs. When a GW finishes and the vaastav sync runs, rows with `gameweek = 1..38` and `source = 'vaastav'` are written/upserted, freezing the official end-of-GW price.
+`gameweek = 0` is reserved for the latest startup snapshot of `player.now_cost`. It is updated in place (upsert on `(season, 0, element_id, 'snapshot')`) so there is always one current "live" price row between GWs. When a GW finishes and the vaastav sync runs, rows with `gameweek = 1..38` and `source = 'vaastav'` are written/upserted, freezing the official end-of-GW price.
 
 The sync only runs when `SeasonResolver` resolves to the season currently being played (`season.currentSeason() == true`). During the pre-season changeover, when the flagged-current 2026-27 season has no data and the resolver falls back to 2025-26, the sync skips with a log message.
 
