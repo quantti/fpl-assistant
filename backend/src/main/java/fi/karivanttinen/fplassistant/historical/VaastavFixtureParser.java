@@ -80,9 +80,19 @@ public final class VaastavFixtureParser {
     }
 
     private static int parseInt(String value, String column, CSVRecord record, String season) {
+        // vaastav sometimes writes whole-number floats ("1.0") in numeric columns, so a plain
+        // Integer.parseInt is too strict — but silently truncating "3.5" to 3 would resolve
+        // team_h/team_a to the wrong team without ever raising an error, which is exactly the
+        // silent-corruption failure VaastavTeamMapper's fail-loud design exists to prevent.
+        // Accept a whole-number float; reject anything with a real fractional part.
         try {
-            // vaastav sometimes writes whole-number floats ("1.0") in numeric columns.
-            return (int) Double.parseDouble(value);
+            double parsed = Double.parseDouble(value);
+            if (parsed != Math.rint(parsed)) {
+                throw new IllegalStateException((season != null ? season + ": " : "") + "fixtures.csv row "
+                        + record.getRecordNumber() + " column '" + column
+                        + "' has a non-integer value: '" + value + "'");
+            }
+            return (int) parsed;
         } catch (NumberFormatException e) {
             throw new IllegalStateException((season != null ? season + ": " : "") + "fixtures.csv row "
                     + record.getRecordNumber() + " column '" + column + "' is not a number: '" + value + "'", e);

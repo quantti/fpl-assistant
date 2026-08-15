@@ -38,12 +38,17 @@ class HistoricalSchemaTest {
         assertThat(columnCount).isGreaterThanOrEqualTo(13);
     }
 
-    // Codes below the highest real FPL team code (127) are used everywhere else in this
-    // package, since other tests in this table populate real historical seasons — a
-    // fictitious pair avoids colliding with a real fixture on the shared natural key, which
-    // does not distinguish by `source`.
     private static final int FICTITIOUS_HOME = 9001;
     private static final int FICTITIOUS_AWAY = 9002;
+    private static final String SEASON_A = "t-sch-a";
+    private static final String SEASON_B = "t-sch-b";
+
+    static {
+        FictitiousTestData.assertSafeCode(FICTITIOUS_HOME);
+        FictitiousTestData.assertSafeCode(FICTITIOUS_AWAY);
+        FictitiousTestData.assertSafeSeason(SEASON_A);
+        FictitiousTestData.assertSafeSeason(SEASON_B);
+    }
 
     @Test
     void naturalKeyRejectsADuplicateSeasonAndTeamPair() {
@@ -60,8 +65,8 @@ class HistoricalSchemaTest {
         jdbc.update("""
                 INSERT INTO %s (season, home_team_code, away_team_code, home_team_name, away_team_name,
                                  home_goals, away_goals, source)
-                VALUES ('2099-00', ?, ?, 'Test Home FC', 'Test Away FC', 1, 1, 'schema-test')
-                """.formatted(tableName), FICTITIOUS_HOME, FICTITIOUS_AWAY);
+                VALUES (?, ?, ?, 'Test Home FC', 'Test Away FC', 1, 1, 'schema-test')
+                """.formatted(tableName), SEASON_B, FICTITIOUS_HOME, FICTITIOUS_AWAY);
 
         Integer count = jdbc.queryForObject(
                 "SELECT COUNT(*) FROM " + tableName + " WHERE source = 'schema-test'", Integer.class);
@@ -72,7 +77,7 @@ class HistoricalSchemaTest {
         jdbc.update("""
                 INSERT INTO %s (season, home_team_code, away_team_code, home_team_name, away_team_name,
                                  home_goals, away_goals, kickoff_time, source)
-                VALUES ('2098-99', ?, ?, 'Test Home FC', 'Test Away FC', 2, 1, ?, 'schema-test')
-                """.formatted(tableName), homeCode, awayCode, Timestamp.from(java.time.Instant.now()));
+                VALUES (?, ?, ?, 'Test Home FC', 'Test Away FC', 2, 1, ?, 'schema-test')
+                """.formatted(tableName), SEASON_A, homeCode, awayCode, Timestamp.from(java.time.Instant.now()));
     }
 }

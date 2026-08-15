@@ -438,7 +438,7 @@ practical value. Recorded here so it is not re-flagged as content loss.
 
 # Status — Phase 3 (Historical Data)
 
-**Progress:** Task 4/7 done. Review checkpoint next (Tasks 1–4), per the plan.
+**Progress:** Task 4/7 done, reviewed at the Tasks 1–4 checkpoint, fixes applied. On to Task 5.
 
 Plan: `docs/superpowers/plans/2026-08-15-phase3-historical-data.md`.
 Spec: `docs/superpowers/specs/2026-08-15-phase3-historical-data-design.md`.
@@ -458,3 +458,46 @@ sync on startup behind a persisted staleness marker.
 
 `pl_match_result` was added to the Supabase project shared with `tapas-fpl-app`. Additive only —
 no existing tapas table touched, per convention.
+
+## Tasks 1–4 review checkpoint (2026-08-15) — applied
+
+Independent review verified the 380/380 oracle and the 2660-row production backfill directly
+against the live database (not just trusting this file), confirmed test isolation is genuinely
+solid, and found three Important issues, all fixed without touching the schema, upsert shape,
+or re-running the production backfill:
+
+- **`VaastavFixtureParser`'s number parsing contradicted the phase's own fail-loud design.**
+  `team_h`/`team_a` were parsed via `Double.parseDouble` cast to `int` to tolerate vaastav's
+  occasional whole-number floats ("1.0") — but that silently truncated a genuine fractional
+  value ("3.5" → 3) instead of failing, which would resolve to the *wrong team* with no error.
+  Neither real fixture file actually contains a fractional value in these columns (checked
+  both programmatically), so the tolerance was solving a problem that doesn't occur in the
+  data this phase imports. Now rejects any value with a real fractional part.
+- **Task 4's own acceptance criterion — "verified against the real table" for a relegated
+  club — was not actually tested.** `HistoricalToolsIntegrationTest` used only fictitious
+  clubs; Watford/Norwich were verified at the mapper and importer layers but never through
+  `HistoricalTeamResolver`/`HistoricalTools` themselves. Added a test that runs its own small
+  real backfill (2019-20, into the isolated table, cleaned up after) and confirms `getTeamForm`
+  and the resolver both handle Watford correctly — independent of whatever other test classes
+  have or haven't populated the shared test table, so it can't pass or fail by accident of
+  execution order.
+- **The natural-key collision class (real codes + real season colliding with backfilled data
+  on a key that doesn't distinguish by `source`) had already recurred once and was guarded
+  only by a comment.** Added `FictitiousTestData`, asserted at class-load time in every test
+  using fictitious data: codes must be ≥9000, and season labels must not match the shape of a
+  real FPL season (`\d{4}-\d{2}`) at all — not just avoid the *currently* backfilled range,
+  since a future range widening should never retroactively collide with a season a test picked
+  because it looked safely far away.
+
+Also fixed while applying the above: `season VARCHAR(10)` rejected the first round of
+fictitious season labels (`"test-schema-a"` etc. — 13 chars); shortened to fit. `kickoff_time`
+now prints "kickoff unknown" instead of a literal `null` string when absent (this exact bug
+class already hit once in Phase 1). `parseKickoff`'s swallowed `DateTimeParseException` now
+logs a warning naming the match, instead of silently dropping the timestamp.
+
+Noted but deliberately not fixed here: `HttpVaastavSource` has no connect/read timeout — a
+non-issue for a manually-invoked 14-request backfill, but Task 5's football-data client will
+likely copy this shape, and an unbounded client there would tie up a background thread
+indefinitely on a hang. Task 5 should not inherit it without a timeout. Ambiguous substring
+name resolution (e.g. "man" matching both Manchester clubs) is inherited from `FixtureTools`'
+identical pattern, not a regression.

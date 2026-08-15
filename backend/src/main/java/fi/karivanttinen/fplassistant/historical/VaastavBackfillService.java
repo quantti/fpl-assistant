@@ -103,16 +103,19 @@ public class VaastavBackfillService {
                 """.formatted(tableName), // tableName is config-injected, not user input
                 season, row.gameweek(), home.code(), away.code(),
                 home.name(), away.name(), row.teamHScore(), row.teamAScore(),
-                row.teamHDifficulty(), row.teamADifficulty(), parseKickoff(row.kickoffTime()));
+                row.teamHDifficulty(), row.teamADifficulty(),
+                parseKickoff(row.kickoffTime(), season, home.name(), away.name()));
     }
 
-    private static Timestamp parseKickoff(String iso) {
+    private static Timestamp parseKickoff(String iso, String season, String homeName, String awayName) {
         if (iso == null) {
             return null;
         }
         try {
             return Timestamp.from(Instant.parse(iso));
         } catch (DateTimeParseException e) {
+            log.warn("{}: {} vs {} has an unparseable kickoff_time '{}', storing as NULL",
+                    season, homeName, awayName, iso);
             return null;
         }
     }
