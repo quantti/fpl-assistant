@@ -54,6 +54,11 @@ fpl:
     provider: ${SPRING_AI_PROVIDER:anthropic}
   historical:
     table-name: pl_match_result
+    football-data-api-key: ${FOOTBALL_DATA_API_KEY:}
+    # Startup sync (StartupSyncRunner) re-syncs the in-progress season when the most recent
+    # football-data row is older than this. 20h keeps a daily-ish cadence without syncing on
+    # every restart during active development.
+    sync-stale-after-hours: 20
 
 cors:
   allowed-origins: ${CORS_ORIGINS:http://localhost:5173}

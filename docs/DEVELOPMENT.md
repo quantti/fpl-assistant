@@ -78,6 +78,28 @@ Every document needs YAML front matter (`title`, `kind`, `valid_from`, plus `val
 `kind: timely`); a document missing it aborts the run *before* anything is deleted, so a bad file
 cannot leave the corpus empty. See the Phase 2 spec for the metadata contract.
 
+## Historical match data (Phase 3)
+
+`pl_match_result` (2019-20 onward) is backfilled once from vaastav and kept current by
+`StartupSyncRunner`, which syncs football-data.org automatically on application startup when
+the last sync is more than `fpl.historical.sync-stale-after-hours` old (default 20h) — there is
+no manual command for the ongoing sync, unlike the RAG corpus.
+
+**Backfill (one-time, or to widen the season range):**
+
+```bash
+./gradlew bootRun --args="--backfill"
+```
+
+Imports 2019-20 through 2025-26 from vaastav's public CSVs (no key needed), upserts on
+`(season, home_team_code, away_team_code)` so re-running is safe, and exits when done.
+
+**Football-data.org sync requires `FOOTBALL_DATA_API_KEY`** — free registration at
+https://www.football-data.org/client/register. This project has never registered one; without
+it, `StartupSyncRunner` logs and does nothing (does not fail startup). `FootballDataTeamAliases`
+(football-data's team names → FPL codes) is built from the API's public documentation and has
+**not been verified against a real response** — see `docs/STATUS.md` for the open item.
+
 Gradle writes JUnit XML to `build/test-results/test/`. When a test fails, the exception message
 lives there rather than in console output, which only prints the exception type:
 
