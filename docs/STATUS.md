@@ -811,7 +811,7 @@ fixture, and `getTeamExpectedGoals`' aggregation matches the `fixture` scoreline
 
 # Status — Frontend Design System
 
-**Progress:** Task 2/6 done, on branch `frontend-design-system` (not yet merged). Executed via
+**Progress:** Task 3/6 done, on branch `frontend-design-system` (not yet merged). Executed via
 subagent-driven-development; ledger at
 `.superpowers/sdd/2026-08-15-frontend-design-system/progress.md`.
 
@@ -828,6 +828,7 @@ the Phase 1–5 numbering above.
 |---|---|---|
 | 1 — Tokens, fonts, contrast guard | `628c374` | `tokens.css` (full light/dark palette + spacing scale), self-hosted Archivo/Newsreader variable fonts, Mantine theme wired to the same custom properties, `check-contrast.mjs` WCAG guard wired into `npm run build`. No component consumes the tokens yet. Review: clean. |
 | 2 — Layout shell, mobile fixes | `12c62fa` | `ChatView.module.css` root as flex column (`height: 100dvh` — see below), single 640px breakpoint (full bleed below with 16px gutter from existing child padding, centred 660px column above), 48/56px header. `index.html` viewport meta gains `viewport-fit=cover, interactive-widget=resizes-content`. `scroll-padding-bottom: 16px` on `MessageThread`'s `.thread`. Review: clean, 3 minors deferred (below). |
+| 3 — Transcript thread | `62c28e6..00959cb` | Bubbles removed from `MessageThread`/`AssistantMessage`; each turn is a small-caps `--font-ui` attribution label (`--muted` user / `--pitch` assistant) plus a `--rule-section` hairline plus body (`--font-reading` 18px/1.65 assistant, `--font-ui` user), 24px turn rhythm, no backgrounds/borders/shadows/radii beyond the hairline and table rules. `remark-gfm@4.0.1` added; tables styled with `--rule-row`/`--rule-section`. Provenance line (`SeasonContext.provenance()`'s `"Data source: ..."` prefix) split out and rendered muted. Review found 1 Important bug (provenance-split could swallow the whole reply when it had no newline) — fixed in round 1 (`00959cb`), re-review clean. |
 
 Deviation: Task 2 ships `height: 100dvh` on `.root`, not the plan's literal `min-height: 100dvh`.
 Proven necessary with an isolated Puppeteer harness — with only `min-height`, a flex column's
@@ -849,6 +850,5 @@ just inconsistent with the same diff's other literal→token conversions.
 
 ## Remaining
 
-Tasks 3 (transcript thread — bubble removal, attribution labels, `remark-gfm`), 4 (composer,
-safe-area insets), 5 (theme toggle, quality floor), 6 (verification, deploy, docs) — see the plan
-for each task's done-when criteria.
+Tasks 4 (composer, safe-area insets), 5 (theme toggle, quality floor), 6 (verification, deploy,
+docs) — see the plan for each task's done-when criteria.
