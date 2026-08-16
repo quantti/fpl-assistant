@@ -811,7 +811,7 @@ fixture, and `getTeamExpectedGoals`' aggregation matches the `fixture` scoreline
 
 # Status — Frontend Design System
 
-**Progress:** Task 4/6 done, on branch `frontend-design-system` (not yet merged). Executed via
+**Progress:** Task 5/6 done, on branch `frontend-design-system` (not yet merged). Executed via
 subagent-driven-development; ledger at
 `.superpowers/sdd/2026-08-15-frontend-design-system/progress.md`.
 
@@ -830,6 +830,7 @@ the Phase 1–5 numbering above.
 | 2 — Layout shell, mobile fixes | `12c62fa` | `ChatView.module.css` root as flex column (`height: 100dvh` — see below), single 640px breakpoint (full bleed below with 16px gutter from existing child padding, centred 660px column above), 48/56px header. `index.html` viewport meta gains `viewport-fit=cover, interactive-widget=resizes-content`. `scroll-padding-bottom: 16px` on `MessageThread`'s `.thread`. Review: clean, 3 minors deferred (below). |
 | 3 — Transcript thread | `62c28e6..00959cb` | Bubbles removed from `MessageThread`/`AssistantMessage`; each turn is a small-caps `--font-ui` attribution label (`--muted` user / `--pitch` assistant) plus a `--rule-section` hairline plus body (`--font-reading` 18px/1.65 assistant, `--font-ui` user), 24px turn rhythm, no backgrounds/borders/shadows/radii beyond the hairline and table rules. `remark-gfm@4.0.1` added; tables styled with `--rule-row`/`--rule-section`. Provenance line (`SeasonContext.provenance()`'s `"Data source: ..."` prefix) split out and rendered muted. Review found 1 Important bug (provenance-split could swallow the whole reply when it had no newline) — fixed in round 1 (`00959cb`), re-review clean. |
 | 4 — Composer | `ae9b281..c57dfd7` | `MessageInput` restyled: `--paper` background, `--rule-section` top rule, `padding-bottom: max(var(--space-12), env(safe-area-inset-bottom))`, textarea caps at 5 rows then scrolls, IME composition guard preserved. New `--pitch-contrast` token (white in light, linked to `--ink-900` in dark) fixes a dark-mode-only bug Mantine's `autoContrast` couldn't have caught (white-on-light-green send button, ~1.45:1) — computed/verified at 5.01:1 light / 11.52:1 dark. Review found 2 Important issues (an unscoped `!important` bled into the disabled-state colour; the dark-mode literal duplicated `--ink`'s hex with no drift guard) — both fixed in round 1 (`c57dfd7`): `.sendButton:not(:disabled)` scoping, and `--ink-900` as the single canonical literal both `--ink` and `--pitch-contrast` reference. `check-contrast.mjs` gained a small `var()`-reference resolver as necessary fallout; re-review confirmed it fails loud rather than masking a broken reference. Re-review clean. |
+| 5 — Theme toggle, quality floor | `e3e3840..3e4c0cf` | Header toggle wired to Mantine's own `useMantineColorScheme`/`useComputedColorScheme` (single persisted source of truth, no parallel storage) syncing `document.documentElement.dataset.theme` on every change. Global `:focus-visible` ring in `--pitch` added to `tokens.css`; needed `!important` to beat Mantine's own `Textarea` focus-outline suppression (verified real specificity conflict, not a misdiagnosis — disabled elements can't be focused, so no blast-radius risk like Task 4's). `prefers-reduced-motion` stops the streaming cursor's blink, stays solid. Review found 1 Important issue (`data-theme` sync ran in `useEffect`, post-paint, risking a theme flash on reload when a persisted choice opposes the OS preference) — fixed in round 1 (`3e4c0cf`) by switching to `useLayoutEffect`, matching Mantine's own pre-paint pattern. Re-review clean. |
 
 Deviation: Task 2 ships `height: 100dvh` on `.root`, not the plan's literal `min-height: 100dvh`.
 Proven necessary with an isolated Puppeteer harness — with only `min-height`, a flex column's
@@ -851,5 +852,4 @@ just inconsistent with the same diff's other literal→token conversions.
 
 ## Remaining
 
-Tasks 5 (theme toggle, quality floor), 6 (verification, deploy, docs) — see the plan for each
-task's done-when criteria.
+Task 6 (verification, deploy, docs) — see the plan for its done-when criteria.
