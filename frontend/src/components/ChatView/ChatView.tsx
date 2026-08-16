@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useLayoutEffect } from 'react'
 import { ActionIcon, useComputedColorScheme, useMantineColorScheme } from '@mantine/core'
 import { useChat } from '../../hooks/useChat'
 import MessageThread from '../MessageThread/MessageThread'
@@ -15,10 +15,20 @@ export default function ChatView() {
   // never 'auto'. Kept in sync with tokens.css's data-theme attribute below
   // so Mantine's own internals and the project's token palette never
   // diverge.
+  //
+  // useLayoutEffect (not useEffect) — this must land before paint, the same
+  // way Mantine's own data-mantine-color-scheme write does internally
+  // (useIsomorphicEffect, effectively useLayoutEffect on the client). A
+  // post-paint useEffect leaves a one-frame gap on reload whenever the
+  // persisted choice opposes the OS preference: computedColorScheme is
+  // already correct synchronously (Mantine reads the persisted value in a
+  // useState initializer), but tokens.css's dark media-query block reads
+  // data-theme, which wouldn't be written yet — so that first frame would
+  // paint the wrong palette before this effect corrects it.
   const { setColorScheme } = useMantineColorScheme()
   const computedColorScheme = useComputedColorScheme('light')
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     document.documentElement.dataset.theme = computedColorScheme
   }, [computedColorScheme])
 
