@@ -49,7 +49,12 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--mantine-color-dimmed);
+  /* Was var(--mantine-color-dimmed), which resolved to Mantine's own #868E96
+     — 3.14:1 on --paper at this size, a WCAG AA failure on the first screen
+     every user sees. theme.ts now maps --mantine-color-dimmed onto --muted
+     too, so Mantine's own components can't reintroduce it; app stylesheets
+     name the token directly. */
+  color: var(--muted);
   font-size: 0.95rem;
   text-align: center;
   padding: var(--space-32);
