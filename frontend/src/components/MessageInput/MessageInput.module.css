@@ -1,11 +1,24 @@
 .wrapper {
   display: flex;
-  gap: 8px;
-  padding: 12px 16px;
-  border-top: 1px solid var(--mantine-color-default-border);
-  background: var(--mantine-color-body);
+  gap: var(--space-8);
+  padding: var(--space-12) var(--space-16);
+  /* iOS home indicator clearance (spec's Mobile section, item 2) — floor of
+     12px so the button doesn't hug the edge on devices with no safe area. */
+  padding-bottom: max(var(--space-12), env(safe-area-inset-bottom));
+  border-top: 1px solid var(--rule-section);
+  background: var(--paper);
 }
 
 .textarea {
   flex: 1;
+}
+
+.sendButton {
+  /* Mantine's filled-variant label colour is hardcoded to theme.white
+     whenever autoContrast is off (see theme.ts) — it's applied via an
+     inline --ai-color custom property, which beats a non-important rule
+     in this stylesheet regardless of CSS import order. !important is
+     required so --pitch-contrast (tokens.css) always wins instead: white
+     fails badly against --pitch's dark-mode light green. */
+  color: var(--pitch-contrast) !important;
 }

@@ -37,9 +37,10 @@ export default function MessageInput({ onSubmit, disabled }: Props) {
         disabled={disabled}
         autosize
         minRows={1}
-        maxRows={4}
+        maxRows={5}
       />
       <ActionIcon
+        className={classes.sendButton}
         size="lg"
         variant="filled"
         onClick={handleSubmit}

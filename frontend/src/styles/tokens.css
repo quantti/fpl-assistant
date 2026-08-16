@@ -34,6 +34,18 @@
      a literal hex, per the project rule that hex lives only in this file. */
   --white: #FFFFFF;
 
+  /* Text colour for content placed on a --pitch background (e.g. the
+     composer's send button). White passes AA on the light palette's dark
+     green (#18811C, 5.01) but --pitch flips to a light green in dark mode
+     (#8DEC90), against which white fails (~1.45) — so, like --pitch
+     itself, this token is redefined in both dark-mode blocks below (to a
+     dark navy literal, not var(--ink) — see the comment there for why).
+     Mantine's autoContrast is off and cannot evaluate var() colours (see
+     theme.ts), so components using --pitch as a background must reference
+     this token explicitly rather than relying on Mantine's filled-variant
+     default. */
+  --pitch-contrast: var(--white);
+
   /* Spacing scale — exactly 4 8 12 16 24 32 48, no other values. */
   --space-4: 4px;
   --space-8: 8px;
@@ -56,6 +68,13 @@
     --ink: #E9ECF2;
     --pitch: #8DEC90;
     --redcard: #EC938D;
+    /* NOT var(--ink): --ink is redefined to a light colour in this same
+       block (for body text against dark --paper), but --pitch inverts the
+       OTHER way (dark green -> light green), so it needs a genuinely dark
+       colour here. This literal matches light-mode --ink's hex — measured
+       11.52:1 against dark-mode --pitch (#8DEC90); var(--ink) measured
+       1.22:1, confirmed with a headless-browser contrast check. */
+    --pitch-contrast: #171E2E;
   }
 }
 
@@ -64,4 +83,5 @@
   --ink: #E9ECF2;
   --pitch: #8DEC90;
   --redcard: #EC938D;
+  --pitch-contrast: #171E2E;
 }
