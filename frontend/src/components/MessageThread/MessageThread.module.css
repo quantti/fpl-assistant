@@ -5,6 +5,10 @@
   flex-direction: column;
   gap: 16px;
   padding: 16px;
+  /* Keeps the last message clear of the composer below it (spec's Mobile
+     section, item 4). Owned by ChatView's shell task even though the rule
+     lives here, since this is the element that actually scrolls. */
+  scroll-padding-bottom: 16px;
 }
 
 .userBubble {
