@@ -94,3 +94,16 @@
   --redcard: #EC938D;
   --pitch-contrast: var(--ink-900);
 }
+
+/* Quality floor: every interactive element gets a visible --pitch focus
+   ring, never outline: none without a replacement. Source order alone does
+   NOT make this win: measured live, Mantine's Textarea/Input suppress the
+   outline via `.mantine-class:focus, .mantine-class:focus-within { outline:
+   none }` — a class + pseudo-class selector (specificity 0,2,0) — which
+   beats a bare `:focus-visible` (specificity 0,1,0) regardless of source
+   order. !important is required, same reasoning as MessageInput.module.css's
+   .sendButton override. */
+:focus-visible {
+  outline: 2px solid var(--pitch) !important;
+  outline-offset: 2px;
+}
