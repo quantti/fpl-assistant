@@ -1,18 +1,84 @@
-.bubble {
-  background: light-dark(var(--mantine-color-gray-1), var(--mantine-color-dark-6));
-  border-radius: 8px;
-  padding: 12px 16px;
-  max-width: 85%;
-  align-self: flex-start;
-  line-height: 1.6;
+.turn {
+  display: flex;
+  flex-direction: column;
 }
 
-.bubble p {
-  margin: 0 0 8px 0;
+/* The printed-interview attribution: small-caps label + hairline rule under
+   it. Shared shape with MessageThread's own .label — colour is the only
+   difference (pitch here, muted there), per the spec's "green earns its
+   place semantically" rule. */
+.label {
+  font-family: var(--font-ui);
+  font-variant-caps: small-caps;
+  font-weight: 600;
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+  color: var(--pitch);
+  padding-bottom: var(--space-8);
+  margin-bottom: var(--space-8);
+  border-bottom: 1px solid var(--rule-section);
 }
 
-.bubble p:last-child {
+/* The "Data source: ..." / season-code line every stats tool opens with —
+   an aside, not body text, so it gets the muted role and the interface
+   face rather than the reading face. */
+.provenance {
+  font-family: var(--font-ui);
+  font-size: 0.875rem;
+  color: var(--muted);
+  margin: 0 0 var(--space-16) 0;
+}
+
+.prose {
+  font-family: var(--font-reading);
+  font-size: 1.125rem;
+  line-height: 1.65;
+}
+
+.prose p {
+  margin: 0 0 var(--space-16) 0;
+}
+
+.prose p:last-child {
   margin-bottom: 0;
+}
+
+.prose ul,
+.prose ol {
+  margin: 0 0 var(--space-16) 0;
+  padding-left: var(--space-24);
+}
+
+.prose li {
+  margin-bottom: var(--space-8);
+}
+
+.prose a {
+  color: var(--pitch);
+}
+
+.prose table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0 0 var(--space-16) 0;
+}
+
+.prose th,
+.prose td {
+  text-align: left;
+  padding: var(--space-8) var(--space-12);
+}
+
+.prose th {
+  border-bottom: 1px solid var(--rule-section);
+}
+
+.prose td {
+  border-bottom: 1px solid var(--rule-row);
+}
+
+.prose tr:last-child td {
+  border-bottom: none;
 }
 
 .cursor::after {
