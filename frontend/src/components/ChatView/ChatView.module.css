@@ -37,9 +37,11 @@
 }
 
 /* Mantine's ActionIcon sets its effective text colour via an inline
-   --ai-color custom property (see MessageInput.module.css's .sendButton
-   comment for the full explanation) — !important is required for a plain
-   author-stylesheet rule to win regardless of variant/state/import order. */
+   --ai-color custom property (see theme.ts's variantColorResolver docstring
+   for the full explanation) — !important is required for a plain
+   author-stylesheet rule to win regardless of variant/state/import order.
+   The resolver only covers variant="filled" color="pitch"; this toggle is
+   neither, so it still needs the override. */
 .themeToggle {
   color: var(--ink) !important;
 }
