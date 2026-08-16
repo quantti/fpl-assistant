@@ -13,16 +13,23 @@
   flex: 1;
 }
 
-.sendButton:not(:disabled) {
-  /* Mantine's filled-variant label colour is hardcoded to theme.white
-     whenever autoContrast is off (see theme.ts) — it's applied via an
-     inline --ai-color custom property, which beats a non-important rule
-     in this stylesheet regardless of CSS import order. !important is
-     required so --pitch-contrast (tokens.css) always wins instead: white
-     fails badly against --pitch's dark-mode light green.
-     :not(:disabled) keeps this scoped to the enabled state only, so
-     Mantine's own disabled-state colour (--mantine-color-disabled-color)
-     still applies when the button is disabled instead of being painted
-     over by this !important. */
-  color: var(--pitch-contrast) !important;
+/* The spec's "deliberately absent" list rules out a filled, rounded box here;
+   Mantine's default input variant is exactly that. Its fill, border and
+   radius come from --input-bg / --input-bd / --input-radius, which Mantine
+   declares on the Input *wrapper* — the div between this module's .textarea
+   root and the textarea element — from a selector
+   (`[data-mantine-color-scheme='x'] .m_xxx[data-variant='default']`, 0,3,0)
+   that out-specifies anything this file can write onto that same element.
+   Declaring them on the textarea element instead sidesteps the fight
+   entirely: an element's own declaration always beats the value it would
+   otherwise inherit, and nothing in Mantine declares these three on the
+   input element itself. That leaves the hairline-only treatment the spec
+   asks for — same --rule-section as the composer's own top rule and the
+   transcript's attribution rules, in both themes.
+   --input-bd-focus is left alone: it resolves to the primary colour, so a
+   focused composer draws a --pitch border, matching the global focus ring. */
+.textarea textarea {
+  --input-bg: var(--paper);
+  --input-bd: var(--rule-section);
+  --input-radius: 0;
 }

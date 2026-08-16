@@ -229,6 +229,46 @@ reading measure, and the no-bubbles thread. What needs designing when Phase 5 st
   three sections recovering. It must not reintroduce the chrome the bubble removal eliminated.
 - The list's own typography (interface face, truncated titles) and its empty state.
 
+## Amendment 2026-08-17 — three things the build measured differently
+
+Written after the whole-branch review of the implementation
+(`docs/STATUS.md`, "Whole-branch review fix wave"). Recorded here rather than left stale, because
+this spec — not `STATUS.md` — is what Phase 5 builds from. The original sections above are
+deliberately unrevised.
+
+**The provenance muted style is removed. Do not re-add it.** "The signature" section above
+mandates that "the provenance line every stats tool emits … gets its own muted style". It was
+built in Task 3, correctly for the input shape it was designed for, and then never fired once
+across five live chat queries: the model paraphrases season attribution into its own words per
+`system-prompt.st`, rather than relaying the tool's literal `"Data source: "` prefix, so the
+matcher had nothing to match. Deleted in `c2f0bd8`. The season mention now renders as ordinary
+body text in the reading face.
+
+This was a frontend-styling decision only. The backend's provenance discipline is **unchanged and
+still binding** — `AGENTS.md`, `SeasonContext.provenance()` and `system-prompt.st` all stand, and
+the model still attributes every reply by season in prose. The owner's position is that the UI
+should not call out which season the data is from beyond what the model already says: the app is
+meant to use current-season data, with older seasons as background.
+
+**The dark palette needs a muted value; it now has one.** The Dark table above lists five roles
+and no muted text, so the implementation left `--muted` at its light navy `#414D66` in dark mode —
+2.16:1 against `#10151F`, and that token carries the transcript's "YOU" attribution label. Added
+2026-08-17:
+
+| Role | Hex | Contrast on `#10151F` | Level |
+|---|---|---|---|
+| Muted text | `#A2ADC3` | 8.09 | AAA |
+
+Generated the same way as every other value here: same hue (220.5°) and saturation (22%) as
+light's `#414D66`, lightness inverted 32.7% → 70%. 8.09 against 15.44 for body text mirrors
+light's own 8.01-against-15.73 relationship. Gated by `check-contrast.mjs` in both themes.
+
+**"The streaming cursor is the only animation" was not true.** The Accessibility line below rests
+on that premise. The transcript also auto-scrolls with `behavior: 'smooth'` on every streamed
+token, which is considerably more vestibular-triggering than a blinking block, and Chrome does not
+downgrade an explicit `'smooth'` for `prefers-reduced-motion`. The requirement itself stands
+unchanged — it is the parenthetical that was wrong. The scroll is now gated on the media query.
+
 ## Out of scope
 
 - Backend behaviour, tools, prompts, and RAG — untouched.
