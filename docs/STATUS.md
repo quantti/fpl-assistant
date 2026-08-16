@@ -808,3 +808,47 @@ fixture, and `getTeamExpectedGoals`' aggregation matches the `fixture` scoreline
   unticked `- [ ]` boxes, which is also the checkbox style `AGENTS.md` forbids. All corrected, with
   the checklist rewritten as a table of outcomes and evidence. `HttpVaastavSource.fetch` and
   `fetchIfPresent` were near-identical copies and now share one private method.
+
+# Status — Frontend Design System
+
+**Progress:** Task 2/6 done, on branch `frontend-design-system` (not yet merged). Executed via
+subagent-driven-development; ledger at
+`.superpowers/sdd/2026-08-15-frontend-design-system/progress.md`.
+
+Plan: `docs/superpowers/plans/2026-08-15-frontend-design-system.md`.
+Spec: `docs/superpowers/specs/2026-08-15-frontend-design-system.md`.
+
+This is a cross-cutting rebuild of the chat UI (tokens, layout, transcript, composer, theme
+toggle) done between Phase 4 and Phase 5 so Phase 5's new screens are styled once. Not part of
+the Phase 1–5 numbering above.
+
+## Done
+
+| Task | Commit | What exists now |
+|---|---|---|
+| 1 — Tokens, fonts, contrast guard | `628c374` | `tokens.css` (full light/dark palette + spacing scale), self-hosted Archivo/Newsreader variable fonts, Mantine theme wired to the same custom properties, `check-contrast.mjs` WCAG guard wired into `npm run build`. No component consumes the tokens yet. Review: clean. |
+| 2 — Layout shell, mobile fixes | `12c62fa` | `ChatView.module.css` root as flex column (`height: 100dvh` — see below), single 640px breakpoint (full bleed below with 16px gutter from existing child padding, centred 660px column above), 48/56px header. `index.html` viewport meta gains `viewport-fit=cover, interactive-widget=resizes-content`. `scroll-padding-bottom: 16px` on `MessageThread`'s `.thread`. Review: clean, 3 minors deferred (below). |
+
+Deviation: Task 2 ships `height: 100dvh` on `.root`, not the plan's literal `min-height: 100dvh`.
+Proven necessary with an isolated Puppeteer harness — with only `min-height`, a flex column's
+`flex:1` child can't resolve a bounded main size once content overflows, so the thread's
+`overflow-y:auto` never gets anything to clip against and the whole page grows instead (composer
+ends up ~2600px off-screen at 375×667 with 40 injected messages). `height: 100dvh` is what the
+plan's own adjacent requirement ("thread region scrolls") actually needs. Full measurements in
+`.superpowers/sdd/2026-08-15-frontend-design-system/task-2-report.md`.
+
+Known gap, not a defect: `interactive-widget=resizes-content` (added in Task 2) has no effect on
+Safari/iOS — WebKit has not implemented it (bug 259770) as of Aug 2026; only Chrome 108+/Firefox
+132+ honour it. The iOS keyboard-covers-composer problem is *not* solved by this meta value;
+`height: 100dvh` plus Task 4's planned safe-area padding are what keep the composer reachable on
+iOS. No JS fallback exists for iOS specifically — open product question, not scoped to any task.
+
+Deferred minors (non-blocking, from Task 2 review): `scroll-padding-bottom: 16px` and `.header`'s
+`height: 48px` are literals rather than `var(--space-16)`/`var(--space-48)` — on-scale values,
+just inconsistent with the same diff's other literal→token conversions.
+
+## Remaining
+
+Tasks 3 (transcript thread — bubble removal, attribution labels, `remark-gfm`), 4 (composer,
+safe-area insets), 5 (theme toggle, quality floor), 6 (verification, deploy, docs) — see the plan
+for each task's done-when criteria.

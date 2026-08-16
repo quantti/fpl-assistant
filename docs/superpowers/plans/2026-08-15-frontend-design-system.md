@@ -4,7 +4,7 @@
 palette values, contrast levels, spacing scale, breakpoint and layout are binding. Every hex value
 in this plan is copied from it verbatim.
 
-**PROGRESS:** Task 0/6 done
+**PROGRESS:** Task 2/6 done
 
 **Goal:** Replace the undesigned Mantine-default chat UI with the specified design system, so that
 Phase 5's new screens are built once, into a finished system, rather than styled twice.
