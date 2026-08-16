@@ -19,16 +19,6 @@
   border-bottom: 1px solid var(--rule-section);
 }
 
-/* The "Data source: ..." / season-code line every stats tool opens with —
-   an aside, not body text, so it gets the muted role and the interface
-   face rather than the reading face. */
-.provenance {
-  font-family: var(--font-ui);
-  font-size: 0.875rem;
-  color: var(--muted);
-  margin: 0 0 var(--space-16) 0;
-}
-
 .prose {
   font-family: var(--font-reading);
   font-size: 1.125rem;
