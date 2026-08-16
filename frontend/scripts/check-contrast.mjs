@@ -91,6 +91,26 @@ function parseHexColors(blockBody) {
   return colors
 }
 
+/**
+ * Resolves single-level `--name: var(--other);` indirection (e.g. --ink:
+ * var(--ink-900);) against `ownColors` first, falling back to
+ * `fallbackColors` for tokens the block doesn't itself redeclare — mirroring
+ * the CSS cascade, where a dark-mode block that doesn't redeclare a token
+ * still reads it from the bare `:root` block. Returns a new map combining
+ * `ownColors` with whatever var() references resolved to a hex.
+ */
+function resolveVarRefs(blockBody, ownColors, fallbackColors) {
+  const resolved = { ...ownColors }
+  const re = /--([\w-]+)\s*:\s*var\(--([\w-]+)\)\s*;/g
+  let m
+  while ((m = re.exec(blockBody))) {
+    const [, name, ref] = m
+    const value = ownColors[ref] ?? fallbackColors[ref]
+    if (value) resolved[name] = value
+  }
+  return resolved
+}
+
 // Bare `:root {` — not `:root:not(...)` or `:root[...]`, both of which have
 // a non-brace, non-whitespace character immediately after `:root`.
 const lightBody = extractBlockBody(css, /^:root\s*\{/m)
@@ -98,7 +118,8 @@ if (!lightBody) {
   console.error('check-contrast: could not find a bare `:root { ... }` block in tokens.css')
   process.exit(1)
 }
-const lightColors = parseHexColors(lightBody)
+const lightHexColors = parseHexColors(lightBody)
+const lightColors = resolveVarRefs(lightBody, lightHexColors, lightHexColors)
 
 const darkMediaBody = extractBlockBody(css, /:root:not\(\[data-theme="light"\]\)\s*\{/)
 const darkAttrBody = extractBlockBody(css, /:root\[data-theme="dark"\]\s*\{/)
@@ -106,8 +127,8 @@ if (!darkMediaBody || !darkAttrBody) {
   console.error('check-contrast: could not find both dark-mode override blocks (`prefers-color-scheme` and `[data-theme="dark"]`) in tokens.css')
   process.exit(1)
 }
-const darkMediaColors = parseHexColors(darkMediaBody)
-const darkAttrColors = parseHexColors(darkAttrBody)
+const darkMediaColors = resolveVarRefs(darkMediaBody, parseHexColors(darkMediaBody), lightColors)
+const darkAttrColors = resolveVarRefs(darkAttrBody, parseHexColors(darkAttrBody), lightColors)
 
 // The whole point of overriding via both `prefers-color-scheme` and
 // `data-theme="dark"` is that a future toggle can force dark regardless of
