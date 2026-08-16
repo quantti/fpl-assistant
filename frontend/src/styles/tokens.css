@@ -26,6 +26,7 @@
   /* Light palette */
   --paper: #F7F9F7;
   --ink: var(--ink-900);
+  /* Redefined in both dark blocks below — see the comment there. */
   --muted: #414D66;
   --rule-row: #C4CBD8;
   --rule-section: #8792A8;
@@ -73,6 +74,16 @@
   :root:not([data-theme="light"]) {
     --paper: #10151F;
     --ink: #E9ECF2;
+    /* The spec's dark palette table never listed a muted value, so until now
+       --muted kept its light navy (#414D66) in dark mode — 2.16:1 against
+       dark --paper, measured in a headless browser. That is the transcript's
+       "YOU" attribution label and (since this pass) the empty state, so it
+       had to be given a dark counterpart rather than inherited.
+       Generated the same way as the rest of the palette: same hue (220.5deg)
+       and saturation (22%) as #414D66, lightness inverted 32.7% -> 70%,
+       which measures 8.09:1 on #10151F — mirroring light's own ink/muted
+       relationship (15.73/8.01). Gated by check-contrast.mjs in both themes. */
+    --muted: #A2ADC3;
     --pitch: #8DEC90;
     --redcard: #EC938D;
     /* NOT var(--ink): --ink is redefined to a light colour in this same
@@ -90,6 +101,7 @@
 :root[data-theme="dark"] {
   --paper: #10151F;
   --ink: #E9ECF2;
+  --muted: #A2ADC3;
   --pitch: #8DEC90;
   --redcard: #EC938D;
   --pitch-contrast: var(--ink-900);

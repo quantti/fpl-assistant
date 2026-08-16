@@ -62,7 +62,12 @@ if (Math.abs(sanity - 21) > 0.005) {
 // Parse tokens.css
 // ---------------------------------------------------------------------------
 
-const css = readFileSync(tokensPath, 'utf8')
+// Comments are stripped before anything is matched. Without this the parser
+// happily reads a commented-out declaration — `/* try --paper: #FFFFFF; */`
+// placed after the real one wins, because the regexes below scan in source
+// order and the last match for a token is the one kept. This is the build's
+// accessibility gate; it must read what the browser reads.
+const css = readFileSync(tokensPath, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
 
 /** Extracts the brace-balanced body of the first block whose opening matches `startRegex`. */
 function extractBlockBody(source, startRegex) {
@@ -168,6 +173,11 @@ const pairs = [
   { theme: 'light', fg: 'muted', bg: 'paper', label: 'muted on paper', level: 'AAA', min: AAA },
   { theme: 'light', fg: 'pitch', bg: 'paper', label: 'pitch on paper (links, primary action)', level: 'AA', min: AA },
   { theme: 'light', fg: 'white', bg: 'pitch', label: 'white label on pitch', level: 'AA', min: AA },
+  // The pairing components actually render (the send button). Distinct from
+  // the row above even in light, where --pitch-contrast merely happens to
+  // equal --white today — that equality is a fact about the current palette,
+  // not a guarantee, and the row above would keep passing if it broke.
+  { theme: 'light', fg: 'pitch-contrast', bg: 'pitch', label: 'pitch-contrast label on pitch (send button)', level: 'AA', min: AA },
   { theme: 'light', fg: 'ink', bg: 'card', label: 'ink label on card', level: 'AAA', min: AAA },
   { theme: 'light', fg: 'redcard', bg: 'paper', label: 'redcard on paper', level: 'AAA', min: AAA },
   { theme: 'light', fg: 'white', bg: 'redcard', label: 'white label on redcard', level: 'AAA', min: AAA },
@@ -179,7 +189,12 @@ const pairs = [
 
   // Dark theme — background is --paper (the "ground" value in dark mode).
   { theme: 'dark', fg: 'ink', bg: 'paper', label: 'body text on ground', level: 'AAA', min: AAA },
+  // Dark --muted was added 2026-08-17; before that --muted kept its light
+  // navy in dark mode at 2.16:1 and nothing here noticed, because this
+  // section had no muted row. It does now.
+  { theme: 'dark', fg: 'muted', bg: 'paper', label: 'muted on ground', level: 'AAA', min: AAA },
   { theme: 'dark', fg: 'pitch', bg: 'paper', label: 'pitch on ground (links)', level: 'AAA', min: AAA },
+  { theme: 'dark', fg: 'pitch-contrast', bg: 'pitch', label: 'pitch-contrast label on pitch (send button)', level: 'AAA', min: AAA },
   { theme: 'dark', fg: 'card', bg: 'paper', label: 'card on ground', level: 'AAA', min: AAA },
   { theme: 'dark', fg: 'redcard', bg: 'paper', label: 'redcard on ground', level: 'AAA', min: AAA },
 ]
