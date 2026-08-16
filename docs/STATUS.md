@@ -811,7 +811,8 @@ fixture, and `getTeamExpectedGoals`' aggregation matches the `fixture` scoreline
 
 # Status — Frontend Design System
 
-**Progress:** Task 5/6 done, on branch `frontend-design-system` (not yet merged). Executed via
+**Progress:** Task 6/6 done, on branch `frontend-design-system` (not yet merged, not yet
+deployed — deploy is a controller/human decision, see below). Executed via
 subagent-driven-development; ledger at
 `.superpowers/sdd/2026-08-15-frontend-design-system/progress.md`.
 
@@ -850,6 +851,43 @@ Deferred minors (non-blocking, from Task 2 review): `scroll-padding-bottom: 16px
 `height: 48px` are literals rather than `var(--space-16)`/`var(--space-48)` — on-scale values,
 just inconsistent with the same diff's other literal→token conversions.
 
+| 6 — Verification, deploy, docs | — (no code changes, verification only) | Verified against the real running backend (5 live `POST /api/chat` calls, not mocked) at 375px/1024px, both themes: transcript/hairline/reading-face rendering confirmed, a real markdown table rendered correctly at both widths/themes, no horizontal scroll, `npm run check-contrast` passes. Built the Docker image locally and extracted `app.jar` to definitively confirm both font files (`archivo-latin-*.woff2`, `newsreader-latin-*.woff2`) are present at the exact path the shipped CSS references — genuine WOFF2 binaries, byte-size matched, independently re-extracted and confirmed by the task reviewer too. `fly deploy` was deliberately not run and this file's update was deliberately deferred — both controller-owned steps, held for the human's go-ahead since a deploy is an external side effect. |
+
+### Known issue: the provenance muted-aside doesn't fire in real usage
+
+Task 3 built a dedicated muted style for the "Data source: ..." line every stats tool prefixes
+onto its reply (`AssistantMessage.tsx`'s `PROVENANCE_RE`, matching from the very start of the
+message). It's correctly implemented for the input shape it was designed for — Task 3's synthetic
+tests proved that, and Task 6's live verification confirmed the regex logic is exactly as built.
+
+But across 5 real chat queries that each hit a `SeasonContext.provenance()`-prefixed tool, it never
+fired once. `SeasonContext.provenance()` really does return a string starting literally with
+`"Data source: season ..."` — but the model never echoes that literal string in its visible answer.
+`backend/src/main/resources/prompts/system-prompt.st` instructs the model to read the data-source
+line and *attribute the season by name in its own words*, not relay the tool string verbatim — a
+reasonable choice for a conversational assistant (a bot that opened every answer with a robotic
+tool-string quote would read badly), and the model genuinely does satisfy `AGENTS.md`'s provenance
+discipline (every answer names its season) — just never in the one literal shape the frontend
+detects.
+
+Net effect: the season-attribution sentence renders as ordinary body text today, not as a
+visually distinct aside, even though the substance (season attribution) is present in every
+answer. Not a bug in the built code; a gap between the design spec's assumption and the system
+prompt's actual behaviour. Three possible directions, none chosen yet — this needs a product
+decision, not a unilateral code change:
+
+1. Change `system-prompt.st` to require verbatim relay of the data-source line — would make
+   answers read more stiffly.
+2. Have the backend carry provenance as a separate structured field instead of folding it into the
+   model's prose, so the frontend doesn't have to detect it inside free text at all.
+3. Accept the model's paraphrased attribution as already satisfying the underlying goal (numbers
+   attributed by season) and drop the dedicated muted-aside styling, since in practice nothing
+   triggers it.
+
 ## Remaining
 
-Task 6 (verification, deploy, docs) — see the plan for its done-when criteria.
+Nothing left in this plan's scope. Two decisions outstanding before this branch is considered
+finished: what to do (if anything) about the provenance finding above, and whether/when to run
+`fly deploy --ha=false --remote-only`. The plan's own review checkpoint ("request a full review
+before considering this plan complete") — the SDD skill's final whole-branch review — has not run
+yet; do that after the two decisions above, then use `finishing-a-development-branch`.
