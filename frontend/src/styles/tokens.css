@@ -113,8 +113,8 @@
    outline via `.mantine-class:focus, .mantine-class:focus-within { outline:
    none }` — a class + pseudo-class selector (specificity 0,2,0) — which
    beats a bare `:focus-visible` (specificity 0,1,0) regardless of source
-   order. !important is required, same reasoning as MessageInput.module.css's
-   .sendButton override. */
+   order. !important is required: it is the only mechanism that wins against
+   a higher-specificity suppression rule from a dependency's own stylesheet. */
 :focus-visible {
   outline: 2px solid var(--pitch) !important;
   outline-offset: 2px;
