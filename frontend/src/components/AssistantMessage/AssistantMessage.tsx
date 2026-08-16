@@ -7,22 +7,23 @@ interface Props {
   isStreaming?: boolean
 }
 
-// Stats tools prefix their reply with `SeasonContext.provenance()` — a
-// banner sentence naming the season and, when it's not the one being
-// played, saying so (see backend SeasonContext.java). The model is
-// instructed to open its answer with that attribution, so it typically
-// arrives as the first line of the assistant's markdown content. Matched
-// narrowly (the backend's literal "Data source:" prefix, or a season-code
-// lead-in like "2025/26,") so ordinary prose never gets misclassified.
-const PROVENANCE_RE = /^(data source:|(?:19|20)\d{2}\/\d{2},)/i
+// Stats tools prefix their reply with `SeasonContext.provenance()`, whose
+// text always starts with the literal "Data source: " and always ends with
+// one of exactly two fixed sentences (see backend SeasonContext.java):
+// "...(the season currently being played)." or "...current form, current
+// price, or current ownership." Matching through one of those known
+// endings — rather than splitting on the first newline — means a reply
+// that runs the provenance sentence directly into the answer with no line
+// break (a single unbroken paragraph) still splits correctly instead of
+// the whole message getting swallowed into the muted aside with nothing
+// left to render as body.
+const PROVENANCE_RE =
+  /^data source:.*?(?:\(the season currently being played\)|current form, current price, or current ownership)\.\s*/is
 
 function splitProvenance(content: string): [string | null, string] {
-  const newlineIndex = content.indexOf('\n')
-  const firstLine = newlineIndex === -1 ? content : content.slice(0, newlineIndex)
-  const trimmed = firstLine.trim()
-  if (!PROVENANCE_RE.test(trimmed)) return [null, content]
-  const rest = newlineIndex === -1 ? '' : content.slice(newlineIndex).replace(/^\n+/, '')
-  return [trimmed, rest]
+  const match = PROVENANCE_RE.exec(content)
+  if (!match) return [null, content]
+  return [match[0].trim(), content.slice(match[0].length)]
 }
 
 export default function AssistantMessage({ content, isStreaming }: Props) {
