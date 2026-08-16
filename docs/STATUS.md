@@ -853,41 +853,30 @@ just inconsistent with the same diff's other literal→token conversions.
 
 | 6 — Verification, deploy, docs | — (no code changes, verification only) | Verified against the real running backend (5 live `POST /api/chat` calls, not mocked) at 375px/1024px, both themes: transcript/hairline/reading-face rendering confirmed, a real markdown table rendered correctly at both widths/themes, no horizontal scroll, `npm run check-contrast` passes. Built the Docker image locally and extracted `app.jar` to definitively confirm both font files (`archivo-latin-*.woff2`, `newsreader-latin-*.woff2`) are present at the exact path the shipped CSS references — genuine WOFF2 binaries, byte-size matched, independently re-extracted and confirmed by the task reviewer too. `fly deploy` was deliberately not run and this file's update was deliberately deferred — both controller-owned steps, held for the human's go-ahead since a deploy is an external side effect. |
 
-### Known issue: the provenance muted-aside doesn't fire in real usage
+### Resolved: the provenance muted-aside never fired in real usage — styling dropped
 
 Task 3 built a dedicated muted style for the "Data source: ..." line every stats tool prefixes
-onto its reply (`AssistantMessage.tsx`'s `PROVENANCE_RE`, matching from the very start of the
-message). It's correctly implemented for the input shape it was designed for — Task 3's synthetic
-tests proved that, and Task 6's live verification confirmed the regex logic is exactly as built.
+onto its reply. It was correctly implemented for the input shape it was designed for — Task 3's
+synthetic tests proved that — but Task 6's live verification found it never fired once across 5
+real chat queries: the model paraphrases season attribution into its own words per
+`system-prompt.st`'s instruction, rather than relaying the tool's literal `"Data source: ..."`
+string, so `PROVENANCE_RE` never matched real output.
 
-But across 5 real chat queries that each hit a `SeasonContext.provenance()`-prefixed tool, it never
-fired once. `SeasonContext.provenance()` really does return a string starting literally with
-`"Data source: season ..."` — but the model never echoes that literal string in its visible answer.
-`backend/src/main/resources/prompts/system-prompt.st` instructs the model to read the data-source
-line and *attribute the season by name in its own words*, not relay the tool string verbatim — a
-reasonable choice for a conversational assistant (a bot that opened every answer with a robotic
-tool-string quote would read badly), and the model genuinely does satisfy `AGENTS.md`'s provenance
-discipline (every answer names its season) — just never in the one literal shape the frontend
-detects.
-
-Net effect: the season-attribution sentence renders as ordinary body text today, not as a
-visually distinct aside, even though the substance (season attribution) is present in every
-answer. Not a bug in the built code; a gap between the design spec's assumption and the system
-prompt's actual behaviour. Three possible directions, none chosen yet — this needs a product
-decision, not a unilateral code change:
-
-1. Change `system-prompt.st` to require verbatim relay of the data-source line — would make
-   answers read more stiffly.
-2. Have the backend carry provenance as a separate structured field instead of folding it into the
-   model's prose, so the frontend doesn't have to detect it inside free text at all.
-3. Accept the model's paraphrased attribution as already satisfying the underlying goal (numbers
-   attributed by season) and drop the dedicated muted-aside styling, since in practice nothing
-   triggers it.
+Owner's decision: keep the season mention as ordinary body text — the model already satisfies
+`AGENTS.md`'s provenance discipline in its own prose, and the app should not otherwise call out
+which season a reply draws on beyond what the model already says. Backend/system-prompt behaviour
+is unchanged (still attributes by season in prose, per `AGENTS.md`'s binding discipline for all
+tools) — this was a frontend-only styling question, not a backend data-honesty one. Fixed by
+deleting the dead `splitProvenance`/`PROVENANCE_RE` logic and the orphaned `.provenance` CSS rule
+(commit `c2f0bd8`); the season mention now renders exactly like the rest of the answer, in the
+reading face.
 
 ## Remaining
 
-Nothing left in this plan's scope. Two decisions outstanding before this branch is considered
-finished: what to do (if anything) about the provenance finding above, and whether/when to run
-`fly deploy --ha=false --remote-only`. The plan's own review checkpoint ("request a full review
+Nothing left in this plan's scope. One decision outstanding before this branch is considered
+finished: whether/when to run `fly deploy --ha=false --remote-only` (this is the single Fly.io app
+`fpl-assistant` per `fly.toml` — the Docker build bundles the frontend's static build into Spring
+Boot's `static/`, so this one deploy ships both backend and frontend together; there is no separate
+frontend hosting). The plan's own review checkpoint ("request a full review
 before considering this plan complete") — the SDD skill's final whole-branch review — has not run
-yet; do that after the two decisions above, then use `finishing-a-development-branch`.
+yet; do that after the deploy decision above, then use `finishing-a-development-branch`.
