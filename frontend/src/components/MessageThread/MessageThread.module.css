@@ -3,21 +3,38 @@
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  padding: 16px;
+  gap: var(--space-24);
+  padding: var(--space-16);
   /* Keeps the last message clear of the composer below it (spec's Mobile
      section, item 4). Owned by ChatView's shell task even though the rule
      lives here, since this is the element that actually scrolls. */
-  scroll-padding-bottom: 16px;
+  scroll-padding-bottom: var(--space-16);
 }
 
-.userBubble {
-  background: var(--mantine-color-blue-6);
-  color: white;
-  border-radius: 8px;
-  padding: 10px 14px;
-  max-width: 75%;
-  align-self: flex-end;
-  word-break: break-word;
+.turn {
+  display: flex;
+  flex-direction: column;
+}
+
+/* The printed-interview attribution: small-caps label + hairline rule under
+   it. Shared shape with AssistantMessage's own .label — colour is the only
+   difference (muted here, pitch there), per the spec's "green earns its
+   place semantically" rule. */
+.label {
+  font-family: var(--font-ui);
+  font-variant-caps: small-caps;
+  font-weight: 600;
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  padding-bottom: var(--space-8);
+  margin-bottom: var(--space-8);
+  border-bottom: 1px solid var(--rule-section);
+}
+
+.userBody {
+  font-family: var(--font-ui);
+  margin: 0;
   white-space: pre-wrap;
+  word-break: break-word;
 }

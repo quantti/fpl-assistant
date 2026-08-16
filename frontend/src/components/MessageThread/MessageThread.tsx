@@ -19,7 +19,10 @@ export default function MessageThread({ messages, streamingContent }: Props) {
     <div className={classes.thread}>
       {messages.map((msg, i) =>
         msg.role === 'user' ? (
-          <div key={i} className={classes.userBubble}>{msg.content}</div>
+          <div key={i} className={classes.turn}>
+            <div className={classes.label}>You</div>
+            <p className={classes.userBody}>{msg.content}</p>
+          </div>
         ) : (
           <AssistantMessage key={i} content={msg.content} />
         )
