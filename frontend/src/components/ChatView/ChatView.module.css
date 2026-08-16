@@ -27,12 +27,21 @@
   flex: 0 0 auto;
   display: flex;
   align-items: center;
+  justify-content: space-between;
   height: 48px;
   padding: 0 var(--space-16);
   border-bottom: 1px solid var(--rule-section);
   font-family: var(--font-ui);
   font-weight: 600;
   font-size: 1.1rem;
+}
+
+/* Mantine's ActionIcon sets its effective text colour via an inline
+   --ai-color custom property (see MessageInput.module.css's .sendButton
+   comment for the full explanation) — !important is required for a plain
+   author-stylesheet rule to win regardless of variant/state/import order. */
+.themeToggle {
+  color: var(--ink) !important;
 }
 
 .empty {
