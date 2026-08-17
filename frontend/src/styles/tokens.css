@@ -1,0 +1,121 @@
+/*
+ * Design tokens — the single source of colour, spacing and type-role values
+ * for the app. No literal hex colour may appear outside this file; every
+ * other stylesheet and theme.ts reference these custom properties instead.
+ *
+ * Contrast numbers below are documented in
+ * docs/superpowers/specs/2026-08-15-frontend-design-system.md and enforced
+ * by `npm run check-contrast` (frontend/scripts/check-contrast.mjs), which
+ * parses this file rather than duplicating the values.
+ *
+ * Dark mode: selected by `prefers-color-scheme`, overridden by a
+ * `data-theme` attribute on the root so a future toggle can force either
+ * theme regardless of OS setting. The complete light palette lives on the
+ * bare `:root`; the dark blocks below redefine only the tokens whose value
+ * actually changes.
+ */
+
+:root {
+  /* Canonical literal for light-mode --ink's navy, factored out so it has
+     exactly one definition. Referenced by --ink below AND by dark-mode
+     --pitch-contrast further down — see the comment there for why
+     --pitch-contrast can't just say var(--ink): this is what removes that
+     duplication without a second, unlinked copy of the hex. */
+  --ink-900: #171E2E;
+
+  /* Light palette */
+  --paper: #F7F9F7;
+  --ink: var(--ink-900);
+  /* Redefined in both dark blocks below — see the comment there. */
+  --muted: #414D66;
+  --rule-row: #C4CBD8;
+  --rule-section: #8792A8;
+  --pitch: #18811C;
+  --card: #F0D04C;
+  --redcard: #9A261D;
+  --flood: #1D819A;
+  --kit: #9A531D;
+
+  /* Invariant across themes. Not part of the seven-colour palette itself —
+     added so Mantine's theme.white (used for the "white label on pitch/
+     redcard" pairings the spec measures) can reference a token instead of
+     a literal hex, per the project rule that hex lives only in this file. */
+  --white: #FFFFFF;
+
+  /* Text colour for content placed on a --pitch background (e.g. the
+     composer's send button). White passes AA on the light palette's dark
+     green (#18811C, 5.01) but --pitch flips to a light green in dark mode
+     (#8DEC90), against which white fails (~1.45) — so, like --pitch
+     itself, this token is redefined in both dark-mode blocks below (to
+     var(--ink-900), not var(--ink) — see the comment there for why).
+     Mantine's autoContrast is off and cannot evaluate var() colours (see
+     theme.ts), so components using --pitch as a background must reference
+     this token explicitly rather than relying on Mantine's filled-variant
+     default. */
+  --pitch-contrast: var(--white);
+
+  /* Spacing scale — exactly 4 8 12 16 24 32 48, no other values. */
+  --space-4: 4px;
+  --space-8: 8px;
+  --space-12: 12px;
+  --space-16: 16px;
+  --space-24: 24px;
+  --space-32: 32px;
+  --space-48: 48px;
+
+  /* Type roles. Reading: Newsreader (assistant answers, prose). Interface:
+     Archivo (user messages, labels, chrome, buttons). Fonts loaded in
+     ./fonts.css. */
+  --font-reading: 'Newsreader Variable', ui-serif, Georgia, 'Times New Roman', serif;
+  --font-ui: 'Archivo Variable', ui-sans-serif, system-ui, -apple-system, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #10151F;
+    --ink: #E9ECF2;
+    /* The spec's dark palette table never listed a muted value, so until now
+       --muted kept its light navy (#414D66) in dark mode — 2.16:1 against
+       dark --paper, measured in a headless browser. That is the transcript's
+       "YOU" attribution label and (since this pass) the empty state, so it
+       had to be given a dark counterpart rather than inherited.
+       Generated the same way as the rest of the palette: same hue (220.5deg)
+       and saturation (22%) as #414D66, lightness inverted 32.7% -> 70%,
+       which measures 8.09:1 on #10151F — mirroring light's own ink/muted
+       relationship (15.73/8.01). Gated by check-contrast.mjs in both themes. */
+    --muted: #A2ADC3;
+    --pitch: #8DEC90;
+    --redcard: #EC938D;
+    /* NOT var(--ink): --ink is redefined to a light colour in this same
+       block (for body text against dark --paper), but --pitch inverts the
+       OTHER way (dark green -> light green), so it needs a genuinely dark
+       colour here. var(--ink-900) is light-mode ink's own navy, factored
+       out at the top of this file so this doesn't carry its own unlinked
+       copy of the hex — measured 11.52:1 against dark-mode --pitch
+       (#8DEC90); var(--ink) measured 1.22:1, confirmed with a
+       headless-browser contrast check. */
+    --pitch-contrast: var(--ink-900);
+  }
+}
+
+:root[data-theme="dark"] {
+  --paper: #10151F;
+  --ink: #E9ECF2;
+  --muted: #A2ADC3;
+  --pitch: #8DEC90;
+  --redcard: #EC938D;
+  --pitch-contrast: var(--ink-900);
+}
+
+/* Quality floor: every interactive element gets a visible --pitch focus
+   ring, never outline: none without a replacement. Source order alone does
+   NOT make this win: measured live, Mantine's Textarea/Input suppress the
+   outline via `.mantine-class:focus, .mantine-class:focus-within { outline:
+   none }` — a class + pseudo-class selector (specificity 0,2,0) — which
+   beats a bare `:focus-visible` (specificity 0,1,0) regardless of source
+   order. !important is required: it is the only mechanism that wins against
+   a higher-specificity suppression rule from a dependency's own stylesheet. */
+:focus-visible {
+  outline: 2px solid var(--pitch) !important;
+  outline-offset: 2px;
+}
