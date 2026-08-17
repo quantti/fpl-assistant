@@ -1,16 +1,49 @@
+/*
+ * Shell: flex column, exactly one breakpoint (640px). Below it, full bleed —
+ * .root has no width constraint, the 16px gutter comes from the fixed
+ * horizontal padding already on .header, .thread (MessageThread.module.css)
+ * and .wrapper (MessageInput.module.css). At and above it, .root itself
+ * becomes the centred 660px column and those same paddings keep working
+ * unchanged inside it.
+ *
+ * `height: 100dvh` (not `min-height`) is required for `.thread`'s
+ * `overflow-y: auto` (MessageThread.module.css) to actually scroll
+ * internally instead of the whole page scrolling once messages overflow the
+ * viewport — see task-2-report.md for the measured evidence. This is also
+ * why the composer needs no bottom padding/hooks from this file: it is an
+ * ordinary in-flow flex child below a height-bounded root, never overlapped
+ * by `.thread`, so Task 4's `env(safe-area-inset-bottom)` on the composer's
+ * own box is all that's needed — nothing here clips or duplicates it.
+ */
 .root {
   display: flex;
   flex-direction: column;
   height: 100dvh;
-  max-width: 800px;
-  margin: 0 auto;
+  background: var(--paper);
+  color: var(--ink);
 }
 
 .header {
-  padding: 16px;
-  border-bottom: 1px solid var(--mantine-color-default-border);
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 48px;
+  padding: 0 var(--space-16);
+  border-bottom: 1px solid var(--rule-section);
+  font-family: var(--font-ui);
   font-weight: 600;
   font-size: 1.1rem;
+}
+
+/* Mantine's ActionIcon sets its effective text colour via an inline
+   --ai-color custom property (see theme.ts's variantColorResolver docstring
+   for the full explanation) — !important is required for a plain
+   author-stylesheet rule to win regardless of variant/state/import order.
+   The resolver only covers variant="filled" color="pitch"; this toggle is
+   neither, so it still needs the override. */
+.themeToggle {
+  color: var(--ink) !important;
 }
 
 .empty {
@@ -18,8 +51,24 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--mantine-color-dimmed);
+  /* Was var(--mantine-color-dimmed), which resolved to Mantine's own #868E96
+     — 3.14:1 on --paper at this size, a WCAG AA failure on the first screen
+     every user sees. theme.ts now maps --mantine-color-dimmed onto --muted
+     too, so Mantine's own components can't reintroduce it; app stylesheets
+     name the token directly. */
+  color: var(--muted);
   font-size: 0.95rem;
   text-align: center;
-  padding: 32px;
+  padding: var(--space-32);
+}
+
+@media (min-width: 640px) {
+  .root {
+    max-width: 660px;
+    margin: 0 auto;
+  }
+
+  .header {
+    height: 56px;
+  }
 }

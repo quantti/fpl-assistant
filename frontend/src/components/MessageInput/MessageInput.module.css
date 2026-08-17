@@ -1,11 +1,35 @@
 .wrapper {
   display: flex;
-  gap: 8px;
-  padding: 12px 16px;
-  border-top: 1px solid var(--mantine-color-default-border);
-  background: var(--mantine-color-body);
+  gap: var(--space-8);
+  padding: var(--space-12) var(--space-16);
+  /* iOS home indicator clearance (spec's Mobile section, item 2) — floor of
+     12px so the button doesn't hug the edge on devices with no safe area. */
+  padding-bottom: max(var(--space-12), env(safe-area-inset-bottom));
+  border-top: 1px solid var(--rule-section);
+  background: var(--paper);
 }
 
 .textarea {
   flex: 1;
+}
+
+/* The spec's "deliberately absent" list rules out a filled, rounded box here;
+   Mantine's default input variant is exactly that. Its fill, border and
+   radius come from --input-bg / --input-bd / --input-radius, which Mantine
+   declares on the Input *wrapper* — the div between this module's .textarea
+   root and the textarea element — from a selector
+   (`[data-mantine-color-scheme='x'] .m_xxx[data-variant='default']`, 0,3,0)
+   that out-specifies anything this file can write onto that same element.
+   Declaring them on the textarea element instead sidesteps the fight
+   entirely: an element's own declaration always beats the value it would
+   otherwise inherit, and nothing in Mantine declares these three on the
+   input element itself. That leaves the hairline-only treatment the spec
+   asks for — same --rule-section as the composer's own top rule and the
+   transcript's attribution rules, in both themes.
+   --input-bd-focus is left alone: it resolves to the primary colour, so a
+   focused composer draws a --pitch border, matching the global focus ring. */
+.textarea textarea {
+  --input-bg: var(--paper);
+  --input-bd: var(--rule-section);
+  --input-radius: 0;
 }
