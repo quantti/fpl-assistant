@@ -808,3 +808,141 @@ fixture, and `getTeamExpectedGoals`' aggregation matches the `fixture` scoreline
   unticked `- [ ]` boxes, which is also the checkbox style `AGENTS.md` forbids. All corrected, with
   the checklist rewritten as a table of outcomes and evidence. `HttpVaastavSource.fetch` and
   `fetchIfPresent` were near-identical copies and now share one private method.
+
+# Status — Frontend Design System
+
+**Progress:** Task 6/6 done plus one whole-branch review fix wave, on branch
+`frontend-design-system` — **deployed** (2026-08-16, `fly deploy` exit 0, health UP at
+https://fpl-assistant.fly.dev/), **not yet merged**. The fix wave below landed after that deploy
+and therefore needs a redeploy. Executed via subagent-driven-development; ledger at
+`.superpowers/sdd/2026-08-15-frontend-design-system/progress.md`.
+
+Plan: `docs/superpowers/plans/2026-08-15-frontend-design-system.md`.
+Spec: `docs/superpowers/specs/2026-08-15-frontend-design-system.md`.
+
+This is a cross-cutting rebuild of the chat UI (tokens, layout, transcript, composer, theme
+toggle) done between Phase 4 and Phase 5 so Phase 5's new screens are styled once. Not part of
+the Phase 1–5 numbering above.
+
+## Done
+
+| Task | Commit | What exists now |
+|---|---|---|
+| 1 — Tokens, fonts, contrast guard | `628c374` | `tokens.css` (full light/dark palette + spacing scale), self-hosted Archivo/Newsreader variable fonts, Mantine theme wired to the same custom properties, `check-contrast.mjs` WCAG guard wired into `npm run build`. No component consumes the tokens yet. Review: clean. |
+| 2 — Layout shell, mobile fixes | `12c62fa` | `ChatView.module.css` root as flex column (`height: 100dvh` — see below), single 640px breakpoint (full bleed below with 16px gutter from existing child padding, centred 660px column above), 48/56px header. `index.html` viewport meta gains `viewport-fit=cover, interactive-widget=resizes-content`. `scroll-padding-bottom: 16px` on `MessageThread`'s `.thread`. Review: clean, 3 minors deferred (below). |
+| 3 — Transcript thread | `62c28e6..00959cb` | Bubbles removed from `MessageThread`/`AssistantMessage`; each turn is a small-caps `--font-ui` attribution label (`--muted` user / `--pitch` assistant) plus a `--rule-section` hairline plus body (`--font-reading` 18px/1.65 assistant, `--font-ui` user), 24px turn rhythm, no backgrounds/borders/shadows/radii beyond the hairline and table rules. `remark-gfm@4.0.1` added; tables styled with `--rule-row`/`--rule-section`. Also shipped a muted style for the provenance line (`SeasonContext.provenance()`'s `"Data source: ..."` prefix) — **since deleted in `c2f0bd8`**, see "Resolved: the provenance muted-aside never fired" below; there is no provenance-specific styling in the build. Review found 1 Important bug (provenance-split could swallow the whole reply when it had no newline) — fixed in round 1 (`00959cb`), re-review clean. |
+| 4 — Composer | `ae9b281..c57dfd7` | `MessageInput` restyled: `--paper` background, `--rule-section` top rule, `padding-bottom: max(var(--space-12), env(safe-area-inset-bottom))`, textarea caps at 5 rows then scrolls, IME composition guard preserved. New `--pitch-contrast` token (white in light, linked to `--ink-900` in dark) fixes a dark-mode-only bug Mantine's `autoContrast` couldn't have caught (white-on-light-green send button, ~1.45:1) — computed/verified at 5.01:1 light / 11.52:1 dark. Review found 2 Important issues (an unscoped `!important` bled into the disabled-state colour; the dark-mode literal duplicated `--ink`'s hex with no drift guard) — both fixed in round 1 (`c57dfd7`): `.sendButton:not(:disabled)` scoping, and `--ink-900` as the single canonical literal both `--ink` and `--pitch-contrast` reference. `check-contrast.mjs` gained a small `var()`-reference resolver as necessary fallout; re-review confirmed it fails loud rather than masking a broken reference. Re-review clean. |
+| 5 — Theme toggle, quality floor | `e3e3840..3e4c0cf` | Header toggle wired to Mantine's own `useMantineColorScheme`/`useComputedColorScheme` (single persisted source of truth, no parallel storage) syncing `document.documentElement.dataset.theme` on every change. Global `:focus-visible` ring in `--pitch` added to `tokens.css`; needed `!important` to beat Mantine's own `Textarea` focus-outline suppression (verified real specificity conflict, not a misdiagnosis — disabled elements can't be focused, so no blast-radius risk like Task 4's). `prefers-reduced-motion` stops the streaming cursor's blink, stays solid. Review found 1 Important issue (`data-theme` sync ran in `useEffect`, post-paint, risking a theme flash on reload when a persisted choice opposes the OS preference) — fixed in round 1 (`3e4c0cf`) by switching to `useLayoutEffect`, matching Mantine's own pre-paint pattern. Re-review clean. |
+| 6 — Verification, deploy, docs | — (no frontend code changes, verification only) | Verified against the real running backend (5 live `POST /api/chat` calls, not mocked) at 375px/1024px, both themes: transcript/hairline/reading-face rendering confirmed, a real markdown table rendered correctly at both widths/themes, no horizontal scroll, `npm run check-contrast` passes. Built the Docker image locally and extracted `app.jar` to definitively confirm both font files (`archivo-latin-*.woff2`, `newsreader-latin-*.woff2`) are present at the exact path the shipped CSS references — genuine WOFF2 binaries, byte-size matched, independently re-extracted and confirmed by the task reviewer too. `fly deploy` and this file's update were held for the human's go-ahead at the time; the go-ahead came and the deploy ran on 2026-08-16 (see Progress above). |
+| Whole-branch review fix wave | this commit | Mantine's own surface colours brought under the token system via `cssVariablesResolver` + `variantColorResolver`, `prefers-reduced-motion` gate on the transcript's auto-scroll, dark-mode `--muted`, two contrast-guard hardenings. Detailed below. |
+
+Deviation: Task 2 ships `height: 100dvh` on `.root`, not the plan's literal `min-height: 100dvh`.
+Proven necessary with an isolated Puppeteer harness — with only `min-height`, a flex column's
+`flex:1` child can't resolve a bounded main size once content overflows, so the thread's
+`overflow-y:auto` never gets anything to clip against and the whole page grows instead (composer
+ends up ~2600px off-screen at 375×667 with 40 injected messages). `height: 100dvh` is what the
+plan's own adjacent requirement ("thread region scrolls") actually needs. Full measurements in
+`.superpowers/sdd/2026-08-15-frontend-design-system/task-2-report.md`.
+
+Known gap, not a defect: `interactive-widget=resizes-content` (added in Task 2) has no effect on
+Safari/iOS — WebKit has not implemented it (bug 259770) as of Aug 2026; only Chrome 108+/Firefox
+132+ honour it. The iOS keyboard-covers-composer problem is *not* solved by this meta value;
+`height: 100dvh` plus Task 4's planned safe-area padding are what keep the composer reachable on
+iOS. No JS fallback exists for iOS specifically — open product question, not scoped to any task.
+
+Deferred minors (from Task 2 review): `scroll-padding-bottom` was tokenized to `var(--space-16)`
+in Task 3 and is no longer a literal. The one remaining literal is `.header`'s `height: 48px`
+(and its `56px` sibling above the breakpoint), and that is deliberate rather than deferred: `56`
+is not on the spacing scale and has no token, and both are element *sizes*, not spacing. Giving
+one of them `var(--space-48)` would imply a relationship to the scale that does not exist.
+
+### Resolved: the provenance muted-aside never fired in real usage — styling dropped
+
+Task 3 built a dedicated muted style for the "Data source: ..." line every stats tool prefixes
+onto its reply. It was correctly implemented for the input shape it was designed for — Task 3's
+synthetic tests proved that — but Task 6's live verification found it never fired once across 5
+real chat queries: the model paraphrases season attribution into its own words per
+`system-prompt.st`'s instruction, rather than relaying the tool's literal `"Data source: ..."`
+string, so `PROVENANCE_RE` never matched real output.
+
+Owner's decision: keep the season mention as ordinary body text — the model already satisfies
+`AGENTS.md`'s provenance discipline in its own prose, and the app should not otherwise call out
+which season a reply draws on beyond what the model already says. Backend/system-prompt behaviour
+is unchanged (still attributes by season in prose, per `AGENTS.md`'s binding discipline for all
+tools) — this was a frontend-only styling question, not a backend data-honesty one. Fixed by
+deleting the dead `splitProvenance`/`PROVENANCE_RE` logic and the orphaned `.provenance` CSS rule
+(commit `c2f0bd8`); the season mention now renders exactly like the rest of the answer, in the
+reading face.
+
+The spec carried the same mandate and now carries the same correction: see
+`docs/superpowers/specs/2026-08-15-frontend-design-system.md`'s "Amendment 2026-08-17". The spec
+is what Phase 5 builds from, so recording the removal only here would have let it be re-added.
+
+### Whole-branch review fix wave (2026-08-17)
+
+The plan's review checkpoint ran against the deployed branch and found four Important issues.
+All are fixed; the pass touched `theme.ts`, `main.tsx`, `tokens.css`, three CSS modules,
+`MessageThread.tsx`, `check-contrast.mjs`, this file and the spec.
+
+**Mantine's own surface colours were never under the token system.** Five tasks each restyled
+what they built; nobody swept the elements nobody built, so the app was rendering colours that
+appear nowhere in `tokens.css` — which is also a structural blind spot in `check-contrast.mjs`,
+since it parses `tokens.css`. Three live symptoms, one root cause: the empty state's
+`--mantine-color-dimmed` measured **3.14:1** on `--paper` (an AA failure on the first screen every
+user sees); no element painted the page ground, so above 640px the desktop gutters showed
+Mantine's `--mantine-color-body` (`#242424` beside a `#10151F` column in dark); and the composer's
+`Textarea` kept Mantine's default filled, bordered, 8px-radius box, which the spec's "deliberately
+absent" list forbids. Fixed at the provider rather than per component: a `cssVariablesResolver`
+maps `--mantine-color-body`, `--mantine-color-text`, `--mantine-color-dimmed`,
+`--mantine-color-placeholder` and `--mantine-color-default-border` onto tokens, and a
+`variantColorResolver` writes `--pitch-contrast` into filled controls itself — which *removed* the
+`.sendButton … !important` in `MessageInput.module.css` rather than fighting it, and pre-empts
+every filled Mantine control Phase 5 adds. Empty state now measures **8.01:1 light / 8.09:1 dark**;
+gutter and column sample identical in both themes at 1024px; textarea is `--paper` on a
+1px `--rule-section` hairline at radius 0; send button unchanged at 5.01 / 11.52. The mapping goes
+into the resolver's `light` *and* `dark` blocks, not the shared one — Mantine's own defaults land
+in `:root[data-mantine-color-scheme="…"]` (0,2,0), which outranks a bare `:root`.
+
+**`--muted` had no dark value.** The spec's dark palette table never listed one, so `--muted` kept
+its light navy `#414D66` in dark mode: **2.16:1** against dark `--paper`, and that is the
+transcript's "YOU" attribution label. Nothing caught it because the guard's dark section had no
+muted row. Adding a dark `--muted` was also a precondition for the empty-state fix, which would
+otherwise have regressed dark from 4.76 to 2.16. New value `#A2ADC3`, generated the same way as
+the rest of the palette (same hue 220.5° and saturation 22% as `#414D66`, lightness inverted
+32.7%→70%), measuring 8.09:1 — mirroring light's own ink/muted relationship. Gated in both themes
+now.
+
+**Auto-scroll ignored `prefers-reduced-motion`.** `MessageThread`'s `scrollIntoView({ behavior:
+'smooth' })` fires on every streamed token and Chrome does not auto-downgrade an explicit
+`'smooth'`. Task 5's quality floor was accepted against the spec's premise that the streaming
+cursor is the only animation in the app; it was not. Now reads the media query and passes `'auto'`
+when set — verified in a headless browser over a mocked SSE stream: 9/9 calls `smooth` at
+no-preference, 9/9 `auto` under `reduce`, both themes.
+
+**Two contrast-guard hardenings.** The parser did not strip `/* */` comments, so a comment like
+`/* try --paper: #FFFFFF; */` placed after the real declaration made the guard report and gate on
+the commented-out value — reproduced, then closed with one `replace()`. And the gated set
+contained `white on pitch` but never `pitch-contrast on pitch`: the token components actually
+render was ungated in both themes, passing in light only because `--pitch-contrast` happens to
+equal `--white` today. Both pairings are gated now, plus `muted on ground`.
+
+**Deliberately not changed.** The disabled send button still uses Mantine's own
+`--mantine-color-disabled` / `--mantine-color-disabled-color` (`#E9ECEF`/`#ADB5BD` light,
+`#2E2E2E`/`#696969` dark) — the last off-token surface in the build, visible on the empty screen.
+WCAG exempts inactive components from contrast requirements, but the colours are off-palette. It
+was left alone because the palette has no disabled token and inventing one is a design decision:
+`--paper` fill plus a `--rule-section` glyph would arguably be right, but that is the owner's call,
+not a review-fix. The send button's own 8px radius is likewise untouched — the finding named the
+input's radius, and `theme.defaultRadius: 0` would have squared every future Mantine control on
+the strength of a finding about one textarea.
+
+## Remaining
+
+Nothing left in this plan's scope, and nothing blocking.
+
+- **Redeploy.** The 2026-08-16 deploy predates the fix wave above, so production is currently
+  serving the branch without it. Run `fly deploy --ha=false --remote-only` (single Fly.io app
+  `fpl-assistant` per `fly.toml` — the Docker build bundles the frontend's static build into
+  Spring Boot's `static/`, so one deploy ships both; there is no separate frontend hosting).
+- **Merge.** The branch is still unmerged. A scoped re-review of the fix range runs first; after
+  that, use `finishing-a-development-branch`.

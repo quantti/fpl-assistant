@@ -12,14 +12,24 @@ export default function MessageThread({ messages, streamingContent }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    // This fires on every streamed token, so it is by far the most
+    // motion the app produces — more than the streaming cursor the spec
+    // treats as its only animation. Chrome does not downgrade an explicit
+    // `behavior: 'smooth'` for prefers-reduced-motion, so gate it here.
+    // Read at scroll time rather than cached: the OS setting can change
+    // mid-session.
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    bottomRef.current?.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth' })
   }, [messages, streamingContent])
 
   return (
     <div className={classes.thread}>
       {messages.map((msg, i) =>
         msg.role === 'user' ? (
-          <div key={i} className={classes.userBubble}>{msg.content}</div>
+          <div key={i} className={classes.turn}>
+            <div className={classes.label}>You</div>
+            <p className={classes.userBody}>{msg.content}</p>
+          </div>
         ) : (
           <AssistantMessage key={i} content={msg.content} />
         )
