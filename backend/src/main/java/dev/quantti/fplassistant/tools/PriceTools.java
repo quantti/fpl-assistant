@@ -45,10 +45,12 @@ public class PriceTools implements FplTool {
     @Tool(description = """
             Get a player's recent price movement — the last N days of prices captured daily
             from FPL, plus how much the price has risen or fallen over that window and FPL's
-            own counters for the change this gameweek and since the season started. Use this
-            for buy/sell timing and team-value questions. The trend is descriptive, not a
-            prediction of future movement. FPL changes prices once a day at 00:00 UK; the reply
-            states which day's capture it comes from, and if that is not today, say so.
+            own counters for the change this gameweek and since the season started. The first
+            row is today's price (or the latest captured) — use this for "what does X cost
+            now" as well as for buy/sell timing and team-value questions. The trend is
+            descriptive, not a prediction of future movement. FPL changes prices once a day at
+            00:00 UK; the reply states which day's capture it comes from, and if that is not
+            today, say so.
             """)
     public String getPriceHistory(String playerName, int lastN) {
         try {

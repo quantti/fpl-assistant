@@ -1,6 +1,8 @@
 package dev.quantti.fplassistant.tools;
 
 import java.sql.Timestamp;
+import java.time.Instant;
+import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.Locale;
@@ -47,6 +49,15 @@ public final class UkTime {
     public static String format(Object value, String fallback) {
         if (value instanceof Timestamp ts) {
             return FORMAT.format(ts.toInstant().atZone(UK)) + " UK";
+        }
+        // pgjdbc can hand back OffsetDateTime or Instant instead of Timestamp depending on
+        // configuration; both carry the instant unambiguously, so render them in the house
+        // style rather than falling through to a raw toString.
+        if (value instanceof OffsetDateTime odt) {
+            return FORMAT.format(odt.atZoneSameInstant(UK)) + " UK";
+        }
+        if (value instanceof Instant instant) {
+            return FORMAT.format(instant.atZone(UK)) + " UK";
         }
         return value == null ? fallback : value.toString();
     }

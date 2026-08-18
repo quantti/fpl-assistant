@@ -1,9 +1,12 @@
 package dev.quantti.fplassistant.tools;
 
 import java.time.LocalDate;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -100,8 +103,9 @@ public class AvailabilityTools implements FplTool {
             at a club. Pass the club name or short name (e.g. "Arsenal", "ARS"). Names are
             matched against FPL's own club names, which are abbreviated — "Man City", "Man Utd",
             "Nott'm Forest", "Spurs". If a full formal name returns no match, retry with FPL's
-            short form or the three-letter code before telling the user anything. The reply
-            states which day's capture it comes from.
+            short form or the three-letter code before telling the user anything. Lists up to
+            30 flagged players, highest-priced first. The reply states which day's capture it
+            comes from.
             """)
     public String getFlaggedPlayers(String teamName) {
         try {
@@ -136,11 +140,25 @@ public class AvailabilityTools implements FplTool {
                         + " check the name with the user before reporting a clean bill of health.";
             }
 
-            StringBuilder out = new StringBuilder(header)
-                    .append("\n\nFlagged players (%s), %d found:\n"
-                            .formatted(rows.getFirst().get("team_name"), rows.size()));
+            // A substring like "man" can match several clubs ("Man City", "Man Utd"); when it
+            // does, each player carries its own club code, and the header names the count of
+            // clubs rather than picking one club's name to stand for all of them.
+            Set<String> clubs = rows.stream()
+                    .map(r -> String.valueOf(r.get("team_short")))
+                    .collect(Collectors.toCollection(LinkedHashSet::new));
+            boolean multiClub = clubs.size() > 1;
+
+            StringBuilder out = new StringBuilder(header);
+            if (multiClub) {
+                out.append("\n\nFlagged players at %d clubs, %d found:\n"
+                        .formatted(clubs.size(), rows.size()));
+            } else {
+                out.append("\n\nFlagged players (%s), %d found:\n"
+                        .formatted(rows.getFirst().get("team_name"), rows.size()));
+            }
             for (Map<String, Object> r : rows) {
-                out.append("  %s (%s, £%.1fm) — %s".formatted(
+                out.append("  %s%s (%s, £%.1fm) — %s".formatted(
+                        multiClub ? String.valueOf(r.get("team_short")) + " " : "",
                         r.get("web_name"), position(r.get("element_type")),
                         ((Number) r.get("now_cost")).intValue() / 10.0,
                         describe(String.valueOf(r.get("status")))));
