@@ -68,6 +68,39 @@
      ./fonts.css. */
   --font-reading: 'Newsreader Variable', ui-serif, Georgia, 'Times New Roman', serif;
   --font-ui: 'Archivo Variable', ui-sans-serif, system-ui, -apple-system, sans-serif;
+
+  /* Type scale. The plan's architecture line promised custom properties for
+     the type scale alongside the palette and spacing; only the families were
+     ever defined, so five ad-hoc sizes accumulated across four component
+     files. These three cover every one of them:
+       0.75rem  -> --text-xs   (both attribution labels, unchanged)
+       0.95rem  -> --text-sm   (empty state; 15.2px -> 15px)
+       1.1rem   -> --text-base (header product name; 17.6px -> 18px)
+       1.125rem -> --text-base (assistant prose; the spec's mandated 18px)
+     Deliberately only three: the two collapses above are sub-pixel, and a
+     --text-lg nothing renders would be a size invented for a future that
+     has not asked yet. Add steps when a screen needs them. */
+  --text-xs: 0.75rem;
+  --text-sm: 0.9375rem;
+  --text-base: 1.125rem;
+
+  /* Disabled controls. Mantine ships its own greys for this state
+     (#E9ECEF/#ADB5BD light, #2E2E2E/#696969 dark) and they were the last
+     surfaces in the app still outside the palette — the whole-branch review
+     found them on the send button, which is disabled on the empty screen
+     every new user sees first.
+
+     Both derived like the rest of the neutrals: hue ~217-221deg, the same
+     navy family as --ink-900/--muted/--rule-section, so the disabled button
+     reads as the palette drained of colour rather than as a foreign grey.
+
+     The ratios are deliberately LOW — 2.39:1 light, 2.53:1 dark. A disabled
+     control that measures like body text does not look disabled. WCAG 1.4.3
+     exempts inactive components, so these are gated as [info] in
+     check-contrast.mjs: recorded and drift-protected, not held to a minimum
+     they are meant to sit under. */
+  --disabled-surface: #DCE1E9;
+  --disabled-ink: #8792A8;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -95,6 +128,12 @@
        (#8DEC90); var(--ink) measured 1.22:1, confirmed with a
        headless-browser contrast check. */
     --pitch-contrast: var(--ink-900);
+    /* Same 2.5:1-ish inactive read as light, rebuilt for a dark ground
+       rather than inherited: light's #DCE1E9 surface would glare against
+       #10151F, and light's #8792A8 ink measures 4.72:1 on the dark surface,
+       which is bright enough to look enabled. Hue held at 219-221deg. */
+    --disabled-surface: #1F2839;
+    --disabled-ink: #5A657D;
   }
 }
 
@@ -105,6 +144,8 @@
   --pitch: #8DEC90;
   --redcard: #EC938D;
   --pitch-contrast: var(--ink-900);
+  --disabled-surface: #1F2839;
+  --disabled-ink: #5A657D;
 }
 
 /* Quality floor: every interactive element gets a visible --pitch focus

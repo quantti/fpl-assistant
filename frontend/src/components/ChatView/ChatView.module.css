@@ -33,7 +33,7 @@
   border-bottom: 1px solid var(--rule-section);
   font-family: var(--font-ui);
   font-weight: 600;
-  font-size: 1.1rem;
+  font-size: var(--text-base);
 }
 
 /* Mantine's ActionIcon sets its effective text colour via an inline
@@ -57,7 +57,7 @@
      too, so Mantine's own components can't reintroduce it; app stylesheets
      name the token directly. */
   color: var(--muted);
-  font-size: 0.95rem;
+  font-size: var(--text-sm);
   text-align: center;
   padding: var(--space-32);
 }

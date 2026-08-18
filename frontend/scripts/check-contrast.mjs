@@ -186,6 +186,11 @@ const pairs = [
   // Documented as honest limits, not gated — decorative separators are exempt from WCAG text-contrast levels.
   { theme: 'light', fg: 'rule-row', bg: 'paper', label: 'rule-row on paper (decorative)', level: null, min: null },
   { theme: 'light', fg: 'rule-section', bg: 'paper', label: 'rule-section on paper (section boundary)', level: null, min: null },
+  // Recorded, not gated: WCAG 1.4.3 exempts inactive components, and these
+  // are meant to sit low — a disabled control that measures like body text
+  // does not read as disabled. Listed so the values are drift-protected and
+  // a future change to either token shows up in this output.
+  { theme: 'light', fg: 'disabled-ink', bg: 'disabled-surface', label: 'disabled label on disabled surface (inactive by design)', level: null, min: null },
 
   // Dark theme — background is --paper (the "ground" value in dark mode).
   { theme: 'dark', fg: 'ink', bg: 'paper', label: 'body text on ground', level: 'AAA', min: AAA },
@@ -197,6 +202,7 @@ const pairs = [
   { theme: 'dark', fg: 'pitch-contrast', bg: 'pitch', label: 'pitch-contrast label on pitch (send button)', level: 'AAA', min: AAA },
   { theme: 'dark', fg: 'card', bg: 'paper', label: 'card on ground', level: 'AAA', min: AAA },
   { theme: 'dark', fg: 'redcard', bg: 'paper', label: 'redcard on ground', level: 'AAA', min: AAA },
+  { theme: 'dark', fg: 'disabled-ink', bg: 'disabled-surface', label: 'disabled label on disabled surface (inactive by design)', level: null, min: null },
 ]
 
 let failed = false
