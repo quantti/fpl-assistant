@@ -94,12 +94,15 @@
      navy family as --ink-900/--muted/--rule-section, so the disabled button
      reads as the palette drained of colour rather than as a foreign grey.
 
-     The ratios are deliberately LOW — 2.39:1 light, 2.53:1 dark. A disabled
+     The ratios are deliberately LOW — 2.38:1 light, 2.53:1 dark. A disabled
      control that measures like body text does not look disabled. WCAG 1.4.3
      exempts inactive components, so these are gated as [info] in
      check-contrast.mjs: recorded and drift-protected, not held to a minimum
      they are meant to sit under. */
   --disabled-surface: #DCE1E9;
+  /* Byte-identical to --rule-section — coincidence of two independent
+     derivations from the navy family, not a shared value; changing one does
+     not (and should not) move the other. */
   --disabled-ink: #8792A8;
 }
 
