@@ -29,6 +29,14 @@ public final class UkTime {
     }
 
     /**
+     * The zone FPL's own day boundaries follow — price changes land at 00:00 here, so "today"
+     * for anything price- or availability-related means today in London, not in the container.
+     */
+    public static ZoneId zone() {
+        return UK;
+    }
+
+    /**
      * Formats a JDBC timestamp as {@code yyyy-MM-dd HH:mm UK}, or returns {@code fallback}
      * when the value is null or is not a timestamp the driver handed back.
      *

@@ -1,7 +1,6 @@
 package fi.karivanttinen.fplassistant.tools;
 
 import java.time.LocalDate;
-import java.util.Map;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -15,39 +14,50 @@ import org.springframework.test.context.ActiveProfiles;
 import fi.karivanttinen.fplassistant.testsupport.FictitiousTestData;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
- * {@link PriceTools#getPriceHistory} against the isolated {@code fpl_player_price_test} table.
- * Resolves a real player (so the tapas {@code player} name lookup actually finds someone)
- * through a mocked {@link SeasonResolver} that reports the season as current, then verifies the
- * per-GW formatting and the descriptive trend summary.
+ * {@link PriceTools#getPriceHistory} against the isolated {@code fpl_daily_price_test} table.
  *
- * <p>The mocked context pairs a <em>real</em> season id with a <em>fictitious</em> season label:
- * the player lookup needs real rows, but everything written to the price table lands under a
- * label {@link FictitiousTestData} certifies cannot collide with real data. Writing test rows
- * under a real season label is the bug class that already recurred once in Phase 3.
+ * <p>Rewritten on 2026-08-18 when the tool moved off {@code fpl_player_price}. The old version
+ * had to resolve a real player through the tapas {@code player} table so the name lookup would
+ * find someone — and that dependency is precisely what broke in production, since that table
+ * held no rows at all for the new season. The daily capture carries its own names, so these
+ * tests now write entirely fictitious players and never touch a tapas table.
+ *
+ * <p>Element ids are above {@link FictitiousTestData#MIN_SAFE_CODE} and the season label is
+ * fictitious, so nothing here can collide with real data in the shared test database.
  */
 @SpringBootTest
 @ActiveProfiles("test")
 class PriceToolsIntegrationTest {
 
     private static final String TEST_SEASON = "test-pt"; // season columns are VARCHAR(10)
+    private static final int SALAH = 9101;
+    private static final int TWIN_A = 9102;
+    private static final int TWIN_B = 9103;
+    private static final LocalDate DAY_3 = LocalDate.of(2026, 9, 3);
+    private static final LocalDate DAY_2 = LocalDate.of(2026, 9, 2);
+    private static final LocalDate DAY_1 = LocalDate.of(2026, 9, 1);
 
     static {
         FictitiousTestData.assertSafeSeason(TEST_SEASON);
+        FictitiousTestData.assertSafeCode(SALAH);
+        FictitiousTestData.assertSafeCode(TWIN_A);
+        FictitiousTestData.assertSafeCode(TWIN_B);
     }
 
     @Autowired
     JdbcTemplate jdbc;
 
-    @Value("${fpl.price.table-name}")
-    String priceTable;
+    @Autowired
+    PriceTools priceTools;
+
+    @Value("${fpl.daily-price.table-name}")
+    String table;
 
     @BeforeEach
     void refuseProductionAndResetFixture() {
-        assertThat(priceTable).as("price tools tests must use the isolated table").endsWith("_test");
+        assertThat(table).as("price tools tests must use the isolated table").endsWith("_test");
         deleteTestRows();
     }
 
@@ -57,104 +67,94 @@ class PriceToolsIntegrationTest {
     }
 
     private void deleteTestRows() {
-        jdbc.update("DELETE FROM " + priceTable + " WHERE season = ?", TEST_SEASON);
+        jdbc.update("DELETE FROM " + table + " WHERE season = ?", TEST_SEASON);
     }
 
-    private int populatedSeasonId() {
-        return jdbc.queryForObject(
-                "SELECT season_id FROM player GROUP BY season_id ORDER BY COUNT(*) DESC LIMIT 1",
-                Integer.class);
-    }
-
-    private Map<String, Object> salah() {
-        return jdbc.queryForMap(
-                "SELECT id, web_name FROM player WHERE season_id = ? AND LOWER(second_name) LIKE '%salah%' LIMIT 1",
-                populatedSeasonId());
-    }
-
-    private PriceTools toolsFor(int seasonId) {
-        SeasonResolver mockResolver = mock(SeasonResolver.class);
-        when(mockResolver.resolve()).thenReturn(new SeasonContext(
-                seasonId, TEST_SEASON, true, "2026-27", LocalDate.of(2026, 8, 21)));
-        return new PriceTools(jdbc, mockResolver, priceTable);
-    }
-
-    private void insertPrice(int elementId, String name, int gameweek, int price, String source) {
-        jdbc.update("INSERT INTO " + priceTable
-                        + " (season, gameweek, element_id, player_name, price, source) VALUES (?, ?, ?, ?, ?, ?)",
-                TEST_SEASON, gameweek, elementId, name, price, source);
+    private void insert(int elementId, String webName, LocalDate date, int price,
+                        int changeEvent, int changeStart) {
+        jdbc.update("INSERT INTO " + table + " (season, price_date, element_id, web_name,"
+                        + " full_name, team_short, element_type, now_cost, cost_change_event,"
+                        + " cost_change_start, status, news) "
+                        + "VALUES (?, ?, ?, ?, ?, 'TST', 3, ?, ?, ?, 'a', '')",
+                TEST_SEASON, date, elementId, webName, webName + " Fictitious", price,
+                changeEvent, changeStart);
     }
 
     @Test
-    void returnsPriceHistoryAndDescriptiveTrend() {
-        Map<String, Object> player = salah();
-        int pid = ((Number) player.get("id")).intValue();
-        String name = (String) player.get("web_name");
-        insertPrice(pid, name, 1, 140, "vaastav");
-        insertPrice(pid, name, 2, 143, "vaastav");
-        insertPrice(pid, name, 0, 145, "snapshot");
+    void listsTheDailySeriesAndDescribesTheTrend() {
+        insert(SALAH, "Salahtest", DAY_1, 140, 0, 0);
+        insert(SALAH, "Salahtest", DAY_2, 143, 3, 3);
+        insert(SALAH, "Salahtest", DAY_3, 145, 5, 5);
 
-        String result = toolsFor(populatedSeasonId()).getPriceHistory("Salah", 10);
+        String result = priceTools.getPriceHistory("Salahtest", 10);
 
-        assertThat(result).contains("Price history for");
-        assertThat(result).contains("GW1: £14.0m (vaastav)");
-        assertThat(result).contains("GW2: £14.3m (vaastav)");
-        assertThat(result).contains("live: £14.5m (snapshot)");
-        assertThat(result).contains("Trend: price has risen by £0.5m between GW1 and the live snapshot");
+        assertThat(result).contains("Price history for Salahtest");
+        assertThat(result).contains("2026-09-01: £14.0m");
+        assertThat(result).contains("2026-09-03: £14.5m");
+        assertThat(result).contains("Trend: price has risen by £0.5m between 2026-09-01 and 2026-09-03");
+        assertThat(result).contains("descriptive, not a prediction");
     }
 
     @Test
-    void lastNBoundsTheGameweeksWithoutTheLiveSnapshotSpendingOneOfThem() {
-        Map<String, Object> player = salah();
-        int pid = ((Number) player.get("id")).intValue();
-        String name = (String) player.get("web_name");
-        for (int gw = 1; gw <= 5; gw++) {
-            insertPrice(pid, name, gw, 140 + gw, "vaastav");
-        }
-        insertPrice(pid, name, 0, 150, "snapshot");
+    void reportsFplsOwnCountersAlongsideOurSeries() {
+        // Our series starts the day the capture began; FPL's counters cover the whole season,
+        // which is the only way to describe movement from before we were watching.
+        insert(SALAH, "Salahtest", DAY_3, 145, 2, 9);
 
-        String result = toolsFor(populatedSeasonId()).getPriceHistory("Salah", 3);
+        String result = priceTools.getPriceHistory("Salahtest", 10);
 
-        // Three gameweeks (5, 4, 3) plus the live snapshot — not two gameweeks and a snapshot.
-        assertThat(result).contains("GW5").contains("GW4").contains("GW3").contains("live:");
-        assertThat(result).doesNotContain("GW2:").doesNotContain("GW1:");
+        assertThat(result).contains("FPL's own counters: +0.2m this gameweek, +0.9m since the season started");
     }
 
     @Test
-    void aLoneSnapshotIsNotDescribedAsATrend() {
-        Map<String, Object> player = salah();
-        insertPrice(((Number) player.get("id")).intValue(), (String) player.get("web_name"),
-                0, 145, "snapshot");
+    void lastNBoundsTheNumberOfDays() {
+        insert(SALAH, "Salahtest", DAY_1, 140, 0, 0);
+        insert(SALAH, "Salahtest", DAY_2, 143, 3, 3);
+        insert(SALAH, "Salahtest", DAY_3, 145, 5, 5);
 
-        String result = toolsFor(populatedSeasonId()).getPriceHistory("Salah", 10);
+        String result = priceTools.getPriceHistory("Salahtest", 2);
 
-        assertThat(result).contains("only one price point is stored so far");
+        assertThat(result).contains("2026-09-03").contains("2026-09-02");
+        assertThat(result).doesNotContain("2026-09-01:");
+    }
+
+    @Test
+    void aSingleCapturedDayIsNotDescribedAsATrend() {
+        insert(SALAH, "Salahtest", DAY_3, 145, 0, 0);
+
+        String result = priceTools.getPriceHistory("Salahtest", 10);
+
+        assertThat(result).contains("only one day has been captured so far");
         assertThat(result).doesNotContain("held steady");
     }
 
     @Test
+    void statesWhichDaysCaptureTheAnswerComesFrom() {
+        insert(SALAH, "Salahtest", DAY_3, 145, 0, 0);
+
+        String result = priceTools.getPriceHistory("Salahtest", 10);
+
+        // The whole point of the daily table: a price without its date is not usable.
+        assertThat(result).contains("Data source: FPL live prices for season " + TEST_SEASON);
+        assertThat(result).contains("2026-09-03");
+        assertThat(result).contains("FPL changes prices once a day at 00:00 UK");
+    }
+
+    @Test
     void unknownPlayerReturnsNotFound() {
-        assertThat(toolsFor(populatedSeasonId()).getPriceHistory("Definitely Not A Real Player", 10))
+        insert(SALAH, "Salahtest", DAY_3, 145, 0, 0);
+
+        assertThat(priceTools.getPriceHistory("Definitely Not A Real Player", 10))
                 .contains("Player not found");
     }
 
     @Test
-    void noPriceHistoryYetIsReportedPlainly() {
-        assertThat(toolsFor(populatedSeasonId()).getPriceHistory("Salah", 10))
-                .contains("No price history yet");
-    }
-
-    @Test
     void anAmbiguousNameSaysWhichOtherPlayersItMatched() {
-        // web_name is not unique: 2025-26 carries two Andersons, two Onanas, two Barneses.
-        // Answering for one of them silently reads as though it were the only match.
-        String duplicated = jdbc.queryForObject("""
-                SELECT web_name FROM player WHERE season_id = ?
-                GROUP BY web_name HAVING COUNT(*) > 1 LIMIT 1
-                """, String.class, populatedSeasonId());
-        assertThat(duplicated).as("expected at least one duplicated web_name in the season").isNotNull();
+        // web_name is not unique in real FPL data either (two Andersons, two Onanas).
+        insert(TWIN_A, "Twintest", DAY_3, 150, 0, 0);
+        insert(TWIN_B, "Twintest", DAY_3, 90, 0, 0);
 
-        String result = toolsFor(populatedSeasonId()).getPriceHistory(duplicated, 10);
+        String result = priceTools.getPriceHistory("Twintest", 10);
 
         assertThat(result).contains("The name also matched:");
     }
