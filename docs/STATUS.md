@@ -1050,3 +1050,98 @@ Nothing left in this plan's scope, and nothing blocking.
   Spring Boot's `static/`, so one deploy ships both; there is no separate frontend hosting).
 - **Merge.** The branch is still unmerged. A scoped re-review of the fix range runs first; after
   that, use `finishing-a-development-branch`.
+
+## Pre-push review (2026-08-18, evening) — all findings fixed
+
+A review of everything ahead of `origin/master` (10 commits: the daily-price capture, the
+price/availability tools on it, the two review-fix commits, the freshness alert, the frontend
+design follow-ups, infra, docs). One critical, eight warnings, and most of the suggestions;
+all fixed in the commits after `01688cd`. 216 tests (was 206), 0 failures; frontend build and
+contrast gate clean.
+
+**Critical: `element_id` reads were not season-scoped.** `getPriceHistory` and `flagAge`
+filtered on `element_id` alone. FPL renumbers every season — the project's own artifacts say
+so (`fpl_daily_price`'s PK is `(season, price_date, element_id)`; STATUS.md notes the ids are
+season-scoped) — so at the 2027 changeover, the exact window this table was built to survive,
+the trend would have mixed last season's rows for the same numeric id (a different player)
+into this season's series, and a flag raised today could read as having stood since last
+April. Both queries now filter on `season` (already in hand from the matched row), the
+per-player index is replaced with a season-leading one (new name; the old index is dropped,
+because `CREATE INDEX IF NOT EXISTS` would have kept the old definition everywhere the table
+already existed), and the convention is recorded in AGENTS.md so a future agent does not
+"fix" it back. Pinned by tests that insert another season's rows under the same element id.
+
+**Capture hardening.** The sync's RestClient had no timeout on the shared scheduler thread —
+a hung 02:00 connection would have held the 06:00/12:00/18:00 freshness checks hostage,
+silencing the alert exactly when the capture failed. Bounded (10s connect / 30s read, the
+generous read because `bootstrap-static` is a ~1-2 MB body) and `spring.task.scheduling.pool.size`
+is now 2 so the capture and the check cannot block each other; the pool size is pinned in
+`DailyPriceScheduleTest` like the crons. The day's rows are written in one transaction:
+under autocommit a crash mid-batch left a partial day that the freshness check (which only
+asserts a row exists for today) accepted as fresh forever, and that a mid-capture reader
+anchored to `MAX(price_date)` could observe half-written — a club answering "nobody flagged"
+because its injured players had not been inserted yet. `today` is sampled after the fetch,
+not before, so a slow response cannot straddle a UK midnight and mislabel the day.
+
+**Season-code guard.** The calendar rule (July ⇒ next season) could mislabel the early-July
+window when FPL has not yet reset `bootstrap-static`: last season's squads written daily
+under the new season label, freshness green, tools serving weeks-old data as "captured
+today". The sync now refuses a response whose newest event deadline is more than 40 days
+past — that response is a finished season FPL has not reset, and a mid-June sync of a
+just-finished season (still correctly labeled by the calendar rule) stays allowed. Unit
+tests pin the refuse/allow/pass-through cases.
+
+**Freshness check: future-dated rows warn.** A row dated in the future (a manual
+`--sync-prices` from a skewed laptop clock) suppresses staleness alerts for as long as it
+stays newest; it now logs a WARN naming the skew instead of passing silently.
+
+**`team_name` backfill.** The `ALTER … ADD COLUMN` left already-captured rows NULL and the
+daily upsert only touches the current date, so full-name club lookups would have kept
+missing until the next morning's capture. The schema now backfills NULLs from the most
+recent row of the same player in the same season — an approximation (a January transfer can
+change a player's club), but a day of the bug the column exists to fix is worse.
+
+**Flagged-list totals.** The header's "%d found / at %d clubs" was computed after `LIMIT 30`,
+so a broad substring ("united") understated the totals and silently hid every club whose
+players fell outside the top-30-by-price cap. Totals now come from an uncapped `COUNT`, and
+a truncated list says so ("showing the first 30 — narrow the club name to see the rest").
+Tests: truncation at the cap, and the single-club header format (which no test pinned).
+
+**Name matching: exact `web_name` first.** "Best match first" was actually "most expensive
+match first" (`ORDER BY now_cost DESC`), so "son" could rank a pricier Wilson above Son and
+the tool would answer for the wrong player. Exact `web_name` matches now rank first, then
+price.
+
+**Error turns replayed to the model.** `useChat` stripped the `isError` flag but sent the
+error *content* back as model history on the next send — the model was told it had previously
+said "Sorry, something went wrong". Error turns are now filtered from the request body, and
+the consecutive user turns that filtering can produce (question, error, retry) are merged,
+because the Anthropic API rejects two user turns in a row. The turns stay visible in the
+transcript. `ChatRequest` was dead code whose type contradicted its own doc comment; it now
+types the actual wire contract (`Array<Pick<Message, 'role' | 'content'>>`) and is used by
+the fetch.
+
+**Commit-message correction.** `d5aca5f`'s message claimed the system prompt "no longer
+sends price questions to searchStrategyDocs" — no committed version of the prompt ever
+contained that routing; the diff was purely additive. Reworded (rebase over the unpushed
+range) to describe what the diff actually does. The substantive gap the finding pointed at —
+the general advice rule routing transfer/value questions through documents with frozen
+prices — is now closed in the prompt itself: strategy advice that turns on a current price or
+ownership figure takes the figure from the stats tools.
+
+**Smaller items.** AGENTS.md no longer lists `getPriceHistory` among the `SeasonContext.provenance()`
+tools (it uses `DailyPriceSource.provenance()` by design, a documented exception like
+`HistoricalTools`). The truncated chips sentence in the system prompt is completed ("the +1
+comes the following gameweek", per FPL_RULES.md). `UkTime` javadoc updated (it still described
+the pre-9a7ec14 fallback behaviour) and documents why `LocalDateTime` deliberately falls
+through unformatted. `UkTimeTest` gained the spring clock-change pair (the commit message had
+claimed "both 2026 switches" but only October was tested). `vite.config.ts` uses `||` so an
+empty `FPL_API_PROXY` falls back rather than crashing the proxy, and `tokens.css` states the
+actual 2.38:1 ratio plus why `--disabled-ink` coincides with `--rule-section`. `GameweekTools`
+no longer selects the never-rendered `most_selected`.
+
+**Considered and not done.** The freshness check's staleness rule keeps using the container
+clock: a manual sync from a machine a day behind genuinely writes yesterday's data, and the
+alert firing on that is correct, not a false positive. Contrast-gating an upper bound on the
+disabled tokens (fail above ~3:1) was left out — "starts looking enabled" has no agreed
+threshold, and the [info] line already records every drift.
