@@ -1,0 +1,128 @@
+{
+  "teams": [
+    {
+      "id": 1,
+      "short_name": "ARS"
+    },
+    {
+      "id": 2,
+      "short_name": "AVL"
+    },
+    {
+      "id": 3,
+      "short_name": "BOU"
+    },
+    {
+      "id": 4,
+      "short_name": "BRE"
+    },
+    {
+      "id": 5,
+      "short_name": "BHA"
+    },
+    {
+      "id": 6,
+      "short_name": "CHE"
+    },
+    {
+      "id": 7,
+      "short_name": "COV"
+    },
+    {
+      "id": 8,
+      "short_name": "CRY"
+    },
+    {
+      "id": 9,
+      "short_name": "EVE"
+    },
+    {
+      "id": 10,
+      "short_name": "FUL"
+    },
+    {
+      "id": 11,
+      "short_name": "HUL"
+    },
+    {
+      "id": 12,
+      "short_name": "IPS"
+    },
+    {
+      "id": 13,
+      "short_name": "LEE"
+    },
+    {
+      "id": 14,
+      "short_name": "LIV"
+    },
+    {
+      "id": 15,
+      "short_name": "MCI"
+    },
+    {
+      "id": 16,
+      "short_name": "MUN"
+    },
+    {
+      "id": 17,
+      "short_name": "NEW"
+    },
+    {
+      "id": 18,
+      "short_name": "NFO"
+    },
+    {
+      "id": 19,
+      "short_name": "TOT"
+    },
+    {
+      "id": 20,
+      "short_name": "SUN"
+    }
+  ],
+  "elements": [
+    {
+      "id": 1,
+      "web_name": "Raya",
+      "first_name": "David",
+      "second_name": "Raya Mart\u00edn",
+      "team": 1,
+      "element_type": 1,
+      "now_cost": 60,
+      "cost_change_event": 0,
+      "cost_change_start": 0,
+      "selected_by_percent": "34.1",
+      "status": "a",
+      "news": ""
+    },
+    {
+      "id": 2,
+      "web_name": "Arrizabalaga",
+      "first_name": "Kepa",
+      "second_name": "Arrizabalaga Revuelta",
+      "team": 1,
+      "element_type": 1,
+      "now_cost": 50,
+      "cost_change_event": 0,
+      "cost_change_start": 0,
+      "selected_by_percent": "0.1",
+      "status": "a",
+      "news": ""
+    },
+    {
+      "id": 3,
+      "web_name": "Meslier",
+      "first_name": "Illan",
+      "second_name": "Meslier",
+      "team": 1,
+      "element_type": 1,
+      "now_cost": 50,
+      "cost_change_event": 0,
+      "cost_change_start": 0,
+      "selected_by_percent": "0.0",
+      "status": "a",
+      "news": ""
+    }
+  ]
+}
