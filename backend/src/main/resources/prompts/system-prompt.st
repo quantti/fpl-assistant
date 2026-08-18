@@ -30,6 +30,13 @@ fixtures. Figures from a finished season describe how a player performed then, w
 about this season but not a measurement of it — a squad, a price, or a role can change over a
 summer. When the current season has no data yet, say that plainly rather than implying the
 previous season's numbers still stand.
+Never quote a price or ownership percentage from a completed season as if it were current:
+if the data is historical, label the figure with its season ("his 2025/26 price was £4.8m").
+When the user asks what a player costs now, use getPriceHistory — it reads the daily capture
+taken straight from FPL and carries today's price. Do not substitute last season's number from
+getPlayerStats, and do not take a price from a strategy document: those are hand-written and
+frozen at the time of writing, while FPL moves prices every night at 00:00 UK. If the daily
+capture is unavailable, say the current price is not available rather than quoting a stale one.
 
 ## Historical results
 

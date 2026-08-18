@@ -68,9 +68,9 @@ class AvailabilityToolsIntegrationTest {
     private void insert(int elementId, String webName, LocalDate date,
                         String status, String news) {
         jdbc.update("INSERT INTO " + table + " (season, price_date, element_id, web_name,"
-                        + " full_name, team_short, element_type, now_cost, cost_change_event,"
+                        + " full_name, team_short, team_name, element_type, now_cost, cost_change_event,"
                         + " cost_change_start, status, news) "
-                        + "VALUES (?, ?, ?, ?, ?, 'TST', 3, 100, 0, 0, ?, ?)",
+                        + "VALUES (?, ?, ?, ?, ?, 'TST', 'Testville United', 3, 100, 0, 0, ?, ?)",
                 TEST_SEASON, date, elementId, webName, webName + " Fictitious", status, news);
     }
 
@@ -137,6 +137,18 @@ class AvailabilityToolsIntegrationTest {
         assertThat(result).contains("Brokentest").contains("INJURED").contains("Hamstring");
         assertThat(result).contains("Doubttest").contains("DOUBTFUL");
         assertThat(result).doesNotContain("Healthytest");
+    }
+
+    @Test
+    void findsAClubByItsFullNameNotOnlyItsShortCode() {
+        // The bug this pins: matching only on team_short meant "Arsenal" found nothing while
+        // "ARS" worked — and users type the full name far more often than the three-letter code,
+        // so in practice the tool reported "club not matched" for the normal question.
+        insert(INJURED, "Brokentest", TODAY, "i", "Hamstring");
+
+        assertThat(tools.getFlaggedPlayers("Testville United")).contains("Brokentest");
+        assertThat(tools.getFlaggedPlayers("testville")).contains("Brokentest");
+        assertThat(tools.getFlaggedPlayers("TST")).contains("Brokentest");
     }
 
     @Test

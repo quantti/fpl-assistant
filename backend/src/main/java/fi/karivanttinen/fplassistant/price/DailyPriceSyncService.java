@@ -91,6 +91,7 @@ public class DailyPriceSyncService {
      */
     static List<Object[]> toRows(Map<String, Object> body, LocalDate priceDate, String season) {
         Map<Integer, String> teamShortNames = new HashMap<>();
+        Map<Integer, String> teamNames = new HashMap<>();
         Object teams = body.get("teams");
         if (teams instanceof List<?> teamList) {
             for (Object t : teamList) {
@@ -98,6 +99,7 @@ public class DailyPriceSyncService {
                     Integer id = asInt(team.get("id"));
                     if (id != null) {
                         teamShortNames.put(id, asString(team.get("short_name")));
+                        teamNames.put(id, asString(team.get("name")));
                     }
                 }
             }
@@ -131,6 +133,7 @@ public class DailyPriceSyncService {
                     fullName,
                     teamId,
                     teamId == null ? null : teamShortNames.get(teamId),
+                    teamId == null ? null : teamNames.get(teamId),
                     asInt(e.get("element_type")),
                     nowCost,
                     zeroIfNull(asInt(e.get("cost_change_event"))),
@@ -155,15 +158,16 @@ public class DailyPriceSyncService {
     private int upsertAll(List<Object[]> rows) {
         String sql = """
                 INSERT INTO %s (season, price_date, element_id, web_name, full_name,
-                                team_id, team_short, element_type, now_cost,
+                                team_id, team_short, team_name, element_type, now_cost,
                                 cost_change_event, cost_change_start, selected_by_percent,
                                 status, news)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (season, price_date, element_id) DO UPDATE SET
                     web_name = EXCLUDED.web_name,
                     full_name = EXCLUDED.full_name,
                     team_id = EXCLUDED.team_id,
                     team_short = EXCLUDED.team_short,
+                    team_name = EXCLUDED.team_name,
                     element_type = EXCLUDED.element_type,
                     now_cost = EXCLUDED.now_cost,
                     cost_change_event = EXCLUDED.cost_change_event,

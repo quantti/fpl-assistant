@@ -61,7 +61,7 @@ public class PlayerTools implements FplTool {
             }
 
             return season.provenance() + "\n\n" + rows.stream()
-                    .map(this::formatPlayer)
+                    .map(r -> formatPlayer(r, season))
                     .collect(Collectors.joining("\n---\n"));
         } catch (DataAccessException e) {
             log.error("getPlayerStats(\"{}\") failed", playerName, e);
@@ -70,7 +70,7 @@ public class PlayerTools implements FplTool {
         }
     }
 
-    private String formatPlayer(Map<String, Object> r) {
+    private String formatPlayer(Map<String, Object> r, SeasonContext season) {
         String position = switch (((Number) r.get("element_type")).intValue()) {
             case 1 -> "GK";
             case 2 -> "DEF";
@@ -79,6 +79,14 @@ public class PlayerTools implements FplTool {
             default -> "?";
         };
         double price = ((Number) r.get("now_cost")).doubleValue() / 10.0;
+        // Price and ownership are "current-state" fields: when the numbers come from a
+        // completed season, label them so the model cannot present them as this season's.
+        String priceLabel = season.currentSeason()
+                ? "Price"
+                : "Price (" + season.code() + ", historical)";
+        String ownershipLabel = season.currentSeason()
+                ? "Ownership"
+                : "Ownership (" + season.code() + ", historical)";
         // FPL status codes: a=available, d=doubtful, i/s/u/n = out for some reason. news is nullable.
         Object news = r.get("news");
         String detail = (news == null || news.toString().isBlank()) ? "" : " (" + news + ")";
@@ -90,15 +98,15 @@ public class PlayerTools implements FplTool {
 
         return """
                 %s %s (%s) [%s]
-                Price: £%.1fm | Points: %s | Form: %s
+                %s: £%.1fm | Points: %s | Form: %s
                 Goals: %s | Assists: %s | CS: %s | Minutes: %s
-                xG: %s | xA: %s | Ownership: %s%%
+                xG: %s | xA: %s | %s: %s%%
                 Status: %s
                 """.formatted(
                 position, r.get("web_name"), r.get("short_name"), r.get("team"),
-                price, r.get("total_points"), r.get("form"),
+                priceLabel, price, r.get("total_points"), r.get("form"),
                 r.get("goals_scored"), r.get("assists"), r.get("clean_sheets"), r.get("minutes"),
-                r.get("expected_goals"), r.get("expected_assists"), r.get("selected_by_percent"),
+                r.get("expected_goals"), r.get("expected_assists"), ownershipLabel, r.get("selected_by_percent"),
                 status
         );
     }
