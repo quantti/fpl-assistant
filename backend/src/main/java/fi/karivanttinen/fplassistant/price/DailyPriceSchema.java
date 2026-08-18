@@ -98,8 +98,14 @@ public class DailyPriceSchema {
                 """.formatted(tableName));
         // Per-player history: "show me this player's price over the last N days" reads the
         // series backwards, which the primary key (season, price_date, element_id) cannot serve.
-        jdbc.execute("CREATE INDEX IF NOT EXISTS idx_%s_element_date ON %s(element_id, price_date DESC)"
-                .formatted(tableName, tableName));
+        // Leads with season because every history read filters on season + element_id:
+        // element_id is renumbered by FPL every season, so element_id alone is not a player.
+        // The first version of this index led with element_id; it is replaced (new name, old
+        // one dropped) rather than redefined, because CREATE INDEX IF NOT EXISTS would have
+        // silently kept the old definition everywhere the table already existed.
+        jdbc.execute(("CREATE INDEX IF NOT EXISTS idx_%s_season_element_date"
+                + " ON %s(season, element_id, price_date DESC)").formatted(tableName, tableName));
+        jdbc.execute("DROP INDEX IF EXISTS idx_%s_element_date".formatted(tableName));
         // "Who moved today" scans one date across all players.
         jdbc.execute("CREATE INDEX IF NOT EXISTS idx_%s_date_change ON %s(price_date, cost_change_event)"
                 .formatted(tableName, tableName));
@@ -108,6 +114,20 @@ public class DailyPriceSchema {
         // a club lookup for a full name matched nothing.
         jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS team_name VARCHAR(100)"
                 .formatted(tableName));
+        // The ALTER above leaves every already-captured row with team_name = NULL, and the
+        // daily upsert only touches the current date, so without a backfill the full-name club
+        // lookup would keep missing until the next morning's capture. Filled from the most
+        // recent row of the same player in the same season — an approximation (a January
+        // transfer can change a player's club), but the alternative is a day of the bug the
+        // column exists to fix, and club changes within a season are rare.
+        jdbc.execute("""
+                UPDATE %s t SET team_name = src.team_name
+                FROM (SELECT DISTINCT ON (element_id, season) element_id, season, team_name
+                      FROM %s WHERE team_name IS NOT NULL
+                      ORDER BY element_id, season, price_date DESC) src
+                WHERE t.team_name IS NULL
+                  AND t.element_id = src.element_id AND t.season = src.season
+                """.formatted(tableName, tableName));
         log.debug("{} schema ensured", tableName);
     }
 }

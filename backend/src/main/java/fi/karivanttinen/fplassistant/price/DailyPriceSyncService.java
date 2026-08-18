@@ -1,6 +1,7 @@
 package fi.karivanttinen.fplassistant.price;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.ArrayList;
@@ -11,9 +12,12 @@ import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.client.RestClient;
+import java.net.http.HttpClient;
 
 /**
  * Captures today's FPL prices straight from {@code bootstrap-static} into
@@ -43,31 +47,66 @@ public class DailyPriceSyncService {
     static final ZoneId UK = ZoneId.of("Europe/London");
     private static final int BATCH_SIZE = 1000;
 
+    /**
+     * How long the most recent event deadline may be in the past before the response is
+     * treated as last season's, left un-reset by FPL. A season ends in late May and the next
+     * one's GW1 deadline lands in August, so a response whose newest deadline is this far
+     * past cannot belong to the season the calendar says we are in — writing it would label
+     * last season's squads with the new season code.
+     */
+    private static final long FINISHED_SEASON_GRACE_DAYS = 40;
+
+    private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(10);
+    /** Generous compared to the football-data client's 10s: bootstrap-static is a ~1-2 MB
+     * body, and the whole point of the timeout is bounding a hang, not racing the payload. */
+    private static final Duration READ_TIMEOUT = Duration.ofSeconds(30);
+
     private final RestClient restClient;
     private final JdbcTemplate jdbc;
+    private final TransactionTemplate tx;
     private final String tableName;
     private final String bootstrapUrl;
 
     public DailyPriceSyncService(RestClient.Builder restClientBuilder, JdbcTemplate jdbc,
+                                 TransactionTemplate tx,
                                  @Value("${fpl.daily-price.table-name}") String tableName,
                                  @Value("${fpl.daily-price.bootstrap-url}") String bootstrapUrl) {
-        this.restClient = restClientBuilder.build();
+        // Bounded on purpose: this client runs on the shared scheduler thread, where an
+        // unbounded connection would hold the 06:00/12:00/18:00 freshness checks hostage —
+        // the alert would fail silent exactly when the capture has failed. Same reasoning as
+        // HttpFootballDataSource, which documents its own timeout for the boot-path variant
+        // of the same failure.
+        HttpClient httpClient = HttpClient.newBuilder().connectTimeout(CONNECT_TIMEOUT).build();
+        JdkClientHttpRequestFactory factory = new JdkClientHttpRequestFactory(httpClient);
+        factory.setReadTimeout(READ_TIMEOUT);
+        this.restClient = restClientBuilder.requestFactory(factory).build();
         this.jdbc = jdbc;
+        this.tx = tx;
         this.tableName = tableName;
         this.bootstrapUrl = bootstrapUrl;
     }
 
     /** @return number of rows written, for logging and tests */
     public int sync() {
-        LocalDate today = LocalDate.now(UK);
         @SuppressWarnings("unchecked")
         Map<String, Object> body = restClient.get()
                 .uri(bootstrapUrl)
                 .retrieve()
                 .body(Map.class);
 
+        // Sampled after the fetch, not before: the date labels the price that was in effect,
+        // and a slow response must not straddle a UK midnight and label yesterday's fetch.
+        LocalDate today = LocalDate.now(UK);
+
         if (body == null) {
             log.warn("daily price sync: bootstrap-static returned an empty body; nothing written");
+            return 0;
+        }
+        if (responseBelongsToAFinishedSeason(body, today)) {
+            log.warn("daily price sync: bootstrap-static still carries last season's data"
+                    + " (newest event deadline is more than {} days past); nothing written for"
+                    + " {} — writing it would label last season's squads with this season code",
+                    FINISHED_SEASON_GRACE_DAYS, seasonCode(today));
             return 0;
         }
 
@@ -77,7 +116,7 @@ public class DailyPriceSyncService {
             return 0;
         }
 
-        int written = upsertAll(rows);
+        int written = tx.execute(status -> upsertAll(rows));
         log.info("daily price sync: {} prices captured for {}", written, today);
         return written;
     }
@@ -155,6 +194,50 @@ public class DailyPriceSyncService {
         return "%d-%02d".formatted(startYear, (startYear + 1) % 100);
     }
 
+    /**
+     * True when every event deadline in the response is long past, i.e. the response is a
+     * finished season that FPL has not yet reset — the early-July window where the calendar
+     * already says "new season" but the API still serves the old one. A body with no events
+     * block (the trimmed test fixture) cannot be judged and is passed through unchanged.
+     *
+     * <p>Takes the date rather than reading the clock so the rule can be pinned in tests.
+     */
+    static boolean responseBelongsToAFinishedSeason(Map<String, Object> body, LocalDate today) {
+        Object events = body.get("events");
+        if (!(events instanceof List<?> eventList) || eventList.isEmpty()) {
+            return false;
+        }
+        LocalDate newestDeadline = null;
+        for (Object o : eventList) {
+            if (!(o instanceof Map<?, ?> event)) {
+                continue;
+            }
+            String deadline = asString(event.get("deadline_time"));
+            if (deadline == null) {
+                continue;
+            }
+            LocalDate parsed;
+            try {
+                parsed = LocalDate.parse(deadline.substring(0, Math.min(10, deadline.length())));
+            } catch (RuntimeException e) {
+                continue;
+            }
+            if (newestDeadline == null || parsed.isAfter(newestDeadline)) {
+                newestDeadline = parsed;
+            }
+        }
+        return newestDeadline != null
+                && newestDeadline.isBefore(today.minusDays(FINISHED_SEASON_GRACE_DAYS));
+    }
+
+    /**
+     * Writes the whole day's rows in one transaction. A crash mid-batch under autocommit
+     * would leave a partially written day that the freshness check then accepts as fresh
+     * forever (it only asserts that a row for today exists), and that a mid-capture reader —
+     * anchored to {@code MAX(price_date)} — could observe half-written: a club whose injured
+     * players have not been inserted yet answers "nobody flagged", the misleading answer
+     * these tools exist to prevent. One commit makes the day atomic.
+     */
     private int upsertAll(List<Object[]> rows) {
         String sql = """
                 INSERT INTO %s (season, price_date, element_id, web_name, full_name,

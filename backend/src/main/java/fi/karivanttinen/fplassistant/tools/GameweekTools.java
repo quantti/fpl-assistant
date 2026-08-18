@@ -38,7 +38,7 @@ public class GameweekTools implements FplTool {
             List<Map<String, Object>> rows = jdbc.queryForList("""
                     SELECT id, name, deadline_time, finished, is_current, is_next,
                            average_entry_score, highest_score,
-                           most_captained, most_transferred_in, most_selected
+                           most_captained, most_transferred_in
                     FROM gameweek
                     WHERE season_id = ?
                       AND (is_current = true OR is_next = true)

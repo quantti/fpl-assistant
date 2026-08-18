@@ -54,6 +54,18 @@ class UkTimeTest {
     }
 
     @Test
+    void rendersEitherSideOfTheSpringClockChange() {
+        // The clocks go forward at 01:00 UTC on 2026-03-29. The same wall time on either side
+        // is a different instant, and both halves have to render correctly — a formatter that
+        // hard-codes one offset cannot pass both.
+        Timestamp before = Timestamp.from(Instant.parse("2026-03-27T12:30:00Z")); // GMT: 12:30
+        Timestamp after = Timestamp.from(Instant.parse("2026-03-31T11:30:00Z"));  // BST: 12:30
+
+        assertThat(UkTime.format(before, "unused")).isEqualTo("2026-03-27 12:30 UK");
+        assertThat(UkTime.format(after, "unused")).isEqualTo("2026-03-31 12:30 UK");
+    }
+
+    @Test
     void alwaysLabelsTheZoneSoTheReaderCanCheckIt() {
         Timestamp ts = Timestamp.from(Instant.parse("2026-08-21T10:30:00Z"));
 

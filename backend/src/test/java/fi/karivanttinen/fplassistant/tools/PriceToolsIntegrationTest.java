@@ -32,15 +32,18 @@ import static org.assertj.core.api.Assertions.assertThat;
 class PriceToolsIntegrationTest {
 
     private static final String TEST_SEASON = "test-pt"; // season columns are VARCHAR(10)
+    private static final String OTHER_SEASON = "test-pt-o"; // a different player under the same element_id
     private static final int SALAH = 9101;
     private static final int TWIN_A = 9102;
     private static final int TWIN_B = 9103;
     private static final LocalDate DAY_3 = LocalDate.of(2026, 9, 3);
     private static final LocalDate DAY_2 = LocalDate.of(2026, 9, 2);
     private static final LocalDate DAY_1 = LocalDate.of(2026, 9, 1);
+    private static final LocalDate LAST_SEASON_DAY = LocalDate.of(2026, 5, 20);
 
     static {
         FictitiousTestData.assertSafeSeason(TEST_SEASON);
+        FictitiousTestData.assertSafeSeason(OTHER_SEASON);
         FictitiousTestData.assertSafeCode(SALAH);
         FictitiousTestData.assertSafeCode(TWIN_A);
         FictitiousTestData.assertSafeCode(TWIN_B);
@@ -68,6 +71,7 @@ class PriceToolsIntegrationTest {
 
     private void deleteTestRows() {
         jdbc.update("DELETE FROM " + table + " WHERE season = ?", TEST_SEASON);
+        jdbc.update("DELETE FROM " + table + " WHERE season = ?", OTHER_SEASON);
     }
 
     private void insert(int elementId, String webName, LocalDate date, int price,
@@ -138,6 +142,29 @@ class PriceToolsIntegrationTest {
         assertThat(result).contains("Data source: FPL live prices for season " + TEST_SEASON);
         assertThat(result).contains("2026-09-03");
         assertThat(result).contains("FPL changes prices once a day at 00:00 UK");
+    }
+
+    @Test
+    void elementIdIsSeasonScopedSoLastSeasonsRowsDoNotLeakIntoTheTrend() {
+        // FPL renumbers every season: the same element_id in another season is a different
+        // player. Without the season predicate, that player's rows would enter this season's
+        // trend at the changeover — the exact window this table was built to survive. The
+        // last-season rows carry dates and prices nothing else in this test produces, so a
+        // leak would be visible in the output.
+        jdbc.update("INSERT INTO " + table + " (season, price_date, element_id, web_name,"
+                        + " full_name, team_short, team_name, element_type, now_cost, cost_change_event,"
+                        + " cost_change_start, status, news) "
+                        + "VALUES (?, ?, ?, ?, ?, 'TST', 'Testville United', 3, ?, ?, ?, 'a', '')",
+                OTHER_SEASON, LAST_SEASON_DAY, SALAH, "Oldplayertest", "Oldplayertest Fictitious",
+                90, 0, 0);
+        insert(SALAH, "Salahtest", DAY_1, 140, 0, 0);
+        insert(SALAH, "Salahtest", DAY_3, 145, 5, 5);
+
+        String result = priceTools.getPriceHistory("Salahtest", 60);
+
+        assertThat(result).contains("2026-09-01: £14.0m").contains("2026-09-03: £14.5m");
+        assertThat(result).doesNotContain("2026-05-20").doesNotContain("£9.0m");
+        assertThat(result).doesNotContain("Oldplayertest");
     }
 
     @Test

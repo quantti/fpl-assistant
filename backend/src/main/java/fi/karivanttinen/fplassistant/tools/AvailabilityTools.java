@@ -1,12 +1,9 @@
 package fi.karivanttinen.fplassistant.tools;
 
 import java.time.LocalDate;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Set;
-import java.util.stream.Collectors;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -67,6 +64,7 @@ public class AvailabilityTools implements FplTool {
 
             Map<String, Object> p = matches.getFirst();
             String webName = String.valueOf(p.get("web_name"));
+            String season = String.valueOf(p.get("season"));
             String ambiguity = NameMatch.ambiguityNote(
                     matches.stream().map(m -> String.valueOf(m.get("web_name"))).toList());
 
@@ -75,8 +73,7 @@ public class AvailabilityTools implements FplTool {
             String news = p.get("news") == null ? "" : String.valueOf(p.get("news"));
 
             StringBuilder out = new StringBuilder(
-                    DailyPriceSource.provenance(String.valueOf(p.get("season")), captured,
-                            LocalDate.now(UkTime.zone())))
+                    DailyPriceSource.provenance(season, captured, LocalDate.now(UkTime.zone())))
                     .append("\n\n")
                     .append("%s (%s, %s) — %s\n".formatted(
                             webName, p.get("team_short"), position(p.get("element_type")),
@@ -86,7 +83,7 @@ public class AvailabilityTools implements FplTool {
                 out.append("FPL's note: ").append(news).append("\n");
             }
             if (!"a".equals(status)) {
-                out.append(flagAge(elementId, status, captured));
+                out.append(flagAge(elementId, season, status, captured));
             }
             return out + ambiguity;
         } catch (DataAccessException e) {
@@ -120,6 +117,21 @@ public class AvailabilityTools implements FplTool {
             // than the code, and an earlier version matched only team_short — so "Arsenal"
             // found nothing while "ARS" worked, which is not how anyone asks the question.
             String pattern = "%" + LikePatterns.escape(teamName.toLowerCase(Locale.ROOT)) + "%";
+
+            // Totals come from an uncapped query, not from the capped rows: a substring like
+            // "united" can match 40+ flagged players league-wide, and a header reading
+            // "30 found" would understate — while silently hiding every club whose players
+            // fell outside the top-30-by-price cap.
+            Map<String, Object> totals = jdbc.queryForMap("""
+                    SELECT COUNT(*) AS total, COUNT(DISTINCT team_short) AS clubs
+                    FROM %s
+                    WHERE price_date = ?
+                      AND status <> 'a'
+                      AND (LOWER(team_short) = LOWER(?) OR LOWER(team_name) LIKE ?)
+                    """.formatted(source.table()), captured, teamName, pattern);
+            int total = ((Number) totals.get("total")).intValue();
+            int clubCount = ((Number) totals.get("clubs")).intValue();
+
             List<Map<String, Object>> rows = jdbc.queryForList("""
                     SELECT web_name, team_short, team_name, element_type, status, news,
                            now_cost, season
@@ -142,19 +154,22 @@ public class AvailabilityTools implements FplTool {
 
             // A substring like "man" can match several clubs ("Man City", "Man Utd"); when it
             // does, each player carries its own club code, and the header names the count of
-            // clubs rather than picking one club's name to stand for all of them.
-            Set<String> clubs = rows.stream()
-                    .map(r -> String.valueOf(r.get("team_short")))
-                    .collect(Collectors.toCollection(LinkedHashSet::new));
-            boolean multiClub = clubs.size() > 1;
+            // clubs rather than picking one club's name to stand for all of them. The count is
+            // the uncapped one, so a club whose players all fell outside the list cap still
+            // shows up in it.
+            boolean multiClub = clubCount > 1;
 
             StringBuilder out = new StringBuilder(header);
             if (multiClub) {
                 out.append("\n\nFlagged players at %d clubs, %d found:\n"
-                        .formatted(clubs.size(), rows.size()));
+                        .formatted(clubCount, total));
             } else {
                 out.append("\n\nFlagged players (%s), %d found:\n"
-                        .formatted(rows.getFirst().get("team_name"), rows.size()));
+                        .formatted(rows.getFirst().get("team_name"), total));
+            }
+            if (total > rows.size()) {
+                out.append("(showing the first ").append(rows.size())
+                        .append(" — narrow the club name to see the rest)\n");
             }
             for (Map<String, Object> r : rows) {
                 out.append("  %s%s (%s, £%.1fm) — %s".formatted(
@@ -184,20 +199,24 @@ public class AvailabilityTools implements FplTool {
      * the older date. Says "at least" because the capture only started on 2026-08-18 — a flag
      * older than the series cannot be dated, and claiming otherwise would invent history.
      */
-    private String flagAge(int elementId, String status, LocalDate captured) {
+    private String flagAge(int elementId, String season, String status, LocalDate captured) {
         // The current run starts the first day after the most recent day this player carried a
         // *different* status. Expressed as "everything since the last change" rather than as a
         // gaps-and-islands window function: the series can have holes (a day the 02:00 capture
         // did not run), and a row-number streak silently treats a hole as a break in the flag.
+        // The season predicate matters as much here as in the price history: element_id is
+        // renumbered every season, so without it a last-season injury streak for the same
+        // number would read as this player's flag having "stood since" last April.
         LocalDate since = jdbc.queryForObject("""
                 SELECT MIN(price_date) FROM %s
-                WHERE element_id = ? AND status = ? AND price_date <= ?
+                WHERE element_id = ? AND season = ? AND status = ? AND price_date <= ?
                   AND price_date > COALESCE((
                       SELECT MAX(price_date) FROM %s
-                      WHERE element_id = ? AND status <> ? AND price_date <= ?
+                      WHERE element_id = ? AND season = ? AND status <> ? AND price_date <= ?
                   ), DATE '1900-01-01')
                 """.formatted(source.table(), source.table()),
-                LocalDate.class, elementId, status, captured, elementId, status, captured);
+                LocalDate.class, elementId, season, status, captured,
+                elementId, season, status, captured);
 
         if (since == null) {
             return "";

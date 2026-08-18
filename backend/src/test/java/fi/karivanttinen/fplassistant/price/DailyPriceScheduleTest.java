@@ -34,6 +34,18 @@ class DailyPriceScheduleTest {
     @Value("${fpl.daily-price.check-at}")
     private String checkCron;
 
+    @Value("${spring.task.scheduling.pool.size}")
+    private int schedulingPoolSize;
+
+    @Test
+    void schedulerPoolHasAThreadForEachJob() {
+        // The capture and the freshness check share the scheduler. On the default single
+        // thread, a capture hung on a dead connection holds the 06:00/12:00/18:00 checks
+        // hostage — the alert fails silent exactly when the capture has failed, which is
+        // the one moment it exists for.
+        assertThat(schedulingPoolSize).isGreaterThanOrEqualTo(2);
+    }
+
     @Test
     void cronIsValidAndFiresAtTwoInTheMorning() {
         assertThat(CronExpression.isValidExpression(cron))

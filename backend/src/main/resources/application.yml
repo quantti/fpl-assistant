@@ -1,4 +1,11 @@
 spring:
+  task:
+    scheduling:
+      # Two threads so the 02:00 capture and the 06:00/12:00/18:00 freshness checks cannot
+      # block each other on the default single-thread scheduler — a hung capture must not
+      # also silence the alert that watches for a hung capture.
+      pool:
+        size: 2
   datasource:
     url: ${DATABASE_URL}
     username: ${DB_USER}
