@@ -1,8 +1,5 @@
 package fi.karivanttinen.fplassistant.tools;
 
-import java.sql.Timestamp;
-import java.time.ZoneId;
-import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -30,11 +27,6 @@ public class FixtureDifficultyTools implements FplTool {
     private static final Logger log = LoggerFactory.getLogger(FixtureDifficultyTools.class);
     private static final int MAX_FIXTURES = 10;
     private static final int MAX_NAME_MATCHES = 4;
-
-    /** FPL deadlines and kickoffs are published in UK time; the container runs UTC on Fly. */
-    private static final ZoneId UK = ZoneId.of("Europe/London");
-    private static final DateTimeFormatter KICKOFF =
-            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm", Locale.UK);
 
     private final JdbcTemplate jdbc;
     private final SeasonResolver seasonResolver;
@@ -195,12 +187,6 @@ public class FixtureDifficultyTools implements FplTool {
 
     /** Rendered in UK time and labelled: the container runs UTC, so an unlabelled hour misleads. */
     private static String kickoff(Object kickoffTime) {
-        if (kickoffTime == null) {
-            return "kickoff TBD";
-        }
-        if (kickoffTime instanceof Timestamp ts) {
-            return KICKOFF.format(ts.toInstant().atZone(UK)) + " UK";
-        }
-        return kickoffTime.toString();
+        return UkTime.format(kickoffTime, "kickoff TBD");
     }
 }

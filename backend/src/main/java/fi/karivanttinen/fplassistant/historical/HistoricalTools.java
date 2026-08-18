@@ -13,6 +13,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
 import fi.karivanttinen.fplassistant.tools.FplTool;
+import fi.karivanttinen.fplassistant.tools.UkTime;
 
 /**
  * Historical match results spanning multiple seasons (2019-20 onward, backfilled from
@@ -137,8 +138,7 @@ public class HistoricalTools implements FplTool {
         String outcome = outcome(((Number) teamGoals).intValue(), ((Number) oppGoals).intValue());
         Object gw = r.get("gameweek");
         String gwLabel = gw == null ? "" : " GW" + gw;
-        Object kickoff = r.get("kickoff_time");
-        String kickoffLabel = kickoff == null ? "kickoff unknown" : kickoff.toString();
+        String kickoffLabel = UkTime.format(r.get("kickoff_time"), "kickoff unknown");
 
         return "%s%s: %s %s vs %s %s | %s-%s (%s) | %s".formatted(
                 r.get("season"), gwLabel, team, isHome ? "(H)" : "(A)", opponent,
@@ -152,11 +152,12 @@ public class HistoricalTools implements FplTool {
         return forGoals < againstGoals ? "L" : "D";
     }
 
-    private static Object mostRecent(List<Map<String, Object>> rows) {
+    private static String mostRecent(List<Map<String, Object>> rows) {
         return rows.stream()
                 .map(r -> r.get("kickoff_time"))
                 .filter(java.util.Objects::nonNull)
                 .findFirst()
+                .map(ts -> UkTime.format(ts, "unknown"))
                 .orElse("unknown (no kickoff time recorded)");
     }
 }

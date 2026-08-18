@@ -25,8 +25,9 @@ public class GameweekTools implements FplTool {
     }
 
     @Tool(description = """
-            Get current and next gameweek information: deadline, average score,
-            highest score, most captained player ID, most transferred in player ID.
+            Get current and next gameweek information: deadline (in UK time, as FPL
+            publishes it), average score, highest score, most captained player ID,
+            most transferred in player ID.
             The reply begins with the season the numbers come from; if that is not the season
             currently being played, tell the user the figures are historical.
             """)
@@ -68,7 +69,7 @@ public class GameweekTools implements FplTool {
                 """.formatted(
                 r.get("name"), r.get("id"),
                 status(r),
-                r.get("deadline_time"),
+                UkTime.format(r.get("deadline_time"), "deadline unknown"),
                 r.get("average_entry_score"), r.get("highest_score"),
                 r.get("most_captained"), r.get("most_transferred_in")
         );
