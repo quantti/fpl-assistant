@@ -39,11 +39,16 @@ case "${1:-}" in
     *) echo "usage: $(basename "$0") [--check]" >&2; exit 2 ;;
 esac
 
+# Supabase credentials, not the test database's: this script reads the real schema. .env.test
+# points at the local container, so it is only the fallback for setups predating the split.
 if [[ -z "${DB_USER:-}" || -z "${DB_PASSWORD:-}" ]]; then
-    env_file="$REPO_ROOT/backend/.env.test"
-    if [[ ! -f "$env_file" ]]; then
-        echo "DB_USER/DB_PASSWORD not set and $env_file does not exist." >&2
-        echo "Copy backend/.env.test.example and fill in the Supabase credentials." >&2
+    env_file=""
+    for candidate in "$REPO_ROOT/backend/.env.supabase" "$REPO_ROOT/backend/.env.test"; do
+        [[ -f "$candidate" ]] && { env_file="$candidate"; break; }
+    done
+    if [[ -z "$env_file" ]]; then
+        echo "DB_USER/DB_PASSWORD not set and backend/.env.supabase does not exist." >&2
+        echo "Copy backend/.env.supabase.example and fill in the Supabase credentials." >&2
         exit 1
     fi
     set -a; source "$env_file"; set +a
