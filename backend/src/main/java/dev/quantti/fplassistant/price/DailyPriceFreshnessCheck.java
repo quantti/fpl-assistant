@@ -65,6 +65,15 @@ public class DailyPriceFreshnessCheck {
                                 + " fpl.daily-price config, or run --sync-prices by hand.",
                         latest, expectedDate(now),
                         ChronoUnit.DAYS.between(latest, now.toLocalDate()));
+            } else if (latest.isAfter(now.toLocalDate())) {
+                // A row dated in the future can only come from a machine whose clock runs
+                // ahead (e.g. a manual --sync-prices from a skewed laptop). It also suppresses
+                // staleness alerts for as long as it stays the newest row, so it deserves a
+                // warning rather than silence.
+                log.warn("fpl_daily_price has a row dated {} — in the future relative to this"
+                        + " container's clock. A capture was run from a machine with a skewed"
+                        + " clock; the freshness alert cannot watch the series until it catches"
+                        + " up.", latest);
             }
         } catch (DataAccessException e) {
             // The check must never do more than fail to run; the capture itself is unaffected.

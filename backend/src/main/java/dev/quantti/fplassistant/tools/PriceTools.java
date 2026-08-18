@@ -70,20 +70,24 @@ public class PriceTools implements FplTool {
 
             Map<String, Object> latest = matches.getFirst();
             int elementId = ((Number) latest.get("element_id")).intValue();
+            String season = String.valueOf(latest.get("season"));
             String webName = String.valueOf(latest.get("web_name"));
             String ambiguity = NameMatch.ambiguityNote(
                     matches.stream().map(m -> String.valueOf(m.get("web_name"))).toList());
 
+            // element_id alone is not a player: FPL renumbers every season, so id 1 is a
+            // different player in 2027-28 than in 2026-27. Without the season predicate the
+            // trend would mix last season's rows for the same number into this season's
+            // series at the changeover — the exact window this table was built to survive.
             List<Map<String, Object>> rows = jdbc.queryForList("""
                     SELECT price_date, now_cost, cost_change_event, cost_change_start
                     FROM %s
-                    WHERE element_id = ?
+                    WHERE element_id = ? AND season = ?
                     ORDER BY price_date DESC
                     LIMIT ?
-                    """.formatted(source.table()), elementId, days);
+                    """.formatted(source.table()), elementId, season, days);
 
-            String header = DailyPriceSource.provenance(
-                    String.valueOf(latest.get("season")), captured, today);
+            String header = DailyPriceSource.provenance(season, captured, today);
             return header + "\n\n" + formatHistory(webName, rows) + ambiguity;
         } catch (DataAccessException e) {
             log.error("getPriceHistory(\"{}\", {}) failed", playerName, lastN, e);
