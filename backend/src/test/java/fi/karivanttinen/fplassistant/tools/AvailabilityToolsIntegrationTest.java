@@ -67,11 +67,17 @@ class AvailabilityToolsIntegrationTest {
 
     private void insert(int elementId, String webName, LocalDate date,
                         String status, String news) {
+        insert(elementId, webName, date, "TST", "Testville United", status, news);
+    }
+
+    private void insert(int elementId, String webName, LocalDate date, String teamShort,
+                        String teamName, String status, String news) {
         jdbc.update("INSERT INTO " + table + " (season, price_date, element_id, web_name,"
                         + " full_name, team_short, team_name, element_type, now_cost, cost_change_event,"
                         + " cost_change_start, status, news) "
-                        + "VALUES (?, ?, ?, ?, ?, 'TST', 'Testville United', 3, 100, 0, 0, ?, ?)",
-                TEST_SEASON, date, elementId, webName, webName + " Fictitious", status, news);
+                        + "VALUES (?, ?, ?, ?, ?, ?, ?, 3, 100, 0, 0, ?, ?)",
+                TEST_SEASON, date, elementId, webName, webName + " Fictitious",
+                teamShort, teamName, status, news);
     }
 
     @Test
@@ -118,6 +124,20 @@ class AvailabilityToolsIntegrationTest {
     }
 
     @Test
+    void aGapInTheCaptureDoesNotBreakTheFlagStreak() {
+        // The daily capture can miss a day (a failed 02:00 run). The flag is still "since the
+        // first day of this status" — the series is sparse but the status did not change, and
+        // the "at least" wording covers the hole.
+        insert(DOUBTFUL, "Doubttest", LocalDate.of(2026, 9, 7), "d", "Knock");
+        insert(DOUBTFUL, "Doubttest", LocalDate.of(2026, 9, 9), "d", "Knock"); // 9-8 missing
+        insert(DOUBTFUL, "Doubttest", TODAY, "d", "Knock");
+
+        String result = tools.getPlayerAvailability("Doubttest");
+
+        assertThat(result).contains("since at least 2026-09-07");
+    }
+
+    @Test
     void alwaysStatesWhichDaysCaptureTheAnswerCameFrom() {
         insert(INJURED, "Brokentest", TODAY, "i", "Out");
 
@@ -149,6 +169,20 @@ class AvailabilityToolsIntegrationTest {
         assertThat(tools.getFlaggedPlayers("Testville United")).contains("Brokentest");
         assertThat(tools.getFlaggedPlayers("testville")).contains("Brokentest");
         assertThat(tools.getFlaggedPlayers("TST")).contains("Brokentest");
+    }
+
+    @Test
+    void aSubstringMatchingSeveralClubsLabelsEachPlayerWithItsClub() {
+        // A substring like "man" matches both Manchester clubs. Without per-row club codes
+        // the reply would list both clubs' players under whichever club came first.
+        insert(INJURED, "Citytest", TODAY, "MCI", "Manchester City", "i", "Hamstring");
+        insert(DOUBTFUL, "Utdtest", TODAY, "MUN", "Manchester United", "d", "Knock");
+
+        String result = tools.getFlaggedPlayers("Man");
+
+        assertThat(result).contains("at 2 clubs, 2 found");
+        assertThat(result).contains("MCI Citytest");
+        assertThat(result).contains("MUN Utdtest");
     }
 
     @Test

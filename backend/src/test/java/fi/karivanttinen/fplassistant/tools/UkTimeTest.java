@@ -2,6 +2,7 @@ package fi.karivanttinen.fplassistant.tools;
 
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.time.OffsetDateTime;
 import java.util.TimeZone;
 
 import org.junit.jupiter.api.AfterAll;
@@ -57,6 +58,22 @@ class UkTimeTest {
         Timestamp ts = Timestamp.from(Instant.parse("2026-08-21T10:30:00Z"));
 
         assertThat(UkTime.format(ts, "unused")).endsWith(" UK");
+    }
+
+    @Test
+    void rendersAnOffsetDateTimeInUkTime() {
+        // The value carries its own offset; the instant is unambiguous, so it must render in
+        // the house style rather than a raw toString.
+        OffsetDateTime odt = OffsetDateTime.parse("2026-08-21T11:30:00+01:00");
+
+        assertThat(UkTime.format(odt, "unused")).isEqualTo("2026-08-21 11:30 UK");
+    }
+
+    @Test
+    void rendersAnInstantInUkTime() {
+        Instant instant = Instant.parse("2026-08-21T10:30:00Z");
+
+        assertThat(UkTime.format(instant, "unused")).isEqualTo("2026-08-21 11:30 UK");
     }
 
     @Test
