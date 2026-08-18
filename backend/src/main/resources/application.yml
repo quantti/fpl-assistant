@@ -76,9 +76,15 @@ fpl:
     # and for any late-running FPL job to finish, per the owner's instruction.
     fetch-at: "0 0 2 * * *"
     fetch-zone: Europe/London
+    # Freshness alert (DailyPriceFreshnessCheck): logs ERROR when the capture misses a day —
+    # the capture writes one row per UK date at 02:00, so by 06:00 a row must exist for the
+    # current UK date. Runs after the capture window; silent while healthy.
+    check-at: "0 0 6,12,18 * * *"
     # Enabled 2026-08-18. Depends on the Fly machine staying up (min_machines_running = 1,
     # auto_stop_machines = false in fly.toml): a stop-when-idle machine has nothing running at
-    # 02:00 to fire the cron, so reverting that setting silently stops the price capture.
+    # 02:00 to fire the cron, so reverting that setting stops the price capture — loudly now,
+    # because the freshness check above surfaces the miss as an ERROR. Gates the capture AND
+    # the freshness check.
     scheduled: true
 
 cors:

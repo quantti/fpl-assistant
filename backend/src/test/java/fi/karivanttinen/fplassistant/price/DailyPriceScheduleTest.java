@@ -31,6 +31,9 @@ class DailyPriceScheduleTest {
     @Value("${fpl.daily-price.fetch-zone}")
     private String zone;
 
+    @Value("${fpl.daily-price.check-at}")
+    private String checkCron;
+
     @Test
     void cronIsValidAndFiresAtTwoInTheMorning() {
         assertThat(CronExpression.isValidExpression(cron))
@@ -71,5 +74,19 @@ class DailyPriceScheduleTest {
     void zoneIsUkRatherThanTheContainerDefault() {
         // The Fly container runs UTC; the whole point of naming a zone is not to inherit it.
         assertThat(zone).isEqualTo("Europe/London");
+    }
+
+    @Test
+    void freshnessCheckRunsAfterTheCaptureWindow() {
+        assertThat(CronExpression.isValidExpression(checkCron))
+                .as("a malformed check cron only fails at runtime")
+                .isTrue();
+
+        // Three checks a day, all after the 02:00 UK capture — a check before 02:00 could
+        // only ever report yesterday's row as stale, which is the healthy state.
+        ZonedDateTime from = ZonedDateTime.of(2026, 9, 15, 0, 0, 0, 0, ZoneId.of(zone));
+        ZonedDateTime next = CronExpression.parse(checkCron).next(from);
+        assertThat(next).isNotNull();
+        assertThat(next.getHour()).isIn(6, 12, 18);
     }
 }

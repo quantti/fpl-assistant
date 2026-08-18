@@ -691,8 +691,21 @@ FPL publishes only today's state and a day not captured is gone for good.
 The schedule works because the Fly machine now stays up (`min_machines_running = 1`,
 `auto_stop_machines = false`). Under the previous stop-when-idle configuration a 02:00 cron
 would never have fired — nothing would have been running to fire it. **If that setting is
-reverted the price capture stops silently.** A Fly scheduled machine would be immune; it was
-not chosen because the always-on setting made the simpler option correct.
+reverted the price capture stops** — the freshness alert below makes the miss visible as an
+ERROR once the app runs, and the app-not-running case itself shows up on Fly's
+`/actuator/health` check. A Fly scheduled machine would be immune; it was not chosen because
+the always-on setting made the simpler option correct.
+
+## Freshness alert (added in the 2026-08-18 review)
+
+`DailyPriceFreshnessCheck` runs at 06:00 / 12:00 / 18:00 UK and logs **ERROR** when
+`fpl_daily_price` has no row for the current UK date. The capture writes one row per UK date
+at 02:00 UK, so by 06:00 a missing row means a missed capture, whatever the cause — scheduler
+failure, machine stopped, or an FPL response whose shape changed so the sync wrote zero rows.
+The check shares the `fpl.daily-price.scheduled` gate: disabling the capture disables the
+alert. Not wired into `/actuator/health`: Fly restarts on a non-UP health check, and a
+restart cannot backfill a missed day — it would flap instead of healing. If an external
+webhook alert is ever wanted, the ERROR log is the hook point.
 
 # Status — Phase 4 (Enrichment)
 
