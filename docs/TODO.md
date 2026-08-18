@@ -16,6 +16,7 @@ to a later date or season by owner decision.
 | Strategy doc: set-and-forget / low-maintenance playstyle | Doc | open | From gap analysis; lower priority |
 | Strategy docs: evaluating promoted clubs and new signings; deadline/team-news management | Doc | done | Two separate files per owner request: `strategy-promoted-clubs-and-new-signings.md` (promoted clubs and new signings as separate frameworks in one doc) and `strategy-deadline-and-team-news.md` (own file) (2026-08-16, ingested) |
 | Daily capture freshness alert | Code | done | `DailyPriceFreshnessCheck` (2026-08-18 review): scheduled ERROR at 06:00/12:00/18:00 UK when `fpl_daily_price` has no row for the current UK date, so a missed 02:00 capture — scheduler failure, stopped machine, FPL response shape change — is loud within hours instead of silent. Gated with the capture on `fpl.daily-price.scheduled`; not wired into `/actuator/health` (Fly would restart-flap, and a restart cannot backfill). External webhook escalation not built: no destination configured |
+| External escalation for the freshness alert (webhook/uptime) | Code | deferred | The ERROR log is the only channel (2026-08-18 review). Hook a webhook or uptime monitor to that log line when a destination exists; until then a missed day shows up in logs within hours |
 
 ## Corpus and repository hygiene
 

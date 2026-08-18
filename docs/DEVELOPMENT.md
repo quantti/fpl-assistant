@@ -57,12 +57,24 @@ set -a; source .env.test; set +a
 ./gradlew compileJava
 ./gradlew bootRun                                 # serves on :8080
 ./gradlew bootRun --args="--ingest"               # reload the RAG corpus, then exit
+./gradlew bootRun --args="--sync-prices"          # capture today's FPL prices, then exit
 ```
 
 Tests hit the real Supabase database — there is no Testcontainers setup and no local Postgres, so
 the env file must be loaded or every `@SpringBootTest` fails on datasource creation. Tests are
 pinned to `fpl_embeddings_test` (`src/test/resources/application.properties` activates the `test`
 profile for the whole source set), so they never touch the production corpus.
+
+Two ways this bites, both hit during the 2026-08-18 review:
+
+- **The failure message hides the cause.** Without the env file, the run fails with
+  `Driver org.postgresql.Driver claims to not accept jdbcUrl, ${DATABASE_URL}` — the literal
+  placeholder is still in the URL, so it reads like a misconfigured datasource rather than an
+  unset variable. `set -a; source .env.test` fixes it.
+- **`test` can report BUILD SUCCESSFUL without running anything.** Gradle skips the task when
+  its inputs are unchanged, so a run printing `5 actionable tasks: 5 up-to-date` executed zero
+  tests. Force a real run with `./gradlew cleanTest test` (or `--rerun-tasks`). The full suite
+  is 206 tests as of 2026-08-18.
 
 ## Reloading the strategy corpus
 

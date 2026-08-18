@@ -707,6 +707,25 @@ alert. Not wired into `/actuator/health`: Fly restarts on a non-UP health check,
 restart cannot backfill a missed day — it would flap instead of healing. If an external
 webhook alert is ever wanted, the ERROR log is the hook point.
 
+## Review follow-ups (2026-08-18)
+
+Whole-branch review of the six commits landing the daily capture, applied the same day (freshness
+alert above is part of it):
+
+- `getFlaggedPlayers` matched several clubs for a substring like "man" and listed all their
+  players under whichever club came first — each player now carries its own club code, and the
+  header names the club count. The 30-player cap is stated in the tool description.
+- `UkTime.format` now renders `OffsetDateTime`/`Instant` in the house style instead of a raw
+  `toString`, in case pgjdbc hands either back.
+- `getPriceHistory` description now states that the first row is today's price, so the model
+  answers "what does X cost now" from it. A dedicated `getCurrentPrice` tool was considered and
+  not built — the description change covers the case without new surface.
+- `PriceTools.formatHistory` empty-list guard considered and not added: the query is anchored to
+  a matched player, so the list cannot be empty (project rule: no handling for impossible
+  scenarios).
+- System prompt has grown long with the new tool guidance; watch for drift and trim when a
+  natural moment comes.
+
 # Status — Phase 4 (Enrichment)
 
 **Progress:** Task 7/7 done — Phase 4 complete, merged to `master`. Two full-phase reviews applied (see below).
