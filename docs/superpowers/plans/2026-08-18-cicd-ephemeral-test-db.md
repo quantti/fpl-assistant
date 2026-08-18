@@ -3,7 +3,7 @@
 **Status:** planned, not started (2026-08-18; revised 2026-08-18 after a code-level review of the
 test suite)
 
-**PROGRESS:** Task 5/11 done
+**PROGRESS:** Task 7/11 done (plus Task 9; Tasks 8 and 10 need repository access)
 
 This plan came out of the 2026-08-18 evening session. Deployments are currently manual
 (`fly deploy --ha=false --remote-only`). The goal: `git push origin master` (via PR) → tests
@@ -333,6 +333,17 @@ labelled block, since production troubleshooting still needs them.
 
 **Verification:** fresh local container from scratch → suite green; no production credentials in
 play.
+
+**Outcome, Tasks 6, 7 and 9 (2026-08-19):** `.github/workflows/deploy.yml` written (test job
+with the `services:` container on pull requests and master, deploy + external smoke test on
+master only, `cancel-in-progress: false` on the deploy), and `scripts/test-db.sh` gives local
+development the same container with `up` / `reset` / `down`.
+
+The env files had to split: tests seed tapas-owned tables, so the suite must not be pointed at
+Supabase. `backend/.env.test` now points at the local container and `backend/.env.supabase`
+carries the production credentials the schema dump and the `bootRun` data commands still need.
+Verified along the documented path — `scripts/test-db.sh reset`, `source .env.test`,
+`./gradlew cleanTest test` — 218 green, no production credentials in play.
 
 ### Task 8 — GitHub secrets
 
