@@ -3,7 +3,7 @@
 **Status:** planned, not started (2026-08-18; revised 2026-08-18 after a code-level review of the
 test suite)
 
-**PROGRESS:** Task 2/11 done
+**PROGRESS:** Task 5/11 done
 
 This plan came out of the 2026-08-18 evening session. Deployments are currently manual
 (`fly deploy --ha=false --remote-only`). The goal: `git push origin master` (via PR) → tests
@@ -286,6 +286,30 @@ Two cleanups the ephemeral database forces:
 
 **Verification:** a full run against a container makes no outbound HTTP call other than the
 embedding calls Task 4 sanctioned (check with the network blocked, or by log inspection).
+
+**Outcome, Tasks 3–5 (2026-08-19):** the suite is green on an empty database.
+
+```
+218 tests, 0 failed          (216 before: +1 fixture-difficulty branch,
+                              +1 pick-tools FDR, +1 vaastav split, −1 excluded by tag)
+```
+
+- **Task 3.** `TapasSeed` (four clubs, six players, four gameweeks, nine fixtures) is what the
+  32 data-dependent tests now assert on. It reproduces the production changeover — a current
+  season flagged but empty beside the completed one holding the data — so the fallback
+  provenance stays under test. It refuses to run unless the database is ephemeral, checked by
+  the presence of tapas' own `manager` table rather than by URL. Two tests gained coverage they
+  could not have had: the fixture-difficulty tool now reaches its Average FDR branch, and the
+  double-gameweek rule is finally exercised by a club that plays twice in the window.
+  `VaastavBackfillIntegrationTest`'s oracle assertion is tagged `realdata` and excluded from the
+  default test task (`-PincludeRealData` to run it against Supabase).
+- **Task 4.** Real `OPENAI_API_KEY`, decided and verified: with it the RAG classes pass, with a
+  dummy key all nine fail on `401`. The stub-`EmbeddingModel` alternative is recorded in the
+  classes' javadoc as the road not taken.
+- **Task 5.** Both startup runners are gated by a `startup-sync` property (off under test), as
+  is the daily-price scheduler — a suite running at 02:00 UK would otherwise call FPL's API for
+  real. `IngestionIntegrationTest`'s production row-count comparison is gone; the `_test`
+  pinning assertion that prevents the damage stays.
 
 ### Task 6 — Container-based test database in CI
 
