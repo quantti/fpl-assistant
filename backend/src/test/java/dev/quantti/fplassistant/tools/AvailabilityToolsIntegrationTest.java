@@ -28,14 +28,17 @@ import static org.assertj.core.api.Assertions.assertThat;
 class AvailabilityToolsIntegrationTest {
 
     private static final String TEST_SEASON = "test-av"; // season columns are VARCHAR(10)
+    private static final String OTHER_SEASON = "test-av-o"; // same element_id, different player
     private static final int INJURED = 9201;
     private static final int DOUBTFUL = 9202;
     private static final int FIT = 9203;
     private static final LocalDate TODAY = LocalDate.of(2026, 9, 10);
     private static final LocalDate EARLIER = LocalDate.of(2026, 9, 8);
+    private static final LocalDate LAST_SEASON_DAY = LocalDate.of(2026, 5, 20);
 
     static {
         FictitiousTestData.assertSafeSeason(TEST_SEASON);
+        FictitiousTestData.assertSafeSeason(OTHER_SEASON);
         FictitiousTestData.assertSafeCode(INJURED);
         FictitiousTestData.assertSafeCode(DOUBTFUL);
         FictitiousTestData.assertSafeCode(FIT);
@@ -63,6 +66,7 @@ class AvailabilityToolsIntegrationTest {
 
     private void deleteTestRows() {
         jdbc.update("DELETE FROM " + table + " WHERE season = ?", TEST_SEASON);
+        jdbc.update("DELETE FROM " + table + " WHERE season = ?", OTHER_SEASON);
     }
 
     private void insert(int elementId, String webName, LocalDate date,
@@ -78,6 +82,15 @@ class AvailabilityToolsIntegrationTest {
                         + "VALUES (?, ?, ?, ?, ?, ?, ?, 3, 100, 0, 0, ?, ?)",
                 TEST_SEASON, date, elementId, webName, webName + " Fictitious",
                 teamShort, teamName, status, news);
+    }
+
+    private void insertOtherSeason(int elementId, String webName, LocalDate date,
+                                   String status, String news) {
+        jdbc.update("INSERT INTO " + table + " (season, price_date, element_id, web_name,"
+                        + " full_name, team_short, team_name, element_type, now_cost, cost_change_event,"
+                        + " cost_change_start, status, news) "
+                        + "VALUES (?, ?, ?, ?, ?, 'TST', 'Testville United', 3, 100, 0, 0, ?, ?)",
+                OTHER_SEASON, date, elementId, webName, webName + " Fictitious", status, news);
     }
 
     @Test
@@ -147,6 +160,20 @@ class AvailabilityToolsIntegrationTest {
     }
 
     @Test
+    void aFlagDoesNotCarryAcrossSeasonsForTheSameElementId() {
+        // FPL renumbers every season, so the element_id that was doubtful all last season
+        // belongs to a different player now. Without the season predicate in flagAge, the
+        // new player's brand-new flag would read as having stood since last season.
+        insertOtherSeason(DOUBTFUL, "Olddoubttest", LAST_SEASON_DAY, "d", "Knock");
+        insert(DOUBTFUL, "Doubttest", TODAY, "d", "Knock");
+
+        String result = tools.getPlayerAvailability("Doubttest");
+
+        assertThat(result).contains("new as of today's capture");
+        assertThat(result).doesNotContain("2026-05-20");
+    }
+
+    @Test
     void listsEveryFlaggedPlayerAtAClubAndOmitsTheFitOnes() {
         insert(INJURED, "Brokentest", TODAY, "i", "Hamstring");
         insert(DOUBTFUL, "Doubttest", TODAY, "d", "Knock");
@@ -154,9 +181,32 @@ class AvailabilityToolsIntegrationTest {
 
         String result = tools.getFlaggedPlayers("TST");
 
+        // Single-club output: the header names the club, and rows carry no club-code prefix
+        // (the prefix is the multi-club disambiguator).
+        assertThat(result).contains("Flagged players (Testville United), 2 found");
+        assertThat(result).doesNotContain("TST Brokentest");
         assertThat(result).contains("Brokentest").contains("INJURED").contains("Hamstring");
         assertThat(result).contains("Doubttest").contains("DOUBTFUL");
         assertThat(result).doesNotContain("Healthytest");
+    }
+
+    @Test
+    void aListThatHitsTheCapReportsTheTrueTotalRatherThanTheCap() {
+        // A broad substring can match more flagged players than the 30-row cap; the header
+        // must state the real count and say the list is truncated, so no club silently
+        // vanishes just because its players fell outside the top-30-by-price.
+        for (int i = 0; i < 32; i++) {
+            insert(9300 + i, "Captest" + i, TODAY, "i", "Hamstring");
+        }
+
+        String result = tools.getFlaggedPlayers("TST");
+
+        assertThat(result).contains("Flagged players (Testville United), 32 found");
+        assertThat(result).contains("showing the first 30");
+        // Exactly 30 rows are listed, not 32 — and which 30 is unspecified (equal prices),
+        // so the assertion counts listed lines rather than naming them.
+        long listed = result.lines().filter(l -> l.contains("Captest") && l.contains("INJURED")).count();
+        assertThat(listed).isEqualTo(30);
     }
 
     @Test

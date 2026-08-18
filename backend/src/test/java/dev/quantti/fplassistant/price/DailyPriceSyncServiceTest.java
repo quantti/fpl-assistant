@@ -92,4 +92,47 @@ class DailyPriceSyncServiceTest {
         // Rolls the two-digit half correctly across a century boundary.
         assertThat(DailyPriceSyncService.seasonCode(LocalDate.of(2099, 9, 1))).isEqualTo("2099-00");
     }
+
+    @Test
+    void refusesAResponseThatStillCarriesLastSeasonsFixtures() {
+        // The early-July window: the calendar already says "new season", but FPL has not
+        // reset bootstrap-static, so every event deadline is weeks past. Writing that
+        // response would label last season's squads with the new season code.
+        Map<String, Object> body = Map.of("events", List.of(
+                Map.of("deadline_time", "2026-05-24T10:00:00Z"),
+                Map.of("deadline_time", "2026-05-31T10:00:00Z")));
+
+        assertThat(DailyPriceSyncService.responseBelongsToAFinishedSeason(
+                body, LocalDate.of(2026, 7, 20))).isTrue();
+    }
+
+    @Test
+    void acceptsAResponseFromTheSeasonAboutToStart() {
+        Map<String, Object> body = Map.of("events", List.of(
+                Map.of("deadline_time", "2026-05-31T10:00:00Z"),
+                Map.of("deadline_time", "2026-08-14T10:00:00Z")));
+
+        assertThat(DailyPriceSyncService.responseBelongsToAFinishedSeason(
+                body, LocalDate.of(2026, 7, 10))).isFalse();
+    }
+
+    @Test
+    void acceptsASyncOfASeasonThatJustFinishedWhileItIsStillCurrent() {
+        // Mid-June: the season that ended in May is still "the current season" by the
+        // calendar rule, and capturing its rows under its own label is correct — the grace
+        // window must not refuse it.
+        Map<String, Object> body = Map.of("events", List.of(
+                Map.of("deadline_time", "2026-05-31T10:00:00Z")));
+
+        assertThat(DailyPriceSyncService.responseBelongsToAFinishedSeason(
+                body, LocalDate.of(2026, 6, 20))).isFalse();
+    }
+
+    @Test
+    void aBodyWithNoEventsBlockIsPassedThrough() {
+        // The trimmed test fixture carries no events; a response that cannot be judged is
+        // not refused on that account.
+        assertThat(DailyPriceSyncService.responseBelongsToAFinishedSeason(
+                Map.of("elements", List.of()), LocalDate.of(2026, 7, 10))).isFalse();
+    }
 }

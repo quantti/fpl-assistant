@@ -39,12 +39,21 @@ public final class UkTime {
     }
 
     /**
-     * Formats a JDBC timestamp as {@code yyyy-MM-dd HH:mm UK}, or returns {@code fallback}
-     * when the value is null or is not a timestamp the driver handed back.
+     * Formats a JDBC timestamp (or an {@link OffsetDateTime}/{@link Instant}, which pgjdbc can
+     * hand back depending on configuration) as {@code yyyy-MM-dd HH:mm UK}, or returns
+     * {@code fallback} when the value is null.
      *
      * <p>The fallback path is not defensive padding: {@code kickoff_time} is genuinely
      * nullable for postponed fixtures, and {@code pl_match_result} rows backfilled from
      * vaastav can carry an unparseable kickoff that was stored as NULL.
+     *
+     * <p>A {@code LocalDateTime} (or {@code java.util.Date}) falls through to
+     * {@code toString()} unlabelled. That is deliberate rather than an oversight: a value
+     * without a zone cannot be rendered "in UK time" without inventing the zone it was
+     * captured in. Unreachable today — every rendered column is {@code TIMESTAMPTZ}, which
+     * the driver maps to {@code Timestamp} — but a future {@code timestamp without time zone}
+     * column would surface here as an unlabelled string, which is at least visible rather
+     * than silently wrong.
      */
     public static String format(Object value, String fallback) {
         if (value instanceof Timestamp ts) {

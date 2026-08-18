@@ -56,7 +56,12 @@ public class DailyPriceSource {
                 "SELECT MAX(price_date) FROM %s".formatted(table), LocalDate.class);
     }
 
-    /** Best name matches on the given date, best first; empty when nothing matched. */
+    /**
+     * Name matches on the given date, best first; empty when nothing matched. "Best" is an
+     * exact {@code web_name} match, then the priciest substring match — without the exact
+     * tier, "son" would rank a pricier Wilson or Maddison above Son and the tool would
+     * answer for the wrong player.
+     */
     List<Map<String, Object>> matchPlayers(String playerName, LocalDate date) {
         String pattern = "%" + LikePatterns.escape(playerName.toLowerCase(Locale.ROOT)) + "%";
         return jdbc.queryForList("""
@@ -66,9 +71,9 @@ public class DailyPriceSource {
                 FROM %s
                 WHERE price_date = ?
                   AND (LOWER(web_name) LIKE ? OR LOWER(full_name) LIKE ?)
-                ORDER BY now_cost DESC
+                ORDER BY (LOWER(web_name) = LOWER(?)) DESC, now_cost DESC
                 LIMIT ?
-                """.formatted(table), date, pattern, pattern, MAX_NAME_MATCHES);
+                """.formatted(table), date, pattern, pattern, playerName, MAX_NAME_MATCHES);
     }
 
     /**

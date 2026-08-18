@@ -48,4 +48,14 @@ class DailyPriceFreshnessTest {
                 LocalDate.of(2026, 9, 9), LocalDateTime.of(2026, 9, 11, 6, 0)))
                 .isTrue();
     }
+
+    @Test
+    void aRowDatedInTheFutureIsNotStale() {
+        // Can only come from a machine with a skewed clock (a manual --sync-prices). The rule
+        // reports it as fresh — the check logs a separate skew warning for it — rather than
+        // compounding one bad clock with a second, false alarm.
+        assertThat(DailyPriceFreshnessCheck.isStale(
+                LocalDate.of(2026, 9, 12), LocalDateTime.of(2026, 9, 11, 6, 0)))
+                .isFalse();
+    }
 }
