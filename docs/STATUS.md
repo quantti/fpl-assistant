@@ -630,6 +630,70 @@ listing the three schemes — stats-tool banner, per-chunk RAG attribution, per-
 historical attribution — instead of accumulating a third per-tool exception.
 ---
 
+# Status — Daily price and availability capture (2026-08-18)
+
+Not a numbered phase: a gap found while investigating tool freshness, fixed the same day.
+
+## Why it exists
+
+Nothing in the project knew today's player price. The two existing sources both lag:
+
+- **vaastav** publishes prices only once a gameweek has been played.
+- **The tapas `player` table**, which this project reads, is synced by the other project's
+  `scheduled_update.py` (daily 06:00 UTC cron) — but that run **skips entirely when no new
+  gameweek has finalised**, and players are documented as syncing weekly.
+
+Measured against the live database on 2026-08-18: every `player`, `fixture` and `gameweek` row
+was last written **2026-05-25 — 85 days earlier**; `team` dated from 2026-01-04; and season
+2026-27 had **zero player rows**, three days before its first deadline. Meanwhile FPL's own API
+already carried the full 590-player 2026/27 squad.
+
+FPL moves prices **once a day at 00:00 UK** (changed from ~01:30 GMT / 02:30 BST for 2026/27 —
+[premierleague.com](https://www.premierleague.com/en/news/4680462/whats-new-in-202627-fantasy-price-change-predictor/)),
+so a weekly source can be seven price changes behind on a value the game is built around.
+
+## What exists now
+
+`fpl_daily_price`, keyed `(season, price_date, element_id)` — one row per player per UK
+calendar date, fetched straight from FPL's `bootstrap-static`. It depends on neither
+`SeasonResolver` nor the tapas tables, which is the point: it has to keep working across the
+season changeover, exactly when the tapas-backed paths go quiet.
+
+| Piece | Where |
+|---|---|
+| Table DDL | `DailyPriceSchema` (idempotent, `_test` table under the test profile) |
+| Fetch and upsert | `DailyPriceSyncService` (parsing is package-private and unit-tested against a captured fixture) |
+| Script | `DailyPriceRunner` — `java -jar app.jar --sync-prices`, exit 0/1 for a scheduler |
+| Schedule | `DailyPriceScheduler`, cron `02:00 Europe/London` (two hours after the price change) |
+
+Verified end to end against the production database: 590 rows captured, re-running the same day
+overwrites rather than duplicates, 182 tests pass.
+
+## The table also carries the injury picture — deliberately
+
+`bootstrap-static` returns availability on the same elements as the price, so `status` and
+`news` are captured in the same request at no extra cost, on the same daily cadence:
+
+- **`status`** — `a` available, `d` doubtful, `i` injured, `s` suspended, `u` unavailable,
+  `n` on loan / not in squad. **103 of 590 players were flagged on 2026-08-18.**
+- **`news`** — FPL's free-text note ("Knock - 75% chance of playing"), empty when available.
+
+This is as important as the price. The tapas `player` table is the only other source for
+availability and is weekly, so a stale `status` would tell a user a player is fit after he has
+been ruled out. Because the rows are dated, the series answers what a snapshot cannot: when a
+flag first appeared, and whether a doubt is clearing or worsening.
+
+**No tool reads these columns yet** — the capture deliberately runs ahead of the tools, because
+FPL publishes only today's state and a day not captured is gone for good.
+
+## Known dependency
+
+The schedule works because the Fly machine now stays up (`min_machines_running = 1`,
+`auto_stop_machines = false`). Under the previous stop-when-idle configuration a 02:00 cron
+would never have fired — nothing would have been running to fire it. **If that setting is
+reverted the price capture stops silently.** A Fly scheduled machine would be immune; it was
+not chosen because the always-on setting made the simpler option correct.
+
 # Status — Phase 4 (Enrichment)
 
 **Progress:** Task 7/7 done — Phase 4 complete, merged to `master`. Two full-phase reviews applied (see below).

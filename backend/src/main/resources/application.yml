@@ -65,9 +65,26 @@ fpl:
     # current-season vaastav merged_gw.csv when the last snapshot is older than this. 6h keeps
     # roughly twice-daily cadence during the season without hitting vaastav on every boot.
     sync-stale-after-hours: 6
+  daily-price:
+    table-name: fpl_daily_price
+    # FPL's own bootstrap-static. Read-only, unauthenticated, and the only source in this
+    # project that carries the price as it stands today: vaastav publishes end-of-gameweek
+    # prices, and the tapas player table is synced weekly.
+    bootstrap-url: https://fantasy.premierleague.com/api/bootstrap-static/
+    # FPL applies price changes once a day at 00:00 UK (moved from ~01:30 for 2026/27 —
+    # premierleague.com/en/news/4680462). 02:00 UK leaves two hours for the change to settle
+    # and for any late-running FPL job to finish, per the owner's instruction.
+    fetch-at: "0 0 2 * * *"
+    fetch-zone: Europe/London
+    # Enabled 2026-08-18. Depends on the Fly machine staying up (min_machines_running = 1,
+    # auto_stop_machines = false in fly.toml): a stop-when-idle machine has nothing running at
+    # 02:00 to fire the cron, so reverting that setting silently stops the price capture.
+    scheduled: true
 
 cors:
-  allowed-origins: ${CORS_ORIGINS:http://localhost:5173}
+  # Dev origins included so the Vite dev server (any local port) can talk to this backend
+  # through the proxy without a CORS 403: the proxy forwards the browser's Origin header.
+  allowed-origins: ${CORS_ORIGINS:http://localhost:5173,http://localhost:5174,http://127.0.0.1:5173,http://127.0.0.1:5174}
 
 management:
   endpoints:

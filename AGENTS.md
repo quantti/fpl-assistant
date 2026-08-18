@@ -37,7 +37,8 @@ Auth (Supabase JWT) + Stripe billing are deferred to the last phase. Build the c
   - **Historical tools** (`HistoricalTools.getTeamForm`, `getHeadToHead`): every match names its own season and the reply states the range covered; `getTeamForm` also reports the date of its most recent known match so a stalled sync shows up as visibly old data. Old results are evidence about tendencies, not statements about current form — a 2019/20 result must not read as recent, and the system prompt instructs the model to attribute by season and never call historical results current form.
 - Do NOT alter existing tapas tables. Only add new tables.
 - Player prices stored as integers ×10 (`now_cost=75` = £7.5m). `element_type`: 1=GK, 2=DEF, 3=MID, 4=FWD.
-- External APIs (vaastav CSVs, football-data.org) are hit only at sync time, never at chat time — everything queries Supabase.
+- External APIs (vaastav CSVs, football-data.org, FPL `bootstrap-static`) are hit only at sync time, never at chat time — everything queries Supabase.
+- **Today's price and today's injury flags come from `fpl_daily_price`, not from the tapas `player` table.** That table is synced weekly by `tapas-fpl-app` and was measured 85 days stale; `fpl_daily_price` is captured daily at 02:00 UK from FPL's own API (prices change at 00:00 UK) and owes tapas nothing, so it also survives the season changeover. It carries `status`/`news` — the availability picture — alongside `now_cost`. Dated rows, so it answers *when* a flag appeared; it cannot be backfilled, since FPL publishes only today's state.
 - Tools query Supabase via `JdbcTemplate`, annotated with Spring AI `@Tool`.
 
 ## Progress tracking

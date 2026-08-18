@@ -20,3 +20,5 @@ fpl:
     table-name: pl_match_result_test
   price:
     table-name: fpl_player_price_test
+  daily-price:
+    table-name: fpl_daily_price_test
