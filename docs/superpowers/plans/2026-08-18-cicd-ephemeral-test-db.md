@@ -3,7 +3,7 @@
 **Status:** planned, not started (2026-08-18; revised 2026-08-18 after a code-level review of the
 test suite)
 
-**PROGRESS:** Task 1/11 done
+**PROGRESS:** Task 2/11 done
 
 This plan came out of the 2026-08-18 evening session. Deployments are currently manual
 (`fly deploy --ha=false --remote-only`). The goal: `git push origin master` (via PR) → tests
@@ -162,32 +162,76 @@ consequences for this plan, none of which require work now:
   because a schema dump reviewer will see `app_user` in the tapas schema and needs to know it is
   not ours.
 
-### Task 2 — Classify all 219 tests
+### Task 2 — Classify all 216 tests
 
 Three groups. The classification decides how much of Task 3 there is.
 
-- **(a) Pure unit tests** — no database. Pass unchanged.
+- **(a) No data dependency** — pure unit tests, plus context-only Spring tests that boot but read
+  no rows. Pass unchanged.
 - **(b) Self-seeding integration tests** — write and read their own rows in the `_test` tables
-  this project creates at startup. Should pass on an empty database once Task 1 is in place.
-  Includes `AvailabilityToolsIntegrationTest` (13), `PriceToolsIntegrationTest` (8),
-  `HistoricalToolsIntegrationTest` (7), `VaastavBackfillIntegrationTest` (4),
-  `FootballDataSyncServiceIntegrationTest` (3), `HistoricalSchemaTest` (3).
-- **(c) Tests asserting on real production content** — cannot be fixed by seeding a season row:
+  this project creates at startup.
+- **(c) Tests depending on data the empty database does not have** — the input to Task 3.
 
-  | Test class | @Test | Dependency on real data |
-  |---|---:|---|
-  | `PickToolsIntegrationTest` | 6 | ownership/form/status rows; asserts a non-empty differentials list |
-  | `ExpectedStatsToolsIntegrationTest` | 6 | real 2025-26 `player_fixture_stats` xG for "Salah" |
-  | `PlayerToolsTest` | 5 | `getPlayerStats("Salah")`, `doesNotContain("not found")` |
-  | `FixtureToolsTest` | 5 | `"Arsenal"`, `containsPattern("GW\\d+:")` |
-  | `GameweekToolsTest` | 3 | `doesNotContain("No gameweek data")` |
-  | `FixtureDifficultyToolsIntegrationTest` | 3 | asserts `COUNT(*) unfinished = 0` over real fixtures |
-  | `DbConnectionTest` | 1 | `SELECT id FROM season WHERE is_current = true` |
-  | **Confirmed subtotal** | **29** | |
-  | `PriceSyncServiceIntegrationTest` | 8 | reads the tapas `player` table — classify in this task |
+**Verification:** every test carries a group, and the (c) size is stated before any rewriting
+starts.
 
-**Verification:** every one of the 219 tests carries a group. The (c) list is the input to
-Task 3 and its size is stated explicitly before any rewriting starts.
+**Outcome (2026-08-19):** measured, not predicted — the full suite was run against the Task 1
+container (`cleanTest test --continue`, dummy LLM keys, 20 s):
+
+```
+216 tests completed, 41 failed
+```
+
+| Group | Tests | Status |
+|---|---:|---|
+| (a) no data dependency | 130 | pass unchanged |
+| (b) self-seeding integration | 45 | **pass on an empty database already** |
+| (c) needs work | 41 | Task 3 (32) + Task 4/5 (9) |
+
+**(b) confirmed green on the empty container:** `AvailabilityToolsIntegrationTest` (13),
+`PriceToolsIntegrationTest` (8), `HistoricalToolsIntegrationTest` (7),
+`StartupSyncRunnerIntegrationTest` (5), `StartupPriceSyncRunnerIntegrationTest` (4),
+`HistoricalSchemaTest` (3), `FootballDataSyncServiceIntegrationTest` (3),
+`VaastavBackfillIntegrationTest` (3 of 4).
+
+**(c1) — needs seeded tapas data (32 tests), Task 3:**
+
+| Test class | Failing | What it needs |
+|---|---:|---|
+| `ExpectedStatsToolsIntegrationTest` | 6/6 | `player_fixture_stats` xG rows for a named player |
+| `PickToolsIntegrationTest` | 6/6 | players with ownership/form/status; a non-empty result |
+| `FixtureToolsTest` | 5/5 | a club with upcoming fixtures (`GW\d+:`) |
+| `PlayerToolsTest` | 5/5 | a player findable by web name and by full name |
+| `FixtureDifficultyToolsIntegrationTest` | 3/3 | fixtures + the season guard |
+| `PriceSyncServiceIntegrationTest` | 3/8 | the tapas `player` table as a price snapshot source |
+| `GameweekToolsTest` | 2/3 | gameweek rows |
+| `DbConnectionTest` | 1/1 | one `season` row with `is_current = true` |
+| `VaastavBackfillIntegrationTest` | 1/4 | cross-checks its import against 380 real `fixture` + `team` rows |
+
+Every one of these fails as `EmptyResultDataAccessException` out of `SeasonResolver` (no `season`
+row exists at all) or as the tool's own "data is temporarily unavailable" fallback string. A
+single seeded season unblocks the resolver but satisfies almost none of the assertions — the
+rewrite is per test, as planned.
+
+`VaastavBackfillIntegrationTest` is the most surgical case: its first assertion (380 rows written
+from the checked-in CSV fixture) **passes** on an empty database, and only the second — a JOIN
+cross-checking the import against tapas' own `fixture`/`team` rows — fails. Seeding 380 fixtures
+to keep it is out of proportion; splitting that assertion into a `@Tag("realdata")` test is the
+better trade, decided in Task 3.
+
+**(c2) — needs a real embedding path (9 tests), Tasks 4 and 5:**
+
+| Test class | Failing | Cause |
+|---|---:|---|
+| `StrategyToolsIntegrationTest` | 5/5 | `401: Incorrect API key provided: dummy-key` |
+| `IngestionIntegrationTest` | 4/4 | same 401, plus `SELECT count(*) FROM fpl_embeddings` — the production table, absent from the container |
+
+This is finding 3 of this plan confirmed by execution: dummy LLM keys do not carry the suite.
+Task 4 decides real key vs stub `EmbeddingModel`; the production-table read is Task 5's cleanup.
+
+**Nothing hung on the network.** The startup runners fired (finding 4) but their tests passed and
+the whole run took 20 s, so Task 5's gating is a correctness and hygiene fix, not a CI-duration
+fix.
 
 ### Task 3 — Rewrite group (c) to seed its own fixtures
 
