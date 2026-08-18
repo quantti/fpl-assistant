@@ -3,7 +3,7 @@
 **Status:** planned, not started (2026-08-18; revised 2026-08-18 after a code-level review of the
 test suite)
 
-**PROGRESS:** Task 7/11 done (plus Task 9; Tasks 8 and 10 need repository access)
+**PROGRESS:** Task 9/11 done — 1–7, 9 and 11 complete; Tasks 8 (GitHub secrets) and 10 (branch protection) need repository access
 
 This plan came out of the 2026-08-18 evening session. Deployments are currently manual
 (`fly deploy --ha=false --remote-only`). The goal: `git push origin master` (via PR) → tests
