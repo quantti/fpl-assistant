@@ -97,7 +97,10 @@ public class AvailabilityTools implements FplTool {
             List every player at a Premier League club who is currently flagged — doubtful,
             injured, suspended or otherwise unavailable — with FPL's news note for each. Use
             this for team-news questions ahead of a deadline, or when the user asks who is out
-            at a club. Pass the club name or short name (e.g. "Arsenal", "ARS"). The reply
+            at a club. Pass the club name or short name (e.g. "Arsenal", "ARS"). Names are
+            matched against FPL's own club names, which are abbreviated — "Man City", "Man Utd",
+            "Nott'm Forest", "Spurs". If a full formal name returns no match, retry with FPL's
+            short form or the three-letter code before telling the user anything. The reply
             states which day's capture it comes from.
             """)
     public String getFlaggedPlayers(String teamName) {
@@ -108,30 +111,21 @@ public class AvailabilityTools implements FplTool {
                         + " unavailable rather than guessing who is fit.";
             }
 
+            // Matches the short name exactly ("ARS") or the club name as a substring
+            // ("arsenal", "man city"). Both are needed: users type the full name far more often
+            // than the code, and an earlier version matched only team_short — so "Arsenal"
+            // found nothing while "ARS" worked, which is not how anyone asks the question.
             String pattern = "%" + LikePatterns.escape(teamName.toLowerCase(Locale.ROOT)) + "%";
             List<Map<String, Object>> rows = jdbc.queryForList("""
-                    SELECT web_name, team_short, element_type, status, news, now_cost, season
+                    SELECT web_name, team_short, team_name, element_type, status, news,
+                           now_cost, season
                     FROM %s
                     WHERE price_date = ?
                       AND status <> 'a'
-                      AND LOWER(team_short) = LOWER(?)
+                      AND (LOWER(team_short) = LOWER(?) OR LOWER(team_name) LIKE ?)
                     ORDER BY now_cost DESC
                     LIMIT ?
-                    """.formatted(source.table()), captured, teamName, MAX_FLAGGED_LISTED);
-
-            if (rows.isEmpty()) {
-                // Fall back to a substring match on the club's full name, which the daily
-                // capture does not store — so match on short_name first, then try LIKE.
-                rows = jdbc.queryForList("""
-                        SELECT web_name, team_short, element_type, status, news, now_cost, season
-                        FROM %s
-                        WHERE price_date = ?
-                          AND status <> 'a'
-                          AND LOWER(team_short) LIKE ?
-                        ORDER BY now_cost DESC
-                        LIMIT ?
-                        """.formatted(source.table()), captured, pattern, MAX_FLAGGED_LISTED);
-            }
+                    """.formatted(source.table()), captured, teamName, pattern, MAX_FLAGGED_LISTED);
 
             String season = rows.isEmpty() ? seasonOf(captured) : String.valueOf(rows.getFirst().get("season"));
             String header = DailyPriceSource.provenance(season, captured, LocalDate.now(UkTime.zone()));
@@ -144,7 +138,7 @@ public class AvailabilityTools implements FplTool {
 
             StringBuilder out = new StringBuilder(header)
                     .append("\n\nFlagged players (%s), %d found:\n"
-                            .formatted(rows.getFirst().get("team_short"), rows.size()));
+                            .formatted(rows.getFirst().get("team_name"), rows.size()));
             for (Map<String, Object> r : rows) {
                 out.append("  %s (%s, £%.1fm) — %s".formatted(
                         r.get("web_name"), position(r.get("element_type")),

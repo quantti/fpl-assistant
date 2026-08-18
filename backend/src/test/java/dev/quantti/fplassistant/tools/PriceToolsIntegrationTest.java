@@ -73,9 +73,9 @@ class PriceToolsIntegrationTest {
     private void insert(int elementId, String webName, LocalDate date, int price,
                         int changeEvent, int changeStart) {
         jdbc.update("INSERT INTO " + table + " (season, price_date, element_id, web_name,"
-                        + " full_name, team_short, element_type, now_cost, cost_change_event,"
+                        + " full_name, team_short, team_name, element_type, now_cost, cost_change_event,"
                         + " cost_change_start, status, news) "
-                        + "VALUES (?, ?, ?, ?, ?, 'TST', 3, ?, ?, ?, 'a', '')",
+                        + "VALUES (?, ?, ?, ?, ?, 'TST', 'Testville United', 3, ?, ?, ?, 'a', '')",
                 TEST_SEASON, date, elementId, webName, webName + " Fictitious", price,
                 changeEvent, changeStart);
     }

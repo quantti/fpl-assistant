@@ -49,7 +49,8 @@ class DailyPriceSyncServiceTest {
         assertThat(raya[3]).isEqualTo("Raya");         // web_name
         assertThat(raya[4]).isEqualTo("David Raya Martín");
         assertThat(raya[6]).isEqualTo("ARS");          // team short, resolved from teams block
-        assertThat(raya[8]).isEqualTo(60);             // now_cost, x10 per project convention
+        assertThat(raya[7]).isEqualTo("Arsenal");      // full club name — users ask by this
+        assertThat(raya[9]).isEqualTo(60);             // now_cost, x10 per project convention
     }
 
     @Test
@@ -58,7 +59,7 @@ class DailyPriceSyncServiceTest {
                 fixture(), LocalDate.of(2026, 8, 18), "2026-27");
 
         // Guards the one field whose JSON type is not what its name suggests.
-        assertThat(rows.getFirst()[11]).isEqualTo(new java.math.BigDecimal("34.1"));
+        assertThat(rows.getFirst()[12]).isEqualTo(new java.math.BigDecimal("34.1"));
     }
 
     @Test

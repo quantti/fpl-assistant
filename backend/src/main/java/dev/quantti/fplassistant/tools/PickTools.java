@@ -144,14 +144,16 @@ public class PickTools implements FplTool {
         List<Map<String, Object>> ranked = rank(rows, fdrByTeam, ownershipTieBreak);
 
         StringBuilder out = new StringBuilder(heading).append(" (").append(season.code()).append("):\n");
+        String qual = season.currentSeason() ? "" : " (" + season.code() + ")";
         for (Map<String, Object> r : ranked.subList(0, Math.min(MAX_PICKS, ranked.size()))) {
             int teamId = ((Number) r.get("team_id")).intValue();
             Double avgFdr = fdrByTeam.get(teamId);
-            out.append("  %s %s (%s) £%.1fm | Own %s%% | Form %s | Pts %s | Avg FDR %s%s\n".formatted(
+            out.append("  %s %s (%s) £%.1fm%s | Own %s%%%s | Form %s | Pts %s | Avg FDR %s%s\n".formatted(
                     positionLabel(((Number) r.get("element_type")).intValue()),
                     r.get("web_name"), r.get("team_short"),
-                    ((Number) r.get("now_cost")).intValue() / 10.0,
-                    r.get("selected_by_percent"), r.get("form"), r.get("total_points"),
+                    ((Number) r.get("now_cost")).intValue() / 10.0, qual,
+                    r.get("selected_by_percent"), qual,
+                    r.get("form"), r.get("total_points"),
                     avgFdr == null ? "n/a" : String.format(Locale.ROOT, "%.1f", avgFdr),
                     availability(r)));
         }
