@@ -1,27 +1,26 @@
-.turn {
-  display: flex;
-  flex-direction: column;
+/* Turn shape and label typography come from styles/typography.module.css,
+   applied alongside this class in the component. Colour is the only thing
+   that differs per role (pitch here, muted in MessageThread), per the
+   spec's "green earns its place semantically" rule. */
+.assistantLabel {
+  color: var(--pitch);
 }
 
-/* The printed-interview attribution: small-caps label + hairline rule under
-   it. Shared shape with MessageThread's own .label — colour is the only
-   difference (pitch here, muted there), per the spec's "green earns its
-   place semantically" rule. */
-.label {
-  font-family: var(--font-ui);
-  font-variant-caps: small-caps;
-  font-weight: 600;
-  font-size: 0.75rem;
-  letter-spacing: 0.06em;
-  color: var(--pitch);
-  padding-bottom: var(--space-8);
-  margin-bottom: var(--space-8);
-  border-bottom: 1px solid var(--rule-section);
+/* The spec reserves red for errors. An error arrives as an ordinary
+   assistant turn (useChat surfaces it as one), so without this it renders
+   in the reading face indistinguishable from an answer — the model
+   appearing to say "something went wrong" rather than the app reporting it.
+   The label carries the signal, matching how --pitch and --muted already
+   mark the two roles; the body stays --ink so the message itself stays as
+   readable as any other text. --redcard on --paper is gated at 7.44 light /
+   7.94 dark. */
+.errorLabel {
+  color: var(--redcard);
 }
 
 .prose {
   font-family: var(--font-reading);
-  font-size: 1.125rem;
+  font-size: var(--text-base);
   line-height: 1.65;
 }
 

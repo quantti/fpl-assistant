@@ -177,6 +177,14 @@ applied (2026-08-14 and an independent second pass 2026-08-15).
 Plan: `docs/superpowers/plans/2026-08-14-phase2-rag.md`.
 Spec: `docs/superpowers/specs/2026-08-14-phase2-rag-design.md`.
 
+**Corpus as of 2026-08-17: 19 documents, 166 chunks in `fpl_embeddings`** — verified against the
+live database, and every document on disk has matching rows. The per-task figures further down
+this file (e.g. "9 docs → 76 chunks") are dated records of what each phase did, not the current
+count. Ten of the nineteen were only committed on 2026-08-17 (`c7165b1`); they had been ingested
+and were shipping in the image, but git did not have them, so the Docker build was copying
+untracked working-tree content. One document is `kind: timely` and ages out by design:
+`strategy-2026-27-preseason-consensus.md`, `valid_until: 2026-08-21`.
+
 ## Done
 
 | Task | Commit | What exists now |

@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { Message } from '../../types'
 import AssistantMessage from '../AssistantMessage/AssistantMessage'
+import typography from '../../styles/typography.module.css'
 import classes from './MessageThread.module.css'
 
 interface Props {
@@ -26,12 +27,12 @@ export default function MessageThread({ messages, streamingContent }: Props) {
     <div className={classes.thread}>
       {messages.map((msg, i) =>
         msg.role === 'user' ? (
-          <div key={i} className={classes.turn}>
-            <div className={classes.label}>You</div>
+          <div key={i} className={typography.turn}>
+            <div className={`${typography.label} ${classes.userLabel}`}>You</div>
             <p className={classes.userBody}>{msg.content}</p>
           </div>
         ) : (
-          <AssistantMessage key={i} content={msg.content} />
+          <AssistantMessage key={i} content={msg.content} isError={msg.isError} />
         )
       )}
       {streamingContent !== null && (

@@ -1,0 +1,37 @@
+/*
+ * The printed-interview turn shape, shared by both roles.
+ *
+ * AssistantMessage and MessageThread each carried a near-verbatim copy of
+ * these two rules, differing only in the label's colour. The whole-branch
+ * review flagged the duplication as fine to ship but worth removing before
+ * Phase 5, which adds a conversation list wanting the same small-caps
+ * treatment — i.e. a third copy.
+ *
+ * Imported and applied directly by each component rather than pulled in with
+ * `composes:` — both share the rules, but `composes` makes postcss-modules
+ * re-parse this file during the component's own build and emit "A PostCSS
+ * plugin did not pass the `from` option to `postcss.parse`" on every build.
+ * Applying two class names side by side costs nothing, keeps build output
+ * pristine, and reads more plainly at the call site.
+ *
+ * Colour is deliberately NOT set on .label — it is the one thing that
+ * differs per role (--pitch for the assistant, --muted for the user,
+ * --redcard for an error), and the spec's "green earns its place
+ * semantically" rule is exactly about that difference carrying meaning.
+ */
+
+.turn {
+  display: flex;
+  flex-direction: column;
+}
+
+.label {
+  font-family: var(--font-ui);
+  font-variant-caps: small-caps;
+  font-weight: 600;
+  font-size: var(--text-xs);
+  letter-spacing: 0.06em;
+  padding-bottom: var(--space-8);
+  margin-bottom: var(--space-8);
+  border-bottom: 1px solid var(--rule-section);
+}
