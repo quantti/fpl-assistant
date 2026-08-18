@@ -21,7 +21,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * End-to-end backfill against the live Supabase test table, pinned to
+ * End-to-end backfill against the ephemeral test database, pinned to
  * {@code pl_match_result_test} by the {@code test} profile. Uses a {@link VaastavSource} that
  * reads the real CSV fixtures checked into {@code src/test/resources/vaastav-fixtures/} instead
  * of hitting the network.
