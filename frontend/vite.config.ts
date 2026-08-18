@@ -5,7 +5,9 @@ import react from '@vitejs/plugin-react'
 // needs env access, not the whole Node API surface.
 declare const process: { env: Record<string, string | undefined> }
 
-const apiTarget = process.env.FPL_API_PROXY ?? 'http://localhost:8080'
+// `||` rather than `??`: an empty-string FPL_API_PROXY is an invalid target and
+// should fall back to the default, not crash the dev server's proxy.
+const apiTarget = process.env.FPL_API_PROXY || 'http://localhost:8080'
 
 export default defineConfig({
   plugins: [react()],

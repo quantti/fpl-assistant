@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react'
-import { Message } from '../types'
+import { ChatRequest, Message } from '../types'
 
 interface UseChatReturn {
   messages: Message[]
@@ -57,16 +57,29 @@ export function useChat(): UseChatReturn {
       }
     }
 
+    // Error turns are transcript-only: they are the app reporting a failure, not the model
+    // saying anything, and sending them back would have the model treat "Sorry, something
+    // went wrong" as its own prior answer. Filtered here rather than never appended because
+    // the user still needs to see them in the UI. Consecutive user turns that the filtering
+    // can produce (question, error, retry) are merged: the Anthropic API rejects a history
+    // with two user turns in a row.
+    const wireMessages: ChatRequest['messages'] = nextMessages
+      .filter(m => !m.isError)
+      .reduce<ChatRequest['messages']>((acc, { role, content }) => {
+        const previous = acc[acc.length - 1]
+        if (previous && previous.role === 'user' && role === 'user') {
+          previous.content = `${previous.content}\n\n${content}`
+          return acc
+        }
+        acc.push({ role, content })
+        return acc
+      }, [])
+
     try {
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        // Projected to the wire shape rather than sent as-is: Message carries
-        // a client-only isError flag, and the request contract is
-        // { role, content }.
-        body: JSON.stringify({
-          messages: nextMessages.map(({ role, content }) => ({ role, content })),
-        }),
+        body: JSON.stringify({ messages: wireMessages } satisfies ChatRequest),
       })
 
       if (response.status === 429) {
