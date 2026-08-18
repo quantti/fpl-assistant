@@ -60,6 +60,8 @@ const surfaces = {
   '--mantine-color-dimmed': 'var(--muted)',
   '--mantine-color-placeholder': 'var(--muted)',
   '--mantine-color-default-border': 'var(--rule-section)',
+  '--mantine-color-disabled': 'var(--disabled-surface)',
+  '--mantine-color-disabled-color': 'var(--disabled-ink)',
 }
 
 export const cssVariablesResolver: CSSVariablesResolver = () => ({
@@ -81,10 +83,14 @@ export const cssVariablesResolver: CSSVariablesResolver = () => ({
  * token; leaving it on Mantine's default here fails loudly-by-eye rather than
  * silently painting it the wrong contrast colour.
  *
- * Disabled state is untouched: ActionIcon's own
- * `:where(:disabled)` rule sets `color` directly and is declared after the
- * `var(--ai-color)` rule at equal specificity, so it still wins — which is
- * what the removed `.sendButton:not(:disabled)` scoping was protecting.
+ * This resolver still does not touch the disabled state, and does not need
+ * to: ActionIcon's own `:where(:disabled)` rule sets `color` directly and is
+ * declared after the `var(--ai-color)` rule at equal specificity, so it wins
+ * regardless — which is what the removed `.sendButton:not(:disabled)`
+ * scoping was protecting. The disabled colours themselves are now palette
+ * values rather than Mantine's greys, via `--mantine-color-disabled(-color)`
+ * in the surfaces map above; that lets Mantine's own rule keep winning while
+ * painting the right thing.
  */
 export const variantColorResolver: VariantColorsResolver = (input) => {
   const base = defaultVariantColorsResolver(input)

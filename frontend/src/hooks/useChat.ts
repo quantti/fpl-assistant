@@ -61,13 +61,19 @@ export function useChat(): UseChatReturn {
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: nextMessages }),
+        // Projected to the wire shape rather than sent as-is: Message carries
+        // a client-only isError flag, and the request contract is
+        // { role, content }.
+        body: JSON.stringify({
+          messages: nextMessages.map(({ role, content }) => ({ role, content })),
+        }),
       })
 
       if (response.status === 429) {
         setMessages(prev => [...prev, {
           role: 'assistant',
           content: 'You are sending messages too quickly — wait a minute and try again.',
+          isError: true,
         }])
         return
       }
@@ -94,15 +100,15 @@ export function useChat(): UseChatReturn {
 
       if (errorText !== null) {
         // Amendment: surface the error instead of committing the partial text.
-        setMessages(prev => [...prev, { role: 'assistant', content: errorText! }])
+        setMessages(prev => [...prev, { role: 'assistant', content: errorText!, isError: true }])
       } else if (!sawDone) {
         // The stream closed without the terminal done event — treat as interrupted.
-        setMessages(prev => [...prev, { role: 'assistant', content: INTERRUPTED }])
+        setMessages(prev => [...prev, { role: 'assistant', content: INTERRUPTED, isError: true }])
       } else {
         setMessages(prev => [...prev, { role: 'assistant', content: accumulated }])
       }
     } catch {
-      setMessages(prev => [...prev, { role: 'assistant', content: FAILED }])
+      setMessages(prev => [...prev, { role: 'assistant', content: FAILED, isError: true }])
     } finally {
       setStreamingContent(null)
       setIsStreaming(false)
