@@ -84,6 +84,7 @@ public class DailyPriceSchema {
                     full_name VARCHAR(200),
                     team_id INTEGER,
                     team_short VARCHAR(10),
+                    team_name VARCHAR(100),
                     element_type SMALLINT,
                     now_cost INTEGER NOT NULL,
                     cost_change_event INTEGER NOT NULL DEFAULT 0,
@@ -102,6 +103,11 @@ public class DailyPriceSchema {
         // "Who moved today" scans one date across all players.
         jdbc.execute("CREATE INDEX IF NOT EXISTS idx_%s_date_change ON %s(price_date, cost_change_event)"
                 .formatted(tableName, tableName));
+        // Added after the table already existed in production, so CREATE TABLE alone would not
+        // have applied it. Users ask for "Arsenal", not "ARS": with only the short name stored,
+        // a club lookup for a full name matched nothing.
+        jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS team_name VARCHAR(100)"
+                .formatted(tableName));
         log.debug("{} schema ensured", tableName);
     }
 }
