@@ -16,6 +16,7 @@ import org.springframework.test.context.ActiveProfiles;
 
 import fi.karivanttinen.fplassistant.historical.VaastavSource;
 import fi.karivanttinen.fplassistant.testsupport.FictitiousTestData;
+import fi.karivanttinen.fplassistant.testsupport.TapasSeed;
 import fi.karivanttinen.fplassistant.tools.SeasonContext;
 import fi.karivanttinen.fplassistant.tools.SeasonResolver;
 
@@ -61,6 +62,9 @@ class PriceSyncServiceIntegrationTest {
         assertThat(tableName)
                 .as("price sync tests must be pinned to the isolated table; check @ActiveProfiles(\"test\")")
                 .endsWith("_test");
+        // The snapshot writer copies from the tapas player table, so the seeded league is what
+        // populatedSeasonId() below resolves to.
+        TapasSeed.ensure(jdbc);
         deleteTestRows();
     }
 

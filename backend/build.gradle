@@ -46,5 +46,12 @@ dependencies {
 }
 
 tasks.named('test') {
-    useJUnitPlatform()
+    useJUnitPlatform {
+        // Tests tagged 'realdata' assert against tapas' fully-synced production tables (a whole
+        // season of fixtures and clubs), which the ephemeral test database deliberately does not
+        // carry. Run them by hand against Supabase with -PincludeRealData.
+        if (!project.hasProperty('includeRealData')) {
+            excludeTags 'realdata'
+        }
+    }
 }

@@ -1,5 +1,7 @@
 package fi.karivanttinen.fplassistant;
 
+import fi.karivanttinen.fplassistant.testsupport.TapasSeed;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -13,10 +15,16 @@ class DbConnectionTest {
     @Autowired
     JdbcTemplate jdbc;
 
+    @BeforeEach
+    void seed() {
+        TapasSeed.ensure(jdbc);
+    }
+
     @Test
     void canQueryCurrentSeason() {
         Integer seasonId = jdbc.queryForObject(
                 "SELECT id FROM season WHERE is_current = true", Integer.class);
-        assertThat(seasonId).isNotNull();
+
+        assertThat(seasonId).isEqualTo(TapasSeed.CURRENT_SEASON_ID);
     }
 }
