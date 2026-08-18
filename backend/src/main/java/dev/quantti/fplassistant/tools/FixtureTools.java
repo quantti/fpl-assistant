@@ -12,7 +12,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -147,6 +146,6 @@ public class FixtureTools implements FplTool {
 
         return "%s: vs %s %s | FDR: %s | %s%s".formatted(
                 gwLabel, opponent, venue, fdr,
-                Objects.toString(r.get("kickoff_time"), "kickoff TBD"), score);
+                UkTime.format(r.get("kickoff_time"), "kickoff TBD"), score);
     }
 }
