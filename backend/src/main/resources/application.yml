@@ -85,6 +85,14 @@ fpl:
     # current-season vaastav merged_gw.csv when the last snapshot is older than this. 6h keeps
     # roughly twice-daily cadence during the season without hitting vaastav on every boot.
     sync-stale-after-hours: 6
+  user:
+    # Phase 5a. Names are properties for the same reason every other table's is: the test
+    # profile pins them to isolated copies. fpl_user_profile is NOT app_user — shared owns that
+    # name in this database.
+    profile-table-name: fpl_user_profile
+    conversation-table-name: conversation
+    message-table-name: message
+    usage-table-name: usage_event
   daily-price:
     table-name: fpl_daily_price
     # FPL's own bootstrap-static. Read-only, unauthenticated, and the only source in this
