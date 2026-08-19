@@ -126,21 +126,17 @@ public class UserSchema {
                     id BIGSERIAL PRIMARY KEY,
                     user_id UUID NOT NULL,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    -- Distinguishes a chat turn from anything else that records usage later:
+                    -- title generation, a retry, a background call. Without it the quota query
+                    -- counts every row as a message, and neither this nor the provider can be
+                    -- backfilled once rows exist — the two chat providers price differently.
+                    event_type VARCHAR(32) NOT NULL DEFAULT 'chat',
+                    provider VARCHAR(20),
                     input_tokens INTEGER,
                     cached_tokens INTEGER,
                     output_tokens INTEGER
                 )
                 """.formatted(usageTable));
-
-        // event_type distinguishes a chat turn from anything else that will record usage —
-        // title generation, a retry, a future background call. Without it the quota query
-        // counts every row as a message, and the distinction cannot be backfilled once rows
-        // exist. Same reasoning for the provider: the two chat providers price differently, so
-        // token counts without it cannot be turned into money afterwards.
-        jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS event_type VARCHAR(32) NOT NULL DEFAULT 'chat'"
-                .formatted(usageTable));
-        jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS provider VARCHAR(20)"
-                .formatted(usageTable));
 
         // The quota check is a range count on exactly this pair, on every chat request.
         jdbc.execute("CREATE INDEX IF NOT EXISTS idx_%s_user_created ON %s(user_id, created_at)"
@@ -164,9 +160,11 @@ public class UserSchema {
                 END $$
                 """);
         for (String table : new String[] {profileTable, conversationTable}) {
-            jdbc.execute("DROP TRIGGER IF EXISTS trg_%s_updated_at ON %s".formatted(table, table));
+            // One statement, not DROP + CREATE: between those two an in-flight UPDATE commits
+            // with updated_at frozen — the exact bug the trigger exists to prevent, reopened
+            // for a moment on every boot. CREATE OR REPLACE TRIGGER is Postgres 14+.
             jdbc.execute("""
-                    CREATE TRIGGER trg_%s_updated_at BEFORE UPDATE ON %s
+                    CREATE OR REPLACE TRIGGER trg_%s_updated_at BEFORE UPDATE ON %s
                     FOR EACH ROW EXECUTE FUNCTION fpl_set_updated_at()
                     """.formatted(table, table));
         }

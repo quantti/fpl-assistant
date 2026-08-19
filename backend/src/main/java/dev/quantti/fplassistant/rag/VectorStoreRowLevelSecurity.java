@@ -39,6 +39,15 @@ public class VectorStoreRowLevelSecurity {
 
     @PostConstruct
     void enableRowLevelSecurity() {
+        // The table is PgVectorStore's, not ours, so it may legitimately not be there: a test
+        // that supplies its own @Primary VectorStore stops the real store — and its schema
+        // initialisation — from ever being created. An unguarded ALTER turns that into a failed
+        // context, and which tests fail then depends on class ordering nobody configured.
+        if (jdbc.queryForObject("SELECT to_regclass(?)::text", String.class, tableName) == null) {
+            log.info("{} does not exist; nothing to protect (the vector store did not create it)",
+                    tableName);
+            return;
+        }
         jdbc.execute("ALTER TABLE %s ENABLE ROW LEVEL SECURITY".formatted(tableName));
         log.debug("row level security ensured on {}", tableName);
     }

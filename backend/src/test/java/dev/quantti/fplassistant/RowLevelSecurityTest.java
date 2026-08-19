@@ -9,6 +9,7 @@ import java.util.regex.Pattern;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -37,6 +38,9 @@ class RowLevelSecurityTest {
     @Autowired
     JdbcTemplate jdbc;
 
+    @Value("${spring.ai.vectorstore.pgvector.table-name}")
+    String corpusTable;
+
     /**
      * Derived, not listed. A hand-maintained list is green precisely for the table nobody
      * remembered to add — which is how `fpl_embeddings` (created by Spring AI's PgVectorStore,
@@ -47,9 +51,14 @@ class RowLevelSecurityTest {
     void everyTableThisProjectCreatesHasRowLevelSecurityEnabled() throws Exception {
         Set<String> sharedTables = tablesDefinedBy("db/shared-stats-schema.sql");
 
+        // relkind covers ordinary, partitioned and materialised tables. Views cannot carry RLS
+        // at all — they run with their owner's privileges and walk past it, which is why
+        // scripts/sql/enable-rls.sql sets security_invoker on them; the assertion below keeps
+        // this project from introducing one without noticing.
         List<String> unprotected = jdbc.queryForList("""
                 SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-                WHERE n.nspname = 'public' AND c.relkind = 'r' AND NOT c.relrowsecurity
+                WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'm')
+                  AND NOT c.relrowsecurity
                 ORDER BY c.relname
                 """, String.class)
                 .stream()
@@ -59,6 +68,23 @@ class RowLevelSecurityTest {
         assertThat(unprotected)
                 .as("tables this project creates are exposed to the anon key through PostgREST"
                         + " unless RLS is enabled")
+                .isEmpty();
+
+        // Deriving from what exists means a table that stopped being created passes silently.
+        // The corpus table is the one that is not created by any DDL in this project, so it is
+        // the one worth naming: absent, both this check and VectorStoreRowLevelSecurity go quiet.
+        assertThat(jdbc.queryForObject("SELECT to_regclass(?)::text", String.class, corpusTable))
+                .as("the vector store table should exist for its RLS to mean anything")
+                .isNotNull();
+
+        assertThat(jdbc.queryForList("""
+                SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = 'public' AND c.relkind = 'v'
+                  AND coalesce(array_to_string(c.reloptions, ','), '') NOT LIKE '%security_invoker=on%'
+                ORDER BY c.relname
+                """, String.class)
+                .stream().filter(view -> !sharedTables.contains(view)).toList())
+                .as("a view runs with its owner's privileges and walks straight past RLS")
                 .isEmpty();
     }
 
