@@ -56,6 +56,14 @@ spring:
         # against the 2.0.0 bytecode, not merely observed. initialize-schema's own
         # CREATE TABLE is the only guard in effect.
 
+# Supabase Auth. SUPABASE_URL is the project URL (https://<ref>.supabase.co); it is not a
+# secret — it appears in every frontend that talks to the project.
+supabase:
+  issuer: ${SUPABASE_URL}/auth/v1
+  jwks-uri: ${SUPABASE_URL}/auth/v1/.well-known/jwks.json
+  # The audience Supabase puts in every access token it issues.
+  audience: authenticated
+
 fpl:
   ai:
     provider: ${SPRING_AI_PROVIDER:anthropic}
