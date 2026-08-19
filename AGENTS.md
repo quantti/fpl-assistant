@@ -59,11 +59,27 @@ serving API + frontend. Frontend built in a Docker multi-stage build, copied int
 `static/`. Secrets via `fly secrets set`. Remote: `origin` → `github.com/quantti/fpl-assistant`
 (private).
 
+> ### NEVER PUSH TO `master`
+>
+> `master` deploys. A push there runs `.github/workflows/deploy.yml` and a green run ships
+> straight to production — no review, no second pair of eyes. **Agents push a branch and open a
+> pull request. Always.** The same tests run on the PR; the owner merges.
+>
+> There is no branch protection to catch a mistake: GitHub refuses it for private repositories on
+> the Free plan (verified 2026-08-19 — the protection and rulesets APIs both answer 403 "Upgrade
+> to GitHub Pro"). The substitute is the `scripts/hooks/pre-push` hook, which runs the suite and
+> refuses a master push that has no terminal to confirm at — which is exactly the case for an
+> agent. **Do not work around it: never `git push --no-verify`, never re-point `core.hooksPath`,
+> never push to master "because the tests passed anyway".** If a push is refused, that is the
+> intended outcome, not an obstacle to route around.
+
 **Deploying is `.github/workflows/deploy.yml`, not a manual command.** A push to `master` runs
 the suite against an ephemeral Postgres container and, if it passes, runs
 `flyctl deploy --ha=false --remote-only` and smoke-tests `/actuator/health` from outside. Pull
 requests run the tests only. `workflow_dispatch` re-deploys without a push. A manual
 `fly deploy` is for emergencies, and is the one path that can ship a red suite.
+
+Install the pre-push hook once per clone: `git config core.hooksPath scripts/hooks`.
 
 Env files are gitignored (only `*.example` templates are tracked) and there are two:
 `backend/.env.test` points at the local test container, `backend/.env.supabase` at production.

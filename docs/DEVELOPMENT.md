@@ -69,6 +69,29 @@ set -a; source .env.test; set +a
 ./gradlew bootRun --args="--sync-prices"          # capture today's FPL prices, then exit
 ```
 
+## The pre-push hook
+
+There is no branch protection on this repository. GitHub blocks it for private repos on the Free
+plan — verified 2026-08-19, both the protection and the rulesets API answer
+`403 Upgrade to GitHub Pro`. Going Pro or making the repo public are the only ways to get the
+real thing; for now the substitute is a hook, installed once per clone:
+
+```bash
+git config core.hooksPath scripts/hooks
+```
+
+`scripts/hooks/pre-push` then does two things before any push leaves the machine:
+
+1. **A push to `master` needs typed confirmation** (`push to master`, exactly). With no terminal
+   to confirm at — an agent, a script, CI — it is refused outright. master deploys, so a push
+   there is a release.
+2. **The backend suite runs** against the local container, which it starts if needed
+   (`scripts/test-db.sh up`), with `cleanTest` so Gradle cannot report a green it did not earn.
+   A failure refuses the push.
+
+`git push --no-verify` skips the hook entirely. That is git's escape hatch for a human who knows
+what they are skipping; treat it as bypassing branch protection, because that is what it is.
+
 ## The test database
 
 Tests run against a disposable Postgres container — the same image CI uses, created empty and

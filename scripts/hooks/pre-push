@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+#
+# Pre-push gate. Installed by pointing git at this directory:
+#
+#     git config core.hooksPath scripts/hooks
+#
+# It does two things, in this order:
+#
+#   1. Refuses a push to master unless a human confirms it at the terminal. There is no branch
+#      protection on this repository — GitHub blocks it for private repos on the Free plan
+#      (verified 2026-08-19: both the protection and the rulesets API answer 403 "Upgrade to
+#      GitHub Pro"). This hook is the substitute, so treat a bypass as bypassing branch
+#      protection.
+#   2. Runs the backend suite against the local ephemeral database, and refuses the push if it
+#      fails.
+#
+# `git push --no-verify` skips all of this. That is git's escape hatch for humans in a hurry,
+# not a normal step — and agents must never use it (see AGENTS.md).
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+ZERO="0000000000000000000000000000000000000000"
+
+pushing_master=false
+has_content=false
+
+# stdin: <local ref> <local sha> <remote ref> <remote sha>, one line per ref being pushed.
+while read -r _local_ref local_sha remote_ref _remote_sha; do
+    [[ -z "${remote_ref:-}" ]] && continue
+    if [[ "$local_sha" == "$ZERO" ]]; then
+        continue  # deleting a remote branch; nothing to test
+    fi
+    has_content=true
+    if [[ "$remote_ref" == "refs/heads/master" ]]; then
+        pushing_master=true
+    fi
+done
+
+if [[ "$has_content" != true ]]; then
+    exit 0
+fi
+
+if [[ "$pushing_master" == true ]]; then
+    echo
+    echo "  ╔═══════════════════════════════════════════════════════════════════════════╗"
+    echo "  ║  PUSHING STRAIGHT TO MASTER                                               ║"
+    echo "  ╚═══════════════════════════════════════════════════════════════════════════╝"
+    echo
+    echo "  master deploys. A push here runs .github/workflows/deploy.yml, and a green run"
+    echo "  ships to https://fpl-assistant.fly.dev — no review, no second pair of eyes."
+    echo
+    echo "  The normal route is a branch and a pull request: the same tests run there, and"
+    echo "  nothing reaches production until the PR is merged."
+    echo
+    # Only a real terminal gets to confirm. A push driven by an agent or a script has neither
+    # stdout nor stderr on a tty, and must be refused rather than left waiting on a prompt
+    # nobody will answer.
+    if [[ ! -t 1 && ! -t 2 ]]; then
+        echo "  Refusing: no terminal to confirm at. If you are an agent, you must not push to"
+        echo "  master at all — push a branch and open a pull request instead."
+        echo
+        exit 1
+    fi
+    printf "  Type exactly 'push to master' to continue: "
+    read -r -t 120 answer < /dev/tty || answer=""
+    if [[ "$answer" != "push to master" ]]; then
+        echo "  Aborted."
+        echo
+        exit 1
+    fi
+    echo
+fi
+
+echo "pre-push: running the backend suite against the local test database..."
+
+if ! command -v docker >/dev/null 2>&1; then
+    echo "pre-push: docker not found, so the test database cannot be started." >&2
+    echo "          Install docker, or push with --no-verify and know what you are skipping." >&2
+    exit 1
+fi
+
+if [[ ! -f "$REPO_ROOT/backend/.env.test" ]]; then
+    echo "pre-push: backend/.env.test is missing." >&2
+    echo "          Copy backend/.env.test.example and fill in OPENAI_API_KEY (the RAG tests" >&2
+    echo "          embed for real and fail with 401 without it)." >&2
+    exit 1
+fi
+
+"$REPO_ROOT/scripts/test-db.sh" up > /dev/null
+
+# SDKMAN puts java on the PATH from ~/.zshrc, which this non-interactive shell does not read.
+if [[ -f "$HOME/.sdkman/bin/sdkman-init.sh" ]]; then
+    # set +eu around it: sdkman-init.sh reads ZSH_VERSION unguarded, which `set -u` treats as
+    # an error and kills the hook before a single test runs.
+    set +eu
+    # shellcheck disable=SC1091
+    source "$HOME/.sdkman/bin/sdkman-init.sh"
+    set -eu
+fi
+
+cd "$REPO_ROOT/backend"
+set -a
+# shellcheck disable=SC1091
+source .env.test
+set +a
+
+# cleanTest, because Gradle reports BUILD SUCCESSFUL without running anything when the task is
+# up to date — a green that proves nothing is worse than no check at all.
+if ! ./gradlew --console=plain --quiet cleanTest test; then
+    echo >&2
+    echo "pre-push: tests failed — push refused." >&2
+    exit 1
+fi
+
+echo "pre-push: suite green."

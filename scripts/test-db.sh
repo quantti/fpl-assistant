@@ -37,10 +37,19 @@ start() {
     done
 
     docker exec -i "$CONTAINER" psql -U postgres -d postgres -v ON_ERROR_STOP=1 -q \
-        -c "CREATE EXTENSION IF NOT EXISTS vector"
-    # stdout is silenced because the dump's set_config() call prints a result set.
-    docker exec -i "$CONTAINER" psql -U postgres -d postgres -v ON_ERROR_STOP=1 -q < "$SCHEMA" >/dev/null
-    echo "Loaded $(basename "$SCHEMA"). The project's own tables are created by the app at boot."
+        -c "CREATE EXTENSION IF NOT EXISTS vector" >/dev/null
+
+    # The dump is plain CREATE TABLE (pg_dump emits no IF NOT EXISTS), so re-loading it into a
+    # container that already has the schema fails. `up` is therefore safe to call repeatedly —
+    # the pre-push hook does exactly that — and `reset` is the way to reload.
+    if [[ -n "$(docker exec -i "$CONTAINER" psql -U postgres -d postgres -tAc \
+                "SELECT to_regclass('public.season')" | tr -d '[:space:]')" ]]; then
+        echo "Schema already loaded (use 'reset' to start over)."
+    else
+        # stdout is silenced because the dump's set_config() call prints a result set.
+        docker exec -i "$CONTAINER" psql -U postgres -d postgres -v ON_ERROR_STOP=1 -q < "$SCHEMA" >/dev/null
+        echo "Loaded $(basename "$SCHEMA"). The project's own tables are created by the app at boot."
+    fi
     echo
     echo "  DATABASE_URL=jdbc:postgresql://localhost:$PORT/postgres  DB_USER=postgres  DB_PASSWORD=postgres"
 }

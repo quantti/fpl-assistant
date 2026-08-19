@@ -3,7 +3,7 @@
 **Status:** planned, not started (2026-08-18; revised 2026-08-18 after a code-level review of the
 test suite)
 
-**PROGRESS:** Task 9/11 done — 1–7, 9 and 11 complete; Tasks 8 (GitHub secrets) and 10 (branch protection) need repository access
+**PROGRESS:** Task 10/11 done — 1–7 and 9–11 complete (Task 10 closed as not available: see its outcome). Task 8 (GitHub secrets) needs repository access.
 
 This plan came out of the 2026-08-18 evening session. Deployments are currently manual
 (`fly deploy --ha=false --remote-only`). The goal: `git push origin master` (via PR) → tests
@@ -396,6 +396,28 @@ paying for a plan upgrade by reflex.
 **Verification:** direct push to master is rejected — or, in the fallback, a red test run is
 shown to block the deploy job while the merge itself stays possible, and that limitation is
 written down.
+
+**Outcome (2026-08-19): not available, and closed rather than left open.** Both APIs answer
+`403 Upgrade to GitHub Pro or make this repository public` on this repo
+(`quantti/fpl-assistant`, private, personal Free account) — classic protection *and* rulesets:
+
+```
+GET /repos/quantti/fpl-assistant/branches/master/protection  → 403
+GET /repos/quantti/fpl-assistant/rulesets                    → 403
+```
+
+Owner decision: stay on the Free plan, do not make the repo public, and accept that the *merge*
+is unguarded while the *release* is not — `needs: test` still blocks a deploy on a red suite.
+
+The substitute is `scripts/hooks/pre-push` (installed with
+`git config core.hooksPath scripts/hooks`): it refuses a push to master unless a human types the
+confirmation, refuses outright when there is no terminal — which is the agent case — and runs
+`cleanTest test` against the local container before letting any push through. `AGENTS.md` carries
+the matching instruction in the strongest terms available to it, including "do not route around
+the hook".
+
+If the plan ever changes, the commands are in `docs/TODO.md`; the workflow's check is named
+`test`, and the workflow must be on master before the check can be required.
 
 ### Task 11 — Documentation
 
