@@ -66,6 +66,12 @@ public class HistoricalSchema {
                     CONSTRAINT uq_%s_season_teams UNIQUE (season, home_team_code, away_team_code)
                 )
                 """.formatted(tableName, tableName));
+        // PostgREST publishes every table in `public` to the anon key, which is public by
+        // design. RLS with no policies is what makes that exposure empty; without it a fresh
+        // database is born open (measured 2026-08-19, see docs/STATUS.md). A no-op for this
+        // application, which connects as a role with rolbypassrls.
+        jdbc.execute("ALTER TABLE %s ENABLE ROW LEVEL SECURITY".formatted(tableName));
+
         jdbc.execute("CREATE INDEX IF NOT EXISTS idx_%s_home_code ON %s(home_team_code)"
                 .formatted(tableName, tableName));
         jdbc.execute("CREATE INDEX IF NOT EXISTS idx_%s_away_code ON %s(away_team_code)"

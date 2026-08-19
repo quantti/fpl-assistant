@@ -2,7 +2,7 @@
 
 **Status:** planned, not started (2026-08-18)
 
-**PROGRESS:** Task 0/8 done
+**PROGRESS:** Task 1/8 done — resource server, validators, tests, and the live-token gate all confirmed. Findings in `docs/STATUS.md`.
 
 **Spec:** `docs/superpowers/specs/2026-08-15-phase5-auth-billing-design.md` — read it fully first.
 Its authorization contract (`user_id` from the JWT `sub` claim and nowhere else), its RLS finding

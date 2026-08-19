@@ -1234,3 +1234,143 @@ is rotated.
   first — classic branch protection on private repos has historically needed GitHub Pro/Team. If
   unavailable, `needs: test` still blocks the release, though not the merge; record the gap
   rather than upgrading by reflex.
+
+
+---
+
+# Phase 5a — Task 1: JWT authentication (2026-08-19, in progress)
+
+Plan: `docs/superpowers/plans/2026-08-18-phase5a-auth-user-profile.md`. `/api/**` now requires a
+bearer token verified against Supabase's published JWKS. 228 tests green.
+
+## Probed against the live project
+
+- **JWKS** `https://itmykooxrbrdbgqwsesb.supabase.co/auth/v1/.well-known/jwks.json` → 200, one
+  key, **ES256** (P-256), kid `25af184b-a504-47f7-90dc-e09785d66077`.
+- **Issuer** `https://itmykooxrbrdbgqwsesb.supabase.co/auth/v1`, confirmed by the OIDC discovery
+  document, which the project also serves.
+- Audience and `sub` shape still to be confirmed against a real token — `/auth/v1/settings` and
+  every token-minting endpoint need the project's anon key, which is not in the repo.
+
+## Findings
+
+- **ES256, not RS256.** Spring's decoder accepts RS256 only unless told otherwise, so an
+  unconfigured decoder would have rejected every real Supabase token. Configured explicitly.
+- **The decoder is built from the JWKS URI, not the issuer URI.** An issuer-based decoder fetches
+  the discovery document while the context starts, which would put a network call to Supabase in
+  front of every boot and every test run. The JWKS-based one fetches on first use and caches.
+- **An unknown key id triggered a JWKS fetch on every request.** Measured, not assumed: six
+  requests carrying tokens signed by a key we never published produced six fetches. That is
+  attacker-controlled amplification against our own auth path. The key set now sits behind a
+  15-minute cache with a 30-second minimum refresh interval.
+- **Rate-limiting that refresh turns a forged token into a 500**, because Spring maps a
+  non-`BadJwtException` decode failure to `AuthenticationServiceException`. A token we cannot
+  verify is now a 401 with a WARN carrying the real reason — otherwise anyone could paint the
+  error log by sending nonsense. The cost: a genuine Supabase outage also answers 401, and the
+  WARN is what tells the two apart.
+
+## Probed with the anon key (2026-08-19)
+
+`GET /auth/v1/settings`:
+
+```
+external.email:      true    → email sign-up is enabled, as the plan assumed
+disable_signup:      false   → sign-up is OPEN to anyone
+mailer_autoconfirm:  false   → a fresh sign-up gets no session token until the address is confirmed
+anonymous_users:     false
+```
+
+Two consequences:
+
+- **Sign-up being open contradicts the owner's decision of 2026-08-19** ("keep registration closed
+  for the duration of 5a"). Without billing there is no card anchor and no cost ceiling per
+  person, only the per-user quota. Turn it off in Authentication → Sign In / Up before anything
+  is deployed with the frontend auth client.
+- **A real token cannot be minted from the anon key alone.** Sign-up needs email confirmation, and
+  Supabase additionally refuses `example.com` addresses (`email_address_invalid`). Confirming the
+  claim shape needs either a user created in the dashboard with "Auto Confirm User", or the
+  service_role key and the admin API.
+
+The anon key is the new `sb_publishable_…` format rather than a legacy JWT, which matches the
+asymmetric ES256 signing scheme the decoder is configured for.
+
+## Gate closed: a real token, decoded (2026-08-19)
+
+Password grant against a dashboard-created, auto-confirmed user:
+
+```
+header: {"alg":"ES256","kid":"25af184b-a504-47f7-90dc-e09785d66077","typ":"JWT"}
+iss:    https://itmykooxrbrdbgqwsesb.supabase.co/auth/v1
+aud:    'authenticated'        (a JSON string, not an array)
+sub:    d40da936-30de-41e0-a182-1586f5b23e2b
+role:   authenticated
+lifetime: 3600 s
+claims: aal amr app_metadata aud email exp iat is_anonymous iss phone role session_id sub
+        user_metadata
+```
+
+Every value the configuration assumes is confirmed: ES256, the kid the JWKS publishes, the
+issuer, the audience, and `sub` as the user's UUID.
+
+**`aud` arrives as a string, and the validator declares `List<String>`.** Spring's claim converter
+normalises a single audience into a one-element list, and the tests already cover exactly this
+shape: Nimbus serialises `audience(List.of("authenticated"))` as `{aud=authenticated}`, the same
+JSON Supabase sends. So the passing tests are not passing on a shape that never occurs.
+
+Also done in the dashboard: public sign-up disabled (the 5a decision), and the test user exists
+for future runs of the probe.
+
+
+---
+
+# Supabase RLS — the PostgREST door was open (2026-08-19)
+
+Supabase's linter flagged "RLS Disabled in Public" on every table. It was not a formality.
+
+## What was actually exposed
+
+Supabase publishes the `public` schema as a REST API at `/rest/v1`, authenticated by the **anon
+key — which is public by design and ships in the frontend bundle**. `anon` and `authenticated`
+held SELECT, INSERT, UPDATE, DELETE and TRUNCATE on all 39 tables (Supabase's default grants),
+and RLS was off on 34 of 35, so nothing constrained them. Measured with the real key, not
+inferred:
+
+```
+player           [{"id":34,"season_id":1,"first_name":"Joe","second_name":"Gauci",…
+fpl_daily_price  [{"price_date":"2026-08-18","element_id":23,"season":"2026-27",…
+chip_usage       [{"id":7748,"manager_id":2346868,"gameweek":26,"chip_type":"bboost",…
+```
+
+**The timing is what made it urgent.** The key had not been published anywhere yet — no frontend
+used `@supabase/supabase-js`, so the door had no handle. Phase 5a Task 6 adds exactly that
+handle, and Task 2 creates `conversation` and `message`. Left alone, the day sign-in shipped
+would have been the day every user's chat history became readable — and deletable — from any
+browser's devtools.
+
+## Fix
+
+`scripts/sql/enable-rls.sql`, run against production: RLS enabled on all 35 tables, no policies
+(deny-all for the PostgREST roles), and `ALTER DEFAULT PRIVILEGES` so tables created later do not
+inherit the grants. `chip_usage`'s "Allow public read access" policy — the one deliberate hole,
+granting PUBLIC an unrestricted read — was dropped on the owner's decision; nothing read it that
+way.
+
+Verified after: the anon key returns `[]` for every table and `42501 new row violates
+row-level security policy` on a write attempt. Our own access is untouched (841 players, 1184
+daily prices, 166 corpus chunks, production `/actuator/health` UP) because both this application
+and `tapas-fpl-app` connect as `postgres`, which has `rolbypassrls = true`.
+
+## Why it cannot regress quietly
+
+`DailyPriceSchema`, `PriceSchema` and `HistoricalSchema` now enable RLS on the tables they create,
+and `RowLevelSecurityTest` fails if any of them stops. One gap remains by construction:
+`fpl_embeddings` is created by Spring AI's `PgVectorStore`, not by us, so a brand-new database
+gets that table without RLS — production is covered by the run above, and the revoked default
+privileges mean a new one would have no anon grants to exploit anyway.
+
+## The same finding, restated for Phase 5a
+
+RLS is now on everywhere, but it still is **not** the authorization mechanism for user data: this
+application connects as a role that bypasses it. Every query touching `conversation`, `message`,
+`usage_event` or `fpl_user_profile` filters on the JWT `sub` in application SQL. RLS is the
+second lock, for the PostgREST path we do not use.
