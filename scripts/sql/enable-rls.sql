@@ -46,6 +46,32 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON TABLES FROM anon, authen
 --    as an oversight a year from now. Reinstating it is one CREATE POLICY.
 DROP POLICY IF EXISTS "Allow public read access" ON public.chip_usage;
 
+-- 4. Views were the hole left in step 1. A Postgres view runs with its OWNER's privileges
+--    unless told otherwise, and these are owned by `postgres`, which has rolbypassrls — so
+--    reading through the view walks straight past the RLS just enabled on its base tables.
+--    Measured 2026-08-19: with every table locked down, the anon key still read
+--    player_season_deltas, player_vs_team_stats, manager_chips_remaining and
+--    points_against_season_totals in full. security_invoker makes the caller's own privileges
+--    apply, which is what puts them behind RLS; the revoke is the second lock.
+DO $$
+DECLARE v regclass;
+BEGIN
+  FOR v IN SELECT c.oid::regclass FROM pg_class c
+           JOIN pg_namespace n ON n.oid = c.relnamespace
+           WHERE n.nspname = 'public' AND c.relkind = 'v'
+  LOOP
+    EXECUTE format('ALTER VIEW %s SET (security_invoker = on)', v);
+    EXECUTE format('REVOKE ALL ON %s FROM anon, authenticated', v);
+    RAISE NOTICE 'view closed: %', v;
+  END LOOP;
+END $$;
+
+-- 5. The two project-owned functions get a fixed search_path. Neither is SECURITY DEFINER, so
+--    this is hygiene rather than a live hole — but a mutable search_path in a function that
+--    later becomes SECURITY DEFINER is a privilege-escalation waiting to be introduced.
+ALTER FUNCTION public.update_pfs_updated_at() SET search_path = public, pg_temp;
+ALTER FUNCTION public.get_player_form(integer, integer, integer) SET search_path = public, pg_temp;
+
 -- Verification, printed by the run:
 SELECT count(*) FILTER (WHERE relrowsecurity) || ' of ' || count(*) || ' public tables have RLS'
 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
