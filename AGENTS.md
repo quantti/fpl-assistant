@@ -48,6 +48,21 @@ Auth (Supabase JWT) + Stripe billing are deferred to the last phase. Build the c
   synced season as its oracle is tagged `realdata` and excluded from `./gradlew test` — there is
   exactly one, and adding another should feel like a decision, not a convenience.
 
+## Commits and pull requests
+
+Short. The narrative belongs in `docs/STATUS.md` and the plan's outcome blocks, not in git
+metadata — nobody reads a git log for a design discussion, and a long message hides the one line
+that mattered.
+
+- **Commit subject:** one line, imperative, ~60 chars. A body only when the *why* is not obvious
+  from the diff, and then 1–3 sentences. Never restate what the diff shows, never paste test
+  output, never list every file touched.
+- **PR title:** one line. **PR body:** 8 lines at most — what changed, why, how it was verified,
+  and a link to the plan if there is one. No headings, no checklists, no findings dumps.
+- **Merge:** squash; the merge message is the PR title.
+- If a decision needs more room than that, it is a `docs/STATUS.md` entry — write it there and
+  keep the commit pointing at it.
+
 ## Progress tracking
 
 Plans use a single `**PROGRESS:**` line (e.g. `Task 3/14 done`), updated once per task. Do NOT use per-step `- [ ]` checkboxes — they waste tokens on every flip.
