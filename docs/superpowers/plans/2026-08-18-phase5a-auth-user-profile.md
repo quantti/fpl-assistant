@@ -2,7 +2,7 @@
 
 **Status:** planned, not started (2026-08-18)
 
-**PROGRESS:** Task 2/8 done — resource server and the four user tables. Findings in `docs/STATUS.md`.
+**PROGRESS:** Task 3/8 done — auth, the user tables, and the FPL team id. Findings in `docs/STATUS.md`.
 
 **Spec:** `docs/superpowers/specs/2026-08-15-phase5-auth-billing-design.md` — read it fully first.
 Its authorization contract (`user_id` from the JWT `sub` claim and nowhere else), its RLS finding
@@ -201,6 +201,20 @@ Store the user's FPL entry id on their profile row, so later phases can answer q
 **Done when:** a valid id round-trips through set → read; an invalid id is rejected without
 writing; an FPL API outage produces a distinct error from "no such team"; a user with no id can
 still chat; and another user's profile is unreachable by any request shape.
+
+**Outcome (2026-08-19):** `GET /api/profile` and `PUT /api/profile/fpl-team-id`, both keyed on
+the token's `sub` and on nothing else — no path or body field names a user, and
+`UserProfileService` has no method that can be asked for someone else's row. 249 tests.
+
+`FplEntryLookup` validates at write time and reports three outcomes, not two: `EXISTS`,
+`NOT_FOUND` (**400** — "FPL does not know a team with id X") and `UNAVAILABLE` (**503** — "could
+not reach FPL, nothing was saved"). Keeping those apart is the point: telling a user their id is
+wrong while FPL is merely down sends them hunting a mistake they did not make. Verified against
+the live API — `entry/1/` answers 200 and `entry/999999999/` answers 404 — and against a local
+stub for the 500 and connection-refused paths.
+
+Timeouts are 3 s connect / 5 s read with no retries, tighter than the sync clients' because a
+person is waiting. An id that is not a positive number is refused without asking FPL at all.
 
 ### Task 4 — Server-side conversation history
 

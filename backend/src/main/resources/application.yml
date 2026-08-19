@@ -93,6 +93,9 @@ fpl:
     conversation-table-name: conversation
     message-table-name: message
     usage-table-name: usage_event
+    # Checked when a user saves their team id. A documented exception to "external APIs only at
+    # sync time": this is a user-initiated write, not the chat path.
+    entry-url: https://fantasy.premierleague.com/api/entry/%d/
   daily-price:
     table-name: fpl_daily_price
     # FPL's own bootstrap-static. Read-only, unauthenticated, and the only source in this
