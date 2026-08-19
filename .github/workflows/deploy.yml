@@ -54,7 +54,7 @@ jobs:
       FOOTBALL_DATA_API_KEY: ""
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Create the vector extension and load the tapas schema
         # Spring AI's PgVectorStore creates the extension itself at context start, so the first
@@ -68,14 +68,14 @@ jobs:
           psql -h localhost -U postgres -d postgres -v ON_ERROR_STOP=1 -q \
             -f backend/src/test/resources/db/tapas-schema.sql
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '25'
 
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: npm
@@ -104,7 +104,7 @@ jobs:
       cancel-in-progress: false
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: superfly/flyctl-actions/setup-flyctl@master
 
