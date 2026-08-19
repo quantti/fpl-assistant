@@ -27,6 +27,9 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-web'
     implementation 'org.springframework.boot:spring-boot-starter-actuator'
     implementation 'org.springframework.boot:spring-boot-starter-jdbc'
+    // Supabase signs its JWTs with an asymmetric key it publishes as a JWKS, so the backend
+    // verifies locally and no shared secret exists anywhere.
+    implementation 'org.springframework.boot:spring-boot-starter-oauth2-resource-server'
     implementation 'org.postgresql:postgresql'
     implementation 'org.springframework.ai:spring-ai-starter-model-anthropic'
     implementation 'org.springframework.ai:spring-ai-starter-model-openai'
@@ -43,6 +46,7 @@ dependencies {
     // WebTestClient (MockMvcWebTestClient) for streaming SSE controller tests
     testImplementation 'org.springframework:spring-webflux'
     testImplementation 'io.projectreactor:reactor-test'
+    testImplementation 'org.springframework.security:spring-security-test'
 }
 
 tasks.named('test') {
