@@ -36,43 +36,60 @@ class JwtAuthenticationTest {
 
     @Test
     void aRequestWithNoTokenIsRejected() throws Exception {
-        mockMvc.perform(chat(null)).andExpect(status().isUnauthorized());
+        mockMvc.perform(protectedEndpoint(null)).andExpect(status().isUnauthorized());
     }
 
     @Test
     void aMalformedTokenIsRejected() throws Exception {
-        mockMvc.perform(chat("not-a-jwt-at-all")).andExpect(status().isUnauthorized());
+        mockMvc.perform(protectedEndpoint("not-a-jwt-at-all")).andExpect(status().isUnauthorized());
     }
 
     @Test
     void anExpiredTokenIsRejected() throws Exception {
-        mockMvc.perform(chat(TestJwks.expiredToken())).andExpect(status().isUnauthorized());
+        mockMvc.perform(protectedEndpoint(TestJwks.expiredToken())).andExpect(status().isUnauthorized());
     }
 
     @Test
     void aTokenFromAnotherIssuerIsRejected() throws Exception {
-        mockMvc.perform(chat(TestJwks.wrongIssuerToken())).andExpect(status().isUnauthorized());
+        mockMvc.perform(protectedEndpoint(TestJwks.wrongIssuerToken())).andExpect(status().isUnauthorized());
     }
 
     @Test
     void aTokenForAnotherAudienceIsRejected() throws Exception {
-        mockMvc.perform(chat(TestJwks.wrongAudienceToken())).andExpect(status().isUnauthorized());
+        mockMvc.perform(protectedEndpoint(TestJwks.wrongAudienceToken())).andExpect(status().isUnauthorized());
     }
 
     /** The one that matters most: a well-formed token nobody in possession of our JWKS signed. */
     @Test
     void aTokenSignedWithTheWrongKeyIsRejected() throws Exception {
-        mockMvc.perform(chat(TestJwks.foreignKeyToken())).andExpect(status().isUnauthorized());
+        mockMvc.perform(protectedEndpoint(TestJwks.foreignKeyToken())).andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void aValidTokenReachesTheController() throws Exception {
+        mockMvc.perform(protectedEndpoint(TestJwks.validToken())).andExpect(status().isOk());
     }
 
     /**
-     * A valid token reaches the controller, which then rejects the empty message list on its own
-     * terms. Asserting 400 rather than 200 keeps the LLM out of this test while still proving
-     * the request passed authentication.
+     * Chat is deliberately open until Task 6 ships sign-in. Requiring a token here while the
+     * deployed frontend cannot send one answered 401 to every user in production on 2026-08-19.
      */
     @Test
-    void aValidTokenReachesTheController() throws Exception {
-        mockMvc.perform(chat(TestJwks.validToken())).andExpect(status().isBadRequest());
+    void chatStaysOpenUntilTheFrontendCanSignIn() throws Exception {
+        mockMvc.perform(post("/api/chat")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"messages\":[]}"))
+                .andExpect(status().isBadRequest());
+    }
+
+    /**
+     * Fail closed: anything not explicitly permitted is challenged rather than served. Under the
+     * previous catch-all {@code permitAll}, a new controller outside {@code /api/**} — or an
+     * actuator endpoint added to the exposure list — was public with no code change here.
+     */
+    @Test
+    void anUnknownPathIsNotPublicByDefault() throws Exception {
+        mockMvc.perform(get("/internal/whatever")).andExpect(status().isUnauthorized());
     }
 
     @Test
@@ -87,8 +104,10 @@ class JwtAuthenticationTest {
      */
     @Test
     void theFrontendIsServedWithoutAToken() throws Exception {
-        mockMvc.perform(get("/index.html"))
-                .andExpect(result -> assertThat(result.getResponse().getStatus()).isNotEqualTo(401));
+        // 404, precisely: there is no built frontend on the test classpath, and asserting "not
+        // 401" would also pass for the 403 a fail-closed chain returns — which would mean the
+        // sign-in screen itself never loads.
+        mockMvc.perform(get("/index.html")).andExpect(status().isNotFound());
     }
 
     /**
@@ -102,12 +121,12 @@ class JwtAuthenticationTest {
      */
     @Test
     void theKeySetIsFetchedOnceAndCached() throws Exception {
-        mockMvc.perform(chat(TestJwks.validToken())).andExpect(status().isBadRequest());
+        mockMvc.perform(protectedEndpoint(TestJwks.validToken())).andExpect(status().isOk());
         int afterFirstVerification = TestJwks.jwksRequestCount();
         assertThat(afterFirstVerification).isPositive();
 
         for (int i = 0; i < 5; i++) {
-            mockMvc.perform(chat(TestJwks.validToken())).andExpect(status().isBadRequest());
+            mockMvc.perform(protectedEndpoint(TestJwks.validToken())).andExpect(status().isOk());
         }
         assertThat(TestJwks.jwksRequestCount())
                 .as("a cached key set means no further fetches")
@@ -117,17 +136,20 @@ class JwtAuthenticationTest {
         // attacker-controlled, so it must stay bounded — and must still answer 401 once the
         // rate limit refuses the refresh, rather than turning nonsense input into a 500.
         for (int i = 0; i < 6; i++) {
-            mockMvc.perform(chat(TestJwks.foreignKeyToken())).andExpect(status().isUnauthorized());
+            mockMvc.perform(protectedEndpoint(TestJwks.foreignKeyToken())).andExpect(status().isUnauthorized());
         }
         assertThat(TestJwks.jwksRequestCount())
                 .as("an unknown key id may refresh the key set, but not once per request")
                 .isLessThanOrEqualTo(afterFirstVerification + 2);
     }
 
-    private static org.springframework.test.web.servlet.RequestBuilder chat(String token) {
-        var request = post("/api/chat")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"messages\":[]}");
+    /**
+     * The profile endpoint, not chat: chat is public until the frontend can send a token, and a
+     * GET here spends no rate-limit budget — ChatControllerTest documents that spending it from a
+     * growing suite is a time bomb.
+     */
+    private static org.springframework.test.web.servlet.RequestBuilder protectedEndpoint(String token) {
+        var request = get("/api/profile");
         return token == null ? request : request.header("Authorization", "Bearer " + token);
     }
 }
