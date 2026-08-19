@@ -18,7 +18,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 class FplEntryLookupTest {
 
     private static HttpServer server;
-    private static String baseUrl;
+    private static FplEntryLookup stubLookup;
+    /** Port 1 refuses connections, which is what an unreachable FPL looks like from here. */
+    private static final FplEntryLookup unreachableLookup =
+            lookup("http://127.0.0.1:1/entry/%d/");
 
     @BeforeAll
     static void startStub() throws IOException {
@@ -26,14 +29,20 @@ class FplEntryLookupTest {
         // The stub encodes the outcome in the path: /entry/404/ answers 404, and so on.
         server.createContext("/entry/", exchange -> {
             String path = exchange.getRequestURI().getPath();
-            int status = path.contains("/404/") ? 404 : path.contains("/500/") ? 500 : 200;
+            int status = path.contains("/404/") ? 404
+                    : path.contains("/500/") ? 500
+                    : path.contains("/301/") ? 301
+                    : 200;
             byte[] body = status == 200 ? "{\"id\":1,\"name\":\"A Team\"}".getBytes() : new byte[0];
+            if (status == 301) {
+                exchange.getResponseHeaders().add("Location", "/entry/1/");
+            }
             exchange.sendResponseHeaders(status, body.length);
             exchange.getResponseBody().write(body);
             exchange.getResponseBody().close();
         });
         server.start();
-        baseUrl = "http://127.0.0.1:" + server.getAddress().getPort() + "/entry/%d/";
+        stubLookup = lookup("http://127.0.0.1:" + server.getAddress().getPort() + "/entry/%d/");
     }
 
     @AfterAll
@@ -43,25 +52,35 @@ class FplEntryLookupTest {
 
     @Test
     void anEntryFplKnowsExists() {
-        assertThat(lookup(baseUrl).lookup(1234567)).isEqualTo(FplEntryLookup.Result.EXISTS);
+        assertThat(stubLookup.lookup(1234567)).isEqualTo(FplEntryLookup.Result.EXISTS);
     }
 
     @Test
     void anEntryFplDoesNotKnowIsNotFound() {
-        assertThat(lookup(baseUrl).lookup(404)).isEqualTo(FplEntryLookup.Result.NOT_FOUND);
+        assertThat(stubLookup.lookup(404)).isEqualTo(FplEntryLookup.Result.NOT_FOUND);
     }
 
     @Test
     void anErrorFromFplIsUnavailableRatherThanNotFound() {
-        assertThat(lookup(baseUrl).lookup(500)).isEqualTo(FplEntryLookup.Result.UNAVAILABLE);
+        assertThat(stubLookup.lookup(500)).isEqualTo(FplEntryLookup.Result.UNAVAILABLE);
     }
 
     @Test
     void anUnreachableFplIsUnavailable() {
-        // Port 1 on localhost refuses connections, which is what a network failure looks like
-        // from here. The id is perfectly valid; the answer must not blame it.
-        assertThat(lookup("http://127.0.0.1:1/entry/%d/").lookup(1234567))
+        // The id is perfectly valid; the answer must not blame it.
+        assertThat(unreachableLookup.lookup(1234567))
                 .isEqualTo(FplEntryLookup.Result.UNAVAILABLE);
+    }
+
+    /**
+     * A redirect is not a confirmation. The JDK client does not follow them and Spring does not
+     * treat them as errors, so a lookup written as "not 404, therefore it exists" would validate
+     * every id the moment FPL puts a redirect in front of the API — or the moment the configured
+     * URL loses its trailing slash.
+     */
+    @Test
+    void aRedirectIsNotProofTheTeamExists() {
+        assertThat(stubLookup.lookup(301)).isNotEqualTo(FplEntryLookup.Result.EXISTS);
     }
 
     private static FplEntryLookup lookup(String url) {
