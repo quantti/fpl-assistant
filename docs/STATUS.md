@@ -1234,3 +1234,42 @@ is rotated.
   first — classic branch protection on private repos has historically needed GitHub Pro/Team. If
   unavailable, `needs: test` still blocks the release, though not the merge; record the gap
   rather than upgrading by reflex.
+
+
+---
+
+# Phase 5a — Task 1: JWT authentication (2026-08-19, in progress)
+
+Plan: `docs/superpowers/plans/2026-08-18-phase5a-auth-user-profile.md`. `/api/**` now requires a
+bearer token verified against Supabase's published JWKS. 228 tests green.
+
+## Probed against the live project
+
+- **JWKS** `https://itmykooxrbrdbgqwsesb.supabase.co/auth/v1/.well-known/jwks.json` → 200, one
+  key, **ES256** (P-256), kid `25af184b-a504-47f7-90dc-e09785d66077`.
+- **Issuer** `https://itmykooxrbrdbgqwsesb.supabase.co/auth/v1`, confirmed by the OIDC discovery
+  document, which the project also serves.
+- Audience and `sub` shape still to be confirmed against a real token — `/auth/v1/settings` and
+  every token-minting endpoint need the project's anon key, which is not in the repo.
+
+## Findings
+
+- **ES256, not RS256.** Spring's decoder accepts RS256 only unless told otherwise, so an
+  unconfigured decoder would have rejected every real Supabase token. Configured explicitly.
+- **The decoder is built from the JWKS URI, not the issuer URI.** An issuer-based decoder fetches
+  the discovery document while the context starts, which would put a network call to Supabase in
+  front of every boot and every test run. The JWKS-based one fetches on first use and caches.
+- **An unknown key id triggered a JWKS fetch on every request.** Measured, not assumed: six
+  requests carrying tokens signed by a key we never published produced six fetches. That is
+  attacker-controlled amplification against our own auth path. The key set now sits behind a
+  15-minute cache with a 30-second minimum refresh interval.
+- **Rate-limiting that refresh turns a forged token into a 500**, because Spring maps a
+  non-`BadJwtException` decode failure to `AuthenticationServiceException`. A token we cannot
+  verify is now a 401 with a WARN carrying the real reason — otherwise anyone could paint the
+  error log by sending nonsense. The cost: a genuine Supabase outage also answers 401, and the
+  WARN is what tells the two apart.
+
+## Still open in this task
+
+- A real signed JWT: confirm `aud` is `authenticated` and `sub` is the user UUID, and confirm
+  email sign-up is enabled. Both need `SUPABASE_ANON_KEY`.
