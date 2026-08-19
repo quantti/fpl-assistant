@@ -11,12 +11,15 @@ import org.springframework.stereotype.Component;
  * Idempotent DDL for the four tables Phase 5a adds, run once at startup — the same pattern
  * {@code HistoricalSchema} and {@code PriceSchema} use, since this project has no migration tool.
  *
- * <p><b>The profile table is not called {@code app_user}.</b> The shared database already carries
- * {@code upstream-stats-app}'s own {@code app_user} and {@code manager} tables, so a
- * {@code CREATE TABLE IF NOT EXISTS app_user} here would find that table, do nothing, and then
- * write our rows into it — the one failure mode "IF NOT EXISTS everywhere" cannot protect
- * against. Phase 5's spec is explicit that our users are unrelated to shared' and must not be
- * joined to them.
+ * <p><b>Every table here is {@code fpl_}-prefixed.</b> The shared database already carries
+ * {@code upstream-stats-app}'s own {@code app_user} and {@code manager}, so a
+ * {@code CREATE TABLE IF NOT EXISTS app_user} would find that table, do nothing, and then write
+ * our rows into it — the one failure mode "IF NOT EXISTS everywhere" cannot protect against.
+ * That argument does not depend on the name: {@code conversation}, {@code message} and
+ * {@code usage_event} are just as available for shared to claim, and our
+ * {@code ALTER TABLE ... ENABLE ROW LEVEL SECURITY} would then quietly close a table they read
+ * through PostgREST. The prefix is what the existing {@code fpl_embeddings},
+ * {@code fpl_daily_price} and {@code fpl_player_price} already do.
  *
  * <p>{@code user_id} is the JWT {@code sub} claim and nothing else. There is no foreign key to
  * {@code auth.users}: it would tie this DDL to privileges on Supabase's auth schema, which the
@@ -94,21 +97,6 @@ public class UserSchema {
                 )
                 """.formatted(profileTable, profileTable));
 
-        // Both statements exist for the table that is already there: CREATE TABLE IF NOT EXISTS
-        // skips an existing table entirely, so a column added later never arrives — and Postgres
-        // has no ADD CONSTRAINT IF NOT EXISTS, hence the lookup.
-        jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS weekly_message_limit INTEGER"
-                .formatted(profileTable));
-        jdbc.execute("""
-                DO $$ BEGIN
-                    IF NOT EXISTS (SELECT 1 FROM pg_constraint
-                                   WHERE conname = 'chk_%s_weekly_limit') THEN
-                        ALTER TABLE %s ADD CONSTRAINT chk_%s_weekly_limit
-                            CHECK (weekly_message_limit IS NULL OR weekly_message_limit >= -1);
-                    END IF;
-                END $$
-                """.formatted(profileTable, profileTable, profileTable));
-
         // A UUID id rather than a sequence: the id travels to the client, and a guessable one
         // invites probing for other users' conversations. The API answers 404 either way, but
         // not handing out the map is cheaper than defending it.
@@ -138,6 +126,12 @@ public class UserSchema {
                     id BIGSERIAL PRIMARY KEY,
                     user_id UUID NOT NULL,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    -- Distinguishes a chat turn from anything else that records usage later:
+                    -- title generation, a retry, a background call. Without it the quota query
+                    -- counts every row as a message, and neither this nor the provider can be
+                    -- backfilled once rows exist — the two chat providers price differently.
+                    event_type VARCHAR(32) NOT NULL DEFAULT 'chat',
+                    provider VARCHAR(20),
                     input_tokens INTEGER,
                     cached_tokens INTEGER,
                     output_tokens INTEGER
@@ -152,6 +146,28 @@ public class UserSchema {
                 .formatted(conversationTable, conversationTable));
         jdbc.execute("CREATE INDEX IF NOT EXISTS idx_%s_conversation ON %s(conversation_id, created_at)"
                 .formatted(messageTable, messageTable));
+
+        // updated_at is the sort key of the conversation list's only index, and nothing was
+        // maintaining it: a conversation used five minutes ago would keep its creation time and
+        // sink to the bottom of the sidebar. Left to callers it is one forgotten UPDATE away
+        // from wrong; as a trigger it is structural.
+        jdbc.execute("""
+                CREATE OR REPLACE FUNCTION fpl_set_updated_at() RETURNS trigger
+                LANGUAGE plpgsql SET search_path = public, pg_temp AS $$
+                BEGIN
+                    NEW.updated_at = NOW();
+                    RETURN NEW;
+                END $$
+                """);
+        for (String table : new String[] {profileTable, conversationTable}) {
+            // One statement, not DROP + CREATE: between those two an in-flight UPDATE commits
+            // with updated_at frozen — the exact bug the trigger exists to prevent, reopened
+            // for a moment on every boot. CREATE OR REPLACE TRIGGER is Postgres 14+.
+            jdbc.execute("""
+                    CREATE OR REPLACE TRIGGER trg_%s_updated_at BEFORE UPDATE ON %s
+                    FOR EACH ROW EXECUTE FUNCTION fpl_set_updated_at()
+                    """.formatted(table, table));
+        }
 
         for (String table : new String[] {profileTable, conversationTable, messageTable, usageTable}) {
             jdbc.execute("ALTER TABLE %s ENABLE ROW LEVEL SECURITY".formatted(table));

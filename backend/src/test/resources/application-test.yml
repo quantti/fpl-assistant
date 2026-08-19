@@ -36,9 +36,9 @@ fpl:
     # connections immediately.
     entry-url: http://127.0.0.1:1/entry/%d/
     profile-table-name: fpl_user_profile_test
-    conversation-table-name: conversation_test
-    message-table-name: message_test
-    usage-table-name: usage_event_test
+    conversation-table-name: fpl_conversation_test
+    message-table-name: fpl_message_test
+    usage-table-name: fpl_usage_event_test
   daily-price:
     table-name: fpl_daily_price_test
     scheduled: false

@@ -36,12 +36,16 @@ public class UserProfileService {
         return found.isEmpty() ? Optional.empty() : Optional.ofNullable(found.getFirst());
     }
 
-    /** {@code null} clears the id. The row is created if the user has never had one. */
+    /**
+     * {@code null} clears the id. The row is created if the user has never had one.
+     *
+     * <p>No {@code updated_at = NOW()} here: a BEFORE UPDATE trigger owns that column, and a
+     * second mechanism writing it would only mislead the next caller who tries to preserve it.
+     */
     public void setTeamId(UUID userId, Integer teamId) {
         jdbc.update("""
                 INSERT INTO %s (user_id, fpl_team_id) VALUES (?, ?)
-                ON CONFLICT (user_id) DO UPDATE SET fpl_team_id = EXCLUDED.fpl_team_id,
-                                                    updated_at = NOW()
+                ON CONFLICT (user_id) DO UPDATE SET fpl_team_id = EXCLUDED.fpl_team_id
                 """.formatted(profileTable), userId, teamId);
     }
 }
