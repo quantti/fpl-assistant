@@ -1,12 +1,17 @@
 package dev.quantti.fplassistant.user;
 
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.UUID;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 
@@ -39,8 +44,13 @@ class UserSchemaTest {
     @Value("${fpl.user.usage-table-name}")
     String usageTable;
 
-    @Test
-    void everyTableIsPinnedToAnIsolatedCopyUnderTheTestProfile() {
+    /**
+     * Checked before every test rather than as one of them: JUnit gives no ordering guarantee and
+     * does not stop a class on failure, so a sibling test could otherwise write to the real
+     * tables before the assertion that was supposed to prevent it ever ran.
+     */
+    @BeforeEach
+    void refuseToRunAgainstProductionTables() {
         assertThat(List.of(profileTable, conversationTable, messageTable, usageTable))
                 .allSatisfy(table -> assertThat(table).endsWith("_test"));
     }
@@ -49,9 +59,28 @@ class UserSchemaTest {
      * upstream-stats-app owns `app_user` in this same database. CREATE TABLE IF NOT EXISTS would find
      * that table, do nothing, and then this project would write its rows into shared' table.
      */
+    /**
+     * The names that matter are the production ones — the test profile's `_test` copies can
+     * never collide with shared. Read from application.yml directly, because under
+     * {@code @ActiveProfiles("test")} the injected properties are the isolated copies and an
+     * assertion on them proves nothing about the deploy.
+     */
     @Test
-    void theProfileTableIsNotNamedAppUser() {
-        assertThat(profileTable).doesNotStartWith("app_user");
+    void theProductionTableNamesCannotCollideWithSharedStats() throws Exception {
+        String config = new String(new ClassPathResource("application.yml").getInputStream()
+                .readAllBytes(), StandardCharsets.UTF_8);
+        Matcher names = Pattern.compile("(?:profile|conversation|message|usage)-table-name:\\s*(\\S+)")
+                .matcher(config);
+
+        int found = 0;
+        while (names.find()) {
+            found++;
+            assertThat(names.group(1))
+                    .as("an unprefixed name is one shared can claim, and IF NOT EXISTS would then"
+                            + " bind this project to their table")
+                    .startsWith("fpl_");
+        }
+        assertThat(found).as("all four table names should be configured").isEqualTo(4);
     }
 
     @Test
@@ -64,11 +93,42 @@ class UserSchemaTest {
     }
 
     @Test
-    void aSecondRunChangesNothing() {
+    void aSecondRunLeavesTheExistingTablesInPlace() {
+        UUID user = UUID.randomUUID();
+        jdbc.update("INSERT INTO " + conversationTable + " (user_id) VALUES (?)", user);
+        Long before = jdbc.queryForObject("SELECT ?::regclass::oid::bigint", Long.class, conversationTable);
+
         schema.ensureSchema();
 
-        assertThat(jdbc.queryForObject("SELECT to_regclass(?)::text", String.class, conversationTable))
-                .isNotNull();
+        // A DDL that dropped and recreated would pass an existence check and lose every row.
+        assertThat(jdbc.queryForObject("SELECT ?::regclass::oid::bigint", Long.class, conversationTable))
+                .isEqualTo(before);
+        assertThat(countFor(conversationTable, "user_id", user)).isEqualTo(1);
+
+        jdbc.update("DELETE FROM " + conversationTable + " WHERE user_id = ?", user);
+    }
+
+    @Test
+    void updatingAConversationMovesItToTheTopOfTheList() throws Exception {
+        UUID user = UUID.randomUUID();
+        UUID conversation = jdbc.queryForObject(
+                "INSERT INTO " + conversationTable + " (user_id) VALUES (?) RETURNING id",
+                UUID.class, user);
+        try {
+            Object created = jdbc.queryForObject("SELECT updated_at FROM " + conversationTable
+                    + " WHERE id = ?", Object.class, conversation);
+            Thread.sleep(10);
+
+            jdbc.update("UPDATE " + conversationTable + " SET title = 'renamed' WHERE id = ?",
+                    conversation);
+
+            assertThat(jdbc.queryForObject("SELECT updated_at FROM " + conversationTable
+                    + " WHERE id = ?", Object.class, conversation))
+                    .as("the list is sorted by updated_at; a frozen column sorts by creation")
+                    .isNotEqualTo(created);
+        } finally {
+            jdbc.update("DELETE FROM " + conversationTable + " WHERE id = ?", conversation);
+        }
     }
 
     @Test
@@ -82,14 +142,16 @@ class UserSchemaTest {
         jdbc.update("INSERT INTO " + usageTable + " (user_id, input_tokens, output_tokens)"
                 + " VALUES (?, 100, 200)", user);
 
-        jdbc.update("DELETE FROM " + conversationTable + " WHERE id = ?", conversation);
+        try {
+            jdbc.update("DELETE FROM " + conversationTable + " WHERE id = ?", conversation);
 
-        assertThat(countFor(messageTable, "conversation_id", conversation)).isZero();
-        assertThat(countFor(usageTable, "user_id", user))
-                .as("usage counted from something the user can delete is a quota they can refill")
-                .isEqualTo(1);
-
-        jdbc.update("DELETE FROM " + usageTable + " WHERE user_id = ?", user);
+            assertThat(countFor(messageTable, "conversation_id", conversation)).isZero();
+            assertThat(countFor(usageTable, "user_id", user))
+                    .as("usage counted from something the user can delete is a quota they can refill")
+                    .isEqualTo(1);
+        } finally {
+            jdbc.update("DELETE FROM " + usageTable + " WHERE user_id = ?", user);
+        }
     }
 
     /**

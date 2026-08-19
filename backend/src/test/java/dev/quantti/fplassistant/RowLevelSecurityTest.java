@@ -1,11 +1,16 @@
 package dev.quantti.fplassistant;
 
+import java.nio.charset.StandardCharsets;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 
@@ -32,38 +37,41 @@ class RowLevelSecurityTest {
     @Autowired
     JdbcTemplate jdbc;
 
-    @Value("${fpl.historical.table-name}")
-    String historicalTable;
-
-    @Value("${fpl.price.table-name}")
-    String priceTable;
-
-    @Value("${fpl.daily-price.table-name}")
-    String dailyPriceTable;
-
-    @Value("${fpl.user.profile-table-name}")
-    String profileTable;
-
-    @Value("${fpl.user.conversation-table-name}")
-    String conversationTable;
-
-    @Value("${fpl.user.message-table-name}")
-    String messageTable;
-
-    @Value("${fpl.user.usage-table-name}")
-    String usageTable;
-
+    /**
+     * Derived, not listed. A hand-maintained list is green precisely for the table nobody
+     * remembered to add — which is how `fpl_embeddings` (created by Spring AI's PgVectorStore,
+     * not by any DDL in this project) went uncovered while the test claimed to cover everything.
+     * Anything in `public` that the shared schema dump does not define belongs to this project.
+     */
     @Test
-    void everyTableThisProjectCreatesHasRowLevelSecurityEnabled() {
-        for (String table : List.of(historicalTable, priceTable, dailyPriceTable,
-                profileTable, conversationTable, messageTable, usageTable)) {
-            Boolean enabled = jdbc.queryForObject(
-                    "SELECT relrowsecurity FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace"
-                            + " WHERE n.nspname = 'public' AND c.relname = ?", Boolean.class, table);
+    void everyTableThisProjectCreatesHasRowLevelSecurityEnabled() throws Exception {
+        Set<String> sharedTables = tablesDefinedBy("db/shared-stats-schema.sql");
 
-            assertThat(enabled)
-                    .as("%s is exposed to the anon key through PostgREST unless RLS is enabled", table)
-                    .isTrue();
+        List<String> unprotected = jdbc.queryForList("""
+                SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = 'public' AND c.relkind = 'r' AND NOT c.relrowsecurity
+                ORDER BY c.relname
+                """, String.class)
+                .stream()
+                .filter(table -> !sharedTables.contains(table))
+                .toList();
+
+        assertThat(unprotected)
+                .as("tables this project creates are exposed to the anon key through PostgREST"
+                        + " unless RLS is enabled")
+                .isEmpty();
+    }
+
+    private Set<String> tablesDefinedBy(String resource) throws Exception {
+        String dump = new String(new ClassPathResource(resource).getInputStream().readAllBytes(),
+                StandardCharsets.UTF_8);
+        Matcher matcher = Pattern.compile("CREATE TABLE public\\.(\\w+)").matcher(dump);
+        Set<String> tables = new HashSet<>();
+        while (matcher.find()) {
+            tables.add(matcher.group(1));
         }
+        assertThat(tables).as("the shared schema dump should define the tables we do not own")
+                .isNotEmpty();
+        return tables;
     }
 }
