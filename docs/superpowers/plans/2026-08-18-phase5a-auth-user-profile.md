@@ -241,9 +241,23 @@ SELECT count(*) FROM usage_event
 WHERE user_id = ? AND created_at > now() - interval '7 days';
 ```
 
-Configuration: `fpl.quota.messages-per-week` (default 50). The spec's second property
-(`trial-messages-per-week`) exists to distinguish trial from paid users, which this phase has no
-concept of — **add it in 5b with the entitlement check that gives it meaning**, not now.
+Configuration: `fpl.quota.messages-per-week` (default 50) is the fallback, not the answer. The
+limit differs per person, so it is resolved per user from `fpl_user_profile.weekly_message_limit`
+(added in Task 2):
+
+| Value | Meaning |
+|---|---|
+| `NULL` | no override — the configured default applies. What almost every row holds |
+| `-1` | unlimited: skip the count entirely |
+| `0` | suspended: no messages at all |
+| *n* | *n* messages per rolling seven days |
+
+A user with no profile row is the `NULL` case. Changing a limit is a statement; there is no admin
+surface in this phase and does not need to be one.
+
+The spec's second property (`trial-messages-per-week`) exists to distinguish trial from paid
+users, which this phase has no concept of — **add it in 5b with the entitlement check that gives
+it meaning**, not now.
 
 Add a usage endpoint returning used, limit, and when the window next frees a message, for Task 7's
 indicator.
