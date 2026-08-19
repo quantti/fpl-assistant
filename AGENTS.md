@@ -99,6 +99,10 @@ requests run the tests only. `workflow_dispatch` re-deploys without a push. A ma
 
 Install the pre-push hook once per clone: `git config core.hooksPath scripts/hooks`.
 
+A manual `fly deploy` always prompts first: `.claude/settings.json` routes any Bash command
+that runs one through `scripts/hooks/ask-before-deploy.sh`, whatever path or wrapper it is
+invoked by. It ships the working tree untested, so it is the emergency path, never the habit.
+
 Env files are gitignored (only `*.example` templates are tracked) and there are two:
 `backend/.env.test` points at the local test container, `backend/.env.supabase` at production.
 Tests must never run against Supabase — see the testing convention below.

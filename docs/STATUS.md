@@ -1218,7 +1218,15 @@ Not a side effect — two rules were untestable against production data and are 
   the RAG tests offline and free, but would stop them proving that a document survives chunking,
   embedding and pgvector storage with its metadata intact.
 
-## Open
+## Live since 2026-08-19
+
+PR #1 merged; the pipeline ran end to end on master: tests 2 m 34 s, deploy + smoke test
+2 m 25 s, `/actuator/health` UP and the frontend serving. Deploying is now a merge.
+
+`FLY_API_TOKEN` expires **2027-08-19** — the deploy job starts failing that day unless the token
+is rotated.
+
+## Superseded — what was open before the merge
 
 - **Task 8, GitHub secrets:** `FLY_API_TOKEN` (app-scoped, `fly tokens create deploy -a
   fpl-assistant`) and `OPENAI_API_KEY`. The workflow is written and will fail without them.

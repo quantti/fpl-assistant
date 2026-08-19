@@ -3,7 +3,7 @@
 **Status:** planned, not started (2026-08-18; revised 2026-08-18 after a code-level review of the
 test suite)
 
-**PROGRESS:** Task 10/11 done — 1–7 and 9–11 complete (Task 10 closed as not available: see its outcome). Task 8 (GitHub secrets) needs repository access.
+**PROGRESS:** Task 11/11 done — plan complete. Task 10 closed as not available (see its outcome); the pipeline deployed to production for the first time on 2026-08-19.
 
 This plan came out of the 2026-08-18 evening session. Deployments are currently manual
 (`fly deploy --ha=false --remote-only`). The goal: `git push origin master` (via PR) → tests
@@ -356,6 +356,11 @@ Only what the container does not provide:
   absence is a decision rather than an accident.
 
 **Verification:** no database credentials in GitHub at all.
+
+**Outcome (2026-08-19):** `FLY_API_TOKEN` (app-scoped `github-actions-deploy`, expires
+2027-08-19, revoke with `flyctl tokens revoke`) and `OPENAI_API_KEY` set as repository secrets.
+No database credentials in GitHub, as intended — the test container's are plain values in the
+workflow.
 
 ### Task 9 — Workflow `.github/workflows/deploy.yml`
 
