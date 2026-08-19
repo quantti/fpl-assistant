@@ -60,7 +60,12 @@ public final class TestJwks {
     }
 
     public static String validToken() {
-        return token(KEY, ISSUER, AUDIENCE, Instant.now().plusSeconds(600));
+        return validTokenFor(USER_ID);
+    }
+
+    /** A token for a specific user, so isolation between two accounts can be tested. */
+    public static String validTokenFor(String subject) {
+        return token(KEY, ISSUER, AUDIENCE, Instant.now().plusSeconds(600), subject);
     }
 
     public static String expiredToken() {
@@ -81,8 +86,13 @@ public final class TestJwks {
     }
 
     private static String token(ECKey key, String issuer, String audience, Instant expiry) {
+        return token(key, issuer, audience, expiry, USER_ID);
+    }
+
+    private static String token(ECKey key, String issuer, String audience, Instant expiry,
+                                String subject) {
         JWTClaimsSet claims = new JWTClaimsSet.Builder()
-                .subject(USER_ID)
+                .subject(subject)
                 .issuer(issuer)
                 .audience(List.of(audience))
                 .issueTime(Date.from(Instant.now().minusSeconds(5)))
