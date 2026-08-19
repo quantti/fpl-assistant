@@ -69,6 +69,22 @@ set -a; source .env.test; set +a
 ./gradlew bootRun --args="--sync-prices"          # capture today's FPL prices, then exit
 ```
 
+## Per-user message limits
+
+The weekly quota is per person, held in `fpl_user_profile.weekly_message_limit`: `NULL` means the
+configured default (`fpl.quota.messages-per-week`), `-1` means unlimited, `0` suspends the
+account, and any other number is that many messages per rolling seven days. There is no admin
+screen; a limit is one statement, run with the `backend/.env.supabase` credentials:
+
+```sql
+INSERT INTO fpl_user_profile (user_id, weekly_message_limit)
+VALUES ('<uuid from the JWT sub claim>', -1)
+ON CONFLICT (user_id) DO UPDATE SET weekly_message_limit = EXCLUDED.weekly_message_limit,
+                                    updated_at = NOW();
+```
+
+The uuid is in Supabase → Authentication → Users, or `auth.users.id`.
+
 ## The pre-push hook
 
 There is no branch protection on this repository. GitHub blocks it for private repos on the Free

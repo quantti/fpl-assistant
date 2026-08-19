@@ -2,7 +2,7 @@
 
 **Status:** planned, not started (2026-08-18)
 
-**PROGRESS:** Task 1/8 done — resource server, validators, tests, and the live-token gate all confirmed. Findings in `docs/STATUS.md`.
+**PROGRESS:** Task 2/8 done — resource server and the four user tables. Findings in `docs/STATUS.md`.
 
 **Spec:** `docs/superpowers/specs/2026-08-15-phase5-auth-billing-design.md` — read it fully first.
 Its authorization contract (`user_id` from the JWT `sub` claim and nowhere else), its RLS finding
@@ -154,6 +154,23 @@ configured name ends in `_test` fails before any write; deleting a conversation 
 messages and leaves `usage_event` untouched; and a test proves the profile table name is not
 `app_user`.
 
+**Outcome (2026-08-19):** `UserSchema` creates `fpl_user_profile`, `conversation`, `message` and
+`usage_event`, each name a property pinned to a `_test` copy. `conversation.id` is a UUID rather
+than a sequence: the id travels to the client, and not handing out the map is cheaper than
+defending it. `usage_event` has no foreign key to `conversation`, asserted both behaviourally
+(deleting a conversation takes its messages and leaves usage) and structurally (`pg_constraint`),
+because a key added later would reintroduce the refill path silently.
+
+**Deviation from the spec, deliberate: RLS is enabled with no policies.** The spec asks for
+`auth.uid()`-scoped policies as defence-in-depth. Deny-all is strictly stronger, needs no
+dependency on Supabase's auth schema — which the ephemeral test database does not have — and
+nothing here reads these tables through PostgREST. `RowLevelSecurityTest` now covers all seven
+tables this project creates.
+
+There is no foreign key to `auth.users` either: it would require privileges on the auth schema
+that the test database cannot grant, and nothing depends on the cascade until account deletion
+exists.
+
 ### Task 3 — The user's FPL team id
 
 Store the user's FPL entry id on their profile row, so later phases can answer questions about
@@ -224,9 +241,23 @@ SELECT count(*) FROM usage_event
 WHERE user_id = ? AND created_at > now() - interval '7 days';
 ```
 
-Configuration: `fpl.quota.messages-per-week` (default 50). The spec's second property
-(`trial-messages-per-week`) exists to distinguish trial from paid users, which this phase has no
-concept of — **add it in 5b with the entitlement check that gives it meaning**, not now.
+Configuration: `fpl.quota.messages-per-week` (default 50) is the fallback, not the answer. The
+limit differs per person, so it is resolved per user from `fpl_user_profile.weekly_message_limit`
+(added in Task 2):
+
+| Value | Meaning |
+|---|---|
+| `NULL` | no override — the configured default applies. What almost every row holds |
+| `-1` | unlimited: skip the count entirely |
+| `0` | suspended: no messages at all |
+| *n* | *n* messages per rolling seven days |
+
+A user with no profile row is the `NULL` case. Changing a limit is a statement; there is no admin
+surface in this phase and does not need to be one.
+
+The spec's second property (`trial-messages-per-week`) exists to distinguish trial from paid
+users, which this phase has no concept of — **add it in 5b with the entitlement check that gives
+it meaning**, not now.
 
 Add a usage endpoint returning used, limit, and when the window next frees a message, for Task 7's
 indicator.

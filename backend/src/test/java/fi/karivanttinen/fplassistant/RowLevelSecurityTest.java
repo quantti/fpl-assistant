@@ -41,9 +41,22 @@ class RowLevelSecurityTest {
     @Value("${fpl.daily-price.table-name}")
     String dailyPriceTable;
 
+    @Value("${fpl.user.profile-table-name}")
+    String profileTable;
+
+    @Value("${fpl.user.conversation-table-name}")
+    String conversationTable;
+
+    @Value("${fpl.user.message-table-name}")
+    String messageTable;
+
+    @Value("${fpl.user.usage-table-name}")
+    String usageTable;
+
     @Test
     void everyTableThisProjectCreatesHasRowLevelSecurityEnabled() {
-        for (String table : List.of(historicalTable, priceTable, dailyPriceTable)) {
+        for (String table : List.of(historicalTable, priceTable, dailyPriceTable,
+                profileTable, conversationTable, messageTable, usageTable)) {
             Boolean enabled = jdbc.queryForObject(
                     "SELECT relrowsecurity FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace"
                             + " WHERE n.nspname = 'public' AND c.relname = ?", Boolean.class, table);
