@@ -1269,10 +1269,35 @@ bearer token verified against Supabase's published JWKS. 228 tests green.
   error log by sending nonsense. The cost: a genuine Supabase outage also answers 401, and the
   WARN is what tells the two apart.
 
+## Probed with the anon key (2026-08-19)
+
+`GET /auth/v1/settings`:
+
+```
+external.email:      true    → email sign-up is enabled, as the plan assumed
+disable_signup:      false   → sign-up is OPEN to anyone
+mailer_autoconfirm:  false   → a fresh sign-up gets no session token until the address is confirmed
+anonymous_users:     false
+```
+
+Two consequences:
+
+- **Sign-up being open contradicts the owner's decision of 2026-08-19** ("keep registration closed
+  for the duration of 5a"). Without billing there is no card anchor and no cost ceiling per
+  person, only the per-user quota. Turn it off in Authentication → Sign In / Up before anything
+  is deployed with the frontend auth client.
+- **A real token cannot be minted from the anon key alone.** Sign-up needs email confirmation, and
+  Supabase additionally refuses `example.com` addresses (`email_address_invalid`). Confirming the
+  claim shape needs either a user created in the dashboard with "Auto Confirm User", or the
+  service_role key and the admin API.
+
+The anon key is the new `sb_publishable_…` format rather than a legacy JWT, which matches the
+asymmetric ES256 signing scheme the decoder is configured for.
+
 ## Still open in this task
 
-- A real signed JWT: confirm `aud` is `authenticated` and `sub` is the user UUID, and confirm
-  email sign-up is enabled. Both need `SUPABASE_ANON_KEY`.
+- A real signed JWT: confirm `aud` is `authenticated` and `sub` is the user UUID. Needs a
+  confirmed test user (see above).
 
 
 ---
