@@ -15,7 +15,10 @@ public class WebConfig implements WebMvcConfigurer {
     public void addCorsMappings(CorsRegistry registry) {
         registry.addMapping("/api/**")
                 .allowedOrigins(allowedOrigins.split("\\s*,\\s*"))
-                .allowedMethods("POST", "GET", "OPTIONS")
+                // PUT and DELETE are the profile endpoints. A method missing here fails at
+                // preflight, which MockMvc never exercises — so the suite stays green
+                // while the browser gets 403 "Invalid CORS request".
+                .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS")
                 .allowedHeaders("*");
     }
 }
