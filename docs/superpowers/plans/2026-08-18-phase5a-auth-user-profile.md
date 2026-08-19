@@ -2,7 +2,7 @@
 
 **Status:** planned, not started (2026-08-18)
 
-**PROGRESS:** Task 1/8 in progress — the resource server, its validators and their tests are done; the live-token half of the gate is blocked on the project's anon key. Findings in `docs/STATUS.md`.
+**PROGRESS:** Task 1/8 done — resource server, validators, tests, and the live-token gate all confirmed. Findings in `docs/STATUS.md`.
 
 **Spec:** `docs/superpowers/specs/2026-08-15-phase5-auth-billing-design.md` — read it fully first.
 Its authorization contract (`user_id` from the JWT `sub` claim and nowhere else), its RLS finding

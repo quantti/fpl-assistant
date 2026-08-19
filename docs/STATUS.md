@@ -1294,10 +1294,31 @@ Two consequences:
 The anon key is the new `sb_publishable_…` format rather than a legacy JWT, which matches the
 asymmetric ES256 signing scheme the decoder is configured for.
 
-## Still open in this task
+## Gate closed: a real token, decoded (2026-08-19)
 
-- A real signed JWT: confirm `aud` is `authenticated` and `sub` is the user UUID. Needs a
-  confirmed test user (see above).
+Password grant against a dashboard-created, auto-confirmed user:
+
+```
+header: {"alg":"ES256","kid":"25af184b-a504-47f7-90dc-e09785d66077","typ":"JWT"}
+iss:    https://itmykooxrbrdbgqwsesb.supabase.co/auth/v1
+aud:    'authenticated'        (a JSON string, not an array)
+sub:    d40da936-30de-41e0-a182-1586f5b23e2b
+role:   authenticated
+lifetime: 3600 s
+claims: aal amr app_metadata aud email exp iat is_anonymous iss phone role session_id sub
+        user_metadata
+```
+
+Every value the configuration assumes is confirmed: ES256, the kid the JWKS publishes, the
+issuer, the audience, and `sub` as the user's UUID.
+
+**`aud` arrives as a string, and the validator declares `List<String>`.** Spring's claim converter
+normalises a single audience into a one-element list, and the tests already cover exactly this
+shape: Nimbus serialises `audience(List.of("authenticated"))` as `{aud=authenticated}`, the same
+JSON Supabase sends. So the passing tests are not passing on a shape that never occurs.
+
+Also done in the dashboard: public sign-up disabled (the 5a decision), and the test user exists
+for future runs of the probe.
 
 
 ---
