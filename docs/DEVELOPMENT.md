@@ -71,6 +71,10 @@ set -a; source .env.test; set +a
 
 ## Per-user message limits
 
+**Nothing reads this column yet — enforcement lands with Phase 5a Task 4.** Setting a limit
+today changes no behaviour: an account set to `0` keeps chatting, with no error and no log
+line to say why.
+
 The weekly quota is per person, held in `fpl_user_profile.weekly_message_limit`: `NULL` means the
 configured default (`fpl.quota.messages-per-week`), `-1` means unlimited, `0` suspends the
 account, and any other number is that many messages per rolling seven days. There is no admin

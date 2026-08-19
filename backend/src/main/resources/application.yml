@@ -97,9 +97,9 @@ fpl:
     # profile pins them to isolated copies. fpl_user_profile is NOT app_user — tapas owns that
     # name in this database.
     profile-table-name: fpl_user_profile
-    conversation-table-name: conversation
-    message-table-name: message
-    usage-table-name: usage_event
+    conversation-table-name: fpl_conversation
+    message-table-name: fpl_message
+    usage-table-name: fpl_usage_event
     # Checked when a user saves their team id. A documented exception to "external APIs only at
     # sync time": this is a user-initiated write, not the chat path.
     entry-url: https://fantasy.premierleague.com/api/entry/%d/
