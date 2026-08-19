@@ -3,6 +3,8 @@ package dev.quantti.fplassistant.tools;
 import java.util.List;
 import java.util.Map;
 
+import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -12,10 +14,10 @@ import org.springframework.test.context.ActiveProfiles;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * {@link ExpectedStatsTools} against real 2025-26 {@code player_fixture_stats} data. The real
- * {@link SeasonResolver} resolves to 2025-26 (a completed fallback, since 2026-27 has no data
- * yet), which is fine here — these tests exercise the aggregation and formatting, and the
- * provenance line correctly labels the data as historical.
+ * {@link ExpectedStatsTools} against the seeded {@code player_fixture_stats} rows. The real
+ * {@link SeasonResolver} resolves to the completed seeded season, which is fine here — these
+ * tests exercise the aggregation and formatting, and the provenance line correctly labels the
+ * data as historical.
  */
 @SpringBootTest
 @ActiveProfiles("test")
@@ -30,9 +32,14 @@ class ExpectedStatsToolsIntegrationTest {
     @Autowired
     SeasonResolver seasonResolver;
 
+    @BeforeEach
+    void seed() {
+        SharedStatsSeed.ensure(jdbc);
+    }
+
     @Test
     void getPlayerExpectedStatsReturnsAggregatesForAKnownPlayer() {
-        String result = tools.getPlayerExpectedStats("Salah", 5);
+        String result = tools.getPlayerExpectedStats(SharedStatsSeed.PLAYER_WEB_NAME, 5);
 
         assertThat(result).contains("Expected stats for");
         assertThat(result).contains("xG");
@@ -43,7 +50,7 @@ class ExpectedStatsToolsIntegrationTest {
 
     @Test
     void getTeamExpectedGoalsReportsBothAttackAndDefence() {
-        String result = tools.getTeamExpectedGoals("Liverpool", 5);
+        String result = tools.getTeamExpectedGoals(SharedStatsSeed.ASHFIELD, 5);
 
         assertThat(result).contains("Expected output for");
         assertThat(result).contains("Attack over window");
@@ -57,13 +64,13 @@ class ExpectedStatsToolsIntegrationTest {
      * The one aggregation in these tools that is not a plain SUM. FPL writes the team's
      * expected-goals-conceded and goals-conceded onto <em>every</em> player who was on the pitch,
      * so summing them multiplies the team's figure by its squad size; the tool uses MAX instead.
-     * This pins that choice against the {@code fixture} table's own scoreline.
+     * This pins that choice against the {@code fixture} table's own scoreline. The seed carries
+     * the same shape: goals_conceded is the team figure repeated on each player row.
      */
     @Test
     void goalsConcededPerFixtureMatchesTheScoreline() {
         int seasonId = seasonResolver.resolve().seasonId();
-        Integer teamId = jdbc.queryForObject(
-                "SELECT id FROM team WHERE season_id = ? ORDER BY id LIMIT 1", Integer.class, seasonId);
+        int teamId = SharedStatsSeed.TEAM_ASHFIELD;
 
         List<Map<String, Object>> checked = jdbc.queryForList("""
                 SELECT f.id,
@@ -100,8 +107,9 @@ class ExpectedStatsToolsIntegrationTest {
 
     @Test
     void anAmbiguousTeamNameSaysWhichOtherClubsItMatched() {
-        // "man" matches both Manchester clubs; answering for one silently reads as the only match.
-        String result = tools.getTeamExpectedGoals("man", 3);
+        // The seeded league has two Northmoor clubs; answering for one silently reads as the
+        // only match.
+        String result = tools.getTeamExpectedGoals(SharedStatsSeed.AMBIGUOUS_TEAM_PREFIX, 3);
 
         assertThat(result).contains("The name also matched:");
     }

@@ -16,6 +16,7 @@ import org.springframework.test.context.ActiveProfiles;
 
 import dev.quantti.fplassistant.historical.VaastavSource;
 import dev.quantti.fplassistant.testsupport.FictitiousTestData;
+import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
 import dev.quantti.fplassistant.tools.SeasonContext;
 import dev.quantti.fplassistant.tools.SeasonResolver;
 
@@ -61,6 +62,9 @@ class PriceSyncServiceIntegrationTest {
         assertThat(tableName)
                 .as("price sync tests must be pinned to the isolated table; check @ActiveProfiles(\"test\")")
                 .endsWith("_test");
+        // The snapshot writer copies from the shared player table, so the seeded league is what
+        // populatedSeasonId() below resolves to.
+        SharedStatsSeed.ensure(jdbc);
         deleteTestRows();
     }
 

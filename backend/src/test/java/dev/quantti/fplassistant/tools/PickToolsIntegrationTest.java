@@ -2,6 +2,8 @@ package dev.quantti.fplassistant.tools;
 
 import java.util.List;
 
+import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -11,11 +13,12 @@ import org.springframework.test.context.ActiveProfiles;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * {@link PickTools} against real 2025-26 data. The real {@link SeasonResolver} resolves to
- * 2025-26 (a completed fallback), so the provenance line labels the picks as historical —
- * which is the correct behaviour and what these tests assert. The ranking composite itself is
- * pinned by {@link PickToolsRankingTest}: no season in the database has an unfinished fixture,
- * so an integration run always resolves an empty FDR map.
+ * {@link PickTools} against the seeded fixture league. The real {@link SeasonResolver} resolves to
+ * the completed season (the seeded current season holds no data, as in production during the
+ * changeover), so the provenance line labels the picks as historical — which is the correct
+ * behaviour and what these tests assert. The ranking composite itself is pinned by
+ * {@link PickToolsRankingTest}; here the seeded fixtures give the FDR map something real to
+ * resolve, which production data never did.
  */
 @SpringBootTest
 @ActiveProfiles("test")
@@ -30,6 +33,11 @@ class PickToolsIntegrationTest {
     @Autowired
     SeasonResolver seasonResolver;
 
+    @BeforeEach
+    void seed() {
+        SharedStatsSeed.ensure(jdbc);
+    }
+
     @Test
     void getDifferentialPicksReturnsLowOwnershipPlayers() {
         String result = tools.getDifferentialPicks("MID", 10, 5);
@@ -40,6 +48,9 @@ class PickToolsIntegrationTest {
         assertThat(result).contains("Avg FDR");
         assertThat(result).contains("Ranked by form, then average FDR");
         assertThat(result).contains("Data source: season");
+        // The seeded midfielders straddle the ownership filter: one at 3.2%, one at 12.5%.
+        assertThat(result).contains(SharedStatsSeed.DIFFERENTIAL_PLAYER);
+        assertThat(result).doesNotContain(SharedStatsSeed.PLAYER_WEB_NAME);
     }
 
     @Test
@@ -58,6 +69,17 @@ class PickToolsIntegrationTest {
         assertThat(result).contains("Data source: season");
     }
 
+    /**
+     * The seeded season has fixtures still to play, so the FDR column carries actual numbers.
+     * Against production data the map was always empty and every pick showed n/a.
+     */
+    @Test
+    void upcomingFixturesGiveThePicksARealFdr() {
+        String result = tools.getCaptainCandidates(3);
+
+        assertThat(result).containsPattern("Avg FDR [0-9]");
+    }
+
     @Test
     void noMatchesForAbsurdOwnershipFilter() {
         // No player has negative ownership, so this returns the empty-filter message.
@@ -74,8 +96,8 @@ class PickToolsIntegrationTest {
 
     /**
      * Form is a rolling average that stays high for weeks after an injury, so a pick tool that
-     * ignores {@code status} recommends players who cannot play. Asserted against the names the
-     * database says are unavailable, rather than against a fixed list.
+     * ignores {@code status} recommends players who cannot play. The seed carries one such
+     * player: the highest form in the league, and unavailable.
      */
     @Test
     void unavailablePlayersAreNeverRecommended() {
@@ -88,7 +110,9 @@ class PickToolsIntegrationTest {
                   AND web_name NOT IN (
                       SELECT web_name FROM player WHERE season_id = ? AND status IN ('a', 'd'))
                 """, String.class, seasonId, seasonId);
-        assertThat(unavailable).as("expected some injured/suspended players to guard against").isNotEmpty();
+        assertThat(unavailable)
+                .as("expected some injured/suspended players to guard against")
+                .contains(SharedStatsSeed.INJURED_PLAYER);
 
         String differentials = tools.getDifferentialPicks("any", 100, 5);
         String captains = tools.getCaptainCandidates(5);

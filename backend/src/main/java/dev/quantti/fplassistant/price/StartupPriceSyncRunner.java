@@ -7,6 +7,7 @@ import java.time.Instant;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.ApplicationListener;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -26,6 +27,10 @@ import org.springframework.stereotype.Component;
  * the application from having started.
  */
 @Component
+// Disabled under the test profile: the tests construct this runner directly, and against an
+// empty test database isStale() is always true, so every Spring context start would fetch the
+// vaastav CSV over the network and read the shared player table while the tests are running.
+@ConditionalOnProperty(name = "fpl.price.startup-sync", havingValue = "true", matchIfMissing = true)
 public class StartupPriceSyncRunner implements ApplicationListener<ApplicationReadyEvent> {
 
     private static final Logger log = LoggerFactory.getLogger(StartupPriceSyncRunner.class);
