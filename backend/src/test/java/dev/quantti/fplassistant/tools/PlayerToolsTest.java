@@ -1,8 +1,11 @@
 package dev.quantti.fplassistant.tools;
 
+import dev.quantti.fplassistant.testsupport.TapasSeed;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -15,17 +18,25 @@ class PlayerToolsTest {
     @Autowired
     SeasonResolver seasonResolver;
 
+    @Autowired
+    JdbcTemplate jdbc;
+
+    @BeforeEach
+    void seed() {
+        TapasSeed.ensure(jdbc);
+    }
+
     @Test
     void getPlayerStatsByWebName() {
-        String result = playerTools.getPlayerStats("Salah");
+        String result = playerTools.getPlayerStats(TapasSeed.PLAYER_WEB_NAME);
 
-        assertThat(result).containsIgnoringCase("salah");
+        assertThat(result).containsIgnoringCase(TapasSeed.PLAYER_WEB_NAME);
         assertThat(result).doesNotContain("not found");
     }
 
     @Test
     void everyAnswerNamesTheSeasonItCameFrom() {
-        String result = playerTools.getPlayerStats("Salah");
+        String result = playerTools.getPlayerStats(TapasSeed.PLAYER_WEB_NAME);
         SeasonContext season = seasonResolver.resolve();
 
         assertThat(result).startsWith("Data source: season " + season.code());
@@ -34,10 +45,10 @@ class PlayerToolsTest {
     @Test
     void fullNameMatchesPlayer() {
         // LLMs pass full names despite the description saying "web name or surname";
-        // no single column contains "Mohamed Salah", so this needs the concatenated match.
-        String result = playerTools.getPlayerStats("Mohamed Salah");
+        // no single column contains "Emeka Okafor", so this needs the concatenated match.
+        String result = playerTools.getPlayerStats(TapasSeed.PLAYER_FULL_NAME);
 
-        assertThat(result).containsIgnoringCase("salah");
+        assertThat(result).containsIgnoringCase(TapasSeed.PLAYER_WEB_NAME);
         assertThat(result).doesNotContain("not found");
     }
 

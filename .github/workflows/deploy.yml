@@ -1,0 +1,125 @@
+# Tests on every pull request, tests then deploy on every push to master.
+#
+# The test database is a container GitHub Actions creates empty at job start and destroys at job
+# end: nothing persists between runs, which is the whole point (see
+# docs/superpowers/plans/2026-08-18-cicd-ephemeral-test-db.md). The production Supabase project
+# is never touched by tests — TapasSeed refuses to seed a database that carries tapas' own
+# tables, so pointing this job at Supabase by accident fails loudly instead of writing there.
+name: test and deploy
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    # Stacked pushes need only the newest test run. The deploy job below deliberately does NOT
+    # cancel in progress.
+    concurrency:
+      group: test-${{ github.ref }}
+      cancel-in-progress: true
+
+    services:
+      postgres:
+        # pgvector, not plain postgres: the RAG store needs the vector extension, and Supabase
+        # runs Postgres 17.6, so matching both keeps the SQL dialect honest.
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      # Plain values, not secrets: the container is reachable only from inside this job.
+      DATABASE_URL: jdbc:postgresql://localhost:5432/postgres
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      SPRING_AI_PROVIDER: anthropic
+      # No test calls a chat model, but the autoconfiguration needs the property non-empty.
+      ANTHROPIC_API_KEY: not-used-no-test-calls-a-chat-model
+      # Real, and genuinely used: the RAG tests embed for real (see IngestionIntegrationTest).
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      # Explicitly empty: the football-data sync logs and no-ops without a key, and that is the
+      # intended behaviour here rather than an oversight.
+      FOOTBALL_DATA_API_KEY: ""
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Create the vector extension and load the tapas schema
+        # Spring AI's PgVectorStore creates the extension itself at context start, so the first
+        # statement is belt-and-braces. The dump is the six tables this project reads but does
+        # not own; regenerate it with scripts/dump-test-schema.sh after any tapas migration.
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -h localhost -U postgres -d postgres -v ON_ERROR_STOP=1 \
+            -c "CREATE EXTENSION IF NOT EXISTS vector"
+          psql -h localhost -U postgres -d postgres -v ON_ERROR_STOP=1 -q \
+            -f backend/src/test/resources/db/tapas-schema.sql
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - uses: gradle/actions/setup-gradle@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # There are no frontend unit tests; this build (check-contrast + tsc + vite) is the
+      # frontend gate, and it fails fast before the slower backend suite.
+      - name: Build the frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Run the backend suite
+        working-directory: backend
+        run: ./gradlew test
+
+  deploy:
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+
+    # NOT cancel-in-progress: a flyctl deploy killed mid-run can leave a half-finished release.
+    concurrency:
+      group: production-deploy
+      cancel-in-progress: false
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      # Deploying restarts the single always-on machine. A deploy landing near 02:00 UK can make
+      # that day's price capture miss its window; DailyPriceFreshnessCheck logs an ERROR the next
+      # morning when it does.
+      - name: Deploy to Fly.io
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: flyctl deploy --ha=false --remote-only
+
+      # An external check, deliberately: it proves the route serves, not merely that flyctl
+      # returned. A JVM cold start on 512 MB takes tens of seconds, hence the retries.
+      - name: Smoke test the deployed health endpoint
+        run: |
+          curl --fail --silent --show-error \
+               --retry 10 --retry-delay 15 --retry-all-errors \
+               https://fpl-assistant.fly.dev/actuator/health

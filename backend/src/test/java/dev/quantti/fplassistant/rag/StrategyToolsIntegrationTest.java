@@ -17,7 +17,9 @@ import java.time.ZoneOffset;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * End-to-end retrieval against the live Supabase test table. The clock is pinned to
+ * End-to-end retrieval against the ephemeral test database. Needs a real
+ * {@code OPENAI_API_KEY}: the query is embedded for real before the similarity search.
+ * The clock is pinned to
  * 2026-08-14 so the fixture dates are deterministic forever: the timely fixture
  * (valid until 2026-09-22) is live, the expired fixture (valid until 2026-08-10) is
  * expired, and the reference fixtures (no valid_until) never expire — regardless of when

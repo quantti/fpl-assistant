@@ -7,6 +7,7 @@ import java.time.Instant;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.ApplicationListener;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -29,6 +30,10 @@ import org.springframework.stereotype.Component;
  * having started.
  */
 @Component
+// Disabled under the test profile, for the same reason as StartupPriceSyncRunner: the tests
+// construct this runner directly, and a startup sync firing behind the suite is a network call
+// nobody asked for. Without an API key it no-ops, but silently rather than by decision.
+@ConditionalOnProperty(name = "fpl.historical.startup-sync", havingValue = "true", matchIfMissing = true)
 public class StartupSyncRunner implements ApplicationListener<ApplicationReadyEvent> {
 
     private static final Logger log = LoggerFactory.getLogger(StartupSyncRunner.class);

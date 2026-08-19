@@ -15,10 +15,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * End-to-end ingestion against the live Supabase, pinned to the isolated test table
- * {@code fpl_embeddings_test} by the {@code test} profile
- * ({@code src/test/resources/application-test.yml}). The production {@code fpl_embeddings}
- * corpus must never change, whatever these tests do.
+ * End-to-end ingestion against the ephemeral test database, pinned to the isolated test
+ * table {@code fpl_embeddings_test} by the {@code test} profile
+ * ({@code src/test/resources/application-test.yml}).
+ *
+ * <p>These are the only tests that need a real {@code OPENAI_API_KEY}: ingestion embeds for
+ * real, and a dummy key fails with {@code 401 Incorrect API key provided}. Stubbing the
+ * embedding model would make them offline and free but would stop them proving the thing
+ * they exist to prove — that a document survives chunking, embedding and pgvector storage
+ * with its metadata intact.
  */
 @SpringBootTest
 @ActiveProfiles("test")
@@ -34,10 +39,11 @@ class IngestionIntegrationTest {
     String configuredTable;
 
     /**
-     * Ingestion truncates whatever table it is pointed at. The other isolation check in this
-     * class compares production row counts *after* the run, which detects damage rather than
-     * preventing it — if the profile ever fails to activate, the real corpus is already gone by
-     * then. This fails first, before any DELETE runs.
+     * Ingestion truncates whatever table it is pointed at, so it must be pointed at the isolated
+     * one. This used to be backed up by a second check comparing the production corpus's row
+     * count before and after the run; that check was removed with the move to an ephemeral test
+     * database, where the production table does not exist to be counted. The pinning assertion
+     * below is what remains, and it prevents damage rather than detecting it afterwards.
      */
     @BeforeEach
     void refuseToRunAgainstProduction() {
@@ -47,9 +53,7 @@ class IngestionIntegrationTest {
     }
 
     @Test
-    void ingestionWritesChunksWithMetadataIntactAndNeverTouchesProduction() {
-        int productionBefore = countRows("fpl_embeddings");
-
+    void ingestionWritesChunksWithMetadataIntact() {
         ingestionService.ingest("classpath:docs-fixtures/*.md");
 
         // fixture-reference.md: intro + 3 sections = 4; fixture-timely.md: intro + 2 sections = 3;
@@ -76,9 +80,6 @@ class IngestionIntegrationTest {
         assertThat(timely.get("kind")).isEqualTo("timely");
         assertThat(timely.get("valid_until")).isEqualTo("2026-09-22");
         assertThat((String) timely.get("content")).startsWith("Gameweek 3 Captaincy Preview > The pick\n");
-
-        // Isolation is the whole point: the production corpus is untouched.
-        assertThat(countRows("fpl_embeddings")).isEqualTo(productionBefore);
     }
 
     @Test
