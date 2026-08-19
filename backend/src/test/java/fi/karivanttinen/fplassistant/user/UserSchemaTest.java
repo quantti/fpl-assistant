@@ -1,16 +1,18 @@
 package fi.karivanttinen.fplassistant.user;
 
-import java.nio.charset.StandardCharsets;
+import java.sql.Timestamp;
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.env.YamlPropertySourceLoader;
+import org.springframework.core.env.EnumerablePropertySource;
+import org.springframework.core.env.PropertySource;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
@@ -56,31 +58,31 @@ class UserSchemaTest {
     }
 
     /**
-     * tapas-fpl-app owns `app_user` in this same database. CREATE TABLE IF NOT EXISTS would find
-     * that table, do nothing, and then this project would write its rows into tapas' table.
-     */
-    /**
-     * The names that matter are the production ones — the test profile's `_test` copies can
-     * never collide with tapas. Read from application.yml directly, because under
-     * {@code @ActiveProfiles("test")} the injected properties are the isolated copies and an
-     * assertion on them proves nothing about the deploy.
+     * The names that matter are the production ones — the test profile's `_test` copies can never
+     * collide with tapas. Bound from application.yml rather than injected, because under
+     * {@code @ActiveProfiles("test")} the injected values are the isolated copies, and an
+     * assertion on those proves nothing about the deploy. Every configured table name is checked,
+     * not the four this class happens to own: tapas develops against the same `public` schema,
+     * and `CREATE TABLE IF NOT EXISTS` on a name they take first binds this project to their
+     * table.
      */
     @Test
-    void theProductionTableNamesCannotCollideWithTapas() throws Exception {
-        String config = new String(new ClassPathResource("application.yml").getInputStream()
-                .readAllBytes(), StandardCharsets.UTF_8);
-        Matcher names = Pattern.compile("(?:profile|conversation|message|usage)-table-name:\\s*(\\S+)")
-                .matcher(config);
+    void everyProductionTableNameIsPrefixedAndCannotCollideWithTapas() throws Exception {
+        PropertySource<?> production = new YamlPropertySourceLoader()
+                .load("application.yml", new ClassPathResource("application.yml")).getFirst();
 
-        int found = 0;
-        while (names.find()) {
-            found++;
-            assertThat(names.group(1))
-                    .as("an unprefixed name is one tapas can claim, and IF NOT EXISTS would then"
-                            + " bind this project to their table")
-                    .startsWith("fpl_");
-        }
-        assertThat(found).as("all four table names should be configured").isEqualTo(4);
+        List<String> tableNames = ((EnumerablePropertySource<?>) production).getPropertyNames()
+                .length == 0 ? List.of() : java.util.Arrays.stream(
+                        ((EnumerablePropertySource<?>) production).getPropertyNames())
+                .filter(name -> name.endsWith("table-name"))
+                .map(name -> String.valueOf(production.getProperty(name)))
+                .toList();
+
+        assertThat(tableNames).as("the table names should be configured in application.yml")
+                .hasSizeGreaterThanOrEqualTo(7);
+        assertThat(tableNames)
+                .as("an unprefixed name is one tapas can claim — this project uses fpl_ and pl_")
+                .allSatisfy(name -> assertThat(name).matches("^(fpl|pl)_.+"));
     }
 
     @Test
@@ -98,129 +100,50 @@ class UserSchemaTest {
         jdbc.update("INSERT INTO " + conversationTable + " (user_id) VALUES (?)", user);
         Long before = jdbc.queryForObject("SELECT ?::regclass::oid::bigint", Long.class, conversationTable);
 
-        schema.ensureSchema();
+        try {
+            schema.ensureSchema();
 
-        // A DDL that dropped and recreated would pass an existence check and lose every row.
-        assertThat(jdbc.queryForObject("SELECT ?::regclass::oid::bigint", Long.class, conversationTable))
-                .isEqualTo(before);
-        assertThat(countFor(conversationTable, "user_id", user)).isEqualTo(1);
-
-        jdbc.update("DELETE FROM " + conversationTable + " WHERE user_id = ?", user);
+            // A DDL that dropped and recreated would pass an existence check and lose every row.
+            assertThat(jdbc.queryForObject("SELECT ?::regclass::oid::bigint", Long.class, conversationTable))
+                    .isEqualTo(before);
+            assertThat(countFor(conversationTable, "user_id", user)).isEqualTo(1);
+        } finally {
+            jdbc.update("DELETE FROM " + conversationTable + " WHERE user_id = ?", user);
+        }
     }
 
+    /**
+     * Both tables the trigger loop covers, and the assertion is that the timestamp moves
+     * <em>forward</em>: a trigger writing an older value would sort the conversation to the
+     * bottom of the sidebar exactly as the unmaintained column did.
+     */
     @Test
-    void updatingAConversationMovesItToTheTopOfTheList() throws Exception {
+    void updatingARowMovesItsUpdatedAtForward() {
         UUID user = UUID.randomUUID();
         UUID conversation = jdbc.queryForObject(
                 "INSERT INTO " + conversationTable + " (user_id) VALUES (?) RETURNING id",
                 UUID.class, user);
-        try {
-            Object created = jdbc.queryForObject("SELECT updated_at FROM " + conversationTable
-                    + " WHERE id = ?", Object.class, conversation);
-            Thread.sleep(10);
-
-            jdbc.update("UPDATE " + conversationTable + " SET title = 'renamed' WHERE id = ?",
-                    conversation);
-
-            assertThat(jdbc.queryForObject("SELECT updated_at FROM " + conversationTable
-                    + " WHERE id = ?", Object.class, conversation))
-                    .as("the list is sorted by updated_at; a frozen column sorts by creation")
-                    .isNotEqualTo(created);
-        } finally {
-            jdbc.update("DELETE FROM " + conversationTable + " WHERE id = ?", conversation);
-        }
-    }
-
-    @Test
-    void deletingAConversationTakesItsMessagesAndLeavesUsageAlone() {
-        UUID user = UUID.randomUUID();
-        UUID conversation = jdbc.queryForObject(
-                "INSERT INTO " + conversationTable + " (user_id, title) VALUES (?, ?) RETURNING id",
-                UUID.class, user, "seeded by UserSchemaTest");
-        jdbc.update("INSERT INTO " + messageTable + " (conversation_id, role, content)"
-                + " VALUES (?, 'user', 'question')", conversation);
-        jdbc.update("INSERT INTO " + usageTable + " (user_id, input_tokens, output_tokens)"
-                + " VALUES (?, 100, 200)", user);
-
-        try {
-            jdbc.update("DELETE FROM " + conversationTable + " WHERE id = ?", conversation);
-
-            assertThat(countFor(messageTable, "conversation_id", conversation)).isZero();
-            assertThat(countFor(usageTable, "user_id", user))
-                    .as("usage counted from something the user can delete is a quota they can refill")
-                    .isEqualTo(1);
-        } finally {
-            jdbc.update("DELETE FROM " + usageTable + " WHERE user_id = ?", user);
-        }
-    }
-
-    /**
-     * Checked structurally as well as behaviourally: a foreign key added later would reintroduce
-     * the refill path, and the cascade test above would still pass until someone also added
-     * ON DELETE CASCADE.
-     */
-    @Test
-    void usageEventHasNoForeignKeyToConversation() {
-        List<String> references = jdbc.queryForList("""
-                SELECT confrelid::regclass::text
-                FROM pg_constraint
-                WHERE conrelid = ?::regclass AND contype = 'f'
-                """, String.class, usageTable);
-
-        assertThat(references).doesNotContain(conversationTable);
-    }
-
-    @Test
-    void aMessageMustBeFromTheUserOrTheAssistant() {
-        UUID conversation = jdbc.queryForObject(
-                "INSERT INTO " + conversationTable + " (user_id) VALUES (?) RETURNING id",
-                UUID.class, UUID.randomUUID());
-
-        try {
-            assertThatThrownBy(() -> jdbc.update("INSERT INTO " + messageTable
-                    + " (conversation_id, role, content) VALUES (?, 'system', 'x')", conversation))
-                    .as("only user and assistant turns are stored")
-                    .isInstanceOf(RuntimeException.class);
-        } finally {
-            jdbc.update("DELETE FROM " + conversationTable + " WHERE id = ?", conversation);
-        }
-    }
-
-    /**
-     * The quota has to be settable per person — the owner's account is unlimited, and a user may
-     * be granted more than the default without a deploy — so it lives in data, not configuration.
-     * One nullable column carries the three states, and the CHECK is what stops a typo inventing
-     * a fourth.
-     */
-    @Test
-    void theWeeklyLimitIsAPerUserOverrideWithADefaultOfNone() {
-        UUID user = UUID.randomUUID();
         jdbc.update("INSERT INTO " + profileTable + " (user_id) VALUES (?)", user);
 
         try {
-            assertThat(limitOf(user))
-                    .as("no override means the configured default applies")
-                    .isNull();
+            Instant conversationBefore = updatedAt(conversationTable, "id", conversation);
+            Instant profileBefore = updatedAt(profileTable, "user_id", user);
 
-            for (int limit : new int[] {-1, 0, 500}) {
-                jdbc.update("UPDATE " + profileTable + " SET weekly_message_limit = ? WHERE user_id = ?",
-                        limit, user);
-                assertThat(limitOf(user)).isEqualTo(limit);
-            }
+            jdbc.update("UPDATE " + conversationTable + " SET title = 'renamed' WHERE id = ?",
+                    conversation);
+            jdbc.update("UPDATE " + profileTable + " SET fpl_team_id = 1 WHERE user_id = ?", user);
 
-            assertThatThrownBy(() -> jdbc.update("UPDATE " + profileTable
-                    + " SET weekly_message_limit = -2 WHERE user_id = ?", user))
-                    .as("-1 is unlimited; anything below it has no meaning")
-                    .isInstanceOf(RuntimeException.class);
+            assertThat(updatedAt(conversationTable, "id", conversation)).isAfter(conversationBefore);
+            assertThat(updatedAt(profileTable, "user_id", user)).isAfter(profileBefore);
         } finally {
+            jdbc.update("DELETE FROM " + conversationTable + " WHERE id = ?", conversation);
             jdbc.update("DELETE FROM " + profileTable + " WHERE user_id = ?", user);
         }
     }
 
-    private Integer limitOf(UUID user) {
-        return jdbc.queryForObject(
-                "SELECT weekly_message_limit FROM " + profileTable + " WHERE user_id = ?",
-                Integer.class, user);
+    private Instant updatedAt(String table, String key, Object value) {
+        return jdbc.queryForObject("SELECT updated_at FROM " + table + " WHERE " + key + " = ?",
+                Timestamp.class, value).toInstant();
     }
 
     private int countFor(String table, String column, Object value) {

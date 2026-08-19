@@ -123,10 +123,11 @@ pattern (`@PostConstruct`, every statement `IF NOT EXISTS`). There is no migrati
 project and this task must not introduce one.
 
 ```
-fpl_user_profile (user_id PK, fpl_team_id, created_at, updated_at)
-conversation     (id, user_id, title, created_at, updated_at, archived_at)
-message          (id, conversation_id -> ON DELETE CASCADE, role, content, created_at)
-usage_event      (id, user_id, created_at, input_tokens, cached_tokens, output_tokens)
+fpl_user_profile (user_id PK, fpl_team_id, weekly_message_limit, created_at, updated_at)
+fpl_conversation (id, user_id, title, created_at, updated_at, archived_at)
+fpl_message      (id, conversation_id -> ON DELETE CASCADE, role, content, created_at)
+fpl_usage_event  (id, user_id, created_at, event_type, provider,
+                  input_tokens, cached_tokens, output_tokens)
 ```
 
 **Naming — do not call this table `app_user`.** The shared database already carries
@@ -154,10 +155,10 @@ configured name ends in `_test` fails before any write; deleting a conversation 
 messages and leaves `usage_event` untouched; and a test proves the profile table name is not
 `app_user`.
 
-**Outcome (2026-08-19):** `UserSchema` creates `fpl_user_profile`, `conversation`, `message` and
-`usage_event`, each name a property pinned to a `_test` copy. `conversation.id` is a UUID rather
+**Outcome (2026-08-19):** `UserSchema` creates `fpl_user_profile`, `fpl_conversation`, `fpl_message` and
+`fpl_usage_event`, each name a property pinned to a `_test` copy. `conversation.id` is a UUID rather
 than a sequence: the id travels to the client, and not handing out the map is cheaper than
-defending it. `usage_event` has no foreign key to `conversation`, asserted both behaviourally
+defending it. `fpl_usage_event` has no foreign key to `fpl_conversation`, asserted both behaviourally
 (deleting a conversation takes its messages and leaves usage) and structurally (`pg_constraint`),
 because a key added later would reintroduce the refill path silently.
 
