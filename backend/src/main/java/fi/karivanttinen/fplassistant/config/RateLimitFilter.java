@@ -18,6 +18,15 @@ import java.util.concurrent.ConcurrentHashMap;
 @Component
 public class RateLimitFilter extends OncePerRequestFilter {
 
+    /**
+     * Paths where one request costs something outside this process: an LLM call, or a request to
+     * FPL. An unlisted endpoint is unlimited, which is why the profile write is here — it makes
+     * one outbound call to fantasy.premierleague.com per invocation, and that is the same host
+     * the 02:00 price capture depends on.
+     */
+    private static final java.util.Set<String> RATE_LIMITED_PATHS =
+            java.util.Set.of("/api/chat", "/api/profile/fpl-team-id");
+
     static final int MAX_REQUESTS_PER_MINUTE = 20;
     private static final long WINDOW_MS = 60_000;
     // Guard against unbounded growth from address-spoofed traffic.
@@ -29,7 +38,7 @@ public class RateLimitFilter extends OncePerRequestFilter {
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response,
                                     FilterChain chain) throws ServletException, IOException {
-        if (!request.getRequestURI().equals("/api/chat")) {
+        if (!RATE_LIMITED_PATHS.contains(request.getRequestURI())) {
             chain.doFilter(request, response);
             return;
         }

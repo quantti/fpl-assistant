@@ -1,15 +1,13 @@
 package fi.karivanttinen.fplassistant.config;
 
+import fi.karivanttinen.fplassistant.testsupport.LocalSigningKey;
 import fi.karivanttinen.fplassistant.testsupport.TestJwks;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Primary;
+import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
-import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -30,19 +28,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @SpringBootTest
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
+@Import(LocalSigningKey.class)
 class JwtAuthenticationTest {
-
-    @TestConfiguration
-    static class LocalSigningKey {
-
-        @Bean
-        @Primary
-        JwtDecoder testJwtDecoder() {
-            // The application's own factory, pointed at the local key server: cache, rate
-            // limit, algorithm and validators are the real ones.
-            return SecurityConfig.decoder(TestJwks.jwksUri(), TestJwks.ISSUER, TestJwks.AUDIENCE);
-        }
-    }
 
     @Autowired
     MockMvc mockMvc;
