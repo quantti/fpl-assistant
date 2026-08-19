@@ -1371,6 +1371,54 @@ privileges mean a new one would have no anon grants to exploit anyway.
 ## The same finding, restated for Phase 5a
 
 RLS is now on everywhere, but it still is **not** the authorization mechanism for user data: this
-application connects as a role that bypasses it. Every query touching `conversation`, `message`,
-`usage_event` or `fpl_user_profile` filters on the JWT `sub` in application SQL. RLS is the
+application connects as a role that bypasses it. Every query touching `fpl_conversation`, `fpl_message`,
+`fpl_usage_event` or `fpl_user_profile` filters on the JWT `sub` in application SQL. RLS is the
 second lock, for the PostgREST path we do not use.
+
+
+---
+
+# Schema review fixes (2026-08-19)
+
+Two reviews of the merged Phase 5a schema, applied on `phase5a-schema-review-fixes`.
+
+## The finding worth the round
+
+**The RLS guard test enumerated tables by hand**, so `fpl_embeddings` — the one table created by
+Spring AI's `PgVectorStore` rather than by any DDL here — was the one table it could never catch.
+Production was closed only because `scripts/sql/enable-rls.sql` was run by hand against tables
+that already existed; a fresh Supabase project would have served the whole strategy corpus to the
+anon key. The list is now derived (every `public` relation the tapas dump does not define), and it
+failed on exactly that table before `VectorStoreRowLevelSecurity` was added.
+
+The derived form then needed two corrections of its own: it passed vacuously for a table that had
+stopped being created (so the corpus table's existence is asserted explicitly), and `relkind = 'r'`
+skipped views — the very shape that walks past RLS via owner privileges.
+
+## Renamed, and the originals dropped
+
+`conversation`, `message` and `usage_event` became `fpl_conversation`, `fpl_message` and
+`fpl_usage_event`. The `app_user` argument never depended on the name: tapas develops against the
+same `public` schema, and `CREATE TABLE IF NOT EXISTS` on a name they take first binds this
+project to their table — after which our `ALTER TABLE ... ENABLE ROW LEVEL SECURITY` would close
+their PostgREST reads.
+
+The merge of PR #4 had already deployed the old names to production. All three were empty (sign-up
+is disabled, so no user has ever existed) and were dropped by `scripts/sql/drop-prerename-tables.sql`,
+which refuses to drop a table with rows rather than trusting that they are empty.
+
+## Also fixed
+
+`VectorStoreRowLevelSecurity` hard-failed context startup when the pgvector autoconfiguration
+backed off — a test supplying its own `@Primary VectorStore` leaves no table to ALTER, so the
+suite passed only on test ordering nobody configured. Reproduced by dropping the table and running
+`StrategyToolsErrorTest` alone; it now skips with a log line instead.
+
+`updated_at` was maintained by nobody while being the sort key of the conversation list's only
+index — now a `BEFORE UPDATE` trigger, created with `CREATE OR REPLACE TRIGGER` so no boot opens a
+window where it is missing. `fpl_usage_event` gained `event_type` and `provider`: without them the
+quota query counts every row as a chat message, and neither can be backfilled once rows exist.
+
+The `app_user` guard test was asserting on the `_test` copy — trivially true, and blind to the
+production value it existed to protect. It now binds `application.yml` and checks every configured
+table name, not the four this phase happens to own.
