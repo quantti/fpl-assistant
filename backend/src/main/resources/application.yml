@@ -61,6 +61,9 @@ fpl:
     provider: ${SPRING_AI_PROVIDER:anthropic}
   historical:
     table-name: pl_match_result
+    # Runs StartupSyncRunner on ApplicationReadyEvent. Off under the test profile so background
+    # syncing never runs behind the suite.
+    startup-sync: true
     football-data-api-key: ${FOOTBALL_DATA_API_KEY:}
     # Startup sync (StartupSyncRunner) re-syncs the in-progress season when the most recent
     # football-data row is older than this. 20h keeps a daily-ish cadence without syncing on
@@ -68,6 +71,8 @@ fpl:
     sync-stale-after-hours: 20
   price:
     table-name: fpl_player_price
+    # Runs StartupPriceSyncRunner on ApplicationReadyEvent; off under the test profile.
+    startup-sync: true
     # Startup price sync (StartupPriceSyncRunner) snapshots player.now_cost and pulls the
     # current-season vaastav merged_gw.csv when the last snapshot is older than this. 6h keeps
     # roughly twice-daily cadence during the season without hitting vaastav on every boot.

@@ -1,5 +1,7 @@
 package fi.karivanttinen.fplassistant.tools;
 
+import fi.karivanttinen.fplassistant.testsupport.TapasSeed;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -9,11 +11,11 @@ import org.springframework.test.context.ActiveProfiles;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * {@link FixtureDifficultyTools} against real data — team resolution, the season guard and the
- * empty path. The rendering itself is pinned by {@link FixtureDifficultyToolsFormatTest}: no
- * season in the shared database has a {@code finished = false} fixture, so an integration test
- * can only ever reach the empty branch. Asserting {@code containsAnyOf(...)} across both
- * branches would pass without exercising either.
+ * {@link FixtureDifficultyTools} against the seeded fixture league: team resolution, the ratings
+ * branch, the empty branch and the ambiguity note. Before the move to a seeded database this
+ * class could only reach the empty branch — no season in the shared database had a
+ * {@code finished = false} fixture — so the Average FDR line went untested here and was pinned
+ * only by {@link FixtureDifficultyToolsFormatTest}.
  */
 @SpringBootTest
 @ActiveProfiles("test")
@@ -28,6 +30,11 @@ class FixtureDifficultyToolsIntegrationTest {
     @Autowired
     SeasonResolver seasonResolver;
 
+    @BeforeEach
+    void seed() {
+        TapasSeed.ensure(jdbc);
+    }
+
     @Test
     void unknownTeamReturnsNotFound() {
         assertThat(tools.getFixtureDifficulty("Definitely Not A Real Club", 5))
@@ -35,25 +42,34 @@ class FixtureDifficultyToolsIntegrationTest {
     }
 
     @Test
-    void aCompletedSeasonWithNoUnfinishedFixturesSaysSoExplicitly() {
+    void upcomingFixturesAreRatedAndAveraged() {
         int seasonId = seasonResolver.resolve().seasonId();
         Integer unfinished = jdbc.queryForObject(
                 "SELECT COUNT(*) FROM fixture WHERE season_id = ? AND finished = false",
                 Integer.class, seasonId);
         assertThat(unfinished)
-                .as("this assertion is only valid while the resolved season has no upcoming fixtures")
-                .isZero();
+                .as("the ratings branch needs fixtures still to play")
+                .isPositive();
 
-        String result = tools.getFixtureDifficulty("Arsenal", 5);
+        String result = tools.getFixtureDifficulty(TapasSeed.ASHFIELD, 5);
 
         assertThat(result).contains("Data source: season");
-        assertThat(result).contains("No upcoming fixtures found for Arsenal");
+        assertThat(result).contains("Average FDR over the next");
+        assertThat(result).doesNotContain("No upcoming fixtures found");
+    }
+
+    @Test
+    void aTeamWithNothingLeftToPlaySaysSoExplicitly() {
+        String result = tools.getFixtureDifficulty(TapasSeed.TEAM_WITHOUT_FIXTURES, 5);
+
+        assertThat(result).contains("Data source: season");
+        assertThat(result).contains("No upcoming fixtures found for");
         assertThat(result).doesNotContain("Average FDR");
     }
 
     @Test
     void anAmbiguousTeamNameSaysWhichOtherClubsItMatched() {
-        String result = tools.getFixtureDifficulty("man", 5);
+        String result = tools.getFixtureDifficulty(TapasSeed.AMBIGUOUS_TEAM_PREFIX, 5);
 
         assertThat(result).contains("The name also matched:");
     }

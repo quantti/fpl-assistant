@@ -1145,3 +1145,84 @@ clock: a manual sync from a machine a day behind genuinely writes yesterday's da
 alert firing on that is correct, not a false positive. Contrast-gating an upper bound on the
 disabled tokens (fail above ~3:1) was left out — "starts looking enabled" has no agreed
 threshold, and the [info] line already records every drift.
+
+---
+
+# CI/CD — ephemeral test database (2026-08-19)
+
+Plan: `docs/superpowers/plans/2026-08-18-cicd-ephemeral-test-db.md`. Tasks 1–7 and 9 done; 8 and
+10 need repository access. The owner's binding constraint: **the test database is empty at the
+start of every run and destroyed at the end.** No hosted test project, no cleanup script — a
+container the runner throws away is the only guarantee that is mechanical rather than hopeful.
+
+## What exists now
+
+- `scripts/dump-test-schema.sh` → `backend/src/test/resources/db/tapas-schema.sql`: the DDL of the
+  six tapas-owned tables this project reads but does not own. `--check` fails on drift against
+  live Supabase. Re-run after any tapas migration.
+- `scripts/test-db.sh up|reset|down`: the local container, same image as CI.
+- `.github/workflows/deploy.yml`: tests on every PR, tests → deploy → external smoke test on
+  every push to `master`.
+- `TapasSeed`: the fixture league (four clubs, six players, four gameweeks, nine fixtures) the
+  data-dependent tests assert on.
+- Two env files: `backend/.env.test` (local container) and `backend/.env.supabase` (production).
+
+218 tests, 0 failures, 25 seconds, against a database that did not exist half a minute earlier.
+
+## What the plan's first draft got wrong
+
+It treated the migration as one inventory task verified by "run the suite against empty Postgres;
+every failure names a missing seed". Reading the tests first showed that was an order of magnitude
+off, and the plan was rewritten before any code was written:
+
+- **An empty database is not merely unseeded, it is schemaless.** Six tables belong to
+  `tapas-fpl-app` and have no DDL here, so the failure is `relation "player" does not exist`.
+- **41 of 216 tests failed**, and 32 of them asserted on production *content* — Salah's xG,
+  Arsenal's fixture list, "no season has an unfinished fixture". A seeded season row satisfies
+  almost none of those.
+- **Dummy LLM keys do not carry the suite.** Both RAG integration classes embed for real.
+- **The startup runners fire in every Spring context**, so each context start would have fetched
+  the vaastav CSV over the network against an empty database.
+
+## Findings worth keeping
+
+- **`pg_dump` 17.11 emits a random `\restrict` token per run.** Left in the committed dump,
+  `--check` would report drift on every invocation and stop meaning anything. Stripped, along with
+  the two version-comment lines that change with the client image.
+- **`pg_dump -t` does not dump trigger functions.** `player_fixture_stats` has a trigger calling
+  `update_pfs_updated_at()`, and the dump would not load without it.
+- **pg_dump needs the session pooler (5432)**, not the transaction pooler (6543) the application
+  uses; the direct host is IPv6-only and unreachable from WSL2.
+- **Spring AI's `PgVectorStore` creates `vector`, `hstore` and `uuid-ossp` itself** at context
+  start, so the workflow's explicit `CREATE EXTENSION` is belt-and-braces.
+- **`app_user` is not an available table name.** The shared database already carries tapas'
+  `app_user` and `manager`; `CREATE TABLE IF NOT EXISTS app_user` here would bind to tapas' table
+  and write our rows into it. Phase 5a uses `fpl_user_profile`.
+
+## Coverage the move added
+
+Not a side effect — two rules were untestable against production data and are now exercised:
+
+- `FixtureDifficultyToolsIntegrationTest` could only reach its empty branch, because no season in
+  the shared database had an unfinished fixture. It now tests the Average FDR branch, and keeps
+  the empty branch through a club seeded with no fixtures.
+- `FixtureToolsTest`'s double-gameweek rule ("bounds distinct gameweeks, not fixture rows") passed
+  on single gameweeks. The seeded club plays twice in the window's first gameweek.
+
+## Deliberate exceptions
+
+- **One test is tagged `realdata` and excluded from `./gradlew test`**: the vaastav importer's
+  cross-check against tapas' fully-synced 2025-26 fixtures. Reproducing that oracle would mean
+  copying production and calling it a fixture. Run it by hand with `-PincludeRealData`.
+- **`OPENAI_API_KEY` must be real in CI.** The alternative — a stub `EmbeddingModel` — would make
+  the RAG tests offline and free, but would stop them proving that a document survives chunking,
+  embedding and pgvector storage with its metadata intact.
+
+## Open
+
+- **Task 8, GitHub secrets:** `FLY_API_TOKEN` (app-scoped, `fly tokens create deploy -a
+  fpl-assistant`) and `OPENAI_API_KEY`. The workflow is written and will fail without them.
+- **Task 10, branch protection:** requires the test check on `master`. Verify plan availability
+  first — classic branch protection on private repos has historically needed GitHub Pro/Team. If
+  unavailable, `needs: test` still blocks the release, though not the merge; record the gap
+  rather than upgrading by reflex.

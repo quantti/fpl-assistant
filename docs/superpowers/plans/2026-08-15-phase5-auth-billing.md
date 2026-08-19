@@ -10,6 +10,14 @@ Mantine defaults means styling every new component twice.
 
 **PROGRESS:** Task 0/8 done
 
+**Split 2026-08-18 (owner decision):** billing waits. Authentication, the user profile (now
+including the user's FPL team id), server-side history and the quota moved to
+`docs/superpowers/plans/2026-08-18-phase5a-auth-user-profile.md` and are planned there. What
+remains for a future **Phase 5b** is this file's Stripe content: Task 5 in full, the
+`user_subscription` / `stripe_event` tables from Task 2, the entitlement `402` path, the
+`trial-messages-per-week` property from Task 4, and Task 7's billing screens. Read 5a first —
+where the two differ, 5a wins.
+
 **Goal:** Turn the anonymous chatbot into a product: users sign in, pay €9.99/month after a
 seven-day trial, are held to 50 messages per rolling seven days, and get their conversations back
 when they return.

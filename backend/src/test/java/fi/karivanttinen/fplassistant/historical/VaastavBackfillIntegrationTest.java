@@ -1,6 +1,7 @@
 package fi.karivanttinen.fplassistant.historical;
 
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -20,7 +21,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * End-to-end backfill against the live Supabase test table, pinned to
+ * End-to-end backfill against the ephemeral test database, pinned to
  * {@code pl_match_result_test} by the {@code test} profile. Uses a {@link VaastavSource} that
  * reads the real CSV fixtures checked into {@code src/test/resources/vaastav-fixtures/} instead
  * of hitting the network.
@@ -67,17 +68,31 @@ class VaastavBackfillIntegrationTest {
     }
 
     @Test
-    void backfillWritesCompletedMatchesOnlyAndMatchesFixtureExactly() {
+    void backfillWritesCompletedMatchesOnly() {
         backfillService.backfill(TEST_SEASONS);
 
         Integer written = jdbc.queryForObject(
                 "SELECT COUNT(*) FROM " + tableName + " WHERE season = '2025-26' AND source = 'vaastav'",
                 Integer.class);
         assertThat(written).isEqualTo(380);
+    }
 
-        // The oracle: every 2025-26 row must match `fixture` exactly on both scores, joined
-        // through team.code (fixture.team_h/team_a are season-scoped ids, not codes). Both
-        // ultimately derive from the same FPL API, so any mismatch here is an import bug.
+    /**
+     * The oracle: every 2025-26 row must match {@code fixture} exactly on both scores, joined
+     * through team.code (fixture.team_h/team_a are season-scoped ids, not codes). Both ultimately
+     * derive from the same FPL API, so any mismatch here is an import bug.
+     *
+     * <p>Tagged {@code realdata} and excluded from the default test task: the oracle is tapas'
+     * own fully-synced 2025-26 season, and seeding 380 fixtures and 20 clubs to reproduce it in
+     * an ephemeral database would be a copy of production dressed up as a fixture. Run it by hand
+     * against Supabase with {@code ./gradlew test -PincludeRealData --tests "*VaastavBackfill*"}
+     * after changing the importer.
+     */
+    @Test
+    @Tag("realdata")
+    void importedRowsMatchTheTapasFixtureTableExactly() {
+        backfillService.backfill(TEST_SEASONS);
+
         Integer matching = jdbc.queryForObject("""
                 SELECT COUNT(*) FROM %s pmr
                 JOIN season s ON s.code = pmr.season

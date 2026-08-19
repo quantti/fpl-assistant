@@ -34,8 +34,17 @@ source "$HOME/.sdkman/bin/sdkman-init.sh"
 
 ## Secrets
 
-`backend/.env.test` holds the database password and the LLM API key. It is gitignored;
-`backend/.env.test.example` is the committed template and documents each value.
+Two env files, both gitignored, both with a committed `.example` template:
+
+| File | Points at | Used by |
+|---|---|---|
+| `backend/.env.test` | the local test container (`localhost:55432`) | the test suite |
+| `backend/.env.supabase` | the production Supabase project | `scripts/dump-test-schema.sh`, `bootRun --ingest` / `--backfill` / `--sync-prices` |
+
+The split exists because tests now seed the data they assert on, which means writing to
+tapas-owned tables. That is forbidden on the shared database, and `TapasSeed` refuses to run
+there — so the suite must not be pointed at Supabase, and the credentials that reach it are kept
+in a separate file you have to load on purpose.
 
 Load it with `set -a; source`, never `export $(cat .env.test | xargs)` — the JDBC URL contains
 characters that the latter mangles:
@@ -60,10 +69,68 @@ set -a; source .env.test; set +a
 ./gradlew bootRun --args="--sync-prices"          # capture today's FPL prices, then exit
 ```
 
-Tests hit the real Supabase database — there is no Testcontainers setup and no local Postgres, so
-the env file must be loaded or every `@SpringBootTest` fails on datasource creation. Tests are
-pinned to `fpl_embeddings_test` (`src/test/resources/application.properties` activates the `test`
-profile for the whole source set), so they never touch the production corpus.
+## The pre-push hook
+
+There is no branch protection on this repository. GitHub blocks it for private repos on the Free
+plan — verified 2026-08-19, both the protection and the rulesets API answer
+`403 Upgrade to GitHub Pro`. Going Pro or making the repo public are the only ways to get the
+real thing; for now the substitute is a hook, installed once per clone:
+
+```bash
+git config core.hooksPath scripts/hooks
+```
+
+`scripts/hooks/pre-push` then does two things before any push leaves the machine:
+
+1. **A push to `master` needs typed confirmation** (`push to master`, exactly). With no terminal
+   to confirm at — an agent, a script, CI — it is refused outright. master deploys, so a push
+   there is a release.
+2. **The backend suite runs** against the local container, which it starts if needed
+   (`scripts/test-db.sh up`), with `cleanTest` so Gradle cannot report a green it did not earn.
+   A failure refuses the push.
+
+`git push --no-verify` skips the hook entirely. That is git's escape hatch for a human who knows
+what they are skipping; treat it as bypassing branch protection, because that is what it is.
+
+## The test database
+
+Tests run against a disposable Postgres container — the same image CI uses, created empty and
+thrown away. Nothing persists between runs, so "is the database clean?" is never a question you
+have to answer.
+
+```bash
+scripts/test-db.sh up       # start it and load the tapas schema
+scripts/test-db.sh reset    # destroy and recreate — the guaranteed-clean path
+scripts/test-db.sh down     # stop and remove
+```
+
+Three layers make up a working test database, and only the first is manual:
+
+1. **The tapas schema.** `season`, `team`, `player`, `gameweek`, `fixture` and
+   `player_fixture_stats` belong to `tapas-fpl-app` and have no DDL in this repository, so an
+   empty container fails with `relation "player" does not exist`. `scripts/test-db.sh` loads
+   `backend/src/test/resources/db/tapas-schema.sql` for you. That file is generated — regenerate
+   it with `scripts/dump-test-schema.sh` after any tapas migration, and check it with
+   `scripts/dump-test-schema.sh --check` (both need `backend/.env.supabase`).
+2. **This project's own tables** (`fpl_embeddings_test`, `pl_match_result_test`,
+   `fpl_player_price_test`, `fpl_daily_price_test`) are created by the application's startup DDL
+   the first time a Spring context boots.
+3. **The data** is seeded by the tests themselves: `TapasSeed` (four clubs, six players, four
+   gameweeks, nine fixtures) for anything reading tapas tables, and per-test rows for everything
+   else. No test asserts on production content any more.
+
+`OPENAI_API_KEY` must be real: `IngestionIntegrationTest` and `StrategyToolsIntegrationTest`
+embed for real and fail with `401: Incorrect API key provided` otherwise. Nothing calls a chat
+model, so `ANTHROPIC_API_KEY` can be any non-empty string.
+
+Tests tagged `realdata` are excluded from `./gradlew test`. There is one: the vaastav importer's
+cross-check against tapas' fully-synced 2025-26 fixtures, which no reasonable fixture reproduces.
+Run it against Supabase by hand after changing the importer:
+
+```bash
+set -a; source .env.supabase; set +a
+./gradlew test -PincludeRealData --tests "*VaastavBackfill*"
+```
 
 Two ways this bites, both hit during the 2026-08-18 review:
 
@@ -74,7 +141,7 @@ Two ways this bites, both hit during the 2026-08-18 review:
 - **`test` can report BUILD SUCCESSFUL without running anything.** Gradle skips the task when
   its inputs are unchanged, so a run printing `5 actionable tasks: 5 up-to-date` executed zero
   tests. Force a real run with `./gradlew cleanTest test` (or `--rerun-tasks`). The full suite
-  is 206 tests as of 2026-08-18.
+  is 218 tests as of 2026-08-19.
 
 ## Reloading the strategy corpus
 

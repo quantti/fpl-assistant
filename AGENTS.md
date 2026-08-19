@@ -40,6 +40,31 @@ Auth (Supabase JWT) + Stripe billing are deferred to the last phase. Build the c
 - External APIs (vaastav CSVs, football-data.org, FPL `bootstrap-static`) are hit only at sync time, never at chat time — everything queries Supabase.
 - **Today's price and today's injury flags come from `fpl_daily_price`, not from the tapas `player` table.** That table is synced weekly by `tapas-fpl-app` and was measured 85 days stale; `fpl_daily_price` is captured daily at 02:00 UK from FPL's own API (prices change at 00:00 UK) and owes tapas nothing, so it also survives the season changeover. It carries `status`/`news` — the availability picture — alongside `now_cost`. Dated rows, so it answers *when* a flag appeared; it cannot be backfilled, since FPL publishes only today's state. **The daily-capture tools (`getPriceHistory`, `getPlayerAvailability`, `getFlaggedPlayers`) are a documented exception like `HistoricalTools`: they use `DailyPriceSource.provenance()` (season + capture date) instead of `SeasonContext.provenance()`, because the resolver would attribute changeover-window data to the wrong season. Do not "fix" them back onto `SeasonContext.provenance()`.** Note that `element_id` in this table is season-scoped (FPL renumbers every season) — every query keyed on it must also filter on `season`.
 - Tools query Supabase via `JdbcTemplate`, annotated with Spring AI `@Tool`.
+- **Tests seed the data they assert on and never depend on production content.** The suite runs
+  against a disposable container (`scripts/test-db.sh`), which holds the tapas schema
+  (`scripts/dump-test-schema.sh` regenerates the dump) and nothing else. Anything reading
+  tapas-owned tables seeds through `TapasSeed`, which refuses to run against the shared
+  database; everything else seeds its own rows in the `_test` tables. A test that needs a whole
+  synced season as its oracle is tagged `realdata` and excluded from `./gradlew test` — there is
+  exactly one, and adding another should feel like a decision, not a convenience.
+
+## Commits and pull requests
+
+Short. The narrative belongs in `docs/STATUS.md` and the plan's outcome blocks, not in git
+metadata — nobody reads a git log for a design discussion, and a long message hides the one line
+that mattered.
+
+- **Commit subject:** one line, imperative, ~60 chars. A body only when the *why* is not obvious
+  from the diff, and then 1–3 sentences. Never restate what the diff shows, never paste test
+  output, never list every file touched.
+- **PR title:** one line. **PR body:** 8 lines at most — what changed, why, how it was verified,
+  and a link to the plan if there is one. No headings, no checklists, no findings dumps.
+- **Describe the change, not the project.** Environment limits, plan status, background the
+  reader already lives with ("branch protection is unavailable on this plan") belong in
+  `docs/TODO.md` or `docs/STATUS.md`. A PR body that explains the repository is padding.
+- **Merge:** squash; the merge message is the PR title.
+- If a decision needs more room than that, it is a `docs/STATUS.md` entry — write it there and
+  keep the commit pointing at it.
 
 ## Progress tracking
 
@@ -50,5 +75,30 @@ Plans use a single `**PROGRESS:**` line (e.g. `Task 3/14 done`), updated once pe
 Single Fly.io app (region `cdg` — `mad` is deprecated and can no longer provision machines)
 serving API + frontend. Frontend built in a Docker multi-stage build, copied into Spring Boot
 `static/`. Secrets via `fly secrets set`. Remote: `origin` → `github.com/quantti/fpl-assistant`
-(private). No CI yet — deploy manually with `fly deploy --ha=false --remote-only` for now.
-`.env.test` is gitignored; only `.env.test.example` templates are tracked.
+(private).
+
+> ### NEVER PUSH TO `master`
+>
+> `master` deploys. A push there runs `.github/workflows/deploy.yml` and a green run ships
+> straight to production — no review, no second pair of eyes. **Agents push a branch and open a
+> pull request. Always.** The same tests run on the PR; the owner merges.
+>
+> There is no branch protection to catch a mistake: GitHub refuses it for private repositories on
+> the Free plan (verified 2026-08-19 — the protection and rulesets APIs both answer 403 "Upgrade
+> to GitHub Pro"). The substitute is the `scripts/hooks/pre-push` hook, which runs the suite and
+> refuses a master push that has no terminal to confirm at — which is exactly the case for an
+> agent. **Do not work around it: never `git push --no-verify`, never re-point `core.hooksPath`,
+> never push to master "because the tests passed anyway".** If a push is refused, that is the
+> intended outcome, not an obstacle to route around.
+
+**Deploying is `.github/workflows/deploy.yml`, not a manual command.** A push to `master` runs
+the suite against an ephemeral Postgres container and, if it passes, runs
+`flyctl deploy --ha=false --remote-only` and smoke-tests `/actuator/health` from outside. Pull
+requests run the tests only. `workflow_dispatch` re-deploys without a push. A manual
+`fly deploy` is for emergencies, and is the one path that can ship a red suite.
+
+Install the pre-push hook once per clone: `git config core.hooksPath scripts/hooks`.
+
+Env files are gitignored (only `*.example` templates are tracked) and there are two:
+`backend/.env.test` points at the local test container, `backend/.env.supabase` at production.
+Tests must never run against Supabase — see the testing convention below.
