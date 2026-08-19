@@ -1422,3 +1422,51 @@ quota query counts every row as a chat message, and neither can be backfilled on
 The `app_user` guard test was asserting on the `_test` copy — trivially true, and blind to the
 production value it existed to protect. It now binds `application.yml` and checks every configured
 table name, not the four this phase happens to own.
+
+
+---
+
+# Production outage, 2026-08-19 — SUPABASE_URL was never a Fly secret
+
+Found by a review of the merged Task 1 branch, not by monitoring. `application.yml` made
+`${SUPABASE_URL}` a required placeholder; nothing set it in production. Every deploy since PR #3
+merged failed its smoke test, the release rolled out anyway, and the app could not start:
+
+```
+PlaceholderResolutionException: Could not resolve placeholder 'SUPABASE_URL'
+flyctl status → 1 total, 1 critical      curl /actuator/health → HTTP 000
+```
+
+Three master runs red in a row (13:43, 14:16, 18:19) and nobody looked. The pipeline deploys on
+green tests and then smoke-tests *after* the release is live — it has no rollback, so a red smoke
+test is a notification, not a gate.
+
+## Fixed
+
+- `fly secrets set SUPABASE_URL=…` — health UP within a minute.
+- `supabase.url` now **defaults** to the project URL rather than requiring the variable. The URL
+  is not a secret (it ships in every frontend), so a default is the honest value; a required
+  placeholder that fails at startup buys nothing but an outage.
+- The suite no longer depends on it either: `application-test.yml` pins `supabase.url` to
+  `127.0.0.1:1`, so a test that forgets its `@Primary` decoder cannot reach production's JWKS.
+
+## The second outage the same change caused
+
+With the app booting again, `POST /api/chat` answered **401 to every user**: Task 1 required a
+token on `/api/**` while the deployed frontend has no sign-in until Task 6. Two tasks that only
+work together were merged apart, onto a branch that auto-deploys.
+
+`/api/chat` is public again until Task 6 flips it in the same change that ships the auth client.
+`/api/profile/**` stays authenticated. A test pins the intent so it cannot drift back silently.
+
+## Also hardened while here
+
+- `anyRequest().permitAll()` → `denyAll()` with explicit permits for the static frontend. The old
+  catch-all made anything outside `/api/**` public by default — a new `/admin` controller or an
+  actuator endpoint added to the exposure list would have been world-readable with no change here
+  and no failing test.
+- The decoder accepts RS256 alongside ES256: Supabase key rotation may move a project to RSA, and
+  accepting only today's algorithm turns a rotation into a total authentication outage that the
+  401 wrapper would report as suspected forgery.
+- A trailing slash on `SUPABASE_URL` — the form the dashboard displays — produced an issuer with
+  a double slash that matches no token. Normalised.
