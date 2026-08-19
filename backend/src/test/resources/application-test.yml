@@ -7,6 +7,12 @@
 #
 # initialize-schema: true (inherited from application.yml) creates fpl_embeddings_test
 # on first test boot, which is intended.
+# Pinned away from the real project: every @SpringBootTest builds the real JwtDecoder bean, and
+# a test that forgets its @Primary override would otherwise fetch production's JWKS.
+supabase:
+  url: http://127.0.0.1:1
+  audience: authenticated
+
 spring:
   ai:
     vectorstore:
