@@ -53,6 +53,12 @@ public class PriceSchema {
                     CONSTRAINT uq_%s_season_gw_element_source UNIQUE (season, gameweek, element_id, source)
                 )
                 """.formatted(tableName, tableName));
+        // PostgREST publishes every table in `public` to the anon key, which is public by
+        // design. RLS with no policies is what makes that exposure empty; without it a fresh
+        // database is born open (measured 2026-08-19, see docs/STATUS.md). A no-op for this
+        // application, which connects as a role with rolbypassrls.
+        jdbc.execute("ALTER TABLE %s ENABLE ROW LEVEL SECURITY".formatted(tableName));
+
         jdbc.execute("CREATE INDEX IF NOT EXISTS idx_%s_season_element ON %s(season, element_id)"
                 .formatted(tableName, tableName));
         log.debug("{} schema ensured", tableName);

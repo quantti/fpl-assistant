@@ -1273,3 +1273,58 @@ bearer token verified against Supabase's published JWKS. 228 tests green.
 
 - A real signed JWT: confirm `aud` is `authenticated` and `sub` is the user UUID, and confirm
   email sign-up is enabled. Both need `SUPABASE_ANON_KEY`.
+
+
+---
+
+# Supabase RLS — the PostgREST door was open (2026-08-19)
+
+Supabase's linter flagged "RLS Disabled in Public" on every table. It was not a formality.
+
+## What was actually exposed
+
+Supabase publishes the `public` schema as a REST API at `/rest/v1`, authenticated by the **anon
+key — which is public by design and ships in the frontend bundle**. `anon` and `authenticated`
+held SELECT, INSERT, UPDATE, DELETE and TRUNCATE on all 39 tables (Supabase's default grants),
+and RLS was off on 34 of 35, so nothing constrained them. Measured with the real key, not
+inferred:
+
+```
+player           [{"id":34,"season_id":1,"first_name":"Joe","second_name":"Gauci",…
+fpl_daily_price  [{"price_date":"2026-08-18","element_id":23,"season":"2026-27",…
+chip_usage       [{"id":7748,"manager_id":2346868,"gameweek":26,"chip_type":"bboost",…
+```
+
+**The timing is what made it urgent.** The key had not been published anywhere yet — no frontend
+used `@supabase/supabase-js`, so the door had no handle. Phase 5a Task 6 adds exactly that
+handle, and Task 2 creates `conversation` and `message`. Left alone, the day sign-in shipped
+would have been the day every user's chat history became readable — and deletable — from any
+browser's devtools.
+
+## Fix
+
+`scripts/sql/enable-rls.sql`, run against production: RLS enabled on all 35 tables, no policies
+(deny-all for the PostgREST roles), and `ALTER DEFAULT PRIVILEGES` so tables created later do not
+inherit the grants. `chip_usage`'s "Allow public read access" policy — the one deliberate hole,
+granting PUBLIC an unrestricted read — was dropped on the owner's decision; nothing read it that
+way.
+
+Verified after: the anon key returns `[]` for every table and `42501 new row violates
+row-level security policy` on a write attempt. Our own access is untouched (841 players, 1184
+daily prices, 166 corpus chunks, production `/actuator/health` UP) because both this application
+and `tapas-fpl-app` connect as `postgres`, which has `rolbypassrls = true`.
+
+## Why it cannot regress quietly
+
+`DailyPriceSchema`, `PriceSchema` and `HistoricalSchema` now enable RLS on the tables they create,
+and `RowLevelSecurityTest` fails if any of them stops. One gap remains by construction:
+`fpl_embeddings` is created by Spring AI's `PgVectorStore`, not by us, so a brand-new database
+gets that table without RLS — production is covered by the run above, and the revoked default
+privileges mean a new one would have no anon grants to exploit anyway.
+
+## The same finding, restated for Phase 5a
+
+RLS is now on everywhere, but it still is **not** the authorization mechanism for user data: this
+application connects as a role that bypasses it. Every query touching `conversation`, `message`,
+`usage_event` or `fpl_user_profile` filters on the JWT `sub` in application SQL. RLS is the
+second lock, for the PostgREST path we do not use.
