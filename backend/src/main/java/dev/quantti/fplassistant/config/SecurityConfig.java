@@ -14,6 +14,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
 import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
@@ -63,10 +64,22 @@ public class SecurityConfig {
                 .authorizeHttpRequests(requests -> requests
                         // Fly's health check has no token to present.
                         .requestMatchers("/actuator/health", "/actuator/health/**").permitAll()
+                        // The built frontend is served from static/ by this same application; it
+                        // must load before the user has signed in.
+                        .requestMatchers(HttpMethod.GET, "/", "/index.html", "/favicon.ico",
+                                "/assets/**", "/*.svg", "/*.png", "/*.webmanifest").permitAll()
+                        // Open until the frontend can send a token. Requiring one here while the
+                        // deployed UI has no sign-in (Phase 5a Task 6) answered 401 to every
+                        // user — which is what happened in production on 2026-08-19. Task 6
+                        // flips this line in the same change that ships the auth client.
+                        .requestMatchers("/api/chat").permitAll()
                         .requestMatchers("/api/**").authenticated()
-                        // The built frontend is served from static/ by this same application;
-                        // it must load before the user has signed in.
-                        .anyRequest().permitAll())
+                        // Fail closed: a new endpoint is protected until someone says otherwise.
+                        // The previous catch-all permitAll made anything outside /api/** public
+                        // by default — a new /admin controller, or an actuator endpoint added to
+                        // the exposure list, would have been world-readable with no code change
+                        // here and no failing test.
+                        .anyRequest().denyAll())
                 .oauth2ResourceServer(oauth2 -> oauth2.jwt(jwt -> jwt.decoder(jwtDecoder)))
                 .build();
     }
@@ -99,6 +112,9 @@ public class SecurityConfig {
      * does — including the cache and rate limit, which is where the interesting behaviour is.
      */
     public static JwtDecoder decoder(String jwkSetUri, String issuer, String audience) {
+        // "https://project.supabase.co/" is what the dashboard shows and what anyone would
+        // paste, and it concatenates into an issuer with a double slash that matches no token.
+        issuer = issuer.replaceAll("(?<!:)//+(?=auth)", "/");
         JWKSource<SecurityContext> keys;
         try {
             keys = JWKSourceBuilder.<SecurityContext>create(URI.create(jwkSetUri).toURL())
@@ -114,6 +130,10 @@ public class SecurityConfig {
                 // Supabase signs ES256 (verified against the live JWKS on 2026-08-19). The
                 // default accepts RS256 only, and would reject every real token.
                 .jwsAlgorithm(SignatureAlgorithm.ES256)
+                // RS256 as well: Supabase's key rotation lets a project move to an RSA key, and
+                // accepting only what it publishes today makes a rotation a total authentication
+                // outage — reported by the wrapper below as a suspected forgery, not an outage.
+                .jwsAlgorithm(SignatureAlgorithm.RS256)
                 .build();
         decoder.setJwtValidator(tokenValidator(issuer, audience));
         return unverifiableIsUnauthorized(decoder);

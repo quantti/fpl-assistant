@@ -66,8 +66,13 @@ spring:
 # Supabase Auth. SUPABASE_URL is the project URL (https://<ref>.supabase.co); it is not a
 # secret — it appears in every frontend that talks to the project.
 supabase:
-  issuer: ${SUPABASE_URL}/auth/v1
-  jwks-uri: ${SUPABASE_URL}/auth/v1/.well-known/jwks.json
+  # Defaulted, not required: an unset SUPABASE_URL took production down on 2026-08-19 —
+  # PlaceholderResolutionException at startup, every deploy since red, health check critical.
+  # The project URL is not a secret (it ships in any frontend), so the default is the honest
+  # value rather than a placeholder that fails later and less clearly.
+  url: ${SUPABASE_URL:https://itmykooxrbrdbgqwsesb.supabase.co}
+  issuer: ${supabase.url}/auth/v1
+  jwks-uri: ${supabase.url}/auth/v1/.well-known/jwks.json
   # The audience Supabase puts in every access token it issues.
   audience: authenticated
 
