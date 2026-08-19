@@ -1,4 +1,11 @@
 spring:
+  mvc:
+    # Without this, Spring Boot strips the reason from every ResponseStatusException
+    # (server.error.include-message defaults to NEVER) and the client sees a bare status. The
+    # difference between "FPL does not know that team" and "FPL could not be reached" then exists
+    # only in our source code, which is no use to the person reading the screen.
+    problemdetails:
+      enabled: true
   task:
     scheduling:
       # Two threads so the 02:00 capture and the 06:00/12:00/18:00 freshness checks cannot

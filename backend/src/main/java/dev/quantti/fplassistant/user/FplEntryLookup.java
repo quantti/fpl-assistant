@@ -56,17 +56,23 @@ public class FplEntryLookup {
 
     public Result lookup(int entryId) {
         try {
-            return restClient.get()
+            // Tested for success rather than against 404: the JDK client does not follow
+            // redirects and Spring treats only 4xx/5xx as errors, so a 3xx would otherwise sail
+            // through as EXISTS. Drop the trailing slash from the configured URL and FPL answers
+            // 301 for every id — including ones that do not exist.
+            boolean exists = restClient.get()
                     .uri(entryUrl.formatted(entryId))
                     .retrieve()
-                    // 404 is an answer, not a failure: FPL is telling us the id is wrong.
                     .onStatus(status -> status.value() == 404, (request, response) -> { })
                     .toBodilessEntity()
-                    .getStatusCode().value() == 404 ? Result.NOT_FOUND : Result.EXISTS;
+                    .getStatusCode().is2xxSuccessful();
+            return exists ? Result.EXISTS : Result.NOT_FOUND;
         } catch (RestClientException e) {
-            // Deliberately not logging the entry id at WARN with anything identifying: an id
-            // links an account to a real person's public FPL profile.
-            log.warn("Could not reach FPL to validate a team id; reporting it as unavailable", e);
+            // The exception message embeds the request URI, and the URI embeds the entry id —
+            // which links an account to a real person's public FPL profile. Only the failure
+            // type is logged.
+            log.warn("Could not reach FPL to validate a team id ({}); reporting it as unavailable",
+                    e.getClass().getSimpleName());
             return Result.UNAVAILABLE;
         }
     }
