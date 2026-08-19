@@ -124,6 +124,43 @@ class UserSchemaTest {
         }
     }
 
+    /**
+     * The quota has to be settable per person — the owner's account is unlimited, and a user may
+     * be granted more than the default without a deploy — so it lives in data, not configuration.
+     * One nullable column carries the three states, and the CHECK is what stops a typo inventing
+     * a fourth.
+     */
+    @Test
+    void theWeeklyLimitIsAPerUserOverrideWithADefaultOfNone() {
+        UUID user = UUID.randomUUID();
+        jdbc.update("INSERT INTO " + profileTable + " (user_id) VALUES (?)", user);
+
+        try {
+            assertThat(limitOf(user))
+                    .as("no override means the configured default applies")
+                    .isNull();
+
+            for (int limit : new int[] {-1, 0, 500}) {
+                jdbc.update("UPDATE " + profileTable + " SET weekly_message_limit = ? WHERE user_id = ?",
+                        limit, user);
+                assertThat(limitOf(user)).isEqualTo(limit);
+            }
+
+            assertThatThrownBy(() -> jdbc.update("UPDATE " + profileTable
+                    + " SET weekly_message_limit = -2 WHERE user_id = ?", user))
+                    .as("-1 is unlimited; anything below it has no meaning")
+                    .isInstanceOf(RuntimeException.class);
+        } finally {
+            jdbc.update("DELETE FROM " + profileTable + " WHERE user_id = ?", user);
+        }
+    }
+
+    private Integer limitOf(UUID user) {
+        return jdbc.queryForObject(
+                "SELECT weekly_message_limit FROM " + profileTable + " WHERE user_id = ?",
+                Integer.class, user);
+    }
+
     private int countFor(String table, String column, Object value) {
         return jdbc.queryForObject(
                 "SELECT count(*) FROM " + table + " WHERE " + column + " = ?", Integer.class, value);
