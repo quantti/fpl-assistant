@@ -27,6 +27,24 @@ import org.springframework.stereotype.Component;
  * it.</b> That is the point of the table: usage counted from something the user can delete is a
  * quota the user can refill by deleting a conversation.
  *
+ * <p><b>{@code weekly_message_limit} is the per-user quota override.</b> The limit has to live
+ * in data rather than configuration because it differs per person: the owner's account is
+ * unlimited, and a given user may be granted more than the default without a deploy. One nullable
+ * column carries all of it:
+ *
+ * <ul>
+ *   <li>{@code NULL} — no override; the configured default ({@code fpl.quota.messages-per-week})
+ *       applies. This is what almost every row holds.</li>
+ *   <li>{@code -1} — unlimited. A sentinel rather than a second column, and enforced by a CHECK
+ *       so a typo cannot invent a third meaning.</li>
+ *   <li>{@code 0} — no messages at all: a way to suspend an account without deleting it.</li>
+ *   <li><i>n</i> — that many messages per rolling seven days.</li>
+ * </ul>
+ *
+ * <p>Changing one is a statement, since there is no admin surface and one person needs this:
+ * {@code UPDATE fpl_user_profile SET weekly_message_limit = -1 WHERE user_id = '<uuid>'} — and
+ * an {@code INSERT ... ON CONFLICT DO UPDATE} if the row does not exist yet.
+ *
  * <p><b>RLS with no policies</b>, which is a deliberate deviation from the spec's "write the
  * policies as defence-in-depth". Deny-all is strictly stronger than an {@code auth.uid()}-scoped
  * policy, it needs no dependency on Supabase's auth schema, and nothing in this project reads
@@ -68,10 +86,28 @@ public class UserSchema {
                 CREATE TABLE IF NOT EXISTS %s (
                     user_id UUID PRIMARY KEY,
                     fpl_team_id INTEGER,
+                    weekly_message_limit INTEGER,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CONSTRAINT chk_%s_weekly_limit
+                        CHECK (weekly_message_limit IS NULL OR weekly_message_limit >= -1)
                 )
-                """.formatted(profileTable));
+                """.formatted(profileTable, profileTable));
+
+        // Both statements exist for the table that is already there: CREATE TABLE IF NOT EXISTS
+        // skips an existing table entirely, so a column added later never arrives — and Postgres
+        // has no ADD CONSTRAINT IF NOT EXISTS, hence the lookup.
+        jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS weekly_message_limit INTEGER"
+                .formatted(profileTable));
+        jdbc.execute("""
+                DO $$ BEGIN
+                    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                                   WHERE conname = 'chk_%s_weekly_limit') THEN
+                        ALTER TABLE %s ADD CONSTRAINT chk_%s_weekly_limit
+                            CHECK (weekly_message_limit IS NULL OR weekly_message_limit >= -1);
+                    END IF;
+                END $$
+                """.formatted(profileTable, profileTable, profileTable));
 
         // A UUID id rather than a sequence: the id travels to the client, and a guessable one
         // invites probing for other users' conversations. The API answers 404 either way, but
