@@ -59,6 +59,9 @@ that mattered.
   output, never list every file touched.
 - **PR title:** one line. **PR body:** 8 lines at most — what changed, why, how it was verified,
   and a link to the plan if there is one. No headings, no checklists, no findings dumps.
+- **Describe the change, not the project.** Environment limits, plan status, background the
+  reader already lives with ("branch protection is unavailable on this plan") belong in
+  `docs/TODO.md` or `docs/STATUS.md`. A PR body that explains the repository is padding.
 - **Merge:** squash; the merge message is the PR title.
 - If a decision needs more room than that, it is a `docs/STATUS.md` entry — write it there and
   keep the commit pointing at it.
