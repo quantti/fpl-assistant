@@ -2,7 +2,7 @@
 
 **Status:** planned, not started (2026-08-18)
 
-**PROGRESS:** Task 1/8 done — resource server, validators, tests, and the live-token gate all confirmed. Findings in `docs/STATUS.md`.
+**PROGRESS:** Task 2/8 done — resource server and the four user tables. Findings in `docs/STATUS.md`.
 
 **Spec:** `docs/superpowers/specs/2026-08-15-phase5-auth-billing-design.md` — read it fully first.
 Its authorization contract (`user_id` from the JWT `sub` claim and nowhere else), its RLS finding
@@ -153,6 +153,23 @@ a second run changes nothing; tests run against `_test` variants and a test asse
 configured name ends in `_test` fails before any write; deleting a conversation removes its
 messages and leaves `usage_event` untouched; and a test proves the profile table name is not
 `app_user`.
+
+**Outcome (2026-08-19):** `UserSchema` creates `fpl_user_profile`, `conversation`, `message` and
+`usage_event`, each name a property pinned to a `_test` copy. `conversation.id` is a UUID rather
+than a sequence: the id travels to the client, and not handing out the map is cheaper than
+defending it. `usage_event` has no foreign key to `conversation`, asserted both behaviourally
+(deleting a conversation takes its messages and leaves usage) and structurally (`pg_constraint`),
+because a key added later would reintroduce the refill path silently.
+
+**Deviation from the spec, deliberate: RLS is enabled with no policies.** The spec asks for
+`auth.uid()`-scoped policies as defence-in-depth. Deny-all is strictly stronger, needs no
+dependency on Supabase's auth schema — which the ephemeral test database does not have — and
+nothing here reads these tables through PostgREST. `RowLevelSecurityTest` now covers all seven
+tables this project creates.
+
+There is no foreign key to `auth.users` either: it would require privileges on the auth schema
+that the test database cannot grant, and nothing depends on the cascade until account deletion
+exists.
 
 ### Task 3 — The user's FPL team id
 
