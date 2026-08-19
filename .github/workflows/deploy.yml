@@ -45,6 +45,10 @@ jobs:
       DB_USER: postgres
       DB_PASSWORD: postgres
       SPRING_AI_PROVIDER: anthropic
+      # The project URL, not a secret — it ships in any frontend that talks to the project. The
+      # tests verify tokens against a local key, but the property has to resolve or no Spring
+      # context starts at all.
+      SUPABASE_URL: https://example-project.supabase.co
       # No test calls a chat model, but the autoconfiguration needs the property non-empty.
       ANTHROPIC_API_KEY: not-used-no-test-calls-a-chat-model
       # Real, and genuinely used: the RAG tests embed for real (see IngestionIntegrationTest).
