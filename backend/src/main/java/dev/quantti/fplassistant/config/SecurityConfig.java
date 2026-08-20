@@ -68,11 +68,15 @@ public class SecurityConfig {
                         // must load before the user has signed in.
                         .requestMatchers(HttpMethod.GET, "/", "/index.html", "/favicon.ico",
                                 "/assets/**", "/*.svg", "/*.png", "/*.webmanifest").permitAll()
-                        // Open until the frontend can send a token. Requiring one here while the
-                        // deployed UI has no sign-in (Phase 5a Task 6) answered 401 to every
-                        // user — which is what happened in production on 2026-08-19. Task 6
-                        // flips this line in the same change that ships the auth client.
-                        .requestMatchers("/api/chat").permitAll()
+                        // Client-side routes: the browser navigates to them, so they arrive
+                        // without a token — the script that holds one has not loaded yet. They
+                        // forward to index.html and reveal nothing beyond it.
+                        .requestMatchers(HttpMethod.GET, SpaForwardingController.CLIENT_ROUTES)
+                        .permitAll()
+                        // Chat included: this change ships the sign-in screen that sends the
+                        // token. Requiring one while the deployed UI had no sign-in answered 401
+                        // to every user in production on 2026-08-19 — the two only work merged
+                        // together.
                         .requestMatchers("/api/**").authenticated()
                         // Fail closed: a new endpoint is protected until someone says otherwise.
                         // The previous catch-all permitAll made anything outside /api/** public
