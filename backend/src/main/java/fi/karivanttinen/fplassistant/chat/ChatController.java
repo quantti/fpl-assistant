@@ -47,6 +47,7 @@ public class ChatController {
 
     private final ChatService chatService;
     private final ConversationStore conversations;
+    private final HistoryBudget budget;
     private final UsageService usage;
     private final String provider;
     // Local instance: Boot 4's web starter no longer guarantees an ObjectMapper bean, and
@@ -54,10 +55,11 @@ public class ChatController {
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public ChatController(ChatService chatService, ConversationStore conversations,
-                          UsageService usage,
+                          HistoryBudget budget, UsageService usage,
                           @Value("${fpl.ai.provider:anthropic}") String provider) {
         this.chatService = chatService;
         this.conversations = conversations;
+        this.budget = budget;
         this.usage = usage;
         // Recorded per event: the two providers price differently, so usage that does not say
         // which one answered cannot be turned into a cost.
@@ -96,7 +98,13 @@ public class ChatController {
         // must not leave one behind.
         usage.attachConversation(usageEventId, conversationId);
         conversations.append(conversationId, ChatTurn.USER, message);
-        List<ChatTurn> history = conversations.recentTurns(conversationId, ChatService.HISTORY_WINDOW);
+        // The whole conversation, not a window of it: continuing an old thread has to mean the
+        // model sees what was said, not only the end of it. Trimmed from the front only if it
+        // would no longer fit — and when that happens the user is told, because an answer given
+        // from half a conversation is worse when nobody knows half is missing.
+        List<ChatTurn> whole = conversations.recentTurns(conversationId);
+        List<ChatTurn> history = budget.fit(whole);
+        int dropped = whole.size() - history.size();
 
         // Token events carry the token as a JSON string: raw SSE data cannot round-trip a
         // leading space (the decoder strips the one after "data:"), and LLM tokens usually
@@ -114,6 +122,10 @@ public class ChatController {
                 Flux.just(ServerSentEvent.<String>builder()
                         .event("conversation")
                         .data(json(conversationId.toString()))
+                        .build()),
+                dropped == 0 ? Flux.empty() : Flux.just(ServerSentEvent.<String>builder()
+                        .event("truncated")
+                        .data(String.valueOf(dropped))
                         .build()),
                 tokens,
                 Flux.just(ServerSentEvent.<String>builder().event("done").data("").build()));
