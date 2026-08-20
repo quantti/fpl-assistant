@@ -1470,3 +1470,54 @@ work together were merged apart, onto a branch that auto-deploys.
   401 wrapper would report as suspected forgery.
 - A trailing slash on `SUPABASE_URL` — the form the dashboard displays — produced an issuer with
   a double slash that matches no token. Normalised.
+
+---
+
+# Phase 5a — Task 6: sign-in, session, and SPA routing (2026-08-20)
+
+The frontend now holds a session and sends the token, so `/api/chat` is authenticated again —
+in the same change, which is the whole point: splitting them is what answered 401 to every user
+on 2026-08-19.
+
+## What exists now
+
+- `SignIn` (sign-in only), `useSession`, and a gate in `App` that renders a loader until the
+  stored session has been read — showing the sign-in screen first and replacing it a moment
+  later reads as being signed out on every reload.
+- `apiFetch` attaches the access token to `/api/**` and signs out on `401`. The token is read
+  per request rather than captured: the client refreshes it in the background, and a captured
+  copy is the expired one an hour into a conversation. `getSession()` is where the silent
+  refresh happens.
+- A sign-out button in the chat header, labelled rather than a glyph.
+- `SpaForwardingController` forwards client routes to `index.html`, closing the Phase 1 known
+  issue that deep links would 404 once Phase 5 added routes.
+
+## No sign-up screen — the plan's "user can sign up" cannot be met by design
+
+Public sign-up is disabled in the Supabase project (the 5a decision: without billing there is no
+cost ceiling per person and no card anchoring an account). A form the API refuses is worse than
+no form, so the screen says accounts are by invitation. Task 8's "settle the sign-up gate" is
+therefore already settled — closed for the duration of 5a.
+
+## The forwarding patterns, and what they cost
+
+Three explicit segment levels, not a trailing `/**`. `/**` matches a segment with a file
+extension in it, which forwarded `/assets/index-abc123.js` to the index page under a JavaScript
+content type — a missing asset then surfaces as a syntax error in the console instead of a 404.
+A client route deeper than three segments will 404 visibly rather than silently.
+
+The permit those patterns need does weaken yesterday's `denyAll` default: every extension-less
+`GET` outside `/api/**` and `/actuator/**` is now public, because the chain cannot tell a route
+the browser owns from one the server does. A deep link arrives without a token — the script
+holding one has not loaded yet — so there is no version of this that authenticates.
+
+What replaces the lost default is a test, not a promise: `SpaForwardingTest` reads the
+`RequestMappingHandlerMapping` and fails if any handler is mapped outside `/api/**`,
+`/actuator/**` or Spring's own `/error`. **New endpoints go under `/api/`**; one that does not
+turns the silent hole into a red suite.
+
+## Not verified end to end yet
+
+The suite is green and the frontend builds, but nobody has signed into the deployed application
+and asked a question — that is Task 8, and it is the check that matters for this pair of
+changes.

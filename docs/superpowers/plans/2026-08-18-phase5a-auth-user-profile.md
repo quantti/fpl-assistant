@@ -2,7 +2,7 @@
 
 **Status:** planned, not started (2026-08-18)
 
-**PROGRESS:** Task 3/8 done — auth, the user tables, and the FPL team id. Findings in `docs/STATUS.md`.
+**PROGRESS:** Task 3/8 done, plus Task 6 — auth, the user tables, the FPL team id, and the frontend sign-in. Findings in `docs/STATUS.md`.
 
 **Spec:** `docs/superpowers/specs/2026-08-15-phase5-auth-billing-design.md` — read it fully first.
 Its authorization contract (`user_id` from the JWT `sub` claim and nowhere else), its RLS finding
