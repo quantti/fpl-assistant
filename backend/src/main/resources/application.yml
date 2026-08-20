@@ -97,35 +97,6 @@ fpl:
     # current-season vaastav merged_gw.csv when the last snapshot is older than this. 6h keeps
     # roughly twice-daily cadence during the season without hitting vaastav on every boot.
     sync-stale-after-hours: 6
-  pricing:
-    # USD per million tokens, priced when a turn happens and stored on the row — rates change,
-    # and a cost that recomputes itself is not a record of what was spent. A provider with no
-    # rates here records NULL rather than a guess.
-    #
-    # Anthropic's own accounting is what the multipliers encode: input_tokens is the *uncached*
-    # remainder, cache reads bill at ~0.1x the input rate and cache writes at 1.25x (five-minute
-    # TTL). Set cached-included-in-input for a provider that instead reports cached tokens inside
-    # its prompt count — check the provider's documentation rather than assuming.
-    anthropic:
-      # claude-sonnet-5 list price. An introductory rate of 2.00/10.00 applies through
-      # 2026-08-31; the list price is configured deliberately, so a recorded cost is never lower
-      # than the invoice. Update both numbers together with the model in spring.ai above.
-      model: claude-sonnet-5
-      input-per-million: 3.00
-      output-per-million: 15.00
-      cache-read-multiplier: 0.1
-      cache-write-multiplier: 1.25
-      cached-included-in-input: false
-    openai:
-      # Left unpriced on purpose: nobody has checked gpt-5.6-terra's rates against OpenAI's
-      # published pricing, and an invented number is worse than a null. Fill both in to start
-      # recording cost for this provider.
-      model: gpt-5.6-terra
-      input-per-million: 0
-      output-per-million: 0
-      cache-read-multiplier: 1.0
-      cache-write-multiplier: 1.0
-      cached-included-in-input: true
   quota:
     # The fallback, not the answer: the limit is per person in
     # fpl_user_profile.weekly_message_limit, and this applies to every account that has no
