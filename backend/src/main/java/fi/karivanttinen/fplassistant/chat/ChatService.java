@@ -35,6 +35,10 @@ public class ChatService {
      * Streams the answer to a conversation whose turns are given oldest-first. The caller has
      * already bounded them to {@link #HISTORY_WINDOW}; trimming here is about the shape of the
      * window rather than its size.
+     *
+     * <p>{@code onUsage} is called with the running measurement each time a chunk reports one,
+     * not once at the end: a stream that fails or times out never completes, and the tokens it
+     * burned before failing were spent all the same.
      */
     public Flux<String> stream(List<ChatTurn> turns, Consumer<TokenUsage> onUsage) {
         List<ChatTurn> window = turns.subList(Math.max(0, turns.size() - HISTORY_WINDOW), turns.size());
@@ -59,15 +63,9 @@ public class ChatService {
                 // metadata, and .content() throws that away. The two lines below are what
                 // .content() does internally — a chunk carrying only metadata has no text.
                 .chatResponse()
-                .doOnNext(response -> capture(response, reported))
+                .doOnNext(response -> capture(response, reported, onUsage))
                 .map(ChatService::textOf)
-                .filter(text -> !text.isEmpty())
-                .doOnComplete(() -> {
-                    TokenUsage usage = reported.get();
-                    if (usage != null) {
-                        onUsage.accept(usage);
-                    }
-                });
+                .filter(text -> !text.isEmpty());
     }
 
     private static String textOf(ChatResponse response) {
@@ -94,7 +92,8 @@ public class ChatService {
      * carrying neither a measurement nor a model name: every text chunk has metadata, and most
      * hold Spring AI's {@code EmptyUsage}, which is zeros with no cache figures beside them.
      */
-    private static void capture(ChatResponse response, AtomicReference<TokenUsage> reported) {
+    private static void capture(ChatResponse response, AtomicReference<TokenUsage> reported,
+                               Consumer<TokenUsage> onUsage) {
         ChatResponseMetadata metadata = response.getMetadata();
         if (metadata == null) {
             return;
@@ -113,14 +112,26 @@ public class ChatService {
             return;
         }
 
-        reported.updateAndGet(previous -> new TokenUsage(
+        // A prompt or completion count of zero is Spring AI's EmptyUsage, not a measurement:
+        // every chunk carries one, and on a provider that also stamps the model on every chunk
+        // that would write zeros into every row — indistinguishable from a real measurement of
+        // nothing. The cache figures are different: they are null when absent, so a zero there
+        // is a genuine cache miss, which is the number worth having.
+        TokenUsage merged = reported.updateAndGet(previous -> new TokenUsage(
                 model != null ? model : previous == null ? null : previous.model(),
-                larger(prompt, previous == null ? null : previous.inputTokens()),
+                larger(unreported(prompt) ? null : prompt,
+                        previous == null ? null : previous.inputTokens()),
                 larger(cacheReads == null ? null : cacheReads.intValue(),
                         previous == null ? null : previous.cachedTokens()),
                 larger(cacheWrites == null ? null : cacheWrites.intValue(),
                         previous == null ? null : previous.cacheWriteTokens()),
-                larger(completion, previous == null ? null : previous.outputTokens())));
+                larger(unreported(completion) ? null : completion,
+                        previous == null ? null : previous.outputTokens())));
+
+        // Reported as it arrives rather than on completion: a stream that fails or times out has
+        // no completion, and the tokens it burned before failing were still spent. The caller
+        // keeps the latest, so being told more than once costs nothing.
+        onUsage.accept(merged);
     }
 
     private static boolean unreported(Integer count) {

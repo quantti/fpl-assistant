@@ -1682,6 +1682,19 @@ The check and the insert were a read followed by a write with nothing between th
 one message remaining both passed. They are now one transaction behind a per-user advisory lock,
 which serialises one person's own requests and nobody else's.
 
+**A failed stream refunded even when it had burned tokens** — found by the second review round,
+after the first one introduced the refund. `ChatService` reported usage from `doOnComplete`,
+which never fires on an error or on the five-minute timeout, so the controller always saw "no
+usage reported" and always discarded the row: a tool-calling turn that spent 30k tokens and then
+lost the connection was free, and free to repeat. Usage is now reported as each chunk carries it,
+so a failure can see what was already spent.
+
+**Spring AI's `EmptyUsage` reports zero prompt and completion tokens on every chunk**, and some
+providers stamp the model name on every chunk too. Together those passed the "did this chunk
+measure anything" guard and wrote zeros into every row — the one thing null exists to
+distinguish. Zero prompt/completion counts are now treated as unreported; the cache figures keep
+their zeros, because they are null when absent and a zero there is a genuine cache miss.
+
 **A stream that failed used to keep its charge.** A provider outage would have spent every user's
 weekly allowance on answers nobody received. A failure that reported no usage now discards the
 row; one that reported usage did consume tokens and keeps it.
