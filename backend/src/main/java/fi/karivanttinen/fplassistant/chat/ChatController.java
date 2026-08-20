@@ -47,6 +47,7 @@ public class ChatController {
 
     private final ChatService chatService;
     private final ConversationStore conversations;
+    private final HistoryBudget budget;
     private final UsageService usage;
     private final String provider;
     // Local instance: Boot 4's web starter no longer guarantees an ObjectMapper bean, and
@@ -54,10 +55,11 @@ public class ChatController {
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public ChatController(ChatService chatService, ConversationStore conversations,
-                          UsageService usage,
+                          HistoryBudget budget, UsageService usage,
                           @Value("${fpl.ai.provider:anthropic}") String provider) {
         this.chatService = chatService;
         this.conversations = conversations;
+        this.budget = budget;
         this.usage = usage;
         // Recorded per event: the two providers price differently, so usage that does not say
         // which one answered cannot be turned into a cost.
@@ -90,13 +92,32 @@ public class ChatController {
         long usageEventId = usage.claimChatTurn(userId, provider);
         AtomicReference<TokenUsage> reported = new AtomicReference<>();
 
-        UUID conversationId = existing != null ? existing : conversations.create(userId, message);
-        // Ties the charge to what it paid for. A second statement rather than a column on the
-        // insert, because the quota is claimed before any conversation exists — a refused turn
-        // must not leave one behind.
-        usage.attachConversation(usageEventId, conversationId);
-        conversations.append(conversationId, ChatTurn.USER, message);
-        List<ChatTurn> history = conversations.recentTurns(conversationId, ChatService.HISTORY_WINDOW);
+        UUID conversationId;
+        List<ChatTurn> history;
+        int dropped;
+        try {
+            conversationId = existing != null ? existing : conversations.create(userId, message);
+            // Ties the charge to what it paid for. A second statement rather than a column on
+            // the insert, because the quota is claimed before any conversation exists — a
+            // refused turn must not leave one behind.
+            usage.attachConversation(usageEventId, conversationId);
+            conversations.append(conversationId, ChatTurn.USER, message);
+
+            // The whole conversation, not a window of it: continuing an old thread has to mean
+            // the model sees what was said, not only the end of it. Trimmed from the front only
+            // if it would no longer fit — and when that happens the user is told, because an
+            // answer given from half a conversation is worse when nobody knows half is missing.
+            history = budget.fit(conversations.recentTurns(conversationId));
+            // Counted against every turn the conversation holds, not against what the read
+            // returned: that read has a ceiling of its own, and a conversation past it would
+            // otherwise lose its oldest turns with nobody told.
+            dropped = conversations.countTurns(conversationId) - history.size();
+        } catch (RuntimeException e) {
+            // Charged a moment ago for a turn that never reached the provider. Anything else
+            // takes a message out of the user's week for a failure that was ours.
+            discard(usageEventId);
+            throw e;
+        }
 
         // Token events carry the token as a JSON string: raw SSE data cannot round-trip a
         // leading space (the decoder strips the one after "data:"), and LLM tokens usually
@@ -114,6 +135,10 @@ public class ChatController {
                 Flux.just(ServerSentEvent.<String>builder()
                         .event("conversation")
                         .data(json(conversationId.toString()))
+                        .build()),
+                dropped == 0 ? Flux.empty() : Flux.just(ServerSentEvent.<String>builder()
+                        .event("truncated")
+                        .data(String.valueOf(dropped))
                         .build()),
                 tokens,
                 Flux.just(ServerSentEvent.<String>builder().event("done").data("").build()));
@@ -157,11 +182,14 @@ public class ChatController {
                     // Nothing was generated, so nothing was paid for: a charge left standing
                     // here would spend a week's allowance on answers nobody received — and
                     // during a provider outage, everybody's at once. A stream that failed after
-                    // reporting usage did consume tokens, and keeps its row.
-                    if (reported.get() == null) {
+                    // reporting usage did consume tokens, and keeps its row. A record carrying
+                    // only a model name is not usage: providers stamp that on chunks that
+                    // measured nothing.
+                    TokenUsage tokens = reported.get();
+                    if (tokens == null || !tokens.measured()) {
                         discard(usageEventId);
                     } else {
-                        recordTokens(usageEventId, reported.get());
+                        recordTokens(usageEventId, tokens);
                     }
                     sink.tryEmitError(error);
                 },

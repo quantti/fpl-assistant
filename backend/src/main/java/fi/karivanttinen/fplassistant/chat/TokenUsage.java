@@ -14,4 +14,15 @@ package fi.karivanttinen.fplassistant.chat;
  * whether it does.
  */
 public record TokenUsage(String model, Integer inputTokens, Integer cachedTokens,
-                        Integer cacheWriteTokens, Integer outputTokens) {}
+                        Integer cacheWriteTokens, Integer outputTokens) {
+
+    /**
+     * Whether any count was actually reported. A record can carry a model name and nothing else —
+     * providers stamp the model on chunks that measure nothing — and treating that as a
+     * measurement would charge a user for a turn that produced no tokens at all.
+     */
+    public boolean measured() {
+        return inputTokens != null || cachedTokens != null || cacheWriteTokens != null
+                || outputTokens != null;
+    }
+}

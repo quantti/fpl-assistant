@@ -7,16 +7,20 @@ interface Props {
   content: string
   isStreaming?: boolean
   isError?: boolean
+  isNotice?: boolean
 }
 
-export default function AssistantMessage({ content, isStreaming, isError }: Props) {
+export default function AssistantMessage({ content, isStreaming, isError, isNotice }: Props) {
+  const label = isError ? 'Error' : isNotice ? 'Note' : 'Assistant'
+  const labelClass = isError
+    ? classes.errorLabel
+    : isNotice
+      ? classes.noticeLabel
+      : classes.assistantLabel
+
   return (
     <div className={typography.turn}>
-      <div
-        className={`${typography.label} ${isError ? classes.errorLabel : classes.assistantLabel}`}
-      >
-        {isError ? 'Error' : 'Assistant'}
-      </div>
+      <div className={`${typography.label} ${labelClass}`}>{label}</div>
       <div className={`${classes.prose} ${isStreaming ? classes.cursor : ''}`}>
         <Markdown remarkPlugins={[remarkGfm]}>{content}</Markdown>
       </div>

@@ -1737,3 +1737,62 @@ does **not** report token counts — those are the owner's numbers, read with SQ
 frontend now reads the `429` body and `Retry-After` instead of always saying "too quickly" —
 there are two different `429`s now, and telling someone who has spent their week to wait a minute
 is worse than saying nothing.
+
+
+---
+
+# Full conversation history (2026-08-20)
+
+Owner decision: continuing a conversation sends **all** of it, not a window of the last 20 turns.
+The cost of resending the whole thing every turn is accepted and will be watched — the number to
+watch is `input_tokens` in `fpl_usage_event`.
+
+`HistoryBudget` is what remains of the old window, and it is not a cost control. A request larger
+than the model's context window is rejected outright, and a conversation past that point would
+fail on **every** turn from then on, permanently: dropping its oldest turns is the lesser loss.
+The budget is 800k characters — roughly 200k tokens at four characters each, well inside
+claude-sonnet-5's window and far beyond anything this application has seen. The test profile pins
+it at 400 so the suite can reach it without seeding a novel.
+
+**When turns are dropped, the user is told.** The stream carries a `truncated` event with the
+count, and the frontend renders it as a `Note` turn: the oldest messages are still on screen and
+still theirs, but the assistant did not see them. An answer written without the beginning of a
+conversation must not look like one written with it.
+
+## Review round
+
+The 500-message ceiling on the history read made the notice a half-truth: a conversation of 600
+turns whose newest 500 fit the budget dropped 100 with nobody told, because "dropped" was counted
+against what the read returned. It is now counted against `countTurns` — every turn the
+conversation holds.
+
+The leading-assistant fix-up moved into `HistoryBudget`. Downstream it made the number shown to
+the user one too low: `ChatService` dropped a turn after the count had been taken.
+
+A `TokenUsage` carrying only a model name is no longer treated as usage. Providers stamp the
+model on chunks that measured nothing, so a stream that died before reporting any count kept its
+charge — a message out of someone's week for a turn that produced nothing.
+
+The claim happens before the conversation is written, and those writes were unguarded: a Hikari
+timeout in `conversations.create` took a message out of the user's allowance for a turn that
+never reached the provider. They now discard the charge and rethrow.
+
+`Retry-After` is now in `exposedHeaders`. It is not CORS-safelisted, so a split-origin deployment
+would have shown "you are out" without ever showing when it frees. Invisible today because the
+Vite proxy and production are both same-origin.
+
+Not changed: the reviewer read the 800k-character budget as equal to the context window. It is
+about 200k tokens against claude-sonnet-5's 1M — the headroom is what the system prompt, the tool
+schemas, the tool results and the reserved output live in, and that reasoning is now in the
+class's javadoc rather than only in someone's head.
+
+Two things that made this less obvious than it looks:
+
+- The trimming lives in `HistoryBudget`, not `ChatService`, because `ChatController` is the one
+  that has to know how many turns were dropped — and in the controller tests `ChatService` is a
+  mock, so asking it would have measured the mock rather than the history.
+- Server-side compaction (the Anthropic beta) was considered and rejected for now: it requires
+  echoing the API's compaction blocks back on every turn, and this application stores plain text
+  per message and speaks to the model through Spring AI, which does not surface them. Summarising
+  the oldest turns ourselves is the shape that would fit — when the measured numbers say it is
+  needed, and not before.

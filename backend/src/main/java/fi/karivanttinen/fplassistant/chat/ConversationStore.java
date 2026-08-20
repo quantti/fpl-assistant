@@ -79,10 +79,18 @@ public class ConversationStore {
     }
 
     /**
-     * The most recent {@code limit} turns, oldest first — the order the model needs, taken from
-     * the end of the conversation because that is the part that fits in the window.
+     * The conversation's turns, oldest first — the order the model needs.
+     *
+     * <p>Bounded by {@link #MAX_MESSAGES} like every other read here, and taken from the recent
+     * end: a conversation long enough to reach that ceiling keeps the part the next answer
+     * depends on. How much of this actually reaches the model is {@code ChatService}'s budget,
+     * not this ceiling.
      */
-    public List<ChatTurn> recentTurns(UUID conversationId, int limit) {
+    public List<ChatTurn> recentTurns(UUID conversationId) {
+        return recentTurns(conversationId, MAX_MESSAGES);
+    }
+
+    List<ChatTurn> recentTurns(UUID conversationId, int limit) {
         List<ChatTurn> newestFirst = jdbc.query(
                 "SELECT role, content FROM " + messageTable
                         + " WHERE conversation_id = ? ORDER BY created_at DESC, id DESC LIMIT ?",
@@ -102,6 +110,19 @@ public class ConversationStore {
                         rs.getString("title"),
                         rs.getTimestamp("updated_at").toInstant()),
                 userId);
+    }
+
+    /**
+     * How many turns the conversation holds — all of them, not the {@link #MAX_MESSAGES} that
+     * come back from a read. The caller needs the real number to tell the user how much was left
+     * out: a conversation of 600 turns whose newest 500 fit the budget would otherwise drop 100
+     * silently, which is the case the notice exists for.
+     */
+    public int countTurns(UUID conversationId) {
+        Integer count = jdbc.queryForObject(
+                "SELECT count(*) FROM " + messageTable + " WHERE conversation_id = ?",
+                Integer.class, conversationId);
+        return count == null ? 0 : count;
     }
 
     /**
