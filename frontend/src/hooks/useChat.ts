@@ -9,6 +9,20 @@ interface UseChatReturn {
   sendMessage: (content: string) => Promise<void>
 }
 
+/** Retry-After in human terms. Empty when the header is missing — a suspended account has no when. */
+function waitFor(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return ''
+  const hours = seconds / 3600
+  if (seconds < 90) return `Try again in ${plural(Math.ceil(seconds), 'second')}.`
+  if (hours < 1) return `Try again in ${plural(Math.ceil(seconds / 60), 'minute')}.`
+  if (hours < 48) return `Try again in ${plural(Math.round(hours), 'hour')}.`
+  return `Try again in ${plural(Math.round(hours / 24), 'day')}.`
+}
+
+function plural(count: number, unit: string): string {
+  return `${count} ${unit}${count === 1 ? '' : 's'}`
+}
+
 const GONE = 'That conversation is no longer available. The messages above stay on screen but are no longer part of it — your next message starts a new conversation, without them.'
 
 const INTERRUPTED = 'Sorry — the connection was interrupted. Please try again.'
@@ -101,10 +115,16 @@ export function useChat(): UseChatReturn {
         setMessages(prev => [...prev, { role: 'assistant', content: GONE, isError: true }])
         return
       }
+      // Two different 429s now: the per-IP rate limit and the weekly quota. The backend says
+      // which in the body, and Retry-After says when it frees — repeating a generic "too
+      // quickly" would tell a user who has spent their week to wait a minute.
       if (response.status === 429) {
+        const reason = (await response.text()).trim()
+        const retryAfter = Number(response.headers.get('Retry-After'))
         setMessages(prev => [...prev, {
           role: 'assistant',
-          content: 'You are sending messages too quickly — wait a minute and try again.',
+          content: [reason || 'Too many messages for now.', waitFor(retryAfter)]
+            .filter(Boolean).join(' '),
           isError: true,
         }])
         return
