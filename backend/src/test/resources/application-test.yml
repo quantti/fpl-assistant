@@ -36,6 +36,11 @@ fpl:
   price:
     table-name: fpl_player_price_test
     startup-sync: false
+  chat:
+    # Small on purpose: the suite proves that a history too large to send is trimmed and that the
+    # user is told, and seeding 800k characters to reach the real budget would prove the same
+    # thing slower. Every other test's messages are far below this.
+    history-char-budget: 400
   user:
     # Pinned off the live API for the same reason the syncs are off: a test that forgets to mock
     # the lookup must fail locally, not call fantasy.premierleague.com from CI. Port 1 refuses
