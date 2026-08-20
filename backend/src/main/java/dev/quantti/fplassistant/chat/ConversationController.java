@@ -4,6 +4,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
+import dev.quantti.fplassistant.config.TokenSubject;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
@@ -36,14 +37,14 @@ public class ConversationController {
 
     @GetMapping
     public List<ConversationResponse> list(@AuthenticationPrincipal Jwt jwt) {
-        return conversations.list(UUID.fromString(jwt.getSubject())).stream()
+        return conversations.list(TokenSubject.userId(jwt)).stream()
                 .map(c -> new ConversationResponse(c.id(), c.title(), c.updatedAt()))
                 .toList();
     }
 
     @GetMapping("/{id}/messages")
     public List<MessageResponse> messages(@PathVariable UUID id, @AuthenticationPrincipal Jwt jwt) {
-        UUID userId = UUID.fromString(jwt.getSubject());
+        UUID userId = TokenSubject.userId(jwt);
         conversations.findOwned(id, userId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "no such conversation"));
 

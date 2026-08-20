@@ -14,8 +14,9 @@ export interface Message {
 /**
  * The wire contract for `POST /api/chat` since Task 4: one new user turn, and
  * the conversation it belongs to. The history is the server's — it reads it
- * back from the database — so the client cannot rewrite what was said, and a
- * reload no longer starts from an empty transcript.
+ * back from the database — so the client cannot rewrite what was said, and
+ * what was said outlives this browser. Reading it back is Task 7: nothing
+ * here calls /api/conversations yet, so a reload still starts fresh.
  *
  * A null `conversationId` opens a new conversation; the id comes back as the
  * stream's first event.
