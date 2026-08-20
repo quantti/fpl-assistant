@@ -2,19 +2,25 @@ package fi.karivanttinen.fplassistant.chat;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.UUID;
 
 import fi.karivanttinen.fplassistant.config.TokenSubject;
+import fi.karivanttinen.fplassistant.user.QuotaExceededException;
+import fi.karivanttinen.fplassistant.user.UsageService;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -41,13 +47,21 @@ public class ChatController {
 
     private final ChatService chatService;
     private final ConversationStore conversations;
+    private final UsageService usage;
+    private final String provider;
     // Local instance: Boot 4's web starter no longer guarantees an ObjectMapper bean, and
     // encoding a bare String needs no configuration.
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    public ChatController(ChatService chatService, ConversationStore conversations) {
+    public ChatController(ChatService chatService, ConversationStore conversations,
+                          UsageService usage,
+                          @Value("${fpl.ai.provider:anthropic}") String provider) {
         this.chatService = chatService;
         this.conversations = conversations;
+        this.usage = usage;
+        // Recorded per event: the two providers price differently, so usage that does not say
+        // which one answered cannot be turned into a cost.
+        this.provider = provider;
     }
 
     /**
@@ -63,16 +77,31 @@ public class ChatController {
                                               @AuthenticationPrincipal Jwt jwt) {
         UUID userId = TokenSubject.userId(jwt);
         String message = validated(request);
-        UUID conversationId = resolve(request == null ? null : request.conversationId(), userId, message);
 
+        // Before anything is written and before the stream opens. Once an SSE response has
+        // begun, its status is already on the wire and cannot become a 429 — and a quota
+        // failure that created a conversation would leave an empty one behind.
+        UsageService.Quota quota = usage.quotaOf(userId);
+        if (quota.exceeded()) {
+            throw new QuotaExceededException(quota);
+        }
+
+        UUID conversationId = resolve(request == null ? null : request.conversationId(), userId, message);
         conversations.append(conversationId, ChatTurn.USER, message);
         List<ChatTurn> history = conversations.recentTurns(conversationId, ChatService.HISTORY_WINDOW);
+
+        // Recorded here, where the cost is incurred, rather than on completion: an answer the
+        // user abandons has still been paid for, and recording at the end would make aborting
+        // and retrying free.
+        long usageEventId = usage.recordChatStart(userId, provider);
+        AtomicReference<TokenUsage> reported = new AtomicReference<>();
 
         // Token events carry the token as a JSON string: raw SSE data cannot round-trip a
         // leading space (the decoder strips the one after "data:"), and LLM tokens usually
         // start with one. The frontend JSON.parses each token event's data.
         Flux<ServerSentEvent<String>> tokens =
-                answerOutlivingTheClient(chatService.stream(history), conversationId)
+                answerOutlivingTheClient(chatService.stream(history, reported::set),
+                        conversationId, usageEventId, reported)
                         .map(token -> ServerSentEvent.builder(json(token)).build())
                         .onErrorResume(e -> Flux.just(ServerSentEvent.<String>builder()
                                 .event("error")
@@ -101,7 +130,9 @@ public class ChatController {
      * partial answer when it sees the error event, and a history holding text the user was told
      * to ignore would be a worse lie than one turn short.
      */
-    private Flux<String> answerOutlivingTheClient(Flux<String> source, UUID conversationId) {
+    private Flux<String> answerOutlivingTheClient(Flux<String> source, UUID conversationId,
+                                                  long usageEventId,
+                                                  AtomicReference<TokenUsage> reported) {
         Sinks.Many<String> sink = Sinks.many().replay().all();
         StringBuilder answer = new StringBuilder();
         source
@@ -125,6 +156,7 @@ public class ChatController {
                 },
                 () -> {
                     persist(conversationId, answer.toString());
+                    recordTokens(usageEventId, reported.get());
                     sink.tryEmitComplete();
                 });
         return sink.asFlux();
@@ -143,6 +175,35 @@ public class ChatController {
             log.error("could not persist the assistant message for conversation {}",
                     conversationId, e);
         }
+    }
+
+    /**
+     * The usage row exists either way — the call was made — so a provider that reports nothing
+     * leaves the token columns null rather than zero. Null reads as "not measured"; zero reads
+     * as a measurement, and would drag every average this data exists to inform.
+     */
+    private void recordTokens(long usageEventId, TokenUsage tokens) {
+        if (tokens == null) {
+            return;
+        }
+        try {
+            usage.recordTokens(usageEventId, tokens.inputTokens(), tokens.cachedTokens(),
+                    tokens.outputTokens());
+        } catch (RuntimeException e) {
+            log.error("could not record token usage for event {}", usageEventId, e);
+        }
+    }
+
+    /**
+     * The quota answer, with {@code Retry-After} when waiting actually helps. A suspended
+     * account (limit 0) gets no header: there is no number of seconds that changes the answer.
+     */
+    @ExceptionHandler(QuotaExceededException.class)
+    ResponseEntity<String> quotaExceeded(QuotaExceededException e) {
+        ResponseEntity.BodyBuilder response = ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                .contentType(MediaType.TEXT_PLAIN);
+        e.retryAfterSeconds().ifPresent(seconds -> response.header("Retry-After", Long.toString(seconds)));
+        return response.body(e.getMessage());
     }
 
     /** Returns the message. ChatService relies on this: nothing invalid may pass this point. */

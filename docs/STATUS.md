@@ -1621,3 +1621,51 @@ paginates. Capped at 500 messages and 200 conversations, read from the recent en
 
 Usage recording and the quota are Task 5, and the conversation list UI is Task 7 — the client
 keeps the id in memory for the session and nothing lists past conversations yet.
+
+---
+
+# Phase 5a — Task 5: usage recording and the quota (2026-08-20)
+
+One `fpl_usage_event` row per chat turn, written **when the call starts**. Recording on
+completion would make an abandoned stream free to repeat, and the cost is incurred at the start
+either way.
+
+The quota is checked **before the stream opens and before anything is written**: once an SSE
+response has begun its status is already on the wire and cannot become a `429`, and a rejected
+turn that had created a conversation would leave an empty one behind. The answer is a real `429`
+with `Retry-After` — seconds until the oldest counted message leaves the seven-day window —
+rather than an SSE `error` event.
+
+## The limit is per person
+
+`fpl_user_profile.weekly_message_limit`: `NULL` means the configured default
+(`fpl.quota.messages-per-week`, 50), `-1` unlimited, `0` suspended, *n* that many per rolling
+seven days. A suspended account gets **no** `Retry-After`: there is no number of seconds that
+turns it back on, and a header promising one would be a lie the client would act on.
+
+The window is counted in the database against `now()`, not in this process — a count that shares
+a clock with the timestamps it counts cannot drift from them. Only `event_type = 'chat'` counts,
+so title generation or a background call cannot quietly spend someone's week.
+
+## Token counts, and what null means
+
+`ChatService` now streams `.chatResponse()` rather than `.content()`, because `.content()`
+discards the metadata the token counts live in. Usage is merged field by field across chunks:
+providers differ in where the numbers arrive — prompt tokens early, completion tokens on the last
+chunk — and keeping only the final chunk would record the answer's size while losing the prompt
+that was paid for.
+
+**A provider that reports nothing leaves the columns null, never zero.** A stored zero is
+indistinguishable from a real measurement and would drag every average this data exists to
+inform. `cached_tokens` comes from `Usage.getCacheReadInputTokens()`; whether it is ever non-null
+is exactly what Task 8 checks, since the spec's pricing assumes prompt caching applies.
+
+What no test can settle: a provider reporting *deltas* meant to be summed would be recorded as
+the last delta. Task 8 compares a real answer against its recorded row.
+
+## Also
+
+`GET /api/usage` returns used, limit and when the window next frees, for Task 7's indicator. The
+frontend now reads the `429` body and `Retry-After` instead of always saying "too quickly" —
+there are two different `429`s now, and telling someone who has spent their week to wait a minute
+is worse than saying nothing.
