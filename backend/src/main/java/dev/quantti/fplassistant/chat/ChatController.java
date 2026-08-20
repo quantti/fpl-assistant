@@ -92,19 +92,32 @@ public class ChatController {
         long usageEventId = usage.claimChatTurn(userId, provider);
         AtomicReference<TokenUsage> reported = new AtomicReference<>();
 
-        UUID conversationId = existing != null ? existing : conversations.create(userId, message);
-        // Ties the charge to what it paid for. A second statement rather than a column on the
-        // insert, because the quota is claimed before any conversation exists — a refused turn
-        // must not leave one behind.
-        usage.attachConversation(usageEventId, conversationId);
-        conversations.append(conversationId, ChatTurn.USER, message);
-        // The whole conversation, not a window of it: continuing an old thread has to mean the
-        // model sees what was said, not only the end of it. Trimmed from the front only if it
-        // would no longer fit — and when that happens the user is told, because an answer given
-        // from half a conversation is worse when nobody knows half is missing.
-        List<ChatTurn> whole = conversations.recentTurns(conversationId);
-        List<ChatTurn> history = budget.fit(whole);
-        int dropped = whole.size() - history.size();
+        UUID conversationId;
+        List<ChatTurn> history;
+        int dropped;
+        try {
+            conversationId = existing != null ? existing : conversations.create(userId, message);
+            // Ties the charge to what it paid for. A second statement rather than a column on
+            // the insert, because the quota is claimed before any conversation exists — a
+            // refused turn must not leave one behind.
+            usage.attachConversation(usageEventId, conversationId);
+            conversations.append(conversationId, ChatTurn.USER, message);
+
+            // The whole conversation, not a window of it: continuing an old thread has to mean
+            // the model sees what was said, not only the end of it. Trimmed from the front only
+            // if it would no longer fit — and when that happens the user is told, because an
+            // answer given from half a conversation is worse when nobody knows half is missing.
+            history = budget.fit(conversations.recentTurns(conversationId));
+            // Counted against every turn the conversation holds, not against what the read
+            // returned: that read has a ceiling of its own, and a conversation past it would
+            // otherwise lose its oldest turns with nobody told.
+            dropped = conversations.countTurns(conversationId) - history.size();
+        } catch (RuntimeException e) {
+            // Charged a moment ago for a turn that never reached the provider. Anything else
+            // takes a message out of the user's week for a failure that was ours.
+            discard(usageEventId);
+            throw e;
+        }
 
         // Token events carry the token as a JSON string: raw SSE data cannot round-trip a
         // leading space (the decoder strips the one after "data:"), and LLM tokens usually
@@ -169,11 +182,14 @@ public class ChatController {
                     // Nothing was generated, so nothing was paid for: a charge left standing
                     // here would spend a week's allowance on answers nobody received — and
                     // during a provider outage, everybody's at once. A stream that failed after
-                    // reporting usage did consume tokens, and keeps its row.
-                    if (reported.get() == null) {
+                    // reporting usage did consume tokens, and keeps its row. A record carrying
+                    // only a model name is not usage: providers stamp that on chunks that
+                    // measured nothing.
+                    TokenUsage tokens = reported.get();
+                    if (tokens == null || !tokens.measured()) {
                         discard(usageEventId);
                     } else {
-                        recordTokens(usageEventId, reported.get());
+                        recordTokens(usageEventId, tokens);
                     }
                     sink.tryEmitError(error);
                 },

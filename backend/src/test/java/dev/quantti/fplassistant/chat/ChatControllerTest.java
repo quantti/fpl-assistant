@@ -69,11 +69,19 @@ class ChatControllerTest {
     @MockitoBean
     ChatService chatService;
 
+    // A spy, not a mock: every other test needs the real store, and only the one below needs it
+    // to fail.
+    @org.springframework.test.context.bean.override.mockito.MockitoSpyBean
+    ConversationStore conversationsSpy;
+
     @Value("${fpl.user.conversation-table-name}")
     String conversationTable;
 
     @Value("${fpl.user.usage-table-name}")
     String usageTable;
+
+    @Value("${fpl.user.message-table-name}")
+    String messageTable;
 
     @Value("${fpl.user.profile-table-name}")
     String profileTable;
@@ -157,6 +165,70 @@ class ChatControllerTest {
                             .as("the turn names the conversation it was spent on")
                             .isNotNull();
                 });
+    }
+
+    /**
+     * The read that builds the history has a ceiling of its own — 500 messages — and a
+     * conversation past it loses its oldest turns before the budget is ever consulted. Counting
+     * against what the read returned would report nothing dropped, which is the silent case the
+     * notice exists to prevent.
+     */
+    @Test
+    void turnsLostToTheReadCeilingAreAnnouncedToo() {
+        when(chatService.stream(any(), any())).thenReturn(Flux.just("answer"));
+        UUID id = conversations.create(UUID.fromString(USER_A), "very long one");
+        // Short messages, so the character budget is not what drops them: the ceiling is.
+        jdbc.update("INSERT INTO " + messageTable + " (conversation_id, role, content)"
+                + " SELECT ?, CASE WHEN i % 2 = 0 THEN 'user' ELSE 'assistant' END, 'turn ' || i"
+                + " FROM generate_series(1, ?) AS i",
+                id, ConversationStore.MAX_MESSAGES + 20);
+
+        List<ServerSentEvent<String>> events = post(USER_A,
+                "{\"conversationId\":\"" + id + "\",\"message\":\"and now?\"}");
+
+        assertThat(events).extracting(ServerSentEvent::event).contains("truncated");
+    }
+
+    /**
+     * A chunk carrying only a model name is not usage. Treating it as usage would charge a
+     * message to someone whose turn produced nothing at all.
+     */
+    @Test
+    void aFailureThatOnlyLearnedTheModelNameIsStillRefunded() {
+        when(chatService.stream(any(), any())).thenAnswer(invocation -> {
+            java.util.function.Consumer<TokenUsage> onUsage = invocation.getArgument(1);
+            onUsage.accept(new TokenUsage("claude-sonnet-5", null, null, null, null));
+            return Flux.error(new IllegalStateException("dropped before reporting anything"));
+        });
+
+        Jwt token = Jwt.withTokenValue("test").header("alg", "none").subject(USER_A).build();
+        StepVerifier.create(controller.chat(new ChatRequest(null, "question"), token))
+                .expectNextCount(3)
+                .verifyComplete();
+
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + usageTable + " WHERE user_id = ?",
+                Integer.class, UUID.fromString(USER_A)))
+                .isZero();
+    }
+
+    /**
+     * The quota is claimed before the conversation is written, so a failure in between would
+     * otherwise take a message out of someone's week for a turn that never reached the provider.
+     */
+    @Test
+    void aWriteThatFailsAfterTheClaimGivesTheMessageBack() {
+        org.mockito.Mockito.doThrow(new org.springframework.dao.QueryTimeoutException("no connection"))
+                .when(conversationsSpy).append(any(), any(), any());
+
+        Jwt token = Jwt.withTokenValue("test").header("alg", "none").subject(USER_A).build();
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                        controller.chat(new ChatRequest(null, "question"), token))
+                .isInstanceOf(org.springframework.dao.QueryTimeoutException.class);
+
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + usageTable + " WHERE user_id = ?",
+                Integer.class, UUID.fromString(USER_A)))
+                .as("charged for nothing, so the charge is given back")
+                .isZero();
     }
 
     /**
