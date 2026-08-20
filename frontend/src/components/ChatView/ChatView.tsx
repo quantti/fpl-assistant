@@ -7,6 +7,7 @@ import AppMenu from '../AppMenu/AppMenu'
 import ConversationSidebar from '../ConversationSidebar/ConversationSidebar'
 import MessageThread from '../MessageThread/MessageThread'
 import MessageInput from '../MessageInput/MessageInput'
+import SettingsPage from '../SettingsPage/SettingsPage'
 import UsagePage from '../UsagePage/UsagePage'
 import classes from './ChatView.module.css'
 
@@ -79,6 +80,8 @@ export default function ChatView({ route }: Props) {
         </div>
         {route === '/usage' ? (
           <UsagePage />
+        ) : route === '/settings' ? (
+          <SettingsPage />
         ) : messages.length === 0 && streamingContent === null ? (
           <div className={classes.empty}>
             Ask me anything about Fantasy Premier League — players, fixtures, strategy, chips, transfers.
