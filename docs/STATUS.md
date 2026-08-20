@@ -1621,3 +1621,119 @@ paginates. Capped at 500 messages and 200 conversations, read from the recent en
 
 Usage recording and the quota are Task 5, and the conversation list UI is Task 7 — the client
 keeps the id in memory for the session and nothing lists past conversations yet.
+
+---
+
+# Phase 5a — Task 5: usage recording and the quota (2026-08-20)
+
+One `fpl_usage_event` row per chat turn, written **when the call starts**. Recording on
+completion would make an abandoned stream free to repeat, and the cost is incurred at the start
+either way.
+
+The quota is checked **before the stream opens and before anything is written**: once an SSE
+response has begun its status is already on the wire and cannot become a `429`, and a rejected
+turn that had created a conversation would leave an empty one behind. The answer is a real `429`
+with `Retry-After` — seconds until the oldest counted message leaves the seven-day window —
+rather than an SSE `error` event.
+
+## The limit is per person
+
+`fpl_user_profile.weekly_message_limit`: `NULL` means the configured default
+(`fpl.quota.messages-per-week`, 50), `-1` unlimited, `0` suspended, *n* that many per rolling
+seven days. A suspended account gets **no** `Retry-After`: there is no number of seconds that
+turns it back on, and a header promising one would be a lie the client would act on.
+
+The window is counted in the database against `now()`, not in this process — a count that shares
+a clock with the timestamps it counts cannot drift from them. Only `event_type = 'chat'` counts,
+so title generation or a background call cannot quietly spend someone's week.
+
+## Token counts, and what null means
+
+`ChatService` now streams `.chatResponse()` rather than `.content()`, because `.content()`
+discards the metadata the token counts live in. Usage is merged field by field across chunks:
+providers differ in where the numbers arrive — prompt tokens early, completion tokens on the last
+chunk — and keeping only the final chunk would record the answer's size while losing the prompt
+that was paid for.
+
+**A provider that reports nothing leaves the columns null, never zero.** A stored zero is
+indistinguishable from a real measurement and would drag every average this data exists to
+inform. `cached_tokens` comes from `Usage.getCacheReadInputTokens()`; whether it is ever non-null
+is exactly what Task 8 checks, since the spec's pricing assumes prompt caching applies.
+
+What no test can settle: a provider reporting *deltas* meant to be summed would be recorded as
+the last delta. Task 8 compares a real answer against its recorded row.
+
+## Review round
+
+The `429` promised a return that would not come: a suspended account normally *has* usage inside
+the window, so a `Retry-After` could be computed for it — "This account cannot send messages. Try
+again in 6 days." Suppressed on the limit rather than on the absence of a timestamp.
+
+`nextFreeAt` was the oldest event plus the window, which is only right when usage equals the
+limit. Lower someone's limit and they are over it: the client waits out the oldest event, retries
+and is refused again by a margin nobody told it about. It now offsets by how many turns are still
+owed.
+
+The `-1` sentinel applied only to the per-user column, never to the configured default — so
+`QUOTA_MESSAGES_PER_WEEK=-1`, documented as "unlimited" beside the property, would have locked
+out every account without an override with "you have used all -1 messages for this week".
+
+The check and the insert were a read followed by a write with nothing between them: two tabs at
+one message remaining both passed. They are now one transaction behind a per-user advisory lock,
+which serialises one person's own requests and nobody else's.
+
+**A failed stream refunded even when it had burned tokens** — found by the second review round,
+after the first one introduced the refund. `ChatService` reported usage from `doOnComplete`,
+which never fires on an error or on the five-minute timeout, so the controller always saw "no
+usage reported" and always discarded the row: a tool-calling turn that spent 30k tokens and then
+lost the connection was free, and free to repeat. Usage is now reported as each chunk carries it,
+so a failure can see what was already spent.
+
+**Spring AI's `EmptyUsage` reports zero prompt and completion tokens on every chunk**, and some
+providers stamp the model name on every chunk too. Together those passed the "did this chunk
+measure anything" guard and wrote zeros into every row — the one thing null exists to
+distinguish. Zero prompt/completion counts are now treated as unreported; the cache figures keep
+their zeros, because they are null when absent and a zero there is a genuine cache miss.
+
+**A stream that failed used to keep its charge.** A provider outage would have spent every user's
+weekly allowance on answers nobody received. A failure that reported no usage now discards the
+row; one that reported usage did consume tokens and keeps it.
+
+A reported *zero* is now kept rather than discarded. A cache miss reports zero cache reads, and
+"the cache did not hit" has to be distinguishable from "the provider said nothing" — that
+distinction is the measurement Task 8 exists to make. Merging takes the largest value seen per
+field, which is correct for the cumulative usage both providers report and immune to a trailing
+empty chunk erasing the totals.
+
+## Token accounting per turn, per user, per message (owner request)
+
+`fpl_usage_event` gained `conversation_id`, `model`, `cache_write_tokens` and a generated
+`total_tokens`. Queries in `docs/DEVELOPMENT.md`.
+
+**No money is recorded.** A first pass stored a USD figure priced at the moment of the turn; the
+owner rejected it as complexity that buys nothing — a price depends on the model, the date and
+whatever promotion is running, so the stored number is wrong as soon as any of those move. The
+question worth answering is how many tokens a message spent, and that is what the table now says.
+
+The cache-write column stays, and it is the one that was actually missing: **Anthropic reports
+`input_tokens` as the uncached remainder**, with reads and writes counted separately. A "total"
+computed from input and output alone is an undercount whenever caching is on. `total_tokens` is
+generated by the database — `input + cached + cache_write + output` — so no code path can forget
+it and no two callers can disagree about the sum. A NULL column contributes nothing: unreported is
+not zero, but it is not a number to add either.
+
+Open, and worth checking before anyone switches provider: if OpenAI counts cached tokens inside
+its prompt total, `total_tokens` double-counts them. Anthropic does not, and Anthropic is what
+runs.
+
+`conversation_id` carries **no foreign key and no cascade**, which is the point of it dangling:
+usage counted from something the user can delete is a quota the user can refill by deleting a
+conversation. A test pins that deleting the conversation leaves the usage row standing.
+
+## Also
+
+`GET /api/usage` returns used, limit and when the window next frees, for Task 7's indicator. It
+does **not** report token counts — those are the owner's numbers, read with SQL. The
+frontend now reads the `429` body and `Retry-After` instead of always saying "too quickly" —
+there are two different `429`s now, and telling someone who has spent their week to wait a minute
+is worse than saying nothing.

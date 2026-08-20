@@ -95,6 +95,57 @@ ON CONFLICT (user_id) DO UPDATE SET weekly_message_limit = EXCLUDED.weekly_messa
 
 The uuid is in Supabase → Authentication → Users, or `auth.users.id`.
 
+## Token tracking
+
+Every chat turn writes one `fpl_usage_event` row: who, when, which provider and model, and the
+token counts the provider reported. **Tokens only — no money.** A price depends on the model, the
+date and whatever promotion is running, so a stored figure is wrong as soon as any of those move.
+Nothing surfaces this in the UI; it is read with SQL.
+
+`total_tokens` is a generated column — `input + cached + cache_write + output`, added up by the
+database so no code path can forget it and no two callers can disagree about the sum.
+
+```sql
+-- How many tokens has one user spent in total?
+SELECT sum(total_tokens) FROM fpl_usage_event WHERE user_id = '<uuid>';
+
+-- Per user, this week, with the breakdown
+SELECT user_id, count(*) AS turns, sum(total_tokens) AS total,
+       sum(input_tokens) AS input, sum(cached_tokens) AS cache_reads,
+       sum(cache_write_tokens) AS cache_writes, sum(output_tokens) AS output
+FROM fpl_usage_event
+WHERE event_type = 'chat' AND created_at > now() - interval '7 days'
+GROUP BY user_id ORDER BY total DESC NULLS LAST;
+
+-- One message at a time, newest first
+SELECT created_at, model, conversation_id, total_tokens,
+       input_tokens, cached_tokens, cache_write_tokens, output_tokens
+FROM fpl_usage_event
+WHERE user_id = '<uuid>' AND event_type = 'chat'
+ORDER BY created_at DESC;
+
+-- One conversation, message by message
+SELECT u.created_at, u.total_tokens, m.role, left(m.content, 60) AS text
+FROM fpl_usage_event u
+JOIN fpl_message m ON m.conversation_id = u.conversation_id
+WHERE u.conversation_id = '<uuid>'
+ORDER BY u.created_at;
+```
+
+What the numbers mean:
+
+- **One row per user turn, not per model call.** Spring AI reports usage cumulatively across a
+  turn's tool-call round trips, so the row is the whole turn.
+- **`input_tokens` is the uncached remainder** on Anthropic: cache reads and cache writes are
+  counted separately, which is why the total adds all four columns. **If the provider is ever
+  switched to OpenAI, check this first** — a provider that counts cached tokens inside its prompt
+  total would be double-counted by `total_tokens`.
+- **`NULL` means the provider reported nothing**, never zero. A cache miss really does report zero
+  reads, and that is the measurement Task 8 checks. A NULL column contributes nothing to the total.
+- **`conversation_id` carries no foreign key and no cascade.** Usage counted from something the
+  user can delete is a quota the user can refill by deleting a conversation, so the reference is
+  allowed to dangle.
+
 ## The pre-push hook
 
 There is no branch protection on this repository. GitHub blocks it for private repos on the Free
