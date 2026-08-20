@@ -12,11 +12,15 @@ interface UseChatReturn {
 /** Retry-After in human terms. Empty when the header is missing — a suspended account has no when. */
 function waitFor(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds <= 0) return ''
-  if (seconds < 90) return `Try again in ${Math.ceil(seconds)} seconds.`
   const hours = seconds / 3600
-  if (hours < 1) return `Try again in ${Math.ceil(seconds / 60)} minutes.`
-  if (hours < 48) return `Try again in ${Math.round(hours)} hours.`
-  return `Try again in ${Math.round(hours / 24)} days.`
+  if (seconds < 90) return `Try again in ${plural(Math.ceil(seconds), 'second')}.`
+  if (hours < 1) return `Try again in ${plural(Math.ceil(seconds / 60), 'minute')}.`
+  if (hours < 48) return `Try again in ${plural(Math.round(hours), 'hour')}.`
+  return `Try again in ${plural(Math.round(hours / 24), 'day')}.`
+}
+
+function plural(count: number, unit: string): string {
+  return `${count} ${unit}${count === 1 ? '' : 's'}`
 }
 
 const GONE = 'That conversation is no longer available. The messages above stay on screen but are no longer part of it — your next message starts a new conversation, without them.'
