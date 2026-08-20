@@ -71,25 +71,27 @@ class JwtAuthenticationTest {
     }
 
     /**
-     * Chat is deliberately open until Task 6 ships sign-in. Requiring a token here while the
-     * deployed frontend cannot send one answered 401 to every user in production on 2026-08-19.
+     * Chat needs a token now that the frontend can send one. It was deliberately open between
+     * 2026-08-19 and this change: requiring one while the deployed UI had no sign-in answered
+     * 401 to every user, so the two only ship merged together.
      */
     @Test
-    void chatStaysOpenUntilTheFrontendCanSignIn() throws Exception {
+    void chatRequiresAToken() throws Exception {
         mockMvc.perform(post("/api/chat")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"messages\":[]}"))
-                .andExpect(status().isBadRequest());
+                .andExpect(status().isUnauthorized());
     }
 
     /**
-     * Fail closed: anything not explicitly permitted is challenged rather than served. Under the
-     * previous catch-all {@code permitAll}, a new controller outside {@code /api/**} — or an
-     * actuator endpoint added to the exposure list — was public with no code change here.
+     * Fail closed for everything the client routes do not cover. A path with a dot in it is a
+     * file request, so it never reaches the SPA forward — and nothing else outside
+     * {@code /api/**} is permitted, which is what {@code SpaForwardingTest} pins by asserting no
+     * server endpoint lives where a client route could shadow it.
      */
     @Test
-    void anUnknownPathIsNotPublicByDefault() throws Exception {
-        mockMvc.perform(get("/internal/whatever")).andExpect(status().isUnauthorized());
+    void anUnknownFilePathIsNotPublicByDefault() throws Exception {
+        mockMvc.perform(get("/internal/whatever.json")).andExpect(status().isUnauthorized());
     }
 
     @Test
@@ -144,9 +146,8 @@ class JwtAuthenticationTest {
     }
 
     /**
-     * The profile endpoint, not chat: chat is public until the frontend can send a token, and a
-     * GET here spends no rate-limit budget — ChatControllerTest documents that spending it from a
-     * growing suite is a time bomb.
+     * The profile endpoint, not chat: a GET here spends no rate-limit budget, and
+     * ChatControllerTest documents that spending it from a growing suite is a time bomb.
      */
     private static org.springframework.test.web.servlet.RequestBuilder protectedEndpoint(String token) {
         var request = get("/api/profile");
