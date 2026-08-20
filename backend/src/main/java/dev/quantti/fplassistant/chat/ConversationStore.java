@@ -113,6 +113,19 @@ public class ConversationStore {
     }
 
     /**
+     * How many turns the conversation holds — all of them, not the {@link #MAX_MESSAGES} that
+     * come back from a read. The caller needs the real number to tell the user how much was left
+     * out: a conversation of 600 turns whose newest 500 fit the budget would otherwise drop 100
+     * silently, which is the case the notice exists for.
+     */
+    public int countTurns(UUID conversationId) {
+        Integer count = jdbc.queryForObject(
+                "SELECT count(*) FROM " + messageTable + " WHERE conversation_id = ?",
+                Integer.class, conversationId);
+        return count == null ? 0 : count;
+    }
+
+    /**
      * One conversation's messages, oldest first, capped at {@link #MAX_MESSAGES} — read from the
      * end, so a conversation long enough to hit the cap keeps its most recent turns rather than
      * its first ones. Ownership is the caller's to check.
