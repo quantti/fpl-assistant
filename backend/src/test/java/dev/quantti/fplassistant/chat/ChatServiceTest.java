@@ -148,7 +148,9 @@ class ChatServiceTest {
                 .expectNext("Hello", " world")
                 .verifyComplete();
 
-        assertThat(reported).containsExactly(new TokenUsage(null, 1200, 900, null, 300));
+        assertThat(reported.getLast())
+                .as("the running measurement, merged across the chunks that reported one")
+                .isEqualTo(new TokenUsage(null, 1200, 900, null, 300));
     }
 
     /**
@@ -168,7 +170,7 @@ class ChatServiceTest {
                 .expectNext("text", "more text")
                 .verifyComplete();
 
-        assertThat(reported).containsExactly(new TokenUsage(null, 1200, 0, null, 300));
+        assertThat(reported.getLast()).isEqualTo(new TokenUsage(null, 1200, 0, null, 300));
     }
 
     /**
@@ -187,7 +189,31 @@ class ChatServiceTest {
                 .expectNext("text")
                 .verifyComplete();
 
-        assertThat(reported).containsExactly(new TokenUsage(null, 400, 900, 1600, 250));
+        assertThat(reported.getLast()).isEqualTo(new TokenUsage(null, 400, 900, 1600, 250));
+    }
+
+    /**
+     * Spring AI's EmptyUsage reports zero prompt and completion tokens on every chunk, and some
+     * providers stamp the model name on every chunk as well. Taken together that would write a
+     * measured-looking zero into every row — the exact thing null exists to distinguish.
+     */
+    @Test
+    void aChunkCarryingOnlyAModelNameRecordsNoZeroes() {
+        ChatResponse named = new ChatResponse(
+                List.of(new Generation(new AssistantMessage("text"))),
+                ChatResponseMetadata.builder()
+                        .model("some-model")
+                        .usage(new org.springframework.ai.chat.metadata.EmptyUsage())
+                        .build());
+        ChatService service = service(List.of(), Flux.just(named));
+
+        List<TokenUsage> reported = new java.util.ArrayList<>();
+        StepVerifier.create(service.stream(List.of(new ChatTurn(ChatTurn.USER, "hi")), reported::add))
+                .expectNext("text")
+                .verifyComplete();
+
+        assertThat(reported.getLast())
+                .isEqualTo(new TokenUsage("some-model", null, null, null, null));
     }
 
     @Test

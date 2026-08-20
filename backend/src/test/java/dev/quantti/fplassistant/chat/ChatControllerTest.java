@@ -159,6 +159,32 @@ class ChatControllerTest {
                 });
     }
 
+    /**
+     * A stream that burned tokens and then failed keeps its charge. Only a failure that produced
+     * nothing is refunded — otherwise a five-minute tool-calling turn that dies at the end would
+     * be free, and free to repeat.
+     */
+    @Test
+    void aFailureAfterTokensWereReportedKeepsTheCharge() {
+        when(chatService.stream(any(), any())).thenAnswer(invocation -> {
+            java.util.function.Consumer<TokenUsage> onUsage = invocation.getArgument(1);
+            onUsage.accept(new TokenUsage("claude-sonnet-5", 30000, 0, 0, 900));
+            return Flux.error(new IllegalStateException("the provider dropped the connection"));
+        });
+
+        Jwt token = Jwt.withTokenValue("test").header("alg", "none").subject(USER_A).build();
+        StepVerifier.create(controller.chat(new ChatRequest(null, "expensive question"), token))
+                .assertNext(event -> assertThat(event.event()).isEqualTo("conversation"))
+                .assertNext(event -> assertThat(event.event()).isEqualTo("error"))
+                .assertNext(event -> assertThat(event.event()).isEqualTo("done"))
+                .verifyComplete();
+
+        assertThat(jdbc.queryForList("SELECT total_tokens FROM " + usageTable
+                + " WHERE user_id = ?", UUID.fromString(USER_A)))
+                .singleElement()
+                .satisfies(row -> assertThat(row).containsEntry("total_tokens", 30900));
+    }
+
     /** Bounded wait for an asynchronous write. Fails the test rather than hanging the suite. */
     private void awaitMessageCount(UUID conversationId, int expected) {
         long deadline = System.currentTimeMillis() + 5_000;
