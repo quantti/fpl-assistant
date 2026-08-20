@@ -85,13 +85,16 @@ class ChatServiceTest {
                 .verifyComplete();
     }
 
+    /**
+     * The whole history is sent — bounding it is HistoryBudget's job — but it must still open on
+     * a user turn: the Anthropic API rejects a history that starts with an assistant message,
+     * and dropping the oldest turns to fit can leave one there.
+     */
     @Test
-    void historyIsWindowedAndAlwaysOpensOnAUserMessage() {
+    void theHistoryIsSentWholeAndAlwaysOpensOnAUserMessage() {
         ChatService service = serviceStreaming(List.of(), Flux.empty());
-        // 25 alternating messages: the raw 20-message window would open on assistant msg-5,
-        // which the Anthropic API rejects — the window must trim itself to user msg-6.
         List<ChatTurn> turns = IntStream.range(0, 25)
-                .mapToObj(i -> new ChatTurn(i % 2 == 0 ? ChatTurn.USER : ChatTurn.ASSISTANT, "msg-" + i))
+                .mapToObj(i -> new ChatTurn(i % 2 == 0 ? ChatTurn.ASSISTANT : ChatTurn.USER, "msg-" + i))
                 .toList();
 
         service.stream(turns, IGNORE_USAGE);
@@ -100,12 +103,11 @@ class ChatServiceTest {
         ArgumentCaptor<List<Message>> captor = ArgumentCaptor.forClass(List.class);
         verify(requestSpec).messages(captor.capture());
         List<Message> sent = captor.getValue();
-        assertThat(sent).hasSize(19);
-        assertThat(sent.getFirst().getText()).isEqualTo("msg-6");
+        assertThat(sent).as("everything except the leading assistant turn").hasSize(24);
+        assertThat(sent.getFirst().getText()).isEqualTo("msg-1");
         assertThat(sent.getFirst()).isInstanceOf(UserMessage.class);
         assertThat(sent.getLast().getText()).isEqualTo("msg-24");
-        assertThat(sent.getLast()).isInstanceOf(UserMessage.class);
-        assertThat(sent.get(1)).isInstanceOf(AssistantMessage.class);
+        assertThat(sent.getLast()).isInstanceOf(AssistantMessage.class);
     }
 
     /**

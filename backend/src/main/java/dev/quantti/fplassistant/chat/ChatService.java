@@ -19,10 +19,6 @@ import java.util.function.Consumer;
 @Service
 public class ChatService {
 
-    // The bound on per-request cost and context growth. Since Task 4 the history is the
-    // server's, so this is also how much of a conversation is read back per turn.
-    public static final int HISTORY_WINDOW = 20;
-
     private final ChatClient chatClient;
     private final List<FplTool> tools;
 
@@ -32,18 +28,18 @@ public class ChatService {
     }
 
     /**
-     * Streams the answer to a conversation whose turns are given oldest-first. The caller has
-     * already bounded them to {@link #HISTORY_WINDOW}; trimming here is about the shape of the
-     * window rather than its size.
+     * Streams the answer to a conversation whose turns are given oldest-first. Whatever is
+     * given is sent: bounding the history is {@link HistoryBudget}'s job, and the caller's,
+     * because the caller is the one who has to tell the user when something was left out.
      *
      * <p>{@code onUsage} is called with the running measurement each time a chunk reports one,
      * not once at the end: a stream that fails or times out never completes, and the tokens it
      * burned before failing were spent all the same.
      */
     public Flux<String> stream(List<ChatTurn> turns, Consumer<TokenUsage> onUsage) {
-        List<ChatTurn> window = turns.subList(Math.max(0, turns.size() - HISTORY_WINDOW), turns.size());
-        // The Anthropic API rejects a history that opens on an assistant turn, and an
-        // even-sized window over an odd-length alternating conversation always does.
+        List<ChatTurn> window = turns;
+        // The Anthropic API rejects a history that opens on an assistant turn, and dropping the
+        // oldest turns can leave one there.
         while (!window.isEmpty() && !ChatTurn.USER.equals(window.getFirst().role())) {
             window = window.subList(1, window.size());
         }

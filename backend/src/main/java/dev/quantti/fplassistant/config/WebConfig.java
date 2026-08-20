@@ -19,6 +19,11 @@ public class WebConfig implements WebMvcConfigurer {
                 // preflight, which MockMvc never exercises — so the suite stays green
                 // while the browser gets 403 "Invalid CORS request".
                 .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS")
-                .allowedHeaders("*");
+                .allowedHeaders("*")
+                // Response headers are not readable cross-origin unless named here, and
+                // Retry-After is not on the CORS safelist. Without it a user who has spent their
+                // week is told that they are out but never when it frees — invisible locally,
+                // because the Vite proxy makes the dev server same-origin.
+                .exposedHeaders("Retry-After");
     }
 }

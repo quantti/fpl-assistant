@@ -32,7 +32,12 @@ export default function MessageThread({ messages, streamingContent }: Props) {
             <p className={classes.userBody}>{msg.content}</p>
           </div>
         ) : (
-          <AssistantMessage key={i} content={msg.content} isError={msg.isError} />
+          <AssistantMessage
+            key={i}
+            content={msg.content}
+            isError={msg.isError}
+            isNotice={msg.isNotice}
+          />
         )
       )}
       {streamingContent !== null && (

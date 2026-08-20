@@ -9,6 +9,13 @@ export interface Message {
    * message, and errors are not messages.
    */
   isError?: boolean
+  /**
+   * Client-side only: a note from the app about the conversation itself —
+   * currently that the oldest turns no longer fit and were left out of what
+   * the model was given. Not an error: nothing failed, but the user is
+   * entitled to know the answer was written without the beginning.
+   */
+  isNotice?: boolean
 }
 
 /**
