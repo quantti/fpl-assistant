@@ -79,6 +79,24 @@ export function useChat(): UseChatReturn {
         }
         return
       }
+      if (eventName === 'truncated') {
+        // The conversation outgrew what can be sent, so its oldest turns were left out of what
+        // the model was given. Nothing failed — but an answer written without the beginning of
+        // the conversation should not look like one written with it.
+        const dropped = Number(data)
+        setMessages(prev => [...prev, {
+          role: 'assistant',
+          content: dropped > 0 && Number.isFinite(dropped)
+            ? `This conversation has grown too long to send in full. The ${dropped} oldest `
+              + 'messages were left out of the answer below — they are still shown above, and '
+              + 'still yours, but the assistant did not see them. Start a new conversation if '
+              + 'the beginning matters.'
+            : 'This conversation has grown too long to send in full. Its oldest messages were '
+              + 'left out of the answer below.',
+          isNotice: true,
+        }])
+        return
+      }
       if (eventName === 'error') {
         errorText = data || FAILED
         return

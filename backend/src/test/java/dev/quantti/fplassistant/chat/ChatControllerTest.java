@@ -160,6 +160,28 @@ class ChatControllerTest {
     }
 
     /**
+     * When the oldest turns no longer fit, the user is told. An answer written without the
+     * beginning of the conversation must not look like one written with it.
+     */
+    @Test
+    void aTrimmedHistoryIsAnnouncedToTheClient() {
+        when(chatService.stream(any(), any())).thenReturn(Flux.just("answer"));
+        UUID id = conversations.create(UUID.fromString(USER_A), "long one");
+        // The test profile's budget is 400 characters; five of these do not fit.
+        for (int i = 0; i < 5; i++) {
+            conversations.append(id, ChatTurn.USER, "question " + i + " " + "x".repeat(200));
+            conversations.append(id, ChatTurn.ASSISTANT, "answer " + i + " " + "x".repeat(200));
+        }
+
+        List<ServerSentEvent<String>> events = post(USER_A,
+                "{\"conversationId\":\"" + id + "\",\"message\":\"and now?\"}");
+
+        assertThat(events).extracting(ServerSentEvent::event).contains("truncated");
+        assertThat(events.stream().filter(e -> "truncated".equals(e.event())).findFirst().orElseThrow())
+                .satisfies(event -> assertThat(Integer.parseInt(event.data())).isPositive());
+    }
+
+    /**
      * A stream that burned tokens and then failed keeps its charge. Only a failure that produced
      * nothing is refunded — otherwise a five-minute tool-calling turn that dies at the end would
      * be free, and free to repeat.
