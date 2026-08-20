@@ -4,6 +4,11 @@ WORKDIR /app/frontend
 COPY frontend/package*.json ./
 RUN npm ci
 COPY frontend/ ./
+# The Supabase publishable key is not committed, so it arrives as a build argument. It ends up
+# in the bundle either way — that is what a publishable key is for — but it stays out of the
+# repository. The build fails without it rather than shipping a page that cannot sign anyone in.
+ARG VITE_SUPABASE_ANON_KEY
+ENV VITE_SUPABASE_ANON_KEY=$VITE_SUPABASE_ANON_KEY
 RUN npm run build
 
 # Stage 2: Build Spring Boot (includes frontend static files)
