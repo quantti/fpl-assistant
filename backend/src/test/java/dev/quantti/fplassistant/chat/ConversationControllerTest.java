@@ -91,6 +91,20 @@ class ConversationControllerTest {
                 .andExpect(status().isNotFound());
     }
 
+    /**
+     * A verified token is not a token with a usable subject. Bare {@code UUID.fromString} on the
+     * claim turns a token without one into a 500 with a stack trace, on a path anyone can reach;
+     * {@code TokenSubject} keeps it at 401, and this is what stops a third call site forgetting.
+     */
+    @Test
+    void aTokenWithoutAUsableSubjectIsUnauthorized() throws Exception {
+        mockMvc.perform(get("/api/conversations").header("Authorization", bearer("not-a-uuid")))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(get("/api/conversations/" + UUID.randomUUID() + "/messages")
+                .header("Authorization", bearer("not-a-uuid")))
+                .andExpect(status().isUnauthorized());
+    }
+
     private static String bearer(String user) {
         return "Bearer " + TestJwks.validTokenFor(user);
     }

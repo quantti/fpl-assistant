@@ -87,6 +87,23 @@ class ChatControllerTest {
         }
     }
 
+    /** Bounded wait for an asynchronous write. Fails the test rather than hanging the suite. */
+    private void awaitMessageCount(UUID conversationId, int expected) {
+        long deadline = System.currentTimeMillis() + 5_000;
+        while (System.currentTimeMillis() < deadline) {
+            if (conversations.messages(conversationId).size() >= expected) {
+                return;
+            }
+            try {
+                Thread.sleep(25);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(e);
+            }
+        }
+        throw new AssertionError("the assistant message was never persisted");
+    }
+
     private List<ServerSentEvent<String>> post(String user, String body) {
         return client.post().uri("/api/chat")
                 .header("Authorization", "Bearer " + TestJwks.validTokenFor(user))
@@ -230,6 +247,10 @@ class ChatControllerTest {
         model.tryEmitComplete();
 
         UUID id = conversations.list(UUID.fromString(USER_A)).getFirst().id();
+        // The persist runs on a boundedElastic worker — the controller hops off the provider's
+        // event loop before touching JDBC — so completion here is not the same instant as the
+        // row landing.
+        awaitMessageCount(id, 2);
         assertThat(conversations.messages(id))
                 .extracting(ConversationStore.StoredMessage::role,
                         ConversationStore.StoredMessage::content)
