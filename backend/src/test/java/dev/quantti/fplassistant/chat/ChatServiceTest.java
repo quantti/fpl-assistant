@@ -59,9 +59,14 @@ class ChatServiceTest {
 
     /** A chunk carrying only usage — what the last chunk of a real stream looks like. */
     private static ChatResponse usage(Integer prompt, Integer completion, Long cacheReads) {
+        return usage(prompt, completion, cacheReads, null);
+    }
+
+    private static ChatResponse usage(Integer prompt, Integer completion, Long cacheReads,
+                                      Long cacheWrites) {
         return new ChatResponse(List.of(),
                 ChatResponseMetadata.builder()
-                        .usage(new DefaultUsage(prompt, completion, null, null, cacheReads, null))
+                        .usage(new DefaultUsage(prompt, completion, null, null, cacheReads, cacheWrites))
                         .build());
     }
 
@@ -143,7 +148,7 @@ class ChatServiceTest {
                 .expectNext("Hello", " world")
                 .verifyComplete();
 
-        assertThat(reported).containsExactly(new TokenUsage(1200, 900, 300));
+        assertThat(reported).containsExactly(new TokenUsage(null, 1200, 900, null, 300));
     }
 
     /**
@@ -163,7 +168,26 @@ class ChatServiceTest {
                 .expectNext("text", "more text")
                 .verifyComplete();
 
-        assertThat(reported).containsExactly(new TokenUsage(1200, 0, 300));
+        assertThat(reported).containsExactly(new TokenUsage(null, 1200, 0, null, 300));
+    }
+
+    /**
+     * Cache writes are billed at a premium and cache reads at a fraction, and Anthropic reports
+     * the prompt's uncached remainder as the input count — a cost computed without the write
+     * figure is always an underestimate.
+     */
+    @Test
+    void cacheWritesAreCapturedAlongsideReads() {
+        ChatService service = service(List.of(), Flux.just(
+                response("text"),
+                usage(400, 250, 900L, 1600L)));
+
+        List<TokenUsage> reported = new java.util.ArrayList<>();
+        StepVerifier.create(service.stream(List.of(new ChatTurn(ChatTurn.USER, "hi")), reported::add))
+                .expectNext("text")
+                .verifyComplete();
+
+        assertThat(reported).containsExactly(new TokenUsage(null, 400, 900, 1600, 250));
     }
 
     @Test
