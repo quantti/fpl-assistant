@@ -97,6 +97,11 @@ fpl:
     # current-season vaastav merged_gw.csv when the last snapshot is older than this. 6h keeps
     # roughly twice-daily cadence during the season without hitting vaastav on every boot.
     sync-stale-after-hours: 6
+  quota:
+    # The fallback, not the answer: the limit is per person in
+    # fpl_user_profile.weekly_message_limit, and this applies to every account that has no
+    # override — which is almost all of them. NULL there means this, -1 unlimited, 0 suspended.
+    messages-per-week: ${QUOTA_MESSAGES_PER_WEEK:50}
   user:
     # Phase 5a. Names are properties for the same reason every other table's is: the test
     # profile pins them to isolated copies. fpl_user_profile is NOT app_user — tapas owns that
