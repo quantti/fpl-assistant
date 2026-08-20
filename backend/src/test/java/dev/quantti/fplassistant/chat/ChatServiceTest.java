@@ -47,8 +47,8 @@ class ChatServiceTest {
     void streamReturnsFluxFromChatClient() {
         ChatService service = service(List.of(), Flux.just("Hello", " FPL", " fan"));
 
-        Flux<String> result = service.stream(new ChatRequest(
-                List.of(new ChatRequest.MessageDto("user", "Who should I captain?"))));
+        Flux<String> result = service.stream(
+                List.of(new ChatTurn(ChatTurn.USER, "Who should I captain?")));
 
         StepVerifier.create(result)
                 .expectNext("Hello", " FPL", " fan")
@@ -60,11 +60,11 @@ class ChatServiceTest {
         ChatService service = service(List.of(), Flux.empty());
         // 25 alternating messages: the raw 20-message window would open on assistant msg-5,
         // which the Anthropic API rejects — the window must trim itself to user msg-6.
-        List<ChatRequest.MessageDto> messages = IntStream.range(0, 25)
-                .mapToObj(i -> new ChatRequest.MessageDto(i % 2 == 0 ? "user" : "assistant", "msg-" + i))
+        List<ChatTurn> turns = IntStream.range(0, 25)
+                .mapToObj(i -> new ChatTurn(i % 2 == 0 ? ChatTurn.USER : ChatTurn.ASSISTANT, "msg-" + i))
                 .toList();
 
-        service.stream(new ChatRequest(messages));
+        service.stream(turns);
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<Message>> captor = ArgumentCaptor.forClass(List.class);
@@ -78,12 +78,34 @@ class ChatServiceTest {
         assertThat(sent.get(1)).isInstanceOf(AssistantMessage.class);
     }
 
+    /**
+     * A failed answer leaves the user's message stored with nothing after it, so the next
+     * question lands directly behind it. Anthropic rejects two user turns in a row; the frontend
+     * used to merge them from the history it held, and holds none since Task 4.
+     */
+    @Test
+    void consecutiveTurnsOfTheSameRoleAreMerged() {
+        ChatService service = service(List.of(), Flux.empty());
+
+        service.stream(List.of(
+                new ChatTurn(ChatTurn.USER, "first question"),
+                new ChatTurn(ChatTurn.USER, "second question"),
+                new ChatTurn(ChatTurn.ASSISTANT, "an answer")));
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<Message>> captor = ArgumentCaptor.forClass(List.class);
+        verify(requestSpec).messages(captor.capture());
+        assertThat(captor.getValue()).hasSize(2);
+        assertThat(captor.getValue().getFirst().getText())
+                .isEqualTo("first question\n\nsecond question");
+    }
+
     @Test
     void everyInjectedToolIsRegistered() {
         List<FplTool> tools = List.of(new FplTool() {}, new FplTool() {}, new FplTool() {});
         ChatService service = service(tools, Flux.empty());
 
-        service.stream(new ChatRequest(List.of(new ChatRequest.MessageDto("user", "hi"))));
+        service.stream(List.of(new ChatTurn(ChatTurn.USER, "hi")));
 
         ArgumentCaptor<Object[]> captor = ArgumentCaptor.forClass(Object[].class);
         verify(requestSpec).tools(captor.capture());
