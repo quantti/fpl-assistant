@@ -16,9 +16,12 @@ import org.springframework.stereotype.Component;
  * happens.
  *
  * <p>Characters, because counting tokens means asking the provider. Four characters per token is
- * the usual rough ratio for English, so the default is on the order of 200k tokens — well inside
- * claude-sonnet-5's window and far beyond any conversation this application has seen. The number
- * to watch before raising it is {@code input_tokens} in {@code fpl_usage_event}.
+ * the usual rough ratio for English, so the default is on the order of 200k tokens against
+ * claude-sonnet-5's 1M window. The headroom is deliberate and is not slack: the budget counts
+ * stored turns only, while the request also carries the system prompt, every tool's schema, the
+ * tool results injected during the answer — RAG chunks and stat tables are not small — and the
+ * reserved output. The number to watch before raising it is {@code input_tokens} in
+ * {@code fpl_usage_event}, which counts what was actually sent.
  */
 @Component
 public class HistoryBudget {
@@ -44,6 +47,13 @@ public class HistoryBudget {
             }
             used = next;
             first--;
+        }
+        // The Anthropic API rejects a history that opens on an assistant turn, and dropping the
+        // oldest turns to fit can leave one there. Done here rather than downstream so that what
+        // the caller counts as withheld is what was actually withheld — a turn dropped later
+        // would make the number shown to the user one too low.
+        while (first < turns.size() && !ChatTurn.USER.equals(turns.get(first).role())) {
+            first++;
         }
         return turns.subList(first, turns.size());
     }

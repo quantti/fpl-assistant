@@ -1759,6 +1759,33 @@ count, and the frontend renders it as a `Note` turn: the oldest messages are sti
 still theirs, but the assistant did not see them. An answer written without the beginning of a
 conversation must not look like one written with it.
 
+## Review round
+
+The 500-message ceiling on the history read made the notice a half-truth: a conversation of 600
+turns whose newest 500 fit the budget dropped 100 with nobody told, because "dropped" was counted
+against what the read returned. It is now counted against `countTurns` — every turn the
+conversation holds.
+
+The leading-assistant fix-up moved into `HistoryBudget`. Downstream it made the number shown to
+the user one too low: `ChatService` dropped a turn after the count had been taken.
+
+A `TokenUsage` carrying only a model name is no longer treated as usage. Providers stamp the
+model on chunks that measured nothing, so a stream that died before reporting any count kept its
+charge — a message out of someone's week for a turn that produced nothing.
+
+The claim happens before the conversation is written, and those writes were unguarded: a Hikari
+timeout in `conversations.create` took a message out of the user's allowance for a turn that
+never reached the provider. They now discard the charge and rethrow.
+
+`Retry-After` is now in `exposedHeaders`. It is not CORS-safelisted, so a split-origin deployment
+would have shown "you are out" without ever showing when it frees. Invisible today because the
+Vite proxy and production are both same-origin.
+
+Not changed: the reviewer read the 800k-character budget as equal to the context window. It is
+about 200k tokens against claude-sonnet-5's 1M — the headroom is what the system prompt, the tool
+schemas, the tool results and the reserved output live in, and that reasoning is now in the
+class's javadoc rather than only in someone's head.
+
 Two things that made this less obvious than it looks:
 
 - The trimming lives in `HistoryBudget`, not `ChatService`, because `ChatController` is the one

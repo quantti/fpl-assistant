@@ -31,14 +31,33 @@ class HistoryBudgetTest {
         String long_ = "x".repeat(BUDGET / 2);
         List<ChatTurn> turns = List.of(
                 new ChatTurn(ChatTurn.USER, "oldest " + long_),
-                new ChatTurn(ChatTurn.ASSISTANT, "middle " + long_),
+                new ChatTurn(ChatTurn.ASSISTANT, "second " + long_),
+                new ChatTurn(ChatTurn.USER, "third"),
+                new ChatTurn(ChatTurn.ASSISTANT, "fourth"));
+
+        assertThat(budget.fit(turns))
+                .as("as much of the recent end as fits, oldest dropped first — and the assistant"
+                        + " turn the trim left exposed goes with them")
+                .containsExactly(
+                        new ChatTurn(ChatTurn.USER, "third"),
+                        new ChatTurn(ChatTurn.ASSISTANT, "fourth"));
+    }
+
+    /**
+     * Dropping the oldest turns can leave an assistant turn first, which Anthropic rejects. It is
+     * dropped here rather than downstream so that the number the user is shown counts every turn
+     * actually withheld.
+     */
+    @Test
+    void whatIsLeftAlwaysOpensOnAUserTurn() {
+        String long_ = "x".repeat(BUDGET);
+        List<ChatTurn> turns = List.of(
+                new ChatTurn(ChatTurn.USER, "oldest " + long_),
+                new ChatTurn(ChatTurn.ASSISTANT, "an answer"),
                 new ChatTurn(ChatTurn.USER, "newest"));
 
         assertThat(budget.fit(turns))
-                .as("as much of the recent end as fits, oldest dropped first")
-                .containsExactly(
-                        new ChatTurn(ChatTurn.ASSISTANT, "middle " + long_),
-                        new ChatTurn(ChatTurn.USER, "newest"));
+                .containsExactly(new ChatTurn(ChatTurn.USER, "newest"));
     }
 
     @Test
