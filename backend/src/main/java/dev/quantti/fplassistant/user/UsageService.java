@@ -9,6 +9,7 @@ import java.util.UUID;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 /**
  * What a user has spent this week, and whether they may spend more.
@@ -57,9 +58,15 @@ public class UsageService {
             return limit != null && used >= limit;
         }
 
-        /** Seconds until one message frees up, or empty when waiting changes nothing. */
+        /**
+         * Seconds until one message frees up, or empty when waiting changes nothing.
+         *
+         * <p>A suspended account is the case worth spelling out: it may well have usage inside
+         * the window, so there is a timestamp to compute — and answering with it would promise
+         * that the account comes back at a time when it does not.
+         */
         public java.util.Optional<Long> retryAfterSeconds() {
-            if (nextFreeAt == null) {
+            if (nextFreeAt == null || (limit != null && limit == 0)) {
                 return java.util.Optional.empty();
             }
             long seconds = Duration.between(Instant.now(), nextFreeAt).toSeconds();
@@ -75,17 +82,33 @@ public class UsageService {
             return new Quota(0, null, null);
         }
 
-        return jdbc.queryForObject("""
-                SELECT count(*) AS used, min(created_at) AS oldest FROM %s
+        Integer used = jdbc.queryForObject("""
+                SELECT count(*) FROM %s
                 WHERE user_id = ? AND event_type = ? AND created_at > now() - interval '%d days'
                 """.formatted(usageTable, WINDOW.toDays()),
-                (rs, row) -> {
-                    int used = rs.getInt("used");
-                    Timestamp oldest = rs.getTimestamp("oldest");
-                    Instant nextFree = oldest == null ? null : oldest.toInstant().plus(WINDOW);
-                    return new Quota(used, limit, nextFree);
-                },
-                userId, CHAT_EVENT);
+                Integer.class, userId, CHAT_EVENT);
+        return new Quota(used, limit, nextFreeAt(userId, used, limit));
+    }
+
+    /**
+     * When the window next frees a slot.
+     *
+     * <p>Not simply the oldest event: an account over its limit has to wait for the
+     * {@code (used - limit + 1)}-th oldest to age out, which is what the offset is. They differ
+     * whenever a limit is lowered under someone — with the oldest event, the client waits it
+     * out, retries, and is refused again by exactly the margin nobody told it about.
+     */
+    private Instant nextFreeAt(UUID userId, int used, int limit) {
+        if (used == 0) {
+            return null;
+        }
+        List<Timestamp> frees = jdbc.queryForList("""
+                SELECT created_at FROM %s
+                WHERE user_id = ? AND event_type = ? AND created_at > now() - interval '%d days'
+                ORDER BY created_at OFFSET ? LIMIT 1
+                """.formatted(usageTable, WINDOW.toDays()),
+                Timestamp.class, userId, CHAT_EVENT, Math.max(0, used - limit));
+        return frees.isEmpty() ? null : frees.getFirst().toInstant().plus(WINDOW);
     }
 
     /**
@@ -96,15 +119,48 @@ public class UsageService {
         List<Integer> stored = jdbc.queryForList(
                 "SELECT weekly_message_limit FROM " + profileTable + " WHERE user_id = ?",
                 Integer.class, userId);
-        Integer configured = stored.isEmpty() ? null : stored.getFirst();
-        if (configured == null) {
-            return defaultLimit;
+        Integer override = stored.isEmpty() ? null : stored.getFirst();
+        // The sentinel applies to the configured default too. It is documented beside the
+        // property, so someone will set QUOTA_MESSAGES_PER_WEEK=-1 to open the gates — and
+        // reading it literally would refuse every account with "all -1 messages used".
+        int limit = override == null ? defaultLimit : override;
+        return limit < 0 ? null : limit;
+    }
+
+    /**
+     * Checks the quota and records the turn in one transaction, so two requests cannot both pass
+     * a check neither has yet paid for.
+     *
+     * <p>The count and the insert are otherwise a read followed by a write with nothing between
+     * them: two tabs at {@code used == limit - 1} both read the same number and both go through.
+     * The advisory lock is per user and released with the transaction, so it serialises one
+     * person's own requests and nobody else's.
+     *
+     * @return the usage row's id, for the token update once the answer is finished
+     * @throws QuotaExceededException when the caller has nothing left this week
+     */
+    @Transactional
+    public long claimChatTurn(UUID userId, String provider) {
+        jdbc.queryForObject("SELECT pg_advisory_xact_lock(hashtext(?))", Object.class,
+                userId.toString());
+        Quota quota = quotaOf(userId);
+        if (quota.exceeded()) {
+            throw new QuotaExceededException(quota);
         }
-        return configured < 0 ? null : configured;
+        return recordChatStart(userId, provider);
+    }
+
+    /**
+     * Removes a charge for a call that produced nothing. A provider that was down consumed no
+     * tokens, and leaving the row would spend a week's allowance on answers nobody received —
+     * during an outage, everybody's at once.
+     */
+    public void discard(long eventId) {
+        jdbc.update("DELETE FROM " + usageTable + " WHERE id = ?", eventId);
     }
 
     /** Records the start of one chat turn and returns the row's id, for the token update. */
-    public long recordChatStart(UUID userId, String provider) {
+    long recordChatStart(UUID userId, String provider) {
         return jdbc.queryForObject(
                 "INSERT INTO " + usageTable + " (user_id, event_type, provider)"
                         + " VALUES (?, ?, ?) RETURNING id",

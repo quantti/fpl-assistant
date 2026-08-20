@@ -247,6 +247,11 @@ class ChatControllerTest {
                 .bodyValue("{\"conversationId\":\"" + id + "\",\"message\":\"yours?\"}")
                 .exchange()
                 .expectStatus().isNotFound();
+
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + usageTable + " WHERE user_id = ?",
+                Integer.class, UUID.fromString(USER_B)))
+                .as("a turn that never happened is not charged")
+                .isZero();
     }
 
     @Test
@@ -282,6 +287,11 @@ class ChatControllerTest {
                 .as("the client discards the partial answer, so history must not keep it")
                 .extracting(ConversationStore.StoredMessage::role)
                 .containsExactly("user");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + usageTable + " WHERE user_id = ?",
+                Integer.class, UUID.fromString(USER_A)))
+                .as("a failure that generated nothing is not a charge — during a provider outage"
+                        + " it would be everyone's week at once")
+                .isZero();
     }
 
     /**

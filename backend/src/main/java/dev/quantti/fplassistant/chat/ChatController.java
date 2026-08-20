@@ -78,23 +78,21 @@ public class ChatController {
         UUID userId = TokenSubject.userId(jwt);
         String message = validated(request);
 
-        // Before anything is written and before the stream opens. Once an SSE response has
-        // begun, its status is already on the wire and cannot become a 429 — and a quota
-        // failure that created a conversation would leave an empty one behind.
-        UsageService.Quota quota = usage.quotaOf(userId);
-        if (quota.exceeded()) {
-            throw new QuotaExceededException(quota);
-        }
+        // Resolved before the turn is charged, so a 404 or a malformed id costs nothing, and
+        // claimed before a conversation is created, so a refused turn leaves no empty one. The
+        // claim is where the quota is checked: before the stream opens, because an SSE response
+        // that has begun has already sent its status and can no longer become a 429.
+        UUID existing = existingConversation(request == null ? null : request.conversationId(), userId);
 
-        UUID conversationId = resolve(request == null ? null : request.conversationId(), userId, message);
+        // Charged where the cost is incurred rather than on completion: an answer the user
+        // abandons has still been paid for, and recording at the end would make aborting and
+        // retrying free.
+        long usageEventId = usage.claimChatTurn(userId, provider);
+        AtomicReference<TokenUsage> reported = new AtomicReference<>();
+
+        UUID conversationId = existing != null ? existing : conversations.create(userId, message);
         conversations.append(conversationId, ChatTurn.USER, message);
         List<ChatTurn> history = conversations.recentTurns(conversationId, ChatService.HISTORY_WINDOW);
-
-        // Recorded here, where the cost is incurred, rather than on completion: an answer the
-        // user abandons has still been paid for, and recording at the end would make aborting
-        // and retrying free.
-        long usageEventId = usage.recordChatStart(userId, provider);
-        AtomicReference<TokenUsage> reported = new AtomicReference<>();
 
         // Token events carry the token as a JSON string: raw SSE data cannot round-trip a
         // leading space (the decoder strips the one after "data:"), and LLM tokens usually
@@ -152,6 +150,15 @@ public class ChatController {
                 },
                 error -> {
                     log.error("chat stream failed", error);
+                    // Nothing was generated, so nothing was paid for: a charge left standing
+                    // here would spend a week's allowance on answers nobody received — and
+                    // during a provider outage, everybody's at once. A stream that failed after
+                    // reporting usage did consume tokens, and keeps its row.
+                    if (reported.get() == null) {
+                        discard(usageEventId);
+                    } else {
+                        recordTokens(usageEventId, reported.get());
+                    }
                     sink.tryEmitError(error);
                 },
                 () -> {
@@ -182,6 +189,15 @@ public class ChatController {
      * leaves the token columns null rather than zero. Null reads as "not measured"; zero reads
      * as a measurement, and would drag every average this data exists to inform.
      */
+    private void discard(long usageEventId) {
+        try {
+            usage.discard(usageEventId);
+        } catch (RuntimeException e) {
+            log.error("could not discard the usage event {} for a stream that produced nothing",
+                    usageEventId, e);
+        }
+    }
+
     private void recordTokens(long usageEventId, TokenUsage tokens) {
         if (tokens == null) {
             return;
@@ -219,13 +235,16 @@ public class ChatController {
     }
 
     /**
-     * A conversation id that is not the caller's own is {@code 404}, never {@code 403}: telling
-     * an attacker that an id exists but is someone else's is the answer they were asking for.
-     * A malformed id is a bad request rather than a miss — it cannot be anyone's.
+     * The conversation this turn names, or {@code null} when it names none and a new one is to
+     * be opened.
+     *
+     * <p>A conversation id that is not the caller's own is {@code 404}, never {@code 403}:
+     * telling an attacker that an id exists but is someone else's is the answer they were asking
+     * for. A malformed id is a bad request rather than a miss — it cannot be anyone's.
      */
-    private UUID resolve(String conversationId, UUID userId, String message) {
+    private UUID existingConversation(String conversationId, UUID userId) {
         if (conversationId == null || conversationId.isBlank()) {
-            return conversations.create(userId, message);
+            return null;
         }
         UUID id;
         try {

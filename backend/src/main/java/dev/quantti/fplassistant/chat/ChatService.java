@@ -78,38 +78,47 @@ public class ChatService {
     }
 
     /**
-     * Merges field by field, keeping the most recent number a provider gave for each.
+     * Merges field by field, keeping the largest number a provider has reported for each.
      *
-     * <p>Providers differ in where usage arrives: some report prompt tokens on the first chunk
-     * and completion tokens on the last, others repeat a running total. Keeping only the final
-     * chunk's usage loses the input count under the first style; overwriting per field survives
-     * both. What it cannot survive is a provider that reports deltas meant to be summed — Task 8
-     * checks the recorded numbers against a real answer, which is the only way to know.
+     * <p>Both providers report usage cumulatively per chunk (Spring AI runs chunk usage through
+     * {@code UsageCalculator.getCumulativeUsage}, across tool-call round trips as well), so the
+     * largest value seen is the total — and a trailing chunk carrying an empty measurement
+     * cannot erase it. What this cannot survive is a provider reporting deltas meant to be
+     * summed; Task 8 checks the recorded numbers against a real answer, which is the only way to
+     * know.
+     *
+     * <p>A reported <em>zero</em> is kept, not discarded. A cache miss reports zero cache reads,
+     * and that is a measurement — the one Task 8 exists to make. What gets skipped is a chunk
+     * carrying no measurement at all: every text chunk has metadata, and most hold Spring AI's
+     * {@code EmptyUsage}, which is zeros with no cache figure beside them.
      */
     private static void capture(ChatResponse response, AtomicReference<TokenUsage> reported) {
         if (response.getMetadata() == null || response.getMetadata().getUsage() == null) {
             return;
         }
         Usage usage = response.getMetadata().getUsage();
+        Integer prompt = usage.getPromptTokens();
+        Integer completion = usage.getCompletionTokens();
         Long cacheReads = usage.getCacheReadInputTokens();
-        reported.updateAndGet(previous -> {
-            TokenUsage merged = new TokenUsage(
-                    pick(usage.getPromptTokens(), previous == null ? null : previous.inputTokens()),
-                    pick(cacheReads == null ? null : cacheReads.intValue(),
-                            previous == null ? null : previous.cachedTokens()),
-                    pick(usage.getCompletionTokens(), previous == null ? null : previous.outputTokens()));
-            // Every chunk carries metadata, and most carry an empty usage inside it. A record of
-            // three nulls is not a measurement, and recording one would claim the provider
-            // answered a question it was never asked.
-            boolean measured = merged.inputTokens() != null || merged.cachedTokens() != null
-                    || merged.outputTokens() != null;
-            return measured ? merged : previous;
-        });
+        if (unreported(prompt) && unreported(completion) && cacheReads == null) {
+            return;
+        }
+        reported.updateAndGet(previous -> new TokenUsage(
+                larger(prompt, previous == null ? null : previous.inputTokens()),
+                larger(cacheReads == null ? null : cacheReads.intValue(),
+                        previous == null ? null : previous.cachedTokens()),
+                larger(completion, previous == null ? null : previous.outputTokens())));
     }
 
-    /** A zero from a provider that has not counted yet must not overwrite a real number. */
-    private static Integer pick(Integer reported, Integer previous) {
-        return reported == null || reported == 0 ? previous : reported;
+    private static boolean unreported(Integer count) {
+        return count == null || count == 0;
+    }
+
+    private static Integer larger(Integer reported, Integer previous) {
+        if (reported == null) {
+            return previous;
+        }
+        return previous == null ? reported : Math.max(reported, previous);
     }
 
     /**
