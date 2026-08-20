@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { ChatRequest, Message } from '../types'
 import { apiFetch } from '../auth/apiFetch'
 
@@ -16,6 +16,11 @@ export function useChat(): UseChatReturn {
   const [messages, setMessages] = useState<Message[]>([])
   const [streamingContent, setStreamingContent] = useState<string | null>(null)
   const [isStreaming, setIsStreaming] = useState(false)
+  const abortRef = useRef<AbortController | null>(null)
+
+  // Signing out unmounts this view, but a stream nobody aborts keeps draining: the backend goes
+  // on generating — and paying for — a completion that will never be read.
+  useEffect(() => () => abortRef.current?.abort(), [])
 
   const sendMessage = useCallback(async (content: string) => {
     if (isStreaming) return // single-flight: the hook does not support overlapping sends
@@ -24,6 +29,9 @@ export function useChat(): UseChatReturn {
     setMessages(nextMessages)
     setStreamingContent('')
     setIsStreaming(true)
+
+    const controller = new AbortController()
+    abortRef.current = controller
 
     let accumulated = ''
     let sawDone = false
@@ -81,6 +89,7 @@ export function useChat(): UseChatReturn {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ messages: wireMessages } satisfies ChatRequest),
+        signal: controller.signal,
       })
 
       // apiFetch has already signed out, so the sign-in screen is about to replace this view.
@@ -127,6 +136,8 @@ export function useChat(): UseChatReturn {
         setMessages(prev => [...prev, { role: 'assistant', content: accumulated }])
       }
     } catch {
+      // An abort is this component going away, not a failure to report to a user who has left.
+      if (controller.signal.aborted) return
       setMessages(prev => [...prev, { role: 'assistant', content: FAILED, isError: true }])
     } finally {
       setStreamingContent(null)

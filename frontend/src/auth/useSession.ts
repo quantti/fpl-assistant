@@ -11,10 +11,13 @@ export function useSession() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session)
-      setLoading(false)
-    })
+    supabase.auth.getSession()
+      .then(({ data }) => setSession(data.session))
+      // Storage the browser refuses (Safari private browsing, blocked cookies, a partitioned
+      // context) makes this reject. Without the catch, `loading` stays true and the app renders
+      // the loader forever — no error, no recovery, and a reload that fails identically.
+      .catch(() => setSession(null))
+      .finally(() => setLoading(false))
 
     // Covers sign-in, sign-out, and the silent token refresh — the last of which is why this
     // subscription exists rather than a one-off read.

@@ -6,11 +6,18 @@ import { createClient } from '@supabase/supabase-js'
 // fact that the backend never trusts the client for identity: it verifies the JWT signature
 // against Supabase's published JWKS and reads the user id from the token's `sub` claim.
 //
-// Baked as defaults rather than required env vars so the Docker build needs no build arguments.
-// Override either with VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY when pointing at another
-// project.
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL ?? 'https://itmykooxrbrdbgqwsesb.supabase.co'
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY ?? 'sb_publishable_amQGCnukyvPrtpWW5XEwlg_o55I_C0Q'
+// The key is supplied at build time and has no fallback here: safe to publish is not the same as
+// belonging in the source tree, and a key committed once is a key you have to rotate to remove.
+// vite.config.ts refuses to build without it, so a missing key fails the deploy rather than
+// shipping a bundle that throws on first paint.
+//
+// The project URL keeps a default. It is not a credential — it is already written into
+// application.yml and the deploy workflow — and a required placeholder for it bought an outage
+// once already (see docs/STATUS.md, 2026-08-19).
+// `||` rather than `??`, as in vite.config.ts: an empty VITE_SUPABASE_URL is not a project URL,
+// and createClient throws on it at module load — a blank page and a console message.
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || 'https://itmykooxrbrdbgqwsesb.supabase.co'
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
 
 // Auth only. This client must never be used to query the database directly: authorization lives
 // in the backend's SQL, which filters on the token's `sub`, and a direct query would route around
