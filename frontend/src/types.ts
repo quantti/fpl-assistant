@@ -5,18 +5,22 @@ export interface Message {
    * Client-side only: marks a turn the app generated to report a failure,
    * not something the model said. The spec reserves red for errors, and an
    * error is otherwise indistinguishable from an answer in the transcript.
-   * Deliberately not part of the wire format — the request body is built by
-   * projecting to `{ role, content }`, so this never reaches the backend.
+   * Never reaches the backend — since Task 4 the client sends only the new
+   * message, and errors are not messages.
    */
   isError?: boolean
 }
 
 /**
- * The wire contract for `POST /api/chat`. `messages` is deliberately a
- * projection of `Message` — a client-only field like `isError` is not part
- * of the request, and typing it as `Message[]` here would let a future call
- * site send it through.
+ * The wire contract for `POST /api/chat` since Task 4: one new user turn, and
+ * the conversation it belongs to. The history is the server's — it reads it
+ * back from the database — so the client cannot rewrite what was said, and a
+ * reload no longer starts from an empty transcript.
+ *
+ * A null `conversationId` opens a new conversation; the id comes back as the
+ * stream's first event.
  */
 export interface ChatRequest {
-  messages: Array<Pick<Message, 'role' | 'content'>>
+  conversationId: string | null
+  message: string
 }

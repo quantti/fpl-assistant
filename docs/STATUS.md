@@ -1549,3 +1549,54 @@ removes it.
 The suite is green and the frontend builds, but nobody has signed into the deployed application
 and asked a question — that is Task 8, and it is the check that matters for this pair of
 changes.
+
+---
+
+# Phase 5a — Task 4: server-side conversation history (2026-08-20)
+
+`POST /api/chat` now takes one new user turn and the conversation it belongs to, not the whole
+transcript. The server reads the history back from `fpl_message`, so a client can no longer
+rewrite what was said, and a reload no longer starts from nothing.
+
+## The contract
+
+```
+POST /api/chat   { "conversationId": null | "<uuid>", "message": "…" }
+    event: conversation   "<uuid>"     ← always first
+    data: "token"…
+    event: done
+GET  /api/conversations              → [{ id, title, updatedAt }] newest first
+GET  /api/conversations/{id}/messages → [{ role, content, createdAt }] oldest first
+```
+
+The conversation id is an event rather than a response header: the client needs it to send the
+next turn, and a header is the one part of a streaming response that cannot be assembled from
+what the model produced.
+
+**A conversation id that is not the caller's own is `404`.** Not `403` — an id that answers
+differently for its owner is an id you can probe for. The store makes this structural rather than
+remembered: `findOwned(id, userId)` is the only lookup, so "someone else's" and "does not exist"
+are the same empty result.
+
+## The answer outlives the client
+
+Returning the model's own `Flux` ties it to the response: a closed tab cancels the response, the
+cancellation propagates upstream, and the answer is neither finished nor stored — after the
+tokens have been paid for. The controller subscribes once itself and hands the client a replay of
+that subscription, so nothing the client does can cancel the model. A test pins it by cancelling
+mid-stream and asserting the finished answer is in the database.
+
+A *failed* stream stores nothing, not even the part that arrived: the client discards a partial
+answer when it sees the error event, and history holding text the user was told to ignore is a
+worse lie than a turn that is missing.
+
+## The merge the frontend used to do
+
+The user's message is persisted before the model is called and a failed answer is not, so stored
+history can hold two user turns in a row — which Anthropic rejects. `ChatService.merged()` joins
+consecutive same-role turns. The frontend did this while it owned the history; it owns none now.
+
+## Not done here
+
+Usage recording and the quota are Task 5, and the conversation list UI is Task 7 — the client
+keeps the id in memory for the session and nothing lists past conversations yet.
