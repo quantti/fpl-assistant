@@ -146,6 +146,26 @@ class ChatServiceTest {
         assertThat(reported).containsExactly(new TokenUsage(1200, 900, 300));
     }
 
+    /**
+     * A cache miss reports zero reads. Recording that as null would make "the cache did not hit"
+     * indistinguishable from "the provider said nothing" — and telling those apart is the whole
+     * reason the column exists.
+     */
+    @Test
+    void aReportedZeroIsAMeasurementAndAnEmptyChunkIsNot() {
+        ChatService service = service(List.of(), Flux.just(
+                response("text"),
+                usage(1200, 300, 0L),
+                response("more text")));
+
+        List<TokenUsage> reported = new java.util.ArrayList<>();
+        StepVerifier.create(service.stream(List.of(new ChatTurn(ChatTurn.USER, "hi")), reported::add))
+                .expectNext("text", "more text")
+                .verifyComplete();
+
+        assertThat(reported).containsExactly(new TokenUsage(1200, 0, 300));
+    }
+
     @Test
     void aStreamThatReportsNoUsageReportsNothing() {
         ChatService service = serviceStreaming(List.of(), Flux.just("only text"));

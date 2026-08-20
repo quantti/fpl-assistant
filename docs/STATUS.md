@@ -1663,6 +1663,35 @@ is exactly what Task 8 checks, since the spec's pricing assumes prompt caching a
 What no test can settle: a provider reporting *deltas* meant to be summed would be recorded as
 the last delta. Task 8 compares a real answer against its recorded row.
 
+## Review round
+
+The `429` promised a return that would not come: a suspended account normally *has* usage inside
+the window, so a `Retry-After` could be computed for it — "This account cannot send messages. Try
+again in 6 days." Suppressed on the limit rather than on the absence of a timestamp.
+
+`nextFreeAt` was the oldest event plus the window, which is only right when usage equals the
+limit. Lower someone's limit and they are over it: the client waits out the oldest event, retries
+and is refused again by a margin nobody told it about. It now offsets by how many turns are still
+owed.
+
+The `-1` sentinel applied only to the per-user column, never to the configured default — so
+`QUOTA_MESSAGES_PER_WEEK=-1`, documented as "unlimited" beside the property, would have locked
+out every account without an override with "you have used all -1 messages for this week".
+
+The check and the insert were a read followed by a write with nothing between them: two tabs at
+one message remaining both passed. They are now one transaction behind a per-user advisory lock,
+which serialises one person's own requests and nobody else's.
+
+**A stream that failed used to keep its charge.** A provider outage would have spent every user's
+weekly allowance on answers nobody received. A failure that reported no usage now discards the
+row; one that reported usage did consume tokens and keeps it.
+
+A reported *zero* is now kept rather than discarded. A cache miss reports zero cache reads, and
+"the cache did not hit" has to be distinguishable from "the provider said nothing" — that
+distinction is the measurement Task 8 exists to make. Merging takes the largest value seen per
+field, which is correct for the cumulative usage both providers report and immune to a trailing
+empty chunk erasing the totals.
+
 ## Also
 
 `GET /api/usage` returns used, limit and when the window next frees, for Task 7's indicator. The
