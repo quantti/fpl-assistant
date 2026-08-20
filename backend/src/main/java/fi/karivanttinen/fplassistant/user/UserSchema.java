@@ -132,11 +132,36 @@ public class UserSchema {
                     -- backfilled once rows exist — the two chat providers price differently.
                     event_type VARCHAR(32) NOT NULL DEFAULT 'chat',
                     provider VARCHAR(20),
+                    -- Which conversation the turn belonged to, for attributing cost to a
+                    -- message. Deliberately NOT a foreign key and with no cascade: usage counted
+                    -- from something the user can delete is a quota the user can refill by
+                    -- deleting a conversation. The column may dangle, and that is the point.
+                    conversation_id UUID,
+                    -- The model that answered. The rates below are configured per provider, so
+                    -- without this a model switch silently reprices history with no trace.
+                    model VARCHAR(64),
                     input_tokens INTEGER,
                     cached_tokens INTEGER,
-                    output_tokens INTEGER
+                    -- Anthropic bills cache writes at a premium and cache reads at a tenth, and
+                    -- reports input_tokens as the uncached remainder only: the prompt's real
+                    -- size is input + cache_write + cache_read. Without this column the premium
+                    -- is invisible and every cost is an underestimate.
+                    cache_write_tokens INTEGER,
+                    output_tokens INTEGER,
+                    -- What the turn cost in USD, priced when it happened. Not recomputed later:
+                    -- rates change, and a receipt that reprices itself is not a record of what
+                    -- was spent. NULL when the provider has no configured rates.
+                    cost_usd NUMERIC(12, 6)
                 )
                 """.formatted(usageTable));
+
+        // The columns above arrived after the table existed in production, and this project has
+        // no migration tool. IF NOT EXISTS makes each one a no-op on a database that has it.
+        for (String column : new String[] {
+                "conversation_id UUID", "model VARCHAR(64)", "cache_write_tokens INTEGER",
+                "cost_usd NUMERIC(12, 6)"}) {
+            jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s".formatted(usageTable, column));
+        }
 
         // The quota check is a range count on exactly this pair, on every chat request.
         jdbc.execute("CREATE INDEX IF NOT EXISTS idx_%s_user_created ON %s(user_id, created_at)"

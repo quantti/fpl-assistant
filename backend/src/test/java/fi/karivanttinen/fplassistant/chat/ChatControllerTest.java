@@ -134,22 +134,31 @@ class ChatControllerTest {
     void usageIsRecordedWhenTheCallStartsAndTokensWhenItEnds() {
         when(chatService.stream(any(), any())).thenAnswer(invocation -> {
             java.util.function.Consumer<TokenUsage> onUsage = invocation.getArgument(1);
-            onUsage.accept(new TokenUsage(1500, 1200, 250));
+            onUsage.accept(new TokenUsage("claude-sonnet-5", 1500, 1200, 800, 250));
             return Flux.just("answer");
         });
 
         post(USER_A, "{\"message\":\"question\"}");
 
-        assertThat(jdbc.queryForList("SELECT event_type, provider, input_tokens, cached_tokens,"
-                + " output_tokens FROM " + usageTable + " WHERE user_id = ?",
-                UUID.fromString(USER_A)))
+        assertThat(jdbc.queryForList("SELECT event_type, provider, model, conversation_id,"
+                + " input_tokens, cached_tokens, cache_write_tokens, output_tokens, cost_usd FROM "
+                + usageTable + " WHERE user_id = ?", UUID.fromString(USER_A)))
                 .singleElement()
                 .satisfies(row -> {
                     assertThat(row).containsEntry("event_type", "chat");
                     assertThat(row.get("provider")).isNotNull();
-                    assertThat(row).containsEntry("input_tokens", 1500)
+                    assertThat(row).containsEntry("model", "claude-sonnet-5")
+                            .containsEntry("input_tokens", 1500)
                             .containsEntry("cached_tokens", 1200)
+                            .containsEntry("cache_write_tokens", 800)
                             .containsEntry("output_tokens", 250);
+                    assertThat(row.get("conversation_id"))
+                            .as("the charge names the conversation it paid for")
+                            .isNotNull();
+                    assertThat((java.math.BigDecimal) row.get("cost_usd"))
+                            .as("priced when it happened, not when it is read")
+                            .isNotNull()
+                            .isPositive();
                 });
     }
 

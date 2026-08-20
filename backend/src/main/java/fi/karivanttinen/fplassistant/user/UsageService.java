@@ -1,5 +1,6 @@
 package fi.karivanttinen.fplassistant.user;
 
+import java.math.BigDecimal;
 import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
@@ -32,15 +33,18 @@ public class UsageService {
     static final String CHAT_EVENT = "chat";
 
     private final JdbcTemplate jdbc;
+    private final Pricing pricing;
     private final String usageTable;
     private final String profileTable;
     private final int defaultLimit;
 
     public UsageService(JdbcTemplate jdbc,
+                        Pricing pricing,
                         @Value("${fpl.user.usage-table-name}") String usageTable,
                         @Value("${fpl.user.profile-table-name}") String profileTable,
                         @Value("${fpl.quota.messages-per-week}") int defaultLimit) {
         this.jdbc = jdbc;
+        this.pricing = pricing;
         this.usageTable = usageTable;
         this.profileTable = profileTable;
         this.defaultLimit = defaultLimit;
@@ -168,13 +172,30 @@ public class UsageService {
     }
 
     /**
-     * Fills in what the provider reported. Separate from the insert because the numbers only
-     * exist once the answer is finished, and the row has to exist before it starts.
+     * Fills in what the provider reported, and what it cost. Separate from the insert because
+     * the numbers only exist once the answer is finished, and the row has to exist before it
+     * starts.
+     *
+     * <p>The cost is priced here and stored, not derived when someone reads the row: rates
+     * change, and a figure that reprices itself is not a record of what was spent.
      */
-    public void recordTokens(long eventId, Integer inputTokens, Integer cachedTokens,
-                             Integer outputTokens) {
-        jdbc.update("UPDATE " + usageTable
-                + " SET input_tokens = ?, cached_tokens = ?, output_tokens = ? WHERE id = ?",
-                inputTokens, cachedTokens, outputTokens, eventId);
+    public void recordTokens(long eventId, String provider, String model, Integer inputTokens,
+                             Integer cachedTokens, Integer cacheWriteTokens, Integer outputTokens) {
+        BigDecimal cost = pricing
+                .costOf(provider, inputTokens, cachedTokens, cacheWriteTokens, outputTokens)
+                .orElse(null);
+        jdbc.update("UPDATE " + usageTable + " SET model = ?, input_tokens = ?, cached_tokens = ?,"
+                + " cache_write_tokens = ?, output_tokens = ?, cost_usd = ? WHERE id = ?",
+                model, inputTokens, cachedTokens, cacheWriteTokens, outputTokens, cost, eventId);
+    }
+
+    /**
+     * Ties the charge to the conversation it paid for, so a cost can be read back per message
+     * rather than only per week. Written after the fact because the quota is claimed before a
+     * conversation exists — a turn nobody was allowed to take must not create one.
+     */
+    public void attachConversation(long eventId, UUID conversationId) {
+        jdbc.update("UPDATE " + usageTable + " SET conversation_id = ? WHERE id = ?",
+                conversationId, eventId);
     }
 }

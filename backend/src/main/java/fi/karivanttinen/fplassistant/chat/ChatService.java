@@ -5,6 +5,7 @@ import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.chat.metadata.ChatResponseMetadata;
 import org.springframework.ai.chat.metadata.Usage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.stereotype.Service;
@@ -78,7 +79,8 @@ public class ChatService {
     }
 
     /**
-     * Merges field by field, keeping the largest number a provider has reported for each.
+     * Merges field by field, keeping the largest number a provider has reported for each, and
+     * the model name from whichever chunk carried one.
      *
      * <p>Both providers report usage cumulatively per chunk (Spring AI runs chunk usage through
      * {@code UsageCalculator.getCumulativeUsage}, across tool-call round trips as well), so the
@@ -89,24 +91,35 @@ public class ChatService {
      *
      * <p>A reported <em>zero</em> is kept, not discarded. A cache miss reports zero cache reads,
      * and that is a measurement — the one Task 8 exists to make. What gets skipped is a chunk
-     * carrying no measurement at all: every text chunk has metadata, and most hold Spring AI's
-     * {@code EmptyUsage}, which is zeros with no cache figure beside them.
+     * carrying neither a measurement nor a model name: every text chunk has metadata, and most
+     * hold Spring AI's {@code EmptyUsage}, which is zeros with no cache figures beside them.
      */
     private static void capture(ChatResponse response, AtomicReference<TokenUsage> reported) {
-        if (response.getMetadata() == null || response.getMetadata().getUsage() == null) {
+        ChatResponseMetadata metadata = response.getMetadata();
+        if (metadata == null) {
             return;
         }
-        Usage usage = response.getMetadata().getUsage();
-        Integer prompt = usage.getPromptTokens();
-        Integer completion = usage.getCompletionTokens();
-        Long cacheReads = usage.getCacheReadInputTokens();
-        if (unreported(prompt) && unreported(completion) && cacheReads == null) {
+        String model = metadata.getModel() == null || metadata.getModel().isBlank()
+                ? null : metadata.getModel();
+        Usage usage = metadata.getUsage();
+        Integer prompt = usage == null ? null : usage.getPromptTokens();
+        Integer completion = usage == null ? null : usage.getCompletionTokens();
+        Long cacheReads = usage == null ? null : usage.getCacheReadInputTokens();
+        Long cacheWrites = usage == null ? null : usage.getCacheWriteInputTokens();
+
+        boolean measured = !unreported(prompt) || !unreported(completion)
+                || cacheReads != null || cacheWrites != null;
+        if (!measured && model == null) {
             return;
         }
+
         reported.updateAndGet(previous -> new TokenUsage(
+                model != null ? model : previous == null ? null : previous.model(),
                 larger(prompt, previous == null ? null : previous.inputTokens()),
                 larger(cacheReads == null ? null : cacheReads.intValue(),
                         previous == null ? null : previous.cachedTokens()),
+                larger(cacheWrites == null ? null : cacheWrites.intValue(),
+                        previous == null ? null : previous.cacheWriteTokens()),
                 larger(completion, previous == null ? null : previous.outputTokens())));
     }
 

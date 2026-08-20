@@ -91,6 +91,10 @@ public class ChatController {
         AtomicReference<TokenUsage> reported = new AtomicReference<>();
 
         UUID conversationId = existing != null ? existing : conversations.create(userId, message);
+        // Ties the charge to what it paid for. A second statement rather than a column on the
+        // insert, because the quota is claimed before any conversation exists — a refused turn
+        // must not leave one behind.
+        usage.attachConversation(usageEventId, conversationId);
         conversations.append(conversationId, ChatTurn.USER, message);
         List<ChatTurn> history = conversations.recentTurns(conversationId, ChatService.HISTORY_WINDOW);
 
@@ -203,8 +207,8 @@ public class ChatController {
             return;
         }
         try {
-            usage.recordTokens(usageEventId, tokens.inputTokens(), tokens.cachedTokens(),
-                    tokens.outputTokens());
+            usage.recordTokens(usageEventId, provider, tokens.model(), tokens.inputTokens(),
+                    tokens.cachedTokens(), tokens.cacheWriteTokens(), tokens.outputTokens());
         } catch (RuntimeException e) {
             log.error("could not record token usage for event {}", usageEventId, e);
         }

@@ -95,6 +95,52 @@ ON CONFLICT (user_id) DO UPDATE SET weekly_message_limit = EXCLUDED.weekly_messa
 
 The uuid is in Supabase → Authentication → Users, or `auth.users.id`.
 
+## Token and cost tracking
+
+Every chat turn writes one `fpl_usage_event` row: who, when, which provider and model, the token
+counts the provider reported, and what it cost in USD. Nothing surfaces this in the UI — it is
+read with SQL.
+
+```sql
+-- One user's turns, newest first, with what each cost
+SELECT created_at, model, conversation_id,
+       input_tokens, cached_tokens, cache_write_tokens, output_tokens, cost_usd
+FROM fpl_usage_event
+WHERE user_id = '<uuid>' AND event_type = 'chat'
+ORDER BY created_at DESC;
+
+-- Spend per user this week
+SELECT user_id, count(*) AS turns, sum(cost_usd) AS usd
+FROM fpl_usage_event
+WHERE event_type = 'chat' AND created_at > now() - interval '7 days'
+GROUP BY user_id ORDER BY usd DESC NULLS LAST;
+
+-- One conversation's cost, message by message
+SELECT u.created_at, u.cost_usd, m.role, left(m.content, 60) AS text
+FROM fpl_usage_event u
+JOIN fpl_message m ON m.conversation_id = u.conversation_id
+WHERE u.conversation_id = '<uuid>'
+ORDER BY u.created_at;
+```
+
+What the numbers mean:
+
+- **One row per user turn, not per model call.** Spring AI reports usage cumulatively across a
+  turn's tool-call round trips, so the row is the whole turn.
+- **`input_tokens` is the uncached remainder.** Anthropic reports cache reads and cache writes
+  separately, so the prompt's real size is `input_tokens + cache_write_tokens + cached_tokens`.
+- **`cost_usd` is priced when the turn happens**, from `fpl.pricing.*` in `application.yml`, and
+  is never recomputed: rates change, and a figure that reprices itself is not a record of what was
+  spent. `NULL` means the provider has no configured rates — `openai` ships that way deliberately,
+  because nobody has checked its published pricing.
+- **`NULL` token counts mean the provider reported nothing**, never zero. A cache miss really does
+  report zero reads, and that is the measurement Task 8 checks.
+- **`conversation_id` carries no foreign key and no cascade.** Usage counted from something the
+  user can delete is a quota the user can refill by deleting a conversation, so the reference is
+  allowed to dangle.
+- Rates are per provider, and the model that answered is on the row: after a model switch, old
+  rows keep the model they were priced against.
+
 ## The pre-push hook
 
 There is no branch protection on this repository. GitHub blocks it for private repos on the Free
