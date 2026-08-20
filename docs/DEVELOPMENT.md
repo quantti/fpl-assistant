@@ -34,12 +34,18 @@ source "$HOME/.sdkman/bin/sdkman-init.sh"
 
 ## Secrets
 
-Two env files, both gitignored, both with a committed `.example` template:
+Three env files, all gitignored, all with a committed `.example` template:
 
 | File | Points at | Used by |
 |---|---|---|
 | `backend/.env.test` | the local test container (`localhost:55432`) | the test suite |
 | `backend/.env.supabase` | the production Supabase project | `scripts/dump-test-schema.sh`, `bootRun --ingest` / `--backfill` / `--sync-prices` |
+| `frontend/.env.local` | the Supabase publishable key | `npm run dev`, `npm run build` |
+
+`frontend/.env.local` holds `VITE_SUPABASE_ANON_KEY` and nothing else has to be in it. The key is
+safe to ship — it is in every built bundle — but it is not committed, so a frontend build without
+it fails with a message rather than producing a page that cannot sign anyone in. CI reads it from
+the `VITE_SUPABASE_ANON_KEY` repository secret and passes it to `flyctl deploy --build-arg`.
 
 The split exists because tests now seed the data they assert on, which means writing to
 tapas-owned tables. That is forbidden on the shared database, and `TapasSeed` refuses to run

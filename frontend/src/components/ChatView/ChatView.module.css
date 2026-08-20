@@ -46,6 +46,22 @@
   color: var(--ink) !important;
 }
 
+.actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+}
+
+/* Same reason as .themeToggle above: Mantine sets the label colour through an
+   inline custom property (--button-color here), which a plain author rule
+   cannot outrank regardless of specificity. Subtle buttons would otherwise be
+   painted in the primary colour, and a green "Sign out" reads as the action
+   the page wants you to take. */
+.signOut {
+  color: var(--muted) !important;
+  font-weight: 400;
+}
+
 .empty {
   flex: 1;
   display: flex;

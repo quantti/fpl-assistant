@@ -1470,3 +1470,82 @@ work together were merged apart, onto a branch that auto-deploys.
   401 wrapper would report as suspected forgery.
 - A trailing slash on `SUPABASE_URL` — the form the dashboard displays — produced an issuer with
   a double slash that matches no token. Normalised.
+
+---
+
+# Phase 5a — Task 6: sign-in, session, and SPA routing (2026-08-20)
+
+The frontend now holds a session and sends the token, so `/api/chat` is authenticated again —
+in the same change, which is the whole point: splitting them is what answered 401 to every user
+on 2026-08-19.
+
+## What exists now
+
+- `SignIn` (sign-in only), `useSession`, and a gate in `App` that renders a loader until the
+  stored session has been read — showing the sign-in screen first and replacing it a moment
+  later reads as being signed out on every reload.
+- `apiFetch` attaches the access token to `/api/**` and signs out on `401`. The token is read
+  per request rather than captured: the client refreshes it in the background, and a captured
+  copy is the expired one an hour into a conversation. `getSession()` is where the silent
+  refresh happens.
+- A sign-out button in the chat header, labelled rather than a glyph.
+- `SpaForwardingController` forwards client routes to `index.html`, closing the Phase 1 known
+  issue that deep links would 404 once Phase 5 added routes.
+
+## No sign-up screen — the plan's "user can sign up" cannot be met by design
+
+Public sign-up is disabled in the Supabase project (the 5a decision: without billing there is no
+cost ceiling per person and no card anchoring an account). A form the API refuses is worse than
+no form, so the screen says accounts are by invitation. Task 8's "settle the sign-up gate" is
+therefore already settled — closed for the duration of 5a.
+
+## The forwarding patterns, and what they cost
+
+Three explicit segment levels, not a trailing `/**`. `/**` matches a segment with a file
+extension in it, which forwarded `/assets/index-abc123.js` to the index page under a JavaScript
+content type — a missing asset then surfaces as a syntax error in the console instead of a 404.
+A client route deeper than three segments matches no pattern and falls through to `denyAll`, so
+it answers 401 rather than loading the app; nothing needs four levels today, and Task 7's
+conversation routes will not.
+
+The permit those patterns need does weaken yesterday's `denyAll` default: every extension-less
+`GET` outside `/api/**` and `/actuator/**` is now public, because the chain cannot tell a route
+the browser owns from one the server does. A deep link arrives without a token — the script
+holding one has not loaded yet — so there is no version of this that authenticates.
+
+What replaces the lost default is a test, not a promise: `SpaForwardingTest` reads the
+`RequestMappingHandlerMapping` and fails if any handler is mapped outside `/api/**`,
+`/actuator/**` or Spring's own `/error`. **New endpoints go under `/api/`**; one that does not
+turns the silent hole into a red suite.
+
+## Review round
+
+A `401` no longer signs the user out on the spot. The backend answers `401` for anything it
+cannot verify — its own javadoc says an unreachable key server looks the same as a forged token —
+so `apiFetch` now refreshes once and retries once, and only a second `401` ends the session. It
+also ends it with `scope: 'local'`: `signOut()` defaults to `global`, which revokes every refresh
+token the user holds, so one spurious `401` in one tab would have signed them out on their phone
+as well.
+
+The sign-in screen says *why* it is showing when a session ends that way. Without it, a backend
+that rejects every valid token — a wrong `supabase.audience`, the 2026-08-19 class of bug — is an
+unbreakable loop with no diagnostic anywhere in the UI.
+
+Also from the round: `getSession()` and `signInWithPassword()` are guarded, because a browser
+that refuses storage makes both reject and left the app on its loader, or the button in its
+loading state, for good; the guard test's prefix matching now agrees with the security pattern
+(`startsWith("/actuator")` also covered `/actuator-admin`, which the client-route permit makes
+public); the stream is aborted on unmount, so signing out mid-answer stops a completion the
+backend was still paying for.
+
+**The publishable key is no longer in the source tree** (PR #8 review). It arrives as
+`VITE_SUPABASE_ANON_KEY` — `frontend/.env.local` locally, a repository secret in CI, a
+`--build-arg` on deploy — and `vite.config.ts` refuses to build without it. It is still in this
+branch's history in commit `f87d15b`; rotating it in the Supabase dashboard is what actually
+removes it.
+
+## Not verified end to end yet
+
+The suite is green and the frontend builds, but nobody has signed into the deployed application
+and asked a question — that is Task 8, and it is the check that matters for this pair of
+changes.
