@@ -9,7 +9,7 @@ interface UseChatReturn {
   sendMessage: (content: string) => Promise<void>
 }
 
-const GONE = 'That conversation is no longer available. Your next message starts a new one.'
+const GONE = 'That conversation is no longer available. The messages above stay on screen but are no longer part of it — your next message starts a new conversation, without them.'
 
 const INTERRUPTED = 'Sorry — the connection was interrupted. Please try again.'
 const FAILED = 'Sorry, something went wrong. Please try again.'

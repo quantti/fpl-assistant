@@ -24,6 +24,16 @@ public class ConversationStore {
     /** Long enough to recognise a conversation in a list, short enough for the column. */
     static final int TITLE_CHARS = 80;
 
+    /**
+     * Ceilings on what one response may carry. Neither read is paginated, and neither has a
+     * natural bound: a conversation grows a turn at a time and each turn can be a full model
+     * answer, so an unbounded read is a multi-megabyte JSON body assembled in heap. These are
+     * far above anything the quota allows a person to produce; a conversation that reaches the
+     * message ceiling shows its most recent turns, which is the half worth reading.
+     */
+    static final int MAX_MESSAGES = 500;
+    static final int MAX_CONVERSATIONS = 200;
+
     private final JdbcTemplate jdbc;
     private final String conversationTable;
     private final String messageTable;
@@ -85,7 +95,8 @@ public class ConversationStore {
     public List<Summary> list(UUID userId) {
         return jdbc.query(
                 "SELECT id, title, updated_at FROM " + conversationTable
-                        + " WHERE user_id = ? AND archived_at IS NULL ORDER BY updated_at DESC",
+                        + " WHERE user_id = ? AND archived_at IS NULL ORDER BY updated_at DESC"
+                        + " LIMIT " + MAX_CONVERSATIONS,
                 (rs, row) -> new Summary(
                         rs.getObject("id", UUID.class),
                         rs.getString("title"),
@@ -93,16 +104,22 @@ public class ConversationStore {
                 userId);
     }
 
-    /** Every message of one conversation, oldest first. Ownership is the caller's to check. */
+    /**
+     * One conversation's messages, oldest first, capped at {@link #MAX_MESSAGES} — read from the
+     * end, so a conversation long enough to hit the cap keeps its most recent turns rather than
+     * its first ones. Ownership is the caller's to check.
+     */
     public List<StoredMessage> messages(UUID conversationId) {
-        return jdbc.query(
+        List<StoredMessage> newestFirst = jdbc.query(
                 "SELECT role, content, created_at FROM " + messageTable
-                        + " WHERE conversation_id = ? ORDER BY created_at, id",
+                        + " WHERE conversation_id = ? ORDER BY created_at DESC, id DESC"
+                        + " LIMIT " + MAX_MESSAGES,
                 (rs, row) -> new StoredMessage(
                         rs.getString("role"),
                         rs.getString("content"),
                         rs.getTimestamp("created_at").toInstant()),
                 conversationId);
+        return newestFirst.reversed();
     }
 
     /**

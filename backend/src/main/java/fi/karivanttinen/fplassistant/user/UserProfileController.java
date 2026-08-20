@@ -2,6 +2,7 @@ package fi.karivanttinen.fplassistant.user;
 
 import java.util.UUID;
 
+import fi.karivanttinen.fplassistant.config.TokenSubject;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
@@ -42,7 +43,7 @@ public class UserProfileController {
 
     @GetMapping
     public ProfileResponse profile(@AuthenticationPrincipal Jwt jwt) {
-        return new ProfileResponse(profiles.teamIdOf(userId(jwt)).orElse(null));
+        return new ProfileResponse(profiles.teamIdOf(TokenSubject.userId(jwt)).orElse(null));
     }
 
     @PutMapping("/fpl-team-id")
@@ -78,28 +79,14 @@ public class UserProfileController {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, rejection);
         }
 
-        profiles.setTeamId(userId(jwt), teamId);
+        profiles.setTeamId(TokenSubject.userId(jwt), teamId);
         return new ProfileResponse(teamId);
     }
 
     @DeleteMapping("/fpl-team-id")
     public ProfileResponse clearTeamId(@AuthenticationPrincipal Jwt jwt) {
-        profiles.setTeamId(userId(jwt), null);
+        profiles.setTeamId(TokenSubject.userId(jwt), null);
         return new ProfileResponse(null);
     }
 
-    /**
-     * The token is verified by the time this runs, but "verified" does not mean the {@code sub}
-     * claim is a UUID — a token without one, or with a different subject format, would otherwise
-     * become a 500 with a stack trace. {@code SecurityConfig} goes to some lengths to keep
-     * attacker-reachable token problems at 401; this keeps that true one layer up.
-     */
-    private static UUID userId(Jwt jwt) {
-        try {
-            return UUID.fromString(jwt.getSubject());
-        } catch (IllegalArgumentException | NullPointerException e) {
-            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED,
-                    "The token carries no usable subject claim.");
-        }
-    }
 }

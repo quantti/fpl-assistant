@@ -1,7 +1,10 @@
 package fi.karivanttinen.fplassistant.chat;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
+
+import fi.karivanttinen.fplassistant.config.TokenSubject;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -19,6 +22,7 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Sinks;
+import reactor.core.scheduler.Schedulers;
 
 @RestController
 @RequestMapping("/api")
@@ -27,6 +31,13 @@ public class ChatController {
     private static final Logger log = LoggerFactory.getLogger(ChatController.class);
 
     static final int MAX_CONTENT_CHARS = 4000;
+
+    /**
+     * How long one answer may take before the detached subscription gives up. Generous: a
+     * tool-calling answer makes several model round trips. It exists to bound a provider that
+     * hangs without closing, not to police slow answers.
+     */
+    private static final Duration ANSWER_TIMEOUT = Duration.ofMinutes(5);
 
     private final ChatService chatService;
     private final ConversationStore conversations;
@@ -50,7 +61,7 @@ public class ChatController {
     @PostMapping(value = "/chat", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<String>> chat(@RequestBody ChatRequest request,
                                               @AuthenticationPrincipal Jwt jwt) {
-        UUID userId = UUID.fromString(jwt.getSubject());
+        UUID userId = TokenSubject.userId(jwt);
         String message = validated(request);
         UUID conversationId = resolve(request == null ? null : request.conversationId(), userId, message);
 
@@ -93,7 +104,17 @@ public class ChatController {
     private Flux<String> answerOutlivingTheClient(Flux<String> source, UUID conversationId) {
         Sinks.Many<String> sink = Sinks.many().replay().all();
         StringBuilder answer = new StringBuilder();
-        source.subscribe(
+        source
+                // The provider delivers terminal signals on its own event-loop thread, and this
+                // subscription ends in two blocking JDBC round trips. Persisting there would
+                // stall every other connection multiplexed onto that loop, for as long as Hikari
+                // takes to hand out a connection — up to its 30-second timeout under load.
+                .publishOn(Schedulers.boundedElastic())
+                // Nothing else can end this subscription: it is deliberately detached from the
+                // response, so a provider that stops sending without closing the connection
+                // would leave the answer unpersisted, the sink retained, and no way to cancel.
+                .timeout(ANSWER_TIMEOUT)
+                .subscribe(
                 token -> {
                     answer.append(token);
                     sink.tryEmitNext(token);

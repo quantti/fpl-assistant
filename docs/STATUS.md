@@ -1556,7 +1556,8 @@ changes.
 
 `POST /api/chat` now takes one new user turn and the conversation it belongs to, not the whole
 transcript. The server reads the history back from `fpl_message`, so a client can no longer
-rewrite what was said, and a reload no longer starts from nothing.
+rewrite what was said, and what was said outlives the browser that said it. Reading it back into
+the UI is Task 7 — until then a reload still starts a new conversation.
 
 ## The contract
 
@@ -1595,6 +1596,26 @@ worse lie than a turn that is missing.
 The user's message is persisted before the model is called and a failed answer is not, so stored
 history can hold two user turns in a row — which Anthropic rejects. `ChatService.merged()` joins
 consecutive same-role turns. The frontend did this while it owned the history; it owns none now.
+
+## Review round
+
+The detached subscription ended in two blocking JDBC calls **on the provider's event loop**: the
+terminal signal arrives on a reactor-netty thread, and Hikari can hold that thread for up to its
+30-second connection timeout under load, stalling every other connection multiplexed onto the
+same loop. It now hops to `boundedElastic` first. Nothing in the suite could have caught it — a
+mocked `Flux.just(...)` completes on the servlet thread.
+
+It also had no bound: nothing else can cancel a subscription that is deliberately nobody's to
+cancel, so a provider that stops sending without closing would strand the answer unpersisted and
+the sink retained forever. Five minutes, generous enough for a tool-calling answer.
+
+`UUID.fromString(jwt.getSubject())` appeared in three new call sites, none with the guard
+`UserProfileController` added a day earlier: a verified token whose `sub` is missing or not a
+UUID answered 500 with a stack trace on a path anyone can reach. One `TokenSubject.userId(Jwt)`
+now serves all four, and a test pins the 401.
+
+Both reads were unbounded — `messages()` returns whole model answers, and neither endpoint
+paginates. Capped at 500 messages and 200 conversations, read from the recent end.
 
 ## Not done here
 
