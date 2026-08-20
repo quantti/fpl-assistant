@@ -18,6 +18,16 @@
   color: var(--redcard);
 }
 
+/* A note is not a failure, so it must not wear the error's red — the spec
+   reserves that. --card would be the obvious "yellow card" choice and is
+   wrong here: #F0D04C on --paper measures about 1.5:1, unreadable as text,
+   and it is gated only as a dark-mode pairing. --muted is gated in both
+   schemes and already carries "secondary, not the answer", which is exactly
+   what this line is. */
+.noticeLabel {
+  color: var(--muted);
+}
+
 .prose {
   font-family: var(--font-reading);
   font-size: var(--text-base);

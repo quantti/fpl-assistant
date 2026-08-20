@@ -79,10 +79,18 @@ public class ConversationStore {
     }
 
     /**
-     * The most recent {@code limit} turns, oldest first — the order the model needs, taken from
-     * the end of the conversation because that is the part that fits in the window.
+     * The conversation's turns, oldest first — the order the model needs.
+     *
+     * <p>Bounded by {@link #MAX_MESSAGES} like every other read here, and taken from the recent
+     * end: a conversation long enough to reach that ceiling keeps the part the next answer
+     * depends on. How much of this actually reaches the model is {@code ChatService}'s budget,
+     * not this ceiling.
      */
-    public List<ChatTurn> recentTurns(UUID conversationId, int limit) {
+    public List<ChatTurn> recentTurns(UUID conversationId) {
+        return recentTurns(conversationId, MAX_MESSAGES);
+    }
+
+    List<ChatTurn> recentTurns(UUID conversationId, int limit) {
         List<ChatTurn> newestFirst = jdbc.query(
                 "SELECT role, content FROM " + messageTable
                         + " WHERE conversation_id = ? ORDER BY created_at DESC, id DESC LIMIT ?",
