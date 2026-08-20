@@ -184,6 +184,22 @@ class UsageServiceTest {
                 .isEqualTo(1);
     }
 
+    /** Unreported is not zero, but it is not a number to add either. */
+    @Test
+    void theTotalCountsOnlyWhatWasReported() {
+        long eventId = usage.claimChatTurn(USER, "anthropic");
+
+        assertThat(jdbc.queryForObject("SELECT total_tokens FROM " + usageTable + " WHERE id = ?",
+                Integer.class, eventId))
+                .as("a turn whose provider reported nothing has spent nothing we know of")
+                .isZero();
+
+        usage.recordTokens(eventId, "claude-sonnet-5", 1000, null, null, 200);
+        assertThat(jdbc.queryForObject("SELECT total_tokens FROM " + usageTable + " WHERE id = ?",
+                Integer.class, eventId))
+                .isEqualTo(1200);
+    }
+
     @Test
     void aDiscardedChargeLeavesNothingBehind() {
         long eventId = usage.claimChatTurn(USER, "anthropic");
@@ -217,18 +233,18 @@ class UsageServiceTest {
     @Test
     void tokensAreRecordedAgainstTheEventTheCallOpened() {
         long eventId = usage.claimChatTurn(USER, "anthropic");
-        usage.recordTokens(eventId, "anthropic", "claude-sonnet-5", 1200, 900, 400, 300);
+        usage.recordTokens(eventId, "claude-sonnet-5", 1200, 900, 400, 300);
 
         assertThat(jdbc.queryForMap(
                 "SELECT provider, model, input_tokens, cached_tokens, cache_write_tokens,"
-                        + " output_tokens, cost_usd FROM " + usageTable + " WHERE id = ?", eventId))
+                        + " output_tokens, total_tokens FROM " + usageTable + " WHERE id = ?", eventId))
                 .containsEntry("provider", "anthropic")
                 .containsEntry("model", "claude-sonnet-5")
                 .containsEntry("input_tokens", 1200)
                 .containsEntry("cached_tokens", 900)
                 .containsEntry("cache_write_tokens", 400)
                 .containsEntry("output_tokens", 300)
-                .hasEntrySatisfying("cost_usd", cost ->
-                        assertThat((java.math.BigDecimal) cost).isPositive());
+                .as("every kind of token, added up by the database rather than by a caller")
+                .containsEntry("total_tokens", 2800);
     }
 }

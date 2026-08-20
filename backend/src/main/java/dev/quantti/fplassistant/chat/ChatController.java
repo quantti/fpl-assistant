@@ -207,7 +207,7 @@ public class ChatController {
             return;
         }
         try {
-            usage.recordTokens(usageEventId, provider, tokens.model(), tokens.inputTokens(),
+            usage.recordTokens(usageEventId, tokens.model(), tokens.inputTokens(),
                     tokens.cachedTokens(), tokens.cacheWriteTokens(), tokens.outputTokens());
         } catch (RuntimeException e) {
             log.error("could not record token usage for event {}", usageEventId, e);

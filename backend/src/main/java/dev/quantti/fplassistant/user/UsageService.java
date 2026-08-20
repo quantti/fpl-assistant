@@ -1,6 +1,5 @@
 package dev.quantti.fplassistant.user;
 
-import java.math.BigDecimal;
 import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
@@ -33,18 +32,15 @@ public class UsageService {
     static final String CHAT_EVENT = "chat";
 
     private final JdbcTemplate jdbc;
-    private final Pricing pricing;
     private final String usageTable;
     private final String profileTable;
     private final int defaultLimit;
 
     public UsageService(JdbcTemplate jdbc,
-                        Pricing pricing,
                         @Value("${fpl.user.usage-table-name}") String usageTable,
                         @Value("${fpl.user.profile-table-name}") String profileTable,
                         @Value("${fpl.quota.messages-per-week}") int defaultLimit) {
         this.jdbc = jdbc;
-        this.pricing = pricing;
         this.usageTable = usageTable;
         this.profileTable = profileTable;
         this.defaultLimit = defaultLimit;
@@ -172,21 +168,18 @@ public class UsageService {
     }
 
     /**
-     * Fills in what the provider reported, and what it cost. Separate from the insert because
-     * the numbers only exist once the answer is finished, and the row has to exist before it
-     * starts.
+     * Fills in what the provider reported. Separate from the insert because the numbers only
+     * exist once the answer is finished, and the row has to exist before it starts.
      *
-     * <p>The cost is priced here and stored, not derived when someone reads the row: rates
-     * change, and a figure that reprices itself is not a record of what was spent.
+     * <p>Tokens only. Money is deliberately not recorded: a price depends on the model, the date
+     * and whatever promotion is running, so a stored figure is wrong as soon as any of those
+     * move — and the question worth answering is how many tokens a message spent.
      */
-    public void recordTokens(long eventId, String provider, String model, Integer inputTokens,
+    public void recordTokens(long eventId, String model, Integer inputTokens,
                              Integer cachedTokens, Integer cacheWriteTokens, Integer outputTokens) {
-        BigDecimal cost = pricing
-                .costOf(provider, inputTokens, cachedTokens, cacheWriteTokens, outputTokens)
-                .orElse(null);
         jdbc.update("UPDATE " + usageTable + " SET model = ?, input_tokens = ?, cached_tokens = ?,"
-                + " cache_write_tokens = ?, output_tokens = ?, cost_usd = ? WHERE id = ?",
-                model, inputTokens, cachedTokens, cacheWriteTokens, outputTokens, cost, eventId);
+                + " cache_write_tokens = ?, output_tokens = ? WHERE id = ?",
+                model, inputTokens, cachedTokens, cacheWriteTokens, outputTokens, eventId);
     }
 
     /**
