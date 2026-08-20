@@ -2,8 +2,18 @@ import { useState, useCallback, useEffect, useRef } from 'react'
 import { ChatRequest, Message } from '../types'
 import { apiFetch } from '../auth/apiFetch'
 
+interface UseChatOptions {
+  /** The conversation being continued, or null to open a new one on the next message. */
+  conversationId: string | null
+  /** The id the server gave the turn — a new conversation's, or null when it is gone. */
+  onConversation: (id: string | null) => void
+  /** A turn landed: the list's order and a new conversation's title come from the server. */
+  onTurnFinished: () => void
+}
+
 interface UseChatReturn {
   messages: Message[]
+  setMessages: (messages: Message[]) => void
   streamingContent: string | null
   isStreaming: boolean
   sendMessage: (content: string) => Promise<void>
@@ -28,13 +38,10 @@ const GONE = 'That conversation is no longer available. The messages above stay 
 const INTERRUPTED = 'Sorry — the connection was interrupted. Please try again.'
 const FAILED = 'Sorry, something went wrong. Please try again.'
 
-export function useChat(): UseChatReturn {
+export function useChat({ conversationId, onConversation, onTurnFinished }: UseChatOptions): UseChatReturn {
   const [messages, setMessages] = useState<Message[]>([])
   const [streamingContent, setStreamingContent] = useState<string | null>(null)
   const [isStreaming, setIsStreaming] = useState(false)
-  // The server owns the history; this is the only part of it the client holds. Null until the
-  // first answer names the conversation the turn landed in.
-  const [conversationId, setConversationId] = useState<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
 
   // Signing out unmounts this view, but a stream nobody aborts keeps draining: the backend goes
@@ -73,7 +80,7 @@ export function useChat(): UseChatReturn {
         // First event of every stream: which conversation this turn landed in. A new one was
         // opened when the request carried no id, and the next turn has to name it.
         try {
-          setConversationId(JSON.parse(data))
+          onConversation(JSON.parse(data))
         } catch {
           // Unparseable id — the turn still streams; the next one opens a new conversation.
         }
@@ -129,7 +136,7 @@ export function useChat(): UseChatReturn {
       // The conversation is gone — deleted elsewhere, or never the caller's. Forget the id so
       // the next message opens a new one instead of failing the same way forever.
       if (response.status === 404) {
-        setConversationId(null)
+        onConversation(null)
         setMessages(prev => [...prev, { role: 'assistant', content: GONE, isError: true }])
         return
       }
@@ -184,8 +191,11 @@ export function useChat(): UseChatReturn {
     } finally {
       setStreamingContent(null)
       setIsStreaming(false)
+      // The list orders by last use and titles a new conversation from its first message, so
+      // both are the server's answer to fetch rather than something to guess at here.
+      onTurnFinished()
     }
-  }, [messages, isStreaming, conversationId])
+  }, [messages, isStreaming, conversationId, onConversation, onTurnFinished])
 
-  return { messages, streamingContent, isStreaming, sendMessage }
+  return { messages, setMessages, streamingContent, isStreaming, sendMessage }
 }

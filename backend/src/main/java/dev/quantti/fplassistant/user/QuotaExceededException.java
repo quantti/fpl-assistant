@@ -19,10 +19,14 @@ public class QuotaExceededException extends RuntimeException {
         return quota.retryAfterSeconds();
     }
 
+    /**
+     * Names no number (issue #11). The user is told they are out for now, and the usage page
+     * shows how much of the week is left as a share — the limit itself is the owner's business.
+     */
     private static String message(UsageService.Quota quota) {
         if (quota.limit() != null && quota.limit() == 0) {
             return "This account cannot send messages.";
         }
-        return "You have used all %d messages for this week.".formatted(quota.limit());
+        return "You have used this week's messages.";
     }
 }
