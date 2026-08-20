@@ -129,9 +129,68 @@ class UsageServiceTest {
                 assertThat(seconds).isBetween(1L, Duration.ofMinutes(6).toSeconds()));
     }
 
+    /**
+     * A suspended account usually has usage inside the window — it was chatting until someone
+     * suspended it — so there is a timestamp to compute. Answering with it would promise the
+     * account comes back at a time it does not.
+     */
+    @Test
+    void aSuspendedAccountWithUsageStillOffersNoRetryAfter() {
+        seedEvents(3, Duration.ofDays(1), UsageService.CHAT_EVENT);
+        setLimit(0);
+
+        UsageService.Quota quota = usage.quotaOf(USER);
+        assertThat(quota.exceeded()).isTrue();
+        assertThat(quota.retryAfterSeconds()).isEmpty();
+    }
+
+    /**
+     * Over the limit — which is what lowering someone's limit does — the next free slot is not
+     * the oldest event but the one that many places in. Pointing at the oldest sends the client
+     * back for a second refusal it was given no way to predict.
+     */
+    @Test
+    void overTheLimitTheNextFreeSlotSkipsTheOnesStillOwed() {
+        setLimit(1);
+        // Ages 6, 5 and 4 days: they leave the window in 1, 2 and 3 days respectively.
+        seedEvents(1, UsageService.WINDOW.minusDays(1), UsageService.CHAT_EVENT);
+        seedEvents(1, UsageService.WINDOW.minusDays(2), UsageService.CHAT_EVENT);
+        seedEvents(1, UsageService.WINDOW.minusDays(3), UsageService.CHAT_EVENT);
+
+        UsageService.Quota quota = usage.quotaOf(USER);
+        assertThat(quota.used()).isEqualTo(3);
+        // Three events against a limit of one: two must leave before there is room, so the slot
+        // frees in three days — not the one day the oldest event alone would suggest.
+        assertThat(quota.nextFreeAt()).isBetween(
+                Instant.now().plus(Duration.ofHours(68)), Instant.now().plus(Duration.ofHours(76)));
+    }
+
+    @Test
+    void claimingRecordsATurnAndRefusesOneOverTheLimit() {
+        setLimit(1);
+
+        long eventId = usage.claimChatTurn(USER, "anthropic");
+        assertThat(eventId).isPositive();
+        assertThat(usage.quotaOf(USER).used()).isEqualTo(1);
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> usage.claimChatTurn(USER, "anthropic"))
+                .isInstanceOf(QuotaExceededException.class);
+        assertThat(usage.quotaOf(USER).used())
+                .as("a refused turn is not a recorded turn")
+                .isEqualTo(1);
+    }
+
+    @Test
+    void aDiscardedChargeLeavesNothingBehind() {
+        long eventId = usage.claimChatTurn(USER, "anthropic");
+        usage.discard(eventId);
+
+        assertThat(usage.quotaOf(USER).used()).isZero();
+    }
+
     @Test
     void tokensAreRecordedAgainstTheEventTheCallOpened() {
-        long eventId = usage.recordChatStart(USER, "anthropic");
+        long eventId = usage.claimChatTurn(USER, "anthropic");
         usage.recordTokens(eventId, 1200, 900, 300);
 
         assertThat(jdbc.queryForMap(
