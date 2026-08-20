@@ -9,6 +9,8 @@ interface UseChatReturn {
   sendMessage: (content: string) => Promise<void>
 }
 
+const GONE = 'That conversation is no longer available. Your next message starts a new one.'
+
 const INTERRUPTED = 'Sorry — the connection was interrupted. Please try again.'
 const FAILED = 'Sorry, something went wrong. Please try again.'
 
@@ -16,6 +18,9 @@ export function useChat(): UseChatReturn {
   const [messages, setMessages] = useState<Message[]>([])
   const [streamingContent, setStreamingContent] = useState<string | null>(null)
   const [isStreaming, setIsStreaming] = useState(false)
+  // The server owns the history; this is the only part of it the client holds. Null until the
+  // first answer names the conversation the turn landed in.
+  const [conversationId, setConversationId] = useState<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
 
   // Signing out unmounts this view, but a stream nobody aborts keeps draining: the backend goes
@@ -50,6 +55,16 @@ export function useChat(): UseChatReturn {
         .map(l => l.slice('data:'.length).replace(/^ /, ''))
         .join('\n')
 
+      if (eventName === 'conversation') {
+        // First event of every stream: which conversation this turn landed in. A new one was
+        // opened when the request carried no id, and the next turn has to name it.
+        try {
+          setConversationId(JSON.parse(data))
+        } catch {
+          // Unparseable id — the turn still streams; the next one opens a new conversation.
+        }
+        return
+      }
       if (eventName === 'error') {
         errorText = data || FAILED
         return
@@ -66,35 +81,24 @@ export function useChat(): UseChatReturn {
       }
     }
 
-    // Error turns are transcript-only: they are the app reporting a failure, not the model
-    // saying anything, and sending them back would have the model treat "Sorry, something
-    // went wrong" as its own prior answer. Filtered here rather than never appended because
-    // the user still needs to see them in the UI. Consecutive user turns that the filtering
-    // can produce (question, error, retry) are merged: the Anthropic API rejects a history
-    // with two user turns in a row.
-    const wireMessages: ChatRequest['messages'] = nextMessages
-      .filter(m => !m.isError)
-      .reduce<ChatRequest['messages']>((acc, { role, content }) => {
-        const previous = acc[acc.length - 1]
-        if (previous && previous.role === 'user' && role === 'user') {
-          previous.content = `${previous.content}\n\n${content}`
-          return acc
-        }
-        acc.push({ role, content })
-        return acc
-      }, [])
-
     try {
       const response = await apiFetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: wireMessages } satisfies ChatRequest),
+        body: JSON.stringify({ conversationId, message: content } satisfies ChatRequest),
         signal: controller.signal,
       })
 
       // apiFetch has already signed out, so the sign-in screen is about to replace this view.
       // Appending an error would only flash a message nobody gets to read.
       if (response.status === 401) {
+        return
+      }
+      // The conversation is gone — deleted elsewhere, or never the caller's. Forget the id so
+      // the next message opens a new one instead of failing the same way forever.
+      if (response.status === 404) {
+        setConversationId(null)
+        setMessages(prev => [...prev, { role: 'assistant', content: GONE, isError: true }])
         return
       }
       if (response.status === 429) {
@@ -143,7 +147,7 @@ export function useChat(): UseChatReturn {
       setStreamingContent(null)
       setIsStreaming(false)
     }
-  }, [messages, isStreaming])
+  }, [messages, isStreaming, conversationId])
 
   return { messages, streamingContent, isStreaming, sendMessage }
 }
