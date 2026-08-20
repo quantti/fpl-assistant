@@ -53,7 +53,11 @@ export default function ChatView() {
             className={classes.signOut}
             variant="subtle"
             size="compact-sm"
-            onClick={() => supabase.auth.signOut()}
+            // Local scope: signing out here should end this browser's session, not revoke the
+            // one on the user's phone — which is what the 'global' default does. The catch keeps
+            // a storage failure from surfacing as an unhandled rejection; the button simply does
+            // nothing, which is also what the user sees.
+            onClick={() => { supabase.auth.signOut({ scope: 'local' }).catch(() => {}) }}
           >
             Sign out
           </Button>

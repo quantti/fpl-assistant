@@ -86,11 +86,14 @@ class SpaForwardingTest {
      */
     @Test
     void everyServerEndpointLivesWhereTheCatchAllCannotExposeIt() {
+        // Annotated controllers only. A RouterFunction bean, a registered servlet, or a
+        // dotless file in static/ is invisible here and would be public under the same permit —
+        // if Phase 5b registers its Stripe webhook functionally, this assertion does not see it.
         List<String> exposed = handlerMapping.getHandlerMethods().entrySet().stream()
                 .filter(entry -> !isSpaForward(entry.getValue()))
                 .flatMap(entry -> entry.getKey().getPatternValues().stream())
-                .filter(pattern -> !pattern.startsWith("/api/")
-                        && !pattern.startsWith("/actuator")
+                .filter(pattern -> !isUnder("/api", pattern)
+                        && !isUnder("/actuator", pattern)
                         // Spring's own error dispatch target. It reveals the error attributes of
                         // the request that failed and nothing else.
                         && !pattern.equals("/error"))
@@ -104,5 +107,15 @@ class SpaForwardingTest {
 
     private static boolean isSpaForward(HandlerMethod handler) {
         return handler.getBeanType().equals(SpaForwardingController.class);
+    }
+
+    /**
+     * Prefix matching by segment, matching what the security patterns exclude. A plain
+     * {@code startsWith("/actuator")} would also cover {@code /actuator-admin}, which the
+     * client-route permit makes public — so the loosest filter here would be blind to exactly
+     * the endpoint this test exists to catch.
+     */
+    private static boolean isUnder(String prefix, String pattern) {
+        return pattern.equals(prefix) || pattern.startsWith(prefix + "/");
     }
 }

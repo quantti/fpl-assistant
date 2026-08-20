@@ -1504,7 +1504,9 @@ therefore already settled — closed for the duration of 5a.
 Three explicit segment levels, not a trailing `/**`. `/**` matches a segment with a file
 extension in it, which forwarded `/assets/index-abc123.js` to the index page under a JavaScript
 content type — a missing asset then surfaces as a syntax error in the console instead of a 404.
-A client route deeper than three segments will 404 visibly rather than silently.
+A client route deeper than three segments matches no pattern and falls through to `denyAll`, so
+it answers 401 rather than loading the app; nothing needs four levels today, and Task 7's
+conversation routes will not.
 
 The permit those patterns need does weaken yesterday's `denyAll` default: every extension-less
 `GET` outside `/api/**` and `/actuator/**` is now public, because the chain cannot tell a route
@@ -1515,6 +1517,32 @@ What replaces the lost default is a test, not a promise: `SpaForwardingTest` rea
 `RequestMappingHandlerMapping` and fails if any handler is mapped outside `/api/**`,
 `/actuator/**` or Spring's own `/error`. **New endpoints go under `/api/`**; one that does not
 turns the silent hole into a red suite.
+
+## Review round
+
+A `401` no longer signs the user out on the spot. The backend answers `401` for anything it
+cannot verify — its own javadoc says an unreachable key server looks the same as a forged token —
+so `apiFetch` now refreshes once and retries once, and only a second `401` ends the session. It
+also ends it with `scope: 'local'`: `signOut()` defaults to `global`, which revokes every refresh
+token the user holds, so one spurious `401` in one tab would have signed them out on their phone
+as well.
+
+The sign-in screen says *why* it is showing when a session ends that way. Without it, a backend
+that rejects every valid token — a wrong `supabase.audience`, the 2026-08-19 class of bug — is an
+unbreakable loop with no diagnostic anywhere in the UI.
+
+Also from the round: `getSession()` and `signInWithPassword()` are guarded, because a browser
+that refuses storage makes both reject and left the app on its loader, or the button in its
+loading state, for good; the guard test's prefix matching now agrees with the security pattern
+(`startsWith("/actuator")` also covered `/actuator-admin`, which the client-route permit makes
+public); the stream is aborted on unmount, so signing out mid-answer stops a completion the
+backend was still paying for.
+
+**The publishable key is no longer in the source tree** (PR #8 review). It arrives as
+`VITE_SUPABASE_ANON_KEY` — `frontend/.env.local` locally, a repository secret in CI, a
+`--build-arg` on deploy — and `vite.config.ts` refuses to build without it. It is still in this
+branch's history in commit `f87d15b`; rotating it in the Supabase dashboard is what actually
+removes it.
 
 ## Not verified end to end yet
 
