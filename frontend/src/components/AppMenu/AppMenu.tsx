@@ -24,9 +24,11 @@ export default function AppMenu({ route }: Props) {
         <Burger opened={open} size="sm" aria-label="Menu" />
       </Menu.Target>
       <Menu.Dropdown>
-        <Menu.Item onClick={() => navigate(route === '/usage' ? '/' : '/usage')}>
-          {route === '/usage' ? 'Back to chat' : 'Usage'}
-        </Menu.Item>
+        {route !== '/' && (
+          <Menu.Item onClick={() => navigate('/')}>Back to chat</Menu.Item>
+        )}
+        <Menu.Item onClick={() => navigate('/usage')}>Usage</Menu.Item>
+        <Menu.Item onClick={() => navigate('/settings')}>Settings</Menu.Item>
         <Menu.Item onClick={() => setColorScheme(scheme === 'dark' ? 'light' : 'dark')}>
           {scheme === 'dark' ? 'Light theme' : 'Dark theme'}
         </Menu.Item>
