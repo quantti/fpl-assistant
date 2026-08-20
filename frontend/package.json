@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:prod": "FPL_API_PROXY=https://fpl-assistant.fly.dev vite",
     "build": "npm run check-contrast && tsc -b && vite build",
     "preview": "vite preview",
     "check-contrast": "node scripts/check-contrast.mjs"
