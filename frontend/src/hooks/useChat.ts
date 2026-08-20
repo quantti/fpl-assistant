@@ -1,5 +1,6 @@
 import { useState, useCallback } from 'react'
 import { ChatRequest, Message } from '../types'
+import { apiFetch } from '../auth/apiFetch'
 
 interface UseChatReturn {
   messages: Message[]
@@ -76,12 +77,17 @@ export function useChat(): UseChatReturn {
       }, [])
 
     try {
-      const response = await fetch('/api/chat', {
+      const response = await apiFetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ messages: wireMessages } satisfies ChatRequest),
       })
 
+      // apiFetch has already signed out, so the sign-in screen is about to replace this view.
+      // Appending an error would only flash a message nobody gets to read.
+      if (response.status === 401) {
+        return
+      }
       if (response.status === 429) {
         setMessages(prev => [...prev, {
           role: 'assistant',

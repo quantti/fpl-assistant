@@ -1,5 +1,6 @@
 import { useLayoutEffect } from 'react'
-import { ActionIcon, useComputedColorScheme, useMantineColorScheme } from '@mantine/core'
+import { ActionIcon, Button, useComputedColorScheme, useMantineColorScheme } from '@mantine/core'
+import { supabase } from '../../auth/supabaseClient'
 import { useChat } from '../../hooks/useChat'
 import MessageThread from '../MessageThread/MessageThread'
 import MessageInput from '../MessageInput/MessageInput'
@@ -36,14 +37,27 @@ export default function ChatView() {
     <div className={classes.root}>
       <div className={classes.header}>
         <span>⚽ FPL Assistant</span>
-        <ActionIcon
-          className={classes.themeToggle}
-          variant="subtle"
-          onClick={() => setColorScheme(computedColorScheme === 'dark' ? 'light' : 'dark')}
-          aria-label={computedColorScheme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
-        >
-          {computedColorScheme === 'dark' ? '☀' : '☾'}
-        </ActionIcon>
+        <div className={classes.actions}>
+          <ActionIcon
+            className={classes.themeToggle}
+            variant="subtle"
+            onClick={() => setColorScheme(computedColorScheme === 'dark' ? 'light' : 'dark')}
+            aria-label={computedColorScheme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+          >
+            {computedColorScheme === 'dark' ? '☀' : '☾'}
+          </ActionIcon>
+          {/* Spelled out rather than a glyph: signing out ends the conversation, and an
+              unlabelled icon is the wrong affordance for an action nobody wants to hit by
+              mistake. The session subscription in App does the rest. */}
+          <Button
+            className={classes.signOut}
+            variant="subtle"
+            size="compact-sm"
+            onClick={() => supabase.auth.signOut()}
+          >
+            Sign out
+          </Button>
+        </div>
       </div>
       {messages.length === 0 && streamingContent === null ? (
         <div className={classes.empty}>
