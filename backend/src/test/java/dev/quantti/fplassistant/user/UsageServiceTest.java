@@ -36,12 +36,16 @@ class UsageServiceTest {
     @Value("${fpl.user.profile-table-name}")
     String profileTable;
 
+    @Value("${fpl.user.conversation-table-name}")
+    String conversationTable;
+
     @Value("${fpl.quota.messages-per-week}")
     int defaultLimit;
 
     @AfterEach
     void clear() {
         jdbc.update("DELETE FROM " + usageTable + " WHERE user_id = ?", USER);
+        jdbc.update("DELETE FROM " + conversationTable + " WHERE user_id = ?", USER);
         jdbc.update("DELETE FROM " + profileTable + " WHERE user_id = ?", USER);
     }
 
@@ -188,17 +192,43 @@ class UsageServiceTest {
         assertThat(usage.quotaOf(USER).used()).isZero();
     }
 
+    /**
+     * The charge names its conversation but does not depend on it. Usage counted from something
+     * the user can delete is a quota the user can refill by deleting a conversation — which is
+     * why the column carries no foreign key and no cascade.
+     */
+    @Test
+    void deletingTheConversationLeavesTheChargeStanding() {
+        UUID conversationId = jdbc.queryForObject(
+                "INSERT INTO " + conversationTable + " (user_id, title) VALUES (?, 'x') RETURNING id",
+                UUID.class, USER);
+        long eventId = usage.claimChatTurn(USER, "anthropic");
+        usage.attachConversation(eventId, conversationId);
+
+        jdbc.update("DELETE FROM " + conversationTable + " WHERE id = ?", conversationId);
+
+        assertThat(usage.quotaOf(USER).used()).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT conversation_id FROM " + usageTable
+                + " WHERE id = ?", UUID.class, eventId))
+                .as("the reference dangles on purpose rather than taking the row with it")
+                .isEqualTo(conversationId);
+    }
+
     @Test
     void tokensAreRecordedAgainstTheEventTheCallOpened() {
         long eventId = usage.claimChatTurn(USER, "anthropic");
-        usage.recordTokens(eventId, 1200, 900, 300);
+        usage.recordTokens(eventId, "anthropic", "claude-sonnet-5", 1200, 900, 400, 300);
 
         assertThat(jdbc.queryForMap(
-                "SELECT provider, input_tokens, cached_tokens, output_tokens FROM " + usageTable
-                        + " WHERE id = ?", eventId))
+                "SELECT provider, model, input_tokens, cached_tokens, cache_write_tokens,"
+                        + " output_tokens, cost_usd FROM " + usageTable + " WHERE id = ?", eventId))
                 .containsEntry("provider", "anthropic")
+                .containsEntry("model", "claude-sonnet-5")
                 .containsEntry("input_tokens", 1200)
                 .containsEntry("cached_tokens", 900)
-                .containsEntry("output_tokens", 300);
+                .containsEntry("cache_write_tokens", 400)
+                .containsEntry("output_tokens", 300)
+                .hasEntrySatisfying("cost_usd", cost ->
+                        assertThat((java.math.BigDecimal) cost).isPositive());
     }
 }
