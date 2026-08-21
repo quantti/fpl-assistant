@@ -102,6 +102,10 @@ public class ChatController {
             // refused turn must not leave one behind.
             usage.attachConversation(usageEventId, conversationId);
             conversations.append(conversationId, ChatTurn.USER, message);
+            // Bumped here rather than when the answer lands: the list orders by last use, and a
+            // turn whose answer failed is still the conversation the user just wrote to — the
+            // hardest one to find if it stays where it was.
+            conversations.touch(conversationId);
 
             // The whole conversation, not a window of it: continuing an old thread has to mean
             // the model sees what was said, not only the end of it. Trimmed from the front only
@@ -207,7 +211,6 @@ public class ChatController {
         }
         try {
             conversations.append(conversationId, ChatTurn.ASSISTANT, answer);
-            conversations.touch(conversationId);
         } catch (RuntimeException e) {
             // The client has the answer either way; losing it from history is worth a log, not a
             // broken stream.
