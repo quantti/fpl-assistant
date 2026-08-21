@@ -1,9 +1,13 @@
 package dev.quantti.fplassistant.tools;
 
+import java.time.LocalDate;
+
 import dev.quantti.fplassistant.testsupport.TapasSeed;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 
@@ -21,9 +25,31 @@ class PlayerToolsTest {
     @Autowired
     JdbcTemplate jdbc;
 
+    @Value("${fpl.daily-price.table-name}")
+    String dailyTable;
+
+    private static final String CURRENT_SEASON = "2099-00";
+
     @BeforeEach
     void seed() {
         TapasSeed.ensure(jdbc);
+        assertThat(dailyTable).as("must use the isolated table").endsWith("_test");
+        clearDaily();
+    }
+
+    @AfterEach
+    void clearDaily() {
+        jdbc.update("DELETE FROM " + dailyTable + " WHERE season = ?", CURRENT_SEASON);
+    }
+
+    /** One row of the daily capture: this season's squad, as FPL's own API reports it. */
+    private void captureToday(String webName, String fullName) {
+        jdbc.update("INSERT INTO " + dailyTable + " (season, price_date, element_id, web_name,"
+                        + " full_name, team_short, team_name, element_type, now_cost,"
+                        + " cost_change_event, cost_change_start, selected_by_percent, status, news)"
+                        + " VALUES (?, ?, 9901, ?, ?, 'TST', 'Testville United', 2, 55, 0, 0,"
+                        + " 12.3, 'a', '')",
+                CURRENT_SEASON, LocalDate.now(), webName, fullName);
     }
 
     @Test
@@ -57,6 +83,36 @@ class PlayerToolsTest {
         String result = playerTools.getPlayerStats("zzznomatch999");
 
         assertThat(result).containsIgnoringCase("not found");
+    }
+
+    /**
+     * This season's squad comes from FPL's own daily capture, not from the tapas table — which
+     * held no rows at all for the season being played. Answering only from there is what let a
+     * question about one player be answered about another who happened to exist in the season
+     * the resolver had fallen back to.
+     */
+    @Test
+    void aPlayerInThisSeasonsSquadIsAnsweredFromTheDailyCapture() {
+        captureToday(TapasSeed.PLAYER_WEB_NAME, TapasSeed.PLAYER_FULL_NAME);
+
+        String result = playerTools.getPlayerStats(TapasSeed.PLAYER_WEB_NAME);
+
+        assertThat(result).startsWith("Data source: FPL live prices for season " + CURRENT_SEASON);
+        assertThat(result).contains("this season: £5.5m");
+        assertThat(result).doesNotContain("NOT IN THIS SEASON");
+    }
+
+    /**
+     * The case that produced the wrong answer: a player who exists in last season's data and not
+     * in this season's game. Saying so is the point — a silent historical answer is exactly what
+     * made a guessed name look like a successful lookup.
+     */
+    @Test
+    void aPlayerMissingFromThisSeasonsSquadIsCalledOut() {
+        String result = playerTools.getPlayerStats(TapasSeed.PLAYER_WEB_NAME);
+
+        assertThat(result).contains("NOT IN THIS SEASON'S FPL GAME");
+        assertThat(result).containsIgnoringCase(TapasSeed.PLAYER_WEB_NAME);
     }
 
     @Test
