@@ -1913,6 +1913,27 @@ Verified against the live application after the change: the same question now an
 **Konsa**, with the 2025/26 numbers attributed to that season and current availability from the
 daily capture.
 
+## Then fixed properly: this season's squad is the first place to look
+
+The prompt rules stop the model from renaming a player. They do not fix why the wrong name
+*worked*: `getPlayerStats` resolved names only through the tapas `player` table, which holds 841
+rows for 2025/26 and **none at all for 2026-27**, so `SeasonResolver` falls back to last season and
+every lookup answers from the one season where a departed player still exists.
+
+We do have this season's squad — `fpl_daily_price`, captured daily from FPL's own API, with
+`web_name`, `full_name`, club, position, price, ownership and availability. `getPlayerStats` now
+reads it first (through `DailyPriceSource.matchPlayers`, the same ranked matcher the price and
+availability tools use) and adds the completed season's statistics underneath, attributed. A name
+that is **not** in this season's squad gets an explicit "NOT IN THIS SEASON'S FPL GAME" before
+anything else — which is what turns a wrong guess from a plausible answer into a visible dead end.
+
+Verified live after the change:
+
+- "konsa vai calafiori?" answers for Konsa (£4.5m, available) and Calafiori (£5.5m), with the
+  2025/26 numbers named as last season's.
+- "onko konate hyvä ostos?" answers that no player by that name is in FPL's data and asks for the
+  club or a fuller spelling, instead of answering about him.
+
 ## Also found while looking
 
 The conversation sidebar read the list once on mount with no error handling, so a backend that was
