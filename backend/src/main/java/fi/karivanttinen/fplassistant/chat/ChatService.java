@@ -127,19 +127,15 @@ public class ChatService {
 
         // A prompt or completion count of zero is Spring AI's EmptyUsage, not a measurement:
         // every chunk carries one, and on a provider that also stamps the model on every chunk
-        // that would write zeros into every row — indistinguishable from a real measurement of
-        // nothing. The cache figures are different: they are null when absent, so a zero there
-        // is a genuine cache miss, which is the number worth having.
-        TokenUsage merged = reported.updateAndGet(previous -> new TokenUsage(
-                model != null ? model : previous == null ? null : previous.model(),
-                larger(unreported(uncachedPrompt) ? null : uncachedPrompt,
-                        previous == null ? null : previous.inputTokens()),
-                larger(cacheReads == null ? null : cacheReads.intValue(),
-                        previous == null ? null : previous.cachedTokens()),
-                larger(cacheWrites == null ? null : cacheWrites.intValue(),
-                        previous == null ? null : previous.cacheWriteTokens()),
-                larger(unreported(completion) ? null : completion,
-                        previous == null ? null : previous.outputTokens())));
+        // that would write zeros into every row. The cache figures are different: they are null
+        // when absent, so a zero there is a genuine cache miss, which is the number worth having.
+        TokenUsage candidate = new TokenUsage(model,
+                unreported(uncachedPrompt) ? null : uncachedPrompt,
+                cacheReads == null ? null : cacheReads.intValue(),
+                cacheWrites == null ? null : cacheWrites.intValue(),
+                unreported(completion) ? null : completion);
+
+        TokenUsage merged = reported.updateAndGet(previous -> richer(previous, candidate));
 
         // Reported as it arrives rather than on completion: a stream that fails or times out has
         // no completion, and the tokens it burned before failing were still spent. The caller
@@ -151,11 +147,36 @@ public class ChatService {
         return count == null || count == 0;
     }
 
-    private static Integer larger(Integer reported, Integer previous) {
-        if (reported == null) {
-            return previous;
+    /**
+     * The chunk that reported the most, kept whole.
+     *
+     * <p>Field-by-field maxima looked equivalent and were not: they can assemble a row from two
+     * different chunks, and on the OpenAI path — where the input count is the prompt minus the
+     * cached part — a chunk that reports the prompt without cache details followed by one that
+     * reports both leaves the un-normalised prompt beside a populated cache figure. The generated
+     * total then counts the cached tokens twice, which is the exact double-count the
+     * normalisation exists to prevent. Usage is cumulative per chunk on both providers, so the
+     * richest chunk is the complete one.
+     *
+     * <p>The model name is carried across regardless: it arrives on chunks that measure nothing.
+     */
+    private static TokenUsage richer(TokenUsage previous, TokenUsage candidate) {
+        if (previous == null) {
+            return candidate;
         }
-        return previous == null ? reported : Math.max(reported, previous);
+        TokenUsage winner = total(candidate) >= total(previous) ? candidate : previous;
+        String model = candidate.model() != null ? candidate.model() : previous.model();
+        return new TokenUsage(model, winner.inputTokens(), winner.cachedTokens(),
+                winner.cacheWriteTokens(), winner.outputTokens());
+    }
+
+    private static long total(TokenUsage usage) {
+        return value(usage.inputTokens()) + value(usage.cachedTokens())
+                + value(usage.cacheWriteTokens()) + value(usage.outputTokens());
+    }
+
+    private static long value(Integer count) {
+        return count == null ? 0 : count;
     }
 
     /**

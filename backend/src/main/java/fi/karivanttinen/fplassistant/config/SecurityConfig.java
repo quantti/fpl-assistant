@@ -116,9 +116,13 @@ public class SecurityConfig {
      * does — including the cache and rate limit, which is where the interesting behaviour is.
      */
     public static JwtDecoder decoder(String jwkSetUri, String issuer, String audience) {
-        // "https://project.supabase.co/" is what the dashboard shows and what anyone would
-        // paste, and it concatenates into an issuer with a double slash that matches no token.
-        issuer = issuer.replaceAll("(?<!:)//+(?=auth)", "/");
+        issuer = collapseDoubledSlash(issuer);
+        // The same repair, for the same reason: both properties are derived from SUPABASE_URL,
+        // and the dashboard shows it with a trailing slash. A doubled slash in the key-set path
+        // is not routed by Supabase's gateway, the fetch fails, and unverifiableIsUnauthorized
+        // turns that into a 401 for every user — distinguishable from forged-token traffic only
+        // by a WARN line.
+        jwkSetUri = collapseDoubledSlash(jwkSetUri);
         JWKSource<SecurityContext> keys;
         try {
             keys = JWKSourceBuilder.<SecurityContext>create(URI.create(jwkSetUri).toURL())
@@ -141,6 +145,14 @@ public class SecurityConfig {
                 .build();
         decoder.setJwtValidator(tokenValidator(issuer, audience));
         return unverifiableIsUnauthorized(decoder);
+    }
+
+    /**
+     * "https://project.supabase.co/" is what the dashboard shows and what anyone would paste, and
+     * it concatenates into a path with a double slash that nothing routes.
+     */
+    static String collapseDoubledSlash(String url) {
+        return url.replaceAll("(?<!:)//+(?=auth)", "/");
     }
 
     /**

@@ -1940,3 +1940,37 @@ The conversation sidebar read the list once on mount with no error handling, so 
 down at that moment left the sidebar empty for the rest of the session — indistinguishable from
 having no conversations, and with nothing to retry. It now says the list could not be loaded and
 offers to try again.
+
+
+---
+
+# Full-phase review of 5a (2026-08-21)
+
+Six findings against the whole phase (`01fd706..master`, 86 files). All fixed.
+
+**The serious one was introduced by the fix before it.** With no daily capture at all,
+`getPlayerStats` answered every lookup with "NOT IN THIS SEASON'S FPL GAME" — a confident
+falsehood on a fresh deploy, and the shape of error the player-name work existed to remove. Worse,
+the test written for that work ran against an empty capture table, so it *pinned* the broken state
+instead of catching it. Three outcomes now: no capture means the squad list is unavailable and no
+claim is made; a capture that does not hold the name means the player is not in the game; a match
+answers from this season.
+
+`jwks-uri` was not getting the trailing-slash repair the issuer already had, though both are
+derived from `SUPABASE_URL` — the value the dashboard shows with a slash on the end. A doubled
+slash in the key-set path is routed by nothing, the fetch fails, and every user gets a 401
+distinguishable from forged-token traffic only by a WARN line.
+
+`FplEntryLookup` folded every non-2xx into NOT_FOUND, so a redirect — which is what FPL answers if
+the configured URL loses its trailing slash — told users their valid team id does not exist. Only
+a 404 says that now.
+
+Token usage merged field by field across chunks, which could assemble a row from two of them: on
+the OpenAI path an un-normalised prompt beside a populated cache count, and the generated total
+counting cached tokens twice. The richest chunk is now kept whole. The test that documented
+field-by-field merging described a shape neither provider produces — both report cumulatively —
+so it was rewritten rather than worked around.
+
+`updated_at` was bumped only when an answer was stored, so a conversation whose answer failed
+stayed where it was in a list ordered by last use — the conversation the user had just written to
+was the hardest to find. The touch moved to the user's turn.
