@@ -109,9 +109,27 @@ class PlayerToolsTest {
      */
     @Test
     void aPlayerMissingFromThisSeasonsSquadIsCalledOut() {
+        // Somebody else was captured today, so the squad list is known — and this name is not in
+        // it. That is what makes the claim safe to make.
+        captureToday("Someoneelse", "Someone Else Fictitious");
+
         String result = playerTools.getPlayerStats(SharedStatsSeed.PLAYER_WEB_NAME);
 
         assertThat(result).contains("NOT IN THIS SEASON'S FPL GAME");
+        assertThat(result).containsIgnoringCase(SharedStatsSeed.PLAYER_WEB_NAME);
+    }
+
+    /**
+     * Not knowing the squad is not the same as knowing the player is absent from it. With no
+     * capture at all — a fresh deploy, or a capture that has never run — claiming absence would
+     * answer every question with a confident falsehood.
+     */
+    @Test
+    void withNoCaptureAtAllNoClaimIsMadeAboutThisSeason() {
+        String result = playerTools.getPlayerStats(SharedStatsSeed.PLAYER_WEB_NAME);
+
+        assertThat(result).contains("squad list is unavailable");
+        assertThat(result).doesNotContain("NOT IN THIS SEASON'S FPL GAME");
         assertThat(result).containsIgnoringCase(SharedStatsSeed.PLAYER_WEB_NAME);
     }
 
