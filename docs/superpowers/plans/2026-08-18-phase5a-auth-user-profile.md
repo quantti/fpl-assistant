@@ -1,8 +1,8 @@
 # FPL Assistant — Phase 5a: Auth, User Profile and Server-Side History
 
-**Status:** planned, not started (2026-08-18)
+**Status:** complete (2026-08-21). Deployed; see `docs/STATUS.md` for what was verified.
 
-**PROGRESS:** Tasks 1–7 done — auth, the user tables, the FPL team id, server-side conversations, the quota, and the frontend sign-in. Task 8 (end-to-end verification) remains. Findings in `docs/STATUS.md`.
+**PROGRESS:** Tasks 1–8 done — phase complete, verified against the running application. Findings in `docs/STATUS.md`.
 
 **Spec:** `docs/superpowers/specs/2026-08-15-phase5-auth-billing-design.md` — read it fully first.
 Its authorization contract (`user_id` from the JWT `sub` claim and nowhere else), its RLS finding
