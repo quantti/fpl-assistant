@@ -19,13 +19,14 @@ import fi.karivanttinen.fplassistant.tools.SeasonResolver;
  * key {@code (season, home_team_code, away_team_code)} vaastav uses.
  *
  * <p><b>Source precedence:</b> vaastav is authoritative for any completed season; this only
- * ever writes the season currently being played. Enforced by checking
- * {@link SeasonContext#currentSeason()} before syncing anything — {@code SeasonResolver} falls
- * back to the most recent season that actually holds data when the flagged-current season is
- * still empty (the same changeover problem every other tool in this codebase handles), and
- * writing football-data results into that fallback would silently overwrite vaastav's
- * authoritative backfill for an already-completed season. If the current season has no data
- * yet at all, this is a no-op rather than an error — there is nothing to sync.
+ * ever writes the season the database flags {@code is_current}. The season written is derived
+ * from the response itself (each match's {@code season.startDate}), not from
+ * {@link SeasonResolver}: the resolver deliberately falls back to a completed season while the
+ * current one has no tapas data, and keying the guard on it kept the current season's results
+ * unwritten for weeks after kickoff. A response serving any season other than the
+ * flagged-current one — the API lagging the calendar over the summer — is skipped whole, so
+ * vaastav's completed seasons stay untouched. A later vaastav backfill of a just-completed
+ * season upserts the same natural key, an idempotent overwrite with authoritative scores.
  */
 @Component
 public class FootballDataSyncService {
@@ -49,24 +50,35 @@ public class FootballDataSyncService {
     /** @return number of matches written, for logging/testing — 0 if nothing needed syncing */
     public int sync() {
         SeasonContext season = seasonResolver.resolve();
-        if (!season.currentSeason()) {
-            log.info("Skipping football-data sync: the resolved season ({}) is a completed"
-                    + " fallback, not the season in progress — nothing for football-data to update", season.code());
-            return 0;
-        }
 
         String body = source.fetchCurrentSeasonMatches();
         List<FootballDataMatch> matches = FootballDataResponseParser.parse(body);
+        if (matches.isEmpty()) {
+            log.info("football-data sync: the response carried no matches — nothing to do");
+            return 0;
+        }
+
+        // The write guard. The season stamped on the rows comes from the payload, and only a
+        // response serving the database's flagged-current season is written — anything else
+        // (the API still serving the just-finished season over the summer) is skipped whole.
+        String responseSeason = matches.getFirst().seasonCode();
+        if (!responseSeason.equals(season.currentSeasonCode())) {
+            log.info("Skipping football-data sync: the response serves season {} but the"
+                    + " database's current season is {} — nothing written",
+                    responseSeason, season.currentSeasonCode());
+            return 0;
+        }
+
         int written = 0;
         for (FootballDataMatch match : matches) {
             if (!match.isFinished() || match.homeGoals() == null || match.awayGoals() == null) {
                 continue;
             }
-            upsert(season.code(), match);
+            upsert(responseSeason, match);
             written++;
         }
         log.info("football-data sync: {} completed matches written for {} ({} total rows in response)",
-                written, season.code(), matches.size());
+                written, responseSeason, matches.size());
         return written;
     }
 

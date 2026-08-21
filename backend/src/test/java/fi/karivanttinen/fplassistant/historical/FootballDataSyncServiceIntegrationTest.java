@@ -23,9 +23,9 @@ import static org.mockito.Mockito.when;
 /**
  * Against the isolated test table. Uses a mocked {@link SeasonResolver} rather than the real
  * one, because — as of this writing — the real one resolves to 2025-26 (2026-27 has no
- * gameweek/player data yet), which means the precedence-guard path is what actually runs in
- * production right now and cannot exercise the write path on demand. Both branches are tested
- * explicitly instead of hoping the calendar cooperates.
+ * gameweek/player data yet). The write guard keys on the season the <b>response</b> serves
+ * versus the season the database flags current, so both branches are exercised here by varying
+ * the context's flagged-current code — hoping the calendar cooperates is not a test strategy.
  */
 @SpringBootTest
 @ActiveProfiles("test")
@@ -59,6 +59,7 @@ class FootballDataSyncServiceIntegrationTest {
                   "utcDate": "2026-08-22T14:00:00Z",
                   "status": "FINISHED",
                   "matchday": 1,
+                  "season": { "startDate": "2026-08-21" },
                   "homeTeam": { "name": "Arsenal FC" },
                   "awayTeam": { "name": "Chelsea FC" },
                   "score": { "fullTime": { "home": 2, "away": 1 } }
@@ -67,6 +68,7 @@ class FootballDataSyncServiceIntegrationTest {
                   "utcDate": "2026-08-23T14:00:00Z",
                   "status": "SCHEDULED",
                   "matchday": 2,
+                  "season": { "startDate": "2026-08-21" },
                   "homeTeam": { "name": "Liverpool FC" },
                   "awayTeam": { "name": "Everton FC" },
                   "score": { "fullTime": { "home": null, "away": null } }
@@ -75,18 +77,27 @@ class FootballDataSyncServiceIntegrationTest {
             }
             """;
 
-    private FootballDataSyncService serviceWith(boolean isCurrentSeason) {
+    private FootballDataSyncService serviceWith(SeasonContext context) {
         SeasonResolver mockResolver = mock(SeasonResolver.class);
-        SeasonContext context = new SeasonContext(
-                99, "2026-27", isCurrentSeason, "2026-27", LocalDate.of(2026, 8, 21));
         when(mockResolver.resolve()).thenReturn(context);
         FootballDataSource source = () -> SAMPLE_RESPONSE;
         return new FootballDataSyncService(source, mockResolver, jdbc, tableName);
     }
 
+    /**
+     * What {@code SeasonResolver} returns while tapas has not synced the new season: resolved
+     * to the completed previous season, with the flagged-current season code carried alongside.
+     */
+    private static SeasonContext completedFallbackContext() {
+        return new SeasonContext(99, "2025-26", false, "2026-27", LocalDate.of(2026, 8, 21));
+    }
+
     @Test
-    void syncsOnlyFinishedMatchesWhenTheResolvedSeasonIsTheOneInProgress() {
-        int written = serviceWith(true).sync();
+    void writesFinishedMatchesEvenWhenTheResolverIsOnACompletedFallback() {
+        // Production's exact shape at the 2026-27 kickoff: the resolver has fallen back (tapas
+        // has synced nothing), but the response serves the season being played — and must be
+        // written, or getTeamForm reports May 2026 as the freshest match for weeks.
+        int written = serviceWith(completedFallbackContext()).sync();
 
         assertThat(written).isEqualTo(1); // only the FINISHED match
 
@@ -98,10 +109,14 @@ class FootballDataSyncServiceIntegrationTest {
     }
 
     @Test
-    void doesNothingWhenTheResolvedSeasonIsACompletedFallback() {
-        // This is the precedence guard: vaastav is authoritative for completed seasons, so
-        // football-data must never write into one just because SeasonResolver fell back to it.
-        int written = serviceWith(false).sync();
+    void skipsWhenTheResponseServesADifferentSeasonThanTheDatabaseFlagsCurrent() {
+        // The precedence guard's remaining form: over the summer the API can lag the calendar
+        // and still serve the just-finished season; writing it would double-source matches
+        // vaastav owns. The season is taken from the payload, so a mismatch skips the response.
+        SeasonContext nextSeasonFlagged =
+                new SeasonContext(99, "2026-27", true, "2027-28", LocalDate.of(2027, 8, 20));
+
+        int written = serviceWith(nextSeasonFlagged).sync();
 
         assertThat(written).isEqualTo(0);
         Integer count = jdbc.queryForObject(
@@ -111,7 +126,7 @@ class FootballDataSyncServiceIntegrationTest {
 
     @Test
     void reRunningIsIdempotent() {
-        FootballDataSyncService service = serviceWith(true);
+        FootballDataSyncService service = serviceWith(completedFallbackContext());
         service.sync();
         service.sync();
 
