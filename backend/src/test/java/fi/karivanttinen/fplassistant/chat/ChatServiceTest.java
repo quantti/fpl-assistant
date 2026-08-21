@@ -29,6 +29,9 @@ import static org.mockito.Mockito.when;
 @ExtendWith(MockitoExtension.class)
 class ChatServiceTest {
 
+    /** Anthropic unless a test says otherwise: the two differ in how a cached prompt is counted. */
+    private String provider = "anthropic";
+
     @Mock
     ChatClient chatClient;
 
@@ -49,7 +52,7 @@ class ChatServiceTest {
         when(requestSpec.tools(any(Object[].class))).thenReturn(requestSpec);
         when(requestSpec.stream()).thenReturn(streamSpec);
         when(streamSpec.chatResponse()).thenReturn(responses);
-        return new ChatService(chatClient, tools);
+        return new ChatService(chatClient, tools, provider);
     }
 
     /** A chunk carrying text, as the provider streams it. */
@@ -216,6 +219,42 @@ class ChatServiceTest {
 
         assertThat(reported.getLast())
                 .isEqualTo(new TokenUsage("some-model", null, null, null, null));
+    }
+
+    /**
+     * OpenAI counts cached tokens inside prompt_tokens and reports them again as cache reads;
+     * Anthropic reports the uncached remainder. Storing OpenAI's number as-is would count the
+     * cached part twice in every total.
+     */
+    @Test
+    void openAisCachedTokensAreTakenOutOfTheInputCount() {
+        provider = "openai";
+        ChatService service = service(List.of(), Flux.just(
+                response("text"),
+                usage(1000, 200, 400L)));
+
+        List<TokenUsage> reported = new java.util.ArrayList<>();
+        StepVerifier.create(service.stream(List.of(new ChatTurn(ChatTurn.USER, "hi")), reported::add))
+                .expectNext("text")
+                .verifyComplete();
+
+        assertThat(reported.getLast())
+                .as("1000 prompt tokens of which 400 were cached is 600 uncached, not 1000")
+                .isEqualTo(new TokenUsage(null, 600, 400, null, 200));
+    }
+
+    @Test
+    void anthropicsInputCountIsAlreadyTheUncachedRemainder() {
+        ChatService service = service(List.of(), Flux.just(
+                response("text"),
+                usage(1000, 200, 400L)));
+
+        List<TokenUsage> reported = new java.util.ArrayList<>();
+        StepVerifier.create(service.stream(List.of(new ChatTurn(ChatTurn.USER, "hi")), reported::add))
+                .expectNext("text")
+                .verifyComplete();
+
+        assertThat(reported.getLast()).isEqualTo(new TokenUsage(null, 1000, 400, null, 200));
     }
 
     @Test

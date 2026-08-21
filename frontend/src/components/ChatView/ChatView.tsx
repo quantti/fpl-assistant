@@ -1,8 +1,8 @@
-import { useLayoutEffect, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useComputedColorScheme } from '@mantine/core'
 import { useChat } from '../../hooks/useChat'
 import { useConversations } from '../../hooks/useConversations'
-import { Route } from '../../router'
+import { navigate, Route } from '../../router'
 import AppMenu from '../AppMenu/AppMenu'
 import ConversationSidebar from '../ConversationSidebar/ConversationSidebar'
 import MessageThread from '../MessageThread/MessageThread'
@@ -17,8 +17,9 @@ interface Props {
 
 export default function ChatView({ route }: Props) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const selectionRef = useRef(0)
   const conversations = useConversations()
-  const { messages, setMessages, streamingContent, isStreaming, sendMessage } = useChat({
+  const { messages, replaceMessages, streamingContent, isStreaming, sendMessage } = useChat({
     conversationId: conversations.currentId,
     onConversation: id => (id === null ? conversations.startNew() : conversations.adopt(id)),
     onTurnFinished: conversations.refresh,
@@ -41,20 +42,55 @@ export default function ChatView({ route }: Props) {
     document.documentElement.dataset.theme = computedColorScheme
   }, [computedColorScheme])
 
+  // The overlay covers the button that opened it, so without this a phone user who opened the
+  // sidebar to look at it has no way back other than picking something.
+  useEffect(() => {
+    if (!sidebarOpen) return
+    const onEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setSidebarOpen(false)
+    }
+    window.addEventListener('keydown', onEscape)
+    return () => window.removeEventListener('keydown', onEscape)
+  }, [sidebarOpen])
+
   async function openConversation(id: string) {
-    const stored = await conversations.select(id)
-    if (stored) setMessages(stored)
+    // Two clicks in a row race, and the slower answer must not win. Only the newest selection
+    // may write to the thread.
+    const selection = ++selectionRef.current
     setSidebarOpen(false)
+    // The sidebar is visible on every page, so opening a conversation from Settings has to take
+    // the user to where the conversation is.
+    navigate('/')
+    const stored = await conversations.select(id)
+    if (selection !== selectionRef.current) return
+    if (stored) {
+      replaceMessages(stored)
+    } else {
+      replaceMessages([{
+        role: 'assistant',
+        content: 'That conversation could not be opened. It may have been removed.',
+        isError: true,
+      }])
+    }
   }
 
   function newConversation() {
+    selectionRef.current++
     conversations.startNew()
-    setMessages([])
+    replaceMessages([])
     setSidebarOpen(false)
+    navigate('/')
   }
 
   return (
     <div className={classes.shell}>
+      {sidebarOpen && (
+        <div
+          className={classes.backdrop}
+          onClick={() => setSidebarOpen(false)}
+          aria-hidden="true"
+        />
+      )}
       <ConversationSidebar
         conversations={conversations.conversations}
         currentId={conversations.currentId}

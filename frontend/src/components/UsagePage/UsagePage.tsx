@@ -50,7 +50,9 @@ export default function UsagePage() {
           >
             <div className={classes.fill} style={{ width: `${usage.remainingPercent}%` }} />
           </div>
-          {usage.nextFreeAt && (
+          {/* Only when there is nothing left: telling someone at 70% when a message "frees up"
+              reads as being blocked, which they are not. */}
+          {usage.remainingPercent === 0 && usage.nextFreeAt && (
             <p className={classes.note}>
               The next message frees up on {new Date(usage.nextFreeAt).toLocaleString()}.
             </p>

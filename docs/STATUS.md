@@ -1841,6 +1841,38 @@ user to different places — "FPL does not know that team" means look for a typo
 reach FPL" means the number may be perfectly good and nothing was saved. The field says outright
 that nothing consumes it yet; an unexplained field that changes nothing reads as broken.
 
+## Review round
+
+**The provider is OpenAI, not Anthropic** (`SPRING_AI_PROVIDER=openai`), and that made the token
+totals wrong. OpenAI folds cached tokens into `prompt_tokens` and reports them again under
+`prompt_tokens_details`; Anthropic reports the uncached remainder with cache reads beside it.
+Spring AI hands both to us in the same two fields — verified in `OpenAiChatModel.getDefaultUsage`,
+which maps `promptTokensDetails().cachedTokens()` straight into the cache-read slot — so
+`total_tokens` was counting the cached part twice on every turn. `ChatService` now normalises to
+the uncached remainder whichever provider answered, and a test pins both.
+
+Switching conversations mid-stream spliced the running answer into the wrong transcript: the
+sidebar was never disabled, so the terminal `setMessages` appended conversation A's answer under
+conversation B, and a reload made it vanish — the server had stored it against A all along.
+`replaceMessages` now ends the stream as it swaps the thread, and a selection counter drops the
+slower of two racing clicks.
+
+The sidebar renders on every page but only mutated chat state, so clicking a conversation from
+Settings closed the sidebar and appeared to do nothing. It navigates now.
+
+The mobile overlay could not be closed: it painted over the button that opened it, with no
+backdrop and no Escape. Both added. It also stayed in the tab order while translated off-screen —
+`visibility` handles that, transitioned so it goes after the slide rather than during it.
+
+Settings sent `NaN` as `null` for non-numeric input and reported the server's "field required" 400
+as "FPL does not know that team", sending the user to look for an id they never transmitted.
+Digits are checked before sending, and only a real 400 gets the unknown-team message; 401 says
+nothing, because the session has already ended by then. A failed profile read no longer looks like
+an empty field, which read as "nothing saved".
+
+The usage page announced when a message "frees up" to someone at 70% remaining, which reads as
+being blocked. Gated on nothing being left.
+
 ## Also
 
 `--text-lg` and `--text-display` were added to `tokens.css`, which invites exactly that when a

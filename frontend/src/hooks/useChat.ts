@@ -13,7 +13,12 @@ interface UseChatOptions {
 
 interface UseChatReturn {
   messages: Message[]
-  setMessages: (messages: Message[]) => void
+  /**
+   * Shows another conversation's transcript, ending any answer still streaming into this one.
+   * The answer itself is not lost: the server finished and stored it against the conversation it
+   * belongs to. What must not happen is it landing under a different conversation's messages.
+   */
+  replaceMessages: (messages: Message[]) => void
   streamingContent: string | null
   isStreaming: boolean
   sendMessage: (content: string) => Promise<void>
@@ -197,5 +202,12 @@ export function useChat({ conversationId, onConversation, onTurnFinished }: UseC
     }
   }, [messages, isStreaming, conversationId, onConversation, onTurnFinished])
 
-  return { messages, setMessages, streamingContent, isStreaming, sendMessage }
+  const replaceMessages = useCallback((next: Message[]) => {
+    abortRef.current?.abort()
+    setStreamingContent(null)
+    setIsStreaming(false)
+    setMessages(next)
+  }, [])
+
+  return { messages, replaceMessages, streamingContent, isStreaming, sendMessage }
 }
