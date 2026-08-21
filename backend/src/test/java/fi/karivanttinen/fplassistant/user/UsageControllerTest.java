@@ -40,9 +40,6 @@ class UsageControllerTest {
     @Value("${fpl.user.profile-table-name}")
     String profileTable;
 
-    @Value("${fpl.quota.messages-per-week}")
-    int defaultLimit;
-
     @AfterEach
     void clear() {
         jdbc.update("DELETE FROM " + usageTable + " WHERE user_id = ?", UUID.fromString(USER));
@@ -54,28 +51,79 @@ class UsageControllerTest {
         mockMvc.perform(get("/api/usage")).andExpect(status().isUnauthorized());
     }
 
+    /**
+     * A share, never a count. The absolute numbers are the owner's (issue #11): a response
+     * carrying the limit, or how many are left, would tell the user exactly what this is meant
+     * to keep to ourselves.
+     */
     @Test
-    void itReportsWhatWasUsedAndTheLimitItCountsAgainst() throws Exception {
-        jdbc.update("INSERT INTO " + usageTable + " (user_id, event_type, created_at)"
-                + " VALUES (?, 'chat', now() - interval '2 days')", UUID.fromString(USER));
+    void itReportsWhatIsLeftAsAPercentageAndNoAbsoluteNumbers() throws Exception {
+        setLimit(10);
+        seedChatEvents(3);
 
         mockMvc.perform(get("/api/usage")
                 .header("Authorization", "Bearer " + TestJwks.validTokenFor(USER)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.used").value(1))
-                .andExpect(jsonPath("$.limit").value(defaultLimit))
-                .andExpect(jsonPath("$.nextFreeAt").isNotEmpty());
+                .andExpect(jsonPath("$.remainingPercent").value(70))
+                .andExpect(jsonPath("$.unlimited").value(false))
+                .andExpect(jsonPath("$.nextFreeAt").isNotEmpty())
+                .andExpect(jsonPath("$.used").doesNotExist())
+                .andExpect(jsonPath("$.limit").doesNotExist());
     }
 
-    /** An unlimited account has nothing to count and says so, rather than reporting a fake zero. */
+    /** An indicator that reads empty while a message can still be sent is worse than none. */
     @Test
-    void anUnlimitedAccountReportsNoLimit() throws Exception {
-        jdbc.update("INSERT INTO " + profileTable + " (user_id, weekly_message_limit) VALUES (?, -1)",
-                UUID.fromString(USER));
+    void aLastRemainingMessageNeverReadsAsZero() throws Exception {
+        setLimit(200);
+        seedChatEvents(199);
+
+        mockMvc.perform(get("/api/usage")
+                .header("Authorization", "Bearer " + TestJwks.validTokenFor(USER)))
+                .andExpect(jsonPath("$.remainingPercent").value(1));
+    }
+
+    @Test
+    void aSpentWeekReadsAsZero() throws Exception {
+        setLimit(2);
+        seedChatEvents(2);
+
+        mockMvc.perform(get("/api/usage")
+                .header("Authorization", "Bearer " + TestJwks.validTokenFor(USER)))
+                .andExpect(jsonPath("$.remainingPercent").value(0));
+    }
+
+    @Test
+    void anUnlimitedAccountSaysSoRatherThanReportingAShare() throws Exception {
+        setLimit(-1);
 
         mockMvc.perform(get("/api/usage")
                 .header("Authorization", "Bearer " + TestJwks.validTokenFor(USER)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.limit").doesNotExist());
+                .andExpect(jsonPath("$.unlimited").value(true));
+    }
+
+    /** No number of seconds turns a suspended account back on, so it is not offered one. */
+    @Test
+    void aSuspendedAccountIsNotToldWhenToComeBack() throws Exception {
+        setLimit(0);
+        seedChatEvents(1);
+
+        mockMvc.perform(get("/api/usage")
+                .header("Authorization", "Bearer " + TestJwks.validTokenFor(USER)))
+                .andExpect(jsonPath("$.remainingPercent").value(0))
+                .andExpect(jsonPath("$.nextFreeAt").doesNotExist());
+    }
+
+    private void setLimit(int limit) {
+        jdbc.update("INSERT INTO " + profileTable + " (user_id, weekly_message_limit) VALUES (?, ?)"
+                + " ON CONFLICT (user_id) DO UPDATE SET weekly_message_limit = EXCLUDED.weekly_message_limit",
+                UUID.fromString(USER), limit);
+    }
+
+    private void seedChatEvents(int count) {
+        for (int i = 0; i < count; i++) {
+            jdbc.update("INSERT INTO " + usageTable + " (user_id, event_type, created_at)"
+                    + " VALUES (?, 'chat', now() - interval '2 days')", UUID.fromString(USER));
+        }
     }
 }

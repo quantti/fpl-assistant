@@ -32,3 +32,17 @@ export interface ChatRequest {
   conversationId: string | null
   message: string
 }
+
+/** A conversation as the list shows it: enough to recognise and to order by. */
+export interface Conversation {
+  id: string
+  title: string | null
+  updatedAt: string
+}
+
+/** What `GET /api/usage` answers. Deliberately a share, never a count — see issue #11. */
+export interface Usage {
+  remainingPercent: number
+  unlimited: boolean
+  nextFreeAt: string | null
+}

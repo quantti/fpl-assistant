@@ -2,9 +2,11 @@ import { Loader } from '@mantine/core'
 import ChatView from './components/ChatView/ChatView'
 import SignIn from './components/SignIn/SignIn'
 import { useSession } from './auth/useSession'
+import { useRoute } from './router'
 
 export default function App() {
   const { session, loading } = useSession()
+  const route = useRoute()
 
   // Nothing rendered until the stored session has been read: showing the sign-in screen first
   // and replacing it a moment later reads as being signed out on every reload.
@@ -25,5 +27,5 @@ export default function App() {
     )
   }
 
-  return session ? <ChatView /> : <SignIn />
+  return session ? <ChatView route={route} /> : <SignIn />
 }

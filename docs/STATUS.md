@@ -1796,3 +1796,85 @@ Two things that made this less obvious than it looks:
   per message and speaks to the model through Spring AI, which does not surface them. Summarising
   the oldest turns ourselves is the shape that would fit — when the measured numbers say it is
   needed, and not before.
+
+
+---
+
+# Phase 5a — Task 7: conversations, usage and settings in the UI (2026-08-21)
+
+The client reads its own history back at last. A left sidebar lists the caller's conversations,
+opening one loads its transcript, and the thread continues it — the endpoints have existed since
+Task 4 and nothing called them, so a reload started from nothing while the server remembered
+everything.
+
+## Shape, as the owner specified it
+
+A hamburger menu in the top bar holds Usage, Settings, the theme and Sign out. There is no
+"Sign in" item and there cannot be: the menu lives inside the signed-in shell, so anyone who can
+open it is already signed in. Conversations are a left sidebar, the shape every chat product
+uses — below 640px an overlay opened from the header, because 260px of chrome beside a 375px
+screen would leave the thread with less than half the reading measure the design spec sets.
+
+## The quota stops being a number (issue #11)
+
+`GET /api/usage` answers `remainingPercent` / `unlimited` / `nextFreeAt`. No count used, no limit,
+nothing to work the limit back out from. The percentage rounds **down**, but never to zero while a
+message can still be sent — an indicator that reads empty before the door closes is worse than no
+indicator — and reads exactly zero once the week is spent. The `429` says "You have used this
+week's messages", naming nothing.
+
+`Retry-After` stayed. It names no count, and without it someone who has run out has no idea when
+they can continue. A suspended account still gets no header and no time on the page: no number of
+seconds turns it back on.
+
+## Routing without a router
+
+Three top-level views, no route parameters — which conversation is open is state, not an address,
+because it is chosen from the list beside it. Thirty lines of `pushState` + `popstate` instead of
+a routing library answering questions this application does not ask. Task 6's
+`SpaForwardingController` already makes `/usage` and `/settings` load on a deep link.
+
+## Settings
+
+One field: the FPL team id. Task 3's two failure modes stay apart in the UI, because they send the
+user to different places — "FPL does not know that team" means look for a typo, "we could not
+reach FPL" means the number may be perfectly good and nothing was saved. The field says outright
+that nothing consumes it yet; an unexplained field that changes nothing reads as broken.
+
+## Review round
+
+**The provider is OpenAI, not Anthropic** (`SPRING_AI_PROVIDER=openai`), and that made the token
+totals wrong. OpenAI folds cached tokens into `prompt_tokens` and reports them again under
+`prompt_tokens_details`; Anthropic reports the uncached remainder with cache reads beside it.
+Spring AI hands both to us in the same two fields — verified in `OpenAiChatModel.getDefaultUsage`,
+which maps `promptTokensDetails().cachedTokens()` straight into the cache-read slot — so
+`total_tokens` was counting the cached part twice on every turn. `ChatService` now normalises to
+the uncached remainder whichever provider answered, and a test pins both.
+
+Switching conversations mid-stream spliced the running answer into the wrong transcript: the
+sidebar was never disabled, so the terminal `setMessages` appended conversation A's answer under
+conversation B, and a reload made it vanish — the server had stored it against A all along.
+`replaceMessages` now ends the stream as it swaps the thread, and a selection counter drops the
+slower of two racing clicks.
+
+The sidebar renders on every page but only mutated chat state, so clicking a conversation from
+Settings closed the sidebar and appeared to do nothing. It navigates now.
+
+The mobile overlay could not be closed: it painted over the button that opened it, with no
+backdrop and no Escape. Both added. It also stayed in the tab order while translated off-screen —
+`visibility` handles that, transitioned so it goes after the slide rather than during it.
+
+Settings sent `NaN` as `null` for non-numeric input and reported the server's "field required" 400
+as "FPL does not know that team", sending the user to look for an id they never transmitted.
+Digits are checked before sending, and only a real 400 gets the unknown-team message; 401 says
+nothing, because the session has already ended by then. A failed profile read no longer looks like
+an empty field, which read as "nothing saved".
+
+The usage page announced when a message "frees up" to someone at 70% remaining, which reads as
+being blocked. Gated on nothing being left.
+
+## Also
+
+`--text-lg` and `--text-display` were added to `tokens.css`, which invites exactly that when a
+screen needs a step. `--text-lg` was already referenced by the sign-in card's title before it
+existed, which made that rule invalid and the size silently inherited.
