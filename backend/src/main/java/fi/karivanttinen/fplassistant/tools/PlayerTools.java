@@ -64,6 +64,19 @@ public class PlayerTools implements FplTool {
                         + " a fuller spelling.";
             }
 
+            if (captured == null) {
+                // No capture has ever run, so we do not know this season's squad — which is not
+                // the same as knowing the player is absent from it. Claiming absence here would
+                // answer every question during a fresh deploy with a confident falsehood.
+                return season.provenance()
+                        + "\n\nThis season's FPL squad list is unavailable (no daily capture has"
+                        + " run), so whether this player is in the game cannot be confirmed. Do"
+                        + " not say they are missing from it. The figures below are from a past"
+                        + " season.\n\n"
+                        + past.stream().map(r -> formatPlayer(r, season))
+                                .collect(Collectors.joining("\n---\n"));
+            }
+
             if (current.isEmpty()) {
                 // In last season's data but not in this season's game — sold abroad, retired,
                 // relegated, or never in FPL. Saying it outright is the whole point: this is
