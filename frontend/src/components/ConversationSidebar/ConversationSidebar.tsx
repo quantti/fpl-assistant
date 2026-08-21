@@ -8,6 +8,9 @@ interface Props {
   onNew: () => void
   /** Below the 640px breakpoint the sidebar is an overlay; above it this does nothing. */
   open: boolean
+  /** The list could not be read — say so instead of showing an empty column. */
+  failed: boolean
+  onRetry: () => void
 }
 
 /**
@@ -17,13 +20,19 @@ interface Props {
  * because a row the user cannot see is a conversation they cannot get back to.
  */
 export default function ConversationSidebar({
-  conversations, currentId, onSelect, onNew, open,
+  conversations, currentId, onSelect, onNew, open, failed, onRetry,
 }: Props) {
   return (
     <nav className={`${classes.sidebar} ${open ? classes.open : ''}`} aria-label="Conversations">
       <button type="button" className={classes.newChat} onClick={onNew}>
         + New conversation
       </button>
+      {failed && (
+        <p className={classes.failed}>
+          Conversations could not be loaded.{' '}
+          <button type="button" className={classes.retry} onClick={onRetry}>Try again</button>
+        </p>
+      )}
       <ul className={classes.list}>
         {conversations.map(conversation => (
           <li key={conversation.id}>

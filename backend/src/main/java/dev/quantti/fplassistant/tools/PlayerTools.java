@@ -7,6 +7,7 @@ import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -19,55 +20,131 @@ public class PlayerTools implements FplTool {
 
     private final JdbcTemplate jdbc;
     private final SeasonResolver seasonResolver;
+    private final DailyPriceSource daily;
 
-    public PlayerTools(JdbcTemplate jdbc, SeasonResolver seasonResolver) {
+    public PlayerTools(JdbcTemplate jdbc, SeasonResolver seasonResolver, DailyPriceSource daily) {
         this.jdbc = jdbc;
         this.seasonResolver = seasonResolver;
+        this.daily = daily;
     }
 
     @Tool(description = """
-            Search for an FPL player by name (web name or surname) and return their
-            season stats: position, team, price, total points, form, goals,
+            Search for an FPL player by name (web name or surname), spelled exactly as the user
+            wrote it — never a corrected or similar-looking name. Answers from this season's FPL
+            squad first (club, position, today's price, ownership, availability) and adds the
+            most recent completed season's statistics beneath it. If the name is not in this
+            season's squad the reply says so first, and that is the answer: the player cannot be
+            picked. The statistics are: position, team, price, total points, form, goals,
             assists, clean sheets, xG, xA, ownership %, and availability status.
             Returns up to 5 matching players. The reply begins with the season the numbers
             come from; if that is not the season currently being played, tell the user the
-            figures are historical.
+            figures are historical. If the reply names a player the user did not ask for, that is
+            not their answer: say who was matched and ask, rather than answering about them.
             """)
     public String getPlayerStats(String playerName) {
         try {
+            // This season's squad first, from the daily capture taken out of FPL's own API. The
+            // shared player table held zero rows for 2026-27 with the season already under way,
+            // so resolving a name there alone answers only for who played last season — which is
+            // how a question about Konsa was answered about Konaté, a name that existed in the
+            // season the resolver had fallen back to.
+            LocalDate captured = daily.latestCaptureDate();
+            List<Map<String, Object>> current =
+                    captured == null ? List.of() : daily.matchPlayers(playerName, captured);
+
             SeasonContext season = seasonResolver.resolve();
-            String pattern = "%" + LikePatterns.escape(playerName.toLowerCase(Locale.ROOT)) + "%";
+            List<Map<String, Object>> past = historicalRows(playerName, season);
 
-            List<Map<String, Object>> rows = jdbc.queryForList("""
-                    SELECT p.web_name, p.first_name, p.second_name,
-                           t.name as team, t.short_name,
-                           p.element_type, p.now_cost, p.total_points, p.form,
-                           p.goals_scored, p.assists, p.clean_sheets,
-                           p.minutes, p.expected_goals, p.expected_assists,
-                           p.selected_by_percent, p.status, p.news
-                    FROM player p
-                    JOIN team t ON t.id = p.team_id AND t.season_id = p.season_id
-                    WHERE p.season_id = ?
-                      AND (LOWER(p.web_name) LIKE ?
-                           OR LOWER(p.second_name) LIKE ?
-                           OR LOWER(p.first_name) LIKE ?
-                           OR LOWER(p.first_name || ' ' || p.second_name) LIKE ?)
-                    ORDER BY p.total_points DESC
-                    LIMIT 5
-                    """, season.seasonId(), pattern, pattern, pattern, pattern);
-
-            if (rows.isEmpty()) {
-                return season.provenance() + "\nPlayer not found: " + playerName;
+            if (current.isEmpty() && past.isEmpty()) {
+                // Spelled out, because the failure mode is the model quietly trying a
+                // similar-looking name and answering about whoever that finds.
+                return season.provenance() + "\nNo player matched \"" + playerName + "\"."
+                        + " Do not search for a similar-looking name or answer about a different"
+                        + " player: tell the user this name was not found and ask for the club or"
+                        + " a fuller spelling.";
             }
 
-            return season.provenance() + "\n\n" + rows.stream()
-                    .map(r -> formatPlayer(r, season))
-                    .collect(Collectors.joining("\n---\n"));
+            if (current.isEmpty()) {
+                // In last season's data but not in this season's game — sold abroad, retired,
+                // relegated, or never in FPL. Saying it outright is the whole point: this is
+                // exactly the shape of answer that let a wrong-name guess look successful.
+                return season.provenance()
+                        + "\n\nNOT IN THIS SEASON'S FPL GAME: no player matching \"" + playerName
+                        + "\" appears in FPL's current player list. Tell the user that before"
+                        + " anything else — they cannot pick this player. The figures below"
+                        + " describe a past season only.\n\n"
+                        + past.stream().map(r -> formatPlayer(r, season))
+                                .collect(Collectors.joining("\n---\n"));
+            }
+
+            Map<String, Object> best = current.getFirst();
+            String currentBlock = DailyPriceSource.provenanceFor(best)
+                    + "\n\n" + formatCurrent(best)
+                    + NameMatch.ambiguityNote(current.stream()
+                            .map(r -> String.valueOf(r.get("web_name"))).toList());
+
+            List<Map<String, Object>> sameName = past.stream()
+                    .filter(r -> String.valueOf(r.get("web_name"))
+                            .equalsIgnoreCase(String.valueOf(best.get("web_name"))))
+                    .toList();
+            List<Map<String, Object>> history = sameName.isEmpty() ? past : sameName;
+            if (history.isEmpty()) {
+                return currentBlock + "\n\nNo earlier-season statistics are stored for this"
+                        + " player.";
+            }
+            return currentBlock + "\n\n" + season.provenance() + "\n\n"
+                    + history.stream().map(r -> formatPlayer(r, season))
+                            .collect(Collectors.joining("\n---\n"));
         } catch (DataAccessException e) {
             log.error("getPlayerStats(\"{}\") failed", playerName, e);
             return "Player data is temporarily unavailable (database error)."
                     + " Tell the user and suggest asking again shortly.";
         }
+    }
+
+    private List<Map<String, Object>> historicalRows(String playerName, SeasonContext season) {
+        String pattern = "%" + LikePatterns.escape(playerName.toLowerCase(Locale.ROOT)) + "%";
+        return jdbc.queryForList("""
+                SELECT p.web_name, p.first_name, p.second_name,
+                       t.name as team, t.short_name,
+                       p.element_type, p.now_cost, p.total_points, p.form,
+                       p.goals_scored, p.assists, p.clean_sheets,
+                       p.minutes, p.expected_goals, p.expected_assists,
+                       p.selected_by_percent, p.status, p.news
+                FROM player p
+                JOIN team t ON t.id = p.team_id AND t.season_id = p.season_id
+                WHERE p.season_id = ?
+                  AND (LOWER(p.web_name) LIKE ?
+                       OR LOWER(p.second_name) LIKE ?
+                       OR LOWER(p.first_name) LIKE ?
+                       OR LOWER(p.first_name || ' ' || p.second_name) LIKE ?)
+                ORDER BY p.total_points DESC
+                LIMIT 5
+                """, season.seasonId(), pattern, pattern, pattern, pattern);
+    }
+
+    /** Who the player is right now: club, position, today's price, ownership and availability. */
+    private String formatCurrent(Map<String, Object> r) {
+        double price = ((Number) r.get("now_cost")).doubleValue() / 10.0;
+        Object type = r.get("element_type");
+        String position = type == null ? "?" : position(((Number) type).intValue());
+        String status = String.valueOf(r.get("status"));
+        String availability = "a".equals(status) ? "available" : "FLAGGED (" + status + ")";
+        String news = r.get("news") == null || String.valueOf(r.get("news")).isBlank()
+                ? "" : " — " + r.get("news");
+        return "%s (%s, %s) — this season: £%.1fm, owned by %s%%, %s%s".formatted(
+                r.get("web_name"), position, r.get("team_short"), price,
+                r.get("selected_by_percent"), availability, news);
+    }
+
+    private static String position(int elementType) {
+        return switch (elementType) {
+            case 1 -> "GK";
+            case 2 -> "DEF";
+            case 3 -> "MID";
+            case 4 -> "FWD";
+            default -> "?";
+        };
     }
 
     private String formatPlayer(Map<String, Object> r, SeasonContext season) {
