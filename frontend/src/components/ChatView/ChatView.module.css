@@ -36,6 +36,22 @@
   color: var(--ink);
 }
 
+/* Only below the breakpoint, where the sidebar is an overlay: a tap outside it is the gesture
+   every phone user already knows, and Escape covers the keyboard. */
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 150;
+  background: var(--ink);
+  opacity: 0.3;
+}
+
+@media (min-width: 640px) {
+  .backdrop {
+    display: none;
+  }
+}
+
 .headerLeft {
   display: flex;
   align-items: center;

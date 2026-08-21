@@ -22,7 +22,13 @@ export default function SettingsPage() {
   useEffect(() => {
     apiFetch('/api/profile')
       .then(async response => {
-        if (!response.ok) return
+        // A blank field is what "nothing saved" looks like, so a failed read must not be allowed
+        // to look like one — the user would conclude their id is gone and save it again.
+        if (!response.ok) {
+          setStatus({ kind: 'error', message: 'Your settings could not be loaded. What is shown'
+            + ' below may not be what is stored.' })
+          return
+        }
         const profile: { fplTeamId: number | null } = await response.json()
         setStored(profile.fplTeamId)
         setTeamId(profile.fplTeamId === null ? '' : String(profile.fplTeamId))
@@ -32,6 +38,13 @@ export default function SettingsPage() {
 
   async function save(event: React.FormEvent) {
     event.preventDefault()
+    // Digits only, checked here: Number('12a') is NaN, which JSON.stringify writes as null, and
+    // the server answers the same 400 it uses for a missing field — the user would be told FPL
+    // does not know an id they never actually sent.
+    if (!/^\d+$/.test(teamId)) {
+      setStatus({ kind: 'error', message: 'An FPL team id is a plain number, digits only.' })
+      return
+    }
     setBusy(true)
     setStatus(null)
     try {
@@ -50,11 +63,19 @@ export default function SettingsPage() {
           message: 'Could not reach FPL to check that id just now. Nothing was saved — the number'
             + ' may well be fine, so try again shortly.',
         })
-      } else {
+      } else if (response.status === 400) {
         setStatus({
           kind: 'error',
           message: 'FPL does not know a team with that id. It is the number in the address of'
             + ' your own points page on fantasy.premierleague.com.',
+        })
+      } else if (response.status !== 401) {
+        // 401 is not reported: apiFetch has already ended the session, and the sign-in screen is
+        // one render away. Everything else is ours, not the user's — saying "no such team" for a
+        // 500 sends them hunting for a mistake they did not make.
+        setStatus({
+          kind: 'error',
+          message: 'Something went wrong saving that. Nothing was changed — try again shortly.',
         })
       }
     } catch {

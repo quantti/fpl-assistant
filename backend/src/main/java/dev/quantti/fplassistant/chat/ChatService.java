@@ -1,6 +1,7 @@
 package dev.quantti.fplassistant.chat;
 
 import dev.quantti.fplassistant.tools.FplTool;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
@@ -21,10 +22,21 @@ public class ChatService {
 
     private final ChatClient chatClient;
     private final List<FplTool> tools;
+    private final boolean cachedCountedInsideInput;
 
-    public ChatService(ChatClient chatClient, List<FplTool> tools) {
+    public ChatService(ChatClient chatClient, List<FplTool> tools,
+                       @Value("${fpl.ai.provider:anthropic}") String provider) {
         this.chatClient = chatClient;
         this.tools = tools;
+        // The two providers count a cached prompt differently, and the difference decides whether
+        // a total is right or double: Anthropic reports input_tokens as the uncached remainder
+        // with cache reads counted beside it, while OpenAI folds cached tokens into prompt_tokens
+        // and reports them again under prompt_tokens_details. Spring AI hands both to us in the
+        // same two fields — verified against OpenAiChatModel.getDefaultUsage, which maps
+        // promptTokensDetails().cachedTokens() straight into the cache-read slot — so the
+        // normalisation belongs here. What is stored is always the uncached remainder, which is
+        // what lets total_tokens add the columns up.
+        this.cachedCountedInsideInput = "openai".equalsIgnoreCase(provider);
     }
 
     /**
@@ -88,8 +100,8 @@ public class ChatService {
      * carrying neither a measurement nor a model name: every text chunk has metadata, and most
      * hold Spring AI's {@code EmptyUsage}, which is zeros with no cache figures beside them.
      */
-    private static void capture(ChatResponse response, AtomicReference<TokenUsage> reported,
-                               Consumer<TokenUsage> onUsage) {
+    private void capture(ChatResponse response, AtomicReference<TokenUsage> reported,
+                         Consumer<TokenUsage> onUsage) {
         ChatResponseMetadata metadata = response.getMetadata();
         if (metadata == null) {
             return;
@@ -108,6 +120,11 @@ public class ChatService {
             return;
         }
 
+        // Stored as the uncached remainder whichever provider answered — see the constructor.
+        Integer uncachedPrompt = cachedCountedInsideInput && prompt != null && cacheReads != null
+                ? Math.max(0, prompt - cacheReads.intValue())
+                : prompt;
+
         // A prompt or completion count of zero is Spring AI's EmptyUsage, not a measurement:
         // every chunk carries one, and on a provider that also stamps the model on every chunk
         // that would write zeros into every row — indistinguishable from a real measurement of
@@ -115,7 +132,7 @@ public class ChatService {
         // is a genuine cache miss, which is the number worth having.
         TokenUsage merged = reported.updateAndGet(previous -> new TokenUsage(
                 model != null ? model : previous == null ? null : previous.model(),
-                larger(unreported(prompt) ? null : prompt,
+                larger(unreported(uncachedPrompt) ? null : uncachedPrompt,
                         previous == null ? null : previous.inputTokens()),
                 larger(cacheReads == null ? null : cacheReads.intValue(),
                         previous == null ? null : previous.cachedTokens()),

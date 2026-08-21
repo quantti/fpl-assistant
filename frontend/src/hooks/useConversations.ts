@@ -6,7 +6,6 @@ interface UseConversationsReturn {
   conversations: Conversation[]
   /** Null while a new conversation has been started but not yet sent to. */
   currentId: string | null
-  loadingMessages: boolean
   select: (id: string) => Promise<Message[] | null>
   startNew: () => void
   /** Called when a turn lands, so a conversation created by sending appears in the list. */
@@ -24,7 +23,6 @@ interface UseConversationsReturn {
 export function useConversations(): UseConversationsReturn {
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [currentId, setCurrentId] = useState<string | null>(null)
-  const [loadingMessages, setLoadingMessages] = useState(false)
 
   const refresh = useCallback(async () => {
     const response = await apiFetch('/api/conversations')
@@ -38,20 +36,15 @@ export function useConversations(): UseConversationsReturn {
 
   /** The conversation's messages, or null when it could not be read — the caller keeps what it has. */
   const select = useCallback(async (id: string): Promise<Message[] | null> => {
-    setLoadingMessages(true)
-    try {
-      const response = await apiFetch(`/api/conversations/${id}/messages`)
-      if (!response.ok) {
-        // A conversation that is gone should not stay in the list pretending otherwise.
-        if (response.status === 404) await refresh()
-        return null
-      }
-      const stored: Array<{ role: 'user' | 'assistant'; content: string }> = await response.json()
-      setCurrentId(id)
-      return stored.map(({ role, content }) => ({ role, content }))
-    } finally {
-      setLoadingMessages(false)
+    const response = await apiFetch(`/api/conversations/${id}/messages`)
+    if (!response.ok) {
+      // A conversation that is gone should not stay in the list pretending otherwise.
+      if (response.status === 404) await refresh()
+      return null
     }
+    const stored: Array<{ role: 'user' | 'assistant'; content: string }> = await response.json()
+    setCurrentId(id)
+    return stored.map(({ role, content }) => ({ role, content }))
   }, [refresh])
 
   const startNew = useCallback(() => setCurrentId(null), [])
@@ -59,5 +52,5 @@ export function useConversations(): UseConversationsReturn {
   /** The id the server gave a conversation that was created by sending the first message. */
   const adopt = useCallback((id: string) => setCurrentId(id), [])
 
-  return { conversations, currentId, loadingMessages, select, startNew, refresh, adopt }
+  return { conversations, currentId, select, startNew, refresh, adopt }
 }
