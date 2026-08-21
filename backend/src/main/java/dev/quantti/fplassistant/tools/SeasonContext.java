@@ -27,4 +27,16 @@ public record SeasonContext(
                 + currentSeasonStart + " and has no data yet. Say so when you use these numbers,"
                 + " and do not describe them as current form, current price, or current ownership.";
     }
+
+    /**
+     * Provenance for a completed season shown <b>alongside</b> the current one — the
+     * dual-season player card. Distinct from {@link #provenance()}'s fallback text, which says
+     * the current season "has no data yet": here the current season is being played and holds
+     * data, which is the whole reason the previous one is shown next to it.
+     */
+    public static String previousSeasonProvenance(String code, String currentSeasonCode) {
+        return "Data source: season " + code + " — a COMPLETED PREVIOUS season. The current season "
+                + currentSeasonCode + " is under way; these are last season's numbers, not current"
+                + " form, price, or ownership.";
+    }
 }
