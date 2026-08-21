@@ -109,15 +109,15 @@ public class DailyPriceSchema {
         // "Who moved today" scans one date across all players.
         jdbc.execute("CREATE INDEX IF NOT EXISTS idx_%s_date_change ON %s(price_date, cost_change_event)"
                 .formatted(tableName, tableName));
-        // Added after the table already existed in production, so CREATE TABLE alone would not
-        // have applied it. Users ask for "Arsenal", not "ARS": with only the short name stored,
-        // a club lookup for a full name matched nothing.
         // PostgREST publishes every table in `public` to the anon key, which is public by
         // design. RLS with no policies is what makes that exposure empty; without it a fresh
         // database is born open (measured 2026-08-19, see docs/STATUS.md). A no-op for this
         // application, which connects as a role with rolbypassrls.
         jdbc.execute("ALTER TABLE %s ENABLE ROW LEVEL SECURITY".formatted(tableName));
 
+        // Added after the table already existed in production, so CREATE TABLE alone would not
+        // have applied it. Users ask for "Arsenal", not "ARS": with only the short name stored,
+        // a club lookup for a full name matched nothing.
         jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS team_name VARCHAR(100)"
                 .formatted(tableName));
         // The ALTER above leaves every already-captured row with team_name = NULL, and the
