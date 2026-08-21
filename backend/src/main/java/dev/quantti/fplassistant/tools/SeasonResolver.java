@@ -7,6 +7,7 @@ import java.sql.Date;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * Picks the season the tools should query.
@@ -57,5 +58,26 @@ public class SeasonResolver {
                 Boolean.TRUE.equals(chosen.get("is_current")),
                 currentCode,
                 currentStart);
+    }
+
+    /**
+     * The season immediately before the given one by start date, when one exists. Used to show
+     * last season's statistics next to the current season's once the current season holds data —
+     * the early-season weighting the system prompt describes needs both on the table at once.
+     */
+    public Optional<SeasonContext> previousSeason(SeasonContext of) {
+        List<Map<String, Object>> rows = jdbc.queryForList("""
+                SELECT id, code FROM season
+                WHERE start_date < (SELECT start_date FROM season WHERE id = ?)
+                ORDER BY start_date DESC
+                LIMIT 1
+                """, of.seasonId());
+        if (rows.isEmpty()) {
+            return Optional.empty();
+        }
+        Map<String, Object> r = rows.getFirst();
+        return Optional.of(new SeasonContext(
+                ((Number) r.get("id")).intValue(), (String) r.get("code"), false,
+                of.currentSeasonCode(), of.currentSeasonStart()));
     }
 }
