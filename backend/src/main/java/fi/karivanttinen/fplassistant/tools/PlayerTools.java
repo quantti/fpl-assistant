@@ -26,12 +26,14 @@ public class PlayerTools implements FplTool {
     }
 
     @Tool(description = """
-            Search for an FPL player by name (web name or surname) and return their
+            Search for an FPL player by name (web name or surname), spelled exactly as the user
+            wrote it — never a corrected or similar-looking name — and return their
             season stats: position, team, price, total points, form, goals,
             assists, clean sheets, xG, xA, ownership %, and availability status.
             Returns up to 5 matching players. The reply begins with the season the numbers
             come from; if that is not the season currently being played, tell the user the
-            figures are historical.
+            figures are historical. If the reply names a player the user did not ask for, that is
+            not their answer: say who was matched and ask, rather than answering about them.
             """)
     public String getPlayerStats(String playerName) {
         try {
@@ -57,7 +59,12 @@ public class PlayerTools implements FplTool {
                     """, season.seasonId(), pattern, pattern, pattern, pattern);
 
             if (rows.isEmpty()) {
-                return season.provenance() + "\nPlayer not found: " + playerName;
+                // Spelled out, because the failure mode is the model quietly trying a
+                // similar-looking name and answering about whoever that finds.
+                return season.provenance() + "\nNo player matched \"" + playerName + "\"."
+                        + " Do not search for a similar-looking name or answer about a different"
+                        + " player: tell the user this name was not found and ask for the club or"
+                        + " a fuller spelling.";
             }
 
             return season.provenance() + "\n\n" + rows.stream()

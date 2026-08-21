@@ -97,6 +97,8 @@ export default function ChatView({ route }: Props) {
         onSelect={openConversation}
         onNew={newConversation}
         open={sidebarOpen}
+        failed={conversations.failed}
+        onRetry={conversations.refresh}
       />
       <div className={classes.root}>
         <div className={classes.header}>
