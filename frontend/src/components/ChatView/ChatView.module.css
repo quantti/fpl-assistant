@@ -15,12 +15,67 @@
  * by `.thread`, so Task 4's `env(safe-area-inset-bottom)` on the composer's
  * own box is all that's needed — nothing here clips or duplicates it.
  */
+/* The shell is the sidebar plus the reading column. The column keeps the
+   height-bounded behaviour described above; the shell only puts the two side
+   by side. */
+.shell {
+  display: flex;
+  height: 100dvh;
+  background: var(--paper);
+}
+
 .root {
+  flex: 1;
+  /* Without this a long conversation title in the row beside it can push the
+     column wider than the viewport. */
+  min-width: 0;
   display: flex;
   flex-direction: column;
   height: 100dvh;
   background: var(--paper);
   color: var(--ink);
+}
+
+/* Only below the breakpoint, where the sidebar is an overlay: a tap outside it is the gesture
+   every phone user already knows, and Escape covers the keyboard. */
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 150;
+  background: var(--ink);
+  opacity: 0.3;
+}
+
+@media (min-width: 640px) {
+  .backdrop {
+    display: none;
+  }
+}
+
+.headerLeft {
+  display: flex;
+  align-items: center;
+  gap: var(--space-12);
+}
+
+/* Below the breakpoint the sidebar is an overlay opened from here — the same
+   shape as every chat product's phone layout, and the only way a 375px screen
+   keeps its reading measure. Above it the sidebar is always there, so this
+   button would be a control that does nothing. */
+.sidebarToggle {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: var(--text-base);
+  cursor: pointer;
+}
+
+@media (min-width: 640px) {
+  .sidebarToggle {
+    display: none;
+  }
 }
 
 .header {
@@ -34,32 +89,6 @@
   font-family: var(--font-ui);
   font-weight: 600;
   font-size: var(--text-base);
-}
-
-/* Mantine's ActionIcon sets its effective text colour via an inline
-   --ai-color custom property (see theme.ts's variantColorResolver docstring
-   for the full explanation) — !important is required for a plain
-   author-stylesheet rule to win regardless of variant/state/import order.
-   The resolver only covers variant="filled" color="pitch"; this toggle is
-   neither, so it still needs the override. */
-.themeToggle {
-  color: var(--ink) !important;
-}
-
-.actions {
-  display: flex;
-  align-items: center;
-  gap: var(--space-8);
-}
-
-/* Same reason as .themeToggle above: Mantine sets the label colour through an
-   inline custom property (--button-color here), which a plain author rule
-   cannot outrank regardless of specificity. Subtle buttons would otherwise be
-   painted in the primary colour, and a green "Sign out" reads as the action
-   the page wants you to take. */
-.signOut {
-  color: var(--muted) !important;
-  font-weight: 400;
 }
 
 .empty {

@@ -1,0 +1,57 @@
+.page {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-12);
+  padding: var(--space-32) var(--space-16);
+  font-family: var(--font-ui);
+  color: var(--ink);
+  overflow-y: auto;
+}
+
+.title {
+  margin: 0;
+  font-size: var(--text-lg);
+}
+
+/* The number is the page, so it is the one thing set at display size. */
+.percent {
+  margin: 0;
+  font-size: var(--text-display);
+  font-weight: 600;
+  line-height: 1;
+}
+
+.lede {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.note {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-xs);
+}
+
+.error {
+  margin: 0;
+  color: var(--redcard);
+  font-size: var(--text-sm);
+}
+
+/* A rule, not a rounded pill: the design system has one border colour and no radii to speak of,
+   and a bar that borrows another product's chrome would be the only such thing here. */
+.bar {
+  width: 100%;
+  max-width: 320px;
+  height: 8px;
+  border: 1px solid var(--rule-section);
+  background: none;
+}
+
+.fill {
+  height: 100%;
+  background: var(--pitch);
+}
