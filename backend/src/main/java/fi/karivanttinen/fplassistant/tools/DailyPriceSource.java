@@ -85,6 +85,16 @@ public class DailyPriceSource {
      * than a day old is called out explicitly — a stale price presented as current is the
      * failure this whole table exists to prevent.
      */
+    /**
+     * The provenance line for a row this source returned, read from the row itself rather than
+     * from a parameter — the season and the capture date are on it, and taking them from
+     * anywhere else is how a number ends up attributed to the wrong season.
+     */
+    static String provenanceFor(Map<String, Object> row) {
+        return provenance(String.valueOf(row.get("season")),
+                ((java.sql.Date) row.get("price_date")).toLocalDate(), LocalDate.now());
+    }
+
     static String provenance(String season, LocalDate captured, LocalDate today) {
         // Clamped at zero: a capture dated ahead of "today" means clock skew between the
         // container and the database, and "captured -1 days ago" is worse than useless in an

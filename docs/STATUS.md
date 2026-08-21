@@ -1878,3 +1878,65 @@ being blocked. Gated on nothing being left.
 `--text-lg` and `--text-display` were added to `tokens.css`, which invites exactly that when a
 screen needs a step. `--text-lg` was already referenced by the sign-in card's title before it
 existed, which made that rule invalid and the size silently inherited.
+
+
+---
+
+# The assistant answered about a player nobody asked for (2026-08-21)
+
+Asked "konsa vai calafiori?", the assistant compared **Konaté** with Calafiori. Reproduced against
+the live application on the first try, so not a one-off.
+
+## What actually happened
+
+Not RAG, and not missing data. `fpl_daily_price` holds Konsa for 2026-27 and the tapas `player`
+table holds him for 2025/26 — a lookup for "Konsa" would have worked. The model never made one:
+it read an unfamiliar lowercase name as a typo, searched for "Konate" instead, got a real 2025/26
+row back (Konaté played in the Premier League that season), and answered confidently about him.
+Nothing in the reply looked wrong, which is what makes this the worst shape of error the assistant
+can make.
+
+Nothing stopped it. The system prompt said to use tools and attribute seasons; it never said the
+player's name is the user's, not the model's.
+
+## Fixed
+
+- A **"Player names are the user's, not yours"** section in the system prompt: search the exact
+  spelling, never correct a name into one that looks similar, say which player was matched when it
+  differs from what was asked, and never quietly answer about someone else.
+- `getPlayerStats`'s tool description says the same at the point where the argument is chosen.
+- Its not-found reply now instructs rather than reports: "do not search for a similar-looking name
+  or answer about a different player" — the failure mode was the model trying another spelling
+  until something matched.
+
+Verified against the live application after the change: the same question now answers for
+**Konsa**, with the 2025/26 numbers attributed to that season and current availability from the
+daily capture.
+
+## Then fixed properly: this season's squad is the first place to look
+
+The prompt rules stop the model from renaming a player. They do not fix why the wrong name
+*worked*: `getPlayerStats` resolved names only through the tapas `player` table, which holds 841
+rows for 2025/26 and **none at all for 2026-27**, so `SeasonResolver` falls back to last season and
+every lookup answers from the one season where a departed player still exists.
+
+We do have this season's squad — `fpl_daily_price`, captured daily from FPL's own API, with
+`web_name`, `full_name`, club, position, price, ownership and availability. `getPlayerStats` now
+reads it first (through `DailyPriceSource.matchPlayers`, the same ranked matcher the price and
+availability tools use) and adds the completed season's statistics underneath, attributed. A name
+that is **not** in this season's squad gets an explicit "NOT IN THIS SEASON'S FPL GAME" before
+anything else — which is what turns a wrong guess from a plausible answer into a visible dead end.
+
+Verified live after the change:
+
+- "konsa vai calafiori?" answers for Konsa (£4.5m, available) and Calafiori (£5.5m), with the
+  2025/26 numbers named as last season's.
+- "onko konate hyvä ostos?" answers that no player by that name is in FPL's data and asks for the
+  club or a fuller spelling, instead of answering about him.
+
+## Also found while looking
+
+The conversation sidebar read the list once on mount with no error handling, so a backend that was
+down at that moment left the sidebar empty for the rest of the session — indistinguishable from
+having no conversations, and with nothing to retry. It now says the list could not be loaded and
+offers to try again.
