@@ -12,7 +12,8 @@ import com.fasterxml.jackson.core.JsonProcessingException;
  * {@link FootballDataMatch}es. Response shape per the API's documented list-resource pattern:
  * top-level {@code filters}/{@code resultSet}/{@code competition}/{@code matches}, each match
  * carrying {@code status}, {@code matchday}, {@code utcDate}, {@code homeTeam.name},
- * {@code awayTeam.name}, {@code score.fullTime.home}/{@code .away}.
+ * {@code awayTeam.name}, {@code score.fullTime.home}/{@code .away} and
+ * {@code season.startDate}.
  *
  * <p>Verified 2026-08-15 against a real captured {@code GET /v4/competitions/PL/matches}
  * response body (checked into {@code src/test/resources/football-data-fixtures/pl-matches-2026-27.json})
@@ -59,7 +60,24 @@ public final class FootballDataResponseParser {
                 intOrNull(m, "score", "fullTime", "home"),
                 intOrNull(m, "score", "fullTime", "away"),
                 intOrNull(m, "matchday"),
-                textOrNull(m, "utcDate"));
+                textOrNull(m, "utcDate"),
+                seasonCode(m));
+    }
+
+    /**
+     * The season the match belongs to, in this database's {@code season.code} format, derived
+     * from the match's own {@code season.startDate} ({@code "2026-08-21" → "2026-27"}). The
+     * sync's write guard compares this against the season the database flags current, so a
+     * missing or unparseable value must fail loudly — never guess a season to stamp on a row.
+     */
+    private static String seasonCode(JsonNode m) {
+        String startDate = textOrNull(m, "season", "startDate");
+        if (startDate == null || !startDate.matches("\\d{4}-\\d{2}-\\d{2}.*")) {
+            throw new IllegalStateException(
+                    "football-data match has no usable season.startDate: " + m);
+        }
+        int year = Integer.parseInt(startDate.substring(0, 4));
+        return "%d-%02d".formatted(year, (year + 1) % 100);
     }
 
     private static String textOrNull(JsonNode node, String... path) {

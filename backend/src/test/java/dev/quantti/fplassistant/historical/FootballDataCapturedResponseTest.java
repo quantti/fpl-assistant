@@ -39,6 +39,9 @@ class FootballDataCapturedResponseTest {
         assertThat(matches.stream().map(FootballDataMatch::matchday).distinct())
                 .as("all 38 gameweeks present")
                 .hasSize(38);
+        assertThat(matches.stream().map(FootballDataMatch::seasonCode).distinct())
+                .as("every match derives its season code from its own season.startDate")
+                .containsExactly("2026-27");
     }
 
     @Test
