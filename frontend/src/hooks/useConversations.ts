@@ -6,6 +6,8 @@ interface UseConversationsReturn {
   conversations: Conversation[]
   /** Null while a new conversation has been started but not yet sent to. */
   currentId: string | null
+  /** True when the list could not be read. An empty sidebar otherwise means "no conversations". */
+  failed: boolean
   select: (id: string) => Promise<Message[] | null>
   startNew: () => void
   /** Called when a turn lands, so a conversation created by sending appears in the list. */
@@ -23,11 +25,24 @@ interface UseConversationsReturn {
 export function useConversations(): UseConversationsReturn {
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [currentId, setCurrentId] = useState<string | null>(null)
+  const [failed, setFailed] = useState(false)
 
   const refresh = useCallback(async () => {
-    const response = await apiFetch('/api/conversations')
-    if (!response.ok) return
-    setConversations(await response.json())
+    // A failed read must not look like an empty list. The fetch happens once on mount, so a
+    // backend that was down at that moment used to leave the sidebar empty for the rest of the
+    // session — indistinguishable from having no conversations at all, and with nothing to
+    // retry.
+    try {
+      const response = await apiFetch('/api/conversations')
+      if (!response.ok) {
+        setFailed(true)
+        return
+      }
+      setConversations(await response.json())
+      setFailed(false)
+    } catch {
+      setFailed(true)
+    }
   }, [])
 
   useEffect(() => {
@@ -52,5 +67,5 @@ export function useConversations(): UseConversationsReturn {
   /** The id the server gave a conversation that was created by sending the first message. */
   const adopt = useCallback((id: string) => setCurrentId(id), [])
 
-  return { conversations, currentId, select, startNew, refresh, adopt }
+  return { conversations, currentId, failed, select, startNew, refresh, adopt }
 }

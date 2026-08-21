@@ -29,6 +29,22 @@
   cursor: pointer;
 }
 
+.failed {
+  margin: 0;
+  color: var(--redcard);
+  font-size: var(--text-xs);
+}
+
+.retry {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--redcard);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 .list {
   list-style: none;
   margin: 0;
