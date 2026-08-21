@@ -1944,6 +1944,49 @@ offers to try again.
 
 ---
 
+# Phase 5a complete — verified against the running application (2026-08-21)
+
+Eight tasks, eight merged pull requests, deployed. What exists now: Supabase JWT authentication,
+per-user profiles with an FPL team id, server-side conversation history, a rolling seven-day
+message quota with token accounting, and a frontend that signs in, lists conversations, and shows
+what is left of the week.
+
+## What was checked, and how
+
+Through the running application against the production database, not through the suite:
+
+| Check | Result |
+|---|---|
+| Sign in, send, answer, sign out | Owner-verified in the browser |
+| Conversations listed, reopened, continued | Owner-verified; API returns the transcript |
+| One account cannot see another's | Owner-verified; unknown id answers `404` on both the read and the chat endpoint |
+| Every API path without a token | `401` on `/api/conversations`, `/api/usage`, `/api/profile` |
+| Quota exhausted | `429`, `Retry-After: 601036` (6.95 days), matching `nextFreeAt`; the body names no number |
+| Usage endpoint at the limit | `remainingPercent: 0`, `unlimited: false` |
+| Token accounting from real answers | provider `openai`, model `gpt-5.6-terra`, `total_tokens` equal to the sum of its parts |
+
+**Prompt caching is real, and now measured.** Every turn reads 4,300–4,600 tokens from cache
+against 2,400–3,800 uncached — the system prompt and the tool schemas. The Phase 5 spec's pricing
+assumed this and nothing had confirmed it; the `cached_tokens` column now says so from live data.
+`cache_write_tokens` stays null because OpenAI neither charges for nor reports cache writes, which
+is the difference from Anthropic the capture code normalises.
+
+The quota check temporarily set the owner's `weekly_message_limit` to 1 and restored it to `NULL`
+afterwards. `NULL` is the configured default, which is what it was.
+
+## What this phase deliberately leaves undone
+
+- **No billing, and therefore no identity anchor.** Every account gets free LLM usage bounded only
+  by the quota, so public sign-up stays closed and accounts are created by hand. Stripe was the
+  spec's abuse defence, and it arrives in 5b.
+- No account deletion and no data export.
+- No entitlement seam. Phase 5b's check goes where the quota check goes — before the stream opens.
+- `getPlayerStats` reads this season's squad from the daily capture, but there are still **no
+  2026-27 rows in the tapas `player` table**, so per-season statistics remain last season's until
+  tapas syncs. The tools say which season they are quoting.
+
+---
+
 # Full-phase review of 5a (2026-08-21)
 
 Six findings against the whole phase (`01fd706..master`, 86 files). All fixed.
