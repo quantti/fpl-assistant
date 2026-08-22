@@ -39,8 +39,8 @@ class UsageServiceTest {
     @Value("${fpl.user.conversation-table-name}")
     String conversationTable;
 
-    @Value("${fpl.quota.messages-per-week}")
-    int defaultLimit;
+    @Value("${fpl.quota.free-messages-per-week}")
+    int freeLimit;
 
     @AfterEach
     void clear() {
@@ -67,9 +67,30 @@ class UsageServiceTest {
     void anAccountWithNoProfileRowGetsTheConfiguredDefault() {
         UsageService.Quota quota = usage.quotaOf(USER);
 
-        assertThat(quota.limit()).isEqualTo(defaultLimit);
+        assertThat(quota.limit()).isEqualTo(freeLimit);
         assertThat(quota.used()).isZero();
         assertThat(quota.exceeded()).isFalse();
+    }
+
+    /**
+     * The tier every account is on until Phase 5b, and the number the spec draws its cost
+     * ceiling against. Asserted as a literal rather than against the property: a plan limit that
+     * quietly moved would still pass a test reading it from the same place the code does.
+     */
+    @Test
+    void theFreePlanIsTwentyMessagesAWeek() {
+        UsageService.Quota quota = usage.quotaOf(USER);
+
+        assertThat(quota.plan()).isEqualTo(Plan.FREE);
+        assertThat(quota.limit()).isEqualTo(20);
+    }
+
+    /** The override is how an account is given more than its tier before Stripe exists. */
+    @Test
+    void aPerUserOverrideWinsOverThePlanLimit() {
+        setLimit(200);
+
+        assertThat(usage.quotaOf(USER).limit()).isEqualTo(200);
     }
 
     @Test
@@ -92,14 +113,14 @@ class UsageServiceTest {
 
     @Test
     void theLimitIsPerUserAndMinusOneMeansUnlimited() {
-        seedEvents(defaultLimit + 10, Duration.ofHours(1), UsageService.CHAT_EVENT);
+        seedEvents(freeLimit + 10, Duration.ofHours(1), UsageService.CHAT_EVENT);
 
         setLimit(-1);
         UsageService.Quota unlimited = usage.quotaOf(USER);
         assertThat(unlimited.limit()).isNull();
         assertThat(unlimited.exceeded()).isFalse();
 
-        setLimit(defaultLimit + 100);
+        setLimit(freeLimit + 100);
         assertThat(usage.quotaOf(USER).exceeded()).isFalse();
 
         setLimit(null);
