@@ -46,6 +46,9 @@ class UserSchemaTest {
     @Value("${fpl.user.usage-table-name}")
     String usageTable;
 
+    @Value("${fpl.user.invite-redemption-table-name}")
+    String inviteTable;
+
     /**
      * Checked before every test rather than as one of them: JUnit gives no ordering guarantee and
      * does not stop a class on failure, so a sibling test could otherwise write to the real
@@ -53,7 +56,7 @@ class UserSchemaTest {
      */
     @BeforeEach
     void refuseToRunAgainstProductionTables() {
-        assertThat(List.of(profileTable, conversationTable, messageTable, usageTable))
+        assertThat(List.of(profileTable, conversationTable, messageTable, usageTable, inviteTable))
                 .allSatisfy(table -> assertThat(table).endsWith("_test"));
     }
 
@@ -86,8 +89,9 @@ class UserSchemaTest {
     }
 
     @Test
-    void allFourTablesExist() {
-        for (String table : List.of(profileTable, conversationTable, messageTable, usageTable)) {
+    void everyTableExists() {
+        for (String table : List.of(profileTable, conversationTable, messageTable, usageTable,
+                inviteTable)) {
             assertThat(jdbc.queryForObject("SELECT to_regclass(?)::text", String.class, table))
                     .as("%s should have been created at startup", table)
                     .isNotNull();
@@ -138,6 +142,45 @@ class UserSchemaTest {
         } finally {
             jdbc.update("DELETE FROM " + conversationTable + " WHERE id = ?", conversation);
             jdbc.update("DELETE FROM " + profileTable + " WHERE user_id = ?", user);
+        }
+    }
+
+    /**
+     * A slot is reserved and committed before Supabase is asked to create the account, so a row
+     * exists before there is a user to name it. That is why user_id is nullable and is not the
+     * key — and why the failure direction is a visible burnt row rather than an uncounted
+     * account.
+     */
+    @Test
+    void aSlotCanBeReservedBeforeThereIsAUserToNameIt() {
+        Long id = jdbc.queryForObject("INSERT INTO " + inviteTable
+                + " (code_label) VALUES ('abc12345') RETURNING id", Long.class);
+
+        try {
+            assertThat(jdbc.queryForObject("SELECT user_id FROM " + inviteTable + " WHERE id = ?",
+                    UUID.class, id)).isNull();
+
+            UUID user = UUID.randomUUID();
+            jdbc.update("UPDATE " + inviteTable + " SET user_id = ? WHERE id = ?", user, id);
+            assertThat(jdbc.queryForObject("SELECT user_id FROM " + inviteTable + " WHERE id = ?",
+                    UUID.class, id)).isEqualTo(user);
+        } finally {
+            jdbc.update("DELETE FROM " + inviteTable + " WHERE id = ?", id);
+        }
+    }
+
+    /** One row per account: the cap is a count of this table, and a double row would inflate it. */
+    @Test
+    void oneAccountCannotRedeemTwice() {
+        UUID user = UUID.randomUUID();
+        jdbc.update("INSERT INTO " + inviteTable + " (user_id) VALUES (?)", user);
+
+        try {
+            assertThatThrownBy(() -> jdbc.update(
+                    "INSERT INTO " + inviteTable + " (user_id) VALUES (?)", user))
+                    .isInstanceOf(org.springframework.dao.DuplicateKeyException.class);
+        } finally {
+            jdbc.update("DELETE FROM " + inviteTable + " WHERE user_id = ?", user);
         }
     }
 
