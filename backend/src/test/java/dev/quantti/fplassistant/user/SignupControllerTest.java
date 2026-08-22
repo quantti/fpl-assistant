@@ -31,6 +31,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  *
  * <p>The test profile sets the code to {@code test-invite-code} and the cap to 2, so the cap is
  * two rows away rather than thirty.
+ *
+ * <p><b>Every request here spends per-IP rate-limit budget</b> — sign-up is one of the limited
+ * paths, MockMvc presents one address for all of them, and the window is 20 a minute. This class
+ * sits at nine. A tenth test is fine; a class that grows past the limit starts failing whichever
+ * test happens to run last, for a reason that has nothing to do with what it asserts.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
