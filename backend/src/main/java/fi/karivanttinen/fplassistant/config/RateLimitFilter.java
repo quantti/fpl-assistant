@@ -23,9 +23,13 @@ public class RateLimitFilter extends OncePerRequestFilter {
      * FPL. An unlisted endpoint is unlimited, which is why the profile write is here — it makes
      * one outbound call to fantasy.premierleague.com per invocation, and that is the same host
      * the 02:00 price capture depends on.
+     *
+     * <p>Sign-up qualifies twice over: it calls Supabase, and it creates accounts. Note what this
+     * buys, though — the limit below is a shared constant, not a number chosen for account
+     * creation. It blunts a script; the invite code and the account cap are the actual gate.
      */
     private static final java.util.Set<String> RATE_LIMITED_PATHS =
-            java.util.Set.of("/api/chat", "/api/profile/fpl-team-id");
+            java.util.Set.of("/api/chat", "/api/profile/fpl-team-id", "/api/auth/signup");
 
     static final int MAX_REQUESTS_PER_MINUTE = 20;
     private static final long WINDOW_MS = 60_000;
