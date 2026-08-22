@@ -50,6 +50,7 @@ fpl:
     conversation-table-name: fpl_conversation_test
     message-table-name: fpl_message_test
     usage-table-name: fpl_usage_event_test
+    invite-redemption-table-name: fpl_invite_redemption_test
   daily-price:
     table-name: fpl_daily_price_test
     scheduled: false

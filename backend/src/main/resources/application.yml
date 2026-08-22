@@ -111,6 +111,9 @@ fpl:
     conversation-table-name: fpl_conversation
     message-table-name: fpl_message
     usage-table-name: fpl_usage_event
+    # The invite ledger: one row per account created through POST /api/auth/signup, and the
+    # count the account cap is checked against.
+    invite-redemption-table-name: fpl_invite_redemption
     # Checked when a user saves their team id. A documented exception to "external APIs only at
     # sync time": this is a user-initiated write, not the chat path.
     entry-url: https://fantasy.premierleague.com/api/entry/%d/
