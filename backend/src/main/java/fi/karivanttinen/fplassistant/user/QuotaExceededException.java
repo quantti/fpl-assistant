@@ -20,12 +20,19 @@ public class QuotaExceededException extends RuntimeException {
     }
 
     /**
-     * Names no number (issue #11). The user is told they are out for now, and the usage page
-     * shows how much of the week is left as a share — the limit itself is the owner's business.
+     * Names the number on the free plan and not on the paid one — the same split as
+     * {@link UsageController}, decided on the same {@link Plan} so the two cannot disagree. The
+     * free limit is the offer; the paid limit is a cost-control number (issue #11).
+     *
+     * <p>A suspended account is told neither: no limit is the reason it cannot send, and quoting
+     * one would send the user to wait for a window that will not open.
      */
     private static String message(UsageService.Quota quota) {
         if (quota.limit() != null && quota.limit() == 0) {
             return "This account cannot send messages.";
+        }
+        if (quota.plan() == Plan.FREE && quota.limit() != null) {
+            return "You have used all " + quota.limit() + " of this week's messages.";
         }
         return "You have used this week's messages.";
     }

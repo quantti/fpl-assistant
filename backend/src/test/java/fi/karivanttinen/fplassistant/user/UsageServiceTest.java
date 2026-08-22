@@ -205,6 +205,24 @@ class UsageServiceTest {
                 .isEqualTo(1);
     }
 
+    /**
+     * The refusal names the number on the free plan. Hiding it would make the product evasive
+     * about the one figure a free user needs, and it is on the marketing page either way — while
+     * a suspended account is told nothing about limits, because no number is the reason.
+     */
+    @Test
+    void theFreePlansRefusalNamesTheLimitAndASuspendedAccountsDoesNot() {
+        setLimit(1);
+        usage.claimChatTurn(USER, "anthropic");
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> usage.claimChatTurn(USER, "anthropic"))
+                .hasMessage("You have used all 1 of this week's messages.");
+
+        setLimit(0);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> usage.claimChatTurn(USER, "anthropic"))
+                .hasMessage("This account cannot send messages.");
+    }
+
     /** Unreported is not zero, but it is not a number to add either. */
     @Test
     void theTotalCountsOnlyWhatWasReported() {
