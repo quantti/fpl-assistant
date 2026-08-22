@@ -109,6 +109,14 @@ fpl:
     # -1 unlimited, 0 suspended. Unlike the paid limit Phase 5b adds beside it, this number is
     # public: it is the offer, and it is on the marketing page either way.
     free-messages-per-week: ${QUOTA_FREE_MESSAGES_PER_WEEK:20}
+  invite:
+    # Sign-up's shared code, handed out by the owner. No default: an unset INVITE_CODE refuses
+    # every sign-up, so a missing secret closes the door rather than opening it.
+    code: ${INVITE_CODE:}
+    # The hard ceiling on accounts created through /api/auth/signup, and the number the free
+    # tier's cost ceiling is drawn against (30 x 20 messages a week is about EUR 38/month). A
+    # property so the owner can move it without a deploy.
+    max-accounts: ${INVITE_MAX_ACCOUNTS:30}
   user:
     # Phase 5a. Names are properties for the same reason every other table's is: the test
     # profile pins them to isolated copies. fpl_user_profile is NOT app_user — tapas owns that
