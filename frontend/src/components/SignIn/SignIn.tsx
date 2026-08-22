@@ -72,8 +72,10 @@ export default function SignIn() {
       setError('Sign-up is full at the moment. Ask for a place and we will let you know.')
     } else if (response.status === 422) {
       // Supabase's own words: only it knows whether the address is taken or the password too
-      // short, and a refusal the user cannot read is one they cannot act on.
-      setError((await response.text()) || 'That email address or password was not accepted.')
+      // short, and a refusal the user cannot read is one they cannot act on. Spring writes them
+      // into the "detail" field of a problem response — reading the body as text would put the
+      // whole JSON object on screen.
+      setError(await problemDetail(response) ?? 'That email address or password was not accepted.')
     } else if (response.status === 503) {
       setError('Sign-up is unavailable right now. Please try again shortly.')
     } else {
@@ -145,4 +147,14 @@ export default function SignIn() {
       </form>
     </div>
   )
+}
+
+/** The human-readable sentence out of Spring's problem response, or null if there is none. */
+async function problemDetail(response: Response): Promise<string | null> {
+  try {
+    const problem: { detail?: string } = await response.json()
+    return problem.detail?.trim() || null
+  } catch {
+    return null
+  }
 }

@@ -120,7 +120,11 @@ class SignupControllerTest {
                 new SupabaseAdminClient.Rejected("Password should be at least 6 characters"));
 
         signUp("a@example.com", "short", CODE)
-                .andExpect(status().isUnprocessableEntity());
+                .andExpect(status().isUnprocessableEntity())
+                // Supabase's own words reach the form, in the "detail" field of the problem
+                // response Spring writes. The sign-up form reads exactly that field, so this
+                // pins the shape as much as the text.
+                .andExpect(jsonPath("$.detail").value("Password should be at least 6 characters"));
 
         assertThat(ledgerRows()).isEqualTo(1);
         assertThat(jdbc.queryForObject(
