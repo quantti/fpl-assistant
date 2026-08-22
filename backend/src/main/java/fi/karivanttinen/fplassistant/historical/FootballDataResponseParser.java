@@ -3,6 +3,9 @@ package fi.karivanttinen.fplassistant.historical;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -22,6 +25,8 @@ import com.fasterxml.jackson.core.JsonProcessingException;
  * behaviour are pinned by unit tests.
  */
 public final class FootballDataResponseParser {
+
+    private static final Logger log = LoggerFactory.getLogger(FootballDataResponseParser.class);
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
@@ -66,15 +71,17 @@ public final class FootballDataResponseParser {
 
     /**
      * The season the match belongs to, in this database's {@code season.code} format, derived
-     * from the match's own {@code season.startDate} ({@code "2026-08-21" → "2026-27"}). The
-     * sync's write guard compares this against the season the database flags current, so a
-     * missing or unparseable value must fail loudly — never guess a season to stamp on a row.
+     * from the match's own {@code season.startDate} ({@code "2026-08-21" → "2026-27"}), or
+     * {@code null} when the response gives no usable date. Never guessed: the sync stamps this
+     * on the row it writes, and a match with no season is skipped rather than written under
+     * some other season's key. One malformed match must not cost the other 379 — a rescheduled
+     * fixture or a schema tweak upstream would otherwise abort the whole sync.
      */
     private static String seasonCode(JsonNode m) {
         String startDate = textOrNull(m, "season", "startDate");
         if (startDate == null || !startDate.matches("\\d{4}-\\d{2}-\\d{2}.*")) {
-            throw new IllegalStateException(
-                    "football-data match has no usable season.startDate: " + m);
+            log.warn("football-data match has no usable season.startDate, skipping that match: {}", m);
+            return null;
         }
         int year = Integer.parseInt(startDate.substring(0, 4));
         return "%d-%02d".formatted(year, (year + 1) % 100);

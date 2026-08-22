@@ -1,6 +1,7 @@
 package fi.karivanttinen.fplassistant.tools;
 
 import java.time.LocalDate;
+import java.util.List;
 
 import fi.karivanttinen.fplassistant.testsupport.TapasSeed;
 import org.junit.jupiter.api.AfterEach;
@@ -30,11 +31,19 @@ class PlayerToolsTest {
 
     private static final String CURRENT_SEASON = "2099-00";
 
+    /** Ids this class inserts into the (tapas-owned) current season, and removes again. */
+    private static final int FLIP_GAMEWEEK_ID = 101;
+    private static final int FLIP_TEAM_ID = 9001;
+    private static final List<Integer> FLIP_PLAYER_IDS = List.of(9301, 9302);
+
     @BeforeEach
     void seed() {
         TapasSeed.ensure(jdbc);
         assertThat(dailyTable).as("must use the isolated table").endsWith("_test");
         clearDaily();
+        // Also before, not only after: a hard abort mid-class would otherwise leave the flip in
+        // place for the next run.
+        unflipSeason();
     }
 
     @AfterEach
@@ -42,12 +51,20 @@ class PlayerToolsTest {
         jdbc.update("DELETE FROM " + dailyTable + " WHERE season = ?", CURRENT_SEASON);
     }
 
-    /** Undoes {@link #flipToCurrentSeason} so every other test still sees the fallback. */
+    /**
+     * Undoes {@link #flipToCurrentSeason} so every other test still sees the fallback. Deletes
+     * only the rows this class inserts, by id: the current season is tapas-owned and shared with
+     * {@link TapasSeed}, and a blanket delete on {@code season_id} would silently wipe another
+     * class's rows the day one of them seeds that season.
+     */
     @AfterEach
     void unflipSeason() {
-        jdbc.update("DELETE FROM player WHERE season_id = " + TapasSeed.CURRENT_SEASON_ID);
-        jdbc.update("DELETE FROM gameweek WHERE season_id = " + TapasSeed.CURRENT_SEASON_ID);
-        jdbc.update("DELETE FROM team WHERE season_id = " + TapasSeed.CURRENT_SEASON_ID);
+        jdbc.update("DELETE FROM player WHERE season_id = ? AND id IN (?, ?)",
+                TapasSeed.CURRENT_SEASON_ID, FLIP_PLAYER_IDS.get(0), FLIP_PLAYER_IDS.get(1));
+        jdbc.update("DELETE FROM gameweek WHERE season_id = ? AND id = ?",
+                TapasSeed.CURRENT_SEASON_ID, FLIP_GAMEWEEK_ID);
+        jdbc.update("DELETE FROM team WHERE season_id = ? AND id = ?",
+                TapasSeed.CURRENT_SEASON_ID, FLIP_TEAM_ID);
     }
 
     /**
@@ -125,6 +142,29 @@ class PlayerToolsTest {
                 + " — a COMPLETED PREVIOUS season");
         assertThat(result).contains("Minutes: 265");
         assertThat(result).doesNotContain("(the season currently being played)");
+        // The season being played holds data, but none of it is on this card: saying it "is
+        // under way" beside numbers that are not there implies a comparison the reply cannot make.
+        assertThat(result).doesNotContain("is under way");
+        assertThat(result).contains("No " + TapasSeed.CURRENT_SEASON_CODE
+                + " numbers accompany these");
+    }
+
+    /**
+     * Absence has to be claimed from the daily capture alone. Once the season has flipped, a
+     * name the capture missed but the player table carries would otherwise be declared
+     * unpickable directly above that same season's statistics.
+     */
+    @Test
+    void afterTheFlipTheAbsenceClaimIsSoftenedWhenThisSeasonHasStatisticsForTheName() {
+        flipToCurrentSeason(true); // Okafor has a current-season row
+        captureToday("Someoneelse", "Someone Else Fictitious"); // ...but is not in today's capture
+
+        String result = playerTools.getPlayerStats(TapasSeed.PLAYER_WEB_NAME);
+
+        assertThat(result).doesNotContain("NOT IN THIS SEASON'S FPL GAME");
+        assertThat(result).contains("NOT CONFIRMED IN THIS SEASON'S FPL GAME");
+        assertThat(result).contains("the season currently being played");
+        assertThat(result).contains("Minutes: 180");
     }
 
     /** One row of the daily capture: this season's squad, as FPL's own API reports it. */
@@ -150,7 +190,19 @@ class PlayerToolsTest {
         String result = playerTools.getPlayerStats(TapasSeed.PLAYER_WEB_NAME);
         SeasonContext season = seasonResolver.resolve();
 
-        assertThat(result).startsWith("Data source: season " + season.code());
+        assertThat(result).contains("Data source: season " + season.code());
+    }
+
+    /**
+     * The provenance paragraph is four lines on the fallback path; printing it as a banner and
+     * again as the block's own header spends the model's attention twice on the same sentence.
+     */
+    @Test
+    void theSeasonIsNamedOnceNotTwice() {
+        String result = playerTools.getPlayerStats(TapasSeed.PLAYER_WEB_NAME);
+        SeasonContext season = seasonResolver.resolve();
+
+        assertThat(result).containsOnlyOnce("Data source: season " + season.code());
     }
 
     @Test
