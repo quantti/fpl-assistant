@@ -2017,3 +2017,149 @@ so it was rewritten rather than worked around.
 `updated_at` was bumped only when an answer was stored, so a conversation whose answer failed
 stayed where it was in a list ordered by last use — the conversation the user had just written to
 was the hardest to find. The touch moved to the user's turn.
+
+
+---
+
+# Early-season data: dual-season player card + football-data guard (2026-08-22)
+
+Plan: `docs/superpowers/plans/2026-08-21-early-season-data.md`. Branch `early-season-data`,
+PR pending. The review that started this: the prompt carried no question-type routing, no
+multi-lookup rule, and no early-season weighting — and the tools could not have honoured the
+weighting anyway: the day tapas syncs the new season, `SeasonResolver` flips and last
+season's evidence would have vanished from every tool.
+
+## Prompt (applied directly, `system-prompt.st`)
+
+Two new sections. **"How to answer: pick the right knowledge first"** routes by question type:
+rules/scoring/chips answered from the prompt's static sections with no tool calls; plain
+statistics from the stats tools only; strategy concepts from `searchStrategyDocs`; advice from
+both; club records from the historical tools — plus the multi-lookup rule (a transfer or
+captaincy answer checks stats, today's price, availability, underlying numbers and fixtures
+before answering). **"Early in the season: last season is the evidence"**: before GW5 lean on
+last season and say so; from GW5 this season alone, for a player who has actually played — a
+player with no 2026/27 minutes is still judged on last season, said explicitly. (The owner's
+GW5 switch replaced the first draft's GW5→GW10 graduation.)
+
+## Task 1 — `getPlayerStats` shows both seasons after the flip
+
+When the resolver returns the current season, the reply now carries that season's aggregates
+AND the previous season's beneath it, each under its own provenance line
+(`SeasonContext.previousSeasonProvenance` — the fallback text's "has no data yet" would be
+false there). `SeasonResolver.previousSeason` finds the earlier season by start_date. While
+the resolver is on the fallback (production today), output shape is unchanged. The no-capture
+and not-in-this-season's-game branches keep leading with their explicit statements; their
+trailing line is now season-neutral ("the statistics below name the season each figure is
+from"). Tested via a simulated flip: seeding one gameweek + one player into the current season
+makes the real resolver pick it, and both season blocks appear, each attributed.
+
+## Task 2 — football-data sync writes the genuinely current season
+
+The precedence guard keyed on `SeasonContext.currentSeason()`, which is false for the whole
+changeover — so `pl_match_result` would have stayed empty for 2026-27 until tapas synced, and
+`getTeamForm` would have reported May 2026 as the freshest match well into autumn. The season
+written is now derived from the response itself (every match's `season.startDate` → the DB's
+`season.code` format, fail-loud when missing) and written only when it equals the database's
+`is_current` code. The summer case keeps its protection: an API response still serving the
+just-finished season mismatches `is_current` and is skipped whole. vaastav precedence is now
+structural (completed seasons are never `is_current`; a later backfill upserts the same
+natural key). The mocked-resolver precedence test changed meaning accordingly: "resolver on
+fallback" now writes, "response season ≠ is_current" skips. Captured-response test pins all
+380 matches deriving `2026-27`.
+
+## Verification
+
+Full suite green against the disposable container: 309 tests, 0 failures, including the two
+simulated-flip tests and both guard branches. **Live smoke is pending the merge-deploy** (the
+pipeline deploys from master, and booting a branch against production would fire the startup
+syncs into a database this branch has no business writing). What to check after deploy, once
+GW1 results exist: a form question surfaces 2026-27 results with the season named; a player
+question still answers from 2025/26 (the flip has not happened — tapas has synced nothing);
+after tapas syncs, the same question shows both seasons side by side.
+
+## Still open
+
+- No current-season fixtures, deadlines or gameweek info until tapas syncs —
+  `GameweekTools`/`FixtureTools` have no fallback-independent source. The plan's deferred list
+  names the bootstrap-static capture as the separate decision that would close it.
+- `PickTools`/`ExpectedStatsTools` still rank on the resolved season alone — after the flip
+  that is a 1–2-match sample. The prompt's weighting rule plus the dual-season player card are
+  the mitigation; blending belongs to the later season-weighting work.
+
+# PR #17 review: thirteen findings fixed (2026-08-22)
+
+A full review of the early-season branch before merge. Thirteen findings, all fixed on the
+branch. Suite: 315 tests, 0 failures against the disposable container (309 before, six new).
+
+## The write guard was only as wide as the first match
+
+`FootballDataSyncService` read `matches.getFirst().seasonCode()`, checked *that* against the
+flagged-current season, then stamped it on every row it wrote — so a response carrying two
+seasons (a rollover, a filtered fetch) would have written last season's results under this
+season's key, overwriting vaastav on the shared natural key `(season, home_team_code,
+away_team_code)`. That is the corruption the guard exists to prevent, reached through the guard
+itself. The check is now per match, each row stamped with its own season, and a match the
+parser could not date is skipped rather than written under a guess.
+
+Related, same file: seasons are compared on their **start year**, not by string equality. The
+two sides come from different owners — `season.code` is tapas', the payload's code is derived
+from `season.startDate` — and any format drift (`2026/27`, `2026-2027`, a prefix) would have
+turned the sync into a permanent silent no-op that logs at INFO. That is the same
+weeks-of-stale-results bug this branch was written to fix, only harder to see, so the skip path
+now logs at WARN and one integration test runs the **real** resolver against a real `season`
+row rather than hand-writing both sides.
+
+`FootballDataResponseParser` no longer throws on a match with no usable `season.startDate`: it
+returns a null season for that match and the sync skips it. One rescheduled fixture or upstream
+schema tweak was aborting all 380.
+
+The pre-fetch guard removed in the previous commit came back in a form that cannot reintroduce
+the original bug: nothing is fetched *before the flagged season's start date*. The old guard
+keyed on `SeasonResolver`, which is exactly what kept the current season unwritten. Without
+some pre-fetch guard, every Fly cold start spent an API request on a response that was then
+discarded — and a skipped sync writes nothing, so `StartupSyncRunner`'s staleness marker never
+advanced and the next start fetched again.
+
+## The player card contradicted itself, and repeated itself
+
+Three fixes in `PlayerTools`:
+
+- The "NOT IN THIS SEASON'S FPL GAME — they cannot pick this player" branch could, after the
+  flip, be followed by that same season's statistics: a name in tapas' current-season table but
+  missing from today's capture (a de-registration, a capture that ran early, a spelling the
+  daily match misses). The reply now distinguishes the two: absent from both is still an
+  absence; present in one and not the other is "NOT CONFIRMED", with the disagreement named.
+- The fallback provenance paragraph was printed twice — once as the banner, once as the block
+  header the dual-season card added. The banner is gone from those branches; every block
+  carries its own line. (`AGENTS.md`'s stats-tool convention now says so explicitly.)
+- `previousSeasonProvenance` asserted "the current season is under way" even when the current
+  season contributed no block, implying a comparison the card could not make. It is now an
+  instance method taking whether the current season's block is actually beside it.
+
+`SeasonStats` no longer stores a rendered provenance string next to the `SeasonContext` it was
+rendered from — a block whose header names one season while its price is labelled with another
+would have compiled cleanly. And both seasons' rows now come back in one query
+(`ROW_NUMBER() OVER (PARTITION BY season_id)`, five per season) instead of two round-trips on
+the chat hot path.
+
+`SeasonResolver.previousSeason` skips seasons with no player rows, the same discipline
+`resolve()` already applies — otherwise an unsynced season row sitting between the current one
+and the last populated one drops last season's evidence off the card without a word.
+
+## The GW5 rule had no way to know the gameweek
+
+The prompt's early-season switch turned on a number nothing told the model how to obtain, and
+the only tool that could — `getGameweekInfo` — reports *last* season's GW38 during exactly the
+window the rule targets (a finished season keeps its last gameweek flagged `is_current`). The
+rule would have misfired in the wrong direction: "past GW5, use this season's numbers alone",
+in August. The prompt now routes "which gameweek is it" to the stats tools and tells the model
+to read the tool's own "Data source" line first: a gameweek from a completed season means this
+season has no gameweek data yet, which is *before* GW5, never past it.
+
+## Test isolation
+
+`PlayerToolsTest` was deleting every `player`/`gameweek`/`team` row for the tapas-owned current
+season after every test, whether or not that test flipped — teardown reaching well beyond what
+it created, working only because `TapasSeed` happens not to seed that season today. It now
+deletes its own rows by id, and runs `@BeforeEach` as well, so an aborted run does not leave
+the flip in place for the next one.

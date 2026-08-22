@@ -3,6 +3,9 @@ package fi.karivanttinen.fplassistant.historical;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -12,7 +15,8 @@ import com.fasterxml.jackson.core.JsonProcessingException;
  * {@link FootballDataMatch}es. Response shape per the API's documented list-resource pattern:
  * top-level {@code filters}/{@code resultSet}/{@code competition}/{@code matches}, each match
  * carrying {@code status}, {@code matchday}, {@code utcDate}, {@code homeTeam.name},
- * {@code awayTeam.name}, {@code score.fullTime.home}/{@code .away}.
+ * {@code awayTeam.name}, {@code score.fullTime.home}/{@code .away} and
+ * {@code season.startDate}.
  *
  * <p>Verified 2026-08-15 against a real captured {@code GET /v4/competitions/PL/matches}
  * response body (checked into {@code src/test/resources/football-data-fixtures/pl-matches-2026-27.json})
@@ -21,6 +25,8 @@ import com.fasterxml.jackson.core.JsonProcessingException;
  * behaviour are pinned by unit tests.
  */
 public final class FootballDataResponseParser {
+
+    private static final Logger log = LoggerFactory.getLogger(FootballDataResponseParser.class);
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
@@ -59,7 +65,26 @@ public final class FootballDataResponseParser {
                 intOrNull(m, "score", "fullTime", "home"),
                 intOrNull(m, "score", "fullTime", "away"),
                 intOrNull(m, "matchday"),
-                textOrNull(m, "utcDate"));
+                textOrNull(m, "utcDate"),
+                seasonCode(m));
+    }
+
+    /**
+     * The season the match belongs to, in this database's {@code season.code} format, derived
+     * from the match's own {@code season.startDate} ({@code "2026-08-21" → "2026-27"}), or
+     * {@code null} when the response gives no usable date. Never guessed: the sync stamps this
+     * on the row it writes, and a match with no season is skipped rather than written under
+     * some other season's key. One malformed match must not cost the other 379 — a rescheduled
+     * fixture or a schema tweak upstream would otherwise abort the whole sync.
+     */
+    private static String seasonCode(JsonNode m) {
+        String startDate = textOrNull(m, "season", "startDate");
+        if (startDate == null || !startDate.matches("\\d{4}-\\d{2}-\\d{2}.*")) {
+            log.warn("football-data match has no usable season.startDate, skipping that match: {}", m);
+            return null;
+        }
+        int year = Integer.parseInt(startDate.substring(0, 4));
+        return "%d-%02d".formatted(year, (year + 1) % 100);
     }
 
     private static String textOrNull(JsonNode node, String... path) {
