@@ -40,9 +40,19 @@ export interface Conversation {
   updatedAt: string
 }
 
-/** What `GET /api/usage` answers. Deliberately a share, never a count — see issue #11. */
+/**
+ * What `GET /api/usage` answers. Always a share; on the free plan a count as well.
+ *
+ * Issue #11's "a share, never a count" now holds for the paid plan only — a free tier's limit is
+ * the offer, and hiding it makes the product evasive about the one number a prospective user
+ * needs. `used` and `limit` are therefore absent rather than null when they are not shown, which
+ * is why they are optional here.
+ */
 export interface Usage {
+  plan: 'FREE'
   remainingPercent: number
   unlimited: boolean
   nextFreeAt: string | null
+  used?: number
+  limit?: number
 }
