@@ -75,6 +75,12 @@ supabase:
   jwks-uri: ${supabase.url}/auth/v1/.well-known/jwks.json
   # The audience Supabase puts in every access token it issues.
   audience: authenticated
+  # Creates accounts through the Admin API, and bypasses row-level security entirely: the same
+  # handling class as the database password — backend only, never logged, never in anything the
+  # frontend build can reach. Empty by default so a deploy without it closes sign-up rather than
+  # failing to start; an unset SUPABASE_URL took production down on 2026-08-19, and unlike that
+  # one this property has a working answer for "unset".
+  service-role-key: ${SUPABASE_SERVICE_ROLE_KEY:}
 
 fpl:
   ai:
