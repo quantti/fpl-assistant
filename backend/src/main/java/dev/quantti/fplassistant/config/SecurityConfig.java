@@ -77,6 +77,11 @@ public class SecurityConfig {
                         // token. Requiring one while the deployed UI had no sign-in answered 401
                         // to every user in production on 2026-08-19 — the two only work merged
                         // together.
+                        // The one permitAll route under /api/**: an account has to be created
+                        // before there is a token to create it with. The gate is the invite code
+                        // and the account cap, both checked in SignupController — never in the
+                        // browser, which could not be trusted with either.
+                        .requestMatchers(HttpMethod.POST, "/api/auth/signup").permitAll()
                         .requestMatchers("/api/**").authenticated()
                         // Fail closed: a new endpoint is protected until someone says otherwise.
                         // The previous catch-all permitAll made anything outside /api/** public

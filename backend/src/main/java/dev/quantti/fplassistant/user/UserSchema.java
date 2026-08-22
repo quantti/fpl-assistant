@@ -8,7 +8,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
 /**
- * Idempotent DDL for the four tables Phase 5a adds, run once at startup — the same pattern
+ * Idempotent DDL for the tables this project's user layer owns — four from Phase 5a and the
+ * invite ledger the free tier adds — run once at startup, the same pattern
  * {@code HistoricalSchema} and {@code PriceSchema} use, since this project has no migration tool.
  *
  * <p><b>Every table here is {@code fpl_}-prefixed.</b> The shared database already carries
@@ -36,7 +37,7 @@ import org.springframework.stereotype.Component;
  * column carries all of it:
  *
  * <ul>
- *   <li>{@code NULL} — no override; the configured default ({@code fpl.quota.messages-per-week})
+ *   <li>{@code NULL} — no override; the configured default ({@code fpl.quota.free-messages-per-week})
  *       applies. This is what almost every row holds.</li>
  *   <li>{@code -1} — unlimited. A sentinel rather than a second column, and enforced by a CHECK
  *       so a typo cannot invent a third meaning.</li>
@@ -66,17 +67,20 @@ public class UserSchema {
     private final String conversationTable;
     private final String messageTable;
     private final String usageTable;
+    private final String inviteTable;
 
     public UserSchema(JdbcTemplate jdbc,
                       @Value("${fpl.user.profile-table-name}") String profileTable,
                       @Value("${fpl.user.conversation-table-name}") String conversationTable,
                       @Value("${fpl.user.message-table-name}") String messageTable,
-                      @Value("${fpl.user.usage-table-name}") String usageTable) {
+                      @Value("${fpl.user.usage-table-name}") String usageTable,
+                      @Value("${fpl.user.invite-redemption-table-name}") String inviteTable) {
         this.jdbc = jdbc;
         this.profileTable = profileTable;
         this.conversationTable = conversationTable;
         this.messageTable = messageTable;
         this.usageTable = usageTable;
+        this.inviteTable = inviteTable;
     }
 
     /**
@@ -164,6 +168,26 @@ public class UserSchema {
                 )
                 """.formatted(usageTable, TOTAL_TOKENS_COLUMN));
 
+        // The account cap is a count of this table, so a row has to exist before the account
+        // does: the slot is reserved and committed, and only then is Supabase asked to create
+        // the user. One transaction cannot span both, and this is the direction chosen — see
+        // InviteLedger. user_id is therefore nullable and is not the key: a row with none is a
+        // reserved slot, or a burnt one if the remote call failed. UNIQUE still holds one row
+        // per account.
+        //
+        // code_label records which code an account came in on, so a rotation stays legible
+        // afterwards. It is a fingerprint of the code, never the code: this table is not a
+        // secret store. No email column either — auth.users has it, and a second copy is PII
+        // kept for a purpose user_id already serves.
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS %s (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id UUID UNIQUE,
+                    code_label TEXT,
+                    redeemed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """.formatted(inviteTable));
+
         // The columns above arrived after the table existed in production, and this project has
         // no migration tool. IF NOT EXISTS makes each one a no-op on a database that has it.
         for (String column : new String[] {
@@ -203,11 +227,12 @@ public class UserSchema {
                     """.formatted(table, table));
         }
 
-        for (String table : new String[] {profileTable, conversationTable, messageTable, usageTable}) {
+        for (String table : new String[] {profileTable, conversationTable, messageTable, usageTable,
+                inviteTable}) {
             jdbc.execute("ALTER TABLE %s ENABLE ROW LEVEL SECURITY".formatted(table));
         }
 
-        log.debug("user schema ensured: {}, {}, {}, {}",
-                profileTable, conversationTable, messageTable, usageTable);
+        log.debug("user schema ensured: {}, {}, {}, {}, {}",
+                profileTable, conversationTable, messageTable, usageTable, inviteTable);
     }
 }

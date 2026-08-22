@@ -34,25 +34,27 @@ public class UsageService {
     private final JdbcTemplate jdbc;
     private final String usageTable;
     private final String profileTable;
-    private final int defaultLimit;
+    private final int freeLimit;
 
     public UsageService(JdbcTemplate jdbc,
                         @Value("${fpl.user.usage-table-name}") String usageTable,
                         @Value("${fpl.user.profile-table-name}") String profileTable,
-                        @Value("${fpl.quota.messages-per-week}") int defaultLimit) {
+                        @Value("${fpl.quota.free-messages-per-week}") int freeLimit) {
         this.jdbc = jdbc;
         this.usageTable = usageTable;
         this.profileTable = profileTable;
-        this.defaultLimit = defaultLimit;
+        this.freeLimit = freeLimit;
     }
 
     /**
+     * @param plan       the tier the limit was resolved against. Carried rather than looked up
+     *                   again, so the response and the 429 cannot disagree about it
      * @param limit      messages allowed per window, or {@code null} for unlimited
      * @param nextFreeAt when the oldest counted message leaves the window, or {@code null} when
      *                   nothing is counted — or when waiting cannot help, which is what a
      *                   suspended account (limit 0) means
      */
-    public record Quota(int used, Integer limit, Instant nextFreeAt) {
+    public record Quota(Plan plan, int used, Integer limit, Instant nextFreeAt) {
 
         public boolean exceeded() {
             return limit != null && used >= limit;
@@ -75,11 +77,12 @@ public class UsageService {
     }
 
     public Quota quotaOf(UUID userId) {
-        Integer limit = resolveLimit(userId);
+        Plan plan = planOf(userId);
+        Integer limit = resolveLimit(userId, plan);
         if (limit == null) {
             // Unlimited: the count is the one query worth skipping, since it is the reason this
             // check exists at all.
-            return new Quota(0, null, null);
+            return new Quota(plan, 0, null, null);
         }
 
         Integer used = jdbc.queryForObject("""
@@ -87,7 +90,7 @@ public class UsageService {
                 WHERE user_id = ? AND event_type = ? AND created_at > now() - interval '%d days'
                 """.formatted(usageTable, WINDOW.toDays()),
                 Integer.class, userId, CHAT_EVENT);
-        return new Quota(used, limit, nextFreeAt(userId, used, limit));
+        return new Quota(plan, used, limit, nextFreeAt(userId, used, limit));
     }
 
     /**
@@ -112,18 +115,34 @@ public class UsageService {
     }
 
     /**
-     * {@code null} means unlimited. A missing profile row and a {@code NULL} column are the same
-     * case — the configured default — which is what almost every account is.
+     * The account's tier. Every account is free in this phase; Phase 5b adds the one branch that
+     * asks whether an entitling subscription exists, and adds it here so nothing else has to
+     * change.
      */
-    private Integer resolveLimit(UUID userId) {
+    private Plan planOf(UUID userId) {
+        return Plan.FREE;
+    }
+
+    /** The tier's own allowance, before any per-user override. */
+    private int limitFor(Plan plan) {
+        return switch (plan) {
+            case FREE -> freeLimit;
+        };
+    }
+
+    /**
+     * {@code null} means unlimited. A missing profile row and a {@code NULL} column are the same
+     * case — the plan's own limit — which is what almost every account is.
+     */
+    private Integer resolveLimit(UUID userId, Plan plan) {
         List<Integer> stored = jdbc.queryForList(
                 "SELECT weekly_message_limit FROM " + profileTable + " WHERE user_id = ?",
                 Integer.class, userId);
         Integer override = stored.isEmpty() ? null : stored.getFirst();
         // The sentinel applies to the configured default too. It is documented beside the
-        // property, so someone will set QUOTA_MESSAGES_PER_WEEK=-1 to open the gates — and
+        // property, so someone will set QUOTA_FREE_MESSAGES_PER_WEEK=-1 to open the gates — and
         // reading it literally would refuse every account with "all -1 messages used".
-        int limit = override == null ? defaultLimit : override;
+        int limit = override == null ? limitFor(plan) : override;
         return limit < 0 ? null : limit;
     }
 
