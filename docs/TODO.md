@@ -20,6 +20,16 @@ to a later date or season by owner decision.
 | Season-code guard in the daily capture | Code | done | (2026-08-18 pre-push review) The sync refuses a `bootstrap-static` response whose newest event deadline is more than 40 days past — the early-July window where the calendar says "new season" but FPL has not reset the endpoint, so last season's squads would be written under the new season label. Mid-June syncs of a just-finished season stay allowed |
 | Error turns replayed to the model as history | Code | done | (2026-08-18 pre-push review) `useChat` filtered the `isError` flag but sent the error content back as model history; now filtered from the request body (merged with adjacent user turns, since the Anthropic API rejects consecutive user turns) while staying visible in the transcript |
 
+## Free tier (2026-08-22)
+
+| Item | Type | Status | Notes |
+|---|---|---|---|
+| Email verification before the invite code comes off | Code | open | `email_confirm: true` creates confirmed accounts without sending anything, which is defensible only while the code and the 30-account cap are the gate. A permanent free tier reached without a code and without a verified address is refillable by anyone willing to register a new address. First thing to build when the tier opens up |
+| Whether 20 messages a week is the right number | Product | open | A judgement, not a derived figure. It is `QUOTA_FREE_MESSAGES_PER_WEEK` precisely so it can move from evidence once testers have used it |
+| `SUPABASE_SERVICE_ROLE_KEY` and `INVITE_CODE` as Fly secrets | Infra | open | Neither is set. Sign-up answers `503` until the service-role key is set, and refuses every code until `INVITE_CODE` is. Owner action: `fly secrets set` |
+| Burnt invite slots have no admin path | Code | deferred | A failed Supabase call leaves a row with a null `user_id` — one slot, deliberately (see STATUS 2026-08-22). Released by hand: `DELETE FROM fpl_invite_redemption WHERE user_id IS NULL`. Not worth a UI at this size |
+| Duplicated `SUPABASE_URL` slash repair | Code | open | `SupabaseAdminClient` inlines the regex that PR #17 extracts as `SecurityConfig.collapseDoubledSlash`. Collapse into one call once #17 merges |
+
 ## Corpus and repository hygiene
 
 | Item | Type | Status | Notes |

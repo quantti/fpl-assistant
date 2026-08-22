@@ -52,23 +52,24 @@ class UsageControllerTest {
     }
 
     /**
-     * A share, never a count. The absolute numbers are the owner's (issue #11): a response
-     * carrying the limit, or how many are left, would tell the user exactly what this is meant
-     * to keep to ourselves.
+     * The free tier's limit is stated, because it is the offer. Issue #11's "a share, never a
+     * count" now holds for the paid plan only: that limit is a cost-control number to be tuned
+     * from usage data, and nobody's entitlement to quote back.
      */
     @Test
-    void itReportsWhatIsLeftAsAPercentageAndNoAbsoluteNumbers() throws Exception {
+    void theFreePlanIsToldItsLimitAndWhatItHasUsed() throws Exception {
         setLimit(10);
         seedChatEvents(3);
 
         mockMvc.perform(get("/api/usage")
                 .header("Authorization", "Bearer " + TestJwks.validTokenFor(USER)))
                 .andExpect(status().isOk())
+                .andExpect(jsonPath("$.plan").value("FREE"))
                 .andExpect(jsonPath("$.remainingPercent").value(70))
                 .andExpect(jsonPath("$.unlimited").value(false))
                 .andExpect(jsonPath("$.nextFreeAt").isNotEmpty())
-                .andExpect(jsonPath("$.used").doesNotExist())
-                .andExpect(jsonPath("$.limit").doesNotExist());
+                .andExpect(jsonPath("$.used").value(3))
+                .andExpect(jsonPath("$.limit").value(10));
     }
 
     /** An indicator that reads empty while a message can still be sent is worse than none. */
@@ -92,6 +93,7 @@ class UsageControllerTest {
                 .andExpect(jsonPath("$.remainingPercent").value(0));
     }
 
+    /** No limit, no count worth showing: the question the numbers answer does not arise. */
     @Test
     void anUnlimitedAccountSaysSoRatherThanReportingAShare() throws Exception {
         setLimit(-1);
@@ -99,7 +101,9 @@ class UsageControllerTest {
         mockMvc.perform(get("/api/usage")
                 .header("Authorization", "Bearer " + TestJwks.validTokenFor(USER)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.unlimited").value(true));
+                .andExpect(jsonPath("$.unlimited").value(true))
+                .andExpect(jsonPath("$.used").doesNotExist())
+                .andExpect(jsonPath("$.limit").doesNotExist());
     }
 
     /** No number of seconds turns a suspended account back on, so it is not offered one. */
@@ -111,7 +115,11 @@ class UsageControllerTest {
         mockMvc.perform(get("/api/usage")
                 .header("Authorization", "Bearer " + TestJwks.validTokenFor(USER)))
                 .andExpect(jsonPath("$.remainingPercent").value(0))
-                .andExpect(jsonPath("$.nextFreeAt").doesNotExist());
+                .andExpect(jsonPath("$.nextFreeAt").doesNotExist())
+                // No count and no limit either: a suspended account is told nothing that reads as
+                // a quota to wait out — "3 of 0 messages used" would be a sentence about nothing.
+                .andExpect(jsonPath("$.used").doesNotExist())
+                .andExpect(jsonPath("$.limit").doesNotExist());
     }
 
     private void setLimit(int limit) {

@@ -15,7 +15,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * "you have used all -1 messages" — the configured default has to pass through the same sentinel
  * the column does.
  */
-@SpringBootTest(properties = "fpl.quota.messages-per-week=-1")
+@SpringBootTest(properties = "fpl.quota.free-messages-per-week=-1")
 @ActiveProfiles("test")
 class UnlimitedDefaultQuotaTest {
 

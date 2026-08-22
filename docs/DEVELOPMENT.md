@@ -75,14 +75,41 @@ set -a; source .env.test; set +a
 ./gradlew bootRun --args="--sync-prices"          # capture today's FPL prices, then exit
 ```
 
+## The free tier and sign-up
+
+Every account is on the free tier: **20 messages per rolling seven days**
+(`fpl.quota.free-messages-per-week`, env `QUOTA_FREE_MESSAGES_PER_WEEK`). There is no `plan`
+column — the tier is derived on every request, and Phase 5b adds the branch that asks whether a
+subscription entitles an account to more.
+
+Sign-up is `POST /api/auth/signup`, the one route under `/api/**` that needs no token. It takes
+`{email, password, inviteCode}`, checks the code against `fpl.invite.code`, reserves a slot in
+`fpl_invite_redemption` against `fpl.invite.max-accounts`, and creates the account through
+Supabase's Admin API. Supabase's own public sign-up stays **off**: a code checked in the browser
+would be decoration.
+
+Production needs two secrets for any of it to work, and neither is in the repository:
+
+```bash
+fly secrets set SUPABASE_SERVICE_ROLE_KEY=...   # Project Settings -> API -> service_role
+fly secrets set INVITE_CODE=...                 # the code handed out to testers
+```
+
+Either one unset closes sign-up rather than opening it — a missing service-role key answers
+`503`, a missing code refuses every submitted code with `403`. The account cap defaults to 30 and
+moves with `fly secrets set INVITE_MAX_ACCOUNTS=n`.
+
+A failed Supabase call leaves a reserved row with a null `user_id` — one burnt slot, chosen over
+an account nobody counted (see `InviteLedger`). Release burnt slots by hand:
+
+```sql
+DELETE FROM fpl_invite_redemption WHERE user_id IS NULL;
+```
+
 ## Per-user message limits
 
-**Nothing reads this column yet — enforcement lands with Phase 5a Task 4.** Setting a limit
-today changes no behaviour: an account set to `0` keeps chatting, with no error and no log
-line to say why.
-
 The weekly quota is per person, held in `fpl_user_profile.weekly_message_limit`: `NULL` means the
-configured default (`fpl.quota.messages-per-week`), `-1` means unlimited, `0` suspends the
+configured default (`fpl.quota.free-messages-per-week`), `-1` means unlimited, `0` suspends the
 account, and any other number is that many messages per rolling seven days. There is no admin
 screen; a limit is one statement, run with the `backend/.env.supabase` credentials:
 

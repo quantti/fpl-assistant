@@ -2,6 +2,7 @@ package fi.karivanttinen.fplassistant.user;
 
 import java.time.Instant;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import fi.karivanttinen.fplassistant.config.TokenSubject;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
@@ -24,13 +25,19 @@ public class UsageController {
     }
 
     /**
-     * What is left, as a share rather than a count.
+     * What is left: always as a share, and on the free plan as a count as well.
      *
-     * <p>The absolute numbers stay on this side of the wire (issue #11): the user is told how
-     * much of their week remains, not how many messages they get. A percentage that leaked the
-     * limit would be the same information in another form, which is why nothing here carries the
-     * count used, the limit, or how many messages are left.
+     * <p>Issue #11 settled that the absolute numbers stay on this side of the wire. That rule now
+     * holds for the paid plan only. A free tier's limit is public information — it is the offer,
+     * and it is on the marketing page either way — so hiding it only makes the product look
+     * evasive about the one number a prospective user needs. The paid limit stays the owner's
+     * business: it is a cost-control number to be tuned from usage data, not an entitlement.
      *
+     * <p>Absent rather than null when they are not to be shown, which is what the
+     * {@code NON_NULL} include buys: a field carrying {@code null} is still an admission of which
+     * fields exist, and the frontend then has to distinguish "not shown" from "no value".
+     *
+     * @param plan             the tier the limit was resolved against
      * @param remainingPercent 0–100, and never 0 while a message can still be sent — an
      *                         indicator that reads empty before the door closes is worse than no
      *                         indicator
@@ -39,14 +46,25 @@ public class UsageController {
      * @param nextFreeAt       when the window next frees a message, or null when nothing is
      *                         counted or waiting cannot help. It names no count, and without it
      *                         someone out of messages has no idea when they can continue
+     * @param used             messages spent this week, on the free plan only
+     * @param limit            messages the week allows, on the free plan only. An unlimited
+     *                         account carries neither: there is no count worth displaying
      */
-    public record UsageResponse(int remainingPercent, boolean unlimited, Instant nextFreeAt) {}
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record UsageResponse(Plan plan, int remainingPercent, boolean unlimited,
+                                Instant nextFreeAt, Integer used, Integer limit) {}
 
     @GetMapping
     public UsageResponse usage(@AuthenticationPrincipal Jwt jwt) {
         UsageService.Quota quota = usage.quotaOf(TokenSubject.userId(jwt));
-        return new UsageResponse(remainingPercent(quota), quota.limit() == null,
-                quota.retryAfterSeconds().isEmpty() ? null : quota.nextFreeAt());
+        // A suspended account (limit 0) is told neither count nor limit — the same silence the
+        // 429 keeps: no number is the reason it cannot send, and "3 of 0 messages used" would
+        // be a sentence about nothing. Unlimited falls out the same way: limit is null.
+        boolean statesTheNumbers = quota.plan() == Plan.FREE && quota.limit() != null && quota.limit() > 0;
+        return new UsageResponse(quota.plan(), remainingPercent(quota), quota.limit() == null,
+                quota.retryAfterSeconds().isEmpty() ? null : quota.nextFreeAt(),
+                statesTheNumbers ? quota.used() : null,
+                statesTheNumbers ? quota.limit() : null);
     }
 
     private static int remainingPercent(UsageService.Quota quota) {
