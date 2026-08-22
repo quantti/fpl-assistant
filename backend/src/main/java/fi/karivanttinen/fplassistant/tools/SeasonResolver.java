@@ -7,6 +7,7 @@ import java.sql.Date;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * Picks the season the tools should query.
@@ -57,5 +58,31 @@ public class SeasonResolver {
                 Boolean.TRUE.equals(chosen.get("is_current")),
                 currentCode,
                 currentStart);
+    }
+
+    /**
+     * The most recent season before the given one that actually holds player data. Used to show
+     * last season's statistics next to the current season's once the current season holds data —
+     * the early-season weighting the system prompt describes needs both on the table at once.
+     *
+     * <p>The {@code EXISTS} is the same discipline as {@link #resolve()}: a season row can sit
+     * in the table for weeks with nothing synced against it, and picking that one by start date
+     * alone would drop last season's evidence off the card without a word.
+     */
+    public Optional<SeasonContext> previousSeason(SeasonContext of) {
+        List<Map<String, Object>> rows = jdbc.queryForList("""
+                SELECT s.id, s.code FROM season s
+                WHERE s.start_date < (SELECT start_date FROM season WHERE id = ?)
+                  AND EXISTS (SELECT 1 FROM player p WHERE p.season_id = s.id)
+                ORDER BY s.start_date DESC
+                LIMIT 1
+                """, of.seasonId());
+        if (rows.isEmpty()) {
+            return Optional.empty();
+        }
+        Map<String, Object> r = rows.getFirst();
+        return Optional.of(new SeasonContext(
+                ((Number) r.get("id")).intValue(), (String) r.get("code"), false,
+                of.currentSeasonCode(), of.currentSeasonStart()));
     }
 }

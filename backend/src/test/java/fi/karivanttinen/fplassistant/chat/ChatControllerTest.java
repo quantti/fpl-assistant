@@ -254,6 +254,23 @@ class ChatControllerTest {
     }
 
     /**
+     * The sidebar orders by last use. A conversation whose answer failed is still the one the
+     * user just wrote to, and leaving it where it was makes it the hardest to find.
+     */
+    @Test
+    void aFailedAnswerStillMovesTheConversationToTheTopOfTheList() {
+        UUID older = conversations.create(UUID.fromString(USER_A), "older");
+        when(chatService.stream(any(), any()))
+                .thenReturn(Flux.error(new IllegalStateException("boom")));
+
+        post(USER_A, "{\"message\":\"a question whose answer fails\"}");
+
+        assertThat(conversations.list(UUID.fromString(USER_A)).getFirst().id())
+                .as("the conversation just written to comes first, answered or not")
+                .isNotEqualTo(older);
+    }
+
+    /**
      * A stream that burned tokens and then failed keeps its charge. Only a failure that produced
      * nothing is refunded — otherwise a five-minute tool-calling turn that dies at the end would
      * be free, and free to repeat.

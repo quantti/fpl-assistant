@@ -136,46 +136,26 @@ class ChatServiceTest {
     }
 
     /**
-     * Providers differ in where the numbers arrive — prompt tokens early, completion tokens on
-     * the last chunk. Keeping only the final chunk's usage would record the answer's size and
-     * lose the prompt it was paid for.
+     * Both providers report usage cumulatively — Spring AI runs every chunk through
+     * {@code UsageCalculator.getCumulativeUsage}, across tool-call round trips too — so later
+     * chunks carry the running totals and the richest one is the complete measurement. Kept
+     * whole rather than merged field by field: a row assembled from two chunks can hold numbers
+     * that never described the same moment.
      */
     @Test
-    void tokenCountsAreMergedAcrossChunksAndReportedOnce() {
+    void theRichestChunksMeasurementIsTheOneKept() {
         ChatService service = service(List.of(), Flux.just(
                 response("Hello"),
-                usage(1200, null, 900L),
+                usage(1200, 100, 900L),
                 response(" world"),
-                usage(null, 300, null)));
+                usage(1200, 300, 900L)));
 
         List<TokenUsage> reported = new java.util.ArrayList<>();
         StepVerifier.create(service.stream(List.of(new ChatTurn(ChatTurn.USER, "hi")), reported::add))
                 .expectNext("Hello", " world")
                 .verifyComplete();
 
-        assertThat(reported.getLast())
-                .as("the running measurement, merged across the chunks that reported one")
-                .isEqualTo(new TokenUsage(null, 1200, 900, null, 300));
-    }
-
-    /**
-     * A cache miss reports zero reads. Recording that as null would make "the cache did not hit"
-     * indistinguishable from "the provider said nothing" — and telling those apart is the whole
-     * reason the column exists.
-     */
-    @Test
-    void aReportedZeroIsAMeasurementAndAnEmptyChunkIsNot() {
-        ChatService service = service(List.of(), Flux.just(
-                response("text"),
-                usage(1200, 300, 0L),
-                response("more text")));
-
-        List<TokenUsage> reported = new java.util.ArrayList<>();
-        StepVerifier.create(service.stream(List.of(new ChatTurn(ChatTurn.USER, "hi")), reported::add))
-                .expectNext("text", "more text")
-                .verifyComplete();
-
-        assertThat(reported.getLast()).isEqualTo(new TokenUsage(null, 1200, 0, null, 300));
+        assertThat(reported.getLast()).isEqualTo(new TokenUsage(null, 1200, 900, null, 300));
     }
 
     /**
@@ -255,6 +235,30 @@ class ChatServiceTest {
                 .verifyComplete();
 
         assertThat(reported.getLast()).isEqualTo(new TokenUsage(null, 1000, 400, null, 200));
+    }
+
+    /**
+     * Field-by-field maxima could assemble a row out of two chunks: on the OpenAI path a chunk
+     * reporting the prompt without cache details normalises to the full prompt, and a later
+     * chunk reporting both would leave that un-normalised figure beside a populated cache count —
+     * the generated total then counts the cached tokens twice.
+     */
+    @Test
+    void aRowIsOneChunksMeasurement() {
+        provider = "openai";
+        ChatService service = service(List.of(), Flux.just(
+                response("text"),
+                usage(1000, 50, null),
+                usage(1200, 200, 500L)));
+
+        List<TokenUsage> reported = new java.util.ArrayList<>();
+        StepVerifier.create(service.stream(List.of(new ChatTurn(ChatTurn.USER, "hi")), reported::add))
+                .expectNext("text")
+                .verifyComplete();
+
+        assertThat(reported.getLast())
+                .as("the richest chunk, kept whole: 1200 prompt less 500 cached is 700 uncached")
+                .isEqualTo(new TokenUsage(null, 700, 500, null, 200));
     }
 
     @Test
