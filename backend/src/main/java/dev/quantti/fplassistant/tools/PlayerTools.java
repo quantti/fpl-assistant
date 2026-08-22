@@ -9,9 +9,11 @@ import org.springframework.stereotype.Component;
 
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.stream.Collectors;
 
 @Component
@@ -38,10 +40,11 @@ public class PlayerTools implements FplTool {
             from — weigh them per the early-season rule. Until then the most recent completed
             season's statistics are shown alone. If the name is not in this
             season's squad the reply says so first, and that is the answer: the player cannot be
-            picked. The statistics are: position, team, price, total points, form, goals,
+            picked — unless the reply says only that they could not be CONFIRMED, in which case
+            two sources disagree and the answer is that, not an absence. The statistics are: position, team, price, total points, form, goals,
             assists, clean sheets, xG, xA, ownership %, and availability status.
-            Returns up to 5 matching players per season. The reply begins with the season the
-            numbers come from; if that is not the season currently being played, tell the user
+            Returns up to 5 matching players per season. Every block of statistics names the
+            season it came from; if that is not the season currently being played, tell the user
             the figures are historical. If the reply names a player the user did not ask for,
             that is not their answer: say who was matched and ask, rather than answering
             about them.
@@ -77,8 +80,8 @@ public class PlayerTools implements FplTool {
                 // No capture has ever run, so we do not know this season's squad — which is not
                 // the same as knowing the player is absent from it. Claiming absence here would
                 // answer every question during a fresh deploy with a confident falsehood.
-                return season.provenance()
-                        + "\n\nThis season's FPL squad list is unavailable (no daily capture has"
+                // Every block below carries its own "Data source:" line, so no banner here.
+                return "This season's FPL squad list is unavailable (no daily capture has"
                         + " run), so whether this player is in the game cannot be confirmed. Do"
                         + " not say they are missing from it. The statistics below name the season"
                         + " each figure is from.\n\n"
@@ -86,11 +89,22 @@ public class PlayerTools implements FplTool {
             }
 
             if (current.isEmpty()) {
+                if (stats.stream().anyMatch(b -> b.context().currentSeason())) {
+                    // Two sources that should agree do not: the name is in this season's player
+                    // table but not in today's capture of FPL's own list. Asserting absence here
+                    // would contradict the statistics printed directly underneath it.
+                    return "NOT CONFIRMED IN THIS SEASON'S FPL GAME: no player matching \""
+                            + playerName + "\" appears in today's capture of FPL's player list,"
+                            + " yet this season's statistics below do carry the name. The two"
+                            + " sources disagree — say that the player could not be confirmed in"
+                            + " FPL's current list rather than that they cannot be picked, and"
+                            + " suggest checking the club or a fuller spelling.\n\n"
+                            + formatBlocks(stats, null);
+                }
                 // In last season's data but not in this season's game — sold abroad, retired,
                 // relegated, or never in FPL. Saying it outright is the whole point: this is
                 // exactly the shape of answer that let a wrong-name guess look successful.
-                return season.provenance()
-                        + "\n\nNOT IN THIS SEASON'S FPL GAME: no player matching \"" + playerName
+                return "NOT IN THIS SEASON'S FPL GAME: no player matching \"" + playerName
                         + "\" appears in FPL's current player list. Tell the user that before"
                         + " anything else — they cannot pick this player. The statistics below"
                         + " name the season each figure is from.\n\n"
@@ -114,8 +128,13 @@ public class PlayerTools implements FplTool {
         }
     }
 
-    /** A season's aggregate rows for the player, with the label those numbers carry. */
-    private record SeasonStats(String provenance, SeasonContext context,
+    /**
+     * A season's rows for the player. {@code previous} marks the completed season on the
+     * dual-season card; the provenance line is rendered from {@code context}, never stored
+     * beside it — a stored line and the context it labels can drift apart, and a block whose
+     * header names one season while its price is labelled with another compiles cleanly.
+     */
+    private record SeasonStats(SeasonContext context, boolean previous,
                                List<Map<String, Object>> rows) {
     }
 
@@ -126,22 +145,23 @@ public class PlayerTools implements FplTool {
      * than rendered empty.
      */
     private List<SeasonStats> seasonStatsBlocks(String playerName, SeasonContext season) {
+        Optional<SeasonContext> previous = season.currentSeason()
+                ? seasonResolver.previousSeason(season)
+                : Optional.empty();
+        Map<Integer, List<Map<String, Object>>> rows = seasonRows(playerName, season.seasonId(),
+                previous.map(SeasonContext::seasonId).orElse(null));
+
         List<SeasonStats> blocks = new ArrayList<>();
-        List<Map<String, Object>> resolved = seasonRows(playerName, season.seasonId());
+        List<Map<String, Object>> resolved = rows.getOrDefault(season.seasonId(), List.of());
         if (!resolved.isEmpty()) {
-            blocks.add(new SeasonStats(season.provenance(), season, resolved));
+            blocks.add(new SeasonStats(season, false, resolved));
         }
-        if (season.currentSeason()) {
-            seasonResolver.previousSeason(season).ifPresent(prev -> {
-                List<Map<String, Object>> rows = seasonRows(playerName, prev.seasonId());
-                if (!rows.isEmpty()) {
-                    blocks.add(new SeasonStats(
-                            SeasonContext.previousSeasonProvenance(prev.code(),
-                                    season.currentSeasonCode()),
-                            prev, rows));
-                }
-            });
-        }
+        previous.ifPresent(prev -> {
+            List<Map<String, Object>> prevRows = rows.getOrDefault(prev.seasonId(), List.of());
+            if (!prevRows.isEmpty()) {
+                blocks.add(new SeasonStats(prev, true, prevRows));
+            }
+        });
         return blocks;
     }
 
@@ -151,9 +171,19 @@ public class PlayerTools implements FplTool {
      * can return five namesakes, and the answer is about one player.
      */
     private String formatBlocks(List<SeasonStats> blocks, String matchedWebName) {
+        // Whether the season being played contributed a block of its own decides how the
+        // completed season is introduced: "the current season is under way" alongside numbers
+        // from it, but not when it is the only block on the card.
+        boolean currentShown = blocks.stream().anyMatch(b -> !b.previous());
         return blocks.stream()
-                .map(b -> b.provenance() + "\n\n" + formatRows(b, matchedWebName))
+                .map(b -> provenanceOf(b, currentShown) + "\n\n" + formatRows(b, matchedWebName))
                 .collect(Collectors.joining("\n\n"));
+    }
+
+    private static String provenanceOf(SeasonStats block, boolean currentShown) {
+        return block.previous()
+                ? block.context().previousSeasonProvenance(currentShown)
+                : block.context().provenance();
     }
 
     private String formatRows(SeasonStats block, String matchedWebName) {
@@ -171,25 +201,41 @@ public class PlayerTools implements FplTool {
                 .collect(Collectors.joining("\n---\n"));
     }
 
-    private List<Map<String, Object>> seasonRows(String playerName, int seasonId) {
+    /**
+     * Both seasons' rows in one round trip, grouped by season id — this runs on the chat hot
+     * path, and the two statements differed only in the season id. The window function keeps
+     * each season's own top five, which a single {@code LIMIT} over the union could not.
+     *
+     * @param previousSeasonId may be null, in which case only {@code seasonId} is queried
+     */
+    private Map<Integer, List<Map<String, Object>>> seasonRows(String playerName, int seasonId,
+                                                               Integer previousSeasonId) {
         String pattern = "%" + LikePatterns.escape(playerName.toLowerCase(Locale.ROOT)) + "%";
-        return jdbc.queryForList("""
-                SELECT p.web_name, p.first_name, p.second_name,
-                       t.name as team, t.short_name,
-                       p.element_type, p.now_cost, p.total_points, p.form,
-                       p.goals_scored, p.assists, p.clean_sheets,
-                       p.minutes, p.expected_goals, p.expected_assists,
-                       p.selected_by_percent, p.status, p.news
-                FROM player p
-                JOIN team t ON t.id = p.team_id AND t.season_id = p.season_id
-                WHERE p.season_id = ?
-                  AND (LOWER(p.web_name) LIKE ?
-                       OR LOWER(p.second_name) LIKE ?
-                       OR LOWER(p.first_name) LIKE ?
-                       OR LOWER(p.first_name || ' ' || p.second_name) LIKE ?)
-                ORDER BY p.total_points DESC
-                LIMIT 5
-                """, seasonId, pattern, pattern, pattern, pattern);
+        int second = previousSeasonId == null ? seasonId : previousSeasonId;
+        List<Map<String, Object>> rows = jdbc.queryForList("""
+                SELECT * FROM (
+                    SELECT p.season_id, p.web_name, p.first_name, p.second_name,
+                           t.name as team, t.short_name,
+                           p.element_type, p.now_cost, p.total_points, p.form,
+                           p.goals_scored, p.assists, p.clean_sheets,
+                           p.minutes, p.expected_goals, p.expected_assists,
+                           p.selected_by_percent, p.status, p.news,
+                           ROW_NUMBER() OVER (PARTITION BY p.season_id
+                                              ORDER BY p.total_points DESC) AS rn
+                    FROM player p
+                    JOIN team t ON t.id = p.team_id AND t.season_id = p.season_id
+                    WHERE p.season_id IN (?, ?)
+                      AND (LOWER(p.web_name) LIKE ?
+                           OR LOWER(p.second_name) LIKE ?
+                           OR LOWER(p.first_name) LIKE ?
+                           OR LOWER(p.first_name || ' ' || p.second_name) LIKE ?)
+                ) ranked
+                WHERE rn <= 5
+                ORDER BY season_id, rn
+                """, seasonId, second, pattern, pattern, pattern, pattern);
+        return rows.stream().collect(Collectors.groupingBy(
+                r -> ((Number) r.get("season_id")).intValue(),
+                LinkedHashMap::new, Collectors.toList()));
     }
 
     /** Who the player is right now: club, position, today's price, ownership and availability. */

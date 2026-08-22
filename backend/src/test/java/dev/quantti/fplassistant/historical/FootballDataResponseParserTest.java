@@ -106,18 +106,28 @@ class FootballDataResponseParserTest {
     }
 
     @Test
-    void missingOrUnusableSeasonStartDateFailsLoudly() {
-        // The sync stamps this code on every row it writes — a missing season must surface as
-        // an error, never as a guessed or null season on stored matches.
-        String noSeason = """
-                { "matches": [ { "status": "FINISHED",
-                  "homeTeam": { "name": "Arsenal FC" },
-                  "awayTeam": { "name": "Chelsea FC" },
-                  "score": { "fullTime": { "home": 1, "away": 0 } } } ] }
+    void aMatchWithoutAUsableSeasonStartDateParsesWithANullSeasonAndDoesNotAbortTheRest() {
+        // The season is never guessed — the sync stamps it on the row — but one malformed match
+        // must not cost the other 379: a rescheduled fixture or an upstream schema tweak would
+        // otherwise abort a whole sync. A null season is the sync's signal to skip that match.
+        String oneBadMatch = """
+                { "matches": [
+                  { "status": "FINISHED",
+                    "homeTeam": { "name": "Arsenal FC" },
+                    "awayTeam": { "name": "Chelsea FC" },
+                    "score": { "fullTime": { "home": 1, "away": 0 } } },
+                  { "status": "FINISHED", "matchday": 1,
+                    "season": { "startDate": "2026-08-21" },
+                    "homeTeam": { "name": "Liverpool FC" },
+                    "awayTeam": { "name": "Everton FC" },
+                    "score": { "fullTime": { "home": 2, "away": 0 } } } ] }
                 """;
-        assertThatThrownBy(() -> FootballDataResponseParser.parse(noSeason))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("season.startDate");
+
+        List<FootballDataMatch> matches = FootballDataResponseParser.parse(oneBadMatch);
+
+        assertThat(matches).hasSize(2);
+        assertThat(matches.getFirst().seasonCode()).isNull();
+        assertThat(matches.get(1).seasonCode()).isEqualTo("2026-27");
     }
 
     @Test
