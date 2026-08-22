@@ -82,7 +82,7 @@ today changes no behaviour: an account set to `0` keeps chatting, with no error 
 line to say why.
 
 The weekly quota is per person, held in `fpl_user_profile.weekly_message_limit`: `NULL` means the
-configured default (`fpl.quota.messages-per-week`), `-1` means unlimited, `0` suspends the
+configured default (`fpl.quota.free-messages-per-week`), `-1` means unlimited, `0` suspends the
 account, and any other number is that many messages per rolling seven days. There is no admin
 screen; a limit is one statement, run with the `backend/.env.supabase` credentials:
 
