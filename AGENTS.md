@@ -14,7 +14,8 @@ Auth (Supabase JWT) + Stripe billing are deferred to the last phase. Build the c
 - **Frontend:** Vite 8.x + React 19 + TypeScript + Mantine v9 + CSS Modules. No Tailwind. (Mantine v9 requires React ≥19.2 — React 18 will not install.)
 - **DB:** Supabase PostgreSQL — shared with the `tapas-fpl-app` project (`~/dev/tapas-fpl-app`). FPL stats (players, fixtures, gw stats, ownership, xG/xA) already live there. New tables added by this project, all `fpl_`-prefixed or otherwise unambiguous because the
 schema is shared: `fpl_embeddings`, `pl_match_result`, `fpl_player_price`, `fpl_daily_price`,
-`fpl_user_profile`, `fpl_conversation`, `fpl_message`, `fpl_usage_event`. Never take a generic
+`fpl_user_profile`, `fpl_conversation`, `fpl_message`, `fpl_usage_event`,
+`fpl_invite_redemption`. Never take a generic
 name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own it first.
 - **LLM provider:** swappable via `SPRING_AI_PROVIDER` env var (`anthropic` default, or `openai`). `OPENAI_API_KEY` is required regardless of this setting from Phase 2 onward — RAG embeddings always use OpenAI (Anthropic has no embeddings API), and that autoconfiguration activates independently of the chat provider.
 - **Chat transport:** `POST /api/chat` returns `text/event-stream` (SSE). Frontend reads via `fetch` + `ReadableStream`.

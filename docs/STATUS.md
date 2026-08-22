@@ -1984,3 +1984,116 @@ afterwards. `NULL` is the configured default, which is what it was.
 - `getPlayerStats` reads this season's squad from the daily capture, but there are still **no
   2026-27 rows in the tapas `player` table**, so per-season statistics remain last season's until
   tapas syncs. The tools say which season they are quoting.
+
+---
+
+# Free tier: 20 messages a week, behind an invite code (2026-08-22)
+
+Spec: `docs/superpowers/specs/2026-08-22-free-tier-design.md`.
+Plan: `docs/superpowers/plans/2026-08-22-free-tier.md`.
+
+A phase inserted between 5a (auth, done) and 5b (Stripe, not started). Before billing exists we
+want testers using the assistant, and the only way in was an account created by hand in the
+Supabase dashboard. This opens a permanent free tier — **20 messages per rolling seven days** —
+reached through a sign-up form gated by a shared invite code with a hard account cap. Free stays
+a real tier after Stripe ships; paid is the upgrade from it.
+
+Almost none of the metering is new. Phase 5a's rolling seven-day count, its per-user advisory
+lock and its `weekly_message_limit` override are unchanged. What changed is the number the
+default resolves to, who can get an account, and what the user is told.
+
+## The plan is derived, never stored
+
+`Plan` is an enum with one constant, resolved in `UsageService.planOf` and carried on `Quota`. No
+`plan` column and no subscription row: a column would be a second cache of Stripe's state sitting
+beside 5b's own cache, and two caches of one truth drift — as a billing bug. 5b adds `PAID`, one
+branch in `planOf`, and one arm in `limitFor`.
+
+The enum exists because free and paid say different things. Issue #11 settled that `/api/usage`
+returns a share and the `429` names no number; **that now holds for paid accounts only.** A free
+tier's limit is the offer — it is on the marketing page either way, and hiding it only makes the
+product look evasive about the one figure a prospective user needs. The paid limit stays the
+owner's business: it is a cost-control number to be tuned from usage data. Both the response and
+the exception branch on the same `Plan` so they cannot disagree.
+
+## Sign-up is a backend call, because a browser one cannot be gated
+
+`supabase.auth.signUp` is a client call anyone can make without our form, so a code checked in
+the browser is decoration. Supabase's public sign-up stays off; `POST /api/auth/signup` creates
+the account itself with the service-role key. It is the one `permitAll` route under `/api/**`
+(POST only — a GET on the same path still answers `401`) and is rate limited per IP like the
+other endpoints that cost something outside this process.
+
+`403` bad code, `409` cap reached, `422` Supabase refused the address or the password, `503`
+Supabase could not be asked — the last two kept apart for the reason `FplEntryLookup` already
+keeps them apart: telling someone their password was rejected while the auth server is down sends
+them rewriting a password that was fine.
+
+## The failure direction at sign-up, chosen deliberately
+
+One transaction cannot span Postgres and Supabase, so the only real choice is which way the pair
+fails when it comes apart. The slot is reserved in `fpl_invite_redemption` **and committed**
+before Supabase is called. Counting afterwards would fail toward undercounting — an account
+nobody counted, and a cap drifting upward with every failure, silently. Reserving first fails
+toward overcounting: a Supabase error leaves a committed row with a null `user_id`, burning one
+slot. That is a visible row, released by hand with
+`DELETE FROM fpl_invite_redemption WHERE user_id IS NULL`, and it errs toward refusing one person
+too many rather than letting the tier grow past its ceiling with no trace. `user_id` is therefore
+nullable and not the primary key.
+
+The advisory lock is keyed on a constant rather than the user: the cap is a global count, so
+every sign-up serialises against every other. That would be wrong for chat and is right here,
+where total volume is a few dozen rows for the lifetime of the tier.
+
+`code_label` holds the first eight hex characters of the code's SHA-256, not the code — enough to
+tell one code from another after a rotation, and a ledger row is not a secret store.
+
+## Configuration
+
+| Property | Env | Default |
+|---|---|---|
+| `fpl.quota.free-messages-per-week` | `QUOTA_FREE_MESSAGES_PER_WEEK` | 20 (was `fpl.quota.messages-per-week`, 50) |
+| `fpl.invite.code` | `INVITE_CODE` | none — unset refuses every sign-up |
+| `fpl.invite.max-accounts` | `INVITE_MAX_ACCOUNTS` | 30 |
+| `supabase.service-role-key` | `SUPABASE_SERVICE_ROLE_KEY` | empty — unset closes sign-up with `503` |
+
+`QUOTA_MESSAGES_PER_WEEK` was never set as a Fly secret (verified 2026-08-22), so the rename had
+nothing to reconcile. **The two new secrets are not set either: sign-up answers `503` until
+`SUPABASE_SERVICE_ROLE_KEY` and `INVITE_CODE` are set with `fly secrets set`.** Both defaults
+close the door rather than opening it, which is the point.
+
+At the measured €0.0146 per message, 20 a week is about €1.27 a month per user who maxes the
+tier, so the 30-account cap is a €38/month ceiling — and a ceiling, not an expectation.
+
+## Left undone on purpose
+
+- **Email verification.** `email_confirm: true` marks the address confirmed without sending
+  anything, defensible only while the invite code and the cap are the gate. It stops being
+  defensible the day the code comes off — a permanent free tier reachable without a code and
+  without a verified address is refillable by anyone willing to register a new address. In
+  `docs/TODO.md`.
+- **Email enumeration is accepted**: an address that already exists answers differently. A fake
+  success is worse for a real person mistyping their own address, and an attacker must already
+  hold a valid code to ask the question.
+- No per-invite single-use codes, no admin UI, no upgrade affordance. There is nothing to click
+  until Stripe can take money, and a dead control for several weeks is worse than an honest
+  absence.
+
+## What this hands to Phase 5b
+
+Two corrections to `2026-08-15-phase5-auth-billing-design.md`, which assumed a card at signup and
+no free tier:
+
+- A cancelled or lapsed subscriber **falls back to the free tier rather than meeting a wall**.
+  That spec's `402` becomes a downgrade, not a door — it changes what the webhook does on
+  `customer.subscription.deleted` and what the frontend shows for a payment problem.
+- Checkout starts from an account that already exists and has no card on file: an upgrade flow
+  for a signed-in user, not the signup flow that spec describes. Its abuse note weakens too —
+  with a free tier, deleting an account and signing up again already yields a fresh 20 a week, so
+  the card anchors the paid tier only.
+
+## Note
+
+`SupabaseAdminClient` repeats the doubled-slash repair on `SUPABASE_URL` inline. PR #17
+(`early-season-data`, open at the time of writing) extracts the same regex as
+`SecurityConfig.collapseDoubledSlash`; once that merges the two should become one call.
