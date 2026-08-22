@@ -38,9 +38,11 @@ export default function UsagePage() {
         <p className={classes.lede}>This account has no weekly limit.</p>
       ) : (
         <>
-          {/* No upgrade button and no "coming soon": there is nothing to click until Stripe can
-              take money, and a dead control is worse than an honest absence. */}
-          <p className={classes.lede}>Free plan</p>
+          {/* Named from what the server sent, not assumed: Phase 5b adds a second plan, and a
+              hardcoded label would then be wrong for half the accounts. No upgrade button and no
+              "coming soon" either — there is nothing to click until Stripe can take money, and a
+              dead control is worse than an honest absence. */}
+          {usage.plan === 'FREE' && <p className={classes.lede}>Free plan</p>}
           <p className={classes.percent}>{usage.remainingPercent}%</p>
           <p className={classes.lede}>of this week&rsquo;s messages remaining</p>
           <div
