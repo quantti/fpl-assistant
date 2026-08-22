@@ -60,13 +60,26 @@ public class FplEntryLookup {
             // redirects and Spring treats only 4xx/5xx as errors, so a 3xx would otherwise sail
             // through as EXISTS. Drop the trailing slash from the configured URL and FPL answers
             // 301 for every id — including ones that do not exist.
-            boolean exists = restClient.get()
+            var status = restClient.get()
                     .uri(entryUrl.formatted(entryId))
                     .retrieve()
-                    .onStatus(status -> status.value() == 404, (request, response) -> { })
+                    .onStatus(s -> s.value() == 404, (request, response) -> { })
                     .toBodilessEntity()
-                    .getStatusCode().is2xxSuccessful();
-            return exists ? Result.EXISTS : Result.NOT_FOUND;
+                    .getStatusCode();
+            // Only a 404 is FPL saying the team does not exist. Anything else that is not a
+            // success — a redirect, most plausibly, since dropping the trailing slash from the
+            // configured URL makes FPL answer 301 for every id — is an answer we cannot read,
+            // and telling the user their perfectly good team id is unknown sends them hunting
+            // for a typo that is not there.
+            if (status.is2xxSuccessful()) {
+                return Result.EXISTS;
+            }
+            if (status.value() == 404) {
+                return Result.NOT_FOUND;
+            }
+            log.warn("FPL answered {} when validating a team id; reporting it as unavailable",
+                    status.value());
+            return Result.UNAVAILABLE;
         } catch (RestClientException e) {
             // The exception message embeds the request URI, and the URI embeds the entry id —
             // which links an account to a real person's public FPL profile. Only the failure
