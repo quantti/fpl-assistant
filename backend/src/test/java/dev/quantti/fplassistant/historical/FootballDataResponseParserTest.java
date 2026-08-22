@@ -11,9 +11,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * Pure unit tests against a hand-built JSON fixture shaped per football-data.org's public
  * documentation (top-level {@code filters}/{@code resultSet}/{@code competition}/{@code matches},
  * each match's {@code homeTeam.name}/{@code awayTeam.name}/{@code score.fullTime.home}/{@code
- * .away}). <b>Not a captured real response</b> — this project has no football-data.org API key.
- * See {@link FootballDataResponseParser}'s class javadoc for why, and {@code docs/STATUS.md} for
- * the open item to verify this against the live API once a key exists.
+ * .away}/{@code season.startDate}). The captured-response counterpart
+ * ({@link FootballDataCapturedResponseTest}) proves the same shape against the live API's real
+ * output.
  */
 class FootballDataResponseParserTest {
 
@@ -29,6 +29,7 @@ class FootballDataResponseParserTest {
                   "matchday": 1,
                   "homeTeam": { "id": 57, "name": "Arsenal FC", "shortName": "Arsenal", "tla": "ARS" },
                   "awayTeam": { "id": 61, "name": "Chelsea FC", "shortName": "Chelsea", "tla": "CHE" },
+                  "season": { "id": 2502, "startDate": "2026-08-21", "currentMatchday": 1 },
                   "score": { "fullTime": { "home": 2, "away": 1 } }
                 },
                 {
@@ -37,6 +38,7 @@ class FootballDataResponseParserTest {
                   "matchday": 2,
                   "homeTeam": { "id": 65, "name": "Manchester City FC", "shortName": "Man City", "tla": "MCI" },
                   "awayTeam": { "id": 66, "name": "Manchester United FC", "shortName": "Man Utd", "tla": "MUN" },
+                  "season": { "id": 2502, "startDate": "2026-08-21", "currentMatchday": 1 },
                   "score": { "fullTime": { "home": null, "away": null } }
                 },
                 {
@@ -45,6 +47,7 @@ class FootballDataResponseParserTest {
                   "matchday": 3,
                   "homeTeam": { "id": 67, "name": "Liverpool FC", "shortName": "Liverpool", "tla": "LIV" },
                   "awayTeam": { "id": 68, "name": "Everton FC", "shortName": "Everton", "tla": "EVE" },
+                  "season": { "id": 2502, "startDate": "2026-08-21", "currentMatchday": 1 },
                   "score": { "fullTime": { "home": 3, "away": 3 } }
                 }
               ]
@@ -95,6 +98,39 @@ class FootballDataResponseParserTest {
     }
 
     @Test
+    void seasonCodeIsDerivedFromTheMatchsOwnSeasonStartDate() {
+        List<FootballDataMatch> matches = FootballDataResponseParser.parse(SAMPLE_RESPONSE);
+
+        assertThat(matches.stream().map(FootballDataMatch::seasonCode).distinct())
+                .containsExactly("2026-27");
+    }
+
+    @Test
+    void aMatchWithoutAUsableSeasonStartDateParsesWithANullSeasonAndDoesNotAbortTheRest() {
+        // The season is never guessed — the sync stamps it on the row — but one malformed match
+        // must not cost the other 379: a rescheduled fixture or an upstream schema tweak would
+        // otherwise abort a whole sync. A null season is the sync's signal to skip that match.
+        String oneBadMatch = """
+                { "matches": [
+                  { "status": "FINISHED",
+                    "homeTeam": { "name": "Arsenal FC" },
+                    "awayTeam": { "name": "Chelsea FC" },
+                    "score": { "fullTime": { "home": 1, "away": 0 } } },
+                  { "status": "FINISHED", "matchday": 1,
+                    "season": { "startDate": "2026-08-21" },
+                    "homeTeam": { "name": "Liverpool FC" },
+                    "awayTeam": { "name": "Everton FC" },
+                    "score": { "fullTime": { "home": 2, "away": 0 } } } ] }
+                """;
+
+        List<FootballDataMatch> matches = FootballDataResponseParser.parse(oneBadMatch);
+
+        assertThat(matches).hasSize(2);
+        assertThat(matches.getFirst().seasonCode()).isNull();
+        assertThat(matches.get(1).seasonCode()).isEqualTo("2026-27");
+    }
+
+    @Test
     void fractionalOrNonNumericScoreFailsLoudlyInsteadOfTruncating() {
         // Same fail-loud class as VaastavFixtureParser's strict score parsing: a fractional
         // score must never silently truncate to a wrong number that would be stored as fact.
@@ -102,6 +138,7 @@ class FootballDataResponseParserTest {
                 { "matches": [ { "status": "FINISHED",
                   "homeTeam": { "name": "Arsenal FC" },
                   "awayTeam": { "name": "Chelsea FC" },
+                  "season": { "startDate": "2026-08-21" },
                   "score": { "fullTime": { "home": 3.5, "away": 1 } } } ] }
                 """;
         assertThatThrownBy(() -> FootballDataResponseParser.parse(fractional))
@@ -112,6 +149,7 @@ class FootballDataResponseParserTest {
                 { "matches": [ { "status": "FINISHED",
                   "homeTeam": { "name": "Arsenal FC" },
                   "awayTeam": { "name": "Chelsea FC" },
+                  "season": { "startDate": "2026-08-21" },
                   "score": { "fullTime": { "home": "abc", "away": 1 } } } ] }
                 """;
         assertThatThrownBy(() -> FootballDataResponseParser.parse(textual))
