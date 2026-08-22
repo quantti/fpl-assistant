@@ -28,13 +28,20 @@ export default function SignIn() {
     setBusy(true)
     setError(null)
 
+    // Trimmed once and used for both the account creation and the sign-in that follows it, so a
+    // trailing space in the field cannot create an account under one address and then fail to
+    // sign in to it under another.
+    const trimmedEmail = email.trim()
     try {
       if (mode === 'signUp') {
-        const created = await createAccount()
+        const created = await createAccount(trimmedEmail)
         if (!created) return
       }
 
-      const { error: signInError } = await supabase.auth.signInWithPassword({ email, password })
+      const { error: signInError } = await supabase.auth.signInWithPassword({
+        email: trimmedEmail,
+        password,
+      })
 
       // Supabase answers the same "Invalid login credentials" for a wrong password and an
       // unknown address, which is what stops the form from telling an attacker which addresses
@@ -56,12 +63,23 @@ export default function SignIn() {
    * Returns whether the account was created, so the caller knows not to try signing in after a
    * refusal.
    */
-  async function createAccount(): Promise<boolean> {
-    const response = await fetch('/api/auth/signup', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password, inviteCode }),
-    })
+  async function createAccount(email: string): Promise<boolean> {
+    let response: Response
+    try {
+      response = await fetch('/api/auth/signup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        // The invite code is trimmed here rather than in the field: a pasted code with a
+        // trailing newline would otherwise fail a byte-exact compare on the server.
+        body: JSON.stringify({ email, password, inviteCode: inviteCode.trim() }),
+      })
+    } catch {
+      // A fetch that rejects — DNS, offline, a blocked connection — is a network problem, not
+      // the storage failure auth-js reports through the outer catch. Confusing the two sends
+      // someone debugging their cookies when their network is down.
+      setError('Sign-up could not reach the server. Check your connection and try again.')
+      return false
+    }
     if (response.ok) return true
 
     // Each refusal has a different fix, so each says something different: a wrong code is not a

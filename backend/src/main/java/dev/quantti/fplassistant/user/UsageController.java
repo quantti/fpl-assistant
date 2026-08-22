@@ -57,7 +57,10 @@ public class UsageController {
     @GetMapping
     public UsageResponse usage(@AuthenticationPrincipal Jwt jwt) {
         UsageService.Quota quota = usage.quotaOf(TokenSubject.userId(jwt));
-        boolean statesTheNumbers = quota.plan() == Plan.FREE && quota.limit() != null;
+        // A suspended account (limit 0) is told neither count nor limit — the same silence the
+        // 429 keeps: no number is the reason it cannot send, and "3 of 0 messages used" would
+        // be a sentence about nothing. Unlimited falls out the same way: limit is null.
+        boolean statesTheNumbers = quota.plan() == Plan.FREE && quota.limit() != null && quota.limit() > 0;
         return new UsageResponse(quota.plan(), remainingPercent(quota), quota.limit() == null,
                 quota.retryAfterSeconds().isEmpty() ? null : quota.nextFreeAt(),
                 statesTheNumbers ? quota.used() : null,
