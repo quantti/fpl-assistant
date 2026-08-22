@@ -8,7 +8,8 @@ package dev.quantti.fplassistant.historical;
  * of which speak a different name set. {@code seasonCode} is this database's
  * {@code season.code} for the season the match belongs to, derived from the match's own
  * {@code season.startDate} by the parser — the sync's write guard compares it against the
- * season the database flags current.
+ * season the database flags current, and stamps it on the row. It is {@code null} when the
+ * response carried no usable date, which the sync treats as "skip this match".
  */
 public record FootballDataMatch(
         String status,

@@ -29,14 +29,20 @@ public record SeasonContext(
     }
 
     /**
-     * Provenance for a completed season shown <b>alongside</b> the current one — the
-     * dual-season player card. Distinct from {@link #provenance()}'s fallback text, which says
-     * the current season "has no data yet": here the current season is being played and holds
-     * data, which is the whole reason the previous one is shown next to it.
+     * Provenance for a completed season shown on the dual-season player card, where the season
+     * being played is already known to hold data. Distinct from {@link #provenance()}'s fallback
+     * text, which says the current season "has no data yet".
+     *
+     * @param shownBesideCurrent whether the current season's own block appears next to this one.
+     *        When it does not — the season being played holds data, but none for this name —
+     *        saying it "is under way" alone would imply numbers that are not on the card.
      */
-    public static String previousSeasonProvenance(String code, String currentSeasonCode) {
-        return "Data source: season " + code + " — a COMPLETED PREVIOUS season. The current season "
-                + currentSeasonCode + " is under way; these are last season's numbers, not current"
-                + " form, price, or ownership.";
+    public String previousSeasonProvenance(boolean shownBesideCurrent) {
+        String middle = shownBesideCurrent
+                ? "The current season " + currentSeasonCode + " is under way; these are last"
+                        + " season's numbers,"
+                : "No " + currentSeasonCode + " numbers accompany these; they are last season's,";
+        return "Data source: season " + code + " — a COMPLETED PREVIOUS season. " + middle
+                + " not current form, price, or ownership.";
     }
 }
