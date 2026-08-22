@@ -115,7 +115,11 @@ class UsageControllerTest {
         mockMvc.perform(get("/api/usage")
                 .header("Authorization", "Bearer " + TestJwks.validTokenFor(USER)))
                 .andExpect(jsonPath("$.remainingPercent").value(0))
-                .andExpect(jsonPath("$.nextFreeAt").doesNotExist());
+                .andExpect(jsonPath("$.nextFreeAt").doesNotExist())
+                // No count and no limit either: a suspended account is told nothing that reads as
+                // a quota to wait out — "3 of 0 messages used" would be a sentence about nothing.
+                .andExpect(jsonPath("$.used").doesNotExist())
+                .andExpect(jsonPath("$.limit").doesNotExist());
     }
 
     private void setLimit(int limit) {

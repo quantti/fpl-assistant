@@ -12,8 +12,14 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Fixed-window per-IP rate limit for the unauthenticated chat endpoint. In-memory only —
- * good enough for a single Fly.io machine; revisit if the app ever scales out.
+ * Fixed-window per-IP rate limit for the endpoints that cost something outside this process —
+ * the ones in {@link #RATE_LIMITED_PATHS}. In-memory only — good enough for a single Fly.io
+ * machine; revisit if the app ever scales out.
+ *
+ * <p>One counter per IP, shared across every listed path rather than per path: a flooded chat
+ * from an address also exhausts that address's sign-up budget, and vice versa. That is the
+ * intended shape — the limit blunts a script and the real gate (an invite code, a quota) is
+ * elsewhere — but it is a coupling to know when a path is added.
  */
 @Component
 public class RateLimitFilter extends OncePerRequestFilter {
