@@ -84,6 +84,32 @@ class JwtAuthenticationTest {
     }
 
     /**
+     * The one permitAll route under {@code /api/**}. There is no token at sign-up and there
+     * cannot be one, so the chain must let the request reach the controller — which then refuses
+     * it on the invite code rather than on the missing token.
+     */
+    @Test
+    void signUpIsReachableWithoutAToken() throws Exception {
+        mockMvc.perform(post("/api/auth/signup")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"email\":\"a@example.com\",\"password\":\"x\",\"inviteCode\":\"no\"}"))
+                .andExpect(status().isForbidden());
+    }
+
+    /**
+     * Only that one verb on that one path. Opening a route is not opening a prefix — a GET on the
+     * same path, or anything else under /api/auth, still needs a token.
+     */
+    @Test
+    void nothingElseUnderApiAuthIsPublic() throws Exception {
+        mockMvc.perform(get("/api/auth/signup")).andExpect(status().isUnauthorized());
+        mockMvc.perform(post("/api/auth/anything-else")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{}"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    /**
      * Fail closed for everything the client routes do not cover. A path with a dot in it is a
      * file request, so it never reaches the SPA forward — and nothing else outside
      * {@code /api/**} is permitted, which is what {@code SpaForwardingTest} pins by asserting no
