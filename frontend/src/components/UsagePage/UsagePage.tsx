@@ -5,11 +5,11 @@ import { Usage } from '../../types'
 import classes from './UsagePage.module.css'
 
 /**
- * How much of this week is left, as a share.
+ * How much of this week is left.
  *
- * No counts, by design (issue #11): the user sees how much room they have, not how many messages
- * they are given. "When it frees" is not a count and is the one thing someone who has run out
- * actually needs.
+ * The share is the page; the count is stated beside it when the server sends one, which on the
+ * free plan it does — that limit is the offer. A paid plan sends no numbers (issue #11), so this
+ * renders exactly what arrives rather than deciding for itself.
  */
 export default function UsagePage() {
   const [usage, setUsage] = useState<Usage | null>(null)
@@ -38,6 +38,11 @@ export default function UsagePage() {
         <p className={classes.lede}>This account has no weekly limit.</p>
       ) : (
         <>
+          {/* Named from what the server sent, not assumed: Phase 5b adds a second plan, and a
+              hardcoded label would then be wrong for half the accounts. No upgrade button and no
+              "coming soon" either — there is nothing to click until Stripe can take money, and a
+              dead control is worse than an honest absence. */}
+          {usage.plan === 'FREE' && <p className={classes.lede}>Free plan</p>}
           <p className={classes.percent}>{usage.remainingPercent}%</p>
           <p className={classes.lede}>of this week&rsquo;s messages remaining</p>
           <div
@@ -50,6 +55,11 @@ export default function UsagePage() {
           >
             <div className={classes.fill} style={{ width: `${usage.remainingPercent}%` }} />
           </div>
+          {usage.used !== undefined && usage.limit !== undefined && (
+            <p className={classes.note}>
+              {usage.used} of {usage.limit} messages used this week.
+            </p>
+          )}
           {/* Only when there is nothing left: telling someone at 70% when a message "frees up"
               reads as being blocked, which they are not. */}
           {usage.remainingPercent === 0 && usage.nextFreeAt && (
