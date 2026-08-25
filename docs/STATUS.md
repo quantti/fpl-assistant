@@ -2376,3 +2376,40 @@ parties who never used this product, and everything here is sent to a model prov
 - Live gameweek points (`/api/event/{event}/live/`), a "my team" page, and head-to-head leagues.
 - No persistence: squads and standings live in in-process TTL maps, keyed by FPL entry or league
   id rather than by user, so editing a stored team id cannot serve the previous team's squad.
+
+---
+
+# Strategy corpus — closing the gaps before test users (2026-08-25)
+
+Corpus is 21 documents / 181 chunks (was 19 / 166). Verified by ingesting against the disposable
+test container, not production.
+
+**Three documents written**, the last two of which were tracked as issues #39, #40 and #41:
+
+- `strategy-set-and-forget-and-low-maintenance.md` — which squad slots absorb inattention and
+  which do not, and the three decisions (captain, availability, chips) that still cannot be
+  skipped. The corpus referred to "set-and-forget" in four places without ever defining it.
+- `strategy-blank-and-double-gameweeks.md` — deferred to a later season when it was first
+  proposed, written now because a test user meeting their first blank without it is exactly the
+  gap it describes. The framing that was missing everywhere else: blanks and doubles are the same
+  fixtures seen at two different times, and with two chip sets a first-half chip cannot be saved
+  for a spring double.
+- `strategy-2026-27-early-season.md` (`kind: timely`, valid to 20 September) — replaces the
+  pre-season consensus document, whose window closed on 21 August and which was therefore
+  invisible to retrieval. Built from FPL's own data read on 25 August: GW1 results, who actually
+  scored, ownership, transfer counts for GW2, and GW2 fixtures. Its most important section is the
+  one that says one gameweek is not form.
+
+`strategy-2026-27-preseason-consensus.md` is deleted rather than left expired. Ingestion truncates
+and rebuilds, so a file that can never be retrieved again is just rows; git keeps the history.
+
+**One factual error fixed.** `strategy-chips.md` claimed "One chip per Gameweek (exception:
+Wildcard can be combined with Bench Boost or Triple Captain)". FPL allows no such exception —
+one chip per gameweek, full stop; the combination people mean is sequential (Wildcard one week,
+Bench Boost the next). `strategy-wildcard-and-free-hit.md` carried the same implication and was
+corrected too. The chips document also now states that there is no Assistant Manager chip in
+2026/27, which FPL's own `bootstrap-static` confirms: four chip types, two sets each.
+
+**Production is not updated by a deploy.** The documents ship in the image, but the embeddings
+live in Supabase, so the corpus changes only take effect after `bootRun --args="--ingest"` is run
+against production. That is a deliberate manual step and it is owner-run.

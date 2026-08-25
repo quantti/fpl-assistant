@@ -40,7 +40,7 @@ WC1 is a mistake when: the squad can be fixed with one or two free transfers; pr
 
 ### When to play WC2 (GW20–38)
 
-- **Before a major DGW**: stack players with two fixtures; especially potent combined with Bench Boost (15 players all with doubles).
+- **Before a major DGW**: stack players with two fixtures; especially potent ahead of a Bench Boost the following Gameweek (15 players all with doubles). The two chips cannot share a Gameweek — only one chip may be played per Gameweek.
 - **After a BGW**: rebuild specifically for the run-in after navigating the blank with Free Hit.
 - **Final push (GW33–36)**: tailors the squad to remaining fixtures, motivation (relegation/Europe battles), and late-season form.
 - WC2 is usually the strategic centrepiece of the second half; post-GW20 the season is settled enough to plan blanks/doubles confidently.
