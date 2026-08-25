@@ -120,10 +120,11 @@ A new section in `system-prompt.st`:
 >
 > If the user asks about improving their position in a specific mini-league, first call
 > `getMyMiniLeagues()` to list the leagues. Once the user names one (or if they already
-> named it), call `getMiniLeagueOpponents(leagueId)` to see the teams of the opponents
-> ranked near them. Compare their squad to those nearby teams and suggest moves that would
-> gain ground in that league specifically. Do not fetch mini-league data unless the user
-> brings up a mini-league.
+> named it), call `getMiniLeagueOpponents(leagueId, focus)` to see the teams you need:
+> `focus="nearby"` for opponents ranked close to the user (default), `focus="top10"` or
+> `focus="top50"` to analyse the league leaders, or `focus="entry:12345"` for one specific
+> team. Compare their squads to the user's own team and suggest moves that gain ground in
+> that league. Do not fetch mini-league data unless the user brings up a mini-league.
 
 Also remove or update the existing sentence "If you can see the user's squad, factor in
 what they already own; otherwise give general advice — ask about their team only when it
@@ -140,8 +141,8 @@ rather than by overall rank. Two additional tools support this without changing 
 | Source | Endpoint | Why |
 |---|---|---|
 | User's mini-leagues | `GET /api/entry/{entry_id}/` | The `leagues.classic` array lists every classic league the user belongs to, with current rank and league size. |
-| League standings | `GET /api/leagues-classic/{league_id}/standings/` | Rankings and total/event points for every member. |
-| Opponent squads | `GET /api/entry/{entry_id}/event/{event_id}/picks/` | Reuses the same picks client as `getMyTeam`. Fetched only for the opponents ranked near the user. |
+| League standings | `GET /api/leagues-classic/{league_id}/standings/` | Rankings and total/event points for every member; supports pagination. |
+| Opponent squads | `GET /api/entry/{entry_id}/event/{event_id}/picks/` | Reuses the same picks client as `getMyTeam`. Fetched only for the opponents the user wants to analyse. |
 
 ### Tool contract
 
@@ -163,36 +164,44 @@ rather than by overall rank. Two additional tools support this without changing 
 }
 ```
 
-`getMiniLeagueOpponents(leagueId)` returns the teams ranked around the user (default
-±5 positions) and their current squads:
+`getMiniLeagueOpponents(leagueId, focus)` returns a configurable slice of the league:
 
 ```json
 {
   "league": { "id": 12345, "name": "Office League" },
   "userRank": 5,
+  "focus": "top10",
   "opponents": [
     {
-      "rank": 4,
+      "rank": 1,
       "entryId": 7654321,
-      "entryName": "Team Above",
+      "entryName": "League Leader",
       "playerName": "...",
-      "totalPoints": 190,
-      "eventPoints": 45,
-      "rankChange": 1,
+      "totalPoints": 210,
+      "eventPoints": 55,
+      "rankChange": 0,
       "squad": [ { ...SquadPlayer... } ]
     }
   ]
 }
 ```
 
+The `focus` string is interpreted by the service:
+- `"nearby"` (default) — opponents ranked close to the user, e.g. ±5 positions.
+- `"topN"` — the top N teams in the league, e.g. `"top10"` or `"top50"`.
+- `"entry:ENTRY_ID"` — one specific team by its FPL entry id.
+
 ### Scope limits
 
 - Only **classic** mini-leagues are supported in this phase. Head-to-head leagues behave
   differently and are out of scope.
-- Only opponents ranked **near the user** are fetched (default ±5). This caps the number
-  of opponent pick requests to ~11 and avoids scraping entire large leagues.
+- The service fetches only the standings pages and opponent pick requests needed to
+  satisfy the `focus`. A `top10` request needs one standings page; a `nearby` request needs
+  the page containing the user plus adjacent entries.
 - Squads are fetched from the same current-gameweek picks endpoint as `getMyTeam`, so the
   same season/gameweek resolution and caching apply.
+- The `focus` is intentionally a single flexible string rather than multiple separate tools,
+  so the prompt does not have to branch into many special cases.
 
 ## Security and rate
 

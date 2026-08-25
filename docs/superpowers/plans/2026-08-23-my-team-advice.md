@@ -255,13 +255,18 @@ tools only when the user brings up a mini-league.
 **Produces:**
 - `List<MiniLeague> getMyMiniLeagues(UUID userId)` — from the entry summary's
   `leagues.classic` list.
-- `MiniLeagueOpponents getMiniLeagueOpponents(UUID userId, int leagueId)` — finds the
-  user's rank in the standings, fetches the entries ranked within ±5 positions, and
-  returns their squads (reusing `FplPicksClient` and the same enrichment logic as
-  `MyTeamService`).
+- `MiniLeagueOpponents getMiniLeagueOpponents(UUID userId, int leagueId, String focus)` —
+  interprets the focus string and returns the matching slice:
+  - `"nearby"` (default or `null`) — entries within ±5 ranks of the user.
+  - `"topN"`, e.g. `"top10"` or `"top50"` — the first N teams from the standings, fetching
+    as many pages as needed.
+  - `"entry:ENTRY_ID"` — one specific team's squad.
+
+The service reuses `FplPicksClient` and the same enrichment logic as `MyTeamService` for
+every squad it returns.
 
 **Caching:** cache standings and opponent squads for 5 minutes keyed by
-`(userId, leagueId, currentEventId)`.
+`(userId, leagueId, currentEventId, focus)`.
 
 ### Task 11: Expose mini-league tools
 
@@ -278,12 +283,17 @@ tools only when the user brings up a mini-league.
 public List<MiniLeague> getMyMiniLeagues()
 
 @Tool(description = """
-    Returns the FPL teams of opponents ranked near the user in a specific classic
-    mini-league. Use this after the user has named or selected a league, then compare
-    the returned squads to the user's own team to suggest moves that gain ground.
+    Returns teams from a specific FPL classic mini-league for analysis.
+    Use focus="nearby" to see opponents ranked close to the user (default).
+    Use focus="topN" with a count, e.g. focus="top10", to analyse the league leaders.
+    Use focus="entry:12345" to see one specific team. Compare the returned squads to the
+    user's own team to suggest moves.
     """)
-public MiniLeagueOpponents getMiniLeagueOpponents(int leagueId)
+public MiniLeagueOpponents getMiniLeagueOpponents(int leagueId, @ToolParam(required = false) String focus)
 ```
+
+A single tool with a flexible `focus` string keeps the prompt simple and avoids
+multiplying tools for every possible slice of the league.
 
 ### Task 12: Update prompt and tests for mini-leagues
 
@@ -295,8 +305,10 @@ public MiniLeagueOpponents getMiniLeagueOpponents(int leagueId)
 - Tests covering:
   - User with no mini-leagues.
   - League not found.
-  - Standings page pagination (user not on first page).
+  - Standings page pagination (user not on first page, and top-N across pages).
   - Nearby opponents fetched with squads.
+  - Top-N opponents fetched with squads.
+  - Specific opponent by `entry:ENTRY_ID` fetched with squad.
   - No opponent squads fetched when FPL is unavailable.
 
 ---
