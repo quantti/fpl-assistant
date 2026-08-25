@@ -52,7 +52,7 @@ dependencies. React unchanged — this phase has no frontend.
 3. **One tool per question, returning text.** `getMyTeam` returns the whole picture in one
    call — splitting it would cost extra model round trips — and returns rendered text so
    the provenance discipline and the token budget stay under our control.
-4. **The cache is a ~40-line TTL map, not a new cache library.** Three caches with fixed
+4. **The cache is a ~40-line TTL map, not a new cache library.** Four caches with fixed
    TTLs do not justify a dependency, `@EnableCaching`, and a `CacheConfig` this project
    does not have today.
 
@@ -72,7 +72,7 @@ dependencies. React unchanged — this phase has no frontend.
 | `myteam/MiniLeagueService.java` (new) | Leagues, standings pages, opponent differences. |
 | `myteam/MiniLeagueTools.java` (new) | `@Tool getMyMiniLeagues`, `@Tool getMiniLeagueOpponents`. |
 | `resources/prompts/system-prompt.st` (modify) | When to call each tool. |
-| `resources/application.yml` (modify) | The four FPL URLs, TTLs, and the request caps. |
+| `resources/application.yml` (modify) | The five FPL URLs, TTLs, and the request caps. |
 | Tests | `ToolContextUserTest`, `FplEntryClientTest`, `MyTeamServiceTest`, `MyTeamToolsTest`, `MiniLeagueServiceTest`, `MiniLeagueToolsTest`. |
 
 ---
@@ -86,11 +86,15 @@ onUsage)` carries no user, tool calls run on the provider's reactive threads whe
 `SecurityContextHolder` is empty, and no existing tool takes a user id.
 
 1. `ChatService.stream(List<ChatTurn> turns, UUID userId, Consumer<TokenUsage> onUsage)`
-   adds `.toolContext(Map.of(ToolUser.KEY, userId))` to the prompt.
+   adds `.toolContext(Map.of(ToolUser.KEY, userId, ToolUser.BUDGET, new FplBudget()))` to
+   the prompt.
 2. `ChatController` passes `TokenSubject.userId(jwt)` — it already resolves it for the
    quota and the conversation.
 3. `ToolUser.required(ToolContext)` returns the `UUID` or throws; tools translate that into
    a one-line refusal and a `WARN`. It must never default to any user.
+4. The same map carries a fresh request budget — the 15-call allowance of Task 10. It is
+   per request for the same reason the user id is: a counter living on a singleton service
+   would be shared by everyone on the machine.
 
 **Verify:** a test registers a probe `FplTool` that records the id it saw, drives a chat
 request with a stubbed model, and asserts the id equals the token's subject; a second
@@ -150,13 +154,19 @@ request; a failing refresh keeps serving the previous value.
 
 **Files:** `myteam/MyTeamService.java`.
 
-`chipSchedule()` windows containing the current event, minus the names in the entry's
-`history.chips[]` played inside that window. If either source is missing, chips are omitted
-from the reply — never guessed. FPL's names (`wildcard`, `freehit`, `bboost`, `3xc`) are
-mapped to the words the prompt already uses.
+A chip is playable now when a `chipSchedule()` window for that chip contains the current
+event and the entry has not played it inside that window (`history.chips[]` carries the
+event each was played on). **The windows are per chip, not one pair for all four** —
+today's payload has wildcard 2–19, free hit 2–19, bench boost 1–19, triple captain 1–19,
+and a second set from 20. Read them; hardcoding "GW1–19" would offer a wildcard in GW1
+that FPL will not accept. If either source is missing, chips are omitted from the reply —
+never guessed. FPL's names (`wildcard`, `freehit`, `bboost`, `3xc`) are mapped to the
+words the prompt already uses.
 
-**Tests:** nothing played → all four; wildcard played in GW3 → the GW1–19 window shows
-three, and the GW20–38 window still shows four.
+**Tests:** nothing played, current event 1 → bench boost and triple captain only, with
+wildcard and free hit named as opening later; nothing played, current event 5 → all four;
+wildcard played in GW3 → the other three for the rest of the first half, and all four
+again from GW20.
 
 ---
 
@@ -167,13 +177,17 @@ three, and the GW20–38 window still shows four.
 `myTeam(UUID userId)` → a result type covering every outcome the spec names:
 
 1. `UserProfileService.teamIdOf(userId)` — empty → `NoTeamId`.
-2. Fetch the entry — `NotFound` → `TeamNotFound`, `Unavailable` → `Unavailable`.
+2. Fetch the entry, cached by `entryId` for 5 minutes — `NotFound` → `TeamNotFound`,
+   `Unavailable` → `Unavailable`. Three tools read this response in one turn, and the
+   request cap only holds if two of them are free.
 3. `current_event` null → `NoSquadYet` (an entry that has not played a gameweek).
 4. Cache lookup by `(entryId, currentEvent)` — **keyed by entry, not by user**, so editing
    the stored team id cannot serve the old team's squad.
 5. Fetch picks for `current_event`; fetch history for chips.
 6. Fill each pick from `FplBootstrap`, then `SquadEnrichment` (Task 5).
-7. Render (Task 6), cache the rendered text for 5 minutes, return.
+7. Cache the **parsed** squad for 5 minutes, then render (Task 6). Not the rendered text:
+   the mini-league view diffs an opponent's squad against the user's, and text does not
+   diff.
 
 ---
 
@@ -250,6 +264,10 @@ path with bank, captain, chips and stats; a second call inside the TTL making no
 request; a changed team id returning the new squad rather than the cached one; the
 season-mismatch path; and no user id in the tool context.
 
+One more, in `MiniLeagueServiceTest` (Task 10): a `top10` turn after `getMyTeam` makes
+fourteen FPL requests, counted at the stub. The cap is arithmetic, and arithmetic in a
+document drifts; a counting test is what keeps it honest.
+
 ---
 
 ### Task 10: Mini-league service
@@ -260,25 +278,33 @@ season-mismatch path; and no user id in the tool context.
   leagues (`"s"`: overall, club, region) are every manager's, and a million-entry league in
   the list is noise the model will reason about.
 - `opponents(userId, leagueId, focus)`:
-  - `"nearby"` (default, and what a null means) — the user's page from
-    `ceil(entry_rank / 50)`, checked for the user's own entry and stepped one page either
-    way at most once, since ties make `rank` lag the row position.
-  - `"topN"` — page 1, N teams, e.g. `"top10"`; N is clamped to ten.
+  - `"nearby"` (default, and what a null means) — up to five either side of the user, from
+    the page `ceil(entry_rank / 50)`, checked for the user's own entry and stepped one page
+    either way at most once, since ties make `rank` lag the row position.
+  - `"topN"` — page 1, N teams, e.g. `"top10"`. N is the digits in the string; absent or
+    unparseable is ten, below one is one, above ten is ten. An unrecognised focus falls
+    back to `nearby` rather than failing — the string is written by a language model.
   - `"entry:12345"` — that entry alone, returned in full rather than as a difference.
   - `"top50"` and friends are accepted and **clamped to the 10-squad cap, with the clamp
     stated in the reply** so the model cannot claim to have read the whole league. Ten fits
-    the per-turn budget: one standings page, ten picks calls, and the user's own squad
-    (usually already cached).
+    the per-turn budget only with the entry cache: three requests for `getMyTeam`, zero for
+    `getMyMiniLeagues`, one standings page and ten opponent picks — fourteen of fifteen.
+    Uncached it is sixteen, and the cap would silently drop an opponent.
 - Each opponent's squad comes from the same picks call and cache as the user's own.
 - The reply lists only what an opponent owns that the user does not, plus their captain:
   that is the part that changes advice, and it is two lines instead of fifteen.
 - **`player_name` is dropped.** It is a third party's legal name, and it would travel to
   the model provider on every subsequent turn.
-- A per-turn counter enforces the 15-request cap; an opponent that fails is dropped from
-  the reply with a note, not retried, and does not fail the answer.
+- The 15-request cap is counted in a small budget object **created per chat request and
+  passed in the `ToolContext` beside the user id** (Task 0). A counter on the singleton
+  service would be shared by every user on the machine: one busy conversation would
+  throttle everyone else's, and the number would mean nothing. When the budget runs out the
+  remaining opponents are dropped with a note in the reply — not retried, and never a
+  failed answer.
 
-**Caching:** standings by `(leagueId, event, page)` and squads by `(entryId, event)`.
-Neither is keyed by user — standings are the same for everyone who asks.
+**Caching:** the entry response by `entryId`, standings by `(leagueId, event, page)`, and
+squads by `(entryId, event)`. None is keyed by user — standings are the same for everyone
+who asks, and an entry belongs to a team id, not to an account.
 
 ---
 
@@ -306,6 +332,13 @@ public String getMiniLeagueOpponents(int leagueId,
 
 `leagueId` stays a parameter — it names a league, not an account, and the service checks
 that the authenticated user is a member of it before fetching anything.
+
+**Tests:** a user in no private leagues gets a sentence, not an empty list; a league the
+user is not a member of is refused before any standings call; `nearby` when the user sits
+on page 3 fetches page 3; a tie that pushes the user off the computed page steps once and
+finds them; `top50` returns ten and says it was clamped; an opponent whose picks call
+fails is dropped with a note while the rest of the reply stands; and no `player_name`
+appears anywhere in the output.
 
 ---
 

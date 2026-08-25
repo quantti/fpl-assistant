@@ -45,7 +45,7 @@ does for the quota and the conversation, hands it to `ChatService.stream(...)`, 
 chatClient.prompt()
         .messages(history)
         .tools(tools.toArray())
-        .toolContext(Map.of(MyTeamTools.USER_ID, userId))   // per request
+        .toolContext(Map.of(ToolUser.KEY, userId))          // per request
         .stream()
 ```
 
@@ -81,7 +81,7 @@ first draft's fields do not exist on the public endpoints, and the design change
 | `GET /api/entry/{entry}/` | `name`, player first/last name, `summary_overall_rank`, `summary_overall_points`, **`current_event`**, `leagues.classic[]` with `entry_rank`, `entry_last_rank`, `rank_count`, `league_type` | — |
 | `GET /api/entry/{entry}/event/{event}/picks/` | `active_chip`, `automatic_subs`, `entry_history.{bank,value,points,event_transfers,event_transfers_cost,points_on_bench}`, `picks[].{element,position,multiplier,is_captain,is_vice_captain,element_type}` | **`selling_price`**, **`purchase_price`** |
 | `GET /api/entry/{entry}/history/` | `chips[]` — the chips already played, with the event each was played on | which chips remain |
-| `GET /api/bootstrap-static/` | `elements[]` (name, team, type, `now_cost`, `form`, `total_points`, `points_per_game`, `selected_by_percent`, `status`, `news`, transfers in/out), `events[]`, `chips[]` schedule with `start_event`/`stop_event` | per-fixture difficulty for a specific player, xG/xA |
+| `GET /api/bootstrap-static/` | `elements[]` (name, team, type, `now_cost`, `form`, `total_points`, `points_per_game`, `selected_by_percent`, `status`, `news`, `chance_of_playing_this_round`/`_next_round`, transfers in/out), `events[]`, `chips[]` schedule with `start_event`/`stop_event` | per-fixture difficulty for a specific player, xG/xA |
 | `GET /api/leagues-classic/{league}/standings/?page_standings=N` | 50 rows a page, `has_next`, rows of `entry`, `entry_name`, `player_name`, `rank`, `last_rank`, `total`, `event_total` | opponents' squads (a separate picks call each) |
 
 Three consequences, each of which the first draft got wrong:
@@ -97,9 +97,12 @@ Three consequences, each of which the first draft got wrong:
    an error state, it is the normal state for most of the week; the tool labels the squad
    with the gameweek it belongs to instead of calling it "current".
 3. **Chips available must be derived**, from the schedule in `bootstrap-static.chips`
-   (which now carries two sets a season — GW1–19 and GW20–38 windows) minus the chips in
-   `entry/{entry}/history/.chips`. If either is unavailable the tool omits chips rather
-   than guessing.
+   minus the chips in `entry/{entry}/history/.chips`. There are two sets a season, and the
+   windows are per chip rather than uniform — verified today: wildcard 2–19 and 20–38,
+   free hit 2–19 and 20–38, bench boost 1–19 and 20–38, triple captain 1–19 and 20–38. So
+   in GW1 only bench boost and triple captain can be played at all. Read the windows from
+   the payload; never hardcode them. If either source is unavailable the tool omits chips
+   rather than guessing.
 
 `current_event` from the entry response is what selects the picks gameweek — **not**
 `SeasonResolver` or the tapas `gameweek` table. The resolver deliberately falls back to the
@@ -145,10 +148,11 @@ Two sources, two lines, following the dual-season pattern `getPlayerStats` alrea
 
 ```
 Squad as locked for Gameweek 1 (deadline 21 Aug 18:30 UK); fetched 25 Aug 14:02 UK.
-Season-long statistics: 2026/27 — the season being played.
+Data source: season 2026/27 (the season currently being played).
 ```
 
-The Supabase block, when present, carries `SeasonContext.provenance()` verbatim. If the
+The second line is `SeasonContext.provenance()` verbatim — its exact words, not a
+paraphrase, so the fallback wording it already carries reaches the model unchanged. If the
 resolved season is not the one being played, the existing wording already labels it
 historical, and the model is instructed not to read it as current form.
 
@@ -159,10 +163,10 @@ Squad as locked for Gameweek 1 (deadline 21 Aug 18:30 UK); fetched 25 Aug 14:02 
 Team: Rangers FC (entry 1234567) — overall rank 420,132, 41 pts.
 Bank £0.0m, squad value £100.0m, total £100.0m. Free transfers and exact selling
 prices are not published by FPL for another manager's team; treat funds as approximate.
-Active chip: none. Chips left in this window (GW1-19): wildcard, free hit, bench boost,
-triple captain.
+Active chip: none. Playable now (GW1): bench boost, triple captain. Wildcard and free
+hit open in GW2.
 
-Season-long statistics: 2026/27 — the season being played.
+Data source: season 2026/27 (the season currently being played).
 Starting XI
  1 Raya (ARS, GK) £5.5m - form 5.0, 6 pts, 6.0/game, 24.1% owned
  6 Salah (LIV, MID) £12.6m - CAPTAIN - form 8.5, 12 pts, 12.0/game, 42.1% owned, next 5 FDR 2.8
@@ -190,10 +194,9 @@ A new section in `system-prompt.st`:
 >
 > If the user asks about a specific mini-league, call `getMyMiniLeagues()` when they have
 > not named one, then `getMiniLeagueOpponents(leagueId, focus)` — `focus="nearby"` for the
-> managers immediately above and below them, `focus="top10"` (any N, capped at ten) for the
-> leaders, or
-> `focus="entry:12345"` for one team. Do not fetch mini-league data unless the user brings
-> a mini-league up.
+> managers immediately above and below them, `focus="top10"` (any N, capped at ten) for
+> the leaders, or `focus="entry:12345"` for one team. Do not fetch mini-league data unless
+> the user brings a mini-league up.
 
 The existing sentence "If you can see the user's squad, factor in what they already own;
 otherwise give general advice — ask about their team only when it would change the answer"
@@ -220,17 +223,26 @@ Standings as at Gameweek 1; fetched 25 Aug 14:02 UK.
  6th  Bench Boost Bob    178 pts (+41 GW1) - owns that you do not: Palmer, Mbeumo
 ```
 
-- `focus="nearby"` (default) — the managers ranked just above and below the user.
-- `focus="topN"` — the league leaders, e.g. `"top10"`; N is clamped to ten.
+- `focus="nearby"` (default) — up to five managers either side of the user.
+- `focus="topN"` — the league leaders, e.g. `"top10"`. `N` is the digits in the string:
+  absent (`"top"`) or unparseable means ten, below one is one, above ten is ten.
 - `focus="entry:12345"` — one named team, given in full rather than as a difference.
+- Anything else falls back to `nearby` rather than failing: the string comes from a
+  language model, and a typo is not worth an error message the user has to decode.
 
 **Hard cap: at most 10 opponent squads per call, and at most 15 FPL requests per chat
 turn.** The first draft advertised `focus="top50"`, which is 50 sequential picks requests
 inside one SSE response, minutes of latency at the client timeouts this project uses, and
 a burst from one Fly IP that FPL would be right to throttle. Larger N is accepted and
 clamped to ten, with the clamp stated in the reply so the model does not claim to have
-read the whole league. Ten fits inside the per-turn budget: one standings page plus ten
-picks calls plus the user's own (usually cached) squad.
+read the whole league.
+
+Ten fits the per-turn budget only because the entry response is cached. Counted for a
+cold conversation that asks a mini-league question: `getMyTeam` spends three (entry,
+picks, chip history), `getMyMiniLeagues` re-reads the same entry from cache for nothing,
+and `getMiniLeagueOpponents` spends one standings page plus ten opponent picks — fourteen
+of fifteen. Without the entry cache the same turn costs sixteen and the cap would quietly
+drop an opponent, so the cache is part of the cap, not an optimisation beside it.
 
 **Opponents' real names are not returned.** `player_name` is the legal name of a third
 party who never used this product, and it would travel to the model provider on every
@@ -248,16 +260,22 @@ Head-to-head leagues are out of scope; they rank on fixtures, not totals.
 ## Budget, caching and failure
 
 - **Caching** is a small in-process TTL map, not a new cache dependency: `bootstrap-static`
-  app-wide for 6 hours (it changes on price updates, not by the minute), squads by
-  `(entryId, eventId)` for 5 minutes, standings by `(leagueId, eventId, page)` for
-  5 minutes. **Keyed by entry, never by user** — a user who edits their team id would
-  otherwise be served the previous team's squad until the entry expired.
+  app-wide for 6 hours (it changes on price updates, not by the minute), the entry
+  response by `entryId` for 5 minutes, squads by `(entryId, eventId)` for 5 minutes, and
+  standings by `(leagueId, eventId, page)` for 5 minutes. **Keyed by entry, never by
+  user** — a user who edits their team id would otherwise be served the previous team's
+  squad until the entry expired. What is cached is the parsed squad, not the rendered
+  text: the mini-league view diffs an opponent's squad against the user's, which text
+  cannot be diffed for.
 - **Every failure keeps `FplEntryLookup`'s three-way distinction:** "no team id stored",
   "FPL says there is no such team", and "FPL could not be reached" are different sentences.
   Telling someone their team id is wrong while FPL is down sends them hunting for a typo
   that is not there.
 - Timeouts stay at `FplEntryLookup`'s 3s connect / 5s read, and the per-turn request cap
-  bounds the worst case at roughly one minute inside the 5-minute answer timeout.
+  bounds the worst case at roughly one minute inside the 5-minute answer timeout. The cap
+  is counted in a budget object created per chat request and carried in the same
+  `ToolContext` as the user id — a counter on a singleton service would be shared by every
+  conversation on the machine.
 - Nothing is retried. A failed opponent fetch drops that opponent from the reply and says
   so; it does not fail the whole answer.
 - Cost: the reply is compact text (~20 lines for a squad, ~2 per opponent) because it
