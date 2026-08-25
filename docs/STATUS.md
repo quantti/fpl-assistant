@@ -2376,3 +2376,95 @@ parties who never used this product, and everything here is sent to a model prov
 - Live gameweek points (`/api/event/{event}/live/`), a "my team" page, and head-to-head leagues.
 - No persistence: squads and standings live in in-process TTL maps, keyed by FPL entry or league
   id rather than by user, so editing a stored team id cannot serve the previous team's squad.
+
+---
+
+# Strategy corpus — closing the gaps before test users (2026-08-25)
+
+Corpus is 21 documents / 181 chunks (was 19 / 166). Verified by ingesting against the disposable
+test container, not production.
+
+**Three documents written**, the last two of which were tracked as issues #39, #40 and #41:
+
+- `strategy-set-and-forget-and-low-maintenance.md` — which squad slots absorb inattention and
+  which do not, and the three decisions (captain, availability, chips) that still cannot be
+  skipped. The corpus referred to "set-and-forget" in four places without ever defining it.
+- `strategy-blank-and-double-gameweeks.md` — deferred to a later season when it was first
+  proposed, written now because a test user meeting their first blank without it is exactly the
+  gap it describes. The framing that was missing everywhere else: blanks and doubles are the same
+  fixtures seen at two different times, and with two chip sets a first-half chip cannot be saved
+  for a spring double.
+- `strategy-2026-27-early-season.md` (`kind: timely`, valid to 20 September) — replaces the
+  pre-season consensus document, whose window closed on 21 August and which was therefore
+  invisible to retrieval. Built from FPL's own data read on 25 August: GW1 results, who actually
+  scored, ownership, transfer counts, prices, and GW2 fixtures, plus published community opinion
+  from the same week, named and dated. Its most important section is the one that says one
+  gameweek is not form.
+
+  The price sections are the part worth knowing about. **No player's price had moved at all by
+  25 August** (`cost_change_start` is zero for every player), even though changes were enabled at
+  the GW1 deadline and now land at midnight UK — so the document says the early-value window is
+  still open rather than guessing at rises that have not happened. "Closest to a rise" is computed
+  the way FPL's own mechanism works, net transfers as a share of current owners, which is why it
+  names De Cuyper and Sangaré rather than the premiums with bigger absolute transfer counts.
+
+`strategy-2026-27-preseason-consensus.md` is deleted rather than left expired. Ingestion truncates
+and rebuilds, so a file that can never be retrieved again is just rows; git keeps the history.
+
+**One factual error fixed.** `strategy-chips.md` claimed "One chip per Gameweek (exception:
+Wildcard can be combined with Bench Boost or Triple Captain)". FPL allows no such exception —
+one chip per gameweek, full stop; the combination people mean is sequential (Wildcard one week,
+Bench Boost the next). `strategy-wildcard-and-free-hit.md` carried the same implication and was
+corrected too. The chips document also now states that there is no Assistant Manager chip in
+2026/27, which FPL's own `bootstrap-static` confirms: four chip types, two sets each.
+
+**Production is not updated by a deploy.** The documents ship in the image, but the embeddings
+live in Supabase, so the corpus changes only take effect after `bootRun --args="--ingest"` is run
+against production. That is a deliberate manual step and it is owner-run.
+
+**Run against production on 2026-08-25, on the owner's instruction: 21 documents, 186 chunks in
+`fpl_embeddings`.** Two things worth copying next time. The startup sync runners fire on
+`ApplicationReadyEvent` regardless of `--ingest`, so the run disabled them
+(`--fpl.historical.startup-sync=false --fpl.price.startup-sync=false
+--fpl.daily-price.scheduled=false`) rather than letting a corpus reload also trigger a
+football-data sync and a price capture from a laptop. And the first attempt failed at context
+startup because the env file was not sourced (`jdbcUrl, ${DATABASE_URL}`) — a failure *before*
+the truncate, which is the safe direction: ingestion truncates the table first, so a run that
+dies halfway leaves the assistant with no strategy layer at all.
+
+---
+
+# Set-piece duty moves from a document to the daily capture (2026-08-25)
+
+Closes the "automated freshness tracking for `penalty-and-set-piece-takers.md`" item, which had
+been deferred as "keep the document manual". The first gameweek settled the argument: a written
+list of penalty takers is written before anyone has taken a penalty, and the opening weekend is
+exactly when the duties are revised.
+
+**The fix is not freshness tracking on a document — it is not needing the document.**
+`bootstrap-static` publishes FPL's own set-piece order on the same elements as the price:
+`penalties_order`, `direct_freekicks_order` and `corners_and_indirect_freekicks_order`, carried by
+66, 56 and 81 players respectively on the day this went in. The 02:00 UK capture already fetches
+that payload, so three columns on `fpl_daily_price` give the whole picture the daily cadence for
+no extra request and no new job.
+
+- `DailyPriceSchema` adds `penalties_order`, `direct_fk_order`, `corners_order`, with
+  `ADD COLUMN IF NOT EXISTS` because the table already exists in production.
+- `DailyPriceSyncService` writes them in the same upsert, in the same transaction, under the same
+  finished-season guard.
+- `SetPieceTools.getSetPieceTakers(club)` reports today's order **and the date each duty last
+  changed**, which is the part a manager needs: "Gyökeres was on penalties until the 24th" changes
+  a transfer decision in a way "Saka takes them" does not. The change log is computed in Java by
+  comparing consecutive captures rather than in SQL by comparing adjacent rows — the series has
+  holes on any day the capture did not run, and a window function would report a hole as a change.
+- The system prompt routes every penalty/free-kick/corner question to the tool and forbids
+  answering from memory or from the corpus.
+- `penalty-and-set-piece-takers.md` keeps its background — why duty matters, how to read an order,
+  which clubs were contested — and hands the live list to the tool, saying plainly that it was
+  written before a penalty had been taken.
+
+**Sequencing note.** That document change is *not* ingested into production yet, deliberately: it
+tells the model to call `getSetPieceTakers`, and production does not have the tool until this
+merges and deploys. Ingest after the deploy, not before. The columns fill on the first 02:00
+capture after that deploy; until then the tool answers "no order published", which is an absence of
+data and says so.
