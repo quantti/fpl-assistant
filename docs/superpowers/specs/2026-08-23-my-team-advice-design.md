@@ -190,7 +190,8 @@ A new section in `system-prompt.st`:
 >
 > If the user asks about a specific mini-league, call `getMyMiniLeagues()` when they have
 > not named one, then `getMiniLeagueOpponents(leagueId, focus)` — `focus="nearby"` for the
-> managers immediately above and below them, `focus="top"` for the leaders, or
+> managers immediately above and below them, `focus="top10"` (any N, capped at ten) for the
+> leaders, or
 > `focus="entry:12345"` for one team. Do not fetch mini-league data unless the user brings
 > a mini-league up.
 
@@ -220,15 +221,16 @@ Standings as at Gameweek 1; fetched 25 Aug 14:02 UK.
 ```
 
 - `focus="nearby"` (default) — the managers ranked just above and below the user.
-- `focus="top"` — the league leaders.
+- `focus="topN"` — the league leaders, e.g. `"top10"`; N is clamped to ten.
 - `focus="entry:12345"` — one named team, given in full rather than as a difference.
 
-**Hard cap: at most 8 opponent squads per call, and at most 15 FPL requests per chat
+**Hard cap: at most 10 opponent squads per call, and at most 15 FPL requests per chat
 turn.** The first draft advertised `focus="top50"`, which is 50 sequential picks requests
 inside one SSE response, minutes of latency at the client timeouts this project uses, and
-a burst from one Fly IP that FPL would be right to throttle. `focus="top50"` is accepted
-and clamped, with the clamp stated in the reply so the model does not claim to have read
-the whole league.
+a burst from one Fly IP that FPL would be right to throttle. Larger N is accepted and
+clamped to ten, with the clamp stated in the reply so the model does not claim to have
+read the whole league. Ten fits inside the per-turn budget: one standings page plus ten
+picks calls plus the user's own (usually cached) squad.
 
 **Opponents' real names are not returned.** `player_name` is the legal name of a third
 party who never used this product, and it would travel to the model provider on every

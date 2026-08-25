@@ -31,7 +31,7 @@ dependencies. React unchanged — this phase has no frontend.
 - FPL is called at chat time, which is a documented exception to "external APIs only at
   sync time" — recorded in `AGENTS.md` in Task 12 alongside the existing `FplEntryLookup`
   exception.
-- **At most 15 outbound FPL requests per chat turn, at most 8 opponent squads per
+- **At most 15 outbound FPL requests per chat turn, at most 10 opponent squads per
   mini-league call.** Enforced in the service, not left to the tool description.
 - `element` ids are season-scoped. Nothing joins a pick's `element` against Supabase rows
   unless the resolved season is the season the entry is playing (Task 5).
@@ -263,10 +263,12 @@ season-mismatch path; and no user id in the tool context.
   - `"nearby"` (default, and what a null means) — the user's page from
     `ceil(entry_rank / 50)`, checked for the user's own entry and stepped one page either
     way at most once, since ties make `rank` lag the row position.
-  - `"top"` — page 1.
+  - `"topN"` — page 1, N teams, e.g. `"top10"`; N is clamped to ten.
   - `"entry:12345"` — that entry alone, returned in full rather than as a difference.
-  - `"top50"` and friends are accepted and **clamped to the 8-squad cap, with the clamp
-    stated in the reply** so the model cannot claim to have read the whole league.
+  - `"top50"` and friends are accepted and **clamped to the 10-squad cap, with the clamp
+    stated in the reply** so the model cannot claim to have read the whole league. Ten fits
+    the per-turn budget: one standings page, ten picks calls, and the user's own squad
+    (usually already cached).
 - Each opponent's squad comes from the same picks call and cache as the user's own.
 - The reply lists only what an opponent owns that the user does not, plus their captain:
   that is the part that changes advice, and it is two lines instead of fifteen.
@@ -293,8 +295,9 @@ public String getMyMiniLeagues(ToolContext context)
 
 @Tool(description = """
     Teams from one of the user's mini-leagues, with what they own that the user does not.
-    focus="nearby" for the managers just above and below (default), "top" for the leaders,
-    or "entry:12345" for one team. At most eight teams are returned.
+    focus="nearby" for the managers just above and below (default), "top10" (any N,
+    capped at ten) for the leaders, or "entry:12345" for one team. At most ten teams are
+    returned.
     """)
 public String getMiniLeagueOpponents(int leagueId,
                                      @ToolParam(required = false) String focus,
