@@ -99,10 +99,14 @@ Three consequences, each of which the first draft got wrong:
 3. **Chips available must be derived**, from the schedule in `bootstrap-static.chips`
    minus the chips in `entry/{entry}/history/.chips`. There are two sets a season, and the
    windows are per chip rather than uniform — verified today: wildcard 2–19 and 20–38,
-   free hit 2–19 and 20–38, bench boost 1–19 and 20–38, triple captain 1–19 and 20–38. So
-   in GW1 only bench boost and triple captain can be played at all. Read the windows from
-   the payload; never hardcode them. If either source is unavailable the tool omits chips
-   rather than guessing.
+   free hit 2–19 and 20–38, bench boost 1–19 and 20–38, triple captain 1–19 and 20–38. The
+   wildcard's window opens at GW2 because transfers are unlimited until the GW1 deadline,
+   so there is nothing for it to buy; a manager sitting in GW1 can still activate one, and
+   it is played on GW2. **The chip list therefore answers for the next deadline, not for
+   the gameweek being played** — the two differ all week, and answering for the wrong one
+   would tell a manager they cannot play a chip they can play right now. Read the windows
+   from the payload; never hardcode them. If either source is unavailable the tool omits
+   chips rather than guessing.
 
 `current_event` from the entry response is what selects the picks gameweek — **not**
 `SeasonResolver` or the tapas `gameweek` table. The resolver deliberately falls back to the
@@ -122,8 +126,9 @@ tool in this project returns:
 - **Squad:** starting XI then bench, in FPL pick order, with captain/vice, position, club,
   current price, and season-long stats (form, total points, points per game, selected-by,
   availability).
-- **Chips:** the active chip for that gameweek, and which chips remain in the current
-  window, when both sources answer.
+- **Chips:** the active chip for the locked gameweek, and which chips can still be played at
+  the next deadline — the gameweek a chip activated now would be played on — when both
+  sources answer.
 - **Provenance:** two lines, one per source — see below.
 
 ### Where each field comes from
@@ -163,8 +168,8 @@ Squad as locked for Gameweek 1 (deadline 21 Aug 18:30 UK); fetched 25 Aug 14:02 
 Team: Rangers FC (entry 1234567) — overall rank 420,132, 41 pts.
 Bank £0.0m, squad value £100.0m, total £100.0m. Free transfers and exact selling
 prices are not published by FPL for another manager's team; treat funds as approximate.
-Active chip: none. Playable now (GW1): bench boost, triple captain. Wildcard and free
-hit open in GW2.
+Active chip: none. Playable at the next deadline (GW2): wildcard, free hit, bench boost,
+triple captain.
 
 Data source: season 2026/27 (the season currently being played).
 Starting XI

@@ -53,8 +53,13 @@ public class MyTeamService {
     public sealed interface Result {
 
         /** Everything the card needs. {@code chipsKnown} is false when FPL's chip data failed. */
+        /**
+         * @param event the gameweek the squad was locked for
+         * @param chipEvent the gameweek the chip list answers for — the next deadline, since
+         *        that is what a chip activated now would be played on
+         */
         record Squad(EntrySummary entry, int event, Optional<Instant> deadline, LockedSquad locked,
-                     List<SquadPlayer> players, List<String> playableChips,
+                     List<SquadPlayer> players, int chipEvent, List<String> playableChips,
                      List<String> chipsOpeningLater, Integer chipsOpenAt, boolean chipsKnown,
                      SquadEnrichment.Enrichment enrichment, Instant fetchedAt) implements Result {
         }
@@ -196,11 +201,15 @@ public class MyTeamService {
                     default -> null;
                 }
                 : null;
-        Chips chips = chipsFor(snapshot.get(), played, event);
+        // Chips are answered for the NEXT deadline, not for the gameweek being played: a chip
+        // activated now applies to the next one. During GW1 that means the wildcard is offered
+        // for GW2 — which is exactly when FPL first accepts it.
+        int chipEvent = chipTargetEvent(snapshot.get(), event);
+        Chips chips = chipsFor(snapshot.get(), played, chipEvent);
 
         return new Result.Squad(summary, event, snapshot.get().deadline(event), locked, players,
-                chips.playable(), chips.openingLater(), chips.opensAt(), chips.known(), depth,
-                Instant.now());
+                chipEvent, chips.playable(), chips.openingLater(), chips.opensAt(), chips.known(),
+                depth, Instant.now());
     }
 
     private record Chips(List<String> playable, List<String> openingLater, Integer opensAt,
@@ -208,10 +217,21 @@ public class MyTeamService {
     }
 
     /**
-     * A chip is playable when one of its own windows covers this gameweek and the manager has
-     * not played it inside that window. The windows are per chip and there are two sets a
-     * season — in 2026/27 the wildcard opens in GW2 while the bench boost is live in GW1 — so
-     * they are read from the payload rather than assumed.
+     * The gameweek a chip activated right now would be played on. FPL's own {@code is_next} when
+     * it has one; otherwise the gameweek after the one being played, which is the same thing
+     * once the season's last deadline has passed and nothing is flagged next.
+     */
+    private static int chipTargetEvent(FplBootstrap.Snapshot snapshot, int currentEvent) {
+        Integer next = snapshot.nextEvent();
+        return next != null ? next : currentEvent + 1;
+    }
+
+    /**
+     * A chip is playable when one of its own windows covers the gameweek being asked about and
+     * the manager has not played it inside that window. The windows are per chip and there are
+     * two sets a season — in 2026/27 the wildcard's first window is GW2-19 while the bench
+     * boost's is GW1-19, because until the GW1 deadline transfers are unlimited and a wildcard
+     * would buy nothing — so they are read from the payload rather than assumed.
      */
     private static Chips chipsFor(FplBootstrap.Snapshot snapshot, List<ChipPlayed> played,
                                   int event) {
@@ -291,7 +311,7 @@ public class MyTeamService {
                         : CHIP_NAMES.getOrDefault(squad.locked().activeChip(),
                                 squad.locked().activeChip()));
         if (squad.chipsKnown()) {
-            out.append(". Playable now (GW").append(squad.event()).append("): ")
+            out.append(". Playable at the next deadline (GW").append(squad.chipEvent()).append("): ")
                     .append(squad.playableChips().isEmpty() ? "none"
                             : String.join(", ", squad.playableChips()));
             if (!squad.chipsOpeningLater().isEmpty()) {

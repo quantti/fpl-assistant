@@ -2314,7 +2314,14 @@ Verified against the live API on 2026-08-25 (2026/27, GW1 current):
   they have transferred since.
 - **Chips remaining are not published.** They are derived from `bootstrap-static.chips` minus
   `entry/{id}/history/.chips`. The windows are per chip and there are two sets a season: in
-  2026/27 the wildcard opens in GW2 while the bench boost is live in GW1.
+  2026/27 the wildcard's first window is GW2–19 while the bench boost's is GW1–19, because
+  transfers are unlimited until the GW1 deadline and a wildcard would buy nothing.
+  **The chip list answers for the next deadline, not for the gameweek being played** — a
+  manager sitting in GW1 can activate a wildcard, and it is played on GW2. The first cut of
+  this compared the windows against `current_event` and told a GW1 manager the wildcard was
+  not available, which is a true statement about the wrong question. `FplBootstrap.Snapshot`
+  now carries `nextEvent` (FPL's `is_next`) and the card says "Playable at the next deadline
+  (GW2)".
 
 ## Why bootstrap-static is fetched at chat time
 

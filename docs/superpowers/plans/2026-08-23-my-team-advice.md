@@ -154,19 +154,22 @@ request; a failing refresh keeps serving the previous value.
 
 **Files:** `myteam/MyTeamService.java`.
 
-A chip is playable now when a `chipSchedule()` window for that chip contains the current
-event and the entry has not played it inside that window (`history.chips[]` carries the
-event each was played on). **The windows are per chip, not one pair for all four** —
-today's payload has wildcard 2–19, free hit 2–19, bench boost 1–19, triple captain 1–19,
-and a second set from 20. Read them; hardcoding "GW1–19" would offer a wildcard in GW1
-that FPL will not accept. If either source is missing, chips are omitted from the reply —
-never guessed. FPL's names (`wildcard`, `freehit`, `bboost`, `3xc`) are mapped to the
-words the prompt already uses.
+A chip is playable when a `chipSchedule()` window for that chip contains **the gameweek the
+chip would be played on** — FPL's `is_next`, not the gameweek being played — and the entry
+has not played it inside that window (`history.chips[]` carries the event each was played
+on). The two events differ for most of every week, and using the wrong one tells a manager
+in GW1 that they cannot wildcard when they can: the wildcard's window opens at GW2 because
+transfers are unlimited until the GW1 deadline, and a wildcard activated during GW1 is
+played on GW2.
 
-**Tests:** nothing played, current event 1 → bench boost and triple captain only, with
-wildcard and free hit named as opening later; nothing played, current event 5 → all four;
-wildcard played in GW3 → the other three for the rest of the first half, and all four
-again from GW20.
+**The windows are per chip, not one pair for all four** — today's payload has wildcard 2–19,
+free hit 2–19, bench boost 1–19, triple captain 1–19, and a second set from 20. Read them;
+never hardcode them. If either source is missing, chips are omitted from the reply — never
+guessed. FPL's names (`wildcard`, `freehit`, `bboost`, `3xc`) are mapped to the words the
+prompt already uses.
+
+**Tests:** during GW1 (next deadline GW2) → all four, wildcard included; wildcard played in
+GW3 with GW4 next → the other three now and the wildcard named as opening again in GW20.
 
 ---
 
