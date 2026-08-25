@@ -60,6 +60,7 @@ class MiniLeagueServiceTest {
     private HttpServer server;
     private final Map<String, AtomicInteger> requests = new ConcurrentHashMap<>();
     private boolean leaguesAreGlobalOnly;
+    private int extraLeagues;
 
     @BeforeEach
     void startStub() throws IOException {
@@ -96,6 +97,27 @@ class MiniLeagueServiceTest {
         assertThat(answer).contains("Office League", "id 12", "105th of 400");
         assertThat(answer).as("FPL's global leagues are everybody's, and are not advice")
                 .doesNotContain("Overall");
+    }
+
+    /**
+     * A live account came back with sixteen mini-leagues, and a heavy player has more; the whole
+     * list would re-enter the prompt on every later turn. The small ones are the ones a user can
+     * move in, so they are the ones that survive the cut.
+     */
+    @Test
+    void aLongListIsCutToTheSmallestLeaguesWithTheRestCountedOff() {
+        extraLeagues = 15;
+
+        String answer = miniLeagues().myLeagues(USER, budget());
+
+        assertThat(answer.lines().filter(line -> line.startsWith("- ")).count())
+                .isEqualTo(MiniLeagueService.MAX_LEAGUES_LISTED);
+        assertThat(answer)
+                .contains("smallest first")
+                .contains("...and 4 larger mini-leagues not listed")
+                .as("the eight-entry league is the actionable one")
+                .contains("Office League")
+                .doesNotContain("Big League 15");
     }
 
     @Test
@@ -230,11 +252,15 @@ class MiniLeagueServiceTest {
     }
 
     private String entryBody(int entryId) {
+        String extra = IntStream.rangeClosed(1, extraLeagues).mapToObj(index -> """
+                {"id": %d, "name": "Big League %d", "league_type": "x", "entry_rank": 10,
+                 "entry_last_rank": 11, "rank_count": %d},
+                """.formatted(500 + index, index, 1000 + index)).collect(Collectors.joining());
         String leagues = leaguesAreGlobalOnly ? globalLeague()
                 : """
                   {"id": 12, "name": "Office League", "league_type": "x", "entry_rank": %d,
-                   "entry_last_rank": 106, "rank_count": 400}, %s
-                  """.formatted(USER_RANK, globalLeague());
+                   "entry_last_rank": 106, "rank_count": 400}, %s%s
+                  """.formatted(USER_RANK, extra, globalLeague());
         return """
                 {"id": %d, "name": "Team %d", "player_first_name": "Jeremy",
                  "player_last_name": "Wang", "summary_overall_rank": 420132,
