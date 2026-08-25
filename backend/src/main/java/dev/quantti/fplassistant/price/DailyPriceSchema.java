@@ -92,6 +92,9 @@ public class DailyPriceSchema {
                     selected_by_percent NUMERIC(5,2),
                     status VARCHAR(4),
                     news TEXT,
+                    penalties_order SMALLINT,
+                    direct_fk_order SMALLINT,
+                    corners_order SMALLINT,
                     captured_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     PRIMARY KEY (season, price_date, element_id)
                 )
@@ -114,6 +117,18 @@ public class DailyPriceSchema {
         // database is born open (measured 2026-08-19, see docs/STATUS.md). A no-op for this
         // application, which connects as a role with rolbypassrls.
         jdbc.execute("ALTER TABLE %s ENABLE ROW LEVEL SECURITY".formatted(tableName));
+
+        // Set-piece duty, added 2026-08-25 to a table that already existed in production, so
+        // CREATE TABLE alone would not apply it. FPL publishes the order on the same elements
+        // as the price — 66 penalty takers, 81 corner takers and 56 direct free-kick takers on
+        // the day this went in — so capturing it costs no extra request and inherits the daily
+        // cadence. It belongs here rather than in a hand-written document because the order is
+        // exactly what a first gameweek revises: the doc was written before anyone had taken a
+        // penalty. Dated rows also answer *when* a duty changed, which a snapshot cannot.
+        for (String column : new String[] {"penalties_order", "direct_fk_order", "corners_order"}) {
+            jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s SMALLINT"
+                    .formatted(tableName, column));
+        }
 
         // Added after the table already existed in production, so CREATE TABLE alone would not
         // have applied it. Users ask for "Arsenal", not "ARS": with only the short name stored,

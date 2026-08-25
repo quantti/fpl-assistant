@@ -6,7 +6,9 @@ valid_from: 2026-08-21
 
 # Penalty and Set-Piece Takers
 
-Reference document on dead-ball duties for all 20 Premier League clubs for 2026/27: penalty takers with backups, direct free-kick takers, and corner/indirect free-kick takers. Compiled 16 August 2026 from the FFScout set-piece hub and penalty-taker article, the r/FantasyPL community table "Set-piece takers for GW1 (version 0)" and its correction comments, cross-checked against the official player list. Duties change with injuries, signings and form — always verify against current team news before advising.
+**The live order is not in this document — it is in the `getSetPieceTakers` tool.** FPL publishes its own set-piece order and this project captures it daily, so the tool knows today's takers and the date each duty last changed. Use it for any question about who takes a penalty, a free kick or a corner. This document is the background around that data: why the duty matters, how to read an order, and which clubs had a contested or unusual arrangement going into the season.
+
+Everything below was compiled on 16 August 2026 from the FFScout set-piece hub and penalty-taker article, the r/FantasyPL community table "Set-piece takers for GW1 (version 0)" and its correction comments, cross-checked against the official player list. **It was written before a single penalty had been taken in 2026/27**, which is exactly when this kind of list is least reliable: the opening weeks are when duties are revised. Treat a name here as a starting expectation and the tool as the fact.
 
 ## How to read this
 
