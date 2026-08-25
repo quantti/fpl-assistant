@@ -196,6 +196,13 @@ public class SetPieceTools implements FplTool {
             if (before == null) {
                 continue;
             }
+            // A capture from before set-piece duty was captured at all carries three nulls, and
+            // cannot tell "this player takes nothing" from "nobody looked". Comparing against it
+            // would announce that every taker in the league changed duty on the day the columns
+            // were added, which is the opposite of what a change log is for.
+            if (noDutyCaptured(before)) {
+                continue;
+            }
             for (Duty duty : DUTIES) {
                 Integer was = asInt(before.get(duty.column()));
                 Integer now = asInt(row.get(duty.column()));
@@ -213,6 +220,11 @@ public class SetPieceTools implements FplTool {
         }
         return "  Changes in the last " + CHANGE_WINDOW_DAYS + " days:\n"
                 + String.join("\n", lines) + "\n";
+    }
+
+    /** True when a capture holds no set-piece data at all for this player. */
+    private static boolean noDutyCaptured(Map<String, Object> row) {
+        return DUTIES.stream().allMatch(duty -> row.get(duty.column()) == null);
     }
 
     private static Integer asInt(Object value) {
