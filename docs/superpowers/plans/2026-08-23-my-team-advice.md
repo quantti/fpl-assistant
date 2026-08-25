@@ -279,7 +279,9 @@ document drifts; a counting test is what keeps it honest.
 
 - `myLeagues(userId)` — `leagues.classic` filtered to `league_type == "x"`. The system
   leagues (`"s"`: overall, club, region) are every manager's, and a million-entry league in
-  the list is noise the model will reason about.
+  the list is noise the model will reason about. Twelve are named, smallest first, with the
+  rest counted off: a live account returned sixteen and the list re-enters the prompt on
+  every later turn.
 - `opponents(userId, leagueId, focus)`:
   - `"nearby"` (default, and what a null means) — up to five either side of the user, from
     the page `ceil(entry_rank / 50)`, checked for the user's own entry and stepped one page

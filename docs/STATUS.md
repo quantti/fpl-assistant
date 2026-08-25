@@ -2348,6 +2348,15 @@ deeper numbers are not available yet instead of joining the wrong rows.
   boundary cuts off — a user at rank 105 gets four above and five below rather than a second
   page fetched to even it up.
 
+## Verified against the live API
+
+Smoke-run on 2026-08-25 against entry 1 with real FPL URLs: the squad card (GW1 locked squad,
+bank, captain, chips for the GW2 deadline), the mini-league list, `nearby` and `top3`. Card plus
+all three league calls cost twelve of the fifteen-call budget. The run also settled the chip
+question above and confirmed the club short names come out right (`element.team` → the response's
+own `teams` block). The throwaway test was deleted rather than kept: it is a smoke check against
+a live third party, not an oracle, and the suite has exactly one `realdata` test on purpose.
+
 ## Cost and limits
 
 Ten opponent squads and fifteen FPL calls per turn, both enforced in the services rather than
@@ -2355,6 +2364,9 @@ left to the tool descriptions. `focus="top50"` is accepted, clamped, and says it
 the model cannot claim to have read the whole league. Opponents are reported as the difference
 against the user's own squad — two lines each instead of fifteen — because the reply re-enters
 the prompt on every later turn and the free tier meters messages, not tokens.
+
+The mini-league list is capped at twelve, smallest first, with the rest counted off — the live
+entry above is in sixteen, and a heavy player is in more.
 
 Managers' real names (`player_name` in the standings) are never read: they belong to third
 parties who never used this product, and everything here is sent to a model provider.

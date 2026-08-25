@@ -218,6 +218,11 @@ leagues someone created and invited people to. FPL also puts every manager in sy
 leagues (`"s"`: overall, their club, their region, and more), and listing "Liverpool,
 1,089,086 entries" next to "Office League" is noise the model will happily reason about.
 
+Even filtered, the list needs a ceiling: a live account came back with sixteen, and the
+whole list re-enters the prompt on every later turn. Twelve are named, **smallest first**,
+and the rest are counted off — a league of eight is one the user can move in, a league of
+1,879 is a leaderboard.
+
 `getMiniLeagueOpponents(leagueId, focus)` returns opponents *and what they own that the
 user does not*, which is the only part of an opponent's squad that changes any advice:
 

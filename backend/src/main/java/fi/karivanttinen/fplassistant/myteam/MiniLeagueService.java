@@ -42,6 +42,13 @@ public class MiniLeagueService {
 
     /** FPL serves standings fifty rows to a page. */
     static final int PAGE_SIZE = 50;
+    /**
+     * How many leagues the list names. A real account can be in thirty of them — verified
+     * against a live entry that returned sixteen — and the whole list re-enters the prompt on
+     * every later turn of the conversation. The smallest are listed first because a league of
+     * eight is one the user can actually move in; a 1,879-entry league is a leaderboard.
+     */
+    static final int MAX_LEAGUES_LISTED = 12;
     /** How far either side of the user "nearby" reaches, before the opponent cap applies. */
     static final int NEARBY_REACH = 5;
 
@@ -72,14 +79,18 @@ public class MiniLeagueService {
             return unreachable(teamId.get());
         }
         List<ClassicLeague> leagues = summary.leagues().stream()
-                .filter(ClassicLeague::userCreated).toList();
+                .filter(ClassicLeague::userCreated)
+                .sorted(java.util.Comparator.comparingInt(
+                        league -> league.totalEntries() == null ? Integer.MAX_VALUE
+                                : league.totalEntries()))
+                .toList();
         if (leagues.isEmpty()) {
             return "This account is not in any mini-league that somebody created - only FPL's"
                     + " own global leagues, which are not what mini-league advice is about.";
         }
         StringBuilder out = new StringBuilder("Mini-leagues for ")
-                .append(summary.teamName()).append(":\n");
-        for (ClassicLeague league : leagues) {
+                .append(summary.teamName()).append(", smallest first:\n");
+        for (ClassicLeague league : leagues.stream().limit(MAX_LEAGUES_LISTED).toList()) {
             out.append("- ").append(league.name()).append(" (id ").append(league.id()).append(")");
             if (league.rank() != null) {
                 out.append(" - ").append(ordinal(league.rank()));
@@ -91,6 +102,11 @@ public class MiniLeagueService {
                 }
             }
             out.append("\n");
+        }
+        if (leagues.size() > MAX_LEAGUES_LISTED) {
+            out.append("...and ").append(leagues.size() - MAX_LEAGUES_LISTED)
+                    .append(" larger mini-leagues not listed. Ask the user to name one if they")
+                    .append(" mean a league that is not here.\n");
         }
         return out.toString();
     }
