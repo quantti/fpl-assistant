@@ -6,7 +6,7 @@ valid_from: 2026-08-21
 
 # FPL Chip Strategy
 
-Reference document on the four FPL chips: function, optimal timing, Double Gameweek interplay, and season-long planning.
+Reference document on the four FPL chips: function, optimal timing, Double Gameweek interplay, and season-long planning. Blank and double gameweeks themselves — when they happen, how far ahead they are known, and how to plan for them — are in `strategy-blank-and-double-gameweeks.md`.
 
 ## Chip overview
 
@@ -18,7 +18,8 @@ Reference document on the four FPL chips: function, optimal timing, Double Gamew
 
 **Key rules:**
 - The first chip set expires at the GW19 deadline — any of its four chips left unused are lost; they do not carry into the second set.
-- One chip per Gameweek (exception: Wildcard can be combined with Bench Boost or Triple Captain).
+- **One chip per Gameweek, with no exceptions.** A Wildcard cannot be played alongside a Bench Boost or a Triple Captain. The combination people mean is *sequential*: Wildcard one Gameweek to build the fifteen, Bench Boost the next.
+- **There is no Assistant Manager chip in 2026/27.** The game carries four chip types, each in two sets; the manager chip trialled in an earlier season is not in this one.
 - Chips can be activated/cancelled freely before the deadline; cannot be cancelled after it.
 - Well-timed vs poorly-timed chips differ by 50+ points over a season.
 
@@ -39,7 +40,7 @@ The most flexible and valuable chip; used to correct mistakes, pivot to fixtures
 
 - Optimal: a DGW where all 15 players have two fixtures. Bench expected points roughly double (typical single-GW bench 8–12 pts → DGW bench 16–24).
 - Preparation (weeks ahead): all 15 are guaranteed starters (a non-playing bench player wastes the slot); favourable fixtures across the squad; no blanks; budget spread across the bench rather than 4.0m enablers.
-- Often combined with Wildcard: the Wildcard builds the 15-strong squad, Bench Boost is activated in the same or following Gameweek.
+- Often paired with the Wildcard, in this order: the Wildcard builds the 15-strong squad one Gameweek, the Bench Boost is played the following Gameweek. They cannot share a Gameweek.
 - Single-Gameweek Bench Boost is acceptable if the bench is genuinely strong and DGW options are poor (10–15 extra points is respectable).
 - Common mistakes: using it too early; ignoring bench quality; timing it into heavy rotation periods (cups, European congestion, festive schedule).
 
