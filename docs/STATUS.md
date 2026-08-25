@@ -2421,3 +2421,13 @@ corrected too. The chips document also now states that there is no Assistant Man
 **Production is not updated by a deploy.** The documents ship in the image, but the embeddings
 live in Supabase, so the corpus changes only take effect after `bootRun --args="--ingest"` is run
 against production. That is a deliberate manual step and it is owner-run.
+
+**Run against production on 2026-08-25, on the owner's instruction: 21 documents, 186 chunks in
+`fpl_embeddings`.** Two things worth copying next time. The startup sync runners fire on
+`ApplicationReadyEvent` regardless of `--ingest`, so the run disabled them
+(`--fpl.historical.startup-sync=false --fpl.price.startup-sync=false
+--fpl.daily-price.scheduled=false`) rather than letting a corpus reload also trigger a
+football-data sync and a price capture from a laptop. And the first attempt failed at context
+startup because the env file was not sourced (`jdbcUrl, ${DATABASE_URL}`) — a failure *before*
+the truncate, which is the safe direction: ingestion truncates the table first, so a run that
+dies halfway leaves the assistant with no strategy layer at all.
