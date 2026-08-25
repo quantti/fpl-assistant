@@ -12,13 +12,15 @@ already own.
 **Architecture:** One new service (`MyTeamService`) fetches the user-specific FPL data
 (entry summary + current gameweek picks) at chat time, enriches each pick from Supabase,
 and caches the result briefly. One new tool (`MyTeamTools.getMyTeam`) exposes it to the
-LLM. The system prompt is updated so the model knows when to call it. Existing tools and
-tables are reused; no new database tables are needed for the MVP.
+LLM. A mini-league extension (`MiniLeagueService` / `MiniLeagueTools`) lists the user's
+classic leagues and fetches nearby opponents' squads when the user asks about a specific
+league. The system prompt is updated so the model knows when to call each tool. Existing
+tools and tables are reused; no new database tables are needed for the MVP.
 
 **Tech stack:** Spring Boot 4.1 / Java 25, `RestClient`, `JdbcTemplate`, Caffeine cache;
 React 19 + Mantine v9 unchanged for this phase.
 
-**PROGRESS:** Task 0/8 done
+**PROGRESS:** Task 0/12 done
 
 ## Global constraints
 
@@ -53,8 +55,12 @@ React 19 + Mantine v9 unchanged for this phase.
 | `myteam/SquadPlayer.java` (new) | Record for one enriched pick. |
 | `myteam/MyTeamCache.java` (new) | Caffeine cache bean + key helper. |
 | `config/CacheConfig.java` (modify or new) | Expose a named Caffeine cache for `myTeam`. |
-| `resources/prompts/system-prompt.st` | New section telling the model to call `getMyTeam` for squad-aware advice. |
+| `resources/prompts/system-prompt.st` | New section telling the model to call `getMyTeam` for squad-aware advice and `getMyMiniLeagues` / `getMiniLeagueOpponents` for mini-league questions. |
 | `myteam/MyTeamToolsTest.java` (new) | Stub FPL with HttpServer; test no-id, not-found, unavailable, happy path, cache hit. |
+| `myteam/MiniLeagueTools.java` (new) | `@Tool getMyMiniLeagues()` and `@Tool getMiniLeagueOpponents(leagueId)`. |
+| `myteam/MiniLeagueService.java` (new) | Fetch user's leagues and nearby opponents with their squads. |
+| `myteam/FplMiniLeagueClient.java` (new) | FPL endpoints for `/api/entry/{entry_id}/` leagues and `/api/leagues-classic/{league_id}/standings/`. |
+| `myteam/MiniLeague.java` / `MiniLeagueOpponent.java` (new) | Records for the mini-league tool responses. |
 
 ---
 
@@ -221,6 +227,77 @@ Use the same `HttpServer` stub pattern as `SupabaseAdminClientTest` and
   chat time and how to interpret `bank` / `teamValue`.
 - `STATUS.md`: a short entry noting the feature, the chat-time exception, and the tests
   run (suite green count).
+
+---
+
+## Mini-league extension
+
+This section extends the plan so the assistant can answer questions like *"how can I
+improve my position in this mini-league?"*. The call is implicit: the model uses these
+tools only when the user brings up a mini-league.
+
+### Task 9: Mini-league client
+
+**Files:** create `myteam/FplMiniLeagueClient.java`.
+
+**Produces:** Typed clients for:
+- `GET /api/entry/{entry_id}/` — reads the `leagues.classic` array from the entry summary.
+- `GET /api/leagues-classic/{league_id}/standings/` — reads classic league standings
+  (handles pagination if the user is not on the first page).
+
+**Result type:** keep the same three-way distinction as `FplPicksClient`:
+`Ok(...)`, `NotFound`, `Unavailable`.
+
+### Task 10: Mini-league service and cache
+
+**Files:** create `myteam/MiniLeagueService.java`; extend `myteam/MyTeamCache.java`.
+
+**Produces:**
+- `List<MiniLeague> getMyMiniLeagues(UUID userId)` — from the entry summary's
+  `leagues.classic` list.
+- `MiniLeagueOpponents getMiniLeagueOpponents(UUID userId, int leagueId)` — finds the
+  user's rank in the standings, fetches the entries ranked within ±5 positions, and
+  returns their squads (reusing `FplPicksClient` and the same enrichment logic as
+  `MyTeamService`).
+
+**Caching:** cache standings and opponent squads for 5 minutes keyed by
+`(userId, leagueId, currentEventId)`.
+
+### Task 11: Expose mini-league tools
+
+**Files:** create `myteam/MiniLeagueTools.java`.
+
+**Produces:**
+
+```java
+@Tool(description = """
+    Lists the user's FPL classic mini-leagues with current rank and league size.
+    Use this when the user asks about improving their position in a mini-league and
+    has not yet named one.
+    """)
+public List<MiniLeague> getMyMiniLeagues()
+
+@Tool(description = """
+    Returns the FPL teams of opponents ranked near the user in a specific classic
+    mini-league. Use this after the user has named or selected a league, then compare
+    the returned squads to the user's own team to suggest moves that gain ground.
+    """)
+public MiniLeagueOpponents getMiniLeagueOpponents(int leagueId)
+```
+
+### Task 12: Update prompt and tests for mini-leagues
+
+**Files:** `resources/prompts/system-prompt.st`; create `myteam/MiniLeagueToolsTest.java`.
+
+**Produces:**
+- Prompt text already added in Task 6 is extended with the mini-league instruction
+  (see spec). If Task 6 is done first, this is a small amendment.
+- Tests covering:
+  - User with no mini-leagues.
+  - League not found.
+  - Standings page pagination (user not on first page).
+  - Nearby opponents fetched with squads.
+  - No opponent squads fetched when FPL is unavailable.
 
 ---
 

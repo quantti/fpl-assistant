@@ -117,6 +117,82 @@ A new section in `system-prompt.st`:
 > advice that factors in what they already own, their bank, and upcoming fixtures. If no
 > team id is stored, tell them how to set it in their profile instead of giving generic
 > advice that ignores their squad.
+>
+> If the user asks about improving their position in a specific mini-league, first call
+> `getMyMiniLeagues()` to list the leagues. Once the user names one (or if they already
+> named it), call `getMiniLeagueOpponents(leagueId)` to see the teams of the opponents
+> ranked near them. Compare their squad to those nearby teams and suggest moves that would
+> gain ground in that league specifically. Do not fetch mini-league data unless the user
+> brings up a mini-league.
+
+Also remove or update the existing sentence "If you can see the user's squad, factor in
+what they already own; otherwise give general advice — ask about their team only when it
+would change the answer." because the model can now see the squad conditionally.
+
+## Mini-league context
+
+The user may want advice shaped by their standing in a specific classic mini-league
+rather than by overall rank. Two additional tools support this without changing the core
+`getMyTeam` flow.
+
+### Data sources
+
+| Source | Endpoint | Why |
+|---|---|---|
+| User's mini-leagues | `GET /api/entry/{entry_id}/` | The `leagues.classic` array lists every classic league the user belongs to, with current rank and league size. |
+| League standings | `GET /api/leagues-classic/{league_id}/standings/` | Rankings and total/event points for every member. |
+| Opponent squads | `GET /api/entry/{entry_id}/event/{event_id}/picks/` | Reuses the same picks client as `getMyTeam`. Fetched only for the opponents ranked near the user. |
+
+### Tool contract
+
+`getMyMiniLeagues()` returns the user's classic leagues:
+
+```json
+{
+  "miniLeagues": [
+    {
+      "id": 12345,
+      "name": "Office League",
+      "shortName": "OFF",
+      "rank": 5,
+      "lastRank": 6,
+      "totalEntries": 20,
+      "totalPoints": 185
+    }
+  ]
+}
+```
+
+`getMiniLeagueOpponents(leagueId)` returns the teams ranked around the user (default
+±5 positions) and their current squads:
+
+```json
+{
+  "league": { "id": 12345, "name": "Office League" },
+  "userRank": 5,
+  "opponents": [
+    {
+      "rank": 4,
+      "entryId": 7654321,
+      "entryName": "Team Above",
+      "playerName": "...",
+      "totalPoints": 190,
+      "eventPoints": 45,
+      "rankChange": 1,
+      "squad": [ { ...SquadPlayer... } ]
+    }
+  ]
+}
+```
+
+### Scope limits
+
+- Only **classic** mini-leagues are supported in this phase. Head-to-head leagues behave
+  differently and are out of scope.
+- Only opponents ranked **near the user** are fetched (default ±5). This caps the number
+  of opponent pick requests to ~11 and avoids scraping entire large leagues.
+- Squads are fetched from the same current-gameweek picks endpoint as `getMyTeam`, so the
+  same season/gameweek resolution and caching apply.
 
 ## Security and rate
 
