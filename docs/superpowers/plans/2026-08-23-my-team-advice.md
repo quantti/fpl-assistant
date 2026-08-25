@@ -3,319 +3,324 @@
 **Spec:** `docs/superpowers/specs/2026-08-23-my-team-advice-design.md` — read it first;
 this plan argues from it and does not repeat its reasoning.
 
-**Goal:** Turn the stored `fpl_user_profile.fpl_team_id` into actionable,
-personalised advice. When a user asks how to improve their team, the assistant fetches
-their actual FPL squad, bank balance, team value, and player-level stats, then compares
-it to the existing stats tools to give recommendations that account for what they
-already own.
+**Goal:** Turn the stored `fpl_user_profile.fpl_team_id` into personalised advice. When a
+user asks how to improve their team, the assistant fetches the squad FPL locked at the last
+deadline, their bank and value, and the season stats for those players, then compares them
+with the existing stats tools.
 
-**Architecture:** One new service (`MyTeamService`) fetches the user-specific FPL data
-(entry summary + current gameweek picks) at chat time, enriches each pick from Supabase,
-and caches the result briefly. One new tool (`MyTeamTools.getMyTeam`) exposes it to the
-LLM. A mini-league extension (`MiniLeagueService` / `MiniLeagueTools`) lists the user's
-classic leagues and fetches nearby opponents' squads when the user asks about a specific
-league. The system prompt is updated so the model knows when to call each tool. Existing
-tools and tables are reused; no new database tables are needed for the MVP.
+**Architecture:** `MyTeamService` fetches the user-specific FPL data (entry + picks +
+chip history) at chat time, fills in player identity and season stats from a cached
+`bootstrap-static`, adds Supabase depth when the resolved season matches, renders text, and
+caches by entry. `MyTeamTools` exposes it. `MiniLeagueService` / `MiniLeagueTools` add the
+mini-league view. The user id reaches the tools through Spring AI's `ToolContext`, never as
+a tool parameter.
 
-**Tech stack:** Spring Boot 4.1 / Java 25, `RestClient`, `JdbcTemplate`, Caffeine cache;
-React 19 + Mantine v9 unchanged for this phase.
+**Tech stack:** Spring Boot 4.1 / Java 25, `RestClient`, `JdbcTemplate`; no new
+dependencies. React unchanged — this phase has no frontend.
 
-**PROGRESS:** Task 0/12 done
+**PROGRESS:** Task 0/13 done
 
 ## Global constraints
 
-- The feature uses the existing `fpl_user_profile.fpl_team_id` column. No schema changes.
-- FPL data is fetched **at chat time** because it is user-specific and gameweek-specific
-  and cannot be pre-synced. This is a second documented exception to the
-  "external APIs only at sync time" rule, alongside the existing team-id write
-  validation.
-- All prices and bank values are in 0.1m units, matching the existing data model.
-- The cache is in-memory only; no new persistence.
-- Every failure mode copies the `FplEntryLookup` pattern: "no team id", "team id not
-  found", and "FPL unavailable" must be distinguishable for the user.
+- **The user id comes from the JWT and only from the JWT.** No `@Tool` method takes a user
+  id, a team id, or anything else that identifies an account: the model fills tool
+  parameters from the conversation, and a user id it can write is a user id an attacker can
+  ask it to write. Same for the team id — always looked up from the authenticated user's
+  profile.
+- No schema changes. No new tables, no new columns.
+- FPL is called at chat time, which is a documented exception to "external APIs only at
+  sync time" — recorded in `AGENTS.md` in Task 12 alongside the existing `FplEntryLookup`
+  exception.
+- **At most 15 outbound FPL requests per chat turn, at most 8 opponent squads per
+  mini-league call.** Enforced in the service, not left to the tool description.
+- `element` ids are season-scoped. Nothing joins a pick's `element` against Supabase rows
+  unless the resolved season is the season the entry is playing (Task 5).
+- Every failure distinguishes "no team id", "no such team", and "FPL unreachable", as
+  `FplEntryLookup` does.
+- Tools return `String`, like all thirteen existing ones, with the provenance lines the
+  spec defines.
 
-## Two decisions this plan makes that the spec leaves open
+## Decisions this plan makes
 
-1. **The bank is taken from the current-gameweek picks endpoint** (`entry_history.bank`)
-   rather than the entry summary (`last_deadline_bank`). It is the more current figure
-   for the GW the squad belongs to, and it travels with the same response as the picks.
-2. **One tool returns everything** (`getMyTeam`) rather than splitting into entry,
-   squad, and bench tools. The LLM needs the whole picture to reason about transfers and
-   captaincy; splitting it would force multiple round trips and increase latency.
+1. **The picks gameweek is FPL's `current_event`, not `SeasonResolver`.** The resolver
+   falls back to the last populated season by design, which during the changeover would
+   have us fetch GW38 of a finished season. FPL's number arrives in a call we already make.
+2. **Player identity and season-long stats come from `bootstrap-static`, cached app-wide.**
+   It is the only source certain to be on the same season as the pick ids. Supabase adds
+   what FPL does not publish (fixture difficulty, xG/xA, price history) and only when the
+   seasons agree.
+3. **One tool per question, returning text.** `getMyTeam` returns the whole picture in one
+   call — splitting it would cost extra model round trips — and returns rendered text so
+   the provenance discipline and the token budget stay under our control.
+4. **The cache is a ~40-line TTL map, not a new cache library.** Three caches with fixed
+   TTLs do not justify a dependency, `@EnableCaching`, and a `CacheConfig` this project
+   does not have today.
 
 ## File structure
 
 | File | Responsibility |
 |---|---|
-| `user/FplEntryLookup.java` (existing) | Reference for the FPL entry validation pattern and result type. |
-| `user/UserProfileService.java` (existing) | Reference for reading `fpl_team_id`. |
-| `myteam/MyTeamService.java` (new) | Fetch entry summary + picks, enrich, cache. |
-| `myteam/MyTeamTools.java` (new) | `@Tool getMyTeam()`. |
-| `myteam/EntrySnapshot.java` (new) | Record for the entry-level data returned. |
-| `myteam/SquadPlayer.java` (new) | Record for one enriched pick. |
-| `myteam/MyTeamCache.java` (new) | Caffeine cache bean + key helper. |
-| `config/CacheConfig.java` (modify or new) | Expose a named Caffeine cache for `myTeam`. |
-| `resources/prompts/system-prompt.st` | New section telling the model to call `getMyTeam` for squad-aware advice and `getMyMiniLeagues` / `getMiniLeagueOpponents` for mini-league questions. |
-| `myteam/MyTeamToolsTest.java` (new) | Stub FPL with HttpServer; test no-id, not-found, unavailable, happy path, cache hit. |
-| `myteam/MiniLeagueTools.java` (new) | `@Tool getMyMiniLeagues()` and `@Tool getMiniLeagueOpponents(leagueId)`. |
-| `myteam/MiniLeagueService.java` (new) | Fetch user's leagues and nearby opponents with their squads. |
-| `myteam/FplMiniLeagueClient.java` (new) | FPL endpoints for `/api/entry/{entry_id}/` leagues and `/api/leagues-classic/{league_id}/standings/`. |
-| `myteam/MiniLeague.java` / `MiniLeagueOpponent.java` (new) | Records for the mini-league tool responses. |
+| `chat/ChatController.java` (modify) | Pass the JWT's user id into `ChatService.stream`. |
+| `chat/ChatService.java` (modify) | Put the user id on the request via `.toolContext(...)`. |
+| `myteam/ToolUser.java` (new) | The `ToolContext` key and the read-it-or-refuse helper. |
+| `myteam/TtlCache.java` (new) | Small in-process TTL map. |
+| `myteam/FplEntryClient.java` (new) | `entry/{id}/`, `entry/{id}/event/{ev}/picks/`, `entry/{id}/history/`. |
+| `myteam/FplBootstrap.java` (new) | Cached `bootstrap-static`: elements, events, chip schedule. |
+| `myteam/MyTeamService.java` (new) | Compose, enrich, cache, render. |
+| `myteam/SquadEnrichment.java` (new) | Supabase depth, gated on season match. |
+| `myteam/MyTeamTools.java` (new) | `@Tool getMyTeam(ToolContext)`. |
+| `myteam/MiniLeagueService.java` (new) | Leagues, standings pages, opponent differences. |
+| `myteam/MiniLeagueTools.java` (new) | `@Tool getMyMiniLeagues`, `@Tool getMiniLeagueOpponents`. |
+| `resources/prompts/system-prompt.st` (modify) | When to call each tool. |
+| `resources/application.yml` (modify) | The four FPL URLs, TTLs, and the request caps. |
+| Tests | `ToolContextUserTest`, `FplEntryClientTest`, `MyTeamServiceTest`, `MyTeamToolsTest`, `MiniLeagueServiceTest`, `MiniLeagueToolsTest`. |
 
 ---
 
-### Task 1: FPL picks fetch client
+### Task 0: Get the user id to the tools — safely
 
-**Files:** create `myteam/FplPicksClient.java`; reuse/adapt `user/FplEntryLookup.java`
-result naming.
+**Files:** `chat/ChatController.java`, `chat/ChatService.java`, `myteam/ToolUser.java`.
 
-**Produces:** A typed client for two endpoints:
-- `GET /api/entry/{entry_id}/`
-- `GET /api/entry/{entry_id}/event/{event_id}/picks/`
+Nothing else can be built first: today `ChatService` is a singleton whose `stream(turns,
+onUsage)` carries no user, tool calls run on the provider's reactive threads where
+`SecurityContextHolder` is empty, and no existing tool takes a user id.
 
-**Why a separate client:** `FplEntryLookup` validates a single id with a single
-`exists/not_found/unavailable` outcome. My-team needs the full JSON bodies, so the client
-is richer but keeps the same bounded-timeout and failure-distinction discipline.
+1. `ChatService.stream(List<ChatTurn> turns, UUID userId, Consumer<TokenUsage> onUsage)`
+   adds `.toolContext(Map.of(ToolUser.KEY, userId))` to the prompt.
+2. `ChatController` passes `TokenSubject.userId(jwt)` — it already resolves it for the
+   quota and the conversation.
+3. `ToolUser.required(ToolContext)` returns the `UUID` or throws; tools translate that into
+   a one-line refusal and a `WARN`. It must never default to any user.
 
-1. Define a `Result` sealed type: `Ok(EntryJson entry, PicksJson picks)`,
-   `EntryNotFound`, `EventNotFound`, `Unavailable`.
-2. Map FPL JSON to internal records. Important fields:
-   - Entry: `id`, `name`, `player_first_name`, `player_last_name`, `summary_overall_rank`,
-     `summary_overall_points`, `current_event`, `last_deadline_bank`,
-     `last_deadline_value`.
-   - Picks response: `entry_history.bank`, `entry_history.value`,
-     `entry_history.event_points`, `active_chip`, `automatic_subs`, `picks[].element`,
-     `picks[].position`, `picks[].multiplier`, `picks[].is_captain`,
-     `picks[].is_vice_captain`, `picks[].selling_price`.
-3. Use `RestClient` with the same timeout and URL-slash-repair patterns as
-   `FplEntryLookup` and `SupabaseAdminClient`.
-
-**Tests:** `FplPicksClientTest` with `HttpServer` stubs covering:
-- 200 entry + 200 picks → `Ok`
-- 404 entry → `EntryNotFound`
-- 200 entry + 404 picks (invalid GW) → `EventNotFound`
-- 500 from either endpoint → `Unavailable`
+**Verify:** a test registers a probe `FplTool` that records the id it saw, drives a chat
+request with a stubbed model, and asserts the id equals the token's subject; a second
+asserts the tool's JSON schema has no user id property (Spring AI excludes `ToolContext`
+from the schema — pin it, because the whole safety argument rests on it).
 
 ---
 
-### Task 2: Resolve current gameweek
+### Task 1: FPL entry client
 
-**Files:** `myteam/MyTeamService.java`; existing `tools/GameweekTools.java` or
-`tools/SeasonResolver.java`.
+**Files:** create `myteam/FplEntryClient.java`; `application.yml`.
 
-**Produces:** A method `Optional<Integer> currentEventId()` that returns the current
-gameweek FPL event id. This is needed to build the picks URL.
+Typed access to three endpoints, all `GET`, all public:
+`entry/{entry}/`, `entry/{entry}/event/{event}/picks/`, `entry/{entry}/history/`.
 
-**Decision:** Use the existing `SeasonResolver`/`GameweekTools` path that reads from the
-Supabase `gameweek` table (tapas-owned). It already resolves the current season and
-which gameweek is current. If no current gameweek exists (changeover window), the tool
-answers that the squad cannot be fetched right now.
+1. Sealed `Result`: `Ok(T body)`, `NotFound`, `Unavailable` — the same three-way split
+   `FplEntryLookup` makes, for the same reason.
+2. Records for what we read (verified against the live API on 2026-08-25):
+   - entry: `id`, `name`, `player_first_name`, `player_last_name`,
+     `summary_overall_rank`, `summary_overall_points`, `current_event` (nullable),
+     `leagues.classic[]` with `id`, `name`, `short_name`, `league_type`, `entry_rank`,
+     `entry_last_rank`, `rank_count`.
+   - picks: `active_chip`, `entry_history.{bank,value,points,event_transfers,
+     event_transfers_cost,points_on_bench}`, `picks[].{element,position,multiplier,
+     is_captain,is_vice_captain,element_type}`. **There is no `selling_price` and no
+     `purchase_price` on this endpoint** — they are behind the manager's own session.
+   - history: `chips[].{name,event}` — chips already played.
+3. Timeouts and the `JdkClientHttpRequestFactory` setup copied from `FplEntryLookup`
+   (3s connect, 5s read, no retries). Log the failure type only: the URI embeds the entry
+   id, which links an account to a real person's public profile.
 
----
-
-### Task 3: Enrich picks with Supabase data
-
-**Files:** `myteam/MyTeamService.java`; existing repositories or raw `JdbcTemplate`
-queries.
-
-**Produces:** For each `element` in the picks response, look up:
-- `web_name`, `team_short_name`, `element_type` from tapas `player` / `team` tables.
-- `now_cost`, `status`, `news` from `fpl_daily_price` (today's capture, season-scoped).
-- `form`, `total_points`, `points_per_game`, `selected_by_percent`, `transfers_in_event`,
-  `transfers_out_event` from the current season's player statistics.
-- Upcoming fixture difficulty: average FDR over the next 5 fixtures from existing fixture
-  data, using the same logic as `getFixtureDifficulty`.
-
-**Performance:** One query per element is fine (15 players). Batch them in one
-`WHERE element_id IN (...)` query per data source to keep it to a few round trips.
-
-**Season scope:** `element_id` is season-scoped, so every query must also filter on the
-resolved season. `fpl_daily_price` requires season + element_id.
+**Tests:** `HttpServer` stub — 200 entry + 200 picks → `Ok`; 404 entry → `NotFound`;
+**404 picks → `Ok` with no squad for that event, not an error** (this is what FPL answers
+for any gameweek whose deadline has not passed — verified); 500 → `Unavailable`.
 
 ---
 
-### Task 4: Compose and cache `MyTeamService`
+### Task 2: Cached bootstrap-static
 
-**Files:** `myteam/MyTeamService.java`, `myteam/MyTeamCache.java`,
-`config/CacheConfig.java`.
+**Files:** create `myteam/FplBootstrap.java`, `myteam/TtlCache.java`.
 
-**Produces:** `MyTeamService.fetchMyTeam(UUID userId)` returning
-`Optional<MyTeam>` (or a result type).
+**Produces:** `elementsById()` — web name, team short name, element type, `now_cost`,
+`form`, `total_points`, `points_per_game`, `selected_by_percent`, `status`, `news`;
+`seasonEvents()` — the current event and its deadline; `chipSchedule()` — the
+`start_event`/`stop_event` windows, which now come in two sets a season.
 
-**Flow:**
-1. Read `fpl_team_id` from `UserProfileService.teamIdOf(userId)`. If absent, return
-   `NoTeamId`.
-2. Resolve current event id. If absent, return `NoCurrentEvent`.
-3. Check cache by `(userId, eventId)`. If hit, return cached value.
-4. Call `FplPicksClient` for entry + picks. Map `EntryNotFound` → `TeamNotFound`,
-   `EventNotFound` → `NoCurrentEvent`, `Unavailable` → `Unavailable`.
-5. Enrich picks.
-6. Build `EntrySnapshot` and `List<SquadPlayer>`.
-7. Cache and return.
+One app-wide entry, TTL 6 hours, refreshed on read. The payload is ~1MB, so it is parsed
+into the trimmed records above and the response is dropped. When the fetch fails, the last
+good value is served if there is one, and only a cold failure degrades the tool.
 
-**Cache:** Caffeine, TTL 5 minutes, max 1000 entries. Key is `(UUID userId, int eventId)`.
+**Tests:** stub serves a trimmed bootstrap; second call inside the TTL makes no second
+request; a failing refresh keeps serving the previous value.
 
 ---
 
-### Task 5: Expose `getMyTeam` tool
+### Task 3: Chips available
 
-**Files:** `myteam/MyTeamTools.java`.
+**Files:** `myteam/MyTeamService.java`.
 
-**Produces:** One `@Tool` method:
+`chipSchedule()` windows containing the current event, minus the names in the entry's
+`history.chips[]` played inside that window. If either source is missing, chips are omitted
+from the reply — never guessed. FPL's names (`wildcard`, `freehit`, `bboost`, `3xc`) are
+mapped to the words the prompt already uses.
+
+**Tests:** nothing played → all four; wildcard played in GW3 → the GW1–19 window shows
+three, and the GW20–38 window still shows four.
+
+---
+
+### Task 4: Compose the squad
+
+**Files:** `myteam/MyTeamService.java`.
+
+`myTeam(UUID userId)` → a result type covering every outcome the spec names:
+
+1. `UserProfileService.teamIdOf(userId)` — empty → `NoTeamId`.
+2. Fetch the entry — `NotFound` → `TeamNotFound`, `Unavailable` → `Unavailable`.
+3. `current_event` null → `NoSquadYet` (an entry that has not played a gameweek).
+4. Cache lookup by `(entryId, currentEvent)` — **keyed by entry, not by user**, so editing
+   the stored team id cannot serve the old team's squad.
+5. Fetch picks for `current_event`; fetch history for chips.
+6. Fill each pick from `FplBootstrap`, then `SquadEnrichment` (Task 5).
+7. Render (Task 6), cache the rendered text for 5 minutes, return.
+
+---
+
+### Task 5: Supabase depth, gated on the season
+
+**Files:** create `myteam/SquadEnrichment.java`.
+
+For the fifteen `element` ids: average FDR over the next five fixtures (the
+`getFixtureDifficulty` logic), xG/xA where present, and today's price and flags from
+`fpl_daily_price` (season + `element_id`, as that table requires).
+
+**The gate:** run this only when `SeasonResolver.resolve()` names the season the entry is
+playing. Otherwise the pick ids belong to a season the database has not synced, the join
+matches *different players*, and the reply would be confidently wrong. When the gate is
+closed the reply says the deeper numbers are not yet available for the new season.
+
+**Tests:** the enrichment query filters on season and on the id set (one batched query per
+source, not fifteen); with a mismatched season nothing is joined and the reply says so.
+
+---
+
+### Task 6: Rendering and provenance
+
+**Files:** `myteam/MyTeamService.java`.
+
+The layout in the spec: snapshot line, entry line, the funds caveat, chips, then
+`SeasonContext.provenance()` above the stats block, starting XI in pick order, bench,
+flagged players. About twenty lines — it re-enters the prompt on every later turn, and the
+free tier meters messages rather than tokens.
+
+The snapshot line names the gameweek and its deadline and never says "current": the squad
+is the one locked at the last deadline, and a transfer made since is invisible to us.
+
+---
+
+### Task 7: The tool
+
+**Files:** create `myteam/MyTeamTools.java`.
 
 ```java
 @Tool(description = """
-    Returns the user's own FPL squad, bank balance, team value, and key player stats.
-    Use this when the user asks how to improve their team, who to transfer, who to
-    captain, or whether to play a chip. If the user has not stored a team id, say how
-    to set it instead.
+    The user's own FPL squad as locked at the last deadline, with bank, squad value,
+    chips and season stats. Use it before advising on transfers, captaincy, chips or
+    squad structure. Takes no arguments - the account is known from the session.
     """)
-public MyTeam getMyTeam()
+public String getMyTeam(ToolContext context)
 ```
 
-The method reads the authenticated user's id from the `Jwt` (like other controllers) or
-receives `UUID userId` from the tool invocation context if Spring AI provides it. The
-project's existing tools receive `UUID` parameters where needed; mirror that pattern.
-
-**Return type:** a single serializable record `MyTeam(EntrySnapshot entry,
-List<SquadPlayer> squad)`.
+Implements `FplTool`, so `ChatService` registers it automatically. Each outcome from Task 4
+becomes one sentence the model can act on — a missing team id tells the user where to set
+it; an unreachable FPL says to try again rather than blaming the id.
 
 ---
 
-### Task 6: Update the system prompt
+### Task 8: System prompt
 
 **Files:** `resources/prompts/system-prompt.st`.
 
-**Produces:** A new "My team" subsection under the advice/strategy section:
-
-> When the user asks about improving their team, transfers, captain choice, chip use, or
-> squad structure, first call `getMyTeam()`. If it returns a squad, base your answer on
-> what they already own, their bank, and upcoming fixtures — use the other stats tools to
-> compare their players with alternatives. If it says no team id is stored, tell them to
-> set their FPL team id in profile and do not pretend to know their squad.
-
-Also remove or update the existing sentence "If you can see the user's squad, factor in
-what they already own; otherwise give general advice — ask about their team only when it
-would change the answer." because the model can now see the squad conditionally.
+Add the "my team" instruction from the spec and replace the existing line at 119 ("If you
+can see the user's squad, factor in what they already own; otherwise give general
+advice…"), which assumes the squad is hypothetical. Include the two warnings the tool's
+data forces: the squad is last deadline's, and selling prices are approximate.
 
 ---
 
-### Task 7: Tests
+### Task 9: Tests for the core
 
-**Files:** `myteam/MyTeamToolsTest.java`, `myteam/MyTeamServiceTest.java`,
-`myteam/FplPicksClientTest.java`.
+**Files:** `myteam/MyTeamServiceTest.java`, `myteam/MyTeamToolsTest.java`.
 
-**Coverage:**
-- No `fpl_team_id` stored → tool returns a clear "not set" message.
-- Stored id but FPL returns 404 → "team id not found" message.
-- FPL down → "FPL unavailable" message, distinct from not-found.
-- Happy path → squad returned with bank, value, captain, enriched stats.
-- Cache hit → second call within TTL does not make a second HTTP request.
-- Season-scope enrichment → `fpl_daily_price` query includes season.
-
-Use the same `HttpServer` stub pattern as `SupabaseAdminClientTest` and
-`FplEntryLookup` tests.
+`HttpServer` stubs for FPL, as `SupabaseAdminClientTest` does. Anything reading tapas
+tables seeds through `TapasSeed`; the `fpl_daily_price` rows are seeded by the test, per the
+project's testing convention. Cover: no team id; team id FPL does not know; FPL down; happy
+path with bank, captain, chips and stats; a second call inside the TTL making no second
+request; a changed team id returning the new squad rather than the cached one; the
+season-mismatch path; and no user id in the tool context.
 
 ---
 
-### Task 8: Documentation and close-out
+### Task 10: Mini-league service
 
-**Files:** `docs/DEVELOPMENT.md`, `docs/STATUS.md`.
+**Files:** create `myteam/MiniLeagueService.java`.
 
-**Produces:**
-- `DEVELOPMENT.md`: a "My team advice" section explaining that FPL data is fetched at
-  chat time and how to interpret `bank` / `teamValue`.
-- `STATUS.md`: a short entry noting the feature, the chat-time exception, and the tests
-  run (suite green count).
+- `myLeagues(userId)` — `leagues.classic` filtered to `league_type == "x"`. The system
+  leagues (`"s"`: overall, club, region) are every manager's, and a million-entry league in
+  the list is noise the model will reason about.
+- `opponents(userId, leagueId, focus)`:
+  - `"nearby"` (default, and what a null means) — the user's page from
+    `ceil(entry_rank / 50)`, checked for the user's own entry and stepped one page either
+    way at most once, since ties make `rank` lag the row position.
+  - `"top"` — page 1.
+  - `"entry:12345"` — that entry alone, returned in full rather than as a difference.
+  - `"top50"` and friends are accepted and **clamped to the 8-squad cap, with the clamp
+    stated in the reply** so the model cannot claim to have read the whole league.
+- Each opponent's squad comes from the same picks call and cache as the user's own.
+- The reply lists only what an opponent owns that the user does not, plus their captain:
+  that is the part that changes advice, and it is two lines instead of fifteen.
+- **`player_name` is dropped.** It is a third party's legal name, and it would travel to
+  the model provider on every subsequent turn.
+- A per-turn counter enforces the 15-request cap; an opponent that fails is dropped from
+  the reply with a note, not retried, and does not fail the answer.
+
+**Caching:** standings by `(leagueId, event, page)` and squads by `(entryId, event)`.
+Neither is keyed by user — standings are the same for everyone who asks.
 
 ---
 
-## Mini-league extension
+### Task 11: Mini-league tools and prompt
 
-This section extends the plan so the assistant can answer questions like *"how can I
-improve my position in this mini-league?"*. The call is implicit: the model uses these
-tools only when the user brings up a mini-league.
-
-### Task 9: Mini-league client
-
-**Files:** create `myteam/FplMiniLeagueClient.java`.
-
-**Produces:** Typed clients for:
-- `GET /api/entry/{entry_id}/` — reads the `leagues.classic` array from the entry summary.
-- `GET /api/leagues-classic/{league_id}/standings/` — reads classic league standings
-  (handles pagination if the user is not on the first page).
-
-**Result type:** keep the same three-way distinction as `FplPicksClient`:
-`Ok(...)`, `NotFound`, `Unavailable`.
-
-### Task 10: Mini-league service and cache
-
-**Files:** create `myteam/MiniLeagueService.java`; extend `myteam/MyTeamCache.java`.
-
-**Produces:**
-- `List<MiniLeague> getMyMiniLeagues(UUID userId)` — from the entry summary's
-  `leagues.classic` list.
-- `MiniLeagueOpponents getMiniLeagueOpponents(UUID userId, int leagueId, String focus)` —
-  interprets the focus string and returns the matching slice:
-  - `"nearby"` (default or `null`) — entries within ±5 ranks of the user.
-  - `"topN"`, e.g. `"top10"` or `"top50"` — the first N teams from the standings, fetching
-    as many pages as needed.
-  - `"entry:ENTRY_ID"` — one specific team's squad.
-
-The service reuses `FplPicksClient` and the same enrichment logic as `MyTeamService` for
-every squad it returns.
-
-**Caching:** cache standings and opponent squads for 5 minutes keyed by
-`(userId, leagueId, currentEventId, focus)`.
-
-### Task 11: Expose mini-league tools
-
-**Files:** create `myteam/MiniLeagueTools.java`.
-
-**Produces:**
+**Files:** create `myteam/MiniLeagueTools.java`; `resources/prompts/system-prompt.st`.
 
 ```java
 @Tool(description = """
-    Lists the user's FPL classic mini-leagues with current rank and league size.
-    Use this when the user asks about improving their position in a mini-league and
-    has not yet named one.
+    The user's FPL mini-leagues (the ones people created and invited each other to),
+    with their rank in each. Use it when they ask about a mini-league without naming one.
     """)
-public List<MiniLeague> getMyMiniLeagues()
+public String getMyMiniLeagues(ToolContext context)
 
 @Tool(description = """
-    Returns teams from a specific FPL classic mini-league for analysis.
-    Use focus="nearby" to see opponents ranked close to the user (default).
-    Use focus="topN" with a count, e.g. focus="top10", to analyse the league leaders.
-    Use focus="entry:12345" to see one specific team. Compare the returned squads to the
-    user's own team to suggest moves.
+    Teams from one of the user's mini-leagues, with what they own that the user does not.
+    focus="nearby" for the managers just above and below (default), "top" for the leaders,
+    or "entry:12345" for one team. At most eight teams are returned.
     """)
-public MiniLeagueOpponents getMiniLeagueOpponents(int leagueId, @ToolParam(required = false) String focus)
+public String getMiniLeagueOpponents(int leagueId,
+                                     @ToolParam(required = false) String focus,
+                                     ToolContext context)
 ```
 
-A single tool with a flexible `focus` string keeps the prompt simple and avoids
-multiplying tools for every possible slice of the league.
+`leagueId` stays a parameter — it names a league, not an account, and the service checks
+that the authenticated user is a member of it before fetching anything.
 
-### Task 12: Update prompt and tests for mini-leagues
+---
 
-**Files:** `resources/prompts/system-prompt.st`; create `myteam/MiniLeagueToolsTest.java`.
+### Task 12: Docs and close-out
 
-**Produces:**
-- Prompt text already added in Task 6 is extended with the mini-league instruction
-  (see spec). If Task 6 is done first, this is a small amendment.
-- Tests covering:
-  - User with no mini-leagues.
-  - League not found.
-  - Standings page pagination (user not on first page, and top-N across pages).
-  - Nearby opponents fetched with squads.
-  - Top-N opponents fetched with squads.
-  - Specific opponent by `entry:ENTRY_ID` fetched with squad.
-  - No opponent squads fetched when FPL is unavailable.
+**Files:** `AGENTS.md`, `docs/DEVELOPMENT.md`, `docs/STATUS.md`.
+
+- `AGENTS.md`: record the chat-time FPL exception (user-specific squad plus cached
+  `bootstrap-static`) beside the existing `FplEntryLookup` one, and the rule that no tool
+  takes an identifier the model can write.
+- `DEVELOPMENT.md`: what `bank`, `value` and the deadline snapshot mean, and why selling
+  prices are absent.
+- `STATUS.md`: one entry — the feature, the two exceptions, the caps, and the suite result.
 
 ---
 
 ## Out of scope
 
-- Live gameweek points (`/api/event/{event_id}/live/`).
-- A frontend "my team" page or dashboard.
-- Persisting picks to a new table.
-- Automatic tool invocation (the model decides based on the prompt).
+- Live gameweek points (`/api/event/{event}/live/`).
+- `/api/my-team/{entry}/`, which needs the manager's own FPL session.
+- Persisting picks or standings; a frontend page; head-to-head leagues.
