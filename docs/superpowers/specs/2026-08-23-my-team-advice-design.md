@@ -1,6 +1,6 @@
 # FPL Assistant — My-Team-Aware Advice Design Spec
 
-**Status:** Revised 2026-08-25 after review — awaiting approval.
+**Status:** Implemented 2026-08-25 — outcome and deviations in `docs/STATUS.md`.
 
 **Relationship to existing work:** Builds on Phase 5a's `fpl_user_profile.fpl_team_id`
 (optional, validated against FPL by `FplEntryLookup`). Adds the second and third
@@ -241,8 +241,9 @@ Ten fits the per-turn budget only because the entry response is cached. Counted 
 cold conversation that asks a mini-league question: `getMyTeam` spends three (entry,
 picks, chip history), `getMyMiniLeagues` re-reads the same entry from cache for nothing,
 and `getMiniLeagueOpponents` spends one standings page plus ten opponent picks — fourteen
-of fifteen. Without the entry cache the same turn costs sixteen and the cap would quietly
-drop an opponent, so the cache is part of the cap, not an optimisation beside it.
+of fifteen with the app-wide bootstrap snapshot warm, and exactly fifteen when it is cold.
+Without the entry cache the same turn costs sixteen and the cap would quietly drop an
+opponent, so the cache is part of the cap, not an optimisation beside it.
 
 **Opponents' real names are not returned.** `player_name` is the legal name of a third
 party who never used this product, and it would travel to the model provider on every

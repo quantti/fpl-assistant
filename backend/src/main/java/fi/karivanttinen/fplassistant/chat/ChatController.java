@@ -127,7 +127,7 @@ public class ChatController {
         // leading space (the decoder strips the one after "data:"), and LLM tokens usually
         // start with one. The frontend JSON.parses each token event's data.
         Flux<ServerSentEvent<String>> tokens =
-                answerOutlivingTheClient(chatService.stream(history, reported::set),
+                answerOutlivingTheClient(chatService.stream(history, userId, reported::set),
                         conversationId, usageEventId, reported)
                         .map(token -> ServerSentEvent.builder(json(token)).build())
                         .onErrorResume(e -> Flux.just(ServerSentEvent.<String>builder()

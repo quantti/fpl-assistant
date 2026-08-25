@@ -18,7 +18,7 @@ a tool parameter.
 **Tech stack:** Spring Boot 4.1 / Java 25, `RestClient`, `JdbcTemplate`; no new
 dependencies. React unchanged — this phase has no frontend.
 
-**PROGRESS:** Task 0/13 done
+**PROGRESS:** Task 13/13 done
 
 ## Global constraints
 
@@ -288,8 +288,9 @@ document drifts; a counting test is what keeps it honest.
   - `"top50"` and friends are accepted and **clamped to the 10-squad cap, with the clamp
     stated in the reply** so the model cannot claim to have read the whole league. Ten fits
     the per-turn budget only with the entry cache: three requests for `getMyTeam`, zero for
-    `getMyMiniLeagues`, one standings page and ten opponent picks — fourteen of fifteen.
-    Uncached it is sixteen, and the cap would silently drop an opponent.
+    `getMyMiniLeagues`, one standings page and ten opponent picks — fourteen of fifteen, with
+    the app-wide bootstrap snapshot warm (cold, it is exactly fifteen). Without the entry cache
+    it is sixteen, and the cap would silently drop an opponent.
 - Each opponent's squad comes from the same picks call and cache as the user's own.
 - The reply lists only what an opponent owns that the user does not, plus their captain:
   that is the part that changes advice, and it is two lines instead of fifteen.
@@ -360,3 +361,11 @@ appears anywhere in the output.
 - Live gameweek points (`/api/event/{event}/live/`).
 - `/api/my-team/{entry}/`, which needs the manager's own FPL session.
 - Persisting picks or standings; a frontend page; head-to-head leagues.
+
+---
+
+## Outcome
+
+Built on branch `plan-my-team-advice`, suite green. What was decided along the way, what the
+live API turned out to allow, and the four places the implementation departs from this plan are
+written up in `docs/STATUS.md` under "My-team-aware advice (2026-08-25)".

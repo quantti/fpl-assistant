@@ -18,10 +18,12 @@ import reactor.core.publisher.Flux;
 import reactor.test.StepVerifier;
 
 import java.util.List;
+import java.util.UUID;
 import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -31,6 +33,9 @@ class ChatServiceTest {
 
     /** Anthropic unless a test says otherwise: the two differ in how a cached prompt is counted. */
     private String provider = "anthropic";
+
+    /** Whoever is asking. The id itself is only interesting to the my-team tools. */
+    private static final UUID USER = UUID.fromString("11111111-2222-4333-8444-555555555555");
 
     @Mock
     ChatClient chatClient;
@@ -50,9 +55,10 @@ class ChatServiceTest {
         when(chatClient.prompt()).thenReturn(requestSpec);
         when(requestSpec.messages(anyList())).thenReturn(requestSpec);
         when(requestSpec.tools(any(Object[].class))).thenReturn(requestSpec);
+        when(requestSpec.toolContext(anyMap())).thenReturn(requestSpec);
         when(requestSpec.stream()).thenReturn(streamSpec);
         when(streamSpec.chatResponse()).thenReturn(responses);
-        return new ChatService(chatClient, tools, provider);
+        return new ChatService(chatClient, tools, provider, 15);
     }
 
     /** A chunk carrying text, as the provider streams it. */
@@ -76,12 +82,33 @@ class ChatServiceTest {
     /** Nothing to record: the usage callback must not fire with an empty measurement. */
     private static final java.util.function.Consumer<TokenUsage> IGNORE_USAGE = usage -> {};
 
+    /**
+     * The tools learn who is asking from the tool context and from nowhere else — a parameter
+     * would be filled in by the model, and the model's input is the user's own text.
+     */
+    @Test
+    void theRequestCarriesTheUserIdAndAFreshCallBudget() {
+        ChatService service = serviceStreaming(List.of(), Flux.empty());
+
+        service.stream(List.of(new ChatTurn(ChatTurn.USER, "how is my team?")), USER, IGNORE_USAGE);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<java.util.Map<String, Object>> captor =
+                ArgumentCaptor.forClass(java.util.Map.class);
+        verify(requestSpec).toolContext(captor.capture());
+        assertThat(captor.getValue())
+                .containsEntry(fi.karivanttinen.fplassistant.myteam.ToolUser.KEY, USER);
+        assertThat(captor.getValue().get(fi.karivanttinen.fplassistant.myteam.ToolUser.BUDGET))
+                .isInstanceOfSatisfying(fi.karivanttinen.fplassistant.myteam.FplBudget.class,
+                        budget -> assertThat(budget.spent()).isZero());
+    }
+
     @Test
     void streamReturnsFluxFromChatClient() {
         ChatService service = serviceStreaming(List.of(), Flux.just("Hello", " FPL", " fan"));
 
         Flux<String> result = service.stream(
-                List.of(new ChatTurn(ChatTurn.USER, "Who should I captain?")), IGNORE_USAGE);
+                List.of(new ChatTurn(ChatTurn.USER, "Who should I captain?")), USER, IGNORE_USAGE);
 
         StepVerifier.create(result)
                 .expectNext("Hello", " FPL", " fan")
@@ -100,7 +127,7 @@ class ChatServiceTest {
                 .mapToObj(i -> new ChatTurn(i % 2 == 0 ? ChatTurn.ASSISTANT : ChatTurn.USER, "msg-" + i))
                 .toList();
 
-        service.stream(turns, IGNORE_USAGE);
+        service.stream(turns, USER, IGNORE_USAGE);
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<Message>> captor = ArgumentCaptor.forClass(List.class);
@@ -125,7 +152,7 @@ class ChatServiceTest {
         service.stream(List.of(
                 new ChatTurn(ChatTurn.USER, "first question"),
                 new ChatTurn(ChatTurn.USER, "second question"),
-                new ChatTurn(ChatTurn.ASSISTANT, "an answer")), IGNORE_USAGE);
+                new ChatTurn(ChatTurn.ASSISTANT, "an answer")), USER, IGNORE_USAGE);
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<Message>> captor = ArgumentCaptor.forClass(List.class);
@@ -151,7 +178,7 @@ class ChatServiceTest {
                 usage(1200, 300, 900L)));
 
         List<TokenUsage> reported = new java.util.ArrayList<>();
-        StepVerifier.create(service.stream(List.of(new ChatTurn(ChatTurn.USER, "hi")), reported::add))
+        StepVerifier.create(service.stream(List.of(new ChatTurn(ChatTurn.USER, "hi")), USER, reported::add))
                 .expectNext("Hello", " world")
                 .verifyComplete();
 
@@ -170,7 +197,7 @@ class ChatServiceTest {
                 usage(400, 250, 900L, 1600L)));
 
         List<TokenUsage> reported = new java.util.ArrayList<>();
-        StepVerifier.create(service.stream(List.of(new ChatTurn(ChatTurn.USER, "hi")), reported::add))
+        StepVerifier.create(service.stream(List.of(new ChatTurn(ChatTurn.USER, "hi")), USER, reported::add))
                 .expectNext("text")
                 .verifyComplete();
 
@@ -193,7 +220,7 @@ class ChatServiceTest {
         ChatService service = service(List.of(), Flux.just(named));
 
         List<TokenUsage> reported = new java.util.ArrayList<>();
-        StepVerifier.create(service.stream(List.of(new ChatTurn(ChatTurn.USER, "hi")), reported::add))
+        StepVerifier.create(service.stream(List.of(new ChatTurn(ChatTurn.USER, "hi")), USER, reported::add))
                 .expectNext("text")
                 .verifyComplete();
 
@@ -214,7 +241,7 @@ class ChatServiceTest {
                 usage(1000, 200, 400L)));
 
         List<TokenUsage> reported = new java.util.ArrayList<>();
-        StepVerifier.create(service.stream(List.of(new ChatTurn(ChatTurn.USER, "hi")), reported::add))
+        StepVerifier.create(service.stream(List.of(new ChatTurn(ChatTurn.USER, "hi")), USER, reported::add))
                 .expectNext("text")
                 .verifyComplete();
 
@@ -230,7 +257,7 @@ class ChatServiceTest {
                 usage(1000, 200, 400L)));
 
         List<TokenUsage> reported = new java.util.ArrayList<>();
-        StepVerifier.create(service.stream(List.of(new ChatTurn(ChatTurn.USER, "hi")), reported::add))
+        StepVerifier.create(service.stream(List.of(new ChatTurn(ChatTurn.USER, "hi")), USER, reported::add))
                 .expectNext("text")
                 .verifyComplete();
 
@@ -252,7 +279,7 @@ class ChatServiceTest {
                 usage(1200, 200, 500L)));
 
         List<TokenUsage> reported = new java.util.ArrayList<>();
-        StepVerifier.create(service.stream(List.of(new ChatTurn(ChatTurn.USER, "hi")), reported::add))
+        StepVerifier.create(service.stream(List.of(new ChatTurn(ChatTurn.USER, "hi")), USER, reported::add))
                 .expectNext("text")
                 .verifyComplete();
 
@@ -266,7 +293,7 @@ class ChatServiceTest {
         ChatService service = serviceStreaming(List.of(), Flux.just("only text"));
 
         List<TokenUsage> reported = new java.util.ArrayList<>();
-        StepVerifier.create(service.stream(List.of(new ChatTurn(ChatTurn.USER, "hi")), reported::add))
+        StepVerifier.create(service.stream(List.of(new ChatTurn(ChatTurn.USER, "hi")), USER, reported::add))
                 .expectNext("only text")
                 .verifyComplete();
 
@@ -279,7 +306,7 @@ class ChatServiceTest {
         List<FplTool> tools = List.of(new FplTool() {}, new FplTool() {}, new FplTool() {});
         ChatService service = serviceStreaming(tools, Flux.empty());
 
-        service.stream(List.of(new ChatTurn(ChatTurn.USER, "hi")), IGNORE_USAGE);
+        service.stream(List.of(new ChatTurn(ChatTurn.USER, "hi")), USER, IGNORE_USAGE);
 
         ArgumentCaptor<Object[]> captor = ArgumentCaptor.forClass(Object[].class);
         verify(requestSpec).tools(captor.capture());

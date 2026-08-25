@@ -322,6 +322,27 @@ lives there rather than in console output, which only prints the exception type:
 grep -oE "Caused by: [^<]{0,200}" build/test-results/test/TEST-<fqcn>.xml
 ```
 
+## My team advice
+
+`getMyTeam`, `getMyMiniLeagues` and `getMiniLeagueOpponents` read the user's own FPL entry at
+chat time — a documented exception to "external APIs only at sync time", because a squad is per
+user and per gameweek. Nothing is stored: the caches are in-process TTL maps.
+
+Two things about the numbers surprise people:
+
+- **`bank` and `value` are in 0.1m units** (`1003` = £100.3m), and `value` excludes the bank.
+- **There are no selling prices.** FPL publishes those only to the logged-in manager, so a
+  player whose price has risen sells for less than the card shows. The tool says so; do not
+  "fix" it by treating `now_cost` as a selling price.
+
+The squad is the one **locked at the last deadline** — FPL serves picks only for a gameweek whose
+deadline has passed, so a transfer made since is invisible. That is normal for most of the week,
+not a bug.
+
+Configuration lives under `fpl.myteam` in `application.yml`: the four FPL URLs, the cache TTLs,
+`max-requests-per-turn` (15) and `max-opponents` (10). The per-turn budget is created in
+`ChatService` and passed to the tools in the `ToolContext`, beside the user id.
+
 ## Database
 
 Supabase project **tapas-and-tackles** (`itmykooxrbrdbgqwsesb`, eu-west-1), shared with
