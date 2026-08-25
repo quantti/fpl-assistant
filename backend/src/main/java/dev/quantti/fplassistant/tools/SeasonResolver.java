@@ -1,5 +1,6 @@
 package dev.quantti.fplassistant.tools;
 
+import org.springframework.dao.IncorrectResultSizeDataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
@@ -28,8 +29,21 @@ public class SeasonResolver {
     }
 
     public SeasonContext resolve() {
-        Map<String, Object> current = jdbc.queryForMap(
-                "SELECT id, code, start_date FROM season WHERE is_current = true");
+        // Named rather than left to queryForMap's own message: the table is tapas-owned, and
+        // "Incorrect result size: expected 1, actual 2" sends whoever reads it into this code
+        // instead of into the season table, which is the only place the problem can be fixed.
+        List<Map<String, Object>> flagged = jdbc.queryForList(
+                "SELECT id, code, start_date FROM season WHERE is_current = true ORDER BY id");
+        if (flagged.size() != 1) {
+            throw new IncorrectResultSizeDataAccessException(
+                    "Exactly one season must be flagged is_current in the tapas season table;"
+                            + " found " + flagged.size()
+                            + (flagged.isEmpty() ? ". Flag the season being played."
+                                    : ": " + flagged.stream().map(row -> String.valueOf(row.get("code")))
+                                            .toList() + ". Clear the flag on all but one."),
+                    1, flagged.size());
+        }
+        Map<String, Object> current = flagged.getFirst();
 
         // A season counts as populated only once both gameweeks and players have landed; a sync
         // that is midway through would otherwise be picked while most tools still see nothing.
