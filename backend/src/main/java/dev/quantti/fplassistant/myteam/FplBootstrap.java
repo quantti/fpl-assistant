@@ -76,8 +76,15 @@ public class FplBootstrap {
         }
     }
 
+    /**
+     * @param currentEvent the gameweek being played
+     * @param nextEvent the gameweek the next deadline belongs to — the one a transfer or a chip
+     *        activated right now would apply to, which is not the same question as which
+     *        gameweek is being played
+     */
     public record Snapshot(Map<Integer, Element> elements, List<ChipWindow> chips,
-                           Map<Integer, Instant> deadlines, Integer currentEvent) {
+                           Map<Integer, Instant> deadlines, Integer currentEvent,
+                           Integer nextEvent) {
 
         public Optional<Element> element(int id) {
             return Optional.ofNullable(elements.get(id));
@@ -182,6 +189,7 @@ public class FplBootstrap {
 
         Map<Integer, Instant> deadlines = new HashMap<>();
         Integer currentEvent = null;
+        Integer nextEvent = null;
         if (body.get("events") instanceof List<?> raw) {
             for (Object item : raw) {
                 Map<String, Object> event = asMap(item);
@@ -200,11 +208,14 @@ public class FplBootstrap {
                 if (Boolean.TRUE.equals(event.get("is_current"))) {
                     currentEvent = id;
                 }
+                if (Boolean.TRUE.equals(event.get("is_next"))) {
+                    nextEvent = id;
+                }
             }
         }
 
         return new Snapshot(Map.copyOf(elements), List.copyOf(chips), Map.copyOf(deadlines),
-                currentEvent);
+                currentEvent, nextEvent);
     }
 
     @SuppressWarnings("unchecked")
