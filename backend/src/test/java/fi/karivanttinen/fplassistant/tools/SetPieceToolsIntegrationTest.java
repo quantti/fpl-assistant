@@ -123,6 +123,33 @@ class SetPieceToolsIntegrationTest {
     }
 
     /**
+     * The day the columns were added, every earlier capture holds three nulls — it predates the
+     * data, it does not record an absence of duty. Comparing against it would announce that
+     * every taker in the league changed duty that morning, which is what production did on the
+     * first run and what this test stops.
+     */
+    @Test
+    void capturesFromBeforeSetPieceDataExistedAreNotReportedAsChanges() {
+        insert(TAKER, "Spotkick", YESTERDAY, null, null, null);
+        insert(TAKER, "Spotkick", TODAY, 1, null, null);
+
+        assertThat(tools.getSetPieceTakers("Testville"))
+                .contains("Penalties: 1 Spotkick")
+                .contains("No change in the last 60 days")
+                .doesNotContain("penalties none -> #1");
+    }
+
+    /** A player who genuinely loses a duty still shows up as a change. */
+    @Test
+    void losingADutyIsStillAChange() {
+        insert(TAKER, "Spotkick", YESTERDAY, 1, null, null);
+        insert(TAKER, "Spotkick", TODAY, null, null, 2);
+
+        assertThat(tools.getSetPieceTakers("Testville"))
+                .contains(TODAY + ": Spotkick penalties #1 -> none");
+    }
+
+    /**
      * The dangerous failure for this tool: a club nobody matched must not read as a club with no
      * takers, which would tell a user their penalty taker has lost the duty.
      */

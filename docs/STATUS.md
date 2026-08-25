@@ -2468,3 +2468,15 @@ tells the model to call `getSetPieceTakers`, and production does not have the to
 merges and deploys. Ingest after the deploy, not before. The columns fill on the first 02:00
 capture after that deploy; until then the tool answers "no order published", which is an absence of
 data and says so.
+
+**Shipped and verified 2026-08-25.** Merged, deployed (v36), corpus ingested from master
+(21 documents, 186 chunks), and `--sync-prices` run by hand so the new columns held today's order
+without waiting for 02:00 (612 rows). End-to-end against production chat: *"Who takes Arsenal
+penalties right now?"* → Saka, Gyökeres, Ødegaard, Bruno G., with the tool's own caveat that the
+daily record begins on 18 August so nothing before that can be confirmed.
+
+That live answer also exposed one bug. Every capture before today carries three nulls — it
+predates the columns rather than recording an absence of duty — so the change log announced that
+the whole league's set-piece duty changed on 25 August. A capture with no set-piece data at all is
+now skipped when comparing, because it cannot tell "takes nothing" from "nobody looked"; a player
+who genuinely loses a duty still reports `#1 -> none`.
