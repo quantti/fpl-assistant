@@ -6,6 +6,8 @@ import java.util.Map;
 import java.util.UUID;
 
 import org.springframework.core.ParameterizedTypeReference;
+import dev.quantti.fplassistant.config.SecurityConfig;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -63,11 +65,11 @@ public class SupabaseAdminClient {
         JdkClientHttpRequestFactory factory = new JdkClientHttpRequestFactory(httpClient);
         factory.setReadTimeout(READ_TIMEOUT);
         this.restClient = builder.requestFactory(factory).build();
-        // The same repair SecurityConfig makes to the issuer: SUPABASE_URL is what the
-        // dashboard shows, and the dashboard shows it with a trailing slash. A doubled slash is
-        // not routed by Supabase's gateway, so the call would fail for a reason nothing here
-        // could report usefully.
-        this.usersUrl = (url + "/auth/v1/admin/users").replaceAll("(?<!:)//+(?=auth)", "/");
+        // The same repair SecurityConfig makes to the issuer, and the same call: SUPABASE_URL is
+        // what the dashboard shows, and the dashboard shows it with a trailing slash. A doubled
+        // slash is not routed by Supabase's gateway, so the call would fail for a reason nothing
+        // here could report usefully.
+        this.usersUrl = SecurityConfig.collapseDoubledSlash(url + "/auth/v1/admin/users");
         this.serviceRoleKey = serviceRoleKey;
     }
 
