@@ -2431,3 +2431,40 @@ football-data sync and a price capture from a laptop. And the first attempt fail
 startup because the env file was not sourced (`jdbcUrl, ${DATABASE_URL}`) — a failure *before*
 the truncate, which is the safe direction: ingestion truncates the table first, so a run that
 dies halfway leaves the assistant with no strategy layer at all.
+
+---
+
+# Set-piece duty moves from a document to the daily capture (2026-08-25)
+
+Closes the "automated freshness tracking for `penalty-and-set-piece-takers.md`" item, which had
+been deferred as "keep the document manual". The first gameweek settled the argument: a written
+list of penalty takers is written before anyone has taken a penalty, and the opening weekend is
+exactly when the duties are revised.
+
+**The fix is not freshness tracking on a document — it is not needing the document.**
+`bootstrap-static` publishes FPL's own set-piece order on the same elements as the price:
+`penalties_order`, `direct_freekicks_order` and `corners_and_indirect_freekicks_order`, carried by
+66, 56 and 81 players respectively on the day this went in. The 02:00 UK capture already fetches
+that payload, so three columns on `fpl_daily_price` give the whole picture the daily cadence for
+no extra request and no new job.
+
+- `DailyPriceSchema` adds `penalties_order`, `direct_fk_order`, `corners_order`, with
+  `ADD COLUMN IF NOT EXISTS` because the table already exists in production.
+- `DailyPriceSyncService` writes them in the same upsert, in the same transaction, under the same
+  finished-season guard.
+- `SetPieceTools.getSetPieceTakers(club)` reports today's order **and the date each duty last
+  changed**, which is the part a manager needs: "Gyökeres was on penalties until the 24th" changes
+  a transfer decision in a way "Saka takes them" does not. The change log is computed in Java by
+  comparing consecutive captures rather than in SQL by comparing adjacent rows — the series has
+  holes on any day the capture did not run, and a window function would report a hole as a change.
+- The system prompt routes every penalty/free-kick/corner question to the tool and forbids
+  answering from memory or from the corpus.
+- `penalty-and-set-piece-takers.md` keeps its background — why duty matters, how to read an order,
+  which clubs were contested — and hands the live list to the tool, saying plainly that it was
+  written before a penalty had been taken.
+
+**Sequencing note.** That document change is *not* ingested into production yet, deliberately: it
+tells the model to call `getSetPieceTakers`, and production does not have the tool until this
+merges and deploys. Ingest after the deploy, not before. The columns fill on the first 02:00
+capture after that deploy; until then the tool answers "no order published", which is an absence of
+data and says so.

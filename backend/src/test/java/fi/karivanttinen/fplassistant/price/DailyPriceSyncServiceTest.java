@@ -29,6 +29,38 @@ class DailyPriceSyncServiceTest {
         }
     }
 
+    /**
+     * Set-piece duty rides along with the price: same endpoint, same daily cadence, no extra
+     * request. It is captured because the order is revised — by a transfer, a manager, and above
+     * all by the first penalty actually taken — which is what makes a written note about takers
+     * go stale within a weekend.
+     */
+    @Test
+    void capturesSetPieceOrderBesideThePrice() {
+        Map<String, Object> body = Map.of("elements", List.of(Map.of(
+                "id", 302, "web_name", "Spotkick", "now_cost", 100, "team", 1,
+                "penalties_order", 1, "direct_freekicks_order", 2,
+                "corners_and_indirect_freekicks_order", 3)));
+
+        Object[] row = DailyPriceSyncService.toRows(
+                body, LocalDate.of(2026, 8, 25), "2026-27").getFirst();
+
+        assertThat(row[15]).as("penalties_order").isEqualTo(1);
+        assertThat(row[16]).as("direct_fk_order").isEqualTo(2);
+        assertThat(row[17]).as("corners_order").isEqualTo(3);
+    }
+
+    /** Most players take nothing, and a missing order must stay null rather than becoming 0. */
+    @Test
+    void aPlayerWithNoSetPieceDutyStoresNulls() throws Exception {
+        Object[] row = DailyPriceSyncService.toRows(
+                fixture(), LocalDate.of(2026, 8, 18), "2026-27").getFirst();
+
+        assertThat(row[15]).isNull();
+        assertThat(row[16]).isNull();
+        assertThat(row[17]).isNull();
+    }
+
     @Test
     void mapsEveryElementToARow() throws Exception {
         List<Object[]> rows = DailyPriceSyncService.toRows(
