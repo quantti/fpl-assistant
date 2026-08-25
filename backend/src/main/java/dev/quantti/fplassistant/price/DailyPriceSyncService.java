@@ -179,7 +179,10 @@ public class DailyPriceSyncService {
                     zeroIfNull(asInt(e.get("cost_change_start"))),
                     asDecimal(e.get("selected_by_percent")),
                     asString(e.get("status")),
-                    asString(e.get("news"))
+                    asString(e.get("news")),
+                    asInt(e.get("penalties_order")),
+                    asInt(e.get("direct_freekicks_order")),
+                    asInt(e.get("corners_and_indirect_freekicks_order"))
             });
         }
         return rows;
@@ -243,8 +246,8 @@ public class DailyPriceSyncService {
                 INSERT INTO %s (season, price_date, element_id, web_name, full_name,
                                 team_id, team_short, team_name, element_type, now_cost,
                                 cost_change_event, cost_change_start, selected_by_percent,
-                                status, news)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                status, news, penalties_order, direct_fk_order, corners_order)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (season, price_date, element_id) DO UPDATE SET
                     web_name = EXCLUDED.web_name,
                     full_name = EXCLUDED.full_name,
@@ -258,6 +261,9 @@ public class DailyPriceSyncService {
                     selected_by_percent = EXCLUDED.selected_by_percent,
                     status = EXCLUDED.status,
                     news = EXCLUDED.news,
+                    penalties_order = EXCLUDED.penalties_order,
+                    direct_fk_order = EXCLUDED.direct_fk_order,
+                    corners_order = EXCLUDED.corners_order,
                     captured_at = NOW()
                 """.formatted(tableName);
 
