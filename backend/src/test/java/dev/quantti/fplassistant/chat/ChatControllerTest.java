@@ -140,8 +140,8 @@ class ChatControllerTest {
      */
     @Test
     void usageIsRecordedWhenTheCallStartsAndTokensWhenItEnds() {
-        when(chatService.stream(any(), any())).thenAnswer(invocation -> {
-            java.util.function.Consumer<TokenUsage> onUsage = invocation.getArgument(1);
+        when(chatService.stream(any(), any(), any())).thenAnswer(invocation -> {
+            java.util.function.Consumer<TokenUsage> onUsage = invocation.getArgument(2);
             onUsage.accept(new TokenUsage("claude-sonnet-5", 1500, 1200, 800, 250));
             return Flux.just("answer");
         });
@@ -175,7 +175,7 @@ class ChatControllerTest {
      */
     @Test
     void turnsLostToTheReadCeilingAreAnnouncedToo() {
-        when(chatService.stream(any(), any())).thenReturn(Flux.just("answer"));
+        when(chatService.stream(any(), any(), any())).thenReturn(Flux.just("answer"));
         UUID id = conversations.create(UUID.fromString(USER_A), "very long one");
         // Short messages, so the character budget is not what drops them: the ceiling is.
         jdbc.update("INSERT INTO " + messageTable + " (conversation_id, role, content)"
@@ -195,8 +195,8 @@ class ChatControllerTest {
      */
     @Test
     void aFailureThatOnlyLearnedTheModelNameIsStillRefunded() {
-        when(chatService.stream(any(), any())).thenAnswer(invocation -> {
-            java.util.function.Consumer<TokenUsage> onUsage = invocation.getArgument(1);
+        when(chatService.stream(any(), any(), any())).thenAnswer(invocation -> {
+            java.util.function.Consumer<TokenUsage> onUsage = invocation.getArgument(2);
             onUsage.accept(new TokenUsage("claude-sonnet-5", null, null, null, null));
             return Flux.error(new IllegalStateException("dropped before reporting anything"));
         });
@@ -237,7 +237,7 @@ class ChatControllerTest {
      */
     @Test
     void aTrimmedHistoryIsAnnouncedToTheClient() {
-        when(chatService.stream(any(), any())).thenReturn(Flux.just("answer"));
+        when(chatService.stream(any(), any(), any())).thenReturn(Flux.just("answer"));
         UUID id = conversations.create(UUID.fromString(USER_A), "long one");
         // The test profile's budget is 400 characters; five of these do not fit.
         for (int i = 0; i < 5; i++) {
@@ -260,7 +260,7 @@ class ChatControllerTest {
     @Test
     void aFailedAnswerStillMovesTheConversationToTheTopOfTheList() {
         UUID older = conversations.create(UUID.fromString(USER_A), "older");
-        when(chatService.stream(any(), any()))
+        when(chatService.stream(any(), any(), any()))
                 .thenReturn(Flux.error(new IllegalStateException("boom")));
 
         post(USER_A, "{\"message\":\"a question whose answer fails\"}");
@@ -277,8 +277,8 @@ class ChatControllerTest {
      */
     @Test
     void aFailureAfterTokensWereReportedKeepsTheCharge() {
-        when(chatService.stream(any(), any())).thenAnswer(invocation -> {
-            java.util.function.Consumer<TokenUsage> onUsage = invocation.getArgument(1);
+        when(chatService.stream(any(), any(), any())).thenAnswer(invocation -> {
+            java.util.function.Consumer<TokenUsage> onUsage = invocation.getArgument(2);
             onUsage.accept(new TokenUsage("claude-sonnet-5", 30000, 0, 0, 900));
             return Flux.error(new IllegalStateException("the provider dropped the connection"));
         });
@@ -330,7 +330,7 @@ class ChatControllerTest {
 
     @Test
     void aFirstMessageOpensAConversationAndStreamsTheAnswer() {
-        when(chatService.stream(any(), any())).thenReturn(Flux.just("Hello", " world"));
+        when(chatService.stream(any(), any(), any())).thenReturn(Flux.just("Hello", " world"));
 
         List<ServerSentEvent<String>> events = post(USER_A, """
                 {"message":"Who should I captain?"}
@@ -354,12 +354,12 @@ class ChatControllerTest {
 
     @Test
     void asecondMessageContinuesTheSameConversation() {
-        when(chatService.stream(any(), any())).thenReturn(Flux.just("first answer"));
+        when(chatService.stream(any(), any(), any())).thenReturn(Flux.just("first answer"));
         UUID id = UUID.fromString(post(USER_A, """
                 {"message":"first question"}
                 """).getFirst().data().replace("\"", ""));
 
-        when(chatService.stream(any(), any())).thenReturn(Flux.just("second answer"));
+        when(chatService.stream(any(), any(), any())).thenReturn(Flux.just("second answer"));
         List<ServerSentEvent<String>> events = post(USER_A,
                 "{\"conversationId\":\"" + id + "\",\"message\":\"second question\"}");
 
@@ -370,7 +370,7 @@ class ChatControllerTest {
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<ChatTurn>> history = ArgumentCaptor.forClass(List.class);
         org.mockito.Mockito.verify(chatService, org.mockito.Mockito.atLeastOnce())
-                .stream(history.capture(), any());
+                .stream(history.capture(), any(), any());
         assertThat(history.getValue()).extracting(ChatTurn::content)
                 .as("the model is given what was said before, read back from the store")
                 .containsExactly("first question", "first answer", "second question");
@@ -379,7 +379,7 @@ class ChatControllerTest {
     /** 404, not 403: an id that answers differently for its owner is an id you can probe for. */
     @Test
     void anotherUsersConversationDoesNotExist() {
-        when(chatService.stream(any(), any())).thenReturn(Flux.just("answer"));
+        when(chatService.stream(any(), any(), any())).thenReturn(Flux.just("answer"));
         UUID id = UUID.fromString(post(USER_A, """
                 {"message":"mine"}
                 """).getFirst().data().replace("\"", ""));
@@ -416,7 +416,7 @@ class ChatControllerTest {
 
     @Test
     void aMidStreamFailureEmitsAnErrorEventAndStoresNothing() {
-        when(chatService.stream(any(), any()))
+        when(chatService.stream(any(), any(), any()))
                 .thenReturn(Flux.concat(Flux.just("partial"), Flux.error(new IllegalStateException("boom"))));
 
         List<ServerSentEvent<String>> events = post(USER_A, """
@@ -447,7 +447,7 @@ class ChatControllerTest {
     @Test
     void anAnswerIsStoredEvenWhenTheClientLeavesMidStream() {
         Sinks.Many<String> model = Sinks.many().unicast().onBackpressureBuffer();
-        when(chatService.stream(any(), any())).thenReturn(model.asFlux());
+        when(chatService.stream(any(), any(), any())).thenReturn(model.asFlux());
 
         Jwt token = Jwt.withTokenValue("test").header("alg", "none").subject(USER_A).build();
         Flux<ServerSentEvent<String>> response =
