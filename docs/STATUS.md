@@ -2397,8 +2397,16 @@ test container, not production.
 - `strategy-2026-27-early-season.md` (`kind: timely`, valid to 20 September) — replaces the
   pre-season consensus document, whose window closed on 21 August and which was therefore
   invisible to retrieval. Built from FPL's own data read on 25 August: GW1 results, who actually
-  scored, ownership, transfer counts for GW2, and GW2 fixtures. Its most important section is the
-  one that says one gameweek is not form.
+  scored, ownership, transfer counts, prices, and GW2 fixtures, plus published community opinion
+  from the same week, named and dated. Its most important section is the one that says one
+  gameweek is not form.
+
+  The price sections are the part worth knowing about. **No player's price had moved at all by
+  25 August** (`cost_change_start` is zero for every player), even though changes were enabled at
+  the GW1 deadline and now land at midnight UK — so the document says the early-value window is
+  still open rather than guessing at rises that have not happened. "Closest to a rise" is computed
+  the way FPL's own mechanism works, net transfers as a share of current owners, which is why it
+  names De Cuyper and Sangaré rather than the premiums with bigger absolute transfer counts.
 
 `strategy-2026-27-preseason-consensus.md` is deleted rather than left expired. Ingestion truncates
 and rebuilds, so a file that can never be retrieved again is just rows; git keeps the history.
