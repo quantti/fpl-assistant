@@ -55,6 +55,9 @@ class MyTeamServiceTest {
 
     private HttpServer server;
     private final Map<String, AtomicInteger> requests = new ConcurrentHashMap<>();
+    /** The gameweek being played; the next deadline is always the one after it. */
+    private int currentEvent = 1;
+    private String chipsPlayed = "[]";
 
     @BeforeEach
     void startStub() throws IOException {
@@ -65,10 +68,10 @@ class MyTeamServiceTest {
             if (path.startsWith("/entry/" + UNKNOWN_ENTRY)) {
                 respond(exchange, 404, "{}");
             } else if (path.equals("/bootstrap-static/")) {
-                respond(exchange, 200, BOOTSTRAP);
+                respond(exchange, 200, bootstrap());
             } else if (path.endsWith("/history/")) {
-                respond(exchange, 200, "{\"chips\": []}");
-            } else if (path.contains("/event/1/picks/")) {
+                respond(exchange, 200, "{\"chips\": " + chipsPlayed + "}");
+            } else if (path.contains("/event/" + currentEvent + "/picks/")) {
                 respond(exchange, 200, PICKS);
             } else if (path.startsWith("/entry/" + OTHER_ENTRY)) {
                 respond(exchange, 200, entryBody(OTHER_ENTRY, "Second Team"));
@@ -130,18 +133,32 @@ class MyTeamServiceTest {
     }
 
     /**
-     * GW1 has a bench boost and a triple captain but no wildcard: the windows are per chip, and
-     * hardcoding "first half of the season" would offer a chip FPL will not accept.
+     * Chips answer for the <b>next deadline</b>, not for the gameweek being played. During GW1 a
+     * manager can absolutely activate a wildcard — it is played on GW2, which is where FPL's own
+     * window (2-19) starts. Answering "GW1: no wildcard" would be true about the wrong question.
      */
     @Test
-    void chipsComeFromTheWindowsFplPublishes() {
+    void chipsAreOfferedForTheDeadlineTheyWouldBePlayedOn() {
         storeTeamId(ENTRY);
         MyTeamService service = service();
 
         assertThat(service.render(service.myTeam(USER, budget())))
-                .contains("Playable now (GW1): bench boost")
-                .doesNotContain("Playable now (GW1): wildcard")
-                .contains("Opening in GW2: wildcard");
+                .contains("Squad as locked for Gameweek 1")
+                .contains("Playable at the next deadline (GW2): wildcard, bench boost,"
+                        + " triple captain");
+    }
+
+    /** A chip spent inside its own window is gone until the next window opens. */
+    @Test
+    void aWildcardPlayedInThisHalfIsNotOfferedAgainUntilTheSecond() {
+        currentEvent = 3;
+        chipsPlayed = "[{\"name\": \"wildcard\", \"event\": 3}]";
+        storeTeamId(ENTRY);
+        MyTeamService service = service();
+
+        assertThat(service.render(service.myTeam(USER, budget())))
+                .contains("Playable at the next deadline (GW4): bench boost, triple captain")
+                .contains("Opening in GW20: wildcard");
     }
 
     /** The changeover case: the database is a season behind, so only FPL's own numbers are used. */
@@ -165,7 +182,7 @@ class MyTeamServiceTest {
         int afterFirst = budget.spent();
         service.myTeam(USER, budget);
 
-        assertThat(requests.get("/entry/111/event/1/picks/").get()).isEqualTo(1);
+        assertThat(requests.get("/entry/111/event/" + currentEvent + "/picks/").get()).isEqualTo(1);
         assertThat(budget.spent() - afterFirst)
                 .as("only the chip history is re-read; everything else is cached")
                 .isEqualTo(1);
@@ -191,7 +208,8 @@ class MyTeamServiceTest {
 
         String card = service.render(service.myTeam(USER, new FplBudget(3)));
 
-        assertThat(card).contains("Squad as locked for Gameweek 1").doesNotContain("Playable now");
+        assertThat(card).contains("Squad as locked for Gameweek 1")
+                .doesNotContain("Playable at the next deadline");
     }
 
     private void storeTeamId(int entryId) {
@@ -216,12 +234,12 @@ class MyTeamServiceTest {
         return new MyTeamService(profiles, client, bootstrap, enrichment, 5, 100);
     }
 
-    private static String entryBody(int id, String name) {
+    private String entryBody(int id, String name) {
         return """
                 {"id": %d, "name": "%s", "player_first_name": "A", "player_last_name": "B",
                  "summary_overall_rank": 420132, "summary_overall_points": 41,
-                 "current_event": 1, "leagues": {"classic": []}}
-                """.formatted(id, name);
+                 "current_event": %d, "leagues": {"classic": []}}
+                """.formatted(id, name, currentEvent);
     }
 
     private static final String PICKS = """
@@ -233,6 +251,10 @@ class MyTeamServiceTest {
                {"element": 17, "position": 12, "multiplier": 0, "is_captain": false,
                 "is_vice_captain": true, "element_type": 1}]}
             """;
+
+    private String bootstrap() {
+        return BOOTSTRAP.formatted(currentEvent, currentEvent + 1);
+    }
 
     private static final String BOOTSTRAP = """
             {"teams": [{"id": 14, "short_name": "LIV"}, {"id": 4, "short_name": "NFO"}],
@@ -246,8 +268,12 @@ class MyTeamServiceTest {
                 "selected_by_percent": "18.3", "status": "a", "news": ""}],
              "chips": [{"name": "wildcard", "start_event": 2, "stop_event": 19},
                        {"name": "bboost", "start_event": 1, "stop_event": 19},
-                       {"name": "3xc", "start_event": 1, "stop_event": 19}],
-             "events": [{"id": 1, "deadline_time": "2026-08-21T17:30:00Z", "is_current": true}]}
+                       {"name": "3xc", "start_event": 1, "stop_event": 19},
+                       {"name": "wildcard", "start_event": 20, "stop_event": 38},
+                       {"name": "bboost", "start_event": 20, "stop_event": 38},
+                       {"name": "3xc", "start_event": 20, "stop_event": 38}],
+             "events": [{"id": %d, "deadline_time": "2026-08-21T17:30:00Z", "is_current": true},
+                        {"id": %d, "deadline_time": "2026-08-28T17:30:00Z", "is_next": true}]}
             """;
 
     private static void respond(HttpExchange exchange, int status, String body) throws IOException {

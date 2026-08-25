@@ -34,7 +34,7 @@ class FplBootstrapTest {
              "chips": [{"name": "wildcard", "start_event": 2, "stop_event": 19},
                        {"name": "bboost", "start_event": 1, "stop_event": 19}],
              "events": [{"id": 1, "deadline_time": "2026-08-21T17:30:00Z", "is_current": true},
-                        {"id": 2, "deadline_time": "2026-08-28T17:30:00Z", "is_current": false}]}
+                        {"id": 2, "deadline_time": "2026-08-28T17:30:00Z", "is_next": true}]}
             """;
 
     private HttpServer server;
@@ -70,6 +70,9 @@ class FplBootstrapTest {
         FplBootstrap.Snapshot snapshot = bootstrap(360).snapshot(new FplBudget(5)).orElseThrow();
 
         assertThat(snapshot.currentEvent()).isEqualTo(1);
+        assertThat(snapshot.nextEvent())
+                .as("the deadline a chip or a transfer made now would be played on")
+                .isEqualTo(2);
         assertThat(snapshot.deadline(1)).isPresent();
         assertThat(snapshot.element(302)).hasValueSatisfying(element -> {
             assertThat(element.webName()).isEqualTo("Salah");
@@ -79,7 +82,11 @@ class FplBootstrapTest {
         });
     }
 
-    /** The windows differ per chip and there are two sets a season: GW1 has no wildcard. */
+    /**
+     * The windows differ per chip. The wildcard's first one opens at GW2 because transfers are
+     * unlimited until the GW1 deadline — not because a manager cannot wildcard during GW1, which
+     * they can: it is played on GW2.
+     */
     @Test
     void chipWindowsAreReadPerChipRatherThanAssumed() {
         FplBootstrap.Snapshot snapshot = bootstrap(360).snapshot(new FplBudget(5)).orElseThrow();
