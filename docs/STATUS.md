@@ -2276,3 +2276,103 @@ no free tier:
 `SupabaseAdminClient` repeats the doubled-slash repair on `SUPABASE_URL` inline. PR #17
 (`early-season-data`, open at the time of writing) extracts the same regex as
 `SecurityConfig.collapseDoubledSlash`; once that merges the two should become one call.
+
+---
+
+# Status — My-team-aware advice (2026-08-25)
+
+Spec: `docs/superpowers/specs/2026-08-23-my-team-advice-design.md`.
+Plan: `docs/superpowers/plans/2026-08-23-my-team-advice.md` (13 tasks, all done).
+
+Three tools that answer from the user's own FPL squad: `getMyTeam`, `getMyMiniLeagues`,
+`getMiniLeagueOpponents`. Everything is fetched at chat time from FPL's public API, filled in
+from a cached `bootstrap-static`, and rendered as text like every other tool.
+
+## How a tool knows whose team it is
+
+The user id travels from the JWT to the tools in Spring AI's `ToolContext`
+(`ChatController` → `ChatService.stream(turns, userId, onUsage)` → `.toolContext(...)`), never
+as a tool parameter. Anything in a tool's schema is filled in by the model, and the model's
+input is the user's own text — a `userId` parameter is a working request for somebody else's
+squad the moment a user types one. `MyTeamToolsTest` asserts the generated schema carries no
+identifier at all, which is the assertion the rest of the feature's safety rests on.
+`SecurityContextHolder` is not an option: tool calls run on the provider's reactive threads.
+
+The same context carries an `FplBudget` — fifteen FPL calls for the turn, created per request
+because a counter on a singleton service would be shared by every conversation on the machine.
+
+## What the public API does not have, and what changed because of it
+
+Verified against the live API on 2026-08-25 (2026/27, GW1 current):
+
+- **No selling or purchase prices.** They are behind `/api/my-team/{entry}/`, which needs the
+  manager's own session. The card reports bank and current prices and says funds are
+  approximate rather than implying a transfer is exactly affordable.
+- **Only a gameweek whose deadline has passed can be fetched** — `event/2/picks/` answers 404
+  while GW1 is current. So the squad is always the one locked at the last deadline; the card
+  says which gameweek it describes, and the prompt tells the model to believe a user who says
+  they have transferred since.
+- **Chips remaining are not published.** They are derived from `bootstrap-static.chips` minus
+  `entry/{id}/history/.chips`. The windows are per chip and there are two sets a season: in
+  2026/27 the wildcard's first window is GW2–19 while the bench boost's is GW1–19, because
+  transfers are unlimited until the GW1 deadline and a wildcard would buy nothing.
+  **The chip list answers for the next deadline, not for the gameweek being played** — a
+  manager sitting in GW1 can activate a wildcard, and it is played on GW2. The first cut of
+  this compared the windows against `current_event` and told a GW1 manager the wildcard was
+  not available, which is a true statement about the wrong question. `FplBootstrap.Snapshot`
+  now carries `nextEvent` (FPL's `is_next`) and the card says "Playable at the next deadline
+  (GW2)".
+
+## Why bootstrap-static is fetched at chat time
+
+`element` ids are season-scoped and FPL renumbers every player every season. Filling a squad
+from a database that has not synced the new season yet would name *different players*, silently.
+`bootstrap-static` is the one source certain to be on the same season as the picks, so identity,
+price, form, ownership and availability come from it (one call, cached six hours, app-wide), and
+Supabase adds only what FPL does not publish — next-five fixture difficulty and xG/xA — and only
+while `SeasonResolver` names the season being played. Across the changeover the card says the
+deeper numbers are not available yet instead of joining the wrong rows.
+
+## Deviations from the plan
+
+- **The standings endpoint lives in `FplEntryClient`, not a separate `FplMiniLeagueClient`.** One
+  place owns the FPL timeouts, the three-way result and the "never log the URI" rule; a second
+  client would have copied all three to add one method.
+- **`fpl_daily_price` is not used for enrichment.** The plan had it supplying today's price and
+  flags, but `bootstrap-static` already carries them live and is fetched anyway — two sources for
+  one number is how they drift apart.
+- **A cold `bootstrap-static` makes the budgeted turn fifteen calls rather than fourteen.** The
+  plan's arithmetic assumed the app-wide snapshot was warm, which it is after the first
+  conversation on a machine. Both fit; `MiniLeagueServiceTest` pins the warm number.
+- **`nearby` is bounded by the page it fetched.** Five either side, minus whatever the page
+  boundary cuts off — a user at rank 105 gets four above and five below rather than a second
+  page fetched to even it up.
+
+## Verified against the live API
+
+Smoke-run on 2026-08-25 against entry 1 with real FPL URLs: the squad card (GW1 locked squad,
+bank, captain, chips for the GW2 deadline), the mini-league list, `nearby` and `top3`. Card plus
+all three league calls cost twelve of the fifteen-call budget. The run also settled the chip
+question above and confirmed the club short names come out right (`element.team` → the response's
+own `teams` block). The throwaway test was deleted rather than kept: it is a smoke check against
+a live third party, not an oracle, and the suite has exactly one `realdata` test on purpose.
+
+## Cost and limits
+
+Ten opponent squads and fifteen FPL calls per turn, both enforced in the services rather than
+left to the tool descriptions. `focus="top50"` is accepted, clamped, and says it was clamped, so
+the model cannot claim to have read the whole league. Opponents are reported as the difference
+against the user's own squad — two lines each instead of fifteen — because the reply re-enters
+the prompt on every later turn and the free tier meters messages, not tokens.
+
+The mini-league list is capped at twelve, smallest first, with the rest counted off — the live
+entry above is in sixteen, and a heavy player is in more.
+
+Managers' real names (`player_name` in the standings) are never read: they belong to third
+parties who never used this product, and everything here is sent to a model provider.
+
+## Left undone on purpose
+
+- Live gameweek points (`/api/event/{event}/live/`), a "my team" page, and head-to-head leagues.
+- No persistence: squads and standings live in in-process TTL maps, keyed by FPL entry or league
+  id rather than by user, so editing a stored team id cannot serve the previous team's squad.

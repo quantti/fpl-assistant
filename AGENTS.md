@@ -44,6 +44,23 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
 - External APIs (vaastav CSVs, football-data.org, FPL `bootstrap-static`) are hit only at sync time, never at chat time — everything queries Supabase.
 - **Today's price and today's injury flags come from `fpl_daily_price`, not from the tapas `player` table.** That table is synced weekly by `tapas-fpl-app` and was measured 85 days stale; `fpl_daily_price` is captured daily at 02:00 UK from FPL's own API (prices change at 00:00 UK) and owes tapas nothing, so it also survives the season changeover. It carries `status`/`news` — the availability picture — alongside `now_cost`. Dated rows, so it answers *when* a flag appeared; it cannot be backfilled, since FPL publishes only today's state. **The daily-capture tools (`getPriceHistory`, `getPlayerAvailability`, `getFlaggedPlayers`) are a documented exception like `HistoricalTools`: they use `DailyPriceSource.provenance()` (season + capture date) instead of `SeasonContext.provenance()`, because the resolver would attribute changeover-window data to the wrong season. Do not "fix" them back onto `SeasonContext.provenance()`.** Note that `element_id` in this table is season-scoped (FPL renumbers every season) — every query keyed on it must also filter on `season`.
 - Tools query Supabase via `JdbcTemplate`, annotated with Spring AI `@Tool`.
+- **No `@Tool` method takes a parameter that identifies an account.** The model fills tool
+  parameters from the conversation, so a `userId` (or a team id) in a tool's schema is a working
+  request for someone else's data the moment a user asks for it. The user id travels from the JWT
+  to the tools in Spring AI's `ToolContext` (`ChatController` → `ChatService.stream` →
+  `.toolContext(...)`), which Spring AI keeps out of the generated schema; `MyTeamTools.getMyTeam`
+  reads it through `ToolUser.required`. `SecurityContextHolder` does not work there — tool calls
+  run on the provider's reactive threads. The same context carries the turn's `FplBudget`.
+- **The my-team tools (`getMyTeam`, `getMyMiniLeagues`, `getMiniLeagueOpponents`) are a third
+  documented chat-time exception to "external APIs only at sync time"**, alongside
+  `FplEntryLookup`: a manager's squad is per user and per gameweek, so there is nothing to
+  pre-sync. They also fetch `bootstrap-static` (cached app-wide for six hours) because it is the
+  only source certain to be on the same season as the `element` ids in a manager's picks — FPL
+  renumbers every player every season, so filling a squad from an unsynced database names
+  *different players*. Supabase adds fixture difficulty and xG/xA only while `SeasonResolver`
+  names the season being played. Their provenance is two lines, not one: the squad block states
+  the gameweek it was locked for and when it was fetched, and the statistics block carries
+  `SeasonContext.provenance()`. Do not fold them into the single-banner convention.
 - **Tests seed the data they assert on and never depend on production content.** The suite runs
   against a disposable container (`scripts/test-db.sh`), which holds the tapas schema
   (`scripts/dump-test-schema.sh` regenerates the dump) and nothing else. Anything reading

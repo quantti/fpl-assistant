@@ -59,3 +59,11 @@ fpl:
   daily-price:
     table-name: fpl_daily_price_test
     scheduled: false
+
+  myteam:
+    # Port 1 refuses connections: a test that reaches FPL by accident fails fast instead of
+    # hitting the real API from CI. Tests that need FPL stub it and build the client themselves.
+    entry-url: http://127.0.0.1:1/entry/%d/
+    picks-url: http://127.0.0.1:1/entry/%d/event/%d/picks/
+    history-url: http://127.0.0.1:1/entry/%d/history/
+    standings-url: http://127.0.0.1:1/leagues-classic/%d/standings/?page_standings=%d

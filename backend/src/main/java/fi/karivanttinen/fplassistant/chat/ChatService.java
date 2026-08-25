@@ -1,5 +1,7 @@
 package fi.karivanttinen.fplassistant.chat;
 
+import fi.karivanttinen.fplassistant.myteam.FplBudget;
+import fi.karivanttinen.fplassistant.myteam.ToolUser;
 import fi.karivanttinen.fplassistant.tools.FplTool;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.ai.chat.client.ChatClient;
@@ -14,6 +16,8 @@ import reactor.core.publisher.Flux;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
@@ -23,11 +27,14 @@ public class ChatService {
     private final ChatClient chatClient;
     private final List<FplTool> tools;
     private final boolean cachedCountedInsideInput;
+    private final int fplAllowance;
 
     public ChatService(ChatClient chatClient, List<FplTool> tools,
-                       @Value("${fpl.ai.provider:anthropic}") String provider) {
+                       @Value("${fpl.ai.provider:anthropic}") String provider,
+                       @Value("${fpl.myteam.max-requests-per-turn}") int fplAllowance) {
         this.chatClient = chatClient;
         this.tools = tools;
+        this.fplAllowance = fplAllowance;
         // The two providers count a cached prompt differently, and the difference decides whether
         // a total is right or double: Anthropic reports input_tokens as the uncached remainder
         // with cache reads counted beside it, while OpenAI folds cached tokens into prompt_tokens
@@ -48,7 +55,7 @@ public class ChatService {
      * not once at the end: a stream that fails or times out never completes, and the tokens it
      * burned before failing were spent all the same.
      */
-    public Flux<String> stream(List<ChatTurn> turns, Consumer<TokenUsage> onUsage) {
+    public Flux<String> stream(List<ChatTurn> turns, UUID userId, Consumer<TokenUsage> onUsage) {
         List<ChatTurn> window = turns;
         // The Anthropic API rejects a history that opens on an assistant turn, and dropping the
         // oldest turns can leave one there.
@@ -66,6 +73,11 @@ public class ChatService {
         return chatClient.prompt()
                 .messages(history)
                 .tools(tools.toArray())
+                // Whose account is asking, and how many calls to FPL this turn may make. Both
+                // belong here rather than in a tool parameter: the model fills parameters from
+                // the user's own text, and a user id it can write is one an attacker can ask it
+                // to write. Spring AI keeps the tool context out of the schema the model sees.
+                .toolContext(Map.of(ToolUser.KEY, userId, ToolUser.BUDGET, new FplBudget(fplAllowance)))
                 .stream()
                 // .chatResponse() rather than .content(): the token counts live in the response
                 // metadata, and .content() throws that away. The two lines below are what
