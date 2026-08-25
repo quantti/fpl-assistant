@@ -155,8 +155,11 @@ public class SecurityConfig {
     /**
      * "https://project.supabase.co/" is what the dashboard shows and what anyone would paste, and
      * it concatenates into a path with a double slash that nothing routes.
+     *
+     * <p>Public because sign-up builds a Supabase URL from the same variable and needs the same
+     * repair; see {@code SupabaseAdminClient}.
      */
-    static String collapseDoubledSlash(String url) {
+    public static String collapseDoubledSlash(String url) {
         return url.replaceAll("(?<!:)//+(?=auth)", "/");
     }
 

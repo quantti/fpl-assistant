@@ -28,7 +28,7 @@ to a later date or season by owner decision.
 | Whether 20 messages a week is the right number | Product | open | A judgement, not a derived figure. It is `QUOTA_FREE_MESSAGES_PER_WEEK` precisely so it can move from evidence once testers have used it |
 | `SUPABASE_SERVICE_ROLE_KEY` and `INVITE_CODE` as Fly secrets | Infra | open | Neither is set. Sign-up answers `503` until the service-role key is set, and refuses every code until `INVITE_CODE` is. Owner action: `fly secrets set` |
 | Burnt invite slots have no admin path | Code | deferred | A failed Supabase call leaves a row with a null `user_id` — one slot, deliberately (see STATUS 2026-08-22). Released by hand: `DELETE FROM fpl_invite_redemption WHERE user_id IS NULL`. Not worth a UI at this size |
-| Duplicated `SUPABASE_URL` slash repair | Code | open | `SupabaseAdminClient` inlines the regex that PR #17 extracts as `SecurityConfig.collapseDoubledSlash`. Collapse into one call once #17 merges |
+| Duplicated `SUPABASE_URL` slash repair | Code | done | Closed 2026-08-25: `SupabaseAdminClient` calls `SecurityConfig.collapseDoubledSlash` (now public) instead of repeating its regex |
 
 ## Corpus and repository hygiene
 
@@ -37,19 +37,28 @@ to a later date or season by owner decision.
 | Ten strategy documents were shipping untracked | Infra | done | Fixed 2026-08-17 (`c7165b1`). The Docker build copies `backend/src/main/resources/docs/` from the working tree, so the deployed image carried content git did not have — a lost working tree would have lost the corpus. Corpus is now 19 documents / 166 chunks, verified against the live database |
 | `strategy-2026-27-preseason-consensus.md` ages out 2026-08-21 | Doc | open | `kind: timely`, `valid_until: 2026-08-21` — by design, but it drops out of retrieval the day the season starts. Decide then whether to replace it with an in-season equivalent |
 
+## My-team advice (2026-08-25)
+
+| Item | Type | Status | Notes |
+|---|---|---|---|
+| Live gameweek points in the squad card | Code | deferred | `/api/event/{event}/live/` adds one cached call and one number per pick. The card judges a squad on season-long form and fixtures, which is what transfer advice turns on |
+| Head-to-head mini-leagues | Code | deferred | Only classic leagues are supported: H2H ranks on fixtures, not totals, so the "who is near me and what do they own" shape does not carry over |
+| A "my team" page in the frontend | Code | open | `MyTeamService` would be reused unchanged; the tools cover the chat case today |
+| Transfers made after the last deadline are invisible | Code | open (by design) | FPL publishes picks only for a gameweek whose deadline has passed. The card says which gameweek it describes and the prompt tells the model to believe a user who says they have transferred since. Only `/api/my-team/{entry}/` would fix it, and that needs the manager's own session |
+
 ## Phase 5 — auth and billing (deferred to the last phase)
 
 | Item | Type | Status | Notes |
 |---|---|---|---|
 | Phase 5: Supabase JWT auth, Stripe billing, conversation persistence wiring | Code | deferred | Spec: `docs/superpowers/specs/2026-08-15-phase5-auth-billing-design.md`. Deferred to the last phase by design (AGENTS.md) |
-| `getUserSquad()` tool | Code | deferred | The system prompt already carries the Phase 5 squad conditional ("if the user's squad is known, factor in what they already own") so this needs no prompt restructuring |
-| SPA deep-link forwarding controller | Code | deferred | 404s once Phase 5 adds routes (recorded in STATUS.md Phase 1 review notes) |
+| `getUserSquad()` tool | Code | done | Shipped 2026-08-25 as `getMyTeam`, with `getMyMiniLeagues` and `getMiniLeagueOpponents` beside it (PR #19). See STATUS.md "My-team-aware advice" |
+| SPA deep-link forwarding controller | Code | done | `config/SpaForwardingController` exists and serves the SPA routes Phase 5a added |
 
 ## Open items from STATUS.md (recorded there, kept here for visibility)
 
 | Item | Type | Status | Notes |
 |---|---|---|---|
-| `SeasonResolver` guard for 0 or 2+ `is_current` rows (+ optional short-TTL cache) | Code | open | Currently throws; recorded in STATUS.md Phase 1 review notes |
+| `SeasonResolver` guard for 0 or 2+ `is_current` rows | Code | done | Closed 2026-08-25. It threw before, in `queryForMap`'s words ("expected 1, actual 2"), which point at this code rather than at the tapas-owned season table where the fix is. Now names the offending season codes and what to do, and stays a `DataAccessException` so the tools' catch still turns it into a sentence. The short-TTL cache was not built: one indexed row per tool call is not the cost worth caching |
 | CI: every test hits live Supabase — needs Testcontainers fixtures or a read-only secret | Infra | done | Closed 2026-08-19 by the ephemeral-container plan (`docs/superpowers/plans/2026-08-18-cicd-ephemeral-test-db.md`). Tests run against a disposable `pgvector/pgvector:pg17` container in CI and locally, seed their own data, and cannot reach Supabase — `TapasSeed` refuses. Deploy is now `.github/workflows/deploy.yml` |
 | `VaastavBackfillIntegrationTest` oracle tagged `realdata`, excluded from CI | Test | open | The import cross-check needs tapas' fully-synced 2025-26 season (380 fixtures, 20 clubs) as its oracle; reproducing that in a fixture would be a copy of production. Run by hand against Supabase with `-PincludeRealData` after changing the importer. Revisit if a second test ever wants the same escape hatch |
 | GitHub secrets for the deploy workflow | Infra | done | Set 2026-08-19. `FLY_API_TOKEN` is app-scoped (`github-actions-deploy`), expires 2027-08-19 — **rotate before then** with `flyctl tokens create deploy -a fpl-assistant` and `gh secret set` |
