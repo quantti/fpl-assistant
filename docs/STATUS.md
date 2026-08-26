@@ -2574,3 +2574,45 @@ only the list supports "he plays as a winger". The system prompt draws that line
 The document is `kind: timely` and names its review points — after three gameweeks, after a
 managerial change at a club on the list, and in January. **It needs a production ingest after this
 merges.**
+
+### Review of #48, and what it changed (2026-08-26)
+
+A review of the branch found fourteen things. Eleven were fixed on the branch; two became issues;
+one was already fixed before the review reported.
+
+The three that mattered:
+
+- **The window read the wrong quarter of a season.** `WINDOW_MATCHES = 10` over a *finished*
+  season means gameweeks 28-38 — verified against production, the window spans GW28-38 — which is
+  the run-in: sides chasing Europe rotate, safe sides coast, relegated ones have stopped. The
+  output called it "the previous season". A finished season is now read whole; the ten-match
+  window applies only to the season being played, where "recent" is the point.
+- **The reply stated a falsehood.** It said save points and penalty saves were "not in the data",
+  and the system prompt told the model to repeat it as the reason goalkeepers are understated.
+  `player_fixture_stats` carries `saves` and `penalties_saved`. Only defensive contribution is
+  genuinely absent. Leaving the other two out is a choice, and the text now says the true thing.
+- **Both `@Tool` descriptions still promised the abandoned design** — xGI/90 for attackers, xGC
+  for defenders — after the ranking moved to blended expected points. The model reads the
+  description, not the code, so it would have explained a list by a rule that no longer produced
+  it.
+
+Also fixed: the cross-season name bridge de-duplicated the metric season only, so two current
+players sharing a name both inherited one previous-season record; `expected_goals_conceded` is
+`NOT NULL DEFAULT 0`, so an unpopulated column read as `exp(-0)` — a certain clean sheet, printed
+as "CS 100%" — and zero is now treated as unrecorded; `element_type` indexed the scoring arrays
+unbounded, and FPL has added managers as a fifth type, so an out-of-range value would have thrown
+past the `DataAccessException` catch and failed the chat turn; the double-gameweek window boundary
+had no tiebreak, so identical calls could return different numbers; `completedGameweeks` counted a
+gameweek in progress as completed; the previous-season fallback triggered on any non-zero sample
+rather than a larger one; and every decimal except the FDR went through `String.formatted`, which
+resolves the default locale — "Score 6,83" on a comma-decimal JVM, and the new tests would have
+failed there while passing in CI.
+
+The footer now also dates the data (`the most recent gameweek in this data is N`), the discipline
+`AGENTS.md` sets for `getTeamForm`: the ranking is load-bearing on a sync that has been measured
+stale before.
+
+Deferred: #49 (no minutes or rotation weighting — 180 minutes across the window does not separate
+a starter from a substitute, and `starts` is never read) and #50 (the pool still takes price and
+injury flags from the weekly tapas `player` table, against the `AGENTS.md` rule; predates this
+change, which rewrote those lines without moving the source).
