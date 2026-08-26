@@ -54,6 +54,12 @@ public final class SharedStatsSeed {
     /** High form but injured: must never be recommended by any pick tool. */
     public static final String INJURED_PLAYER = "Halvorsen";
 
+    /** Available, but with no per-fixture record — the pick tools cannot judge him at all. */
+    public static final String PLAYER_WITHOUT_UNDERLYING = "Novak";
+
+    /** Available and has a record, but far too little of it to carry a per-90 figure. */
+    public static final String PLAYER_BELOW_MINUTES_FLOOR = "Halloran";
+
     /** Ashfield plays twice in gameweek 2, so a one-gameweek window returns two fixtures. */
     public static final int DOUBLE_GAMEWEEK = 2;
 
@@ -118,7 +124,15 @@ public final class SharedStatsSeed {
                     (9204, 9026, 9003, 'Lars',  'Halvorsen', 'Halvorsen', 4, 84, 'i',
                         'Knee injury - expected back late September', 55, 180, 2, 1, 8.0, 2.00, 6.9),
                     (9205, 9026, 9003, 'Tiago', 'Ferreira',  'Ferreira',  2, 45, 'a', NULL, 38, 270, 0, 1, 4.0,  8.00, 3.8),
-                    (9206, 9026, 9004, 'Piotr', 'Kaminski',  'Kaminski',  1, 45, 'a', NULL, 33, 270, 0, 0, 3.5,  6.00, 3.3)
+                    (9206, 9026, 9004, 'Piotr', 'Kaminski',  'Kaminski',  1, 45, 'a', NULL, 33, 270, 0, 0, 3.5,  6.00, 3.3),
+                    -- No player_fixture_stats rows anywhere: a summer signing, as far as the
+                    -- underlying data is concerned. The pick tools must count him out loud
+                    -- rather than drop him, which would read as a player judged and rejected.
+                    (9207, 9026, 9005, 'Ryan',  'Novak',     'Novak',     3, 60, 'a', NULL, 12,  45, 0, 0, 1.2, 50.00, 1.5),
+                    -- One substitute appearance. He has a record, so a count of "players with no
+                    -- rows" would miss him, while the minutes floor still drops him from the
+                    -- ranking — the gap the exclusion count used to fall through.
+                    (9208, 9026, 9003, 'Sean',  'Halloran',  'Halloran',  2, 45, 'a', NULL,  2,  45, 0, 0, 0.5,  4.00, 0.5)
                 ON CONFLICT (id, season_id) DO NOTHING
                 """);
 
@@ -157,7 +171,15 @@ public final class SharedStatsSeed {
                     (9103, 9203, 9026, 2, 9001, 9002, false, TIMESTAMPTZ '2025-08-23 14:00:00+00', 85, 13, 2, 0, 1.10, 0.05, 1.15, 0, 1, 0.90, 96),
                     (9103, 9202, 9026, 2, 9002, 9001, true,  TIMESTAMPTZ '2025-08-23 14:00:00+00', 90, 5, 1, 0, 0.35, 0.00, 0.35, 0, 3, 2.10, 55),
                     (9110, 9201, 9026, 2, 9001, 9004, true,  TIMESTAMPTZ '2025-08-24 14:00:00+00', 90, 3, 0, 0, 0.25, 0.20, 0.45, 1, 0, 0.60, 75),
-                    (9110, 9203, 9026, 2, 9001, 9004, true,  TIMESTAMPTZ '2025-08-24 14:00:00+00', 78, 2, 0, 0, 0.40, 0.00, 0.40, 1, 0, 0.60, 96)
+                    (9110, 9203, 9026, 2, 9001, 9004, true,  TIMESTAMPTZ '2025-08-24 14:00:00+00', 78, 2, 0, 0, 0.40, 0.00, 0.40, 1, 0, 0.60, 96),
+                    -- A defender and a goalkeeper, so the pick tools' defensive metric (expected
+                    -- goals conceded per match) has something to rank. Selby keep the tighter
+                    -- side of the two.
+                    (9102, 9205, 9026, 1, 9003, 9004, true,  TIMESTAMPTZ '2025-08-16 16:30:00+00', 90, 6, 0, 0, 0.05, 0.10, 0.15, 1, 0, 0.80, 45),
+                    (9104, 9205, 9026, 2, 9003, 9004, false, TIMESTAMPTZ '2025-08-23 16:30:00+00', 90, 2, 0, 1, 0.05, 0.20, 0.25, 0, 2, 1.70, 45),
+                    (9102, 9206, 9026, 1, 9004, 9003, false, TIMESTAMPTZ '2025-08-16 16:30:00+00', 90, 6, 0, 0, 0.00, 0.00, 0.00, 1, 0, 0.60, 45),
+                    (9104, 9206, 9026, 2, 9004, 9003, true,  TIMESTAMPTZ '2025-08-23 16:30:00+00', 90, 2, 0, 0, 0.00, 0.00, 0.00, 0, 2, 1.10, 45),
+                    (9102, 9208, 9026, 1, 9003, 9004, true,  TIMESTAMPTZ '2025-08-16 16:30:00+00', 45, 2, 0, 0, 0.02, 0.03, 0.05, 0, 0, 0.80, 45)
                 ON CONFLICT (fixture_id, player_id, season_id) DO NOTHING
                 """);
     }

@@ -153,6 +153,21 @@ fpl:
     max-requests-per-turn: 15
     # Ten squads is what fits the budget; a bigger focus is clamped to it, and the reply says so.
     max-opponents: 10
+  defcon:
+    # Defensive contribution: 2 points for a defender reaching 10 clearances, blocks,
+    # interceptions and tackles in a match, or a midfielder or forward reaching 12 including
+    # recoveries. FPL added it for 2025/26; shared' player_fixture_stats predates the field, so
+    # this project adds the columns and fills them. One request per player, from the same
+    # element-summary endpoint shared reads for the rest of that table.
+    element-summary-url: https://fantasy.premierleague.com/api/element-summary/{playerId}/
+    # 03:00 UK, an hour after the price capture: this run takes minutes, and the price capture
+    # is the one that cannot be repeated later.
+    fetch-at: "0 0 3 * * *"
+    fetch-zone: Europe/London
+    scheduled: ${DEFCON_SCHEDULED:true}
+    # Spacing between requests. ~600 players at 150ms is about a minute and a half of polite
+    # traffic against a public API nobody is paying for.
+    request-delay-ms: ${DEFCON_REQUEST_DELAY_MS:150}
   daily-price:
     table-name: fpl_daily_price
     # FPL's own bootstrap-static. Read-only, unauthenticated, and the only source in this
