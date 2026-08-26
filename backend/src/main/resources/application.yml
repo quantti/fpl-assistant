@@ -110,9 +110,9 @@ fpl:
     # public: it is the offer, and it is on the marketing page either way.
     free-messages-per-week: ${QUOTA_FREE_MESSAGES_PER_WEEK:20}
   invite:
-    # Sign-up's shared code, handed out by the owner. No default: an unset INVITE_CODE refuses
-    # every sign-up, so a missing secret closes the door rather than opening it.
-    code: ${INVITE_CODE:}
+    # There is no shared code any more. Codes are rows in fpl_invite_code, each with its own
+    # ceiling, benefit and validity window; an empty table refuses every sign-up, which is the
+    # same safe default the missing secret used to give. Issue one with --create-invite-code.
     # The hard ceiling on accounts created through /api/auth/signup, and the number the free
     # tier's cost ceiling is drawn against (30 x 20 messages a week is about EUR 38/month). A
     # property so the owner can move it without a deploy.
@@ -121,6 +121,7 @@ fpl:
     # Phase 5a. Names are properties for the same reason every other table's is: the test
     # profile pins them to isolated copies. fpl_user_profile is NOT app_user — tapas owns that
     # name in this database.
+    invite-code-table-name: fpl_invite_code
     profile-table-name: fpl_user_profile
     conversation-table-name: fpl_conversation
     message-table-name: fpl_message

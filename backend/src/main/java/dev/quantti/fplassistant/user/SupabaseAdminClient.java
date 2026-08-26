@@ -69,7 +69,7 @@ public class SupabaseAdminClient {
         // what the dashboard shows, and the dashboard shows it with a trailing slash. A doubled
         // slash is not routed by Supabase's gateway, so the call would fail for a reason nothing
         // here could report usefully.
-        this.usersUrl = SecurityConfig.collapseDoubledSlash(url + "/auth/v1/admin/users");
+        this.usersUrl = SecurityConfig.collapseDoubledSlash(url + "/auth/v1/signup");
         this.serviceRoleKey = serviceRoleKey;
     }
 
@@ -79,11 +79,22 @@ public class SupabaseAdminClient {
     }
 
     /**
-     * Creates an account with its address already confirmed.
+     * Creates an account with its address <b>unconfirmed</b>, and asks Supabase to send the
+     * confirmation email.
      *
-     * <p>{@code email_confirm} marks the address confirmed without sending anything, which is
-     * defensible only while the invite code and the account cap are the gate. It stops being
-     * defensible the day the code comes off — recorded in {@code docs/TODO.md}.
+     * <p>This calls {@code /auth/v1/signup} rather than {@code /auth/v1/admin/users}, and the
+     * difference is the whole point: the admin endpoint creates a user and sends nothing, which
+     * is why the project's own {@code email_confirm: true} was the only way it could ever be
+     * signed into. {@code /signup} is GoTrue's own registration path — it creates the user
+     * unconfirmed and sends the confirmation mail through the project's configured SMTP, using
+     * the project's own template.
+     *
+     * <p>It is called <b>with the service-role key</b>, which is what keeps the invite code
+     * meaningful: the endpoint is public, so the browser could reach it directly with the anon
+     * key, and public sign-up must therefore be turned off in the Supabase project. The service
+     * role is expected to be exempt from that switch. <b>Verify that before relying on it</b> —
+     * if it is not exempt, the fallback is {@code admin/users} with {@code email_confirm: false}
+     * plus {@code admin/generate_link}, and sending the mail ourselves.
      */
     public Result createUser(String email, String password) {
         if (!configured()) {
@@ -96,7 +107,9 @@ public class SupabaseAdminClient {
                     .header("apikey", serviceRoleKey)
                     .header("Authorization", "Bearer " + serviceRoleKey)
                     .contentType(MediaType.APPLICATION_JSON)
-                    .body(Map.of("email", email, "password", password, "email_confirm", true))
+                    // No email_confirm. The address is confirmed by the person who owns it,
+                    // by following the link Supabase sends, and not before.
+                    .body(Map.of("email", email, "password", password))
                     // Supabase says "no" with 400 or 422 depending on which check failed, and
                     // both are answers rather than failures. Everything else falls through to
                     // the status check below rather than being thrown, so a 500 and a refusal
