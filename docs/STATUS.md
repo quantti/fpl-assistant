@@ -2616,3 +2616,44 @@ Deferred: #49 (no minutes or rotation weighting — 180 minutes across the windo
 a starter from a substitute, and `starts` is never read) and #50 (the pool still takes price and
 injury flags from the weekly tapas `player` table, against the `AGENTS.md` rule; predates this
 change, which rewrote those lines without moving the source).
+
+## Defensive contribution captured into player_fixture_stats (2026-08-26)
+
+FPL introduced defensive-contribution points for 2025/26: **2 points for a defender reaching 10
+clearances, blocks, interceptions and tackles in a match, or a midfielder or forward reaching 12
+including recoveries.** For a ball-winning defender or a holding midfielder that is a large and
+repeatable share of their return, and nothing in this project could see it.
+
+The reason was not that FPL withholds it. `element-summary/{id}/history` — the same endpoint tapas
+reads to fill `player_fixture_stats` — carries `defensive_contribution`,
+`clearances_blocks_interceptions`, `recoveries` and `tackles` **per match**. Tapas' schema predates
+the field and its sync writes a named column list, so the values have been arriving in the payload
+and being dropped.
+
+**The owner granted an exception to the "do not alter tapas tables" rule** and the four columns now
+live on `player_fixture_stats`, recorded in `AGENTS.md`. They belong at that grain; a parallel
+`fpl_`-prefixed table would duplicate the key, need a join in every query, and drift whenever tapas
+re-syncs a gameweek. The write split keeps the two projects apart: tapas owns the rows and INSERTs
+them, this project owns four columns and only ever UPDATEs them, and because both write named
+column lists neither can clear the other's values.
+
+Nullable with no default, deliberately. Zero is a real reading — a striker who did no defensive
+work — and a `DEFAULT 0` would make "nothing happened" indistinguishable from "never fetched". That
+is the same mistake that made the first set-piece capture announce the whole league had changed
+duty.
+
+`DefensiveStatsSyncService` fetches one player at a time, bounded to players who already have a row
+in the current season, spaced 150ms apart. Per-match rather than the season totals in
+`bootstrap-static`, which would be one request instead of six hundred: the points are a **threshold
+per match**, so a season mean cannot say how often a player crossed it — a defender steady on 9.8
+scores less often than one averaging 9.5 with a wide spread. Per-match rows also backfill, which a
+daily total never can. Scheduled 03:00 Europe/London, an hour after the price capture so the two
+never share the scheduler thread; `--sync-defcon` runs it by hand.
+
+**Run against production 2026-08-26: 610 of 610 rows filled, 0 failures.** In GW1, 19 defenders and
+12 midfielders earned the two points; no forward and no goalkeeper did. Starters average 7.2 actions
+(DEF and MID alike), forwards 3.7, goalkeepers 0 — FPL does not award it to keepers. 2025/26 rows
+are still empty and can be backfilled by the same runner whenever it is wanted.
+
+Not yet wired into `PickTools`' `xPts/90`, which still covers goals, assists and clean sheets only
+and says so. That is issue #46, which stays open for the scoring half.
