@@ -2544,3 +2544,28 @@ that they scored, say plainly there is no underlying case yet.
 
 Issue #26 is only half closed by this — `ExpectedStatsTools` still ranks on the resolved season
 alone.
+
+### Positional mismatch (same day)
+
+One more thing the score alone does not say. FPL pays by the position a player is **listed** as,
+not the one they play, so a defender who plays wing-back or winger collects 6 a goal, 3 an assist
+and 4 a clean sheet while creating like a midfielder. That gap is durable value, and it also
+changes how fixture difficulty should be read: a hard fixture removes most of a *stopper's* return,
+because the clean sheet is most of it, but an attacking defender still takes the corners and plays
+the 90.
+
+Measured over 2025/26 (900+ minutes), the median xGI/90 by listed position is GK 0.00, DEF 0.11,
+MID 0.26, FWD 0.43 — so a defender above 0.26 is producing like a median midfielder on a defender's
+scoring table. `backend/src/main/resources/docs/positional-mismatch-players.md` is the maintained
+list: eleven defenders above the DEF median with their attacking split and set-piece duty, plus the
+smaller midfielder-as-forward case. De Cuyper (0.26 xA/90, Brighton's corners, £4.6m) and Reece
+James (first on both corners and direct free kicks) are the two clearest.
+
+The document is `kind: timely` and says how to revisit it — after three gameweeks, after a
+managerial change, and in January — because there is no API field for "the position he actually
+plays". The measurable half is re-derivable from `player_fixture_stats`; the unmeasurable half is
+whether he is still picked in that role. **It needs a production ingest after this merges.**
+
+The system prompt now routes there: check the corpus document and `getSetPieceTakers` before
+answering "is this defender worth it", and do not dismiss an attacking defender on fixture
+difficulty alone.
