@@ -2480,3 +2480,67 @@ predates the columns rather than recording an absence of duty — so the change 
 the whole league's set-piece duty changed on 25 August. A capture with no set-piece data at all is
 now skipped when comparing, because it cannot tell "takes nothing" from "nobody looked"; a player
 who genuinely loses a duty still reports `#1 -> none`.
+
+## Pick tools rank on expected points, not on points scored (2026-08-26)
+
+`getDifferentialPicks` and `getCaptainCandidates` ranked on FPL's `form` column. That column is
+average points per match over the last 30 days, so two gameweeks into a season it *is* the last
+scoreline. In GW2 the tools led with a £4.5m defender who had scored in GW1 — the model relayed
+the ordering as though it were a case for him, which is points chasing dressed as advice.
+
+They now rank on a **Score**: expected FPL points per 90, blended with the points actually scored.
+
+```
+xPts/90 = 2 + xG/90 × goal points + xA/90 × 3 + exp(-xGC) × clean-sheet points
+Score   = xPts/90 × (1 - w) + Pts/90 × w
+```
+
+FPL's own scoring is what makes one number fair across positions, and across the two kinds of
+defender: a goal is worth 6 to a defender and 4 to a forward, a clean sheet 4 to a defender, 1 to
+a midfielder and nothing to a forward. `exp(-xGC)` is the Poisson probability that a side with
+that expected concession keeps one. **An attacking full-back earns through the first two terms and
+a stopper through the last**, and neither is judged on the other's strength — the earlier attempt
+ranked defenders on xGC alone, which buried the attacking ones. Each pick prints its components
+(`xG/90`, `xA/90`, `CS % at xGC`) so the model can say which kind of defender it is recommending.
+
+`w` rises from 0 to 0.5 by gameweek 19. Underlying numbers predict better, but a real return is
+evidence too, and it stops being a small sample as the season runs — penalties, set pieces, bonus
+and defensive contributions are all real points the expected model cannot see. At GW2 realised
+points carry 5% of the weight; by the midpoint, half. `form` is gone from the output entirely: a
+30-day points average sitting beside a ranking invites the model to explain the order with it.
+
+`form > 0` is gone as a filter too. It excluded every player yet to score, which early in a season
+is exactly the set the underlying numbers would promote. A minimum of 180 minutes inside the
+window replaces it — below two full matches a per-90 figure is arithmetic on noise.
+
+**Not modelled, because tapas does not carry the columns:** defensive-contribution points, save
+points, penalty saves. Goalkeepers and ball-winning defenders are understated in `xPts/90`, which
+the reply states; `Pts/90` is where their return shows up. Issue #46 tracks capturing defcon data,
+issue #47 the fixture-aware clean-sheet projection.
+
+**Which season the metrics come from** is decided by sample size, not by the resolver alone: the
+season being played once it has 5 completed gameweeks, the previous one until then. This is the
+system prompt's early-season rule applied where the ordering is actually decided, instead of being
+left for the model to remember after the tool has already handed it a points-sorted list.
+
+Crossing seasons costs something. `player.id` is FPL's element id and is reassigned every season,
+and tapas keeps no stable player code (`fixture` and `team` have one; `player` does not), so
+players are bridged by name. Measured on production: of 612 players in 2026-27, 440 match a unique
+2025-26 name, 34 match an ambiguous one, 138 match none. Ambiguous and missing are both dropped
+rather than guessed — a wrong metric attached to a recommendation is the failure being fixed — and
+the count of dropped players is printed, because a silently missing promoted-club defender reads
+as one that was judged and rejected.
+
+**Verified against production data.** The GW1 scorer who triggered this moves from 1st on `form`
+to 31st of 63 cheap defenders — attacking output that is real, behind a defence that leaked. The
+top of the list reads De Cuyper (xPts/90 6.83: xA/90 0.64 *and* a 68% clean-sheet chance),
+Sessegnon (5.38, xG/90 0.20), Diop (5.01), with stoppers like Dunk alongside them — both shapes
+present, each legible from its own components. 46 cheap defenders have no comparable 2025-26
+record and are reported as unjudged. Suite green at 404 tests.
+
+The system prompt gained a matching rule: never recommend a player because of one big gameweek,
+name which kind of defender is being recommended and on what, and if the only case for a player is
+that they scored, say plainly there is no underlying case yet.
+
+Issue #26 is only half closed by this — `ExpectedStatsTools` still ranks on the resolved season
+alone.
