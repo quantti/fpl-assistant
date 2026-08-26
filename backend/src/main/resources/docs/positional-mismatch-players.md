@@ -2,7 +2,7 @@
 title: Positional Mismatch — Defenders Who Play Further Forward
 kind: timely
 valid_from: 2026-08-26
-valid_until: 2026-12-31
+valid_until: 2027-02-28
 ---
 
 # Positional Mismatch — Defenders Who Play Further Forward

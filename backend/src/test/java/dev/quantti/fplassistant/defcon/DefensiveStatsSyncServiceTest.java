@@ -32,8 +32,9 @@ class DefensiveStatsSyncServiceTest {
                 body(match(11, 2, 6, 9, 4), match(12, 0, 1, 8, 0)), 42, 7);
 
         assertThat(updates).hasSize(2);
-        assertThat(updates.getFirst()).containsExactly(2, 6, 9, 4, 11, 42, 7);
-        assertThat(updates.get(1)).containsExactly(0, 1, 8, 0, 12, 42, 7);
+        // defcon, cbi, recoveries, tackles, fixture, player, season, minutes
+        assertThat(updates.getFirst()).containsExactly(2, 6, 9, 4, 11, 42, 7, 90);
+        assertThat(updates.get(1)).containsExactly(0, 1, 8, 0, 12, 42, 7, 90);
     }
 
     /**
@@ -59,6 +60,28 @@ class DefensiveStatsSyncServiceTest {
                 DefensiveStatsSyncService.toUpdates(body(withoutDefcon), 42, 7);
 
         assertThat(updates.getFirst()).startsWith(null, null, null, null);
+    }
+
+    /**
+     * Minutes travel into the WHERE clause. FPL's history carries whatever season it is serving,
+     * which need not be the one the database flags current, and element ids are reused across
+     * seasons — so a colliding key must not be allowed to overwrite another player's match.
+     */
+    @Test
+    void minutesAreCarriedLastSoTheyCanGuardTheUpdate() {
+        Object[] update = DefensiveStatsSyncService
+                .toUpdates(body(match(11, 2, 6, 9, 4)), 42, 7).getFirst();
+
+        assertThat(update[update.length - 1]).isEqualTo(90);
+    }
+
+    /** No minutes means no guard, so there is nothing safe to write. */
+    @Test
+    void aRowWithoutMinutesIsSkipped() {
+        Map<String, Object> noMinutes = Map.of("element", 1, "fixture", 11, "round", 1,
+                "defensive_contribution", 2);
+
+        assertThat(DefensiveStatsSyncService.toUpdates(body(noMinutes), 42, 7)).isEmpty();
     }
 
     /** No fixture id means no key to update on; the row is skipped rather than guessed at. */

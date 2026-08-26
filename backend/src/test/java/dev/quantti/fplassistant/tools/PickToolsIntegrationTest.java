@@ -196,7 +196,8 @@ class PickToolsIntegrationTest {
     void playersWithoutAnUnderlyingRecordAreExcludedAndCounted() {
         String result = tools.getDifferentialPicks("any", 100, 3);
 
-        assertThat(result).contains("not listed: they have no comparable");
+        assertThat(result).containsPattern("Ranked from [0-9]+ of the [0-9]+ players matching");
+        assertThat(result).contains("they are unjudged, not judged and rejected");
         assertThat(result).doesNotContain(" " + TapasSeed.PLAYER_WITHOUT_UNDERLYING + " (");
     }
 
@@ -211,6 +212,8 @@ class PickToolsIntegrationTest {
         String result = tools.getDifferentialPicks("DEF", 100, 3);
 
         assertThat(result).doesNotContain(" " + TapasSeed.PLAYER_BELOW_MINUTES_FLOOR + " (");
-        assertThat(result).containsPattern("\\b1 further player\\(s\\) matching these filters are not listed");
+        // The coverage line has to notice him: he has rows, so a count of "players with no rows"
+        // would not, which is the drift this replaced.
+        assertThat(result).containsPattern("Ranked from [0-9]+ of the [0-9]+ players matching");
     }
 }
