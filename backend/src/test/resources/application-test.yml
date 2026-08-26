@@ -60,6 +60,15 @@ fpl:
     table-name: fpl_daily_price_test
     scheduled: false
 
+  defcon:
+    # Port 1 refuses connections: a test that reaches FPL by accident fails fast instead of
+    # hitting the real API from CI. The mapping is unit-tested against a captured body.
+    element-summary-url: http://127.0.0.1:1/element-summary/{playerId}/
+    fetch-at: "0 0 3 * * *"
+    fetch-zone: Europe/London
+    scheduled: false
+    request-delay-ms: 0
+
   myteam:
     # Port 1 refuses connections: a test that reaches FPL by accident fails fast instead of
     # hitting the real API from CI. Tests that need FPL stub it and build the client themselves.
