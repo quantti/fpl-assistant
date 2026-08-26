@@ -44,9 +44,12 @@ class PickToolsIntegrationTest {
 
         assertThat(result).contains("Differential picks");
         assertThat(result).contains("Own ");
-        assertThat(result).contains("Form ");
+        assertThat(result).contains("Score ");
         assertThat(result).contains("Avg FDR");
-        assertThat(result).contains("Ranked by form, then average FDR");
+        // Form is deliberately not a column here: it is 30 days of points, and showing it beside
+        // a ranking invites the model to explain the order with it.
+        assertThat(result).doesNotContain("| Form ");
+        assertThat(result).contains("Ranked by Score");
         assertThat(result).contains("Data source: season");
         // The seeded midfielders straddle the ownership filter: one at 3.2%, one at 12.5%.
         assertThat(result).contains(TapasSeed.DIFFERENTIAL_PLAYER);
@@ -64,7 +67,7 @@ class PickToolsIntegrationTest {
         String result = tools.getCaptainCandidates(5);
 
         assertThat(result).contains("Captain candidates");
-        assertThat(result).contains("Form ");
+        assertThat(result).contains("xPts/90 ");
         assertThat(result).contains("Avg FDR");
         assertThat(result).contains("Data source: season");
     }
@@ -122,5 +125,95 @@ class PickToolsIntegrationTest {
             assertThat(captains).doesNotContain(" " + name + " (");
         }
         assertThat(differentials).contains("Unavailable players (injured/suspended) are excluded");
+    }
+
+    /**
+     * The defect this ranking replaced: FPL's {@code form} is average points per match over the
+     * last 30 days, so early in a season it is one scoreline. Points still reach the score, but
+     * through Pts/90 and weighted by how much season there is behind them — never as the
+     * headline.
+     */
+    @Test
+    void theOutputSeparatesWhatIsExpectedFromWhatWasScored() {
+        String result = tools.getCaptainCandidates(3);
+
+        assertThat(result).contains("Score ");
+        assertThat(result).contains("xPts/90 ");
+        assertThat(result).contains("Pts/90 ");
+        assertThat(result).contains("Realised points carry ");
+    }
+
+    /**
+     * The score has to be readable back to its parts, or the model cites a number it cannot
+     * explain — and "why this defender" is exactly the question a user asks next.
+     */
+    @Test
+    void everyPickShowsTheComponentsBehindItsExpectedPoints() {
+        String result = tools.getDifferentialPicks("MID", 100, 3);
+
+        assertThat(result).containsPattern("xG/90 [0-9]\\.[0-9]{2}, xA/90 [0-9]\\.[0-9]{2}");
+    }
+
+    /**
+     * Two kinds of defender have to be visible as different picks: the clean-sheet term is what
+     * separates a stopper from an attacking full-back, so it is shown for everyone who earns from
+     * it — and for nobody who does not.
+     */
+    @Test
+    void defendersAndKeepersShowACleanSheetProbabilityAndForwardsDoNot() {
+        assertThat(tools.getDifferentialPicks("DEF", 100, 3))
+                .containsPattern("CS [0-9]+% at xGC [0-9]\\.[0-9]{2}");
+        assertThat(tools.getDifferentialPicks("GK", 100, 3))
+                .containsPattern("CS [0-9]+% at xGC [0-9]\\.[0-9]{2}");
+        assertThat(tools.getDifferentialPicks("FWD", 100, 3))
+                .as("a forward is paid nothing for a clean sheet")
+                .doesNotContain("CS ");
+    }
+
+    /**
+     * What the model must not do is present xPts/90 as a complete projection. An earlier version
+     * of this line said save points and penalty saves were "not in the data", which is false —
+     * player_fixture_stats carries `saves` and `penalties_saved`. Leaving them out is a choice,
+     * and the reply has to say the true thing.
+     */
+    @Test
+    void theReplySaysWhichPointsTheExpectedModelDoesNotCover() {
+        String result = tools.getDifferentialPicks("DEF", 100, 3);
+
+        assertThat(result).contains("xPts/90 covers goals, assists and clean sheets only");
+        assertThat(result).contains("Do not call xPts/90 a complete projection");
+        assertThat(result).doesNotContain("are not in the data");
+    }
+
+    /** A stalled statistics sync has to be visible, the way getTeamForm makes it visible. */
+    @Test
+    void theReplyDatesTheUnderlyingData() {
+        assertThat(tools.getCaptainCandidates(3))
+                .containsPattern("The most recent gameweek in this data is [0-9]+ of ");
+    }
+
+    @Test
+    void playersWithoutAnUnderlyingRecordAreExcludedAndCounted() {
+        String result = tools.getDifferentialPicks("any", 100, 3);
+
+        assertThat(result).containsPattern("Ranked from [0-9]+ of the [0-9]+ players matching");
+        assertThat(result).contains("they are unjudged, not judged and rejected");
+        assertThat(result).doesNotContain(" " + TapasSeed.PLAYER_WITHOUT_UNDERLYING + " (");
+    }
+
+    /**
+     * The count used to be a second query listing the reasons a player could be absent, and it
+     * missed two of them: too few minutes, and a name that is ambiguous across the seasons. Those
+     * players left the list without leaving a trace. It is now the pool minus what came back, so
+     * every absence is accounted for whatever caused it.
+     */
+    @Test
+    void aPlayerBelowTheMinutesFloorIsCountedAndNotSilentlyDropped() {
+        String result = tools.getDifferentialPicks("DEF", 100, 3);
+
+        assertThat(result).doesNotContain(" " + TapasSeed.PLAYER_BELOW_MINUTES_FLOOR + " (");
+        // The coverage line has to notice him: he has rows, so a count of "players with no rows"
+        // would not, which is the drift this replaced.
+        assertThat(result).containsPattern("Ranked from [0-9]+ of the [0-9]+ players matching");
     }
 }

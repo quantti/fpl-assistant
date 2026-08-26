@@ -2480,3 +2480,244 @@ predates the columns rather than recording an absence of duty — so the change 
 the whole league's set-piece duty changed on 25 August. A capture with no set-piece data at all is
 now skipped when comparing, because it cannot tell "takes nothing" from "nobody looked"; a player
 who genuinely loses a duty still reports `#1 -> none`.
+
+## Pick tools rank on expected points, not on points scored (2026-08-26)
+
+`getDifferentialPicks` and `getCaptainCandidates` ranked on FPL's `form` column. That column is
+average points per match over the last 30 days, so two gameweeks into a season it *is* the last
+scoreline. In GW2 the tools led with a £4.5m defender who had scored in GW1 — the model relayed
+the ordering as though it were a case for him, which is points chasing dressed as advice.
+
+They now rank on a **Score**: expected FPL points per 90, blended with the points actually scored.
+
+```
+xPts/90 = 2 + xG/90 × goal points + xA/90 × 3 + exp(-xGC) × clean-sheet points
+Score   = xPts/90 × (1 - w) + Pts/90 × w
+```
+
+FPL's own scoring is what makes one number fair across positions, and across the two kinds of
+defender: a goal is worth 6 to a defender and 4 to a forward, a clean sheet 4 to a defender, 1 to
+a midfielder and nothing to a forward. `exp(-xGC)` is the Poisson probability that a side with
+that expected concession keeps one. **An attacking full-back earns through the first two terms and
+a stopper through the last**, and neither is judged on the other's strength — the earlier attempt
+ranked defenders on xGC alone, which buried the attacking ones. Each pick prints its components
+(`xG/90`, `xA/90`, `CS % at xGC`) so the model can say which kind of defender it is recommending.
+
+`w` rises from 0 to 0.5 by gameweek 19. Underlying numbers predict better, but a real return is
+evidence too, and it stops being a small sample as the season runs — penalties, set pieces, bonus
+and defensive contributions are all real points the expected model cannot see. At GW2 realised
+points carry 5% of the weight; by the midpoint, half. `form` is gone from the output entirely: a
+30-day points average sitting beside a ranking invites the model to explain the order with it.
+
+`form > 0` is gone as a filter too. It excluded every player yet to score, which early in a season
+is exactly the set the underlying numbers would promote. A minimum of 180 minutes inside the
+window replaces it — below two full matches a per-90 figure is arithmetic on noise.
+
+**Not modelled, because tapas does not carry the columns:** defensive-contribution points, save
+points, penalty saves. Goalkeepers and ball-winning defenders are understated in `xPts/90`, which
+the reply states; `Pts/90` is where their return shows up. Issue #46 tracks capturing defcon data,
+issue #47 the fixture-aware clean-sheet projection.
+
+**Which season the metrics come from** is decided by sample size, not by the resolver alone: the
+season being played once it has 5 completed gameweeks, the previous one until then. This is the
+system prompt's early-season rule applied where the ordering is actually decided, instead of being
+left for the model to remember after the tool has already handed it a points-sorted list.
+
+Crossing seasons costs something. `player.id` is FPL's element id and is reassigned every season,
+and tapas keeps no stable player code (`fixture` and `team` have one; `player` does not), so
+players are bridged by name. Measured on production: of 612 players in 2026-27, 440 match a unique
+2025-26 name, 34 match an ambiguous one, 138 match none. Ambiguous and missing are both dropped
+rather than guessed — a wrong metric attached to a recommendation is the failure being fixed — and
+the count of dropped players is printed, because a silently missing promoted-club defender reads
+as one that was judged and rejected.
+
+**Verified against production data.** The GW1 scorer who triggered this moves from 1st on `form`
+to 31st of 63 cheap defenders — attacking output that is real, behind a defence that leaked. The
+top of the list reads De Cuyper (xPts/90 6.83: xA/90 0.64 *and* a 68% clean-sheet chance),
+Sessegnon (5.38, xG/90 0.20), Diop (5.01), with stoppers like Dunk alongside them — both shapes
+present, each legible from its own components. 46 cheap defenders have no comparable 2025-26
+record and are reported as unjudged. Suite green at 404 tests.
+
+The system prompt gained a matching rule: never recommend a player because of one big gameweek,
+name which kind of defender is being recommended and on what, and if the only case for a player is
+that they scored, say plainly there is no underlying case yet.
+
+Issue #26 is only half closed by this — `ExpectedStatsTools` still ranks on the resolved season
+alone.
+
+### Positional mismatch (same day)
+
+One more thing the score alone does not say. FPL pays by the position a player is **listed** as,
+not the one they play, so a defender who plays winger or midfielder collects 6 a goal, 3 an assist
+and 4 a clean sheet from an attacking role. That gap is durable value, and it also changes how
+fixture difficulty should be read: a hard fixture removes most of a *stopper's* return, because the
+clean sheet is most of it, but a defender playing further forward keeps his attacking role whoever
+the opponent is.
+
+`backend/src/main/resources/docs/positional-mismatch-players.md` holds the list. It has two entries
+— De Cuyper (Brighton, plays winger) and Reece James (Chelsea, plays midfield) — and it is
+maintained by the owner, who decides membership from watching the games, community writing and
+reporting, and their own observation. **The assistant does not add names to it.**
+
+That rule exists because the first draft broke it. The list was screened out of `player_fixture_stats`
+by expected goal involvements per 90, eleven names deep, against a stated threshold of the midfield
+median that only two of them actually cleared — a criterion and a list that did not match. Worse,
+the screen answers a different question from the one the document asks: it put three centre-backs
+(Guéhi, Thiaw, Senesi) in its top fourteen because they head in corners, and it missed Reece James
+at 0.195 despite his genuinely playing midfield. Attacking output conflates wing-backs, corner-box
+centre-backs and penalty takers. It cannot identify a role, and a role is the whole subject.
+
+The measurable half stays where it belongs: the pick tools already print `xG/90` and `xA/90` per
+candidate, and `getSetPieceTakers` gives live duty. Those support "he produces well for a defender";
+only the list supports "he plays as a winger". The system prompt draws that line explicitly.
+
+The document is `kind: timely` and names its review points — after three gameweeks, after a
+managerial change at a club on the list, and in January. **It needs a production ingest after this
+merges.**
+
+### Review of #48, and what it changed (2026-08-26)
+
+A review of the branch found fourteen things. Eleven were fixed on the branch; two became issues;
+one was already fixed before the review reported.
+
+The three that mattered:
+
+- **The window read the wrong quarter of a season.** `WINDOW_MATCHES = 10` over a *finished*
+  season means gameweeks 28-38 — verified against production, the window spans GW28-38 — which is
+  the run-in: sides chasing Europe rotate, safe sides coast, relegated ones have stopped. The
+  output called it "the previous season". A finished season is now read whole; the ten-match
+  window applies only to the season being played, where "recent" is the point.
+- **The reply stated a falsehood.** It said save points and penalty saves were "not in the data",
+  and the system prompt told the model to repeat it as the reason goalkeepers are understated.
+  `player_fixture_stats` carries `saves` and `penalties_saved`. Only defensive contribution is
+  genuinely absent. Leaving the other two out is a choice, and the text now says the true thing.
+- **Both `@Tool` descriptions still promised the abandoned design** — xGI/90 for attackers, xGC
+  for defenders — after the ranking moved to blended expected points. The model reads the
+  description, not the code, so it would have explained a list by a rule that no longer produced
+  it.
+
+Also fixed: the cross-season name bridge de-duplicated the metric season only, so two current
+players sharing a name both inherited one previous-season record; `expected_goals_conceded` is
+`NOT NULL DEFAULT 0`, so an unpopulated column read as `exp(-0)` — a certain clean sheet, printed
+as "CS 100%" — and zero is now treated as unrecorded; `element_type` indexed the scoring arrays
+unbounded, and FPL has added managers as a fifth type, so an out-of-range value would have thrown
+past the `DataAccessException` catch and failed the chat turn; the double-gameweek window boundary
+had no tiebreak, so identical calls could return different numbers; `completedGameweeks` counted a
+gameweek in progress as completed; the previous-season fallback triggered on any non-zero sample
+rather than a larger one; and every decimal except the FDR went through `String.formatted`, which
+resolves the default locale — "Score 6,83" on a comma-decimal JVM, and the new tests would have
+failed there while passing in CI.
+
+The footer now also dates the data (`the most recent gameweek in this data is N`), the discipline
+`AGENTS.md` sets for `getTeamForm`: the ranking is load-bearing on a sync that has been measured
+stale before.
+
+Deferred: #49 (no minutes or rotation weighting — 180 minutes across the window does not separate
+a starter from a substitute, and `starts` is never read) and #50 (the pool still takes price and
+injury flags from the weekly tapas `player` table, against the `AGENTS.md` rule; predates this
+change, which rewrote those lines without moving the source).
+
+## Defensive contribution captured into player_fixture_stats (2026-08-26)
+
+FPL introduced defensive-contribution points for 2025/26: **2 points for a defender reaching 10
+clearances, blocks, interceptions and tackles in a match, or a midfielder or forward reaching 12
+including recoveries.** For a ball-winning defender or a holding midfielder that is a large and
+repeatable share of their return, and nothing in this project could see it.
+
+The reason was not that FPL withholds it. `element-summary/{id}/history` — the same endpoint tapas
+reads to fill `player_fixture_stats` — carries `defensive_contribution`,
+`clearances_blocks_interceptions`, `recoveries` and `tackles` **per match**. Tapas' schema predates
+the field and its sync writes a named column list, so the values have been arriving in the payload
+and being dropped.
+
+**The owner granted an exception to the "do not alter tapas tables" rule** and the four columns now
+live on `player_fixture_stats`, recorded in `AGENTS.md`. They belong at that grain; a parallel
+`fpl_`-prefixed table would duplicate the key, need a join in every query, and drift whenever tapas
+re-syncs a gameweek. The write split keeps the two projects apart: tapas owns the rows and INSERTs
+them, this project owns four columns and only ever UPDATEs them, and because both write named
+column lists neither can clear the other's values.
+
+Nullable with no default, deliberately. Zero is a real reading — a striker who did no defensive
+work — and a `DEFAULT 0` would make "nothing happened" indistinguishable from "never fetched". That
+is the same mistake that made the first set-piece capture announce the whole league had changed
+duty.
+
+`DefensiveStatsSyncService` fetches one player at a time, bounded to players who already have a row
+in the current season, spaced 150ms apart. Per-match rather than the season totals in
+`bootstrap-static`, which would be one request instead of six hundred: the points are a **threshold
+per match**, so a season mean cannot say how often a player crossed it — a defender steady on 9.8
+scores less often than one averaging 9.5 with a wide spread. Per-match rows also backfill, which a
+daily total never can. Scheduled 03:00 Europe/London, an hour after the price capture so the two
+never share the scheduler thread; `--sync-defcon` runs it by hand.
+
+**Run against production 2026-08-26: 610 of 610 rows filled, 0 failures.** In GW1, 19 defenders and
+12 midfielders earned the two points; no forward and no goalkeeper did. Starters average 7.2 actions
+(DEF and MID alike), forwards 3.7, goalkeepers 0 — FPL does not award it to keepers. 2025/26 rows
+are still empty and can be backfilled by the same runner whenever it is wanted.
+
+Not yet wired into `PickTools`' `xPts/90`, which still covers goals, assists and clean sheets only
+and says so. That is issue #46, which stays open for the scoring half.
+
+### Second review of #48, and the backfill (2026-08-26)
+
+Last season's defensive-contribution data is in: **29,757 rows backfilled for 2025/26, 0 skipped.**
+Not from FPL — `element-summary` serves per-match rows for the current season only, and a past
+season appears under `history_past` as one row of season totals, which cannot say how often a
+player crossed a per-match threshold. vaastav archives the per-match rows, and this project already
+reads that repository. `--backfill-defcon=2025-26` does it in one CSV fetch.
+
+Every backfilled write is guarded on minutes: the UPDATE matches on fixture, player, season *and*
+the minutes already stored, so a row is touched only where both sources agree on what happened in
+it. vaastav's `element` column is the FPL id of the season the file belongs to, and if that
+assumption were ever wrong the guard turns a silent corruption into a skipped row and a number in
+the log. All matched — nothing was skipped, which is the strongest evidence available that the two key
+spaces are the same.
+
+The first run reported 29,757 rows updated against a table holding 29,747, which is not possible
+and was worth chasing rather than rounding off: vaastav's file lists ten player-fixture pairs
+twice, with identical values both times. The count was of statements, not of rows. Updates are now
+keyed by player and fixture before they are applied, so a duplicate collapses and the number means
+what it says.
+
+The review of the branch found fifteen things. The one that mattered most was in my own fix from
+the first round:
+
+**The run-in fix was keyed on the wrong flag.** `windowLimit` tested `isResolvedSeason`, which is
+true whenever the resolver's season has five or more gameweeks — including the changeover window,
+which `AGENTS.md` documents as normal, where the resolver returns a *completed* season. So the
+10-match window went straight back to reading GW28-38 of a finished season and calling it recent
+form. `MetricSeason` now carries two flags: `isResolvedSeason` decides the SQL join key,
+`beingPlayed` decides the window.
+
+**And the cross-season branch had never been executed by a test.** `TapasSeed` leaves the current
+season empty, so every existing test resolved the completed season and took the same-season path.
+`PickToolsCrossSeasonTest` seeds a started season with no fixture statistics — the state every
+season spends its first weeks in — and the name bridge ran for the first time. It was broken: the
+metric-side uniqueness guard was missing its `WHERE`, so the query did not parse at all. That would
+have surfaced in production on the day 2026/27's first gameweek synced.
+
+Also fixed: the reply's banner named the season being played while every number under it came from
+the previous one, so the metric block now carries its own `previousSeasonProvenance` line as
+`AGENTS.md` requires; name uniqueness was checked inside the filtered pool, so a position or
+ownership filter could hide a collision by admitting only one of a pair, and on the metric side the
+minutes floor could drop one of a pair and leave the survivor looking unique; `matches` counted
+fixture rows rather than appearances, printing "450 mins (10 mt)" for a player who played five; the
+absentee count read as hundreds of withheld picks and is now a coverage line; `expected_goals` and
+`expected_assists` had no "zero means unpopulated" guard, so an unfilled season would have tied the
+whole pool and silently degenerated the ranking to the fixture tiebreak.
+
+On the defcon side: the CSV reader used `isMapped` where it needed `isSet`, so one ragged row would
+have thrown past the `IOException` catch and aborted the backfill (`MergedGwParser` already gets
+this right); the nightly sync now guards its writes on minutes too, because `element-summary`
+serves whatever season FPL is on and element ids are reused, so a rollover before tapas flips
+`is_current` could stamp one player's match onto another's row; a payload whose fields changed
+shape would have mapped every value to null and overwritten every captured reading while logging
+success, so a run that produces no values at all now refuses to write; the runner exits with a code
+like `DailyPriceRunner` instead of leaving a web server up; and the `ALTER TABLE` is now non-fatal
+and switchable, because failing to start the chatbot over four enrichment columns is the wrong
+trade.
+
+One finding is not a code change: the review flagged that this branch rewrites `AGENTS.md`'s
+guardrail on tapas tables and that the exception's only record is the commit itself. The owner
+granted it in conversation on 2026-08-26, having confirmed they own both projects. Recorded here so
+the grant lives outside the diff that relies on it.
