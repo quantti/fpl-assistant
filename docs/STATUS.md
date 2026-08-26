@@ -2724,6 +2724,10 @@ the grant lives outside the diff that relies on it.
 
 ## Sign-up: email verification, and invite codes that are rows (2026-08-26)
 
+> **Not deployed, and it cannot work until the Supabase project is configured.** The remaining
+> steps are dashboard settings and a mail provider, none of which live in this repository:
+> `docs/EMAIL-SETUP.md` is the runbook, and #51 tracks it.
+
 Two changes to the same door.
 
 ### The verification step that was missing
