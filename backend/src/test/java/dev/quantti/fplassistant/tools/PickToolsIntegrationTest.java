@@ -44,9 +44,12 @@ class PickToolsIntegrationTest {
 
         assertThat(result).contains("Differential picks");
         assertThat(result).contains("Own ");
-        assertThat(result).contains("Form ");
+        assertThat(result).contains("Score ");
         assertThat(result).contains("Avg FDR");
-        assertThat(result).contains("Ranked by form, then average FDR");
+        // Form is deliberately not a column here: it is 30 days of points, and showing it beside
+        // a ranking invites the model to explain the order with it.
+        assertThat(result).doesNotContain("| Form ");
+        assertThat(result).contains("Ranked by Score");
         assertThat(result).contains("Data source: season");
         // The seeded midfielders straddle the ownership filter: one at 3.2%, one at 12.5%.
         assertThat(result).contains(SharedStatsSeed.DIFFERENTIAL_PLAYER);
@@ -64,7 +67,7 @@ class PickToolsIntegrationTest {
         String result = tools.getCaptainCandidates(5);
 
         assertThat(result).contains("Captain candidates");
-        assertThat(result).contains("Form ");
+        assertThat(result).contains("xPts/90 ");
         assertThat(result).contains("Avg FDR");
         assertThat(result).contains("Data source: season");
     }
@@ -122,5 +125,64 @@ class PickToolsIntegrationTest {
             assertThat(captains).doesNotContain(" " + name + " (");
         }
         assertThat(differentials).contains("Unavailable players (injured/suspended) are excluded");
+    }
+
+    /**
+     * The defect this ranking replaced: FPL's {@code form} is average points per match over the
+     * last 30 days, so early in a season it is one scoreline. Points still reach the score, but
+     * through Pts/90 and weighted by how much season there is behind them — never as the
+     * headline.
+     */
+    @Test
+    void theOutputSeparatesWhatIsExpectedFromWhatWasScored() {
+        String result = tools.getCaptainCandidates(3);
+
+        assertThat(result).contains("Score ");
+        assertThat(result).contains("xPts/90 ");
+        assertThat(result).contains("Pts/90 ");
+        assertThat(result).contains("Realised points carry ");
+    }
+
+    /**
+     * The score has to be readable back to its parts, or the model cites a number it cannot
+     * explain — and "why this defender" is exactly the question a user asks next.
+     */
+    @Test
+    void everyPickShowsTheComponentsBehindItsExpectedPoints() {
+        String result = tools.getDifferentialPicks("MID", 100, 3);
+
+        assertThat(result).containsPattern("xG/90 [0-9]\\.[0-9]{2}, xA/90 [0-9]\\.[0-9]{2}");
+    }
+
+    /**
+     * Two kinds of defender have to be visible as different picks: the clean-sheet term is what
+     * separates a stopper from an attacking full-back, so it is shown for everyone who earns from
+     * it — and for nobody who does not.
+     */
+    @Test
+    void defendersAndKeepersShowACleanSheetProbabilityAndForwardsDoNot() {
+        assertThat(tools.getDifferentialPicks("DEF", 100, 3))
+                .containsPattern("CS [0-9]+% at xGC [0-9]\\.[0-9]{2}");
+        assertThat(tools.getDifferentialPicks("GK", 100, 3))
+                .containsPattern("CS [0-9]+% at xGC [0-9]\\.[0-9]{2}");
+        assertThat(tools.getDifferentialPicks("FWD", 100, 3))
+                .as("a forward is paid nothing for a clean sheet")
+                .doesNotContain("CS ");
+    }
+
+    /** What the model must not do is present the model as complete. */
+    @Test
+    void theReplySaysWhichPointsTheExpectedModelCannotSee() {
+        assertThat(tools.getDifferentialPicks("DEF", 100, 3))
+                .contains("Defensive-contribution points, save points and penalty saves are not"
+                        + " in the data");
+    }
+
+    @Test
+    void playersWithoutAnUnderlyingRecordAreExcludedAndCounted() {
+        String result = tools.getDifferentialPicks("any", 100, 3);
+
+        assertThat(result).contains("not listed: no comparable");
+        assertThat(result).doesNotContain(" " + SharedStatsSeed.PLAYER_WITHOUT_UNDERLYING + " (");
     }
 }
