@@ -3,7 +3,9 @@ package fi.karivanttinen.fplassistant.defcon;
 import java.io.StringReader;
 import java.io.UncheckedIOException;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import fi.karivanttinen.fplassistant.historical.VaastavSource;
 import org.apache.commons.csv.CSVFormat;
@@ -91,14 +93,18 @@ public class DefensiveStatsBackfillService {
      * seasons, and these four columns were only added when FPL introduced the scoring rule.
      */
     static List<Object[]> toUpdates(String csv, int seasonId, String seasonCode) {
-        List<Object[]> updates = new ArrayList<>();
+        // Keyed, not appended. vaastav's 2025-26 file lists ten player-fixture pairs twice —
+        // identical values both times, an artefact rather than a conflict — and duplicates would
+        // otherwise make the update count exceed the number of rows that exist, which is exactly
+        // the shape of a bug worth not having to rule out later.
+        Map<List<Integer>, Object[]> byKey = new LinkedHashMap<>();
         CSVFormat format = CSVFormat.DEFAULT.builder()
                 .setHeader().setSkipHeaderRecord(true).get();
         try (CSVParser parser = format.parse(new StringReader(csv))) {
             if (!parser.getHeaderMap().containsKey("defensive_contribution")) {
                 log.warn("defcon backfill: {}/{} has no defensive_contribution column — the"
                         + " season predates the scoring rule", seasonCode, FILE);
-                return updates;
+                return List.of();
             }
             for (CSVRecord record : parser) {
                 Integer fixtureId = intAt(record, "fixture");
@@ -107,7 +113,7 @@ public class DefensiveStatsBackfillService {
                 if (fixtureId == null || playerId == null || minutes == null) {
                     continue;
                 }
-                updates.add(new Object[] {
+                byKey.put(List.of(fixtureId, playerId), new Object[] {
                         intAt(record, "defensive_contribution"),
                         intAt(record, "clearances_blocks_interceptions"),
                         intAt(record, "recoveries"),
@@ -118,7 +124,7 @@ public class DefensiveStatsBackfillService {
         } catch (java.io.IOException e) {
             throw new UncheckedIOException(seasonCode + ": failed to parse " + FILE, e);
         }
-        return updates;
+        return new ArrayList<>(byKey.values());
     }
 
     private int applyAll(List<Object[]> updates) {

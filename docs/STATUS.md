@@ -2670,8 +2670,14 @@ Every backfilled write is guarded on minutes: the UPDATE matches on fixture, pla
 the minutes already stored, so a row is touched only where both sources agree on what happened in
 it. vaastav's `element` column is the FPL id of the season the file belongs to, and if that
 assumption were ever wrong the guard turns a silent corruption into a skipped row and a number in
-the log. All 29,757 matched, which is the strongest evidence available that the two key spaces are
-the same.
+the log. All matched — nothing was skipped, which is the strongest evidence available that the two key
+spaces are the same.
+
+The first run reported 29,757 rows updated against a table holding 29,747, which is not possible
+and was worth chasing rather than rounding off: vaastav's file lists ten player-fixture pairs
+twice, with identical values both times. The count was of statements, not of rows. Updates are now
+keyed by player and fixture before they are applied, so a duplicate collapses and the number means
+what it says.
 
 The review of the branch found fifteen things. The one that mattered most was in my own fix from
 the first round:
