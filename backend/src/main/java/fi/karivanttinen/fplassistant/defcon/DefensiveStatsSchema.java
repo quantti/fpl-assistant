@@ -2,6 +2,8 @@ package fi.karivanttinen.fplassistant.defcon;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
@@ -34,6 +36,8 @@ import jakarta.annotation.PostConstruct;
  * report the whole league as changed.
  */
 @Component
+@ConditionalOnProperty(name = "fpl.defcon.ensure-columns", havingValue = "true",
+        matchIfMissing = true)
 public class DefensiveStatsSchema {
 
     private static final Logger log = LoggerFactory.getLogger(DefensiveStatsSchema.class);
@@ -54,12 +58,25 @@ public class DefensiveStatsSchema {
         this.jdbc = jdbc;
     }
 
+    /**
+     * Logged and swallowed, never fatal. The role this app connects as may not hold ALTER on a
+     * table it does not own, and refusing to start the whole chatbot over four enrichment columns
+     * would be the wrong trade — the sync that fills them already logs and continues, and the
+     * pick tools already say when the numbers are unavailable. {@code fpl.defcon.ensure-columns}
+     * turns it off entirely once the columns exist.
+     */
     @PostConstruct
     public void ensureColumns() {
-        for (String column : COLUMNS) {
-            jdbc.execute("ALTER TABLE " + TABLE + " ADD COLUMN IF NOT EXISTS " + column
-                    + " SMALLINT");
+        try {
+            for (String column : COLUMNS) {
+                jdbc.execute("ALTER TABLE " + TABLE + " ADD COLUMN IF NOT EXISTS " + column
+                        + " SMALLINT");
+            }
+            log.info("defensive-contribution columns ensured on {}", TABLE);
+        } catch (DataAccessException e) {
+            log.error("could not add the defensive-contribution columns to {}. Defensive numbers"
+                    + " will be unavailable until this is granted or the columns are added by"
+                    + " hand; nothing else is affected.", TABLE, e);
         }
-        log.info("defensive-contribution columns ensured on {}", TABLE);
     }
 }

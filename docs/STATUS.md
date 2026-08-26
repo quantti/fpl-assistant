@@ -2657,3 +2657,61 @@ are still empty and can be backfilled by the same runner whenever it is wanted.
 
 Not yet wired into `PickTools`' `xPts/90`, which still covers goals, assists and clean sheets only
 and says so. That is issue #46, which stays open for the scoring half.
+
+### Second review of #48, and the backfill (2026-08-26)
+
+Last season's defensive-contribution data is in: **29,757 rows backfilled for 2025/26, 0 skipped.**
+Not from FPL — `element-summary` serves per-match rows for the current season only, and a past
+season appears under `history_past` as one row of season totals, which cannot say how often a
+player crossed a per-match threshold. vaastav archives the per-match rows, and this project already
+reads that repository. `--backfill-defcon=2025-26` does it in one CSV fetch.
+
+Every backfilled write is guarded on minutes: the UPDATE matches on fixture, player, season *and*
+the minutes already stored, so a row is touched only where both sources agree on what happened in
+it. vaastav's `element` column is the FPL id of the season the file belongs to, and if that
+assumption were ever wrong the guard turns a silent corruption into a skipped row and a number in
+the log. All 29,757 matched, which is the strongest evidence available that the two key spaces are
+the same.
+
+The review of the branch found fifteen things. The one that mattered most was in my own fix from
+the first round:
+
+**The run-in fix was keyed on the wrong flag.** `windowLimit` tested `isResolvedSeason`, which is
+true whenever the resolver's season has five or more gameweeks — including the changeover window,
+which `AGENTS.md` documents as normal, where the resolver returns a *completed* season. So the
+10-match window went straight back to reading GW28-38 of a finished season and calling it recent
+form. `MetricSeason` now carries two flags: `isResolvedSeason` decides the SQL join key,
+`beingPlayed` decides the window.
+
+**And the cross-season branch had never been executed by a test.** `TapasSeed` leaves the current
+season empty, so every existing test resolved the completed season and took the same-season path.
+`PickToolsCrossSeasonTest` seeds a started season with no fixture statistics — the state every
+season spends its first weeks in — and the name bridge ran for the first time. It was broken: the
+metric-side uniqueness guard was missing its `WHERE`, so the query did not parse at all. That would
+have surfaced in production on the day 2026/27's first gameweek synced.
+
+Also fixed: the reply's banner named the season being played while every number under it came from
+the previous one, so the metric block now carries its own `previousSeasonProvenance` line as
+`AGENTS.md` requires; name uniqueness was checked inside the filtered pool, so a position or
+ownership filter could hide a collision by admitting only one of a pair, and on the metric side the
+minutes floor could drop one of a pair and leave the survivor looking unique; `matches` counted
+fixture rows rather than appearances, printing "450 mins (10 mt)" for a player who played five; the
+absentee count read as hundreds of withheld picks and is now a coverage line; `expected_goals` and
+`expected_assists` had no "zero means unpopulated" guard, so an unfilled season would have tied the
+whole pool and silently degenerated the ranking to the fixture tiebreak.
+
+On the defcon side: the CSV reader used `isMapped` where it needed `isSet`, so one ragged row would
+have thrown past the `IOException` catch and aborted the backfill (`MergedGwParser` already gets
+this right); the nightly sync now guards its writes on minutes too, because `element-summary`
+serves whatever season FPL is on and element ids are reused, so a rollover before tapas flips
+`is_current` could stamp one player's match onto another's row; a payload whose fields changed
+shape would have mapped every value to null and overwritten every captured reading while logging
+success, so a run that produces no values at all now refuses to write; the runner exits with a code
+like `DailyPriceRunner` instead of leaving a web server up; and the `ALTER TABLE` is now non-fatal
+and switchable, because failing to start the chatbot over four enrichment columns is the wrong
+trade.
+
+One finding is not a code change: the review flagged that this branch rewrites `AGENTS.md`'s
+guardrail on tapas tables and that the exception's only record is the commit itself. The owner
+granted it in conversation on 2026-08-26, having confirmed they own both projects. Recorded here so
+the grant lives outside the diff that relies on it.

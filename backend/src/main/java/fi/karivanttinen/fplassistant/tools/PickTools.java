@@ -127,9 +127,19 @@ public class PickTools implements FplTool {
         this.seasonResolver = seasonResolver;
     }
 
-    /** Which season the underlying numbers were read from, and why it is not the resolved one. */
+    /**
+     * Which season the underlying numbers were read from.
+     *
+     * <p>Two flags, because two different questions were being answered by one and getting the
+     * second wrong. {@code isResolvedSeason} decides the SQL join key — the same season joins on
+     * the element id, a different one has to go through the name. {@code beingPlayed} decides the
+     * window: "the last 10 matches" means recent form only for a season in progress, and the
+     * resolver returns a *completed* season for the whole changeover window, which put the window
+     * back on the run-in it was written to avoid.
+     */
     private record MetricSeason(int seasonId, String code, boolean isResolvedSeason,
-                                int playedGameweeks, int latestGameweek) {}
+                                boolean beingPlayed, int playedGameweeks, int latestGameweek,
+                                String provenance) {}
 
     @Tool(description = """
             Suggest differential FPL picks — players with low ownership (≤ maxOwnership
@@ -224,8 +234,8 @@ public class PickTools implements FplTool {
     private MetricSeason metricSeason(SeasonContext season) {
         int played = completedGameweeks(season.seasonId());
         if (played >= MIN_SAMPLE_GAMEWEEKS) {
-            return new MetricSeason(season.seasonId(), season.code(), true, played,
-                    latestGameweek(season.seasonId()));
+            return new MetricSeason(season.seasonId(), season.code(), true,
+                    season.currentSeason(), played, latestGameweek(season.seasonId()), null);
         }
         Optional<SeasonContext> previous = seasonResolver.previousSeason(season);
         if (previous.isPresent()) {
@@ -234,14 +244,20 @@ public class PickTools implements FplTool {
             // evidence to prefer over this season's four, and falling back to it would print
             // "too few to judge anyone on" about the larger of the two samples.
             if (completedGameweeks(prev.seasonId()) > played) {
-                return new MetricSeason(prev.seasonId(), prev.code(), false, played,
-                        latestGameweek(prev.seasonId()));
+                // A previous season is never the one being played, whatever the resolver says.
+                // It carries its own provenance line: the banner above names the season being
+                // played, and every number below this point is not from it. AGENTS.md requires
+                // each block to be attributed, and false is right here — none of the season
+                // being played's own numbers accompany these.
+                return new MetricSeason(prev.seasonId(), prev.code(), false, false, played,
+                        latestGameweek(prev.seasonId()),
+                        prev.previousSeasonProvenance(false));
             }
         }
         // Nothing better exists. Rank on the thin sample rather than refusing — the footer says
         // how thin it is, which is the honest version of answering at all.
-        return new MetricSeason(season.seasonId(), season.code(), true, played,
-                latestGameweek(season.seasonId()));
+        return new MetricSeason(season.seasonId(), season.code(), true, season.currentSeason(),
+                played, latestGameweek(season.seasonId()), null);
     }
 
     /**
@@ -274,7 +290,7 @@ public class PickTools implements FplTool {
 
     /** How many matches back the metric window reaches. See {@link #WINDOW_MATCHES}. */
     private static int windowLimit(MetricSeason metric) {
-        return metric.isResolvedSeason() ? WINDOW_MATCHES : WHOLE_SEASON;
+        return metric.beingPlayed() ? WINDOW_MATCHES : WHOLE_SEASON;
     }
 
     /**
@@ -291,12 +307,17 @@ public class PickTools implements FplTool {
         // element id, a different season has to go through the name.
         String metricKey = metric.isResolvedSeason() ? "mp.id::text" : "LOWER(mp.web_name)";
         String poolKey = metric.isResolvedSeason() ? "pool.id::text" : "LOWER(pool.web_name)";
+        // Only the name bridge can attach one player's record to another. Joining on the element
+        // id inside one season is exact, and demanding unique names there would throw away both
+        // of any two players who happen to share one.
+        String metricUnique = metric.isResolvedSeason() ? "" : "WHERE " + nameIsUnique("mp");
+        String poolUnique = metric.isResolvedSeason() ? "" : "WHERE " + nameIsUnique("pool");
 
         return jdbc.queryForList("""
                 WITH pool AS (
-                    SELECT p.id, p.web_name, p.element_type, p.now_cost, p.selected_by_percent,
-                           p.form, p.total_points, p.team_id, p.status, p.news,
-                           t.short_name AS team_short
+                    SELECT p.id, p.season_id, p.web_name, p.element_type, p.now_cost,
+                           p.selected_by_percent, p.form, p.total_points, p.team_id, p.status,
+                           p.news, t.short_name AS team_short
                     FROM player p
                     JOIN team t ON t.id = p.team_id AND t.season_id = p.season_id
                     WHERE p.season_id = ?
@@ -319,7 +340,10 @@ public class PickTools implements FplTool {
                 windowed AS (
                     SELECT player_id,
                            SUM(minutes) AS mins,
-                           count(*) AS matches,
+                           -- Appearances, not rows. tapas writes a row for every fixture in the
+                           -- squad, including the ones a player watched, so counting rows would
+                           -- print "450 mins (10 mt)" for someone who played five.
+                           count(*) FILTER (WHERE minutes > 0) AS matches,
                            SUM(xg) * 90 / NULLIF(SUM(minutes), 0) AS xg90,
                            SUM(xa) * 90 / NULLIF(SUM(minutes), 0) AS xa90,
                            SUM(total_points) * 90.0 / NULLIF(SUM(minutes), 0) AS pts90,
@@ -339,23 +363,33 @@ public class PickTools implements FplTool {
                            min(w.xgc_per_match) AS xgc_per_match
                     FROM windowed w
                     JOIN player mp ON mp.id = w.player_id AND mp.season_id = ?
+                    %s
                     GROUP BY 1
                     HAVING count(*) = 1
                 )
                 SELECT pool.*, m.mins, m.matches, m.xg90, m.xa90, m.pts90, m.xgc_per_match
                 FROM pool
                 JOIN metrics m ON m.k = %s
-                -- Unique on the pool side too. Dropping names that repeat in the metric season
-                -- is only half of it: two current players sharing a web_name would both inherit
-                -- one previous-season record, and neither could be told it was the wrong man.
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM pool other
-                    WHERE %s = %s AND other.id <> pool.id
-                )
+                %s
                 """.formatted(positionFilter(elementType, "p"), windowLimit(metric),
-                        MIN_WINDOW_MINUTES, metricKey, poolKey,
-                        poolKey.replace("pool.", "other."), poolKey),
+                        MIN_WINDOW_MINUTES, metricKey, metricUnique, poolKey, poolUnique),
                 season.seasonId(), maxOwnership, metric.seasonId(), metric.seasonId());
+    }
+
+    /**
+     * A name that belongs to exactly one player in that row's own season. Checked against the
+     * whole squad, not the filtered pool: the position and ownership filters would otherwise
+     * hide a collision by admitting only one of the pair, and the minutes floor would hide
+     * another by dropping one of them before the check ran.
+     */
+    private static String nameIsUnique(String alias) {
+        return """
+                NOT EXISTS (
+                    SELECT 1 FROM player twin
+                    WHERE twin.season_id = %s.season_id
+                      AND LOWER(twin.web_name) = LOWER(%s.web_name)
+                      AND twin.id <> %s.id
+                )""".formatted(alias, alias, alias);
     }
 
     private static String positionFilter(int elementType, String alias) {
@@ -367,18 +401,18 @@ public class PickTools implements FplTool {
     }
 
     /**
-     * How many players matched the filters but could not be ranked. Reported rather than
-     * swallowed: a promoted side's defence and a summer signing are exactly the picks a user asks
-     * about, and silently omitting them reads as "no such option".
+     * How many players matched the filters at all, ranked or not, so the reply can state its own
+     * coverage. Reported rather than swallowed: a promoted side's defence and a summer signing
+     * are exactly the picks a user asks about, and silently omitting them reads as "no such
+     * option".
      *
-     * <p>Counted as the pool minus what came back, not by a second query reproducing the reasons.
-     * The first version did reproduce them and got it wrong — it counted only players with no
-     * per-fixture rows at all, so anyone under the minutes floor, and anyone whose name was
-     * ambiguous across the two seasons, vanished from both the list and the count. A subtraction
-     * cannot drift from the query it describes.
+     * <p>The count is the pool; the shortfall is inferred by subtraction rather than by a second
+     * query reproducing the pool's reasons. An earlier version did reproduce them and got it
+     * wrong — it counted only players with no per-fixture rows at all, so anyone under the
+     * minutes floor, and anyone with an ambiguous name, vanished from both the list and the
+     * count. A subtraction cannot drift from the query it describes.
      */
-    private int withoutEvidence(SeasonContext season, int elementType, double maxOwnership,
-                                int ranked) {
+    private int poolSize(SeasonContext season, int elementType, double maxOwnership) {
         Integer pool = jdbc.queryForObject("""
                 SELECT count(*) FROM player p
                 JOIN team t ON t.id = p.team_id AND t.season_id = p.season_id
@@ -388,7 +422,20 @@ public class PickTools implements FplTool {
                   %s
                 """.formatted(positionFilter(elementType, "p")),
                 Integer.class, season.seasonId(), maxOwnership);
-        return pool == null ? 0 : Math.max(0, pool - ranked);
+        return pool == null ? 0 : pool;
+    }
+
+    /**
+     * Whether the expected columns were ever populated for this season. {@code expected_goals}
+     * and {@code expected_assists} are {@code NOT NULL DEFAULT 0} like {@code
+     * expected_goals_conceded}, so an unfilled season reads as a league in which nobody creates
+     * anything: every xPts/90 collapses to the appearance constant, the whole pool ties, and the
+     * order silently becomes the fixture and ownership tiebreak while the footer still calls it a
+     * ranking on underlying numbers. A single non-zero anywhere is enough to rule that out.
+     */
+    private static boolean noUnderlyingSignal(List<Map<String, Object>> rows) {
+        return rows.stream().noneMatch(r ->
+                numeric(r.get("xg90")) > 0 || numeric(r.get("xa90")) > 0);
     }
 
     private String formatPicks(String heading, List<Map<String, Object>> rows, SeasonContext season,
@@ -399,7 +446,11 @@ public class PickTools implements FplTool {
         double realisedWeight = realisedWeight(metric.playedGameweeks());
         List<Map<String, Object>> ranked = rank(rows, fdrByTeam, ownershipTieBreak, realisedWeight);
 
-        StringBuilder out = new StringBuilder(heading).append(" (").append(season.code()).append("):\n");
+        StringBuilder out = new StringBuilder();
+        if (metric.provenance() != null) {
+            out.append(metric.provenance()).append("\n\n");
+        }
+        out.append(heading).append(" (").append(metric.code()).append("):\n");
         String qual = season.currentSeason() ? "" : " (" + season.code() + ")";
         for (Map<String, Object> r : ranked.subList(0, Math.min(MAX_PICKS, ranked.size()))) {
             int teamId = ((Number) r.get("team_id")).intValue();
@@ -426,13 +477,24 @@ public class PickTools implements FplTool {
         }
         out.append(footer(metric, fixtureLimit, ownershipTieBreak, realisedWeight));
 
-        int missing = withoutEvidence(season, elementType, maxOwnership, rows.size());
-        if (missing > 0) {
-            out.append(missing).append(" further player(s) matching these filters are not listed:")
-                    .append(" they have no comparable ").append(metric.code())
-                    .append(" record — new to the league, too few minutes to judge, or a name that")
-                    .append(" is not unique across the two seasons. Say so if the user asks about")
-                    .append(" someone who is missing; do not report them as a poor pick.\n");
+        int pool = poolSize(season, elementType, maxOwnership);
+        if (pool > rows.size()) {
+            // Phrased as a coverage figure rather than a count of absentees. With no filters a
+            // bare count is most of the game's fringe players, and "250 further players are not
+            // listed" reads as 250 picks being withheld.
+            out.append("Ranked from ").append(rows.size()).append(" of the ").append(pool)
+                    .append(" players matching these filters; the rest have no comparable ")
+                    .append(metric.code())
+                    .append(" record — new to the league, too few minutes to judge, or a name")
+                    .append(" that is not unique in its season. If the user asks about someone")
+                    .append(" absent, that is why: they are unjudged, not judged and rejected.\n");
+        }
+        if (noUnderlyingSignal(ranked)) {
+            out.append("WARNING: every player here has xG/90 and xA/90 of 0.00. That is a column")
+                    .append(" that was never populated for ").append(metric.code())
+                    .append(", not a league of players who create nothing — the ranking has")
+                    .append(" fallen back to fixtures and ownership. Tell the user the underlying")
+                    .append(" numbers are unavailable rather than presenting this as form.\n");
         }
         return out.toString();
     }
@@ -453,7 +515,7 @@ public class PickTools implements FplTool {
 
     private String footer(MetricSeason metric, int fixtureLimit, boolean ownershipTieBreak,
                           double realisedWeight) {
-        String span = metric.isResolvedSeason()
+        String span = metric.beingPlayed()
                 ? "each player's last " + WINDOW_MATCHES + " matches in " + metric.code()
                 : "all of " + metric.code();
         StringBuilder out = new StringBuilder("\nRanked by Score over "
@@ -462,7 +524,7 @@ public class PickTools implements FplTool {
                 + " implied by expected goals conceded, each valued at that position's own points"
                 + " — with Pts/90, the points actually scored. Realised points carry "
                 + Math.round(realisedWeight * 100) + "% of the weight here"
-                + (metric.isResolvedSeason()
+                + (metric.beingPlayed()
                         ? ", rising towards " + Math.round(MAX_REALISED_WEIGHT * 100)
                           + "% by gameweek " + FULL_WEIGHT_GAMEWEEK + " as the sample grows"
                         : " — deliberately low: these are a previous season's returns, and"
@@ -481,6 +543,11 @@ public class PickTools implements FplTool {
                     .append(" completed gameweek(s) — too few to judge anyone on. Attribute them")
                     .append(" to ").append(metric.code())
                     .append(" in your answer and never call them this season's form.\n");
+        } else if (!metric.beingPlayed()) {
+            out.append("This season is not under way in the data yet, so these are ")
+                    .append(metric.code())
+                    .append("'s numbers over the whole season. Attribute them to it and never")
+                    .append(" call them current form.\n");
         } else if (metric.playedGameweeks() < MIN_SAMPLE_GAMEWEEKS) {
             out.append("Only ").append(metric.playedGameweeks())
                     .append(" completed gameweek(s) of data exist and no earlier season is")
