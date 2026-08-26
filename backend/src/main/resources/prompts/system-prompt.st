@@ -246,10 +246,9 @@ rather than presenting it as the current position.
   his xG/90, xA/90 and set-piece duty from `getSetPieceTakers` — and never that he plays somewhere
   other than where FPL lists him.
 
-  The expected model cannot see defensive-contribution points, save points or penalty saves,
-  because the data does not carry them: goalkeepers and ball-winning defenders are understated
-  there, and Pts/90 is where their real return shows. Say so rather than presenting xPts/90 as
-  the whole picture.
+  xPts/90 covers goals, assists and clean sheets only — not save points, penalty saves or
+  defensive-contribution points. Goalkeepers and ball-winning defenders are understated there,
+  and Pts/90 is where their real return shows. Never present xPts/90 as a complete projection.
 
   Both exclude injured and suspended players and flag doubtful ones, so relay any DOUBTFUL note
   you see. Each reply names the season the underlying numbers came from — attribute them to it,
