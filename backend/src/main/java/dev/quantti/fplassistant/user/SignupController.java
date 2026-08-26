@@ -1,14 +1,10 @@
 package dev.quantti.fplassistant.user;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.util.HexFormat;
+import java.time.OffsetDateTime;
 import java.util.UUID;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -43,17 +39,19 @@ public class SignupController {
 
     public record SignupRequest(String email, String password, String inviteCode) {}
 
-    public record SignupResponse(UUID userId) {}
+    /**
+     * @param verificationRequired always true now, and stated rather than implied: the frontend
+     *        has to know not to try signing in, and a client reading a bare 201 as "you are in"
+     *        is exactly the bug this replaced.
+     */
+    public record SignupResponse(UUID userId, boolean verificationRequired) {}
 
     private final InviteLedger ledger;
     private final SupabaseAdminClient admin;
-    private final String inviteCode;
 
-    public SignupController(InviteLedger ledger, SupabaseAdminClient admin,
-                            @Value("${fpl.invite.code:}") String inviteCode) {
+    public SignupController(InviteLedger ledger, SupabaseAdminClient admin) {
         this.ledger = ledger;
         this.admin = admin;
-        this.inviteCode = inviteCode;
     }
 
     @PostMapping("/signup")
@@ -64,30 +62,45 @@ public class SignupController {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "An email address and a password are required.");
         }
-        if (!codeMatches(request.inviteCode())) {
+        // Read before anything is reserved, so an unknown or closed code is answered as such
+        // even on a deploy that could not create the account anyway. The authoritative check is
+        // inside reserve(), under the lock; this one only decides which refusal to send.
+        OffsetDateTime now = OffsetDateTime.now();
+        InviteCode peeked = ledger.findByCode(request.inviteCode()).orElse(null);
+        if (peeked == null) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "That invite code is not valid.");
         }
-        // Checked before a slot is reserved: a deploy with no service-role key cannot make the
-        // call, and must not burn a slot discovering that.
+        String refusal = peeked.refusalReason(now);
+        if (refusal != null) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, refusal);
+        }
+        // Checked before a place is reserved: a deploy with no service-role key cannot make the
+        // call, and must not burn a place discovering that.
         if (!admin.configured()) {
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
                     "Sign-up is not available right now.");
         }
 
-        long slot;
+        InviteLedger.Reservation reservation;
         try {
-            slot = ledger.reserve(codeLabel());
+            reservation = ledger.reserve(request.inviteCode());
+        } catch (InviteLedger.CodeRefusedException e) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, e.getMessage());
         } catch (InviteLedger.CapReachedException e) {
             log.info("sign-up refused: {}", e.getMessage());
             throw new ResponseStatusException(HttpStatus.CONFLICT,
                     "Sign-up is full at the moment. Ask for a place and we will let you know when"
                             + " one frees up.");
         }
+        long slot = reservation.slotId();
 
         return switch (admin.createUser(email.trim(), password)) {
             case SupabaseAdminClient.Created(UUID userId) -> {
                 ledger.assign(slot, userId);
-                yield ResponseEntity.status(HttpStatus.CREATED).body(new SignupResponse(userId));
+                log.info("sign-up: account created on code {}, awaiting email confirmation",
+                        reservation.code().label());
+                yield ResponseEntity.status(HttpStatus.CREATED)
+                        .body(new SignupResponse(userId, true));
             }
             // The slot stays burnt, deliberately — see InviteLedger for why that is the failure
             // direction chosen. Supabase's own words travel back: only it knows whether the
@@ -99,32 +112,5 @@ public class SignupController {
                     throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
                             "Sign-up could not complete. Please try again shortly.");
         };
-    }
-
-    /**
-     * Constant-time, and false for every code while {@code fpl.invite.code} is unset: a missing
-     * secret closes sign-up rather than opening it.
-     */
-    private boolean codeMatches(String presented) {
-        if (inviteCode.isBlank()) {
-            return false;
-        }
-        return MessageDigest.isEqual(inviteCode.getBytes(StandardCharsets.UTF_8),
-                (presented == null ? "" : presented).getBytes(StandardCharsets.UTF_8));
-    }
-
-    /**
-     * The first eight hex characters of the code's SHA-256 — enough to tell one code from
-     * another after a rotation, and not the code itself. A ledger row is not a secret store.
-     */
-    private String codeLabel() {
-        try {
-            byte[] digest = MessageDigest.getInstance("SHA-256")
-                    .digest(inviteCode.getBytes(StandardCharsets.UTF_8));
-            return HexFormat.of().formatHex(digest, 0, 4);
-        } catch (NoSuchAlgorithmException e) {
-            // Every JVM ships SHA-256. Losing the label must not lose the account.
-            return "unknown";
-        }
     }
 }
