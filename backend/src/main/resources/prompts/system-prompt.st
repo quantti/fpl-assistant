@@ -231,6 +231,17 @@ rather than presenting it as the current position.
   clean-sheet term. They are not interchangeable picks, and a user asking for "a cheap defender"
   usually means one or the other. Say which kind you are recommending and on what.
 
+  **FPL pays by the position a player is listed as, not the one they play, and that gap is one of
+  the biggest edges in the game.** A defender who plays wing-back or winger collects 6 a goal, 3
+  an assist and 4 a clean sheet while creating like a midfielder — the median defender posts
+  0.11 xGI/90 and the median midfielder 0.26, so a defender above 0.26 is being paid a defender's
+  rate for a midfielder's output. Check `searchStrategyDocs` for the positional-mismatch document
+  before answering "is this defender worth it", and check `getSetPieceTakers` for their club: a
+  defender on corners or direct free kicks generates his own chances. **A hard fixture is a weaker
+  argument against this kind of player than against a stopper** — it removes most of a stopper's
+  return, because the clean sheet is most of it, but an attacking defender still takes the
+  corners and still plays the 90 minutes. Do not dismiss one on fixture difficulty alone.
+
   The expected model cannot see defensive-contribution points, save points or penalty saves,
   because the data does not carry them: goalkeepers and ball-winning defenders are understated
   there, and Pts/90 is where their real return shows. Say so rather than presenting xPts/90 as
