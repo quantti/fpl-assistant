@@ -36,6 +36,14 @@ import org.springframework.web.client.RestClientException;
  * <p>Requests are spaced by {@code fpl.defcon.request-delay-ms} and the season's player list
  * bounds them: only players who already have a row in the current season are fetched, so this
  * asks FPL for nothing it cannot use.
+ *
+ * <p><b>Every write is guarded on minutes.</b> {@code history} carries whatever season FPL is
+ * currently serving, which is not necessarily the one the database flags {@code is_current} —
+ * FPL opens a season in July and shared may not have flipped the row yet. Element ids are reused
+ * across seasons, so without the guard a colliding {@code (fixture_id, player_id)} would stamp
+ * one player's match onto a different player's row in a different season, on a table shared with
+ * another project. Requiring the stored minutes to match makes that collision a skipped row and
+ * a number in the log.
  */
 @Component
 public class DefensiveStatsSyncService {
@@ -91,9 +99,24 @@ public class DefensiveStatsSyncService {
             pause();
         }
 
+        // A payload whose field names or types have changed maps every value to null while
+        // still producing one update per fixture, so a "successful" run would overwrite every
+        // captured reading with NULL and log a row count. Refusing to write is the safe
+        // direction: the columns keep the last good run's values, which is what the scheduler's
+        // contract promises.
+        long withValues = updates.stream().filter(u -> u[0] != null || u[1] != null
+                || u[2] != null || u[3] != null).count();
+        if (!updates.isEmpty() && withValues == 0) {
+            log.error("defcon sync: {} rows parsed and not one carried a defensive value."
+                    + " The element-summary payload has probably changed shape. Nothing written;"
+                    + " the columns keep the previous run's values.", updates.size());
+            return 0;
+        }
+
         int updated = applyAll(updates);
-        log.info("defcon sync: {} rows updated for season {} ({} players fetched, {} failed)",
-                updated, seasonId, fetched, failed);
+        int skipped = updates.size() - updated;
+        log.info("defcon sync: {} rows updated for season {} ({} players fetched, {} failed,"
+                + " {} skipped on a minutes mismatch)", updated, seasonId, fetched, failed, skipped);
         return updated;
     }
 
@@ -158,12 +181,16 @@ public class DefensiveStatsSyncService {
             if (fixtureId == null) {
                 continue;
             }
+            Integer minutes = asInt(row.get("minutes"));
+            if (minutes == null) {
+                continue;
+            }
             updates.add(new Object[] {
                     asInt(row.get("defensive_contribution")),
                     asInt(row.get("clearances_blocks_interceptions")),
                     asInt(row.get("recoveries")),
                     asInt(row.get("tackles")),
-                    fixtureId, playerId, seasonId,
+                    fixtureId, playerId, seasonId, minutes,
             });
         }
         return updates;
@@ -176,7 +203,7 @@ public class DefensiveStatsSyncService {
                        clearances_blocks_interceptions = ?,
                        recoveries = ?,
                        tackles = ?
-                 WHERE fixture_id = ? AND player_id = ? AND season_id = ?
+                 WHERE fixture_id = ? AND player_id = ? AND season_id = ? AND minutes = ?
                 """;
         int updated = 0;
         for (int from = 0; from < updates.size(); from += BATCH_SIZE) {
