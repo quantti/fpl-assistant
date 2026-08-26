@@ -2721,3 +2721,63 @@ One finding is not a code change: the review flagged that this branch rewrites `
 guardrail on tapas tables and that the exception's only record is the commit itself. The owner
 granted it in conversation on 2026-08-26, having confirmed they own both projects. Recorded here so
 the grant lives outside the diff that relies on it.
+
+## Sign-up: email verification, and invite codes that are rows (2026-08-26)
+
+Two changes to the same door.
+
+### The verification step that was missing
+
+Sign-up created the account with `email_confirm: true` and the frontend signed the person straight
+in. Supabase's own **Confirm email** toggle was on and had no effect, because that setting governs
+GoTrue's `/signup` path and this project used `/admin/users`, which creates a user and sends
+nothing. The toggle had nothing left to enforce.
+
+Sign-up now calls **`POST /auth/v1/signup` with the service-role key**. Verified against production
+before it was built on: the account comes back with `email_confirmed_at` null, `confirmation_sent_at`
+set, and **no session** — Supabase sends its own confirmation mail through the project's SMTP, and
+there is nothing to sign in with until the link is followed. The probe account was deleted.
+
+The service-role key is what keeps the invite code meaningful. `/signup` is a public endpoint, so
+**public sign-up must be turned off in the Supabase project** — it is currently on
+(`disable_signup: false`), which means the anon key in the frontend bundle can create accounts with
+no code at all. The service role is expected to be exempt from that switch; that is the one thing
+still to confirm, and it cannot be confirmed until the switch is off.
+
+The frontend no longer signs in after a 201. It shows "check your email", and an attempt to sign in
+before confirming turns Supabase's "Email not confirmed" into an instruction rather than an error.
+The response carries `verificationRequired` explicitly, so no client can read a bare 201 as being
+signed in.
+
+Also learned: Supabase rejects `@example.com` as an invalid address, so a throwaway probe needs a
+real domain.
+
+### Codes are rows now, not one secret
+
+`INVITE_CODE` could express one thing — whether a string matched — and every question actually
+worth asking is about something else. `fpl_invite_code` gives each code its own ceiling
+(`max_uses`), its own worth (`benefit_kind`, `benefit_value`), its own validity window and an
+`active` flag, so one code can be worth ten places, another a hundred, and another half off the
+subscription. A code runs out or is withdrawn on its own without touching any other; rotating the
+shared secret revoked everyone at once.
+
+`uses` is a stored counter incremented in the same transaction as the redemption row, under the
+same advisory lock that guards the account cap. Counting rows would be correct too, but it puts the
+ceiling a join away from the lock protecting it. `--reconcile-invite-codes` brings the counters back
+in line, which is the second half of the documented procedure for releasing a place burnt by a
+failed Supabase call.
+
+Codes are stored in plain text and matched case-insensitively. An invite code is a promotion code —
+printed on things, read aloud, pasted into chats — and the owner has to know which is which. What
+protects the tier is the ceiling on each code and the account cap behind it.
+
+The account cap (`INVITE_MAX_ACCOUNTS`, 30) survives as a cost ceiling across every code. **A code
+worth 100 places will still stop at 30 until that number is raised**, which is deliberate: the free
+tier's cost is drawn against it.
+
+Discounts are recorded, not yet applied — Stripe is Phase 5b (#43). The redemption row points at the
+code, so the billing phase reads the benefit from the join.
+
+`--create-invite-code=launch:10`, `--create-invite-code=podcast:100:discount_percent:50`,
+`--list-invite-codes`. Creating a code that exists leaves it untouched rather than resetting a live
+ceiling.

@@ -35,7 +35,7 @@ class SupabaseAdminClientTest {
     static void startStub() throws IOException {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         // The stub encodes the outcome in the address it is asked to create.
-        server.createContext("/auth/v1/admin/users", exchange -> {
+        server.createContext("/auth/v1/signup", exchange -> {
             String body = new String(exchange.getRequestBody().readAllBytes());
             int status;
             String response;
