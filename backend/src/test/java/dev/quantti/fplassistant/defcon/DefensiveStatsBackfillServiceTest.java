@@ -98,6 +98,20 @@ class DefensiveStatsBackfillServiceTest {
         assertThat(updates.get(1)).containsExactly(8, 6, 3, 2, 5, 543, 3, 90);
     }
 
+    /**
+     * vaastav's 2025-26 file lists ten player-fixture pairs twice, with identical values. Left
+     * in, they make the run report more rows updated than the table holds — which reads as a
+     * write having gone somewhere it should not have.
+     */
+    @Test
+    void aPlayerFixturePairListedTwiceBecomesOneUpdate() {
+        String csv = HEADER
+                + "Kroupi,100,29,4,9,0,1,0,1\n"
+                + "Kroupi,100,29,4,9,0,1,0,1\n";
+
+        assertThat(DefensiveStatsBackfillService.toUpdates(csv, 3, "2025-26")).hasSize(1);
+    }
+
     @Test
     void anEmptyFileYieldsNothing() {
         assertThat(DefensiveStatsBackfillService.toUpdates(HEADER, 3, "2025-26")).isEmpty();
