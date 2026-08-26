@@ -2733,16 +2733,30 @@ in. Supabase's own **Confirm email** toggle was on and had no effect, because th
 GoTrue's `/signup` path and this project used `/admin/users`, which creates a user and sends
 nothing. The toggle had nothing left to enforce.
 
-Sign-up now calls **`POST /auth/v1/signup` with the service-role key**. Verified against production
-before it was built on: the account comes back with `email_confirmed_at` null, `confirmation_sent_at`
-set, and **no session** — Supabase sends its own confirmation mail through the project's SMTP, and
-there is nothing to sign in with until the link is followed. The probe account was deleted.
+Sign-up now creates the account unconfirmed and then asks GoTrue to send its own confirmation
+mail — **two calls, because no single endpoint does both while public sign-up is off.** Each of the
+four candidates was tried against the live project rather than reasoned about:
 
-The service-role key is what keeps the invite code meaningful. `/signup` is a public endpoint, so
-**public sign-up must be turned off in the Supabase project** — it is currently on
-(`disable_signup: false`), which means the anon key in the frontend bundle can create accounts with
-no code at all. The service role is expected to be exempt from that switch; that is the one thing
-still to confirm, and it cannot be confirmed until the switch is off.
+| Endpoint | Creates | Sends | With sign-up disabled |
+|---|---|---|---|
+| `/auth/v1/signup` | yes | yes | **refused, service role included** |
+| `/auth/v1/admin/users` (`email_confirm: false`) | yes | no | works |
+| `/auth/v1/admin/generate_link` | yes | no (returns a link) | works |
+| `/auth/v1/resend` | no | yes | works |
+
+The first row is the one that mattered. `/signup` does everything in one call and was the design
+this was first built on; with public sign-up turned off it answers `signup_disabled` to the anon key
+**and to the service role alike** — the service role is not exempt. Public sign-up cannot stay on,
+because the anon key ships in the frontend bundle and would let anyone create an account with no
+code, so that endpoint is unusable here.
+
+So: `admin/users` with `email_confirm: false`, then `resend` with `type: signup`. The mail is
+Supabase's own, through the project's SMTP and template, which keeps a second provider out of the
+request path. A failed send is logged and swallowed: the account exists and the place is taken by
+then, and throwing would present a sent-mail failure as a failed sign-up, after which the person
+retries and is told the address is taken.
+
+Public sign-up was turned off in the project on 2026-08-26.
 
 The frontend no longer signs in after a 201. It shows "check your email", and an attempt to sign in
 before confirming turns Supabase's "Email not confirmed" into an instruction rather than an error.
@@ -2750,7 +2764,10 @@ The response carries `verificationRequired` explicitly, so no client can read a 
 signed in.
 
 Also learned: Supabase rejects `@example.com` as an invalid address, so a throwaway probe needs a
-real domain.
+real domain. And the built-in mailer's rate limit is real — a probe hit
+`429 over_email_send_rate_limit` after a single earlier send, which is why custom SMTP has to be
+configured before any real sign-up. The client logs that 429 as its own line rather than leaving it
+to be guessed at.
 
 ### Codes are rows now, not one secret
 
