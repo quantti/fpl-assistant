@@ -57,6 +57,9 @@ public final class TapasSeed {
     /** Available, but with no per-fixture record — the pick tools cannot judge him at all. */
     public static final String PLAYER_WITHOUT_UNDERLYING = "Novak";
 
+    /** Available and has a record, but far too little of it to carry a per-90 figure. */
+    public static final String PLAYER_BELOW_MINUTES_FLOOR = "Halloran";
+
     /** Ashfield plays twice in gameweek 2, so a one-gameweek window returns two fixtures. */
     public static final int DOUBLE_GAMEWEEK = 2;
 
@@ -125,7 +128,11 @@ public final class TapasSeed {
                     -- No player_fixture_stats rows anywhere: a summer signing, as far as the
                     -- underlying data is concerned. The pick tools must count him out loud
                     -- rather than drop him, which would read as a player judged and rejected.
-                    (9207, 9026, 9005, 'Ryan',  'Novak',     'Novak',     3, 60, 'a', NULL, 12,  45, 0, 0, 1.2, 50.00, 1.5)
+                    (9207, 9026, 9005, 'Ryan',  'Novak',     'Novak',     3, 60, 'a', NULL, 12,  45, 0, 0, 1.2, 50.00, 1.5),
+                    -- One substitute appearance. He has a record, so a count of "players with no
+                    -- rows" would miss him, while the minutes floor still drops him from the
+                    -- ranking — the gap the exclusion count used to fall through.
+                    (9208, 9026, 9003, 'Sean',  'Halloran',  'Halloran',  2, 45, 'a', NULL,  2,  45, 0, 0, 0.5,  4.00, 0.5)
                 ON CONFLICT (id, season_id) DO NOTHING
                 """);
 
@@ -171,7 +178,8 @@ public final class TapasSeed {
                     (9102, 9205, 9026, 1, 9003, 9004, true,  TIMESTAMPTZ '2025-08-16 16:30:00+00', 90, 6, 0, 0, 0.05, 0.10, 0.15, 1, 0, 0.80, 45),
                     (9104, 9205, 9026, 2, 9003, 9004, false, TIMESTAMPTZ '2025-08-23 16:30:00+00', 90, 2, 0, 1, 0.05, 0.20, 0.25, 0, 2, 1.70, 45),
                     (9102, 9206, 9026, 1, 9004, 9003, false, TIMESTAMPTZ '2025-08-16 16:30:00+00', 90, 6, 0, 0, 0.00, 0.00, 0.00, 1, 0, 0.60, 45),
-                    (9104, 9206, 9026, 2, 9004, 9003, true,  TIMESTAMPTZ '2025-08-23 16:30:00+00', 90, 2, 0, 0, 0.00, 0.00, 0.00, 0, 2, 1.10, 45)
+                    (9104, 9206, 9026, 2, 9004, 9003, true,  TIMESTAMPTZ '2025-08-23 16:30:00+00', 90, 2, 0, 0, 0.00, 0.00, 0.00, 0, 2, 1.10, 45),
+                    (9102, 9208, 9026, 1, 9003, 9004, true,  TIMESTAMPTZ '2025-08-16 16:30:00+00', 45, 2, 0, 0, 0.02, 0.03, 0.05, 0, 0, 0.80, 45)
                 ON CONFLICT (fixture_id, player_id, season_id) DO NOTHING
                 """);
     }

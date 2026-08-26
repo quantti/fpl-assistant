@@ -182,7 +182,21 @@ class PickToolsIntegrationTest {
     void playersWithoutAnUnderlyingRecordAreExcludedAndCounted() {
         String result = tools.getDifferentialPicks("any", 100, 3);
 
-        assertThat(result).contains("not listed: no comparable");
+        assertThat(result).contains("not listed: they have no comparable");
         assertThat(result).doesNotContain(" " + TapasSeed.PLAYER_WITHOUT_UNDERLYING + " (");
+    }
+
+    /**
+     * The count used to be a second query listing the reasons a player could be absent, and it
+     * missed two of them: too few minutes, and a name that is ambiguous across the seasons. Those
+     * players left the list without leaving a trace. It is now the pool minus what came back, so
+     * every absence is accounted for whatever caused it.
+     */
+    @Test
+    void aPlayerBelowTheMinutesFloorIsCountedAndNotSilentlyDropped() {
+        String result = tools.getDifferentialPicks("DEF", 100, 3);
+
+        assertThat(result).doesNotContain(" " + TapasSeed.PLAYER_BELOW_MINUTES_FLOOR + " (");
+        assertThat(result).containsPattern("\\b1 further player\\(s\\) matching these filters are not listed");
     }
 }

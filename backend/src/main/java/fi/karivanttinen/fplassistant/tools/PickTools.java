@@ -302,32 +302,27 @@ public class PickTools implements FplTool {
     }
 
     /**
-     * How many otherwise-eligible players had to be left out for want of a comparable record.
-     * Reported rather than swallowed: a promoted side's defence and a summer signing are exactly
-     * the picks a user asks about, and silently omitting them reads as "no such option".
+     * How many players matched the filters but could not be ranked. Reported rather than
+     * swallowed: a promoted side's defence and a summer signing are exactly the picks a user asks
+     * about, and silently omitting them reads as "no such option".
+     *
+     * <p>Counted as the pool minus what came back, not by a second query reproducing the reasons.
+     * The first version did reproduce them and got it wrong — it counted only players with no
+     * per-fixture rows at all, so anyone under the minutes floor, and anyone whose name was
+     * ambiguous across the two seasons, vanished from both the list and the count. A subtraction
+     * cannot drift from the query it describes.
      */
-    private int withoutEvidence(SeasonContext season, MetricSeason metric, int elementType,
-                                double maxOwnership) {
-        String metricKey = metric.isResolvedSeason() ? "mp.id::text" : "LOWER(mp.web_name)";
-        String poolKey = metric.isResolvedSeason() ? "p.id::text" : "LOWER(p.web_name)";
-
-        Integer count = jdbc.queryForObject("""
-                WITH metrics AS (
-                    SELECT %s AS k
-                    FROM player_fixture_stats pfs
-                    JOIN player mp ON mp.id = pfs.player_id AND mp.season_id = pfs.season_id
-                    WHERE pfs.season_id = ?
-                    GROUP BY 1
-                )
+    private int withoutEvidence(SeasonContext season, int elementType, double maxOwnership,
+                                int ranked) {
+        Integer pool = jdbc.queryForObject("""
                 SELECT count(*) FROM player p
                 WHERE p.season_id = ?
                   AND p.status IN ('a', 'd')
                   AND p.selected_by_percent <= ?
                   %s
-                  AND %s NOT IN (SELECT k FROM metrics)
-                """.formatted(metricKey, positionFilter(elementType, "p"), poolKey),
-                Integer.class, metric.seasonId(), season.seasonId(), maxOwnership);
-        return count == null ? 0 : count;
+                """.formatted(positionFilter(elementType, "p")),
+                Integer.class, season.seasonId(), maxOwnership);
+        return pool == null ? 0 : Math.max(0, pool - ranked);
     }
 
     private String formatPicks(String heading, List<Map<String, Object>> rows, SeasonContext season,
@@ -364,13 +359,13 @@ public class PickTools implements FplTool {
         }
         out.append(footer(metric, fixtureLimit, ownershipTieBreak, realisedWeight));
 
-        int missing = withoutEvidence(season, metric, elementType, maxOwnership);
+        int missing = withoutEvidence(season, elementType, maxOwnership, rows.size());
         if (missing > 0) {
             out.append(missing).append(" further player(s) matching these filters are not listed:")
-                    .append(" no comparable ").append(metric.code()).append(" record — new to the")
-                    .append(" league, or a name that is not unique across the two seasons. Say so")
-                    .append(" if the user asks about someone who is missing; do not report them")
-                    .append(" as a poor pick.\n");
+                    .append(" they have no comparable ").append(metric.code())
+                    .append(" record — new to the league, too few minutes to judge, or a name that")
+                    .append(" is not unique across the two seasons. Say so if the user asks about")
+                    .append(" someone who is missing; do not report them as a poor pick.\n");
         }
         return out.toString();
     }
