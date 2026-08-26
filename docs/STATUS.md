@@ -2548,24 +2548,29 @@ alone.
 ### Positional mismatch (same day)
 
 One more thing the score alone does not say. FPL pays by the position a player is **listed** as,
-not the one they play, so a defender who plays wing-back or winger collects 6 a goal, 3 an assist
-and 4 a clean sheet while creating like a midfielder. That gap is durable value, and it also
-changes how fixture difficulty should be read: a hard fixture removes most of a *stopper's* return,
-because the clean sheet is most of it, but an attacking defender still takes the corners and plays
-the 90.
+not the one they play, so a defender who plays winger or midfielder collects 6 a goal, 3 an assist
+and 4 a clean sheet from an attacking role. That gap is durable value, and it also changes how
+fixture difficulty should be read: a hard fixture removes most of a *stopper's* return, because the
+clean sheet is most of it, but a defender playing further forward keeps his attacking role whoever
+the opponent is.
 
-Measured over 2025/26 (900+ minutes), the median xGI/90 by listed position is GK 0.00, DEF 0.11,
-MID 0.26, FWD 0.43 — so a defender above 0.26 is producing like a median midfielder on a defender's
-scoring table. `backend/src/main/resources/docs/positional-mismatch-players.md` is the maintained
-list: eleven defenders above the DEF median with their attacking split and set-piece duty, plus the
-smaller midfielder-as-forward case. De Cuyper (0.26 xA/90, Brighton's corners, £4.6m) and Reece
-James (first on both corners and direct free kicks) are the two clearest.
+`backend/src/main/resources/docs/positional-mismatch-players.md` holds the list. It has two entries
+— De Cuyper (Brighton, plays winger) and Reece James (Chelsea, plays midfield) — and it is
+maintained by the owner, who decides membership from watching the games, community writing and
+reporting, and their own observation. **The assistant does not add names to it.**
 
-The document is `kind: timely` and says how to revisit it — after three gameweeks, after a
-managerial change, and in January — because there is no API field for "the position he actually
-plays". The measurable half is re-derivable from `player_fixture_stats`; the unmeasurable half is
-whether he is still picked in that role. **It needs a production ingest after this merges.**
+That rule exists because the first draft broke it. The list was screened out of `player_fixture_stats`
+by expected goal involvements per 90, eleven names deep, against a stated threshold of the midfield
+median that only two of them actually cleared — a criterion and a list that did not match. Worse,
+the screen answers a different question from the one the document asks: it put three centre-backs
+(Guéhi, Thiaw, Senesi) in its top fourteen because they head in corners, and it missed Reece James
+at 0.195 despite his genuinely playing midfield. Attacking output conflates wing-backs, corner-box
+centre-backs and penalty takers. It cannot identify a role, and a role is the whole subject.
 
-The system prompt now routes there: check the corpus document and `getSetPieceTakers` before
-answering "is this defender worth it", and do not dismiss an attacking defender on fixture
-difficulty alone.
+The measurable half stays where it belongs: the pick tools already print `xG/90` and `xA/90` per
+candidate, and `getSetPieceTakers` gives live duty. Those support "he produces well for a defender";
+only the list supports "he plays as a winger". The system prompt draws that line explicitly.
+
+The document is `kind: timely` and names its review points — after three gameweeks, after a
+managerial change at a club on the list, and in January. **It needs a production ingest after this
+merges.**
