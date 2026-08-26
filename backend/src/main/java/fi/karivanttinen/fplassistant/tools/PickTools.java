@@ -44,9 +44,10 @@ import org.springframework.stereotype.Component;
  * ({@link #MAX_REALISED_WEIGHT} at {@link #FULL_WEIGHT_GAMEWEEK}), so a hot start counts for
  * little in GW2 and a season of returns counts properly in GW20.
  *
- * <p>Not modelled, because tapas does not carry the columns: defensive-contribution points, save
- * points and penalty saves. Goalkeepers and ball-winning defenders are therefore understated,
- * which the reply says.
+ * <p>Not modelled: defensive-contribution points, save points and penalty saves. Only the first
+ * of those is missing from the data — {@code player_fixture_stats} carries {@code saves} and
+ * {@code penalties_saved}, and leaving them out is a choice, not a gap. Goalkeepers and
+ * ball-winning defenders are understated either way, which the reply says.
  *
  * <p>The metrics come from whichever season has a real sample — the season being played once it
  * has {@link #MIN_SAMPLE_GAMEWEEKS} completed gameweeks, and the previous one until then, which
@@ -70,8 +71,19 @@ public class PickTools implements FplTool {
     private static final int MAX_PICKS = 10;
     private static final int MAX_FIXTURES = 5;
 
-    /** Matches of underlying data read per player — a season's worth of recent evidence. */
+    /**
+     * Matches of underlying data read per player when the metrics come from the season being
+     * played: recent form, which is what "last 10" should mean.
+     *
+     * <p>A finished season is read whole instead. Taking its last ten gameweeks means GW28-38 —
+     * the run-in, where a side chasing Europe rotates, a safe mid-table side coasts and a
+     * relegated one has stopped trying. That is the least representative quarter of the season,
+     * and it was being labelled "the previous season" in the output.
+     */
     private static final int WINDOW_MATCHES = 10;
+
+    /** Every gameweek of a finished season; no season has more fixtures than this per player. */
+    private static final int WHOLE_SEASON = 60;
 
     /**
      * Minutes a player must have inside that window to be ranked at all. Two full matches: below
@@ -90,7 +102,12 @@ public class PickTools implements FplTool {
     /** Sinks players whose fixtures are unknown below any player with a real FDR. */
     private static final double UNKNOWN_FDR = Double.MAX_VALUE;
 
-    /** FPL scoring, indexed by element_type (1=GK, 2=DEF, 3=MID, 4=FWD). */
+    /**
+     * FPL scoring, indexed by element_type (1=GK, 2=DEF, 3=MID, 4=FWD). Read through
+     * {@link #goalPoints} and {@link #cleanSheetPoints}: the column has no CHECK constraint and
+     * FPL has since added managers as a fifth type, so an out-of-range value must degrade rather
+     * than throw out of a tool call.
+     */
     private static final double[] GOAL_POINTS = {0, 6, 6, 5, 4};
     private static final double[] CLEAN_SHEET_POINTS = {0, 4, 4, 1, 0};
     private static final double ASSIST_POINTS = 3;
@@ -112,20 +129,22 @@ public class PickTools implements FplTool {
 
     /** Which season the underlying numbers were read from, and why it is not the resolved one. */
     private record MetricSeason(int seasonId, String code, boolean isResolvedSeason,
-                                int playedGameweeks) {}
+                                int playedGameweeks, int latestGameweek) {}
 
     @Tool(description = """
             Suggest differential FPL picks — players with low ownership (≤ maxOwnership
             percent) whose underlying numbers and upcoming fixtures are favourable. Filters by
-            position (1=GK, 2=DEF, 3=MID, 4=FWD, or "any"). Returns up to 10 players ranked by
-            underlying performance — expected goal involvements per 90 for midfielders and
-            forwards, expected goals conceded per match for goalkeepers and defenders — then by
-            the average difficulty of their next N fixtures, then by ownership. NOT ranked by
-            points or form: a player's recent points haul is a result, not a reason, and the
-            reply says which season the underlying numbers cover. Players who are injured,
-            suspended or otherwise unavailable are excluded; doubtful players are included and
-            flagged. Use for differential/pick questions and combine with strategy docs. The
-            reply begins with the season the numbers come from.
+            position (1=GK, 2=DEF, 3=MID, 4=FWD, or "any"). Returns up to 10 players ranked by a
+            Score: expected FPL points per 90 (xG and xA at that position's own goal and assist
+            values, plus the clean-sheet probability implied by expected goals conceded), blended
+            with the points actually scored per 90 at a weight that rises as the season runs.
+            Then the average difficulty of their next N fixtures, then ownership. NOT ranked by
+            form: a recent points haul is a result, not a reason. Each pick shows the parts behind
+            its expected points, so a defender who attacks and a defender at a mean side are
+            distinguishable. The reply says which season the numbers cover. Players who are
+            injured, suspended or otherwise unavailable are excluded; doubtful players are
+            included and flagged. Use for differential/pick questions and combine with strategy
+            docs. The reply begins with the season the numbers come from.
             """)
     public String getDifferentialPicks(String position, double maxOwnership, int nextN) {
         try {
@@ -160,11 +179,12 @@ public class PickTools implements FplTool {
     @Tool(description = """
             Suggest FPL captain candidates — midfielders and forwards with the strongest
             underlying attacking numbers and favourable upcoming fixtures. Returns up to 10
-            players ranked by expected goal involvements (xG + xA) per 90 minutes, then by the
-            average difficulty of their next N fixtures, then by total points, each shown with
-            ownership (so the user can see template vs differential captains). NOT ranked by
-            points or form: a big gameweek is a result, not a reason, and the reply says which
-            season the underlying numbers cover. Players who are injured, suspended or otherwise
+            players ranked by a Score: expected FPL points per 90 from xG and xA at that
+            position's own values, blended with the points actually scored per 90 at a weight
+            that rises as the season runs. Then the average difficulty of their next N fixtures,
+            then total points, each shown with ownership (so the user can see template vs
+            differential captains). NOT ranked by form: a big gameweek is a result, not a reason,
+            and the reply says which season the numbers cover. Players who are injured, suspended or otherwise
             unavailable are excluded; doubtful players are included and flagged. Use for
             captaincy questions and combine with strategy docs. The reply begins with the season
             the numbers come from.
@@ -204,23 +224,57 @@ public class PickTools implements FplTool {
     private MetricSeason metricSeason(SeasonContext season) {
         int played = completedGameweeks(season.seasonId());
         if (played >= MIN_SAMPLE_GAMEWEEKS) {
-            return new MetricSeason(season.seasonId(), season.code(), true, played);
+            return new MetricSeason(season.seasonId(), season.code(), true, played,
+                    latestGameweek(season.seasonId()));
         }
         Optional<SeasonContext> previous = seasonResolver.previousSeason(season);
-        if (previous.isPresent() && completedGameweeks(previous.get().seasonId()) > 0) {
+        if (previous.isPresent()) {
             SeasonContext prev = previous.get();
-            return new MetricSeason(prev.seasonId(), prev.code(), false, played);
+            // Better, not merely non-empty. A previous season with one synced gameweek is not
+            // evidence to prefer over this season's four, and falling back to it would print
+            // "too few to judge anyone on" about the larger of the two samples.
+            if (completedGameweeks(prev.seasonId()) > played) {
+                return new MetricSeason(prev.seasonId(), prev.code(), false, played,
+                        latestGameweek(prev.seasonId()));
+            }
         }
         // Nothing better exists. Rank on the thin sample rather than refusing — the footer says
         // how thin it is, which is the honest version of answering at all.
-        return new MetricSeason(season.seasonId(), season.code(), true, played);
+        return new MetricSeason(season.seasonId(), season.code(), true, played,
+                latestGameweek(season.seasonId()));
     }
 
-    private int completedGameweeks(int seasonId) {
-        Integer count = jdbc.queryForObject(
-                "SELECT count(DISTINCT gameweek) FROM player_fixture_stats WHERE season_id = ?",
+    /**
+     * The newest gameweek the underlying data actually reaches. Printed for the reason
+     * {@code getTeamForm} prints its most recent match date: a stalled tapas sync otherwise
+     * ranks on weeks-old numbers with nothing in the output to show it.
+     */
+    private int latestGameweek(int seasonId) {
+        Integer gw = jdbc.queryForObject(
+                "SELECT COALESCE(max(gameweek), 0) FROM player_fixture_stats WHERE season_id = ?",
                 Integer.class, seasonId);
+        return gw == null ? 0 : gw;
+    }
+
+    /**
+     * Gameweeks whose fixtures are all played. Counting distinct gameweeks in
+     * {@code player_fixture_stats} instead would count a gameweek in progress the moment its
+     * first fixture syncs, flipping the sample-size switch a week early and printing a number
+     * the footer calls "completed".
+     */
+    private int completedGameweeks(int seasonId) {
+        Integer count = jdbc.queryForObject("""
+                SELECT count(*) FROM gameweek g
+                WHERE g.season_id = ? AND g.finished = true
+                  AND EXISTS (SELECT 1 FROM player_fixture_stats pfs
+                              WHERE pfs.season_id = g.season_id AND pfs.gameweek = g.id)
+                """, Integer.class, seasonId);
         return count == null ? 0 : count;
+    }
+
+    /** How many matches back the metric window reaches. See {@link #WINDOW_MATCHES}. */
+    private static int windowLimit(MetricSeason metric) {
+        return metric.isResolvedSeason() ? WINDOW_MATCHES : WHOLE_SEASON;
     }
 
     /**
@@ -254,8 +308,11 @@ public class PickTools implements FplTool {
                     SELECT pfs.player_id, pfs.minutes, pfs.total_points,
                            pfs.expected_goals AS xg, pfs.expected_assists AS xa,
                            pfs.expected_goals_conceded AS xgc,
+                           -- fixture_id breaks the tie: a double gameweek gives one player two
+                           -- rows with the same gameweek, and an unordered pair straddling the
+                           -- window edge makes the same call return different numbers.
                            ROW_NUMBER() OVER (PARTITION BY pfs.player_id
-                                              ORDER BY pfs.gameweek DESC) AS rn
+                                              ORDER BY pfs.gameweek DESC, pfs.fixture_id DESC) AS rn
                     FROM player_fixture_stats pfs
                     WHERE pfs.season_id = ?
                 ),
@@ -288,8 +345,16 @@ public class PickTools implements FplTool {
                 SELECT pool.*, m.mins, m.matches, m.xg90, m.xa90, m.pts90, m.xgc_per_match
                 FROM pool
                 JOIN metrics m ON m.k = %s
-                """.formatted(positionFilter(elementType, "p"), WINDOW_MATCHES,
-                        MIN_WINDOW_MINUTES, metricKey, poolKey),
+                -- Unique on the pool side too. Dropping names that repeat in the metric season
+                -- is only half of it: two current players sharing a web_name would both inherit
+                -- one previous-season record, and neither could be told it was the wrong man.
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM pool other
+                    WHERE %s = %s AND other.id <> pool.id
+                )
+                """.formatted(positionFilter(elementType, "p"), windowLimit(metric),
+                        MIN_WINDOW_MINUTES, metricKey, poolKey,
+                        poolKey.replace("pool.", "other."), poolKey),
                 season.seasonId(), maxOwnership, metric.seasonId(), metric.seasonId());
     }
 
@@ -316,6 +381,7 @@ public class PickTools implements FplTool {
                                 int ranked) {
         Integer pool = jdbc.queryForObject("""
                 SELECT count(*) FROM player p
+                JOIN team t ON t.id = p.team_id AND t.season_id = p.season_id
                 WHERE p.season_id = ?
                   AND p.status IN ('a', 'd')
                   AND p.selected_by_percent <= ?
@@ -339,19 +405,20 @@ public class PickTools implements FplTool {
             int teamId = ((Number) r.get("team_id")).intValue();
             int position = ((Number) r.get("element_type")).intValue();
             Double avgFdr = fdrByTeam.get(teamId);
-            out.append("  %s %s (%s) £%.1fm%s | Own %s%%%s | Score %.2f | xPts/90 %.2f (%s) | Pts/90 %.2f | Mins %s (%s mt) | Avg FDR %s%s\n"
-                    .formatted(
-                            positionLabel(position),
-                            r.get("web_name"), r.get("team_short"),
-                            ((Number) r.get("now_cost")).intValue() / 10.0, qual,
-                            r.get("selected_by_percent"), qual,
-                            score(r, realisedWeight),
-                            expectedPointsPer90(r),
-                            components(r, position),
-                            pointsPer90(r),
-                            r.get("mins"), r.get("matches"),
-                            avgFdr == null ? "n/a" : String.format(Locale.ROOT, "%.1f", avgFdr),
-                            availability(r)));
+            out.append(String.format(Locale.ROOT,
+                    "  %s %s (%s) £%sm%s | Own %s%%%s | Score %s | xPts/90 %s (%s) | Pts/90 %s"
+                            + " | Mins %s (%s mt) | Avg FDR %s%s\n",
+                    positionLabel(position),
+                    r.get("web_name"), r.get("team_short"),
+                    fixed(((Number) r.get("now_cost")).intValue() / 10.0, 1), qual,
+                    r.get("selected_by_percent"), qual,
+                    fixed(score(r, realisedWeight), 2),
+                    fixed(expectedPointsPer90(r), 2),
+                    components(r, position),
+                    fixed(pointsPer90(r), 2),
+                    r.get("mins"), r.get("matches"),
+                    avgFdr == null ? "n/a" : fixed(avgFdr, 1),
+                    availability(r)));
         }
         if (fdrByTeam.isEmpty()) {
             out.append("\n(No upcoming fixtures found — FDR is n/a and the ranking falls back to"
@@ -372,27 +439,36 @@ public class PickTools implements FplTool {
 
     /** The parts of xPts/90, so the model can say *why* a player ranks where they do. */
     private static String components(Map<String, Object> row, int position) {
-        String attacking = "xG/90 %.2f, xA/90 %.2f".formatted(
-                numeric(row.get("xg90")), numeric(row.get("xa90")));
-        if (CLEAN_SHEET_POINTS[position] == 0) {
+        String attacking = "xG/90 " + fixed(numeric(row.get("xg90")), 2)
+                + ", xA/90 " + fixed(numeric(row.get("xa90")), 2);
+        if (cleanSheetPoints(position) == 0) {
             return attacking;
         }
         Object xgc = row.get("xgc_per_match");
-        return xgc == null
-                ? attacking + ", CS n/a"
-                : attacking + ", CS %.0f%% at xGC %.2f".formatted(
-                        cleanSheetProbability(numeric(xgc)) * 100, numeric(xgc));
+        return hasCleanSheetSignal(xgc)
+                ? attacking + ", CS %s%% at xGC %s".formatted(
+                        fixed(cleanSheetProbability(numeric(xgc)) * 100, 0), fixed(numeric(xgc), 2))
+                : attacking + ", CS n/a";
     }
 
     private String footer(MetricSeason metric, int fixtureLimit, boolean ownershipTieBreak,
                           double realisedWeight) {
-        StringBuilder out = new StringBuilder("\nRanked by Score over each player's last "
-                + WINDOW_MATCHES + " matches in " + metric.code() + ". Score blends xPts/90 —"
+        String span = metric.isResolvedSeason()
+                ? "each player's last " + WINDOW_MATCHES + " matches in " + metric.code()
+                : "all of " + metric.code();
+        StringBuilder out = new StringBuilder("\nRanked by Score over "
+                + span + ". Score blends xPts/90 —"
                 + " expected FPL points per 90, built from xG, xA and the clean-sheet probability"
                 + " implied by expected goals conceded, each valued at that position's own points"
                 + " — with Pts/90, the points actually scored. Realised points carry "
-                + Math.round(realisedWeight * 100) + "% of the weight here, rising towards "
-                + Math.round(MAX_REALISED_WEIGHT * 100) + "% by gameweek " + FULL_WEIGHT_GAMEWEEK
+                + Math.round(realisedWeight * 100) + "% of the weight here"
+                + (metric.isResolvedSeason()
+                        ? ", rising towards " + Math.round(MAX_REALISED_WEIGHT * 100)
+                          + "% by gameweek " + FULL_WEIGHT_GAMEWEEK + " as the sample grows"
+                        : " — deliberately low: these are a previous season's returns, and"
+                          + " penalties, set-piece duty and a player's role all change between"
+                          + " seasons, so what he scored then is weaker evidence than how he"
+                          + " created chances")
                 + ". Then average FDR of the next " + fixtureLimit + " fixtures, then "
                 + (ownershipTieBreak ? "ownership" : "total points") + ".\n");
         out.append("This is why both kinds of defender can appear: an attacking full-back earns"
@@ -410,9 +486,14 @@ public class PickTools implements FplTool {
                     .append(" completed gameweek(s) of data exist and no earlier season is")
                     .append(" available, so this is a thin sample. Say so.\n");
         }
-        out.append("Defensive-contribution points, save points and penalty saves are not in the")
-                .append(" data and so are not in xPts/90: goalkeepers and ball-winning defenders")
-                .append(" are understated, and Pts/90 is where their real return shows up.\n")
+        out.append("The most recent gameweek in this data is ").append(metric.latestGameweek())
+                .append(" of ").append(metric.code())
+                .append(". If that is well behind the gameweek being played, the statistics sync")
+                .append(" has stalled and these numbers are older than they look — say so.\n");
+        out.append("xPts/90 covers goals, assists and clean sheets only. Save points, penalty")
+                .append(" saves and defensive-contribution points are not in it, so goalkeepers")
+                .append(" and ball-winning defenders are understated; Pts/90 is where their real")
+                .append(" return shows up. Do not call xPts/90 a complete projection.\n")
                 .append("Unavailable players (injured/suspended) are excluded.\n");
         return out.toString();
     }
@@ -426,9 +507,38 @@ public class PickTools implements FplTool {
         return MAX_REALISED_WEIGHT * progress;
     }
 
+    /**
+     * Locale-pinned decimal formatting. {@code String.formatted} resolves the default locale, so
+     * on a machine set to a comma-decimal language the model is handed "Score 6,83" — a number it
+     * can read as a list or as thousands. The FDR column was already pinned; nothing else was.
+     */
+    private static String fixed(double value, int decimals) {
+        return String.format(Locale.ROOT, "%." + decimals + "f", value);
+    }
+
+    private static double goalPoints(int position) {
+        return position >= 1 && position < GOAL_POINTS.length ? GOAL_POINTS[position] : 0;
+    }
+
+    private static double cleanSheetPoints(int position) {
+        return position >= 1 && position < CLEAN_SHEET_POINTS.length
+                ? CLEAN_SHEET_POINTS[position] : 0;
+    }
+
     /** Poisson: the chance a side with this expected concession lets in none. */
     static double cleanSheetProbability(double expectedGoalsConceded) {
         return Math.exp(-expectedGoalsConceded);
+    }
+
+    /**
+     * Whether a captured expected-concession figure can be believed. The column is
+     * {@code NOT NULL DEFAULT 0}, so an unpopulated season reads as 0.00 — and {@code exp(-0)}
+     * is a 100% clean sheet, which would put every defender and keeper in that season at the top
+     * of every list with "CS 100%" printed beside them. No real side has an expected concession
+     * of exactly zero across a match, so zero means nobody wrote it.
+     */
+    private static boolean hasCleanSheetSignal(Object xgc) {
+        return xgc != null && numeric(xgc) > 0;
     }
 
     /**
@@ -441,11 +551,11 @@ public class PickTools implements FplTool {
     static double expectedPointsPer90(Map<String, Object> row) {
         int position = ((Number) row.get("element_type")).intValue();
         double points = APPEARANCE_POINTS
-                + numeric(row.get("xg90")) * GOAL_POINTS[position]
+                + numeric(row.get("xg90")) * goalPoints(position)
                 + numeric(row.get("xa90")) * ASSIST_POINTS;
         Object xgc = row.get("xgc_per_match");
-        if (xgc != null && CLEAN_SHEET_POINTS[position] > 0) {
-            points += cleanSheetProbability(numeric(xgc)) * CLEAN_SHEET_POINTS[position];
+        if (hasCleanSheetSignal(xgc) && cleanSheetPoints(position) > 0) {
+            points += cleanSheetProbability(numeric(xgc)) * cleanSheetPoints(position);
         }
         return points;
     }

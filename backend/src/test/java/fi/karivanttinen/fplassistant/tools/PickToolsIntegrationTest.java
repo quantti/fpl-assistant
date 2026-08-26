@@ -170,12 +170,26 @@ class PickToolsIntegrationTest {
                 .doesNotContain("CS ");
     }
 
-    /** What the model must not do is present the model as complete. */
+    /**
+     * What the model must not do is present xPts/90 as a complete projection. An earlier version
+     * of this line said save points and penalty saves were "not in the data", which is false —
+     * player_fixture_stats carries `saves` and `penalties_saved`. Leaving them out is a choice,
+     * and the reply has to say the true thing.
+     */
     @Test
-    void theReplySaysWhichPointsTheExpectedModelCannotSee() {
-        assertThat(tools.getDifferentialPicks("DEF", 100, 3))
-                .contains("Defensive-contribution points, save points and penalty saves are not"
-                        + " in the data");
+    void theReplySaysWhichPointsTheExpectedModelDoesNotCover() {
+        String result = tools.getDifferentialPicks("DEF", 100, 3);
+
+        assertThat(result).contains("xPts/90 covers goals, assists and clean sheets only");
+        assertThat(result).contains("Do not call xPts/90 a complete projection");
+        assertThat(result).doesNotContain("are not in the data");
+    }
+
+    /** A stalled statistics sync has to be visible, the way getTeamForm makes it visible. */
+    @Test
+    void theReplyDatesTheUnderlyingData() {
+        assertThat(tools.getCaptainCandidates(3))
+                .containsPattern("The most recent gameweek in this data is [0-9]+ of ");
     }
 
     @Test
