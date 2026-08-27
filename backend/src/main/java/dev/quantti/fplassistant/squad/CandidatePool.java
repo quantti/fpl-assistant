@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+import dev.quantti.fplassistant.tools.ExpectedPoints;
 import dev.quantti.fplassistant.tools.SeasonContext;
 import dev.quantti.fplassistant.tools.SeasonResolver;
 import org.springframework.beans.factory.annotation.Value;
@@ -28,18 +29,6 @@ import org.springframework.stereotype.Component;
  */
 @Component
 public class CandidatePool {
-
-    /** Matches read per player when the metric season is the one being played: recent form. */
-    static final int WINDOW_MATCHES = 10;
-
-    /** Every gameweek of a finished season, which is read whole rather than by its run-in. */
-    static final int WHOLE_SEASON = 60;
-
-    /** Minutes needed inside the window to be judged at all. Two full matches. */
-    static final int MIN_WINDOW_MINUTES = 180;
-
-    /** Completed gameweeks the season being played needs before its own numbers are used. */
-    static final int MIN_SAMPLE_GAMEWEEKS = 5;
 
     private final JdbcTemplate jdbc;
     private final SeasonResolver seasonResolver;
@@ -67,28 +56,16 @@ public class CandidatePool {
      * same early-season rule the system prompt states, applied where the ordering is decided.
      */
     public MetricWindow metricWindow(SeasonContext season) {
-        int played = completedGameweeks(season.seasonId());
-        if (played >= MIN_SAMPLE_GAMEWEEKS) {
-            return new MetricWindow(season.seasonId(), season.code(), true,
-                    season.currentSeason(),
-                    season.currentSeason() ? WINDOW_MATCHES : WHOLE_SEASON);
-        }
-        Optional<SeasonContext> previous = seasonResolver.previousSeason(season);
-        return previous
-                .map(p -> new MetricWindow(p.seasonId(), p.code(), false, false, WHOLE_SEASON))
+        int played = seasonResolver.completedGameweeks(season.seasonId());
+        Optional<SeasonContext> better = seasonResolver.betterMetricSeason(season, played,
+                ExpectedPoints.MIN_SAMPLE_GAMEWEEKS);
+        return better
+                .map(p -> new MetricWindow(p.seasonId(), p.code(), false, false,
+                        ExpectedPoints.WHOLE_SEASON))
                 .orElseGet(() -> new MetricWindow(season.seasonId(), season.code(), true,
                         season.currentSeason(),
-                        season.currentSeason() ? WINDOW_MATCHES : WHOLE_SEASON));
-    }
-
-    private int completedGameweeks(int seasonId) {
-        Integer count = jdbc.queryForObject("""
-                SELECT count(*) FROM gameweek g
-                WHERE g.season_id = ? AND g.finished = true
-                  AND EXISTS (SELECT 1 FROM player_fixture_stats pfs
-                              WHERE pfs.season_id = g.season_id AND pfs.gameweek = g.id)
-                """, Integer.class, seasonId);
-        return count == null ? 0 : count;
+                        season.currentSeason() ? ExpectedPoints.WINDOW_MATCHES
+                                : ExpectedPoints.WHOLE_SEASON));
     }
 
     /**
@@ -181,7 +158,7 @@ public class CandidatePool {
                 SELECT pool.*, m.mins, m.fixtures, m.xg90, m.xa90, m.pts90, m.xgc_per_match
                 FROM pool
                 LEFT JOIN metrics m ON m.k = %s %s
-                """.formatted(dailyTable, window.windowLimit(), MIN_WINDOW_MINUTES,
+                """.formatted(dailyTable, window.windowLimit(), ExpectedPoints.MIN_WINDOW_MINUTES,
                         metricKey, metricUnique, poolKey, poolUnique),
                 season.code(), captureDate, window.seasonId(), window.seasonId(),
                 window.seasonId());

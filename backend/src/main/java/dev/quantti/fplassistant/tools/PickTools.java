@@ -50,7 +50,7 @@ import org.springframework.stereotype.Component;
  * ball-winning defenders are understated either way, which the reply says.
  *
  * <p>The metrics come from whichever season has a real sample — the season being played once it
- * has {@link #MIN_SAMPLE_GAMEWEEKS} completed gameweeks, and the previous one until then, which
+ * has {@link ExpectedPoints#MIN_SAMPLE_GAMEWEEKS} completed gameweeks, and the previous one until then, which
  * is the same rule the system prompt states for early-season judgements. When the metric season
  * is not the season being played, players are bridged across it by name: {@code player.id} is
  * FPL's element id and is reassigned every season, and shared keeps no stable player code. Names
@@ -72,32 +72,11 @@ public class PickTools implements FplTool {
     private static final int MAX_FIXTURES = 5;
 
     /**
-     * Matches of underlying data read per player when the metrics come from the season being
-     * played: recent form, which is what "last 10" should mean.
-     *
-     * <p>A finished season is read whole instead. Taking its last ten gameweeks means GW28-38 —
-     * the run-in, where a side chasing Europe rotates, a safe mid-table side coasts and a
-     * relegated one has stopped trying. That is the least representative quarter of the season,
-     * and it was being labelled "the previous season" in the output.
+     * Window and sample-size constants ({@code WINDOW_MATCHES}, {@code WHOLE_SEASON},
+     * {@code MIN_WINDOW_MINUTES}, {@code MIN_SAMPLE_GAMEWEEKS}) live on {@link ExpectedPoints}
+     * now, shared with {@code CandidatePool} so the two tools cannot rank the same player two
+     * different ways in one conversation by drifting apart on what "recent form" means.
      */
-    private static final int WINDOW_MATCHES = 10;
-
-    /** Every gameweek of a finished season; no season has more fixtures than this per player. */
-    private static final int WHOLE_SEASON = 60;
-
-    /**
-     * Minutes a player must have inside that window to be ranked at all. Two full matches: below
-     * that, a per-90 figure is arithmetic on noise, and a cameo with one big chance outranks a
-     * regular starter.
-     */
-    private static final int MIN_WINDOW_MINUTES = 180;
-
-    /**
-     * Completed gameweeks the season being played needs before its own numbers are used. Under
-     * this, the previous season is the evidence — the system prompt's early-season rule, applied
-     * where the ordering is actually decided rather than left for the model to remember.
-     */
-    private static final int MIN_SAMPLE_GAMEWEEKS = 5;
 
     /** Sinks players whose fixtures are unknown below any player with a real FDR. */
     private static final double UNKNOWN_FDR = Double.MAX_VALUE;
@@ -161,7 +140,7 @@ public class PickTools implements FplTool {
                 return season.provenance() + "\nNo differentials match those filters in "
                         + season.code() + " with a comparable underlying record"
                         + " (players who are injured or suspended are excluded, and so are"
-                        + " players with under " + MIN_WINDOW_MINUTES + " minutes of "
+                        + " players with under " + ExpectedPoints.MIN_WINDOW_MINUTES + " minutes of "
                         + metric.code() + " football to judge them on).";
             }
 
@@ -199,7 +178,7 @@ public class PickTools implements FplTool {
                 return season.provenance() + "\nNo captain candidates in " + season.code()
                         + " have a comparable underlying record yet (players who are injured or"
                         + " suspended are excluded, and so are players with under "
-                        + MIN_WINDOW_MINUTES + " minutes of " + metric.code()
+                        + ExpectedPoints.MIN_WINDOW_MINUTES + " minutes of " + metric.code()
                         + " football to judge them on).";
             }
 
@@ -221,27 +200,18 @@ public class PickTools implements FplTool {
      * sample, the previous one until then. A one-match sample is noise whichever tool reads it.
      */
     private MetricSeason metricSeason(SeasonContext season) {
-        int played = completedGameweeks(season.seasonId());
-        if (played >= MIN_SAMPLE_GAMEWEEKS) {
-            return new MetricSeason(season.seasonId(), season.code(), true,
-                    season.currentSeason(), played, latestGameweek(season.seasonId()), null);
-        }
-        Optional<SeasonContext> previous = seasonResolver.previousSeason(season);
-        if (previous.isPresent()) {
-            SeasonContext prev = previous.get();
-            // Better, not merely non-empty. A previous season with one synced gameweek is not
-            // evidence to prefer over this season's four, and falling back to it would print
-            // "too few to judge anyone on" about the larger of the two samples.
-            if (completedGameweeks(prev.seasonId()) > played) {
-                // A previous season is never the one being played, whatever the resolver says.
-                // It carries its own provenance line: the banner above names the season being
-                // played, and every number below this point is not from it. AGENTS.md requires
-                // each block to be attributed, and false is right here — none of the season
-                // being played's own numbers accompany these.
-                return new MetricSeason(prev.seasonId(), prev.code(), false, false, played,
-                        latestGameweek(prev.seasonId()),
-                        prev.previousSeasonProvenance(false));
-            }
+        int played = seasonResolver.completedGameweeks(season.seasonId());
+        Optional<SeasonContext> better = seasonResolver.betterMetricSeason(season, played,
+                ExpectedPoints.MIN_SAMPLE_GAMEWEEKS);
+        if (better.isPresent()) {
+            // A previous season is never the one being played, whatever the resolver says. It
+            // carries its own provenance line: the banner above names the season being played,
+            // and every number below this point is not from it. AGENTS.md requires each block to
+            // be attributed, and false is right here — none of the season being played's own
+            // numbers accompany these.
+            SeasonContext prev = better.get();
+            return new MetricSeason(prev.seasonId(), prev.code(), false, false, played,
+                    latestGameweek(prev.seasonId()), prev.previousSeasonProvenance(false));
         }
         // Nothing better exists. Rank on the thin sample rather than refusing — the footer says
         // how thin it is, which is the honest version of answering at all.
@@ -261,25 +231,9 @@ public class PickTools implements FplTool {
         return gw == null ? 0 : gw;
     }
 
-    /**
-     * Gameweeks whose fixtures are all played. Counting distinct gameweeks in
-     * {@code player_fixture_stats} instead would count a gameweek in progress the moment its
-     * first fixture syncs, flipping the sample-size switch a week early and printing a number
-     * the footer calls "completed".
-     */
-    private int completedGameweeks(int seasonId) {
-        Integer count = jdbc.queryForObject("""
-                SELECT count(*) FROM gameweek g
-                WHERE g.season_id = ? AND g.finished = true
-                  AND EXISTS (SELECT 1 FROM player_fixture_stats pfs
-                              WHERE pfs.season_id = g.season_id AND pfs.gameweek = g.id)
-                """, Integer.class, seasonId);
-        return count == null ? 0 : count;
-    }
-
-    /** How many matches back the metric window reaches. See {@link #WINDOW_MATCHES}. */
+    /** How many matches back the metric window reaches. See {@link ExpectedPoints#WINDOW_MATCHES}. */
     private static int windowLimit(MetricSeason metric) {
-        return metric.beingPlayed() ? WINDOW_MATCHES : WHOLE_SEASON;
+        return metric.beingPlayed() ? ExpectedPoints.WINDOW_MATCHES : ExpectedPoints.WHOLE_SEASON;
     }
 
     /**
@@ -361,7 +315,7 @@ public class PickTools implements FplTool {
                 JOIN metrics m ON m.k = %s
                 %s
                 """.formatted(positionFilter(elementType, "p"), windowLimit(metric),
-                        MIN_WINDOW_MINUTES, metricKey, metricUnique, poolKey, poolUnique),
+                        ExpectedPoints.MIN_WINDOW_MINUTES, metricKey, metricUnique, poolKey, poolUnique),
                 season.seasonId(), maxOwnership, metric.seasonId(), metric.seasonId());
     }
 
@@ -505,7 +459,7 @@ public class PickTools implements FplTool {
     private String footer(MetricSeason metric, int fixtureLimit, boolean ownershipTieBreak,
                           double realisedWeight) {
         String span = metric.beingPlayed()
-                ? "each player's last " + WINDOW_MATCHES + " matches in " + metric.code()
+                ? "each player's last " + ExpectedPoints.WINDOW_MATCHES + " matches in " + metric.code()
                 : "all of " + metric.code();
         StringBuilder out = new StringBuilder("\nRanked by Score over "
                 + span + ". Score blends xPts/90 —"
@@ -537,7 +491,7 @@ public class PickTools implements FplTool {
                     .append(metric.code())
                     .append("'s numbers over the whole season. Attribute them to it and never")
                     .append(" call them current form.\n");
-        } else if (metric.playedGameweeks() < MIN_SAMPLE_GAMEWEEKS) {
+        } else if (metric.playedGameweeks() < ExpectedPoints.MIN_SAMPLE_GAMEWEEKS) {
             out.append("Only ").append(metric.playedGameweeks())
                     .append(" completed gameweek(s) of data exist and no earlier season is")
                     .append(" available, so this is a thin sample. Say so.\n");
@@ -688,8 +642,9 @@ public class PickTools implements FplTool {
         }
     }
 
+    /** Delegates to {@link ExpectedPoints#numeric}, which this and the squad builder now share. */
     private static double numeric(Object value) {
-        return value == null ? 0.0 : ((Number) value).doubleValue();
+        return ExpectedPoints.numeric(value);
     }
 
     /**

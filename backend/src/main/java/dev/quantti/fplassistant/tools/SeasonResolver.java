@@ -99,4 +99,51 @@ public class SeasonResolver {
                 ((Number) r.get("id")).intValue(), (String) r.get("code"), false,
                 of.currentSeasonCode(), of.currentSeasonStart()));
     }
+
+    /**
+     * Gameweeks whose fixtures are all played and already carry a synced record. Counting
+     * distinct gameweeks in {@code player_fixture_stats} instead would count a gameweek in
+     * progress the moment its first fixture syncs, flipping a caller's sample-size switch a week
+     * early.
+     *
+     * <p>Shared by {@code PickTools} and {@code CandidatePool}, which both need this count to
+     * decide whether to trust the season being played or fall back to the previous one.
+     */
+    public int completedGameweeks(int seasonId) {
+        Integer count = jdbc.queryForObject("""
+                SELECT count(*) FROM gameweek g
+                WHERE g.season_id = ? AND g.finished = true
+                  AND EXISTS (SELECT 1 FROM player_fixture_stats pfs
+                              WHERE pfs.season_id = g.season_id AND pfs.gameweek = g.id)
+                """, Integer.class, seasonId);
+        return count == null ? 0 : count;
+    }
+
+    /**
+     * Whether the previous season is a better source of metrics than the season being played,
+     * and its context if so. "Better" is not merely "has any data at all": a previous season
+     * with one synced gameweek is not evidence to prefer over this season's four, so the
+     * fallback only fires when the previous season actually holds more completed evidence than
+     * {@code played} — the season being played's own count, already known to the caller.
+     *
+     * <p>{@code PickTools} and {@code CandidatePool} stated this rule independently, and one of
+     * them lost the comparison against {@code played} in a later edit and fell back
+     * unconditionally whenever the season being played was thin — bridging to a previous season
+     * that was thinner still. It lives here once now so the two cannot drift apart again.
+     *
+     * @param played completed gameweeks the caller has already counted for {@code season}
+     * @param minSampleGameweeks completed gameweeks {@code season} needs before its own numbers
+     *        are preferred outright, without even consulting the previous season
+     */
+    public Optional<SeasonContext> betterMetricSeason(SeasonContext season, int played,
+                                                       int minSampleGameweeks) {
+        if (played >= minSampleGameweeks) {
+            return Optional.empty();
+        }
+        Optional<SeasonContext> previous = previousSeason(season);
+        if (previous.isPresent() && completedGameweeks(previous.get().seasonId()) > played) {
+            return previous;
+        }
+        return Optional.empty();
+    }
 }
