@@ -112,11 +112,17 @@ class CandidatePoolIntegrationTest {
 
     private void insert(int elementId, String webName, int nowCost, int elementType,
                         double ownership, String status, String news) {
+        insert(elementId, webName, nowCost, elementType, ownership, status, news, season, TODAY);
+    }
+
+    private void insert(int elementId, String webName, int nowCost, int elementType,
+                        double ownership, String status, String news, String seasonCode,
+                        LocalDate date) {
         jdbc.update("INSERT INTO " + table + " (season, price_date, element_id, web_name,"
                         + " full_name, team_id, team_short, team_name, element_type, now_cost,"
                         + " cost_change_event, cost_change_start, selected_by_percent, status, news)"
                         + " VALUES (?, ?, ?, ?, ?, 9001, 'ASH', 'Ashfield Rovers', ?, ?, 0, 0, ?, ?, ?)",
-                season, TODAY, elementId, webName, webName + " Fictitious",
+                seasonCode, date, elementId, webName, webName + " Fictitious",
                 elementType, nowCost, ownership, status, news);
     }
 
@@ -161,7 +167,40 @@ class CandidatePoolIntegrationTest {
     void theCaptureDateIsTheLatestOneNotToday() {
         // A missed 02:00 run must degrade to yesterday's capture, clearly labelled, rather than
         // returning nothing.
-        assertThat(pool.latestCaptureDate()).isNotNull();
+        assertThat(pool.latestCapture()).isPresent();
+        assertThat(pool.latestCapture().orElseThrow().date()).isNotNull();
+    }
+
+    @Test
+    void thePoolFollowsTheCaptureNotTheResolverAcrossTheChangeover() {
+        // C1: during the changeover the daily capture already carries the new season's prices
+        // (nothing stops it — it owes nothing to tapas), but tapas has not synced the new
+        // season's player/gameweek rows yet, so SeasonResolver still falls back to last season.
+        // A pool filtered on the resolver's season would then look for last season's code at
+        // today's capture date and find nothing, even though the capture holds real players.
+        assertThat(season).as("the resolver must be on the previous season for this test to prove"
+                + " anything").isEqualTo(TapasSeed.POPULATED_SEASON_CODE);
+        int changeoverId = 9505;
+        LocalDate tomorrow = TODAY.plusDays(1);
+        jdbc.update("DELETE FROM " + table + " WHERE season = ? AND element_id = ?",
+                TapasSeed.CURRENT_SEASON_CODE, changeoverId);
+        insert(changeoverId, "Changeovertest", 45, 2, 1.0, "a", null,
+                TapasSeed.CURRENT_SEASON_CODE, tomorrow);
+
+        try {
+            CandidatePool.Capture capture = pool.latestCapture().orElseThrow();
+            assertThat(capture.season()).isEqualTo(TapasSeed.CURRENT_SEASON_CODE);
+            assertThat(capture.date()).isEqualTo(tomorrow);
+
+            List<SquadCandidate> candidates =
+                    pool.load(capture, pool.metricWindow(seasonResolver.resolve()));
+
+            assertThat(candidates).isNotEmpty();
+            assertThat(candidates).extracting(SquadCandidate::elementId).contains(changeoverId);
+        } finally {
+            jdbc.update("DELETE FROM " + table + " WHERE season = ? AND element_id = ?",
+                    TapasSeed.CURRENT_SEASON_CODE, changeoverId);
+        }
     }
 
     @Test
@@ -195,8 +234,9 @@ class CandidatePoolIntegrationTest {
     }
 
     private List<SquadCandidate> load() {
-        var season = seasonResolver.resolve();
-        return pool.load(season, pool.metricWindow(season), pool.latestCaptureDate())
+        var resolved = seasonResolver.resolve();
+        CandidatePool.Capture capture = pool.latestCapture().orElseThrow();
+        return pool.load(capture, pool.metricWindow(resolved))
                 .stream()
                 .filter(c -> TEST_ELEMENT_IDS.contains(c.elementId()))
                 .toList();
