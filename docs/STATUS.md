@@ -2722,6 +2722,49 @@ guardrail on tapas tables and that the exception's only record is the commit its
 granted it in conversation on 2026-08-26, having confirmed they own both projects. Recorded here so
 the grant lives outside the diff that relies on it.
 
+## Squad builder — what it is and where it stands (2026-08-28, PR #54)
+
+`buildSquad` picks a whole FPL squad with a solver instead of prose. It exists because the model,
+asked for a wildcard squad with three players from each of three clubs, produced two answers that
+were not squads: three of fifteen slots were descriptions rather than players, a club constraint
+was claimed but not met, the stated total disagreed with the answer's own table by over £1m, and
+one player carried two different prices in the same conversation. Squad selection is constrained
+optimisation — fifteen players inside a budget, at fixed position quotas, at most three per club,
+around named pins — and prose cannot do it.
+
+**How it works.** The candidate pool comes from `fpl_daily_price`, never the weekly-synced tapas
+tables, so it carries no stale price or injury flag and survives the season changeover. Each
+player is scored on expected FPL points per fixture — the per-90 model scaled by the minutes he
+actually plays — summed over the next N gameweeks, so a double gameweek counts twice and a blank
+counts as nothing. `Feasibility` refuses an impossible request before the solve with a sentence
+naming the constraint and, where money is involved, the amount. An ojAlgo integer program then
+picks the fifteen and the eleven under FPL's own rules, the user's constraints, and three
+structural defaults that give way in a fixed order when they cannot all hold. The formatter prints
+every constraint beside what was actually achieved, with ✓ or ✗.
+
+**Two documented exceptions to project conventions**, both recorded in `AGENTS.md`: `SquadTools`
+carries two provenance lines rather than one, because prices and metrics come from sources of
+different freshness and one banner would attribute one of them to the wrong season; and the pool
+is built from the daily capture rather than the tapas `player` table, which is what keeps issue
+#50 from recurring here.
+
+**Deliberately not built**, so nobody mistakes the gaps for oversights:
+
+- Defensive-contribution points are absent from the scoring (#46), so goalkeepers and
+  ball-winning defenders are understated. The output says so.
+- Fixture difficulty is one multiplier on the whole score rather than a per-fixture clean-sheet
+  projection (#47).
+- Players with no minutes history — new signings, returns from long injury — can only enter as
+  bench bodies or by being named. A curated source for them is its own ticket.
+- Selling prices. FPL returns the purchase price plus half the profit and does not publish it, so
+  a wildcard squad is priced as fresh purchases and the figure errs toward the manager looking
+  poorer than they are. The output says so. Issue #53 covers the authenticated route.
+
+**Follow-ups filed from this work:** #55 (`PickTools.avgFdrByTeam` has the double-gameweek defect
+this branch fixed in `HorizonScorer`, and undervalues those clubs in production today), #56 (the
+suite never runs against an empty database, so schema-ordering bugs only reach CI), #57 (the
+minors the whole-branch review triaged as carry).
+
 ## Squad builder (`squad-builder` branch) — known gap after the whole-branch fix wave (2026-08-28)
 
 A final reviewer read the branch as a whole, compiled and executed three probes, and found two
