@@ -33,6 +33,7 @@ public final class Feasibility {
                 () -> quotasWithinTheGamesLimit(constraints),
                 () -> quotasAgreeWithEachOther(constraints),
                 () -> quotaMinimumsFit(constraints),
+                () -> formationIsLegal(constraints),
                 () -> pinsWithinTheClubLimit(pinned),
                 () -> pinsWithinPositionQuotas(pinned),
                 () -> clubsHaveEnoughPlayers(pool, constraints),
@@ -109,6 +110,45 @@ public final class Feasibility {
             return Optional.of(("Those club quotas require %d players and a squad holds %d."
                     + " Drop one of them and I can build the squad.")
                     .formatted(total, SQUAD_SIZE));
+        }
+        return Optional.empty();
+    }
+
+    /**
+     * A forced formation must actually describe a legal starting XI: ten outfield players
+     * (eleven minus the fixed goalkeeper), at least as many defenders and forwards as the game
+     * itself requires, and never more of a position than a squad holds of it in total. Syntax
+     * ("three numbers separated by dashes") is {@code ConstraintParser}'s job; whether those
+     * numbers describe a squad that can exist is this one's, same split as everywhere else here.
+     */
+    private static Optional<String> formationIsLegal(SquadConstraints constraints) {
+        SquadConstraints.Formation formation = constraints.formation();
+        if (formation == null) {
+            return Optional.empty();
+        }
+        int outfield = SquadSolver.XI_SIZE - SquadSolver.GK_IN_XI;
+        int sum = formation.def() + formation.mid() + formation.fwd();
+        if (sum != outfield) {
+            return Optional.of(("The formation %s has %d outfield players, but a starting XI"
+                    + " needs %d (%d minus the goalkeeper). Fix the numbers and I can build the"
+                    + " squad.").formatted(formation.label(), sum, outfield, SquadSolver.XI_SIZE));
+        }
+        if (formation.def() < SquadSolver.MIN_DEF_IN_XI || formation.def() > POSITION_QUOTAS[2]) {
+            return Optional.of(("The formation %s needs between %d and %d defenders in the"
+                    + " starting XI, and it has %d. Fix the numbers and I can build the squad.")
+                    .formatted(formation.label(), SquadSolver.MIN_DEF_IN_XI, POSITION_QUOTAS[2],
+                            formation.def()));
+        }
+        if (formation.fwd() < SquadSolver.MIN_FWD_IN_XI || formation.fwd() > POSITION_QUOTAS[4]) {
+            return Optional.of(("The formation %s needs between %d and %d forwards in the"
+                    + " starting XI, and it has %d. Fix the numbers and I can build the squad.")
+                    .formatted(formation.label(), SquadSolver.MIN_FWD_IN_XI, POSITION_QUOTAS[4],
+                            formation.fwd()));
+        }
+        if (formation.mid() > POSITION_QUOTAS[3]) {
+            return Optional.of(("The formation %s needs at most %d midfielders in the starting"
+                    + " XI, and it has %d. Fix the numbers and I can build the squad.")
+                    .formatted(formation.label(), POSITION_QUOTAS[3], formation.mid()));
         }
         return Optional.empty();
     }

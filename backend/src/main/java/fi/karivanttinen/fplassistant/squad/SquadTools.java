@@ -128,10 +128,19 @@ public class SquadTools implements FplTool {
             int excluded = (int) candidates.stream()
                     .filter(c -> c.tier() == SquadCandidate.Tier.BODY).count();
 
+            // previousSeasonProvenance must be called on the previous season's own context, not
+            // on the resolved one: when isResolvedSeason() is false, "season" is the current,
+            // too-thin season, and naming it as the "COMPLETED PREVIOUS" one is exactly the
+            // misattribution this provenance discipline exists to prevent.
+            String metricProvenance = window.isResolvedSeason()
+                    ? season.provenance()
+                    : seasonResolver.previousSeason(season)
+                            .map(prev -> prev.previousSeasonProvenance(false))
+                            .orElseGet(season::provenance);
+
             return SquadFormatter.format(solved.get(), constraints,
                     DailyPriceSource.provenance(season.code(), captured, LocalDate.now()),
-                    window.isResolvedSeason() ? season.provenance()
-                            : season.previousSeasonProvenance(false),
+                    metricProvenance,
                     excluded);
         } catch (DataAccessException e) {
             log.error("buildSquad failed", e);

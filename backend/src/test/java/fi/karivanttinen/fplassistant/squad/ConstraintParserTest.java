@@ -82,4 +82,37 @@ class ConstraintParserTest {
         assertThatThrownBy(() -> parse("Arsenal:-1"))
                 .isInstanceOf(ConstraintParser.MalformedConstraintException.class);
     }
+
+    private static SquadConstraints.Formation formation(String formation) {
+        return ConstraintParser.parse("", "", "", 100.0, 5, formation).formation();
+    }
+
+    @Test
+    void aWellFormedFormationParsesIntoDefMidFwd() {
+        var formation = formation("3-4-3");
+
+        assertThat(formation.def()).isEqualTo(3);
+        assertThat(formation.mid()).isEqualTo(4);
+        assertThat(formation.fwd()).isEqualTo(3);
+    }
+
+    @Test
+    void anAbsentFormationIsNull() {
+        assertThat(formation("")).isNull();
+        assertThat(formation(null)).isNull();
+    }
+
+    @Test
+    void aMalformedFormationNamesTheInputRatherThanFailingVaguely() {
+        assertThatThrownBy(() -> formation("3-4"))
+                .isInstanceOf(ConstraintParser.MalformedConstraintException.class)
+                .hasMessageContaining("3-4");
+
+        assertThatThrownBy(() -> formation("three-four-three"))
+                .isInstanceOf(ConstraintParser.MalformedConstraintException.class)
+                .hasMessageContaining("three-four-three");
+
+        assertThatThrownBy(() -> formation("3-4-3-2"))
+                .isInstanceOf(ConstraintParser.MalformedConstraintException.class);
+    }
 }
