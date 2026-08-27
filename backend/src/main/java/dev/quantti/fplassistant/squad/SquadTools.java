@@ -142,10 +142,20 @@ public class SquadTools implements FplTool {
                     scorer.fixtureDifficulties(season.seasonId(), constraints.horizon());
             Map<Integer, Double> scores = new HashMap<>();
             Map<Integer, Double> minutes = new HashMap<>();
+            // Whether any candidate this tool might actually rank found a fixture at all: once
+            // C1 lets the pool follow a different season from the resolved one, candidate.teamId()
+            // (the capture season's FPL ids) need not match fixture.team_h/team_a (the resolved
+            // season's) — the metrics side bridges cross-season by name, but fixtures have no such
+            // bridge. When nothing scores, the reply must say so rather than presenting an
+            // arbitrary legal fifteen as a ranked one.
+            boolean anyCandidateHasFixtures = false;
             for (SquadCandidate candidate : candidates) {
-                scores.put(candidate.elementId(), HorizonScorer.score(candidate,
-                        fixtures.getOrDefault(candidate.teamId(), List.of())));
+                List<Integer> teamFixtures = fixtures.getOrDefault(candidate.teamId(), List.of());
+                scores.put(candidate.elementId(), HorizonScorer.score(candidate, teamFixtures));
                 minutes.put(candidate.elementId(), HorizonScorer.expectedMinutes(candidate));
+                if (candidate.tier() == SquadCandidate.Tier.RANKABLE && !teamFixtures.isEmpty()) {
+                    anyCandidateHasFixtures = true;
+                }
             }
 
             Optional<SolvedSquad> solved = SquadSolver.solveWithDefaults(
@@ -171,7 +181,8 @@ public class SquadTools implements FplTool {
             return SquadFormatter.format(solved.get(), constraints,
                     DailyPriceSource.provenance(capture.season(), capture.date(), LocalDate.now()),
                     metricProvenance,
-                    excludedForNoRecord, pinned, excludedPlayers);
+                    excludedForNoRecord, pinned, excludedPlayers, scores, minutes,
+                    !anyCandidateHasFixtures);
         } catch (DataAccessException e) {
             log.error("buildSquad failed", e);
             return "Squad data is temporarily unavailable (database error)."
