@@ -3,6 +3,7 @@ package fi.karivanttinen.fplassistant.user;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.DependsOn;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
@@ -33,7 +34,19 @@ import jakarta.annotation.PostConstruct;
  * carry a fingerprint and no {@code code_id}, and dropping the column would erase which code
  * those accounts came in on.
  */
+/**
+ * <b>Ordered after {@link UserSchema}, which creates the table this one alters.</b> Both run their
+ * DDL from {@code @PostConstruct} and Spring is free to initialise two independent components in
+ * either order. {@code ADD COLUMN IF NOT EXISTS} guards the column, never the table, so losing
+ * that race is a hard {@code BadSqlGrammarException} that takes the whole application context
+ * down — and with it every test that needs one.
+ *
+ * <p>It did. A long-lived local test container already held {@code fpl_invite_redemption} from
+ * earlier runs, so the order never mattered here and the suite was green; CI builds a fresh
+ * Postgres for every run, lost the race, and failed 250 tests with one root cause.
+ */
 @Component
+@DependsOn("userSchema")
 public class InviteCodeSchema {
 
     private static final Logger log = LoggerFactory.getLogger(InviteCodeSchema.class);
