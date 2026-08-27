@@ -77,7 +77,8 @@ public class CandidatePool {
         return previous
                 .map(p -> new MetricWindow(p.seasonId(), p.code(), false, false, WHOLE_SEASON))
                 .orElseGet(() -> new MetricWindow(season.seasonId(), season.code(), true,
-                        season.currentSeason(), WHOLE_SEASON));
+                        season.currentSeason(),
+                        season.currentSeason() ? WINDOW_MATCHES : WHOLE_SEASON));
     }
 
     private int completedGameweeks(int seasonId) {
@@ -97,6 +98,18 @@ public class CandidatePool {
      * doubtful. A doubtful player with a record is admitted and flagged; a doubtful player
      * without one is not admitted at all, because a body is worth buying only when it is a fit
      * one.
+     *
+     * <p><b>The pool-side name guard uses a {@code LEFT JOIN}, deliberately, and that changes
+     * what "ambiguous" must do to the row.</b> When the metric season is not the pool's own
+     * season, a metric row is bridged to a pool row by lowercased {@code web_name}. If two
+     * current-season candidates shared a name, both would otherwise match the same single
+     * historical row through that key and both would print one player's numbers. The guard here
+     * only breaks the join's {@code ON} condition for an ambiguous pool name — it does not filter
+     * the row out of {@code pool} itself, because an ambiguous name is still a fit, purchasable
+     * player; he simply loses the metric attachment and reads as a {@link SquadCandidate.Tier#BODY}.
+     * This is the opposite of {@code PickTools}'s equivalent guard, which is safe to drop the row
+     * entirely only because it joins with an {@code INNER JOIN} onto a pool that is not the thing
+     * being returned.
      */
     public List<SquadCandidate> load(SeasonContext season, MetricWindow window,
                                      LocalDate captureDate) {
@@ -106,18 +119,20 @@ public class CandidatePool {
         String metricKey = window.isResolvedSeason() ? "mp.id::text" : "LOWER(mp.web_name)";
         String poolKey = window.isResolvedSeason() ? "pool.element_id::text" : "LOWER(pool.web_name)";
         String metricUnique = window.isResolvedSeason() ? "" : "WHERE " + nameIsUnique("mp");
+        String poolUnique = window.isResolvedSeason() ? "" : "AND pool.name_count = 1";
 
         List<Map<String, Object>> rows = jdbc.queryForList("""
                 WITH pool AS (
                     SELECT element_id, web_name, full_name, team_id, team_short, team_name,
-                           element_type, now_cost, selected_by_percent, status, news
+                           element_type, now_cost, selected_by_percent, status, news,
+                           COUNT(*) OVER (PARTITION BY LOWER(web_name)) AS name_count
                     FROM %s
                     WHERE season = ? AND price_date = ? AND status IN ('a', 'd')
                 ),
                 recent AS (
-                    SELECT pfs.player_id, pfs.player_team_id, pfs.minutes, pfs.total_points,
-                           pfs.expected_goals AS xg, pfs.expected_assists AS xa,
-                           pfs.expected_goals_conceded AS xgc,
+                    SELECT pfs.player_id, pfs.player_team_id, pfs.gameweek, pfs.minutes,
+                           pfs.total_points, pfs.expected_goals AS xg,
+                           pfs.expected_assists AS xa, pfs.expected_goals_conceded AS xgc,
                            ROW_NUMBER() OVER (PARTITION BY pfs.player_id
                                               ORDER BY pfs.gameweek DESC, pfs.fixture_id DESC) AS rn
                     FROM player_fixture_stats pfs
@@ -126,8 +141,9 @@ public class CandidatePool {
                 windowed AS (
                     SELECT player_id,
                            MIN(player_team_id) AS metric_team_id,
+                           MIN(gameweek) AS min_gw,
+                           MAX(gameweek) AS max_gw,
                            SUM(minutes) AS mins,
-                           count(*) AS fixtures,
                            SUM(xg) * 90 / NULLIF(SUM(minutes), 0) AS xg90,
                            SUM(xa) * 90 / NULLIF(SUM(minutes), 0) AS xa90,
                            SUM(total_points) * 90.0 / NULLIF(SUM(minutes), 0) AS pts90,
@@ -138,11 +154,25 @@ public class CandidatePool {
                     GROUP BY player_id
                     HAVING SUM(minutes) >= %d
                 ),
+                club_fixtures AS (
+                    -- The club's own fixtures between his first and last windowed gameweek,
+                    -- not a count of his rows: tapas omits a row entirely for a fixture he was
+                    -- not in the squad for, so a row count silently shrinks whenever a player
+                    -- misses part of the window and inflates his expected minutes as a result.
+                    SELECT w.player_id,
+                           (SELECT count(*) FROM fixture f
+                            WHERE f.season_id = ?
+                              AND f.gameweek BETWEEN w.min_gw AND w.max_gw
+                              AND (f.team_h = w.metric_team_id OR f.team_a = w.metric_team_id)
+                           ) AS fixtures
+                    FROM windowed w
+                ),
                 metrics AS (
-                    SELECT %s AS k, min(w.mins) AS mins, min(w.fixtures) AS fixtures,
+                    SELECT %s AS k, min(w.mins) AS mins, min(cf.fixtures) AS fixtures,
                            min(w.xg90) AS xg90, min(w.xa90) AS xa90, min(w.pts90) AS pts90,
                            min(w.xgc_per_match) AS xgc_per_match
                     FROM windowed w
+                    JOIN club_fixtures cf ON cf.player_id = w.player_id
                     JOIN player mp ON mp.id = w.player_id AND mp.season_id = ?
                     %s
                     GROUP BY 1
@@ -150,10 +180,11 @@ public class CandidatePool {
                 )
                 SELECT pool.*, m.mins, m.fixtures, m.xg90, m.xa90, m.pts90, m.xgc_per_match
                 FROM pool
-                LEFT JOIN metrics m ON m.k = %s
+                LEFT JOIN metrics m ON m.k = %s %s
                 """.formatted(dailyTable, window.windowLimit(), MIN_WINDOW_MINUTES,
-                        metricKey, metricUnique, poolKey),
-                season.code(), captureDate, window.seasonId(), window.seasonId());
+                        metricKey, metricUnique, poolKey, poolUnique),
+                season.code(), captureDate, window.seasonId(), window.seasonId(),
+                window.seasonId());
 
         List<SquadCandidate> candidates = new ArrayList<>();
         for (Map<String, Object> row : rows) {

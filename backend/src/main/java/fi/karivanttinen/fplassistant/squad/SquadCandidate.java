@@ -14,8 +14,13 @@ import java.util.Map;
  *        {@code xgc_per_match}, {@code pts90}) as {@code ExpectedPoints.perNinety} expects it;
  *        empty for a {@link Tier#BODY}
  * @param minutesInWindow the player's minutes across the metric window
- * @param teamFixturesInWindow his club's fixtures across that window — the denominator that
- *        turns minutes into a rotation-aware expectation
+ * @param teamFixturesInWindow his club's distinct fixtures across the gameweek span his own
+ *        windowed rows cover — not a count of those rows. tapas writes a
+ *        {@code player_fixture_stats} row only for a fixture he was named in the squad for, so a
+ *        plain row count silently shrinks for anyone dropped from the squad mid-window, which
+ *        inflates his expected minutes per fixture rather than flagging the gap. Counting the
+ *        club's actual fixtures between his first and last windowed gameweek catches that miss
+ *        without penalising a player who simply was not at the club yet.
  */
 public record SquadCandidate(
         int elementId,
