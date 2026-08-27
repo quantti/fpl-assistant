@@ -76,11 +76,28 @@ public class HorizonScorer {
     }
 
     /**
-     * Each club's next {@code horizon} gameweeks of fixture difficulty, in kickoff order.
+     * Each club's fixture difficulty across the next {@code horizon} gameweeks, in kickoff
+     * order.
      *
-     * <p>A club with two fixtures in one gameweek contributes two entries, which is what makes a
-     * double gameweek score twice. Resolved once for every club rather than once per player: a
-     * pool of six hundred players shares at most twenty clubs.
+     * <p>Bounded by <b>gameweek range</b> ({@code gameweek < from + horizon}), not by a per-club
+     * fixture count. A club with a double inside the window contributes two entries for that one
+     * gameweek — what makes a double gameweek score twice — while every club is still scored over
+     * the identical stretch of calendar. Capping by fixture count instead (an earlier version of
+     * this method did) silently shrinks a doubled club's effective horizon by a gameweek and
+     * erases the double's advantage: at {@code horizon=5} a club with no doubles would keep
+     * GW1-5, but a club doubling in GW3 would keep GW1,2,3a,3b,4 — five fixtures covering only
+     * four gameweeks, with GW5 dropped — which is exactly backwards for a design whose whole
+     * point is that summing, not averaging, is supposed to reward the double.
+     *
+     * <p>{@code finished = false} excludes a fixture that has already been played. {@code
+     * is_current} stays true for a gameweek's whole multi-day span, so without this filter a call
+     * made after that gameweek's first kickoff would count an already-decided match as one of a
+     * player's future fixtures — consuming a horizon slot that can no longer return anything and
+     * skewing that club against one whose corresponding fixture has not kicked off yet. Same
+     * filter {@code PickTools.avgFdrByTeam} already applies for the same reason.
+     *
+     * <p>Resolved once for every club rather than once per player: a pool of six hundred players
+     * shares at most twenty clubs.
      */
     public Map<Integer, List<Integer>> fixtureDifficulties(int seasonId, int horizon) {
         Integer from = jdbc.queryForObject("""
@@ -92,24 +109,21 @@ public class HorizonScorer {
         if (from == null) {
             return Map.of();
         }
+        int upTo = from + horizon;
 
         List<Map<String, Object>> rows = jdbc.queryForList("""
                 SELECT team_id, fdr FROM (
-                    SELECT team_id, fdr,
-                           ROW_NUMBER() OVER (PARTITION BY team_id
-                                              ORDER BY gameweek, kickoff_time, fixture_id) AS rn
-                    FROM (
-                        SELECT id AS fixture_id, team_h AS team_id, team_h_difficulty AS fdr,
-                               gameweek, kickoff_time
-                        FROM fixture WHERE season_id = ? AND gameweek >= ?
-                        UNION ALL
-                        SELECT id, team_a, team_a_difficulty, gameweek, kickoff_time
-                        FROM fixture WHERE season_id = ? AND gameweek >= ?
-                    ) f
-                ) ranked
-                WHERE rn <= ?
-                ORDER BY team_id, rn
-                """, seasonId, from, seasonId, from, horizon);
+                    SELECT id AS fixture_id, team_h AS team_id, team_h_difficulty AS fdr,
+                           gameweek, kickoff_time
+                    FROM fixture
+                    WHERE season_id = ? AND gameweek >= ? AND gameweek < ? AND finished = false
+                    UNION ALL
+                    SELECT id, team_a, team_a_difficulty, gameweek, kickoff_time
+                    FROM fixture
+                    WHERE season_id = ? AND gameweek >= ? AND gameweek < ? AND finished = false
+                ) f
+                ORDER BY team_id, gameweek, kickoff_time, fixture_id
+                """, seasonId, from, upTo, seasonId, from, upTo);
 
         Map<Integer, List<Integer>> byTeam = new HashMap<>();
         for (Map<String, Object> row : rows) {
