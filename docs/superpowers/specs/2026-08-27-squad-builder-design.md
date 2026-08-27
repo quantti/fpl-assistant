@@ -217,13 +217,53 @@ that costs nothing, because a postponed fixture otherwise removes both.
 The bench is one goalkeeper and three outfield players in auto-substitution priority order.
 Bench order is an output with meaning, not a list.
 
-### Budget is not always £100.0m
+### Money is not the sum of current prices
 
-£100.0m is correct for a squad built from nothing. A manager playing a wildcard has **team
-value + bank**, which may be £101.7m or £98.4m — and that is the case the original
-conversation was about. `budget` is a parameter defaulting to 100.0; when the user's FPL team
-id is stored, the model is instructed to read the real figure from `getMyTeam` and pass it.
-The output states which budget was used.
+£100.0m is correct only for a squad built from nothing. Two separate things go wrong when the
+same arithmetic is applied to a manager who already owns a squad.
+
+**First, selling a player does not return his price.** FPL returns the purchase price plus
+**half the profit, rounded down to £0.1m**; losses are returned in full. In tenths:
+
+```
+sellingPrice(p) = now(p) > purchase(p)
+                ? purchase(p) + floor( (now(p) − purchase(p)) / 2 )
+                : now(p)
+```
+
+A player bought at £7.0m and now worth £7.5m sells for £7.2m, not £7.5m. `FPL_RULES.md` states
+the same rule from the other end — "Gain £0.1m per £0.2m rise" — as a single row in the
+price-change table, which is why it is easy to miss.
+
+FPL's own squad value already reflects this, so **money available = squad value + bank** holds.
+
+**Second — and this is the subtler one — a player already owned must not be priced as a
+purchase.** Keeping him is equivalent to selling and immediately rebuying at his *selling*
+price: the money leaves the pot and returns to it. Charging `now_cost` instead makes the
+solver pay the un-banked half of every rise it never actually incurs. So the budget
+coefficient is per player, not global:
+
+```
+cost(p) = owned(p) ? sellingPrice(p) : now_cost(p)
+```
+
+**We cannot compute that today.** The public FPL endpoints publish neither purchase nor
+selling price — they live behind the manager's own session, which `MyTeamService` already
+documents and which its squad card already warns about ("treat available funds as
+approximate").
+
+The consequence is stated rather than hidden:
+
+- **A from-scratch build is exact.** No ownership, no selling prices, `budget` = 100.0,
+  `cost(p)` = `now_cost(p)`. This is the pre-season and new-team case, and it is v1's
+  guaranteed-correct scope.
+- **A wildcard over an existing squad is conservative.** `budget` is supplied by the caller
+  (from `getMyTeam`'s squad value + bank, or read off the FPL site), and every player is
+  charged at `now_cost` because nothing better is available. Both approximations err the same
+  way — the tool believes the manager is poorer than they are — so it can only under-spend,
+  never propose an illegal squad. **The output says so explicitly, and names the mechanism.**
+
+Retrieving real selling prices needs an authenticated FPL session and is its own ticket.
 
 ### User constraints — outrank structural defaults
 
@@ -346,7 +386,9 @@ Every reply carries:
 - **a constraint receipt** — every parsed constraint beside its achieved value
   (`Arsenal: 3/3 ✓`), so a misreading is visible instead of silent
 - fifteen real players: name, club, price, expected points over the horizon
-- the computed total cost and the money remaining
+- the computed total cost and the money remaining, and — when the budget was not the
+  from-scratch £100.0m — that owned players were priced as purchases, so the figure is
+  conservative
 - the XI, its formation, and the bench in substitution order
 - captain and vice-captain
 - how many players were excluded for insufficient minutes history, with a note that any of
@@ -375,6 +417,9 @@ Also:
 - formation rule against the enumerated list — the test fails if they disagree, which is how
   the 5-2-3 discrepancy below gets settled rather than assumed
 - structural-default relaxation order, and that rules 1–7 are never relaxed
+- a budget other than the from-scratch £100.0m produces the conservative-pricing warning in
+  the output; £100.0m does not. The selling-price formula itself gets no test because it gets
+  no code — there is nothing to feed it until an authenticated session exists
 - **an acceptance test reproducing the original request**: 3 ARS + 3 CHE + 3 MCI with Haaland,
   Gabriel and João Pedro under £100.0m returns either a valid fifteen or a precise refusal —
   never a placeholder
