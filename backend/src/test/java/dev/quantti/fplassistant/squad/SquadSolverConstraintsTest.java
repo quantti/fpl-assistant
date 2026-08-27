@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import org.junit.jupiter.api.Test;
 
@@ -75,6 +76,10 @@ class SquadSolverConstraintsTest {
 
     private static SquadConstraints with(List<SquadConstraints.ClubQuota> quotas) {
         return new SquadConstraints(List.of(), List.of(), quotas, 1000, 5, null);
+    }
+
+    private static SquadConstraints withFormation(SquadConstraints.Formation formation) {
+        return new SquadConstraints(List.of(), List.of(), List.of(), 1000, 5, formation);
     }
 
     @Test
@@ -248,5 +253,40 @@ class SquadSolverConstraintsTest {
         // too, by a different route, and the assertions above would not tell the two apart.
         assertThat(solved.relaxed()).containsExactly(SquadSolver.RELAXED_TEMPLATE);
         SquadSolverRulesTest.assertEveryRule(solved, 1000);
+    }
+
+    @Test
+    void aForcedFormationOverridesWhereThePointsAre() {
+        List<SquadCandidate> pool = pool();
+        // Defenders and forwards score far above midfielders — SquadSolverRulesTest's
+        // unconstrained equivalent of this bias reaches 5-2-3. A forced "4-4-2" must override it:
+        // the equality this constraint adds is never a preference, same as a club quota.
+        Map<Integer, Double> scores = new HashMap<>();
+        for (SquadCandidate c : pool) {
+            scores.put(c.elementId(), switch (c.elementType()) {
+                case 2, 4 -> 20.0;
+                default -> 1.0;
+            });
+        }
+
+        SolvedSquad solved = SquadSolver.solveWithDefaults(pool, scores,
+                withFormation(new SquadConstraints.Formation(4, 4, 2)),
+                List.of(), allNailed(pool)).orElseThrow();
+
+        assertThat(solved.formation()).isEqualTo("4-4-2");
+        SquadSolverRulesTest.assertEveryRule(solved, 1000);
+    }
+
+    @Test
+    void anIllegalForcedFormationNeverSolves() {
+        // Feasibility is what turns this into a named refusal in the tool; the solver itself has
+        // no relaxation step for a rule of the game, so an illegal formation must simply fail to
+        // produce a result, the same way an unmeetable budget does.
+        List<SquadCandidate> pool = pool();
+
+        Optional<SolvedSquad> solved = SquadSolver.solveWithDefaults(pool, flatScores(pool),
+                withFormation(new SquadConstraints.Formation(1, 1, 1)), List.of(), allNailed(pool));
+
+        assertThat(solved).isEmpty();
     }
 }

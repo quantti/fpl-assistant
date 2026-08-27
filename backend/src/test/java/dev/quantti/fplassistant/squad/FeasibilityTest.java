@@ -192,4 +192,43 @@ class FeasibilityTest {
         assertThat(refusal).isPresent();
         assertThat(refusal.get()).contains("goalkeeper").contains("1");
     }
+
+    private static SquadConstraints withFormation(SquadConstraints.Formation formation) {
+        return new SquadConstraints(List.of(), List.of(), List.of(), 1000, 5, formation);
+    }
+
+    @Test
+    void passesALegalFormation() {
+        Optional<String> refusal = Feasibility.check(deepPool(),
+                withFormation(new SquadConstraints.Formation(3, 4, 3)), List.of());
+
+        assertThat(refusal).isEmpty();
+    }
+
+    @Test
+    void refusesAFormationThatDoesNotSumToTenOutfieldPlayers() {
+        Optional<String> refusal = Feasibility.check(deepPool(),
+                withFormation(new SquadConstraints.Formation(4, 4, 4)), List.of());
+
+        assertThat(refusal).isPresent();
+        assertThat(refusal.get()).contains("4-4-4").contains("12").contains("10");
+    }
+
+    @Test
+    void refusesAFormationWithTooFewDefenders() {
+        Optional<String> refusal = Feasibility.check(deepPool(),
+                withFormation(new SquadConstraints.Formation(2, 5, 3)), List.of());
+
+        assertThat(refusal).isPresent();
+        assertThat(refusal.get()).contains("2-5-3").contains("defenders");
+    }
+
+    @Test
+    void refusesAFormationWithTooManyForwards() {
+        Optional<String> refusal = Feasibility.check(deepPool(),
+                withFormation(new SquadConstraints.Formation(3, 2, 5)), List.of());
+
+        assertThat(refusal).isPresent();
+        assertThat(refusal.get()).contains("3-2-5").contains("forwards");
+    }
 }

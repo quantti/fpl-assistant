@@ -23,6 +23,10 @@ public final class ConstraintParser {
     private static final java.util.regex.Pattern QUOTA =
             java.util.regex.Pattern.compile("^(.+?):(>=|<=|=)?(\\d+)$");
 
+    /** A formation: three dash-separated non-negative integers, defenders-midfielders-forwards. */
+    private static final java.util.regex.Pattern FORMATION =
+            java.util.regex.Pattern.compile("^(\\d+)-(\\d+)-(\\d+)$");
+
     private ConstraintParser() {
     }
 
@@ -40,7 +44,30 @@ public final class ConstraintParser {
                 quotas(clubQuota),
                 budget <= 0 ? BUDGET_DEFAULT : (int) Math.round(budget * 10),
                 nextN <= 0 ? HORIZON_DEFAULT : nextN,
-                formation == null || formation.isBlank() ? null : formation.trim());
+                parseFormation(formation));
+    }
+
+    /**
+     * Syntax only — three dash-separated non-negative integers. Whether those numbers describe a
+     * legal starting XI is {@code Feasibility}'s question, not this method's: a formation can be
+     * well-formed and still illegal, same as a club quota can be well-formed and still exceed the
+     * three-per-club limit.
+     */
+    private static SquadConstraints.Formation parseFormation(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        var matcher = FORMATION.matcher(raw.trim());
+        if (!matcher.matches()) {
+            throw new MalformedConstraintException(
+                    "Could not read the formation \"" + raw + "\". Write it as three numbers"
+                            + " separated by dashes, defenders-midfielders-forwards, such as"
+                            + " \"3-4-3\".");
+        }
+        return new SquadConstraints.Formation(
+                Integer.parseInt(matcher.group(1)),
+                Integer.parseInt(matcher.group(2)),
+                Integer.parseInt(matcher.group(3)));
     }
 
     private static List<String> names(String csv) {
