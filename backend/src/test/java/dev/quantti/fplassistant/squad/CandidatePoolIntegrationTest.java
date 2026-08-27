@@ -58,10 +58,12 @@ class CandidatePoolIntegrationTest {
     /**
      * The season the pool actually filters on, read at runtime rather than hardcoded.
      *
-     * <p>{@code CandidatePool.load} filters the daily table on
-     * {@code seasonResolver.resolve().code()}, and the resolver returns whichever season holds
-     * data — during the changeover that is the <b>previous</b> season, not the one on the
-     * calendar. Seeding under a constant would leave every test looking at an empty pool.
+     * <p>{@code CandidatePool.load} filters the daily table on the season named by the capture
+     * itself, not on {@code seasonResolver.resolve().code()} — the two differ across the
+     * changeover, and following the resolver was the bug that made the tool answer "no players
+     * available" while the capture held a full pool. Most cases here want the two to agree, so
+     * they seed under the resolved season; {@code thePoolFollowsTheCaptureNotTheResolver...}
+     * deliberately makes them disagree.
      */
     String season;
 
