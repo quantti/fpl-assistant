@@ -71,7 +71,7 @@ public final class ExpectedPoints {
      * a 100% clean sheet. No real side has an expected concession of exactly zero across a match,
      * so zero means nobody wrote it.
      */
-    private static boolean hasCleanSheetSignal(Object xgc) {
+    static boolean hasCleanSheetSignal(Object xgc) {
         return xgc != null && numeric(xgc) > 0;
     }
 }
