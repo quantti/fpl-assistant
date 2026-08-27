@@ -102,17 +102,6 @@ public class PickTools implements FplTool {
     /** Sinks players whose fixtures are unknown below any player with a real FDR. */
     private static final double UNKNOWN_FDR = Double.MAX_VALUE;
 
-    /**
-     * FPL scoring, indexed by element_type (1=GK, 2=DEF, 3=MID, 4=FWD). Read through
-     * {@link #goalPoints} and {@link #cleanSheetPoints}: the column has no CHECK constraint and
-     * FPL has since added managers as a fifth type, so an out-of-range value must degrade rather
-     * than throw out of a tool call.
-     */
-    private static final double[] GOAL_POINTS = {0, 6, 6, 5, 4};
-    private static final double[] CLEAN_SHEET_POINTS = {0, 4, 4, 1, 0};
-    private static final double ASSIST_POINTS = 3;
-    private static final double APPEARANCE_POINTS = 2;
-
     /** The most weight a player's realised points are ever given against the expected model. */
     private static final double MAX_REALISED_WEIGHT = 0.5;
 
@@ -503,11 +492,11 @@ public class PickTools implements FplTool {
     private static String components(Map<String, Object> row, int position) {
         String attacking = "xG/90 " + fixed(numeric(row.get("xg90")), 2)
                 + ", xA/90 " + fixed(numeric(row.get("xa90")), 2);
-        if (cleanSheetPoints(position) == 0) {
+        if (ExpectedPoints.cleanSheetPoints(position) == 0) {
             return attacking;
         }
         Object xgc = row.get("xgc_per_match");
-        return hasCleanSheetSignal(xgc)
+        return (xgc != null && numeric(xgc) > 0)
                 ? attacking + ", CS %s%% at xGC %s".formatted(
                         fixed(cleanSheetProbability(numeric(xgc)) * 100, 0), fixed(numeric(xgc), 2))
                 : attacking + ", CS n/a";
@@ -583,48 +572,18 @@ public class PickTools implements FplTool {
         return String.format(Locale.ROOT, "%." + decimals + "f", value);
     }
 
-    private static double goalPoints(int position) {
-        return position >= 1 && position < GOAL_POINTS.length ? GOAL_POINTS[position] : 0;
-    }
-
-    private static double cleanSheetPoints(int position) {
-        return position >= 1 && position < CLEAN_SHEET_POINTS.length
-                ? CLEAN_SHEET_POINTS[position] : 0;
-    }
-
     /** Poisson: the chance a side with this expected concession lets in none. */
     static double cleanSheetProbability(double expectedGoalsConceded) {
-        return Math.exp(-expectedGoalsConceded);
+        return ExpectedPoints.cleanSheetProbability(expectedGoalsConceded);
     }
 
     /**
-     * Whether a captured expected-concession figure can be believed. The column is
-     * {@code NOT NULL DEFAULT 0}, so an unpopulated season reads as 0.00 — and {@code exp(-0)}
-     * is a 100% clean sheet, which would put every defender and keeper in that season at the top
-     * of every list with "CS 100%" printed beside them. No real side has an expected concession
-     * of exactly zero across a match, so zero means nobody wrote it.
-     */
-    private static boolean hasCleanSheetSignal(Object xgc) {
-        return xgc != null && numeric(xgc) > 0;
-    }
-
-    /**
-     * FPL's own scoring applied to expected numbers, which is what lets one figure compare a
-     * forward with a goalkeeper and an attacking full-back with a stopper. A goal is worth 6 to a
-     * defender and 4 to a forward; a clean sheet 4 to a defender, 1 to a midfielder, nothing to a
-     * forward. Appearance points are a constant and do not affect the order — they are here so
-     * the number reads as points rather than as an index.
+     * FPL's own scoring applied to expected numbers. The formula lives in
+     * {@link ExpectedPoints} because the squad builder ranks on the same one; a copy here would
+     * be a copy that drifts.
      */
     static double expectedPointsPer90(Map<String, Object> row) {
-        int position = ((Number) row.get("element_type")).intValue();
-        double points = APPEARANCE_POINTS
-                + numeric(row.get("xg90")) * goalPoints(position)
-                + numeric(row.get("xa90")) * ASSIST_POINTS;
-        Object xgc = row.get("xgc_per_match");
-        if (hasCleanSheetSignal(xgc) && cleanSheetPoints(position) > 0) {
-            points += cleanSheetProbability(numeric(xgc)) * cleanSheetPoints(position);
-        }
-        return points;
+        return ExpectedPoints.perNinety(row);
     }
 
     static double pointsPer90(Map<String, Object> row) {
