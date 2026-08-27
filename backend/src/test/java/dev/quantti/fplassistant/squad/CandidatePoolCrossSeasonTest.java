@@ -172,7 +172,8 @@ class CandidatePoolCrossSeasonTest {
 
     private List<SquadCandidate> load() {
         var resolved = seasonResolver.resolve();
-        return pool.load(resolved, pool.metricWindow(resolved), pool.latestCaptureDate())
+        CandidatePool.Capture capture = pool.latestCapture().orElseThrow();
+        return pool.load(capture, pool.metricWindow(resolved))
                 .stream()
                 .filter(c -> c.elementId() == BRIDGED || c.elementId() == AMBIGUOUS)
                 .toList();

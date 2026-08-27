@@ -83,13 +83,17 @@ public class SquadTools implements FplTool {
             }
 
             SeasonContext season = seasonResolver.resolve();
-            LocalDate captured = pool.latestCaptureDate();
-            if (captured == null) {
+            // The capture's own season, not the resolver's: during the changeover the resolver
+            // still falls back to last season (shared has not synced the new one), while the
+            // daily capture already carries today's prices for it. Filtering on the resolver's
+            // season here would match nothing at all — see AGENTS.md and CandidatePool.Capture.
+            CandidatePool.Capture capture = pool.latestCapture().orElse(null);
+            if (capture == null) {
                 return "No player prices have been captured yet, so I cannot build a squad."
                         + " Tell the user the daily price capture has not run.";
             }
             CandidatePool.MetricWindow window = pool.metricWindow(season);
-            List<SquadCandidate> candidates = pool.load(season, window, captured);
+            List<SquadCandidate> candidates = pool.load(capture, window);
             if (candidates.isEmpty()) {
                 return "No players are available to pick from today's capture.";
             }
@@ -139,7 +143,7 @@ public class SquadTools implements FplTool {
                             .orElseGet(season::provenance);
 
             return SquadFormatter.format(solved.get(), constraints,
-                    DailyPriceSource.provenance(season.code(), captured, LocalDate.now()),
+                    DailyPriceSource.provenance(capture.season(), capture.date(), LocalDate.now()),
                     metricProvenance,
                     excluded);
         } catch (DataAccessException e) {
