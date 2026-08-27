@@ -48,8 +48,8 @@ class FeasibilityTest {
     /**
      * A resolved quota — {@code teamId} follows {@link #player} and {@link #deepPool}'s own
      * {@code club.hashCode()} convention, the way {@code SquadTools.resolveClub} would have
-     * resolved it against a real pool. {@code clubsHaveEnoughPlayers} matches candidates by this
-     * id, never by the display string.
+     * resolved it against a real pool. {@code clubsHaveEnoughPlayers} and the pins-vs-quota
+     * check both match candidates by this id, never by the display string.
      */
     private static SquadConstraints.ClubQuota quota(String club,
                                                      SquadConstraints.Comparator comparator,

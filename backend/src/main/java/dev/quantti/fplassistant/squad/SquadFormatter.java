@@ -2,6 +2,7 @@ package dev.quantti.fplassistant.squad;
 
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 /**
  * Renders a solved squad.
@@ -27,13 +28,29 @@ public final class SquadFormatter {
      *        before this method ever runs, so the two lists are always the same length
      * @param resolvedExcludes {@code mustExclude} resolved the same way, index-parallel with
      *        {@code constraints.mustExclude()}
+     * @param scores expected points over the horizon, keyed by element id — the same map
+     *        {@code SquadTools} already built to feed the solver
+     * @param expectedMinutes expected minutes per club fixture, keyed by element id
+     * @param noCandidateWasScoreable true when not one rankable candidate in the whole pool found
+     *        a fixture to score against, so every score is zero and this squad is an arbitrary
+     *        legal fifteen rather than a ranked one
      */
     public static String format(SolvedSquad solved, SquadConstraints constraints,
                                 String priceProvenance, String metricProvenance,
                                 int excludedForNoRecord, List<SquadCandidate> resolvedIncludes,
-                                List<SquadCandidate> resolvedExcludes) {
+                                List<SquadCandidate> resolvedExcludes,
+                                Map<Integer, Double> scores, Map<Integer, Double> expectedMinutes,
+                                boolean noCandidateWasScoreable) {
         StringBuilder out = new StringBuilder();
         out.append(priceProvenance).append('\n').append(metricProvenance).append("\n\n");
+
+        if (noCandidateWasScoreable) {
+            out.append("WARNING: no player in today's pool could be matched to a real fixture for"
+                    + " this horizon, so every expected-points figure below is zero. This is an"
+                    + " arbitrary legal fifteen, not a ranked selection — the pick of players, the"
+                    + " captain and the bench order carry no signal. Say so rather than presenting"
+                    + " it as a ranked squad.\n\n");
+        }
 
         out.append("Constraints\n");
         for (int i = 0; i < constraints.mustInclude().size(); i++) {
@@ -76,14 +93,15 @@ public final class SquadFormatter {
 
         out.append("Starting XI (").append(solved.formation()).append(")\n");
         for (SquadCandidate player : solved.startingXi()) {
-            out.append("  ").append(line(player)).append('\n');
+            out.append("  ").append(line(player, scores)).append('\n');
         }
 
         out.append("\nBench, in substitution order\n");
         int order = 1;
         for (SquadCandidate player : solved.bench()) {
             String prefix = player.elementType() == 1 ? "  " : "  " + order++ + ". ";
-            out.append(prefix).append(line(player)).append('\n');
+            out.append(prefix).append(line(player, scores))
+                    .append(benchMinutesNote(player, expectedMinutes)).append('\n');
         }
 
         out.append("\nCaptain: ").append(solved.captain().webName())
@@ -123,7 +141,12 @@ public final class SquadFormatter {
         };
     }
 
-    private static String line(SquadCandidate player) {
+    /**
+     * @param scores expected points over the horizon, keyed by element id — printed for every
+     *        real player so the model has something to quote when asked "why this squad?"
+     *        instead of reaching elsewhere or inventing a reason.
+     */
+    private static String line(SquadCandidate player, Map<Integer, Double> scores) {
         StringBuilder line = new StringBuilder();
         line.append(POSITION_ABBR[player.elementType()])
                 .append("  ").append(player.webName())
@@ -131,10 +154,26 @@ public final class SquadFormatter {
                 .append(Feasibility.money(player.nowCost()));
         if (player.tier() == SquadCandidate.Tier.BODY) {
             line.append(" — bench body, no playing record, worth nothing in this model");
+        } else {
+            line.append(String.format(Locale.ROOT, " — %.2f xPts",
+                    scores.getOrDefault(player.elementId(), 0.0)));
         }
         if (player.isDoubtful()) {
             line.append(" — DOUBTFUL: ").append(player.news());
         }
         return line.toString();
+    }
+
+    /**
+     * Expected minutes per club fixture, printed on bench rows only. The XI already clears the
+     * minutes floor by construction (row 14), so the number is uninteresting there; on the bench
+     * it is the whole trade the spec asks to make visible — cheapness against playing time.
+     */
+    private static String benchMinutesNote(SquadCandidate player, Map<Integer, Double> expectedMinutes) {
+        if (player.tier() == SquadCandidate.Tier.BODY) {
+            return "";
+        }
+        double minutes = expectedMinutes.getOrDefault(player.elementId(), 0.0);
+        return String.format(Locale.ROOT, ", %.0f expected mins/fixture", minutes);
     }
 }
