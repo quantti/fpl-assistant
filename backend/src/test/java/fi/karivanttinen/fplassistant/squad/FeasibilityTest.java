@@ -131,7 +131,7 @@ class FeasibilityTest {
                 pinned);
 
         assertThat(refusal).isPresent();
-        assertThat(refusal.get()).contains("£");
+        assertThat(refusal.get()).contains("£").contains("13.0m");
     }
 
     @Test
@@ -148,5 +148,36 @@ class FeasibilityTest {
         // constant. With six or more left it must pass.
         assertThat(remaining).isGreaterThanOrEqualTo(3);
         assertThat(refusal).isEmpty();
+    }
+
+    @Test
+    void refusesWhenAClubIsThinnedBelowItsQuota() {
+        List<SquadCandidate> thin = new ArrayList<>(deepPool());
+        // Remove all but one player from Ashfield.
+        thin.removeIf(c -> c.club().equals("Ashfield") && c.elementId() > 1);
+        long remaining = thin.stream().filter(c -> c.club().equals("Ashfield")).count();
+
+        Optional<String> refusal = Feasibility.check(thin, constraints(List.of(
+                new SquadConstraints.ClubQuota("Ashfield",
+                        SquadConstraints.Comparator.EXACTLY, 2)), 1000), List.of());
+
+        assertThat(remaining).isEqualTo(1);
+        assertThat(refusal).isPresent();
+        assertThat(refusal.get()).contains("Ashfield").contains("1");
+    }
+
+    @Test
+    void refusesWhenPoolLacksEnoughPlayersOfAPosition() {
+        List<SquadCandidate> thin = new ArrayList<>(deepPool());
+        // Remove all but one goalkeeper from the pool.
+        thin.removeIf(c -> c.elementType() == 1 && c.elementId() > 1);
+        long remaining = thin.stream().filter(c -> c.elementType() == 1).count();
+
+        Optional<String> refusal = Feasibility.check(thin, constraints(List.of(), 1000),
+                List.of());
+
+        assertThat(remaining).isEqualTo(1);
+        assertThat(refusal).isPresent();
+        assertThat(refusal.get()).contains("goalkeeper").contains("1");
     }
 }

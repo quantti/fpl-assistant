@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.Supplier;
 
 /**
  * Everything checked before the integer program runs.
@@ -40,7 +41,7 @@ public final class Feasibility {
     }
 
     @SafeVarargs
-    private static Optional<String> firstOf(java.util.function.Supplier<Optional<String>>... checks) {
+    private static Optional<String> firstOf(Supplier<Optional<String>>... checks) {
         for (var check : checks) {
             Optional<String> refusal = check.get();
             if (refusal.isPresent()) {
@@ -176,6 +177,11 @@ public final class Feasibility {
     /**
      * The one refusal that must carry a number. "You cannot afford this" is useless; "you are
      * £3.5m short" tells the user which pin to drop.
+     *
+     * <p>The cheapest-completion loop cannot under-count only because `pinsWithinPositionQuotas`
+     * and `poolCanFillEveryPosition` have already passed — under-counting would require a position
+     * with fewer pool players than its quota, which check 7 forecloses. Reordering the check chain
+     * or lifting this check out for standalone use would silently produce a too-low estimate.
      */
     private static Optional<String> budgetCoversThePinsAndTheCheapestCompletion(
             List<SquadCandidate> pool, SquadConstraints constraints, List<SquadCandidate> pinned) {
