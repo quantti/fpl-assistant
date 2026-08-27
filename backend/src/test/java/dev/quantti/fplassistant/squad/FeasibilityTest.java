@@ -190,6 +190,21 @@ class FeasibilityTest {
     }
 
     @Test
+    void refusesAPinCollidingWithAClubQuota() {
+        // I4: "no Arsenal except Saka" is an ordinary request. Pinning one Arsenal player while
+        // also asking for zero Arsenal players must refuse and name both the pin and the quota —
+        // not exhaust the relaxation ladder and answer with the generic "cannot all be met".
+        SquadCandidate pin = player(901, "Saka", "Ashfield", 3, 80);
+
+        Optional<String> refusal = Feasibility.check(deepPool(), constraints(List.of(
+                quota("Ashfield", SquadConstraints.Comparator.EXACTLY, 0)), 1000),
+                List.of(pin));
+
+        assertThat(refusal).isPresent();
+        assertThat(refusal.get()).contains("Saka").contains("Ashfield");
+    }
+
+    @Test
     void refusesWhenPoolLacksEnoughPlayersOfAPosition() {
         List<SquadCandidate> thin = new ArrayList<>(deepPool());
         // Remove all but one goalkeeper from the pool.
