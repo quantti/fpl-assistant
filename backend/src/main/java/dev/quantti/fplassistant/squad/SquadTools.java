@@ -98,6 +98,18 @@ public class SquadTools implements FplTool {
                 return "No players are available to pick from today's capture.";
             }
 
+            List<SquadConstraints.ClubQuota> resolvedQuotas = new ArrayList<>();
+            for (SquadConstraints.ClubQuota quota : constraints.clubQuotas()) {
+                ClubResolution resolved = resolveClub(quota, candidates);
+                if (resolved.refusal() != null) {
+                    return resolved.refusal();
+                }
+                resolvedQuotas.add(resolved.quota());
+            }
+            constraints = new SquadConstraints(constraints.mustInclude(), constraints.mustExclude(),
+                    resolvedQuotas, constraints.budget(), constraints.horizon(),
+                    constraints.formation());
+
             List<SquadCandidate> pinned = new ArrayList<>();
             for (String name : constraints.mustInclude()) {
                 Resolution resolved = resolve(name, candidates);
@@ -107,7 +119,21 @@ public class SquadTools implements FplTool {
                 pinned.add(resolved.player());
             }
 
-            Optional<String> refusal = Feasibility.check(candidates, constraints, pinned);
+            // Run through the same resolve() as mustInclude, for the same reason: an unmatched or
+            // ambiguous exclusion refuses rather than silently becoming a no-op, and matching the
+            // squad against a real element id (not a display string) is what lets the constraint
+            // receipt tell the truth about whether the exclusion actually applied.
+            List<SquadCandidate> excludedPlayers = new ArrayList<>();
+            for (String name : constraints.mustExclude()) {
+                Resolution resolved = resolve(name, candidates);
+                if (resolved.refusal() != null) {
+                    return resolved.refusal();
+                }
+                excludedPlayers.add(resolved.player());
+            }
+
+            Optional<String> refusal =
+                    Feasibility.check(candidates, constraints, pinned, excludedPlayers);
             if (refusal.isPresent()) {
                 return refusal.get();
             }
@@ -123,13 +149,13 @@ public class SquadTools implements FplTool {
             }
 
             Optional<SolvedSquad> solved = SquadSolver.solveWithDefaults(
-                    candidates, scores, constraints, pinned, minutes);
+                    candidates, scores, constraints, pinned, excludedPlayers, minutes);
             if (solved.isEmpty()) {
                 return "Those constraints cannot all be met at once, and I could not narrow it to"
                         + " a single one. Try loosening the club quotas or the budget.";
             }
 
-            int excluded = (int) candidates.stream()
+            int excludedForNoRecord = (int) candidates.stream()
                     .filter(c -> c.tier() == SquadCandidate.Tier.BODY).count();
 
             // previousSeasonProvenance must be called on the previous season's own context, not
@@ -145,7 +171,7 @@ public class SquadTools implements FplTool {
             return SquadFormatter.format(solved.get(), constraints,
                     DailyPriceSource.provenance(capture.season(), capture.date(), LocalDate.now()),
                     metricProvenance,
-                    excluded);
+                    excludedForNoRecord, pinned, excludedPlayers);
         } catch (DataAccessException e) {
             log.error("buildSquad failed", e);
             return "Squad data is temporarily unavailable (database error)."
@@ -154,6 +180,29 @@ public class SquadTools implements FplTool {
     }
 
     private record Resolution(SquadCandidate player, String refusal) {
+    }
+
+    private record ClubResolution(SquadConstraints.ClubQuota quota, String refusal) {
+    }
+
+    /**
+     * A club quota's name resolved to the pool's own canonical team id, matched against both
+     * {@code team_name} and {@code team_short} — a manager writes "Manchester City" or
+     * "Man City" interchangeably, and the daily capture's {@code club()} is FPL's own form
+     * ("Man City", "Spurs", "Nott'm Forest"), not necessarily the one written. Every later
+     * comparison against a candidate uses this id, never the display string.
+     */
+    private static ClubResolution resolveClub(SquadConstraints.ClubQuota quota,
+                                              List<SquadCandidate> candidates) {
+        String wanted = fold(quota.club());
+        Optional<SquadCandidate> match = candidates.stream()
+                .filter(c -> fold(c.club()).equals(wanted) || fold(c.clubShort()).equals(wanted))
+                .findFirst();
+        if (match.isEmpty()) {
+            return new ClubResolution(null, "I could not find a club called \"" + quota.club()
+                    + "\" among today's pool. Check the spelling.");
+        }
+        return new ClubResolution(quota.withTeamId(match.get().teamId()), null);
     }
 
     /**

@@ -78,6 +78,13 @@ class SquadSolverConstraintsTest {
         return new SquadConstraints(List.of(), List.of(), quotas, 1000, 5, null);
     }
 
+    /** A resolved quota, following {@link #player}'s own {@code club.hashCode()} team id. */
+    private static SquadConstraints.ClubQuota quota(String club,
+                                                     SquadConstraints.Comparator comparator,
+                                                     int count) {
+        return new SquadConstraints.ClubQuota(club, comparator, count, club.hashCode());
+    }
+
     private static SquadConstraints withFormation(SquadConstraints.Formation formation) {
         return new SquadConstraints(List.of(), List.of(), List.of(), 1000, 5, formation);
     }
@@ -87,8 +94,7 @@ class SquadSolverConstraintsTest {
         List<SquadCandidate> pool = pool();
 
         SolvedSquad solved = SquadSolver.solveWithDefaults(pool, flatScores(pool), with(List.of(
-                        new SquadConstraints.ClubQuota("Club00",
-                                SquadConstraints.Comparator.EXACTLY, 3))),
+                        quota("Club00", SquadConstraints.Comparator.EXACTLY, 3))),
                 List.of(), allNailed(pool)).orElseThrow();
 
         assertThat(solved.squad()).filteredOn(c -> c.club().equals("Club00")).hasSize(3);
@@ -100,8 +106,7 @@ class SquadSolverConstraintsTest {
         List<SquadCandidate> pool = pool();
 
         SolvedSquad solved = SquadSolver.solveWithDefaults(pool, flatScores(pool), with(List.of(
-                        new SquadConstraints.ClubQuota("Club01",
-                                SquadConstraints.Comparator.AT_LEAST, 2))),
+                        quota("Club01", SquadConstraints.Comparator.AT_LEAST, 2))),
                 List.of(), allNailed(pool)).orElseThrow();
 
         assertThat(solved.squad()).filteredOn(c -> c.club().equals("Club01"))
@@ -113,8 +118,7 @@ class SquadSolverConstraintsTest {
         List<SquadCandidate> pool = pool();
 
         SolvedSquad solved = SquadSolver.solveWithDefaults(pool, flatScores(pool), with(List.of(
-                        new SquadConstraints.ClubQuota("Club02",
-                                SquadConstraints.Comparator.AT_MOST, 1))),
+                        quota("Club02", SquadConstraints.Comparator.AT_MOST, 1))),
                 List.of(), allNailed(pool)).orElseThrow();
 
         assertThat(solved.squad()).filteredOn(c -> c.club().equals("Club02"))
@@ -147,7 +151,7 @@ class SquadSolverConstraintsTest {
         scores.put(unwanted.elementId(), 1000.0);
 
         SolvedSquad solved = SquadSolver.solveWithDefaults(pool, scores, constraints,
-                List.of(), allNailed(pool)).orElseThrow();
+                List.of(), List.of(unwanted), allNailed(pool)).orElseThrow();
 
         assertThat(solved.squad()).doesNotContain(unwanted);
     }
@@ -237,9 +241,9 @@ class SquadSolverConstraintsTest {
             }
         }
         var quotas = List.of(
-                new SquadConstraints.ClubQuota("Club00", SquadConstraints.Comparator.EXACTLY, 3),
-                new SquadConstraints.ClubQuota("Club01", SquadConstraints.Comparator.EXACTLY, 3),
-                new SquadConstraints.ClubQuota("Club02", SquadConstraints.Comparator.EXACTLY, 3));
+                quota("Club00", SquadConstraints.Comparator.EXACTLY, 3),
+                quota("Club01", SquadConstraints.Comparator.EXACTLY, 3),
+                quota("Club02", SquadConstraints.Comparator.EXACTLY, 3));
 
         SolvedSquad solved = SquadSolver.solveWithDefaults(pool, flatScores(pool), with(quotas),
                 List.of(), allNailed(pool)).orElseThrow();

@@ -350,6 +350,29 @@ class SquadToolsIntegrationTest {
     }
 
     @Test
+    void aClubQuotaWrittenAsTheShortNameStillResolves() {
+        // I3: club quotas must resolve against both team_name and team_short, not team_name
+        // alone. CLUBS[0] ("Ashfield Rovers") carries the fictitious short name "C00" here.
+        String output = tools.buildSquad("", "", "C00:3", 100.0, 5, "");
+
+        assertThat(output).contains("C00: 3/3");
+        assertThat(output).doesNotContain("could not find a club");
+    }
+
+    @Test
+    void anUnmatchedClubQuotaRefusesByNameRatherThanReadingAsAnOutage() {
+        // I3: before the fix, an unmatched club quota either read as "only 0 are available"
+        // (a floor, indistinguishable from a genuine data outage) or silently printed a ceiling
+        // as met against nobody (a false ✓, the same class of bug as C2). Either way it must
+        // now refuse by name instead.
+        String output = tools.buildSquad("", "", "Nonexistent FC:>=1", 100.0, 5, "");
+
+        assertThat(output).contains("Nonexistent FC");
+        assertThat(output).doesNotContain("Starting XI");
+        assertThat(output).doesNotContain("only 0 are available");
+    }
+
+    @Test
     void anUnknownNameIsRefusedRatherThanQuietlyDropped() {
         String output = tools.buildSquad("Nobodyatall", "", "", 100.0, 5, "");
 
@@ -376,6 +399,34 @@ class SquadToolsIntegrationTest {
 
         assertThat(output).contains("Starting XI");
         assertThat(output).contains("Jõao");
+        // C2: the player line alone is not enough. The constraint receipt compared "Joao" to
+        // the candidate's webName with a plain toLowerCase, which does not strip "õ" — so it
+        // read "Joao: included ✗" even though Jõao himself was correctly pinned into the squad,
+        // sitting right there in the output above this very line.
+        assertThat(output).contains("Joao: included ✓");
+    }
+
+    @Test
+    void anExclusionWrittenAsAFullNameStillAppliesToTheAbbreviatedWebName() {
+        // C2's central bug: mustExclude was never resolved at all, and SquadSolver matched an
+        // exclusion against a plain-lowercased webName, so "Gabriel Jesus" never matched a
+        // candidate whose actual webName is "G.Jesus". The exclusion silently did nothing, and
+        // the receipt then certified it as met using the same broken comparison. Deliberately
+        // the best forward in the pool (same recipe as STAR_ID/Beststriker): if the exclusion is
+        // a no-op, he is exactly the player the solver would otherwise buy.
+        jdbc.update("INSERT INTO " + table + " (season, price_date, element_id, web_name,"
+                        + " full_name, team_id, team_short, team_name, element_type, now_cost,"
+                        + " cost_change_event, cost_change_start, selected_by_percent, status, news)"
+                        + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 4, 90, 0, 0, ?, 'a', NULL)",
+                season, TODAY, 9811, "G.Jesus", "Gabriel Jesus",
+                teamIdFor(CLUBS[0]), "C00", CLUBS[0], 8.0);
+        seedMetrics(9811, "G.Jesus", 4, 90, 8.0, 1.50, 0.30, 1.20);
+
+        String output = tools.buildSquad("", "Gabriel Jesus", "", 100.0, 5, "");
+
+        assertThat(output).contains("Starting XI");
+        assertThat(output).doesNotContain("G.Jesus");
+        assertThat(output).contains("Gabriel Jesus: excluded ✓");
     }
 
     @Test

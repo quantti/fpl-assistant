@@ -6,6 +6,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import org.ojalgo.optimisation.ExpressionsBasedModel;
 import org.ojalgo.optimisation.Optimisation;
@@ -102,11 +104,26 @@ public final class SquadSolver {
                                                           SquadConstraints constraints,
                                                           List<SquadCandidate> pinned,
                                                           Map<Integer, Double> expectedMinutes) {
+        return solveWithDefaults(pool, scores, constraints, pinned, List.of(), expectedMinutes);
+    }
+
+    /**
+     * @param excluded {@code mustExclude} resolved to real candidates, matched against the pool
+     *        by element id — never by comparing {@code webName} to the raw string the user wrote,
+     *        which misses a full name or FPL's abbreviated form and leaves the exclusion a silent
+     *        no-op.
+     */
+    public static Optional<SolvedSquad> solveWithDefaults(List<SquadCandidate> pool,
+                                                          Map<Integer, Double> scores,
+                                                          SquadConstraints constraints,
+                                                          List<SquadCandidate> pinned,
+                                                          List<SquadCandidate> excluded,
+                                                          Map<Integer, Double> expectedMinutes) {
         List<String> ladder = List.of(RELAXED_TEMPLATE, RELAXED_PREMIUM, RELAXED_STARTERS_PLAY);
         List<String> given = new ArrayList<>();
 
         for (int step = 0; step <= ladder.size(); step++) {
-            Optional<SolvedSquad> solved = attempt(pool, scores, constraints, pinned,
+            Optional<SolvedSquad> solved = attempt(pool, scores, constraints, pinned, excluded,
                     expectedMinutes, List.copyOf(given));
             if (solved.isPresent()) {
                 return solved;
@@ -122,6 +139,7 @@ public final class SquadSolver {
                                                  Map<Integer, Double> scores,
                                                  SquadConstraints constraints,
                                                  List<SquadCandidate> pinned,
+                                                 List<SquadCandidate> excluded,
                                                  Map<Integer, Double> expectedMinutes,
                                                  List<String> relaxed) {
         if (pool.isEmpty()) {
@@ -139,7 +157,7 @@ public final class SquadSolver {
         }
 
         rulesOfTheGame(model, pool, inSquad, inXi, constraints);
-        userConstraints(model, pool, inSquad, constraints, pinned);
+        userConstraints(model, pool, inSquad, constraints, pinned, excluded);
         structuralDefaults(model, pool, inSquad, inXi, expectedMinutes, relaxed);
 
         Optimisation.Result result = model.maximise();
@@ -155,16 +173,17 @@ public final class SquadSolver {
      */
     private static void userConstraints(ExpressionsBasedModel model, List<SquadCandidate> pool,
                                         List<Variable> inSquad, SquadConstraints constraints,
-                                        List<SquadCandidate> pinned) {
-        List<Integer> pinnedIds = pinned.stream().map(SquadCandidate::elementId).toList();
-        List<String> excluded = constraints.mustExclude().stream()
-                .map(name -> name.toLowerCase(java.util.Locale.ROOT)).toList();
+                                        List<SquadCandidate> pinned, List<SquadCandidate> excluded) {
+        Set<Integer> pinnedIds = pinned.stream().map(SquadCandidate::elementId)
+                .collect(Collectors.toSet());
+        Set<Integer> excludedIds = excluded.stream().map(SquadCandidate::elementId)
+                .collect(Collectors.toSet());
 
         for (int i = 0; i < pool.size(); i++) {
             SquadCandidate candidate = pool.get(i);
             if (pinnedIds.contains(candidate.elementId())) {
                 inSquad.get(i).level(1);
-            } else if (excluded.contains(candidate.webName().toLowerCase(java.util.Locale.ROOT))) {
+            } else if (excludedIds.contains(candidate.elementId())) {
                 inSquad.get(i).level(0);
             }
         }
@@ -178,7 +197,7 @@ public final class SquadSolver {
                 case AT_MOST -> row.upper(quota.count());
             }
             for (int i = 0; i < pool.size(); i++) {
-                if (pool.get(i).club().equalsIgnoreCase(quota.club())) {
+                if (pool.get(i).teamId() == quota.teamId()) {
                     row.set(inSquad.get(i), 1);
                 }
             }
