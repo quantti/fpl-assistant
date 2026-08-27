@@ -21,30 +21,38 @@ public final class SquadFormatter {
     private SquadFormatter() {
     }
 
+    /**
+     * @param resolvedIncludes {@code mustInclude} resolved to real candidates, index-parallel with
+     *        {@code constraints.mustInclude()} — every name is resolved to exactly one player
+     *        before this method ever runs, so the two lists are always the same length
+     * @param resolvedExcludes {@code mustExclude} resolved the same way, index-parallel with
+     *        {@code constraints.mustExclude()}
+     */
     public static String format(SolvedSquad solved, SquadConstraints constraints,
                                 String priceProvenance, String metricProvenance,
-                                int excludedForNoRecord) {
+                                int excludedForNoRecord, List<SquadCandidate> resolvedIncludes,
+                                List<SquadCandidate> resolvedExcludes) {
         StringBuilder out = new StringBuilder();
         out.append(priceProvenance).append('\n').append(metricProvenance).append("\n\n");
 
         out.append("Constraints\n");
-        for (String name : constraints.mustInclude()) {
-            String nameLower = name.toLowerCase(Locale.ROOT);
-            boolean included = solved.squad().stream()
-                    .anyMatch(c -> c.webName().toLowerCase(Locale.ROOT).equals(nameLower));
+        for (int i = 0; i < constraints.mustInclude().size(); i++) {
+            String name = constraints.mustInclude().get(i);
+            int id = resolvedIncludes.get(i).elementId();
+            boolean included = solved.squad().stream().anyMatch(c -> c.elementId() == id);
             out.append("  ").append(name).append(": included ")
                     .append(included ? "✓" : "✗").append("\n");
         }
-        for (String name : constraints.mustExclude()) {
-            String nameLower = name.toLowerCase(Locale.ROOT);
-            boolean excluded = solved.squad().stream()
-                    .noneMatch(c -> c.webName().toLowerCase(Locale.ROOT).equals(nameLower));
+        for (int i = 0; i < constraints.mustExclude().size(); i++) {
+            String name = constraints.mustExclude().get(i);
+            int id = resolvedExcludes.get(i).elementId();
+            boolean excluded = solved.squad().stream().noneMatch(c -> c.elementId() == id);
             out.append("  ").append(name).append(": excluded ")
                     .append(excluded ? "✓" : "✗").append("\n");
         }
         for (var quota : constraints.clubQuotas()) {
             long achieved = solved.squad().stream()
-                    .filter(c -> c.club().equalsIgnoreCase(quota.club()))
+                    .filter(c -> c.teamId() == quota.teamId())
                     .count();
             boolean met = switch (quota.comparator()) {
                 case EXACTLY -> achieved == quota.count();

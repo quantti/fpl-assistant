@@ -48,14 +48,27 @@ class SquadFormatterTest {
 
     private static SquadConstraints constraints() {
         return new SquadConstraints(List.of("Name13"), List.of(), List.of(
-                new SquadConstraints.ClubQuota("Arsenal", SquadConstraints.Comparator.EXACTLY, 3),
-                new SquadConstraints.ClubQuota("Chelsea", SquadConstraints.Comparator.AT_LEAST, 2)),
+                new SquadConstraints.ClubQuota("Arsenal", SquadConstraints.Comparator.EXACTLY, 3,
+                        "Arsenal".hashCode()),
+                new SquadConstraints.ClubQuota("Chelsea", SquadConstraints.Comparator.AT_LEAST, 2,
+                        "Chelsea".hashCode())),
                 1000, 5, null);
     }
 
+    /** {@code constraints()}'s "Name13" resolved to the real candidate — see {@code player(13, ...)}. */
+    private static List<SquadCandidate> resolvedMustInclude() {
+        return List.of(player(13, "Man City", 4, 150));
+    }
+
     private static String format(SolvedSquad solved, SquadConstraints constraints) {
+        return format(solved, constraints, resolvedMustInclude(), List.of());
+    }
+
+    private static String format(SolvedSquad solved, SquadConstraints constraints,
+                                 List<SquadCandidate> resolvedIncludes,
+                                 List<SquadCandidate> resolvedExcludes) {
         return SquadFormatter.format(solved, constraints, "PRICE PROVENANCE",
-                "METRIC PROVENANCE", 12);
+                "METRIC PROVENANCE", 12, resolvedIncludes, resolvedExcludes);
     }
 
     @Test
@@ -112,7 +125,7 @@ class SquadFormatterTest {
     void warnsThatOwnedPlayersArePricedAsPurchasesWhenTheBudgetIsNotTheFromScratchHundred() {
         var wildcard = new SquadConstraints(List.of(), List.of(), List.of(), 1017, 5, null);
 
-        String output = format(solved(), wildcard);
+        String output = format(solved(), wildcard, List.of(), List.of());
 
         assertThat(output).containsIgnoringCase("selling price");
     }
@@ -221,22 +234,27 @@ class SquadFormatterTest {
 
     @Test
     void marksAbsentMustIncludeWithFailure() {
-        // When a must-include player is absent, mark with ✗
+        // When a must-include player is absent, mark with ✗. Resolved to a real candidate with
+        // an element id that is not in the squad — the receipt must match on that id, not on the
+        // display string, so this also proves the match isn't a coincidental string equality.
         SquadConstraints requireAbsent = new SquadConstraints(List.of("AbsentPlayer"),
                 List.of(), List.of(), 1000, 5, null);
+        SquadCandidate absent = player(999, "Nowhere", 1, 40);
 
-        String output = format(solved(), requireAbsent);
+        String output = format(solved(), requireAbsent, List.of(absent), List.of());
 
         assertThat(output).contains("AbsentPlayer: included ✗");
     }
 
     @Test
     void marksPresentMustExcludeWithFailure() {
-        // When a must-exclude player is present, mark with ✗
+        // When a must-exclude player is present, mark with ✗. Resolved to the real squad.get(0)
+        // candidate by element id.
         SquadConstraints excludeFail = new SquadConstraints(List.of(),
                 List.of("Name1"), List.of(), 1000, 5, null);
+        SquadCandidate name1 = player(1, "Arsenal", 1, 50);
 
-        String output = format(solved(), excludeFail);
+        String output = format(solved(), excludeFail, List.of(), List.of(name1));
 
         assertThat(output).contains("Name1: excluded ✗");
     }
@@ -247,7 +265,7 @@ class SquadFormatterTest {
         SquadConstraints tightBudget = new SquadConstraints(List.of(), List.of(),
                 List.of(), 950, 5, null);
 
-        String output = format(solved(), tightBudget);
+        String output = format(solved(), tightBudget, List.of(), List.of());
 
         assertThat(output).contains("Budget: £95.5m of £95.0m ✗");
     }
