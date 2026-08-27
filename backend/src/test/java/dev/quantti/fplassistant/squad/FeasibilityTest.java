@@ -167,6 +167,18 @@ class FeasibilityTest {
     }
 
     @Test
+    void refusesAPlayerBothPinnedAndExcluded() {
+        SquadCandidate contradiction = player(901, "Salah", "Ashfield", 3, 130);
+
+        Optional<String> refusal = Feasibility.check(deepPool(),
+                new SquadConstraints(List.of(), List.of("Salah"), List.of(), 1000, 5, null),
+                List.of(contradiction));
+
+        assertThat(refusal).isPresent();
+        assertThat(refusal.get()).contains("Salah");
+    }
+
+    @Test
     void refusesWhenPoolLacksEnoughPlayersOfAPosition() {
         List<SquadCandidate> thin = new ArrayList<>(deepPool());
         // Remove all but one goalkeeper from the pool.

@@ -37,6 +37,7 @@ public final class Feasibility {
                 () -> pinsWithinPositionQuotas(pinned),
                 () -> clubsHaveEnoughPlayers(pool, constraints),
                 () -> poolCanFillEveryPosition(pool),
+                () -> pinsNeverExcluded(pinned, constraints),
                 () -> budgetCoversThePinsAndTheCheapestCompletion(pool, constraints, pinned));
     }
 
@@ -169,6 +170,27 @@ public final class Feasibility {
                 return Optional.of(("There are only %d %ss available and a squad needs %d."
                         + " The player data may not have been captured yet.")
                         .formatted(available, POSITION_NAMES[type], POSITION_QUOTAS[type]));
+            }
+        }
+        return Optional.empty();
+    }
+
+    /**
+     * A player named in both lists is a contradiction, not a priority to guess at. Left unchecked,
+     * {@code SquadSolver.userConstraints} resolves it by code order — the pin is applied first and
+     * wins silently — which is the exact silent-priority-between-user-constraints failure this
+     * project's constraints are meant to forbid. Refusing by name is the safe direction: better to
+     * ask which one the user meant than to guess.
+     */
+    private static Optional<String> pinsNeverExcluded(List<SquadCandidate> pinned,
+                                                       SquadConstraints constraints) {
+        List<String> excluded = constraints.mustExclude().stream()
+                .map(name -> name.toLowerCase(Locale.ROOT)).toList();
+        for (SquadCandidate player : pinned) {
+            if (excluded.contains(player.webName().toLowerCase(Locale.ROOT))) {
+                return Optional.of(("You asked me to include %s and also to exclude %s. Only one"
+                        + " can be right — tell me which one you meant and I can build the squad.")
+                        .formatted(player.webName(), player.webName()));
             }
         }
         return Optional.empty();
