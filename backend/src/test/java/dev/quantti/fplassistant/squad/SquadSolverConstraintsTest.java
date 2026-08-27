@@ -242,6 +242,11 @@ class SquadSolverConstraintsTest {
         for (String club : List.of("Club00", "Club01", "Club02")) {
             assertThat(solved.squad()).filteredOn(c -> c.club().equals(club)).hasSize(3);
         }
+        // Pins down the order the ladder gives way in, not just that it gave way somehow: with
+        // the correct order this fixture resolves at step 1 (template dropped, premium and
+        // starters-play both still held); tried in a different order it would resolve at step 1
+        // too, by a different route, and the assertions above would not tell the two apart.
+        assertThat(solved.relaxed()).containsExactly(SquadSolver.RELAXED_TEMPLATE);
         SquadSolverRulesTest.assertEveryRule(solved, 1000);
     }
 }
