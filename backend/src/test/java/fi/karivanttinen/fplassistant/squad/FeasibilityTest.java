@@ -231,4 +231,15 @@ class FeasibilityTest {
         assertThat(refusal).isPresent();
         assertThat(refusal.get()).contains("3-2-5").contains("forwards");
     }
+
+    @Test
+    void refusesAFormationWithTooManyMidfielders() {
+        // Legal on their own (def at its floor, fwd at its floor), but 10 outfield players
+        // leaves 6 for midfield — one more than a squad holds in total.
+        Optional<String> refusal = Feasibility.check(deepPool(),
+                withFormation(new SquadConstraints.Formation(3, 6, 1)), List.of());
+
+        assertThat(refusal).isPresent();
+        assertThat(refusal.get()).contains("3-6-1").contains("midfielders");
+    }
 }
