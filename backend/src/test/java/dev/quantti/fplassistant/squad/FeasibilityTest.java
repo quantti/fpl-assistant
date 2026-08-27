@@ -45,6 +45,18 @@ class FeasibilityTest {
         return new SquadConstraints(List.of(), List.of(), quotas, budget, 5, null);
     }
 
+    /**
+     * A resolved quota — {@code teamId} follows {@link #player} and {@link #deepPool}'s own
+     * {@code club.hashCode()} convention, the way {@code SquadTools.resolveClub} would have
+     * resolved it against a real pool. {@code clubsHaveEnoughPlayers} matches candidates by this
+     * id, never by the display string.
+     */
+    private static SquadConstraints.ClubQuota quota(String club,
+                                                     SquadConstraints.Comparator comparator,
+                                                     int count) {
+        return new SquadConstraints.ClubQuota(club, comparator, count, club.hashCode());
+    }
+
     @Test
     void passesAPlainRequest() {
         Optional<String> refusal = Feasibility.check(deepPool(),
@@ -56,7 +68,7 @@ class FeasibilityTest {
     @Test
     void refusesAQuotaAboveTheGamesOwnThreePerClubLimit() {
         Optional<String> refusal = Feasibility.check(deepPool(), constraints(List.of(
-                new SquadConstraints.ClubQuota("Ashfield", SquadConstraints.Comparator.EXACTLY, 4)),
+                quota("Ashfield", SquadConstraints.Comparator.EXACTLY, 4)),
                 1000), List.of());
 
         assertThat(refusal).isPresent();
@@ -66,8 +78,8 @@ class FeasibilityTest {
     @Test
     void refusesContradictoryQuotasForOneClub() {
         Optional<String> refusal = Feasibility.check(deepPool(), constraints(List.of(
-                new SquadConstraints.ClubQuota("Ashfield", SquadConstraints.Comparator.AT_LEAST, 3),
-                new SquadConstraints.ClubQuota("Ashfield", SquadConstraints.Comparator.AT_MOST, 2)),
+                quota("Ashfield", SquadConstraints.Comparator.AT_LEAST, 3),
+                quota("Ashfield", SquadConstraints.Comparator.AT_MOST, 2)),
                 1000), List.of());
 
         assertThat(refusal).isPresent();
@@ -79,8 +91,7 @@ class FeasibilityTest {
         List<SquadConstraints.ClubQuota> quotas = new ArrayList<>();
         String[] clubs = {"Ashfield", "Barnwell", "Coleridge", "Dunmore", "Eastvale", "Fallowfield"};
         for (String club : clubs) {
-            quotas.add(new SquadConstraints.ClubQuota(club,
-                    SquadConstraints.Comparator.EXACTLY, 3));
+            quotas.add(quota(club, SquadConstraints.Comparator.EXACTLY, 3));
         }
         // Six clubs at exactly three is eighteen players.
         Optional<String> refusal = Feasibility.check(deepPool(), constraints(quotas, 1000),
@@ -141,8 +152,7 @@ class FeasibilityTest {
         long remaining = thin.stream().filter(c -> c.club().equals("Ashfield")).count();
 
         Optional<String> refusal = Feasibility.check(thin, constraints(List.of(
-                new SquadConstraints.ClubQuota("Ashfield",
-                        SquadConstraints.Comparator.EXACTLY, 3)), 1000), List.of());
+                quota("Ashfield", SquadConstraints.Comparator.EXACTLY, 3)), 1000), List.of());
 
         // The thinned club still has players; this asserts the check reads the pool, not a
         // constant. With six or more left it must pass.
@@ -158,8 +168,7 @@ class FeasibilityTest {
         long remaining = thin.stream().filter(c -> c.club().equals("Ashfield")).count();
 
         Optional<String> refusal = Feasibility.check(thin, constraints(List.of(
-                new SquadConstraints.ClubQuota("Ashfield",
-                        SquadConstraints.Comparator.EXACTLY, 2)), 1000), List.of());
+                quota("Ashfield", SquadConstraints.Comparator.EXACTLY, 2)), 1000), List.of());
 
         assertThat(remaining).isEqualTo(1);
         assertThat(refusal).isPresent();
@@ -168,11 +177,13 @@ class FeasibilityTest {
 
     @Test
     void refusesAPlayerBothPinnedAndExcluded() {
+        // Resolving "Salah" for mustInclude and for mustExclude against the same pool returns
+        // the same candidate, exactly as SquadTools.resolve would.
         SquadCandidate contradiction = player(901, "Salah", "Ashfield", 3, 130);
 
         Optional<String> refusal = Feasibility.check(deepPool(),
                 new SquadConstraints(List.of(), List.of("Salah"), List.of(), 1000, 5, null),
-                List.of(contradiction));
+                List.of(contradiction), List.of(contradiction));
 
         assertThat(refusal).isPresent();
         assertThat(refusal.get()).contains("Salah");

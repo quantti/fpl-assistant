@@ -6,7 +6,9 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 
 /**
  * Everything checked before the integer program runs.
@@ -29,6 +31,18 @@ public final class Feasibility {
 
     public static Optional<String> check(List<SquadCandidate> pool, SquadConstraints constraints,
                                          List<SquadCandidate> pinned) {
+        return check(pool, constraints, pinned, List.of());
+    }
+
+    /**
+     * @param excluded {@code mustExclude} resolved to real candidates, the same way {@code pinned}
+     *        resolves {@code mustInclude} — needed so {@link #pinsNeverExcluded} can compare by
+     *        element id rather than by a display string that may not match the candidate's own
+     *        {@code webName} (a full name, or FPL's abbreviated form, resolves to the same player
+     *        without matching it textually).
+     */
+    public static Optional<String> check(List<SquadCandidate> pool, SquadConstraints constraints,
+                                         List<SquadCandidate> pinned, List<SquadCandidate> excluded) {
         return firstOf(
                 () -> quotasWithinTheGamesLimit(constraints),
                 () -> quotasAgreeWithEachOther(constraints),
@@ -38,7 +52,7 @@ public final class Feasibility {
                 () -> pinsWithinPositionQuotas(pinned),
                 () -> clubsHaveEnoughPlayers(pool, constraints),
                 () -> poolCanFillEveryPosition(pool),
-                () -> pinsNeverExcluded(pinned, constraints),
+                () -> pinsNeverExcluded(pinned, excluded),
                 () -> budgetCoversThePinsAndTheCheapestCompletion(pool, constraints, pinned));
     }
 
@@ -191,7 +205,7 @@ public final class Feasibility {
                 continue;
             }
             long available = pool.stream()
-                    .filter(c -> c.club().equalsIgnoreCase(quota.club()))
+                    .filter(c -> c.teamId() == quota.teamId())
                     .count();
             if (available < quota.count()) {
                 return Optional.of(("You asked for %d players from %s, but only %d are available"
@@ -221,13 +235,19 @@ public final class Feasibility {
      * wins silently — which is the exact silent-priority-between-user-constraints failure this
      * project's constraints are meant to forbid. Refusing by name is the safe direction: better to
      * ask which one the user meant than to guess.
+     *
+     * <p>Matched by element id, both resolved the same way ({@code SquadTools.resolve}), never by
+     * comparing display strings: a full name ("Gabriel Jesus") and FPL's abbreviated form
+     * ("G.Jesus") name the same player without matching each other textually, and a
+     * string-matched version of this check would find no contradiction — and no exclusion row
+     * either — while still certifying the exclusion as met.
      */
     private static Optional<String> pinsNeverExcluded(List<SquadCandidate> pinned,
-                                                       SquadConstraints constraints) {
-        List<String> excluded = constraints.mustExclude().stream()
-                .map(name -> name.toLowerCase(Locale.ROOT)).toList();
+                                                       List<SquadCandidate> excluded) {
+        Set<Integer> excludedIds = excluded.stream().map(SquadCandidate::elementId)
+                .collect(Collectors.toSet());
         for (SquadCandidate player : pinned) {
-            if (excluded.contains(player.webName().toLowerCase(Locale.ROOT))) {
+            if (excludedIds.contains(player.elementId())) {
                 return Optional.of(("You asked me to include %s and also to exclude %s. Only one"
                         + " can be right — tell me which one you meant and I can build the squad.")
                         .formatted(player.webName(), player.webName()));
