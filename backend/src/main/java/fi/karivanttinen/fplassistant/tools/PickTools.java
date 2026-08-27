@@ -50,12 +50,12 @@ import org.springframework.stereotype.Component;
  * ball-winning defenders are understated either way, which the reply says.
  *
  * <p>The metrics come from whichever season has a real sample — the season being played once it
- * has {@link ExpectedPoints#MIN_SAMPLE_GAMEWEEKS} completed gameweeks, and the previous one until then, which
- * is the same rule the system prompt states for early-season judgements. When the metric season
- * is not the season being played, players are bridged across it by name: {@code player.id} is
- * FPL's element id and is reassigned every season, and tapas keeps no stable player code. Names
- * that are not unique in either season are dropped rather than guessed — a wrong metric attached
- * to a recommendation is the failure this class exists to prevent.
+ * has {@link ExpectedPoints#MIN_SAMPLE_GAMEWEEKS} completed gameweeks, and the previous one until
+ * then, which is the same rule the system prompt states for early-season judgements. When the
+ * metric season is not the season being played, players are bridged across it by name:
+ * {@code player.id} is FPL's element id and is reassigned every season, and tapas keeps no stable
+ * player code. Names that are not unique in either season are dropped rather than guessed — a
+ * wrong metric attached to a recommendation is the failure this class exists to prevent.
  *
  * <p>Both tools exclude players who are injured, suspended or otherwise out ({@code status} not
  * in {@code a}/{@code d}) and label the doubtful ones with their news line. Recommending a player
@@ -71,12 +71,10 @@ public class PickTools implements FplTool {
     private static final int MAX_PICKS = 10;
     private static final int MAX_FIXTURES = 5;
 
-    /**
-     * Window and sample-size constants ({@code WINDOW_MATCHES}, {@code WHOLE_SEASON},
-     * {@code MIN_WINDOW_MINUTES}, {@code MIN_SAMPLE_GAMEWEEKS}) live on {@link ExpectedPoints}
-     * now, shared with {@code CandidatePool} so the two tools cannot rank the same player two
-     * different ways in one conversation by drifting apart on what "recent form" means.
-     */
+    // Window and sample-size constants (WINDOW_MATCHES, WHOLE_SEASON, MIN_WINDOW_MINUTES,
+    // MIN_SAMPLE_GAMEWEEKS) live on ExpectedPoints now, shared with CandidatePool so the two
+    // tools cannot rank the same player two different ways in one conversation by drifting apart
+    // on what "recent form" means.
 
     /** Sinks players whose fixtures are unknown below any player with a real FDR. */
     private static final double UNKNOWN_FDR = Double.MAX_VALUE;
