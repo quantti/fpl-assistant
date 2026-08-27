@@ -440,8 +440,7 @@ class ConstraintParserTest {
                         SquadConstraints.Comparator.AT_MOST,
                         SquadConstraints.Comparator.EXACTLY);
         assertThat(quotas).extracting(SquadConstraints.ClubQuota::club)
-                .containsExactly("Chelsea", "Spurs", "Arsenal")
-                .doesNotContainNull();
+                .containsExactly("Arsenal", "Chelsea", "Spurs");
     }
 
     @Test
@@ -491,7 +490,7 @@ class ConstraintParserTest {
 }
 ```
 
-Note the second test's `containsExactly` on clubs asserts the parser's own ordering. Sort quotas by club name so the order is stable regardless of how the model wrote them; that is what makes `Chelsea, Spurs, Arsenal` the expected order there while the comparators list follows the same sort.
+Note the second test's `containsExactly` asserts the parser's own ordering. Sort quotas by club name so the order is stable regardless of how the model wrote them — a reply that reorders itself between two identical calls reads as a different answer. The input is written `Arsenal, Chelsea, Spurs` and comes back in that order, so the comparators follow it: `AT_LEAST` (Arsenal), `AT_MOST` (Chelsea), `EXACTLY` (Spurs).
 
 - [ ] **Step 2: Run it and watch it fail**
 
@@ -680,6 +679,7 @@ import java.time.LocalDate;
 import java.util.List;
 
 import fi.karivanttinen.fplassistant.testsupport.FictitiousTestData;
+import fi.karivanttinen.fplassistant.testsupport.TapasSeed;
 import fi.karivanttinen.fplassistant.tools.SeasonResolver;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -703,13 +703,22 @@ import static org.assertj.core.api.Assertions.assertThat;
 @ActiveProfiles("test")
 class CandidatePoolIntegrationTest {
 
-    private static final String SEASON = "T-2026-27";
     private static final LocalDate TODAY = LocalDate.of(2026, 8, 27);
 
     private static final int RANKABLE = 9501;
     private static final int BODY = 9502;
     private static final int INJURED = 9503;
     private static final int DOUBTFUL_NO_RECORD = 9504;
+
+    /**
+     * The season the pool actually filters on, read at runtime rather than hardcoded.
+     *
+     * <p>{@code CandidatePool.load} filters the daily table on
+     * {@code seasonResolver.resolve().code()}, and the resolver returns whichever season holds
+     * data — during the changeover that is the <b>previous</b> season, not the one on the
+     * calendar. Seeding under a constant would leave every test looking at an empty pool.
+     */
+    String season;
 
     @Autowired
     JdbcTemplate jdbc;
@@ -725,7 +734,9 @@ class CandidatePoolIntegrationTest {
 
     @BeforeEach
     void refuseProductionAndSeed() {
-        FictitiousTestData.assertSafeSeason(SEASON);
+        TapasSeed.ensure(jdbc);
+        season = seasonResolver.resolve().code();
+        FictitiousTestData.assertSafeSeason(season);
         assertThat(table).as("pool tests must use the isolated table").endsWith("_test");
         deleteTestRows();
 
@@ -741,7 +752,7 @@ class CandidatePoolIntegrationTest {
     }
 
     private void deleteTestRows() {
-        jdbc.update("DELETE FROM " + table + " WHERE season = ?", SEASON);
+        jdbc.update("DELETE FROM " + table + " WHERE season = ?", season);
     }
 
     private void insert(int elementId, String webName, int nowCost, int elementType,
@@ -750,7 +761,7 @@ class CandidatePoolIntegrationTest {
                         + " full_name, team_id, team_short, team_name, element_type, now_cost,"
                         + " cost_change_event, cost_change_start, selected_by_percent, status, news)"
                         + " VALUES (?, ?, ?, ?, ?, 9001, 'ASH', 'Ashfield Rovers', ?, ?, 0, 0, ?, ?, ?)",
-                SEASON, TODAY, elementId, webName, webName + " Fictitious",
+                season, TODAY, elementId, webName, webName + " Fictitious",
                 elementType, nowCost, ownership, status, news);
     }
 
@@ -1527,7 +1538,7 @@ class FeasibilityTest {
     }
 
     @Test
-    void refusesWhenAClubHasTooFewAvailablePlayersToMeetItsQuota() {
+    void countsTheActualPoolRatherThanAssumingAClubIsDeep() {
         List<SquadCandidate> thin = new ArrayList<>(deepPool());
         thin.removeIf(c -> c.club().equals("Ashfield") && c.elementId() % 2 == 0);
         long remaining = thin.stream().filter(c -> c.club().equals("Ashfield")).count();
@@ -2418,11 +2429,16 @@ class SquadSolverConstraintsTest {
         Map<Integer, Double> scores = flatScores(pool);
         scores.put(9999, 0.0);
 
-        var tight = new SquadConstraints(List.of(), List.of(), List.of(), 700, 5, null);
+        // 720 is chosen, not arbitrary: fifteen real players in this pool cost 750, so the body
+        // is the only way to a legal squad; the cheapest squad containing it costs 701, so one
+        // exists. Below 701 the model is infeasible and above 750 the body is never needed —
+        // this test would then prove nothing.
+        var tight = new SquadConstraints(List.of(), List.of(), List.of(), 720, 5, null);
         SolvedSquad solved = SquadSolver.solveWithDefaults(pool, scores, tight, List.of(), minutes)
                 .orElseThrow();
 
         SquadSolverRulesTest.assertEveryRule(solved);
+        assertThat(solved.squad()).contains(cheapNonPlayer);
         assertThat(solved.startingXi()).doesNotContain(cheapNonPlayer);
     }
 
@@ -2700,16 +2716,17 @@ class SquadFormatterTest {
                 player(12, "Everton", 3, 45),
                 player(13, "Man City", 4, 150), player(14, "Brighton", 4, 80),
                 player(15, "Fulham", 4, 45));
-        List<SquadCandidate> xi = squad.subList(0, 1).stream()
-                .toList();
         // 1 GK, 4 DEF, 4 MID, 2 FWD
         List<SquadCandidate> startingXi = List.of(squad.get(0), squad.get(2), squad.get(3),
                 squad.get(4), squad.get(5), squad.get(7), squad.get(8), squad.get(9),
                 squad.get(10), squad.get(12), squad.get(13));
         List<SquadCandidate> bench = List.of(squad.get(1), squad.get(11), squad.get(6),
                 squad.get(14));
+        // 955 is the sum of the fifteen prices above. The formatter prints what it is given
+        // rather than summing, but a fixture whose total disagrees with its own squad is a
+        // fixture nobody can reason about.
         return new SolvedSquad(squad, startingXi, bench, squad.get(12), squad.get(7),
-                855, "4-4-2", List.of());
+                955, "4-4-2", List.of());
     }
 
     private static SquadConstraints constraints() {
@@ -2744,8 +2761,10 @@ class SquadFormatterTest {
     void printsTheComputedTotalRatherThanAnEstimate() {
         String output = format(solved(), constraints());
 
-        assertThat(output).contains("85.5m");
-        assertThat(output).contains("14.5m");
+        assertThat(output).contains("Total £95.5m");
+        // "£4.5m" alone would match two player prices in this fixture; the money left is only
+        // proved by the phrase that reports it.
+        assertThat(output).contains("£4.5m left");
     }
 
     @Test
@@ -2791,7 +2810,7 @@ class SquadFormatterTest {
     @Test
     void saysWhichStructuralDefaultGaveWay() {
         SolvedSquad relaxed = new SolvedSquad(solved().squad(), solved().startingXi(),
-                solved().bench(), solved().captain(), solved().viceCaptain(), 855, "4-4-2",
+                solved().bench(), solved().captain(), solved().viceCaptain(), 955, "4-4-2",
                 List.of(SquadSolver.RELAXED_TEMPLATE));
 
         String output = format(relaxed, constraints());
@@ -2949,6 +2968,7 @@ The tool itself, and the acceptance test that reproduces the request this whole 
 
 **Files:**
 - Create: `backend/src/main/java/fi/karivanttinen/fplassistant/squad/SquadTools.java`
+- Modify: `backend/src/main/java/fi/karivanttinen/fplassistant/tools/DailyPriceSource.java` — widen `provenance(String, LocalDate, LocalDate)` from package-private to `public`, one word, no behaviour change
 - Modify: `backend/src/main/resources/prompts/system-prompt.st`
 - Modify: `AGENTS.md`
 - Test: `backend/src/test/java/fi/karivanttinen/fplassistant/squad/SquadToolsIntegrationTest.java`
@@ -2965,6 +2985,8 @@ package fi.karivanttinen.fplassistant.squad;
 import java.time.LocalDate;
 
 import fi.karivanttinen.fplassistant.testsupport.FictitiousTestData;
+import fi.karivanttinen.fplassistant.testsupport.TapasSeed;
+import fi.karivanttinen.fplassistant.tools.SeasonResolver;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -2987,9 +3009,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 @ActiveProfiles("test")
 class SquadToolsIntegrationTest {
 
-    private static final String SEASON = "T-2026-27";
     private static final LocalDate TODAY = LocalDate.of(2026, 8, 27);
     private static final int FIRST_ID = 9600;
+
+    /**
+     * The season the tool actually filters on, read at runtime rather than hardcoded — see the
+     * same field on {@code CandidatePoolIntegrationTest}. The resolver returns whichever season
+     * holds data, which during the changeover is not the one on the calendar.
+     */
+    String season;
 
     @Autowired
     JdbcTemplate jdbc;
@@ -2997,12 +3025,17 @@ class SquadToolsIntegrationTest {
     @Autowired
     SquadTools tools;
 
+    @Autowired
+    SeasonResolver seasonResolver;
+
     @Value("${fpl.daily-price.table-name}")
     String table;
 
     @BeforeEach
     void refuseProductionAndSeedALeague() {
-        FictitiousTestData.assertSafeSeason(SEASON);
+        TapasSeed.ensure(jdbc);
+        season = seasonResolver.resolve().code();
+        FictitiousTestData.assertSafeSeason(season);
         assertThat(table).as("squad tests must use the isolated table").endsWith("_test");
         deleteTestRows();
 
@@ -3014,8 +3047,9 @@ class SquadToolsIntegrationTest {
         for (int c = 0; c < clubs.length; c++) {
             for (int type = 1; type <= 4; type++) {
                 for (int n = 0; n < 4; n++) {
-                    insert(id++, "P%d".formatted(id), clubs[c], "C%02d".formatted(c), type,
+                    insert(id, "P%d".formatted(id), clubs[c], "C%02d".formatted(c), type,
                             n == 0 ? 105 : 40 + n * 5, n == 1 ? 35.0 : 1.5);
+                    id++;
                 }
             }
         }
@@ -3027,7 +3061,7 @@ class SquadToolsIntegrationTest {
     }
 
     private void deleteTestRows() {
-        jdbc.update("DELETE FROM " + table + " WHERE season = ?", SEASON);
+        jdbc.update("DELETE FROM " + table + " WHERE season = ?", season);
     }
 
     private void insert(int elementId, String webName, String club, String clubShort,
@@ -3036,7 +3070,7 @@ class SquadToolsIntegrationTest {
                         + " full_name, team_id, team_short, team_name, element_type, now_cost,"
                         + " cost_change_event, cost_change_start, selected_by_percent, status, news)"
                         + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, 'a', NULL)",
-                SEASON, TODAY, elementId, webName, webName + " Fictitious",
+                season, TODAY, elementId, webName, webName + " Fictitious",
                 club.hashCode() & 0x7fff, clubShort, club, elementType, nowCost, ownership);
     }
 
