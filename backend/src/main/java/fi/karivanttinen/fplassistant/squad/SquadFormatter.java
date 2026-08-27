@@ -16,6 +16,8 @@ import java.util.Locale;
  */
 public final class SquadFormatter {
 
+    private static final String[] POSITION_ABBR = {"", "GK", "DEF", "MID", "FWD"};
+
     private SquadFormatter() {
     }
 
@@ -27,20 +29,32 @@ public final class SquadFormatter {
 
         out.append("Constraints\n");
         for (String name : constraints.mustInclude()) {
-            out.append("  ").append(name).append(": included ✓\n");
+            boolean included = solved.squad().stream()
+                    .anyMatch(c -> c.webName().equals(name));
+            out.append("  ").append(name).append(": included ")
+                    .append(included ? "✓" : "✗").append("\n");
         }
         for (String name : constraints.mustExclude()) {
-            out.append("  ").append(name).append(": excluded ✓\n");
+            boolean excluded = solved.squad().stream()
+                    .noneMatch(c -> c.webName().equals(name));
+            out.append("  ").append(name).append(": excluded ")
+                    .append(excluded ? "✓" : "✗").append("\n");
         }
         for (var quota : constraints.clubQuotas()) {
             long achieved = solved.squad().stream()
                     .filter(c -> c.club().equalsIgnoreCase(quota.club()))
                     .count();
+            boolean met = switch (quota.comparator()) {
+                case EXACTLY -> achieved == quota.count();
+                case AT_LEAST -> achieved >= quota.count();
+                case AT_MOST -> achieved <= quota.count();
+            };
             out.append("  ").append(quota.club()).append(": ").append(achieved).append('/')
-                    .append(describe(quota)).append(" ✓\n");
+                    .append(describe(quota)).append(" ").append(met ? "✓" : "✗").append("\n");
         }
-        out.append("  Budget: £").append(money(solved.totalCost())).append(" of £")
-                .append(money(constraints.budget())).append(" ✓\n");
+        boolean budgetMet = solved.totalCost() <= constraints.budget();
+        out.append("  Budget: £").append(Feasibility.money(solved.totalCost())).append(" of £")
+                .append(Feasibility.money(constraints.budget())).append(" ").append(budgetMet ? "✓" : "✗").append("\n");
         if (!solved.relaxed().isEmpty()) {
             // The wording avoids claiming necessity — the solver's ladder gives up defaults
             // cumulatively, so this list is the set that were not enforced, not a minimal set
@@ -52,14 +66,14 @@ public final class SquadFormatter {
 
         out.append("Starting XI (").append(solved.formation()).append(")\n");
         for (SquadCandidate player : solved.startingXi()) {
-            out.append("  ").append(line(player, solved)).append('\n');
+            out.append("  ").append(line(player)).append('\n');
         }
 
         out.append("\nBench, in substitution order\n");
         int order = 1;
         for (SquadCandidate player : solved.bench()) {
-            String prefix = player.elementType() == 1 ? "  GK " : "  " + order++ + ". ";
-            out.append(prefix).append(line(player, solved)).append('\n');
+            String prefix = player.elementType() == 1 ? "  " : "  " + order++ + ". ";
+            out.append(prefix).append(line(player)).append('\n');
         }
 
         out.append("\nCaptain: ").append(solved.captain().webName())
@@ -67,11 +81,11 @@ public final class SquadFormatter {
         out.append("Vice-captain: ").append(solved.viceCaptain().webName())
                 .append(" (").append(solved.viceCaptain().clubShort()).append(")\n");
 
-        out.append("\nTotal £").append(money(solved.totalCost())).append(", £")
-                .append(money(constraints.budget() - solved.totalCost())).append(" left.\n");
+        out.append("\nTotal £").append(Feasibility.money(solved.totalCost())).append(", £")
+                .append(Feasibility.money(constraints.budget() - solved.totalCost())).append(" left.\n");
 
         if (!constraints.isFromScratchBudget()) {
-            out.append("This budget is not the from-scratch £100.0m, so it looks like a wildcard:"
+            out.append("\nThis budget is not the from-scratch £100.0m, so it looks like a wildcard:"
                     + " every player here is priced as a fresh purchase, because FPL does not"
                     + " publish a manager's selling price. Selling returns the purchase price plus"
                     + " half the profit, so a squad you already part-own costs less than this in"
@@ -79,13 +93,13 @@ public final class SquadFormatter {
         }
 
         if (excludedForNoRecord > 0) {
-            out.append(excludedForNoRecord)
+            out.append("\n").append(excludedForNoRecord)
                     .append(" players were left out of the ranking because they have too little"
                             + " playing history to judge — new signings, and players back from"
                             + " long injuries. Name them and I will build around them anyway.\n");
         }
 
-        out.append("Defensive-contribution points, save points and penalty saves are not in these"
+        out.append("\nDefensive-contribution points, save points and penalty saves are not in these"
                 + " numbers, so goalkeepers and ball-winning defenders are understated.\n");
 
         return out.toString();
@@ -99,12 +113,12 @@ public final class SquadFormatter {
         };
     }
 
-    private static String line(SquadCandidate player, SolvedSquad solved) {
+    private static String line(SquadCandidate player) {
         StringBuilder line = new StringBuilder();
-        line.append(Feasibility.POSITION_NAMES[player.elementType()].substring(0, 3).toUpperCase(Locale.ROOT))
+        line.append(POSITION_ABBR[player.elementType()])
                 .append("  ").append(player.webName())
                 .append(" (").append(player.clubShort()).append(") £")
-                .append(money(player.nowCost()));
+                .append(Feasibility.money(player.nowCost()));
         if (player.tier() == SquadCandidate.Tier.BODY) {
             line.append(" — bench body, no playing record, worth nothing in this model");
         }
@@ -112,9 +126,5 @@ public final class SquadFormatter {
             line.append(" — DOUBTFUL: ").append(player.news());
         }
         return line.toString();
-    }
-
-    static String money(int tenths) {
-        return String.format(Locale.ROOT, "%.1fm", tenths / 10.0);
     }
 }

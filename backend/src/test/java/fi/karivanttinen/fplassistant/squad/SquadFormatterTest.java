@@ -71,7 +71,7 @@ class SquadFormatterTest {
 
         assertThat(output).contains("Arsenal: 3/3");
         assertThat(output).contains("Chelsea: 3/at least 2");
-        assertThat(output).contains("Name13");
+        assertThat(output).contains("Name13: included");
     }
 
     @Test
@@ -104,7 +104,7 @@ class SquadFormatterTest {
     void saysHowManyPlayersWereSetAsideAndThatTheyCanBePinned() {
         String output = format(solved(), constraints());
 
-        assertThat(output).contains("12");
+        assertThat(output).contains("12 players were left out");
         assertThat(output).containsIgnoringCase("name them");
     }
 
@@ -133,5 +133,89 @@ class SquadFormatterTest {
         String output = format(relaxed, constraints());
 
         assertThat(output).contains(SquadSolver.RELAXED_TEMPLATE);
+    }
+
+    @Test
+    void labelsBodyTierPlayersAsNoPlayingRecord() {
+        // A body player has no playing history to judge; explain that in the output
+        SquadCandidate body = new SquadCandidate(99, "BodyName", "Body Full", "Arsenal", "Ars",
+                1, 40, 0.0, "a", null, 1, 0, 0,
+                Map.of(), SquadCandidate.Tier.BODY);
+        List<SquadCandidate> squad = List.of(body, player(2, "Brentford", 1, 40),
+                player(3, "Arsenal", 2, 60), player(4, "Arsenal", 2, 55),
+                player(5, "Chelsea", 2, 50), player(6, "Everton", 2, 45),
+                player(7, "Fulham", 2, 40),
+                player(8, "Chelsea", 3, 90), player(9, "Chelsea", 3, 75),
+                player(10, "Liverpool", 3, 70), player(11, "Newcastle", 3, 60),
+                player(12, "Everton", 3, 45),
+                player(13, "Man City", 4, 150), player(14, "Brighton", 4, 80),
+                player(15, "Fulham", 4, 45));
+        List<SquadCandidate> bench = List.of(body, player(12, "Everton", 3, 45),
+                player(7, "Fulham", 2, 40), player(15, "Fulham", 4, 45));
+        SolvedSquad withBody = new SolvedSquad(squad, squad.subList(1, 12), bench,
+                squad.get(13), squad.get(8), 955, "4-4-2", List.of());
+
+        String output = format(withBody, constraints());
+
+        assertThat(output).contains("bench body, no playing record");
+    }
+
+    @Test
+    void markDoubtfulPlayersWithTheirNews() {
+        // A doubtful player (d status) is marked in the output with their news
+        SquadCandidate doubtful = new SquadCandidate(98, "DoubtfulName", "Doubtful Full", "Arsenal", "Ars",
+                2, 50, 10.0, "d", "Ankle injury", 1, 900, 10,
+                Map.of("element_type", 2), SquadCandidate.Tier.RANKABLE);
+        List<SquadCandidate> squad = List.of(
+                player(1, "Arsenal", 1, 50), player(2, "Brentford", 1, 40),
+                doubtful, player(4, "Arsenal", 2, 55),
+                player(5, "Chelsea", 2, 50), player(6, "Everton", 2, 45),
+                player(7, "Fulham", 2, 40),
+                player(8, "Chelsea", 3, 90), player(9, "Chelsea", 3, 75),
+                player(10, "Liverpool", 3, 70), player(11, "Newcastle", 3, 60),
+                player(12, "Everton", 3, 45),
+                player(13, "Man City", 4, 150), player(14, "Brighton", 4, 80),
+                player(15, "Fulham", 4, 45));
+        List<SquadCandidate> startingXi = List.of(squad.get(0), squad.get(2), squad.get(3),
+                squad.get(4), squad.get(5), squad.get(7), squad.get(8), squad.get(9),
+                squad.get(10), squad.get(12), squad.get(13));
+        List<SquadCandidate> bench = List.of(squad.get(1), squad.get(11), squad.get(6),
+                squad.get(14));
+        SolvedSquad withDoubtful = new SolvedSquad(squad, startingXi, bench, squad.get(12), squad.get(7),
+                955, "4-4-2", List.of());
+
+        String output = format(withDoubtful, constraints());
+
+        assertThat(output).contains("DOUBTFUL: Ankle injury");
+    }
+
+    @Test
+    void marksUnmetConstraintsWithFailureIndicator() {
+        // When a constraint is not met, mark it with ✗ instead of ✓
+        SquadCandidate other = new SquadCandidate(99, "WrongClub", "Wrong Club", "Manchester United", "Mun",
+                1, 40, 10.0, "a", null, 10, 900, 10,
+                Map.of("element_type", 1), SquadCandidate.Tier.RANKABLE);
+        List<SquadCandidate> squad = List.of(
+                other, player(2, "Brentford", 1, 40),
+                player(3, "Arsenal", 2, 60), player(4, "Arsenal", 2, 55),
+                player(5, "Chelsea", 2, 50), player(6, "Everton", 2, 45),
+                player(7, "Fulham", 2, 40),
+                player(8, "Chelsea", 3, 90), player(9, "Chelsea", 3, 75),
+                player(10, "Liverpool", 3, 70), player(11, "Newcastle", 3, 60),
+                player(12, "Everton", 3, 45),
+                player(13, "Man City", 4, 150), player(14, "Brighton", 4, 80),
+                player(15, "Fulham", 4, 45));
+        List<SquadCandidate> startingXi = List.of(squad.get(0), squad.get(2), squad.get(3),
+                squad.get(4), squad.get(5), squad.get(7), squad.get(8), squad.get(9),
+                squad.get(10), squad.get(12), squad.get(13));
+        List<SquadCandidate> bench = List.of(squad.get(1), squad.get(11), squad.get(6),
+                squad.get(14));
+        // Only 2 Arsenal players, not the required 3
+        SolvedSquad unmet = new SolvedSquad(squad, startingXi, bench, squad.get(12), squad.get(7),
+                955, "4-4-2", List.of());
+
+        String output = format(unmet, constraints());
+
+        assertThat(output).contains("Arsenal: 2/3 ✗");
     }
 }
