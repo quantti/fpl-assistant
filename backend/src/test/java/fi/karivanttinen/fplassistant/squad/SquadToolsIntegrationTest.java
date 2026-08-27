@@ -314,6 +314,35 @@ class SquadToolsIntegrationTest {
     }
 
     /**
+     * M4: when every fixture {@link #seedRealFixtures} wired up is finished, {@code
+     * HorizonScorer.fixtureDifficulties} returns nothing for any of this class's candidates and
+     * every score comes out at zero. The tool must still build a legal fifteen — it never refuses
+     * for this reason alone — but must say the pick is not a ranked one, rather than presenting
+     * an arbitrary squad in the same confident format as a scored one.
+     */
+    @Test
+    void anUnscoreableHorizonIsDisclosedRatherThanPresentedAsRanked() {
+        jdbc.update("UPDATE fixture SET finished = true WHERE season_id = ? AND id BETWEEN ? AND ?",
+                seasonId, FIXTURE_BASE, FIXTURE_BASE + DIFFICULTY_PAIRS.length - 1);
+        try {
+            String output = tools.buildSquad("", "", "", 100.0, 5, "");
+
+            assertThat(output).contains("Starting XI");
+            assertThat(output).containsIgnoringCase("arbitrary");
+        } finally {
+            jdbc.update("UPDATE fixture SET finished = false WHERE season_id = ? AND id BETWEEN ? AND ?",
+                    seasonId, FIXTURE_BASE, FIXTURE_BASE + DIFFICULTY_PAIRS.length - 1);
+        }
+    }
+
+    @Test
+    void aScoreableHorizonSaysNothingAboutBeingArbitrary() {
+        String output = tools.buildSquad("", "", "", 100.0, 5, "");
+
+        assertThat(output).doesNotContainIgnoringCase("arbitrary");
+    }
+
+    /**
      * Every candidate at a given position otherwise shares identical underlying metrics, so a
      * genuine per-90 ranking and an all-zero objective resolved by tie-break are
      * indistinguishable by every other test in this class — none of them would fail if

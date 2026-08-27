@@ -398,6 +398,9 @@ Every reply carries:
 - how many players were excluded for insufficient minutes history, with a note that any of
   them can be pinned
 - which structural defaults, if any, were relaxed
+- when no candidate in the pool could be matched to a real fixture for the horizon, an explicit
+  warning that every score came out at zero and the fifteen is not a ranked selection — never a
+  silently presented arbitrary squad in the same format as a scored one
 
 ---
 

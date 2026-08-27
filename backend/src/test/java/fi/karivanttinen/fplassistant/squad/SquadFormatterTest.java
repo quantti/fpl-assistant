@@ -68,7 +68,8 @@ class SquadFormatterTest {
                                  List<SquadCandidate> resolvedIncludes,
                                  List<SquadCandidate> resolvedExcludes) {
         return SquadFormatter.format(solved, constraints, "PRICE PROVENANCE",
-                "METRIC PROVENANCE", 12, resolvedIncludes, resolvedExcludes);
+                "METRIC PROVENANCE", 12, resolvedIncludes, resolvedExcludes, Map.of(), Map.of(),
+                false);
     }
 
     @Test
@@ -268,5 +269,40 @@ class SquadFormatterTest {
         String output = format(solved(), tightBudget, List.of(), List.of());
 
         assertThat(output).contains("Budget: £95.5m of £95.0m ✗");
+    }
+
+    @Test
+    void printsExpectedPointsPerPlayerAndBenchExpectedMinutes() {
+        // I6: the output must carry expected points per player and expected minutes on bench
+        // rows, so the model has something to quote when asked "why this squad?" instead of
+        // reaching elsewhere or inventing a reason.
+        Map<Integer, Double> scores = Map.of(1, 4.5, 2, 1.2);
+        Map<Integer, Double> minutes = Map.of(2, 45.0);
+
+        String output = SquadFormatter.format(solved(), constraints(), "PRICE PROVENANCE",
+                "METRIC PROVENANCE", 12, resolvedMustInclude(), List.of(), scores, minutes, false);
+
+        // Name1 (element id 1) is in the starting XI.
+        assertThat(output).contains("4.50 xPts");
+        // Name2 (element id 2) is on the bench.
+        assertThat(output).contains("1.20 xPts");
+        assertThat(output).contains("45 expected mins/fixture");
+    }
+
+    @Test
+    void warnsWhenNoCandidateCouldBeScored() {
+        // M4: an unscoreable horizon must be disclosed, not silently presented as a ranked squad.
+        String output = SquadFormatter.format(solved(), constraints(), "PRICE PROVENANCE",
+                "METRIC PROVENANCE", 12, resolvedMustInclude(), List.of(), Map.of(), Map.of(),
+                true);
+
+        assertThat(output).containsIgnoringCase("arbitrary");
+    }
+
+    @Test
+    void saysNothingAboutAnUnscoreableHorizonWhenScoringWorked() {
+        String output = format(solved(), constraints());
+
+        assertThat(output).doesNotContainIgnoringCase("arbitrary");
     }
 }
