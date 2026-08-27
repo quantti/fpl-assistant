@@ -218,4 +218,37 @@ class SquadFormatterTest {
 
         assertThat(output).contains("Arsenal: 2/3 ✗");
     }
+
+    @Test
+    void marksAbsentMustIncludeWithFailure() {
+        // When a must-include player is absent, mark with ✗
+        SquadConstraints requireAbsent = new SquadConstraints(List.of("AbsentPlayer"),
+                List.of(), List.of(), 1000, 5, null);
+
+        String output = format(solved(), requireAbsent);
+
+        assertThat(output).contains("AbsentPlayer: included ✗");
+    }
+
+    @Test
+    void marksPresentMustExcludeWithFailure() {
+        // When a must-exclude player is present, mark with ✗
+        SquadConstraints excludeFail = new SquadConstraints(List.of(),
+                List.of("Name1"), List.of(), 1000, 5, null);
+
+        String output = format(solved(), excludeFail);
+
+        assertThat(output).contains("Name1: excluded ✗");
+    }
+
+    @Test
+    void marksOverBudgetWithFailure() {
+        // When total cost exceeds budget, mark with ✗
+        SquadConstraints tightBudget = new SquadConstraints(List.of(), List.of(),
+                List.of(), 950, 5, null);
+
+        String output = format(solved(), tightBudget);
+
+        assertThat(output).contains("Budget: £95.5m of £95.0m ✗");
+    }
 }

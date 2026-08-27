@@ -29,14 +29,16 @@ public final class SquadFormatter {
 
         out.append("Constraints\n");
         for (String name : constraints.mustInclude()) {
+            String nameLower = name.toLowerCase(Locale.ROOT);
             boolean included = solved.squad().stream()
-                    .anyMatch(c -> c.webName().equals(name));
+                    .anyMatch(c -> c.webName().toLowerCase(Locale.ROOT).equals(nameLower));
             out.append("  ").append(name).append(": included ")
                     .append(included ? "✓" : "✗").append("\n");
         }
         for (String name : constraints.mustExclude()) {
+            String nameLower = name.toLowerCase(Locale.ROOT);
             boolean excluded = solved.squad().stream()
-                    .noneMatch(c -> c.webName().equals(name));
+                    .noneMatch(c -> c.webName().toLowerCase(Locale.ROOT).equals(nameLower));
             out.append("  ").append(name).append(": excluded ")
                     .append(excluded ? "✓" : "✗").append("\n");
         }
