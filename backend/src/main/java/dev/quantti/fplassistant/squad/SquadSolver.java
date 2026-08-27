@@ -233,6 +233,10 @@ public final class SquadSolver {
     /**
      * The rules FPL itself enforces. These are never relaxed — not for a user constraint, not to
      * rescue an infeasible model. A squad that breaks one of them cannot be entered.
+     *
+     * <p>A forced formation lives here too, alongside the DEF/FWD floors it replaces: once
+     * {@code Feasibility} has confirmed it is a legal starting XI, it is exactly as absolute as
+     * the floors are, never given up by the relaxation ladder.
      */
     private static void rulesOfTheGame(ExpressionsBasedModel model, List<SquadCandidate> pool,
                                        List<Variable> inSquad, List<Variable> inXi,
@@ -248,8 +252,23 @@ public final class SquadSolver {
         }
 
         var gkInXi = model.newExpression("xi-gk").level(GK_IN_XI);
-        var defInXi = model.newExpression("xi-def").lower(MIN_DEF_IN_XI);
-        var fwdInXi = model.newExpression("xi-fwd").lower(MIN_FWD_IN_XI);
+        var defInXi = model.newExpression("xi-def");
+        var fwdInXi = model.newExpression("xi-fwd");
+        // Unbuilt (null) unless a formation is forced: with no formation, midfielders are simply
+        // whatever the other three rows leave over, and the existing 5-2-3 test relies on that
+        // being unconstrained.
+        org.ojalgo.optimisation.Expression midInXi = null;
+        SquadConstraints.Formation formation = constraints.formation();
+        if (formation != null) {
+            // Forced by name: "3-4-3" is an equality nothing can violate, the same discipline
+            // rows 1-9 already apply to the club quota and the budget.
+            defInXi.level(formation.def());
+            fwdInXi.level(formation.fwd());
+            midInXi = model.newExpression("xi-mid").level(formation.mid());
+        } else {
+            defInXi.lower(MIN_DEF_IN_XI);
+            fwdInXi.lower(MIN_FWD_IN_XI);
+        }
 
         Map<String, org.ojalgo.optimisation.Expression> clubLimit = new HashMap<>();
 
@@ -274,6 +293,7 @@ public final class SquadSolver {
             switch (candidate.elementType()) {
                 case 1 -> gkInXi.set(x, 1);
                 case 2 -> defInXi.set(x, 1);
+                case 3 -> { if (midInXi != null) midInXi.set(x, 1); }
                 case 4 -> fwdInXi.set(x, 1);
                 default -> { }
             }
