@@ -36,6 +36,26 @@ class CandidatePoolIntegrationTest {
     private static final int DOUBTFUL_NO_RECORD = 9504;
 
     /**
+     * SharedStats' own Okafor (season {@link SharedStatsSeed#POPULATED_SEASON_ID}, 270 minutes across 3
+     * fixtures). {@link #RANKABLE} above never actually earns {@code Tier.RANKABLE} — nothing in
+     * shared exists at id 9501 to join to — so nothing in this class could catch the tier split
+     * itself breaking without a candidate wired to a real record. This one is.
+     */
+    private static final int OKAFOR = 9201;
+
+    /**
+     * Selby's goalkeeper: 2 {@code player_fixture_stats} rows across gameweeks 1-2, but Selby
+     * actually played 3 fixtures in that span (a double gameweek he missed one leg of). A
+     * denominator built from his row count reads as ever-present; his club's true fixture count
+     * of 3 correctly shows the miss.
+     */
+    private static final int KAMINSKI = 9206;
+
+    /** Every element id this class writes into the daily-price table, for scoped cleanup. */
+    private static final List<Integer> TEST_ELEMENT_IDS =
+            List.of(RANKABLE, BODY, INJURED, DOUBTFUL_NO_RECORD, OKAFOR, KAMINSKI);
+
+    /**
      * The season the pool actually filters on, read at runtime rather than hardcoded.
      *
      * <p>{@code CandidatePool.load} filters the daily table on
@@ -69,6 +89,8 @@ class CandidatePoolIntegrationTest {
         insert(BODY, "Bodytest", 40, 2, 0.2, "a", null);
         insert(INJURED, "Injuredtest", 45, 2, 1.0, "i", "Hamstring");
         insert(DOUBTFUL_NO_RECORD, "Doubtfultest", 40, 2, 0.1, "d", "Knock");
+        insert(OKAFOR, "Okafor", 75, 3, 12.0, "a", null);
+        insert(KAMINSKI, "Kaminski", 45, 1, 6.0, "a", null);
     }
 
     @AfterEach
@@ -76,8 +98,16 @@ class CandidatePoolIntegrationTest {
         deleteTestRows();
     }
 
+    /**
+     * Scoped by element id as well as season: this is the first test class to key daily-price
+     * rows to whatever season {@link SeasonResolver} actually resolves at runtime rather than a
+     * hardcoded fictitious label, and a later test in this same plan will plausibly do the same.
+     * A blanket {@code DELETE WHERE season = ?} would wipe that class's rows too.
+     */
     private void deleteTestRows() {
-        jdbc.update("DELETE FROM " + table + " WHERE season = ?", season);
+        jdbc.update("DELETE FROM " + table + " WHERE season = ?"
+                        + " AND element_id IN (?, ?, ?, ?, ?, ?)",
+                season, RANKABLE, BODY, INJURED, DOUBTFUL_NO_RECORD, OKAFOR, KAMINSKI);
     }
 
     private void insert(int elementId, String webName, int nowCost, int elementType,
@@ -134,11 +164,41 @@ class CandidatePoolIntegrationTest {
         assertThat(pool.latestCaptureDate()).isNotNull();
     }
 
+    @Test
+    void aPlayerWithARealMinutesRecordIsRankable() {
+        // The only test in this class that can catch the tier split itself breaking: every other
+        // candidate here has no shared record to join to, so a solver that hardcoded
+        // "rankable = false" and deleted the recent/windowed/metrics machinery entirely would
+        // still pass every other test in this file.
+        SquadCandidate okafor = candidate(OKAFOR);
+
+        assertThat(okafor.tier()).isEqualTo(SquadCandidate.Tier.RANKABLE);
+        assertThat(okafor.minutesInWindow()).isEqualTo(270.0);
+        assertThat(((Number) okafor.metrics().get("xg90")).doubleValue()).isGreaterThan(0);
+    }
+
+    @Test
+    void theFixtureDenominatorIsTheClubsFixturesNotThePlayersRowCount() {
+        // Kaminski has 180 minutes across 2 rows, but Selby played 3 fixtures across those same
+        // two gameweeks (he missed one leg of a double gameweek). A denominator built from his
+        // row count would read 180/2 — ever-present; his club's true count of 3 correctly shows
+        // the gap.
+        SquadCandidate kaminski = candidate(KAMINSKI);
+
+        assertThat(kaminski.tier()).isEqualTo(SquadCandidate.Tier.RANKABLE);
+        assertThat(kaminski.minutesInWindow()).isEqualTo(180.0);
+        assertThat(kaminski.teamFixturesInWindow()).isEqualTo(3);
+    }
+
+    private SquadCandidate candidate(int elementId) {
+        return load().stream().filter(c -> c.elementId() == elementId).findFirst().orElseThrow();
+    }
+
     private List<SquadCandidate> load() {
         var season = seasonResolver.resolve();
         return pool.load(season, pool.metricWindow(season), pool.latestCaptureDate())
                 .stream()
-                .filter(c -> c.elementId() >= 9501 && c.elementId() <= 9504)
+                .filter(c -> TEST_ELEMENT_IDS.contains(c.elementId()))
                 .toList();
     }
 }
