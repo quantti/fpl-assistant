@@ -201,14 +201,18 @@ starting XI).
 | 6 | XI size | `Σ x_p = 11` |
 | 7 | Formation | `Σ_{GK} x = 1`, `Σ_{DEF} x ≥ 3`, `Σ_{FWD} x ≥ 1` |
 
-Rule 7 encodes the **rule**, not an enumerated formation list — see "To verify" below.
-`MID ∈ [2,5]` follows from it rather than being stated.
+Rule 7 encodes the **rule**, not an enumerated formation list. `MID ∈ [2,5]` follows from it
+rather than being stated.
 
-The goalkeeper row is an equality (`= 1`) where `FPL_RULES.md` words the rule as "at least 1".
-Every formation FPL accepts starts exactly one goalkeeper, and a second would occupy an
-outfield place the game does not offer. The equality is therefore what FPL enforces rather
-than what the sentence says — and it goes on the verification list below with the rest of the
-formation question.
+**Both formation questions are settled** (owner, 2026-08-27):
+
+- **5-2-3 is legal.** The enumerated list in `FPL_RULES.md` omits it and is therefore
+  incomplete. Nothing may be derived from that list; the rule is the authority.
+- **The starting XI holds exactly one goalkeeper.** The second goalkeeper is always on the
+  bench. `FPL_RULES.md`'s "at least 1" wording is loose — the equality is correct.
+
+That makes `MID ≥ 2` reachable in practice rather than a theoretical corner, since 5-2-3 is
+exactly the case that reaches it.
 
 Captain and vice-captain are both mandatory and both must be in the XI. They are chosen after
 the solve, by score; the vice-captain is taken from a different club than the captain where
@@ -263,7 +267,7 @@ The consequence is stated rather than hidden:
   way — the tool believes the manager is poorer than they are — so it can only under-spend,
   never propose an illegal squad. **The output says so explicitly, and names the mechanism.**
 
-Retrieving real selling prices needs an authenticated FPL session and is its own ticket.
+Retrieving real selling prices needs an authenticated FPL session — issue #53.
 
 ### User constraints — outrank structural defaults
 
@@ -414,8 +418,9 @@ Also:
 - club quota comparators: `Arsenal:3`, `Arsenal:>=2`, `Arsenal:<=2`, `Arsenal:=3` and
   `Arsenal:0` each produce their own row; `Arsenal:4` and `Arsenal:>=3, Arsenal:<=2` are
   refused at pre-flight with their own reasons
-- formation rule against the enumerated list — the test fails if they disagree, which is how
-  the 5-2-3 discrepancy below gets settled rather than assumed
+- every legal formation is reachable and every illegal one refused, enumerated from the rule
+  and **including 5-2-3** — the case that proves `MID = 2` is a real outcome and not a
+  rounding artefact. 2 GK in the XI, 2 DEF, or 0 FWD must each be rejected
 - structural-default relaxation order, and that rules 1–7 are never relaxed
 - a budget other than the from-scratch £100.0m produces the conservative-pricing warning in
   the output; £100.0m does not. The selling-price formula itself gets no test because it gets
@@ -428,21 +433,17 @@ Also:
 
 ---
 
-## To verify before implementation
+## A note on the rules source
 
-**`FPL_RULES.md` contradicts itself on legal formations.** It states the rule as "at least 1
-GK, at least 3 DEF, at least 1 FWD", lists valid formations as 3-4-3, 3-5-2, 4-3-3, 4-4-2,
-4-5-1, 5-3-2, 5-4-1 — which omits **5-2-3**, legal under that rule — and gives a third
-variant in the auto-substitution section ("min 1 GK, 3 DEF, 1 FWD").
+`FPL_RULES.md` lives in the tapas project and its formation list — 3-4-3, 3-5-2, 4-3-3,
+4-4-2, 4-5-1, 5-3-2, 5-4-1 — **omits 5-2-3**, which is legal. Its squad section also words
+the goalkeeper requirement as "at least 1" where the game requires exactly one in the XI, and
+its auto-substitution section gives a third variant again.
 
-Two questions need settling against FPL's own rules page:
-
-1. Is **5-2-3** legal? The stated rule says yes; the enumerated list says no.
-2. Is exactly one goalkeeper required, or merely at least one?
-
-The model encodes the stated rule with a goalkeeper equality. The enumerated list becomes a
-test. If FPL's rules page says otherwise, the rule row changes and the test catches it. This
-is not settled by guessing.
+Both points are settled above on the owner's word. The note stands because the file is a
+shared reference and the next reader will hit the same list: **treat the stated rule as the
+authority and the enumerated list as incomplete.** Correcting the file itself belongs to the
+tapas project, not here.
 
 ## Constants
 
@@ -469,3 +470,5 @@ is not settled by guessing.
 - #50 — `PickTools` reads price and injury flags from the stale tapas `player` table; this
   spec avoids the same mistake by sourcing the pool from `fpl_daily_price`
 - #26 — early-season blending across seasons
+- #53 — authenticated FPL session for real selling prices; makes a wildcard build exact
+  instead of conservative
