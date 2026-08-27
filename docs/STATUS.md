@@ -2742,3 +2742,23 @@ The pre-flight (`Feasibility.check`) now covers every case the spec enumerates, 
 colliding with a club quota, so the generic sentence should be rare — but it is still the whole
 answer whenever the solver, not the pre-flight, is what discovers the infeasibility. Left for a
 follow-up rather than added under this fix wave's scope.
+
+**A second gap, found by the re-review of that fix wave.** Decoupling the pool's season from the
+resolver's (the changeover fix) reopened a narrow cross-season hazard on the *metric* side.
+`CandidatePool.load` picks its bridge join key from `window.isResolvedSeason()` alone: when true it
+joins on the raw FPL element id, with no uniqueness guard — that guard exists only on the
+name-bridging branch. Before the fix, pool and metrics were always drawn from the same season, so an
+id match was always semantically an id match. Now the pool follows the capture's season while the
+metric window follows the resolved one, and FPL renumbers every element every season, so a mismatch
+between the two can pair a real current-season candidate with an unrelated same-numbered player's
+statistics.
+
+It does not fire in the changeover case the fix was written for: there the resolved season is
+completed, so `HorizonScorer.fixtureDifficulties` returns nothing, every score is zero, and the
+"could not score anyone" warning fires. The untested trigger is the inverse — a *stale* daily-price
+capture lagging behind an already-advanced resolved season, which needs the capture job to stall for
+longer than tapas takes to sync past five gameweeks. That inverts this project's usual assumption
+that the capture is fresh and tapas lags, which is why it is recorded rather than fixed here.
+
+The fix is to apply the same uniqueness discipline on the id branch that the name branch already
+has, or to refuse to bridge at all when the capture's season and the metric window's season differ.

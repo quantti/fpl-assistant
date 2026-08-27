@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-08-27-squad-builder-design.md`
 
-**PROGRESS:** Task 0/10 done
+**PROGRESS:** Task 10/10 done — implemented, reviewed, and through one whole-branch fix wave.
 
 ## Global Constraints
 
