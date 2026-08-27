@@ -496,7 +496,7 @@ public class PickTools implements FplTool {
             return attacking;
         }
         Object xgc = row.get("xgc_per_match");
-        return (xgc != null && numeric(xgc) > 0)
+        return ExpectedPoints.hasCleanSheetSignal(xgc)
                 ? attacking + ", CS %s%% at xGC %s".formatted(
                         fixed(cleanSheetProbability(numeric(xgc)) * 100, 0), fixed(numeric(xgc), 2))
                 : attacking + ", CS n/a";
