@@ -231,15 +231,32 @@ The output states which budget was used.
 |---|---|---|
 | 8 | Pinned players | `s_p = 1` |
 | 9 | Excluded players | `s_p = 0` |
-| 10 | Club quota | `Σ_{club c} s_p = q_c` |
+| 10 | Club quota | `Σ_{club c} s_p = q_c`, `≥ q_c` or `≤ q_c` |
 | 11 | Forced formation (optional) | equalities on rule 7's sums |
 
 Row 10 is the point of the whole feature. "Three City players" is not a preference to be
 interpreted; it is an equality the solver cannot violate.
 
-`clubQuota` values are **exact counts**. A minimum/maximum syntax can be added later if it is
-ever asked for; exactness is what was actually demanded, and an infeasible exact quota
-produces a named refusal rather than a quiet substitution.
+A club quota carries a comparator, because all three kinds get asked for:
+
+| Written | Meaning | Row |
+|---|---|---|
+| `Arsenal:3` | exactly three | `Σ = 3` |
+| `Arsenal:>=2` | at least two | `Σ ≥ 2` |
+| `Arsenal:<=2` | at most two | `Σ ≤ 2` |
+| `Arsenal:0` | none | `Σ = 0` |
+
+A bare number means exactly, because that is the common request — "all three from Arsenal" —
+and it is the reading that fails loudly rather than quietly. `=3` is accepted as an explicit
+synonym. `Arsenal:0` costs nothing to support and gives a club-level exclusion for free.
+
+Every quota is still bounded above by rule 3. An exact or minimum quota above 3 breaks the
+game's own limit and is refused at pre-flight rather than silently clipped, as is a pair of
+quotas for one club that contradict each other (`Arsenal:>=3, Arsenal:<=2`).
+
+Making minimums expressible matters beyond convenience: an exact quota is the most common
+source of infeasibility, and a manager who says "at least two Arsenal players" usually means
+it. Forcing that intent through an equality manufactures refusals the user never asked for.
 
 ### Structural defaults — relaxed before user constraints
 
@@ -282,8 +299,11 @@ precise:
 
 - a pin set exceeds the three-per-club limit
 - a pin set exceeds a position quota
-- club quotas sum above 15, or any single quota exceeds 3
+- club minimums sum above 15, or any exact or minimum quota exceeds 3
+- two quotas for one club contradict each other
 - a club quota cannot be met from the available players at that club
+- an exact or minimum club quota collides with a maximum on the same club, or with the pins
+  already placed at that club
 - pinned prices plus the cheapest legal completion exceed the budget — reported with the
   shortfall in pounds
 - a pinned name is unavailable (`status` not in `a`/`d`)
@@ -305,8 +325,8 @@ buildSquad(String mustInclude, String mustExclude, String clubQuota,
 No parameter identifies an account (`AGENTS.md`). Defaults: `budget` 100.0, `nextN` 5,
 `formation` chosen by the solver, the three string parameters empty.
 
-`clubQuota` is `"Arsenal:3,Chelsea:3,Man City:3"`. `mustInclude` and `mustExclude` are
-comma-separated names.
+`clubQuota` is `"Arsenal:3,Chelsea:>=2,Spurs:<=1"` — see the comparator table above.
+`mustInclude` and `mustExclude` are comma-separated names.
 
 ### Name resolution is a requirement, not a detail
 
@@ -349,6 +369,9 @@ Also:
   "no solution"
 - name resolution: `Joao Pedro` → `João Pedro`; an ambiguous name refuses and lists matches;
   an invented name refuses
+- club quota comparators: `Arsenal:3`, `Arsenal:>=2`, `Arsenal:<=2`, `Arsenal:=3` and
+  `Arsenal:0` each produce their own row; `Arsenal:4` and `Arsenal:>=3, Arsenal:<=2` are
+  refused at pre-flight with their own reasons
 - formation rule against the enumerated list — the test fails if they disagree, which is how
   the 5-2-3 discrepancy below gets settled rather than assumed
 - structural-default relaxation order, and that rules 1–7 are never relaxed
