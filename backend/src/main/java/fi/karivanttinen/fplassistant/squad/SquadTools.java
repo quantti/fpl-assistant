@@ -1,0 +1,193 @@
+package fi.karivanttinen.fplassistant.squad;
+
+import java.text.Normalizer;
+import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Optional;
+
+import fi.karivanttinen.fplassistant.tools.DailyPriceSource;
+import fi.karivanttinen.fplassistant.tools.FplTool;
+import fi.karivanttinen.fplassistant.tools.SeasonContext;
+import fi.karivanttinen.fplassistant.tools.SeasonResolver;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.dao.DataAccessException;
+import org.springframework.stereotype.Component;
+
+/**
+ * Builds a whole FPL squad under stated constraints.
+ *
+ * <p><b>Why this is a solver and not a prompt.</b> Picking fifteen players inside a budget, at
+ * fixed position quotas, at most three per club, around a set of named players, is a constrained
+ * optimisation problem. Asked to do it in prose the model invented players who do not exist,
+ * claimed a club constraint it had not met, and produced a total that did not match its own
+ * table. None of those are prompt failures; they are the wrong tool for the job.
+ *
+ * <p><b>Provenance is two lines.</b> Prices, clubs, ownership and availability come from the
+ * daily capture; metrics come from {@code player_fixture_stats}, which may be a season behind.
+ * One banner cannot describe both, and a price attributed to the wrong season is the error the
+ * provenance convention exists to prevent. This is a documented exception, like
+ * {@code MyTeamTools}.
+ */
+@Component
+public class SquadTools implements FplTool {
+
+    private static final Logger log = LoggerFactory.getLogger(SquadTools.class);
+
+    private final CandidatePool pool;
+    private final HorizonScorer scorer;
+    private final SeasonResolver seasonResolver;
+
+    public SquadTools(CandidatePool pool, HorizonScorer scorer, SeasonResolver seasonResolver) {
+        this.pool = pool;
+        this.scorer = scorer;
+        this.seasonResolver = seasonResolver;
+    }
+
+    @Tool(description = """
+            Build a complete 15-player FPL squad under constraints: a budget, named players who
+            must be in it, named players to avoid, and how many players to take from particular
+            clubs. Returns fifteen real players with a computed total, a starting XI and
+            formation, the bench in substitution order, and a captain and vice-captain — or a
+            refusal naming the constraint that cannot be met. Use this for wildcard, free hit,
+            pre-season and "build me a team" questions, and whenever the user states a squad
+            constraint such as "three Arsenal players". Do NOT assemble a squad yourself: this
+            tool enforces FPL's rules (15 players as 2 GK, 5 DEF, 5 MID, 3 FWD; at most 3 per
+            club; the budget) which prose cannot.
+            clubQuota is written "Arsenal:3" for exactly three, "Arsenal:>=2" for at least two,
+            "Arsenal:<=2" for at most two. mustInclude and mustExclude are comma-separated player
+            names. budget is in millions and defaults to 100.0 — for a wildcard, read the
+            manager's squad value plus bank from getMyTeam and pass that instead. nextN is how
+            many gameweeks ahead to score, default 5. formation forces one such as "3-4-3";
+            leave it empty to let the solver choose the best legal shape.
+            Players ranked on expected FPL points per fixture — expected goals and assists at
+            their position's own values, the clean-sheet chance implied by expected goals
+            conceded, scaled by the minutes they actually play — summed over the next N fixtures.
+            NOT ranked on form: a points haul is a result, not a reason. The reply states which
+            season the numbers come from and which day the prices were captured.
+            """)
+    public String buildSquad(String mustInclude, String mustExclude, String clubQuota,
+                             double budget, int nextN, String formation) {
+        try {
+            SquadConstraints constraints;
+            try {
+                constraints = ConstraintParser.parse(mustInclude, mustExclude, clubQuota,
+                        budget, nextN, formation);
+            } catch (ConstraintParser.MalformedConstraintException e) {
+                return e.getMessage();
+            }
+
+            SeasonContext season = seasonResolver.resolve();
+            LocalDate captured = pool.latestCaptureDate();
+            if (captured == null) {
+                return "No player prices have been captured yet, so I cannot build a squad."
+                        + " Tell the user the daily price capture has not run.";
+            }
+            CandidatePool.MetricWindow window = pool.metricWindow(season);
+            List<SquadCandidate> candidates = pool.load(season, window, captured);
+            if (candidates.isEmpty()) {
+                return "No players are available to pick from today's capture.";
+            }
+
+            List<SquadCandidate> pinned = new ArrayList<>();
+            for (String name : constraints.mustInclude()) {
+                Resolution resolved = resolve(name, candidates);
+                if (resolved.refusal() != null) {
+                    return resolved.refusal();
+                }
+                pinned.add(resolved.player());
+            }
+
+            Optional<String> refusal = Feasibility.check(candidates, constraints, pinned);
+            if (refusal.isPresent()) {
+                return refusal.get();
+            }
+
+            Map<Integer, List<Integer>> fixtures =
+                    scorer.fixtureDifficulties(season.seasonId(), constraints.horizon());
+            Map<Integer, Double> scores = new HashMap<>();
+            Map<Integer, Double> minutes = new HashMap<>();
+            for (SquadCandidate candidate : candidates) {
+                scores.put(candidate.elementId(), HorizonScorer.score(candidate,
+                        fixtures.getOrDefault(candidate.teamId(), List.of())));
+                minutes.put(candidate.elementId(), HorizonScorer.expectedMinutes(candidate));
+            }
+
+            Optional<SolvedSquad> solved = SquadSolver.solveWithDefaults(
+                    candidates, scores, constraints, pinned, minutes);
+            if (solved.isEmpty()) {
+                return "Those constraints cannot all be met at once, and I could not narrow it to"
+                        + " a single one. Try loosening the club quotas or the budget.";
+            }
+
+            int excluded = (int) candidates.stream()
+                    .filter(c -> c.tier() == SquadCandidate.Tier.BODY).count();
+
+            return SquadFormatter.format(solved.get(), constraints,
+                    DailyPriceSource.provenance(season.code(), captured, LocalDate.now()),
+                    window.isResolvedSeason() ? season.provenance()
+                            : season.previousSeasonProvenance(false),
+                    excluded);
+        } catch (DataAccessException e) {
+            log.error("buildSquad failed", e);
+            return "Squad data is temporarily unavailable (database error)."
+                    + " Tell the user and suggest asking again shortly.";
+        }
+    }
+
+    private record Resolution(SquadCandidate player, String refusal) {
+    }
+
+    /**
+     * A name to exactly one player, or a refusal.
+     *
+     * <p><b>Ambiguity is never guessed.</b> Putting the wrong player in a squad the user then
+     * enters is worse than asking them which one they meant. Accents are stripped on both sides
+     * because a model writes "Joao Pedro" for "João Pedro" — the original conversation failed on
+     * exactly that.
+     */
+    private static Resolution resolve(String name, List<SquadCandidate> candidates) {
+        String wanted = fold(name);
+        List<SquadCandidate> exact = candidates.stream()
+                .filter(c -> fold(c.webName()).equals(wanted))
+                .toList();
+        List<SquadCandidate> matches = exact.isEmpty()
+                ? candidates.stream()
+                        .filter(c -> fold(c.webName()).contains(wanted)
+                                || fold(c.fullName()).contains(wanted))
+                        .toList()
+                : exact;
+
+        if (matches.isEmpty()) {
+            return new Resolution(null, ("I could not find a player called \"" + name
+                    + "\" among those available today. Check the spelling, or they may be"
+                    + " injured, suspended or not in the game."));
+        }
+        if (matches.size() > 1) {
+            StringBuilder options = new StringBuilder();
+            for (SquadCandidate match : matches.stream().limit(6).toList()) {
+                options.append("\n  ").append(match.webName()).append(" (")
+                        .append(match.club()).append(", £")
+                        .append(Feasibility.money(match.nowCost())).append(')');
+            }
+            return new Resolution(null, "\"" + name + "\" matches more than one player, and I will"
+                    + " not guess which you meant:" + options + "\nName one of them exactly.");
+        }
+        return new Resolution(matches.getFirst(), null);
+    }
+
+    /** Lowercased and stripped of diacritics, so "Joao" finds "João". */
+    private static String fold(String value) {
+        if (value == null) {
+            return "";
+        }
+        return Normalizer.normalize(value, Normalizer.Form.NFD)
+                .replaceAll("\\p{InCombiningDiacriticalMarks}+", "")
+                .toLowerCase(Locale.ROOT);
+    }
+}
