@@ -24,6 +24,38 @@ public final class ExpectedPoints {
     public static final double ASSIST_POINTS = 3;
     public static final double APPEARANCE_POINTS = 2;
 
+    /**
+     * Matches of underlying data read per player when the metrics come from the season being
+     * played: recent form, which is what "last 10" should mean.
+     *
+     * <p>A finished season is read whole instead ({@link #WHOLE_SEASON}). Taking its last ten
+     * gameweeks means GW28-38 — the run-in, where a side chasing Europe rotates, a safe
+     * mid-table side coasts and a relegated one has stopped trying. That is the least
+     * representative quarter of the season.
+     *
+     * <p>Shared by {@code PickTools} and {@code CandidatePool} so the two cannot rank the same
+     * player two different ways in one conversation by drifting apart on what "recent form"
+     * means.
+     */
+    public static final int WINDOW_MATCHES = 10;
+
+    /** Every gameweek of a finished season; no season has more fixtures than this per player. */
+    public static final int WHOLE_SEASON = 60;
+
+    /**
+     * Minutes a player must have inside the window to be ranked at all. Two full matches: below
+     * that, a per-90 figure is arithmetic on noise, and a cameo with one big chance outranks a
+     * regular starter.
+     */
+    public static final int MIN_WINDOW_MINUTES = 180;
+
+    /**
+     * Completed gameweeks the season being played needs before its own numbers are used
+     * outright, without even consulting the previous season. See
+     * {@code SeasonResolver#betterMetricSeason}.
+     */
+    public static final int MIN_SAMPLE_GAMEWEEKS = 5;
+
     private ExpectedPoints() {
     }
 
