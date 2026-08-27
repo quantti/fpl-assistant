@@ -50,6 +50,7 @@ public final class Feasibility {
                 () -> formationIsLegal(constraints),
                 () -> pinsWithinTheClubLimit(pinned),
                 () -> pinsWithinPositionQuotas(pinned),
+                () -> pinsAgreeWithClubQuotas(pinned, constraints),
                 () -> clubsHaveEnoughPlayers(pool, constraints),
                 () -> poolCanFillEveryPosition(pool),
                 () -> pinsNeverExcluded(pinned, excluded),
@@ -193,6 +194,34 @@ public final class Feasibility {
             if (counts[type] > POSITION_QUOTAS[type]) {
                 return Optional.of(("You named %d %ss and a squad holds %d.")
                         .formatted(counts[type], POSITION_NAMES[type], POSITION_QUOTAS[type]));
+            }
+        }
+        return Optional.empty();
+    }
+
+    /**
+     * An exact or minimum club quota colliding with the pins already placed at that club — "no
+     * Arsenal except Saka" is an ordinary request, and a pin at that club must not silently
+     * outrun a ceiling the user also asked for. A floor never collides with pins: pins only add
+     * players, which can only help reach a minimum, never break it.
+     */
+    private static Optional<String> pinsAgreeWithClubQuotas(List<SquadCandidate> pinned,
+                                                            SquadConstraints constraints) {
+        for (var quota : constraints.clubQuotas()) {
+            if (quota.comparator() == SquadConstraints.Comparator.AT_LEAST) {
+                continue;
+            }
+            List<String> namedPins = pinned.stream()
+                    .filter(p -> p.teamId() == quota.teamId())
+                    .map(SquadCandidate::webName)
+                    .toList();
+            if (namedPins.size() > quota.count()) {
+                String limit = quota.comparator() == SquadConstraints.Comparator.EXACTLY
+                        ? "exactly " + quota.count() : "at most " + quota.count();
+                return Optional.of(("You pinned %s from %s, but the club quota there is %s."
+                        + " Only one can be right — drop the pin or change the quota and I can"
+                        + " build the squad.")
+                        .formatted(String.join(" and ", namedPins), quota.club(), limit));
             }
         }
         return Optional.empty();

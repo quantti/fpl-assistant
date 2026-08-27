@@ -2721,3 +2721,24 @@ One finding is not a code change: the review flagged that this branch rewrites `
 guardrail on tapas tables and that the exception's only record is the commit itself. The owner
 granted it in conversation on 2026-08-26, having confirmed they own both projects. Recorded here so
 the grant lives outside the diff that relies on it.
+
+## Squad builder (`squad-builder` branch) — known gap after the whole-branch fix wave (2026-08-28)
+
+A final reviewer read the branch as a whole, compiled and executed three probes, and found two
+merge-blocking defects and five more worth fixing before merge — a stale-pool bug during the
+season changeover, a constraint receipt that could certify an exclusion as met when it had
+silently done nothing, club quotas matching only `team_name` and not `team_short`, a missing
+pre-flight check for a pin colliding with a club quota, cross-season metric bridging with no
+comparison against the season being played, expected points missing from the output, duplicated
+window constants, and a silently unscored horizon. All eight were fixed in one pass, each with a
+test that fails without its fix.
+
+**One piece of the spec is deliberately still unimplemented.** `2026-08-27-squad-builder-design.md`'s
+Infeasibility section says that when the pre-flight passes but the solver still reports
+infeasible, "constraint groups are relaxed one at a time and re-solved; the group whose relaxation
+restores feasibility is named." That diagnosis is not built. `SquadTools.buildSquad`'s only
+fallback in that case is the generic sentence ("Those constraints cannot all be met at once...").
+The pre-flight (`Feasibility.check`) now covers every case the spec enumerates, including a pin
+colliding with a club quota, so the generic sentence should be rare — but it is still the whole
+answer whenever the solver, not the pre-flight, is what discovers the infeasibility. Left for a
+follow-up rather than added under this fix wave's scope.
