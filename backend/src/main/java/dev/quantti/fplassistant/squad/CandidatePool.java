@@ -46,9 +46,26 @@ public class CandidatePool {
                                boolean beingPlayed, int windowLimit) {
     }
 
-    public LocalDate latestCaptureDate() {
-        return jdbc.queryForObject(
-                "SELECT MAX(price_date) FROM " + dailyTable, LocalDate.class);
+    /**
+     * The season and date of the most recent daily-price capture, read from the capture itself
+     * rather than from {@link SeasonResolver}. During the changeover the resolver still names the
+     * previous season — tapas has not synced the new one — while this table already carries
+     * today's prices for it; filtering {@link #load} on the resolver's season would then match
+     * nothing at all, even though the capture holds hundreds of fit players. See
+     * {@code DailyPriceSource#provenanceFor}, which reads a row's own season the same way.
+     */
+    public record Capture(String season, LocalDate date) {
+    }
+
+    public Optional<Capture> latestCapture() {
+        List<Map<String, Object>> rows = jdbc.queryForList(
+                "SELECT season, price_date FROM " + dailyTable + " ORDER BY price_date DESC LIMIT 1");
+        if (rows.isEmpty()) {
+            return Optional.empty();
+        }
+        Map<String, Object> row = rows.getFirst();
+        return Optional.of(new Capture((String) row.get("season"),
+                ((java.sql.Date) row.get("price_date")).toLocalDate()));
     }
 
     /**
@@ -88,9 +105,8 @@ public class CandidatePool {
      * entirely only because it joins with an {@code INNER JOIN} onto a pool that is not the thing
      * being returned.
      */
-    public List<SquadCandidate> load(SeasonContext season, MetricWindow window,
-                                     LocalDate captureDate) {
-        if (captureDate == null) {
+    public List<SquadCandidate> load(Capture capture, MetricWindow window) {
+        if (capture == null) {
             return List.of();
         }
         String metricKey = window.isResolvedSeason() ? "mp.id::text" : "LOWER(mp.web_name)";
@@ -160,7 +176,7 @@ public class CandidatePool {
                 LEFT JOIN metrics m ON m.k = %s %s
                 """.formatted(dailyTable, window.windowLimit(), ExpectedPoints.MIN_WINDOW_MINUTES,
                         metricKey, metricUnique, poolKey, poolUnique),
-                season.code(), captureDate, window.seasonId(), window.seasonId(),
+                capture.season(), capture.date(), window.seasonId(), window.seasonId(),
                 window.seasonId());
 
         List<SquadCandidate> candidates = new ArrayList<>();
