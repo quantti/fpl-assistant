@@ -95,7 +95,7 @@ public class DailyPriceSource {
                 ((java.sql.Date) row.get("price_date")).toLocalDate(), LocalDate.now());
     }
 
-    static String provenance(String season, LocalDate captured, LocalDate today) {
+    public static String provenance(String season, LocalDate captured, LocalDate today) {
         // Clamped at zero: a capture dated ahead of "today" means clock skew between the
         // container and the database, and "captured -1 days ago" is worse than useless in an
         // answer a user is meant to trust.

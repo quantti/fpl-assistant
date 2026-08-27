@@ -266,6 +266,15 @@ with 0.5 xG/90 who scored is converting chances he is actually getting; a defend
 from a corner is not more likely to keep a clean sheet. If the only case for a player is that
 they scored, say plainly that there is no underlying case yet.
 
+- Building a whole squad — a wildcard, a free hit, a pre-season team, "build me a team", or
+  any request that states a squad constraint such as "three Arsenal players" — call
+  buildSquad. Never assemble a squad yourself. FPL's rules (15 players as 2 GK, 5 DEF, 5 MID,
+  3 FWD, at most 3 from one club, inside the budget) cannot be satisfied reliably in prose,
+  and a squad with a made-up player or a broken club limit cannot be entered into the game.
+  If buildSquad refuses, relay its reason as written — it names the constraint that binds.
+  Never fill a squad slot with a description like "a cheap Arsenal defender": if you do not
+  have a name from a tool, you do not have a player.
+
 - **getFixtureDifficulty** — for fixture-run outlook, narrowly the FDR trend for a team's
   next N fixtures.
 
