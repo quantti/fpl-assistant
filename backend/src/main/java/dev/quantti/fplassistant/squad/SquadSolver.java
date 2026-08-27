@@ -138,12 +138,22 @@ public final class SquadSolver {
                                         Optimisation.Result result, List<String> relaxed) {
         List<SquadCandidate> squad = new ArrayList<>();
         List<SquadCandidate> startingXi = new ArrayList<>();
+        List<SquadCandidate> bench = new ArrayList<>();
         for (int i = 0; i < pool.size(); i++) {
-            if (chosen(result, inSquad.get(i))) {
+            boolean inTheSquad = chosen(result, inSquad.get(i));
+            boolean inTheXi = chosen(result, inXi.get(i));
+            if (inTheSquad) {
                 squad.add(pool.get(i));
             }
-            if (chosen(result, inXi.get(i))) {
+            if (inTheXi) {
                 startingXi.add(pool.get(i));
+            } else if (inTheSquad) {
+                // Squad but not XI, read from the same per-index model result used for squad and
+                // startingXi above — not a set difference. SquadCandidate is a record; a
+                // removeAll(startingXi) would match on value equality (including metrics), so a
+                // pool holding two value-equal candidates would strip every match rather than
+                // just the one actually in the XI, silently shrinking the bench.
+                bench.add(pool.get(i));
             }
         }
 
@@ -152,8 +162,6 @@ public final class SquadSolver {
                 .reversed();
         startingXi.sort(Comparator.comparingInt(SquadCandidate::elementType).thenComparing(byScore));
 
-        List<SquadCandidate> bench = new ArrayList<>(squad);
-        bench.removeAll(startingXi);
         // The reserve keeper first — he can only ever replace the keeper — then the outfield
         // substitutes in the order FPL should try them.
         bench.sort(Comparator.comparingInt((SquadCandidate c) -> c.elementType() == 1 ? 0 : 1)

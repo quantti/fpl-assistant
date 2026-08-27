@@ -57,16 +57,35 @@ class SquadSolverRulesTest {
 
     @RepeatedTest(20)
     void everyResultObeysEveryRuleOfTheGame() {
-        Random random = new Random();
+        // Seeded, not fixed: each repetition must still see a different pool, but a failure has
+        // to be reproducible — an unseeded Random loses the exact case that broke it.
+        long seed = System.nanoTime();
+        Random random = new Random(seed);
         List<SquadCandidate> pool = pool(random);
+        SquadConstraints constraints = plain();
 
-        SolvedSquad solved = SquadSolver.solve(pool, scores(pool, random), plain(), List.of())
-                .orElseThrow(() -> new AssertionError("a full pool inside budget must solve"));
+        try {
+            SolvedSquad solved = SquadSolver
+                    .solve(pool, scores(pool, random), constraints, List.of())
+                    .orElseThrow(() -> new AssertionError("a full pool inside budget must solve"));
 
-        assertEveryRule(solved);
+            assertEveryRule(solved, constraints.budget());
+        } catch (AssertionError failure) {
+            throw new AssertionError(
+                    "seed=" + seed + "L reproduces this pool: " + failure.getMessage(), failure);
+        }
     }
 
+    /**
+     * The rules of the game, minus the budget check: for a caller with no {@code
+     * SquadConstraints} in scope. Prefer {@link #assertEveryRule(SolvedSquad, int)} wherever the
+     * budget is known — every test in this class is.
+     */
     static void assertEveryRule(SolvedSquad solved) {
+        assertEveryRule(solved, Integer.MAX_VALUE);
+    }
+
+    static void assertEveryRule(SolvedSquad solved, int budget) {
         assertThat(solved.squad()).hasSize(Feasibility.SQUAD_SIZE);
         assertThat(solved.squad()).extracting(SquadCandidate::elementId).doesNotHaveDuplicates();
 
@@ -100,6 +119,7 @@ class SquadSolverRulesTest {
 
         assertThat(solved.totalCost())
                 .isEqualTo(solved.squad().stream().mapToInt(SquadCandidate::nowCost).sum());
+        assertThat(solved.totalCost()).as("squad cost within budget").isLessThanOrEqualTo(budget);
 
         assertThat(solved.startingXi()).contains(solved.captain());
         assertThat(solved.startingXi()).contains(solved.viceCaptain());
@@ -114,7 +134,12 @@ class SquadSolverRulesTest {
     void aBodyIsNeverInTheStartingEleven() {
         Random random = new Random(7);
         List<SquadCandidate> pool = new ArrayList<>(pool(random));
-        // A free body at every position, worth nothing but priced at the floor.
+        // A body at every position: free to buy, and scored far above any real candidate (whose
+        // scores top out just under 30). A zero score would not test the rule — the objective
+        // already prefers any positive-score real player over a worthless one, with roughly 48
+        // real candidates per position competing for the spot. Scoring him this high means the
+        // objective alone would want to start him the moment the BODY-never-starts constraint
+        // came loose, which is what lets this test actually fail on that regression.
         int id = 9000;
         for (int type = 1; type <= 4; type++) {
             pool.add(new SquadCandidate(id++, "Body" + type, "Body " + type, "Bodytown", "BOD",
@@ -123,12 +148,16 @@ class SquadSolverRulesTest {
         }
         Map<Integer, Double> scores = scores(pool, random);
         pool.stream().filter(c -> c.tier() == SquadCandidate.Tier.BODY)
-                .forEach(c -> scores.put(c.elementId(), 0.0));
+                .forEach(c -> scores.put(c.elementId(), 1000.0));
 
-        SolvedSquad solved = SquadSolver.solve(pool, scores, plain(), List.of()).orElseThrow();
+        SquadConstraints constraints = plain();
+        SolvedSquad solved = SquadSolver.solve(pool, scores, constraints, List.of()).orElseThrow();
 
-        assertThat(solved.startingXi()).noneMatch(c -> c.tier() == SquadCandidate.Tier.BODY);
-        assertEveryRule(solved);
+        assertThat(solved.squad()).as("cheap and top-scoring: he should be bought")
+                .anyMatch(c -> c.tier() == SquadCandidate.Tier.BODY);
+        assertThat(solved.startingXi()).as("but never started")
+                .noneMatch(c -> c.tier() == SquadCandidate.Tier.BODY);
+        assertEveryRule(solved, constraints.budget());
     }
 
     @Test
