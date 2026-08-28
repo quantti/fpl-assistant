@@ -39,6 +39,11 @@ dependencies {
     // RFC 4180 CSV parsing for the vaastav historical-data import (fixtures.csv's `stats`
     // column is a quoted blob containing commas and quotes — split(",") corrupts every row).
     implementation 'org.apache.commons:commons-csv:1.14.1'
+    // Integer programming for the squad builder: picking 15 players under a budget, position
+    // quotas, a three-per-club cap and the user's own constraints is a knapsack with side
+    // constraints, not something to hand-roll. MIT, pure Java, and every dependency it declares
+    // is test-scoped, so nothing joins the runtime classpath but ojAlgo itself.
+    implementation 'org.ojalgo:ojalgo:57.1.1'
 
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
     // Boot 4 modularization: @WebMvcTest lives in its own test module
