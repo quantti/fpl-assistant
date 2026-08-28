@@ -128,8 +128,8 @@ public final class SquadFormatter {
         }
 
         out.append("\nSave points and penalty saves are not in these numbers, so goalkeepers are"
-                + " understated. Defensive contribution is included, as the share of matches a"
-                + " player reaches his position's action threshold in.\n");
+                + " understated. Defensive contribution is included, as each player's estimated"
+                + " chance of reaching his position's action threshold in a match.\n");
 
         return out.toString();
     }

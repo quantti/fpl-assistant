@@ -78,7 +78,7 @@ public final class ExpectedPoints {
     public static final double DEFCON_POINTS = 2;
 
     /**
-     * Matches of 60 minutes or more the hit rate must rest on before it is read at all.
+     * Matches of 60 minutes or more the mean must rest on before it is read at all.
      *
      * <p>Two, which is the same sample {@link #MIN_WINDOW_MINUTES} already admits a player to the
      * ranking on: no single component is held to a stricter standard than the row itself. Below
@@ -129,9 +129,10 @@ public final class ExpectedPoints {
      * of a per-match event, counted over matches of an hour or more, and both are added to a
      * per-90 figure on the understanding that a player who qualifies has played most of the 90.
      *
-     * <p>The average cannot answer this. The points land at a per-match threshold, so a defender
-     * steady on 9.8 actions scores nothing while one averaging 9.5 with a wide spread scores
-     * often. The hit rate reads the distribution the mean hides.
+     * <p>The average answers this once it is read through a distribution. The points land at a
+     * per-match threshold, so the question is how often the player clears it — and a defender
+     * averaging 9.8 actions clears 10 about half the time, which neither the bare average nor a
+     * tally of past crossings says on its own.
      */
     public static double defconPerNinety(Map<String, Object> row, int position) {
         return defconProbability(row, position) * DEFCON_POINTS;
@@ -153,9 +154,10 @@ public final class ExpectedPoints {
      *
      * <p><b>Provisional for a day, new in 2026/27.</b> Gameweek scores are final at 09:00 UK on
      * the day after the gameweek's last match rather than an hour after the whistle, so that
-     * post-match Opta review can feed into defensive-contribution points. A hit rate feels that
-     * more than an average would: a review lifting a defender from 9 actions to 10 flips a whole
-     * match from miss to hit. Nothing is done about it here because
+     * post-match Opta review can feed into defensive-contribution points. Modelling from the
+     * mean absorbs that better than counting crossings would: a review lifting a defender from 9
+     * actions to 10 moves his average slightly rather than flipping a whole match from miss to
+     * hit. Nothing is done about it here because
      * {@code DefensiveStatsSyncService} rewrites every match row on every run, so the next
      * nightly sync replaces a provisional figure with the reviewed one.
      */

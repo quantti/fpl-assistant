@@ -194,6 +194,10 @@ class PickToolsIntegrationTest {
         String result = tools.getDifferentialPicks("DEF", 100, 3);
 
         assertThat(result).contains("Save points and penalty saves are still not in it");
+        // DC is a modelled chance, not a tally. The wording went stale once when the model
+        // changed and no test noticed, so the distinction is pinned here.
+        assertThat(result).contains("estimated chance of reaching");
+        assertThat(result).doesNotContain("share of matches");
         assertThat(result).contains("Do not call xPts/90 a complete projection");
         assertThat(result).doesNotContain("are not in the data");
     }

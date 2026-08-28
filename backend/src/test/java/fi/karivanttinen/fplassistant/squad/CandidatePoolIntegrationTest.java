@@ -53,7 +53,7 @@ class CandidatePoolIntegrationTest {
      */
     private static final int KAMINSKI = 9206;
 
-    /** Tapas' Ferreira: a defender with two 90-minute rows, so a defcon hit rate can be read. */
+    /** Tapas' Ferreira: a defender with two 90-minute rows, so a defcon mean can be read. */
     private static final int FERREIRA = 9205;
 
     /** Every element id this class writes into the daily-price table, for scoped cleanup. */

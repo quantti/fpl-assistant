@@ -44,10 +44,11 @@ import org.springframework.stereotype.Component;
  * ({@link #MAX_REALISED_WEIGHT} at {@link #FULL_WEIGHT_GAMEWEEK}), so a hot start counts for
  * little in GW2 and a season of returns counts properly in GW20.
  *
- * <p>Defensive contribution is modelled as a hit rate: the share of a player's hour-or-more
- * matches in which he reached his position's action threshold, times the two points it pays. The
- * average cannot stand in for it — the points land at a per-match threshold, so a defender steady
- * on 9.8 actions scores nothing and one averaging 9.5 with a wide spread scores often.
+ * <p>Defensive contribution is modelled as a probability: the chance a player reaches his
+ * position's action threshold in a match, read from his average actions through a negative
+ * binomial, times the two points it pays. Counting how often he has managed it before is the
+ * weaker estimator — it keeps only "over or under" and discards the counts themselves, and it is
+ * measurably worse on any sample short enough to matter.
  *
  * <p>Still not modelled: save points and penalty saves. {@code player_fixture_stats} carries
  * {@code saves} and {@code penalties_saved}, so leaving them out is a choice, not a gap.
@@ -531,13 +532,14 @@ public class PickTools implements FplTool {
                 .append(". If that is well behind the gameweek being played, the statistics sync")
                 .append(" has stalled and these numbers are older than they look — say so.\n");
         out.append("xPts/90 covers goals, assists, clean sheets and defensive contribution. DC is")
-                .append(" the share of matches the player cleared his threshold in — ")
-                .append(ExpectedPoints.DEFCON_THRESHOLD[2])
+                .append(" his estimated chance of reaching the defensive-contribution threshold")
+                .append(" in a match — ").append(ExpectedPoints.DEFCON_THRESHOLD[2])
                 .append(" defensive actions for a defender, ")
                 .append(ExpectedPoints.DEFCON_THRESHOLD[3])
-                .append(" for a midfielder or forward — counted over matches he played an hour")
-                .append(" of, and it reads n/a below ").append(ExpectedPoints.MIN_DEFCON_MATCHES)
-                .append(" such matches. Save points and penalty saves are still not in it, so")
+                .append(" for a midfielder or forward — modelled from his average actions over")
+                .append(" matches he played an hour of, not counted from how often he has")
+                .append(" managed it before. It reads n/a below ")
+                .append(ExpectedPoints.MIN_DEFCON_MATCHES).append(" such matches. Save points and penalty saves are still not in it, so")
                 .append(" goalkeepers are understated; Pts/90 is where their real return shows")
                 .append(" up. Do not call xPts/90 a complete projection.\n")
                 .append("Unavailable players (injured/suspended) are excluded.\n");
