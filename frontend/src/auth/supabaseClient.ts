@@ -28,6 +28,11 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     // one-hour token does not become a surprise sign-out mid-conversation.
     persistSession: true,
     autoRefreshToken: true,
+    // The confirmation link sends the browser back here with the tokens in the URL fragment, and
+    // this is what turns them into a session. It defaults to true, and is written out because the
+    // email-verification flow depends on it — a later tidy-up that "removes a default" would
+    // leave people who confirmed their address staring at the sign-in form.
+    detectSessionInUrl: true,
   },
 })
 

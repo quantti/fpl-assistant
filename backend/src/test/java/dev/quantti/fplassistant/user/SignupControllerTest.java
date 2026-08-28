@@ -3,6 +3,7 @@ package dev.quantti.fplassistant.user;
 import java.util.UUID;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -43,6 +44,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class SignupControllerTest {
 
     private static final String CODE = "test-invite-code";
+
     private static final String PASSWORD = "correct horse battery staple";
 
     @Autowired
@@ -57,10 +59,33 @@ class SignupControllerTest {
     @Value("${fpl.user.invite-redemption-table-name}")
     String inviteTable;
 
+    @Value("${fpl.user.invite-code-table-name}")
+    String codeTable;
+
+    /** A code has to exist for anyone to sign up at all: an empty table refuses everyone. */
+    @BeforeEach
+    void issueACode() {
+        jdbc.update("DELETE FROM " + inviteTable);
+        jdbc.update("DELETE FROM " + codeTable);
+        jdbc.update("INSERT INTO " + codeTable + " (code, label, max_uses) VALUES (?, ?, ?)",
+                CODE, "test", 5);
+    }
+
     /** Unconditional: a leftover reservation would put the next test at the cap. */
     @AfterEach
     void emptyTheLedger() {
         jdbc.update("DELETE FROM " + inviteTable);
+        jdbc.update("DELETE FROM " + codeTable);
+    }
+
+    private long codeId() {
+        return jdbc.queryForObject("SELECT id FROM " + codeTable + " WHERE code = ?",
+                Long.class, CODE);
+    }
+
+    private int uses(String code) {
+        return jdbc.queryForObject("SELECT uses FROM " + codeTable + " WHERE code = ?",
+                Integer.class, code);
     }
 
     /**
@@ -89,10 +114,96 @@ class SignupControllerTest {
         assertThat(ledgerRows()).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT user_id FROM " + inviteTable, UUID.class))
                 .isEqualTo(created);
-        assertThat(jdbc.queryForObject("SELECT code_label FROM " + inviteTable, String.class))
-                .as("which code the account came in on, so a rotation stays legible")
-                .isNotBlank()
-                .doesNotContain(CODE);
+        assertThat(jdbc.queryForObject("SELECT code_id FROM " + inviteTable, Long.class))
+                .as("which code the account came in on, so it stays traceable afterwards")
+                .isEqualTo(codeId());
+        assertThat(uses(CODE))
+                .as("the ceiling is checked against a counter, so it has to move")
+                .isEqualTo(1);
+    }
+
+    /** The frontend must not read a bare 201 as "you are signed in" — that was the old bug. */
+    @Test
+    void theResponseSaysTheAddressStillNeedsVerifying() throws Exception {
+        when(admin.configured()).thenReturn(true);
+        when(admin.createUser(any(), any()))
+                .thenReturn(new SupabaseAdminClient.Created(UUID.randomUUID()));
+
+        signUp("a@example.com", PASSWORD, CODE)
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.verificationRequired").value(true));
+    }
+
+    /**
+     * The point of per-code ceilings: one code runs out without touching any other. A shared
+     * secret could only be revoked for everyone at once.
+     */
+    @Test
+    void aCodeThatIsUsedUpIsRefusedWhileAnotherCodeStillWorks() throws Exception {
+        when(admin.configured()).thenReturn(true);
+        when(admin.createUser(any(), any()))
+                .thenReturn(new SupabaseAdminClient.Created(UUID.randomUUID()));
+        jdbc.update("INSERT INTO " + codeTable + " (code, label, max_uses, uses) VALUES"
+                + " (?, ?, ?, ?)", "spent", "spent", 1, 1);
+        jdbc.update("INSERT INTO " + codeTable + " (code, label, max_uses) VALUES (?, ?, ?)",
+                "roomy", "roomy", 20);
+
+        signUp("a@example.com", PASSWORD, "spent").andExpect(status().isForbidden());
+        verify(admin, never()).createUser(any(), any());
+
+        signUp("b@example.com", PASSWORD, "roomy").andExpect(status().isCreated());
+    }
+
+    /** An expired code says so, rather than "not valid" — different problem, different fix. */
+    @Test
+    void anExpiredCodeIsRefusedWithItsOwnReason() throws Exception {
+        when(admin.configured()).thenReturn(true);
+        jdbc.update("INSERT INTO " + codeTable
+                + " (code, label, max_uses, valid_until) VALUES (?, ?, ?, NOW() - INTERVAL '1 day')",
+                "lapsed", "lapsed", 10);
+
+        signUp("a@example.com", PASSWORD, "lapsed")
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.detail").value("That invite code has expired."));
+        verify(admin, never()).createUser(any(), any());
+    }
+
+    /** A code deactivated by hand stops working without being deleted or losing its history. */
+    @Test
+    void anInactiveCodeIsRefused() throws Exception {
+        when(admin.configured()).thenReturn(true);
+        jdbc.update("UPDATE " + codeTable + " SET active = false WHERE code = ?", CODE);
+
+        signUp("a@example.com", PASSWORD, CODE).andExpect(status().isForbidden());
+        verify(admin, never()).createUser(any(), any());
+    }
+
+    /** Codes are matched case-insensitively: they are read aloud and typed by hand. */
+    @Test
+    void aCodeMatchesWhateverCaseItIsTypedIn() throws Exception {
+        when(admin.configured()).thenReturn(true);
+        when(admin.createUser(any(), any()))
+                .thenReturn(new SupabaseAdminClient.Created(UUID.randomUUID()));
+
+        signUp("a@example.com", PASSWORD, CODE.toUpperCase()).andExpect(status().isCreated());
+    }
+
+    /** The benefit is recorded at redemption so the billing phase can read it later. */
+    @Test
+    void aDiscountCodeRecordsWhatItIsWorth() throws Exception {
+        when(admin.configured()).thenReturn(true);
+        UUID user = UUID.randomUUID();
+        when(admin.createUser(any(), any())).thenReturn(new SupabaseAdminClient.Created(user));
+        jdbc.update("INSERT INTO " + codeTable + " (code, label, max_uses, benefit_kind,"
+                + " benefit_value) VALUES (?, ?, ?, ?, ?)", "half", "half", 10,
+                InviteCode.DISCOUNT_PERCENT, 50);
+
+        signUp("a@example.com", PASSWORD, "half").andExpect(status().isCreated());
+
+        assertThat(jdbc.queryForObject("""
+                SELECT c.benefit_value FROM %s c JOIN %s r ON r.code_id = c.id
+                WHERE r.user_id = ?
+                """.formatted(codeTable, inviteTable), Integer.class, user)).isEqualTo(50);
     }
 
     @Test
