@@ -17,6 +17,7 @@ export default function SignIn() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [inviteCode, setInviteCode] = useState('')
+  const [awaitingVerification, setAwaitingVerification] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   // Read once, on mount: whether we are here because a request was rejected rather than because
@@ -28,14 +29,18 @@ export default function SignIn() {
     setBusy(true)
     setError(null)
 
-    // Trimmed once and used for both the account creation and the sign-in that follows it, so a
-    // trailing space in the field cannot create an account under one address and then fail to
-    // sign in to it under another.
+    // Trimmed once, so a trailing space in the field cannot create an account under one address
+    // and then fail to sign in to it under another.
     const trimmedEmail = email.trim()
     try {
       if (mode === 'signUp') {
         const created = await createAccount(trimmedEmail)
         if (!created) return
+        // No sign-in after sign-up. The address is unverified until the person follows the link
+        // Supabase mails them, and signInWithPassword would fail with "Email not confirmed"
+        // anyway — a refusal that reads as a broken form rather than as the next step.
+        setAwaitingVerification(true)
+        return
       }
 
       const { error: signInError } = await supabase.auth.signInWithPassword({
@@ -47,7 +52,12 @@ export default function SignIn() {
       // unknown address, which is what stops the form from telling an attacker which addresses
       // exist. The message is passed through rather than rewritten.
       if (signInError) {
-        setError(signInError.message)
+        // Supabase says "Email not confirmed" for an account that exists but has not been
+        // verified. Passed through as an instruction rather than as a failure: the person has an
+        // account and one thing left to do, and the raw message does not say that.
+        setError(/not confirmed/i.test(signInError.message)
+          ? 'Confirm your email address first — check your inbox for the link we sent.'
+          : signInError.message)
       }
     } catch {
       // auth-js rethrows anything that is not an AuthError — storage it cannot write to, most
@@ -103,6 +113,33 @@ export default function SignIn() {
   }
 
   const signingUp = mode === 'signUp'
+
+  // The account exists and the person cannot sign in yet. Shown instead of the form rather than
+  // beside it: leaving the fields on screen invites them to try signing in, which will be refused
+  // until they follow the link, and a refusal here reads as the sign-up not having worked.
+  if (awaitingVerification) {
+    return (
+      <div className={classes.root}>
+        <div className={classes.card}>
+          <h1 className={classes.title}>⚽ FPL Assistant</h1>
+          <p className={classes.lede}>
+            Check your email. We have sent a confirmation link to {email.trim()} — follow it, then
+            sign in.
+          </p>
+          <Button
+            variant="subtle"
+            onClick={() => {
+              setAwaitingVerification(false)
+              setMode('signIn')
+              setPassword('')
+            }}
+          >
+            Back to sign in
+          </Button>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className={classes.root}>

@@ -2722,6 +2722,88 @@ guardrail on tapas tables and that the exception's only record is the commit its
 granted it in conversation on 2026-08-26, having confirmed they own both projects. Recorded here so
 the grant lives outside the diff that relies on it.
 
+## Sign-up: email verification, and invite codes that are rows (2026-08-26)
+
+> **Not deployed, and it cannot work until the Supabase project is configured.** The remaining
+> steps are dashboard settings and a mail provider, none of which live in this repository:
+> `docs/EMAIL-SETUP.md` is the runbook, and #51 tracks it.
+
+Two changes to the same door.
+
+### The verification step that was missing
+
+Sign-up created the account with `email_confirm: true` and the frontend signed the person straight
+in. Supabase's own **Confirm email** toggle was on and had no effect, because that setting governs
+GoTrue's `/signup` path and this project used `/admin/users`, which creates a user and sends
+nothing. The toggle had nothing left to enforce.
+
+Sign-up now creates the account unconfirmed and then asks GoTrue to send its own confirmation
+mail — **two calls, because no single endpoint does both while public sign-up is off.** Each of the
+four candidates was tried against the live project rather than reasoned about:
+
+| Endpoint | Creates | Sends | With sign-up disabled |
+|---|---|---|---|
+| `/auth/v1/signup` | yes | yes | **refused, service role included** |
+| `/auth/v1/admin/users` (`email_confirm: false`) | yes | no | works |
+| `/auth/v1/admin/generate_link` | yes | no (returns a link) | works |
+| `/auth/v1/resend` | no | yes | works |
+
+The first row is the one that mattered. `/signup` does everything in one call and was the design
+this was first built on; with public sign-up turned off it answers `signup_disabled` to the anon key
+**and to the service role alike** — the service role is not exempt. Public sign-up cannot stay on,
+because the anon key ships in the frontend bundle and would let anyone create an account with no
+code, so that endpoint is unusable here.
+
+So: `admin/users` with `email_confirm: false`, then `resend` with `type: signup`. The mail is
+Supabase's own, through the project's SMTP and template, which keeps a second provider out of the
+request path. A failed send is logged and swallowed: the account exists and the place is taken by
+then, and throwing would present a sent-mail failure as a failed sign-up, after which the person
+retries and is told the address is taken.
+
+Public sign-up was turned off in the project on 2026-08-26.
+
+The frontend no longer signs in after a 201. It shows "check your email", and an attempt to sign in
+before confirming turns Supabase's "Email not confirmed" into an instruction rather than an error.
+The response carries `verificationRequired` explicitly, so no client can read a bare 201 as being
+signed in.
+
+Also learned: Supabase rejects `@example.com` as an invalid address, so a throwaway probe needs a
+real domain. And the built-in mailer's rate limit is real — a probe hit
+`429 over_email_send_rate_limit` after a single earlier send, which is why custom SMTP has to be
+configured before any real sign-up. The client logs that 429 as its own line rather than leaving it
+to be guessed at.
+
+### Codes are rows now, not one secret
+
+`INVITE_CODE` could express one thing — whether a string matched — and every question actually
+worth asking is about something else. `fpl_invite_code` gives each code its own ceiling
+(`max_uses`), its own worth (`benefit_kind`, `benefit_value`), its own validity window and an
+`active` flag, so one code can be worth ten places, another a hundred, and another half off the
+subscription. A code runs out or is withdrawn on its own without touching any other; rotating the
+shared secret revoked everyone at once.
+
+`uses` is a stored counter incremented in the same transaction as the redemption row, under the
+same advisory lock that guards the account cap. Counting rows would be correct too, but it puts the
+ceiling a join away from the lock protecting it. `--reconcile-invite-codes` brings the counters back
+in line, which is the second half of the documented procedure for releasing a place burnt by a
+failed Supabase call.
+
+Codes are stored in plain text and matched case-insensitively. An invite code is a promotion code —
+printed on things, read aloud, pasted into chats — and the owner has to know which is which. What
+protects the tier is the ceiling on each code and the account cap behind it.
+
+The account cap (`INVITE_MAX_ACCOUNTS`, 30) survives as a cost ceiling across every code. **A code
+worth 100 places will still stop at 30 until that number is raised**, which is deliberate: the free
+tier's cost is drawn against it.
+
+Discounts are recorded, not yet applied — Stripe is Phase 5b (#43). The redemption row points at the
+code, so the billing phase reads the benefit from the join.
+
+`--create-invite-code=launch:10`, `--create-invite-code=podcast:100:discount_percent:50`,
+`--list-invite-codes`. Creating a code that exists leaves it untouched rather than resetting a live
+ceiling.
+
+
 ## Squad builder — what it is and where it stands (2026-08-28, PR #54)
 
 `buildSquad` picks a whole FPL squad with a solver instead of prose. It exists because the model,
