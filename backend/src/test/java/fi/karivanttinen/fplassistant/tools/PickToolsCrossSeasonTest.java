@@ -19,9 +19,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>Everything specific to that state lives on this path and nowhere else: the bridge that
  * matches players across seasons <b>by name</b>, because FPL reassigns element ids every season
- * and tapas keeps no stable player code; the whole-season window; the deliberately low weight on
- * last season's realised points; and the second provenance line. Without this class all of it
- * would first run in production, on the day the new season's first gameweek syncs.
+ * and tapas keeps no stable player code; the whole-season window on last season; the per-player
+ * blend weight and the line that prints it; and the realised-points weight that starts at zero.
+ * Without this class all of it would first run in production, on the day the new season's first
+ * gameweek syncs.
  */
 @SpringBootTest
 @ActiveProfiles("test")
@@ -103,9 +104,9 @@ class PickToolsCrossSeasonTest {
     }
 
     /**
-     * Last season's returns are weighted low on purpose, and the reason has to be the true one:
-     * not a small sample — it is a whole season — but that roles, penalties and set-piece duty
-     * change between seasons.
+     * The realised-points weight is keyed on the season being played's completed gameweeks, so
+     * with none of them it is zero — last season's returns reach the Score only through the
+     * blended Pts/90 rate, never as a separate realised term.
      */
     @Test
     void realisedPointsCarryNothingUntilThisSeasonHasCompletedGameweeks() {

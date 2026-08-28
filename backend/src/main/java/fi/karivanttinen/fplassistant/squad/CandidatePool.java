@@ -10,7 +10,6 @@ import java.util.Optional;
 import fi.karivanttinen.fplassistant.tools.ExpectedPoints;
 import fi.karivanttinen.fplassistant.tools.MetricSeasons;
 import fi.karivanttinen.fplassistant.tools.SeasonBlend;
-import fi.karivanttinen.fplassistant.tools.SeasonContext;
 import fi.karivanttinen.fplassistant.tools.SeasonResolver;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
