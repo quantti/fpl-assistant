@@ -261,8 +261,10 @@ class CandidatePoolIntegrationTest {
                 .orElseThrow();
 
         assertThat(ExpectedPoints.hasDefconSignal(ferreira.metrics(), 2)).isTrue();
-        assertThat(ExpectedPoints.defconHitRate(ferreira.metrics(), 2))
-                .isCloseTo(0.5, within(1e-9));
+        // Equal to the model read off the same mean, so this pins the plumbing rather than
+        // restating the distribution's constants a second time.
+        assertThat(ExpectedPoints.defconProbability(ferreira.metrics(), 2))
+                .isCloseTo(ExpectedPoints.thresholdProbability(8.0, 10), within(1e-9));
     }
 
     private List<SquadCandidate> load() {

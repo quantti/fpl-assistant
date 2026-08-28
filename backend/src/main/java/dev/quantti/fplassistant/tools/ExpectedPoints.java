@@ -66,7 +66,7 @@ public final class ExpectedPoints {
      * none, and all 20 keepers with an hour behind them read 0 in the live 2026-27 data.
      *
      * <p>Unchanged for 2026/27. What changed that season is when the numbers become final — see
-     * {@link #defconHitRate}.
+     * {@link #defconProbability}.
      *
      * <p>These are rules of the game held here, not data read from anywhere:
      * {@code bootstrap-static} does not publish
@@ -85,6 +85,22 @@ public final class ExpectedPoints {
      * it the term is dropped rather than estimated, and callers print {@code DC n/a}.
      */
     public static final int MIN_DEFCON_MATCHES = 2;
+
+    /**
+     * How much wider the spread of a player's per-match defensive actions is than a Poisson
+     * process would give: {@code variance = DEFCON_DISPERSION * mean}.
+     *
+     * <p>Measured at 1.60 (median within-player, p10 1.01, p90 2.51) across the backfilled
+     * 2025-26 season. Poisson assumes exactly 1.0, so Poisson is the wrong distribution here and
+     * a negative binomial is the right one — it is the Poisson generalised to admit this spread.
+     *
+     * <p>Sanity check against the live 2026-27 data after GW1: at the measured league mean of
+     * 7.19 actions the model gives a defender a 22.9% chance of reaching 10, and 22.4% of
+     * defenders actually did. Midfielders come out 10.6% against a measured 14.0%, so the figure
+     * is slightly conservative for them; one shared value is kept rather than fitting a second
+     * to a single gameweek.
+     */
+    public static final double DEFCON_DISPERSION = 1.6;
 
     private ExpectedPoints() {
     }
@@ -118,14 +134,22 @@ public final class ExpectedPoints {
      * often. The hit rate reads the distribution the mean hides.
      */
     public static double defconPerNinety(Map<String, Object> row, int position) {
-        return defconHitRate(row, position) * DEFCON_POINTS;
+        return defconProbability(row, position) * DEFCON_POINTS;
     }
 
     /**
-     * The share of the player's qualifying matches in which he cleared his position's threshold,
-     * or zero when there is no readable record. Counted over matches of an hour or more — the
-     * same discipline the clean sheet uses, because the actions arrive with the minutes and a
-     * cameo would otherwise read as a match he failed to contribute in.
+     * The chance this player reaches his position's threshold in a match, or zero when there is
+     * no readable record. Estimated from his mean actions per match through
+     * {@link #thresholdProbability}, over matches of an hour or more — the same discipline the
+     * clean sheet uses, because the actions arrive with the minutes and a cameo would otherwise
+     * read as a match he failed to contribute in.
+     *
+     * <p><b>Modelled, not counted.</b> An earlier version divided past crossings by matches.
+     * That reads only "over or under" and throws away the action counts themselves, so a
+     * defender who made 9 in every match scored identically to one who made 2 — and on a
+     * two-match record the only possible answers were 0%, 50% and 100%. Measured against the
+     * second half of the 2025-26 season from the first, this estimator is 19% more accurate
+     * after 2 matches, 18% after 3, 10% after 5, and level by 10.
      *
      * <p><b>Provisional for a day, new in 2026/27.</b> Gameweek scores are final at 09:00 UK on
      * the day after the gameweek's last match rather than an hour after the whistle, so that
@@ -135,13 +159,33 @@ public final class ExpectedPoints {
      * {@code DefensiveStatsSyncService} rewrites every match row on every run, so the next
      * nightly sync replaces a provisional figure with the reviewed one.
      */
-    public static double defconHitRate(Map<String, Object> row, int position) {
-        if (!hasDefconSignal(row, position)) {
+    public static double defconProbability(Map<String, Object> row, int position) {
+        return hasDefconSignal(row, position)
+                ? thresholdProbability(numeric(row.get("defcon_avg")), defconThreshold(position))
+                : 0;
+    }
+
+    /**
+     * Negative-binomial tail: the chance a player averaging {@code meanActions} per match reaches
+     * {@code threshold} in one of them, with the spread {@link #DEFCON_DISPERSION} describes.
+     *
+     * <p>Summed forward from {@code P(0)} rather than called as a library function — the
+     * threshold is 10 or 12, so this is a dozen multiplications and the project carries no
+     * statistics dependency.
+     */
+    public static double thresholdProbability(double meanActions, int threshold) {
+        if (meanActions <= 0 || threshold <= 0) {
             return 0;
         }
-        double matches = numeric(row.get("defcon_matches"));
-        double hits = numeric(row.get(position == 2 ? "defcon_hits_def" : "defcon_hits_mid"));
-        return hits / matches;
+        double shape = meanActions / (DEFCON_DISPERSION - 1);
+        double success = shape / (shape + meanActions);
+        double term = Math.pow(success, shape);
+        double cumulative = term;
+        for (int i = 1; i < threshold; i++) {
+            term *= (shape + i - 1) / i * (1 - success);
+            cumulative += term;
+        }
+        return Math.min(1, Math.max(0, 1 - cumulative));
     }
 
     /**
@@ -152,7 +196,8 @@ public final class ExpectedPoints {
      */
     public static boolean hasDefconSignal(Map<String, Object> row, int position) {
         return defconThreshold(position) > 0
-                && numeric(row.get("defcon_matches")) >= MIN_DEFCON_MATCHES;
+                && numeric(row.get("defcon_matches")) >= MIN_DEFCON_MATCHES
+                && numeric(row.get("defcon_avg")) > 0;
     }
 
     /** Bounds-guarded like {@link #goalPoints}: an unknown element type earns no term. */
