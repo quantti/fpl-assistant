@@ -128,8 +128,13 @@ jobs:
 
       # An external check, deliberately: it proves the route serves, not merely that flyctl
       # returned. A JVM cold start on 512 MB takes tens of seconds, hence the retries.
+      #
+      # The custom domain rather than fly.dev, since 2026-08-28: that is the route the public
+      # uses, and a deploy where fly.dev answers but fpl-sidekick.com does not is broken from
+      # every user's point of view. This check is also what would catch a DNS or certificate
+      # regression on the domain, which nothing else in the pipeline looks at.
       - name: Smoke test the deployed health endpoint
         run: |
           curl --fail --silent --show-error \
                --retry 10 --retry-delay 15 --retry-all-errors \
-               https://fpl-assistant.fly.dev/actuator/health
+               https://fpl-sidekick.com/actuator/health
