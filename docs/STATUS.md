@@ -2887,3 +2887,60 @@ that the capture is fresh and tapas lags, which is why it is recorded rather tha
 
 The fix is to apply the same uniqueness discipline on the id branch that the name branch already
 has, or to refuse to bridge at all when the capture's season and the metric window's season differ.
+
+## Defensive contribution reaches xPts/90 (2026-08-28)
+
+The capture half shipped on 2026-08-26; this is the scoring half, and it closes KAR-29 (the
+migrated GitHub #46). `ExpectedPoints.perNinety` now carries a fourth term, so both the pick tools
+and the squad builder stop understating ball-winning defenders and holding midfielders.
+
+Plan: `docs/superpowers/plans/2026-08-28-defcon-in-expected-points.md`.
+
+**A hit rate, not an average.** Defensive contribution pays 2 points at a threshold *per match* —
+10 clearances, blocks, interceptions and tackles for a defender, 12 of those plus recoveries for a
+midfielder or forward. A mean cannot say how often a player crossed it: one steady on 9.8 scores
+nothing while one averaging 9.5 with a wide spread scores often. The term is
+`hits / qualifying matches × 2`, read straight off the per-match rows in `player_fixture_stats`.
+
+Counted over matches of 60 minutes or more, the same discipline the clean-sheet term uses — the
+actions arrive with the minutes, and a cameo counted as a match the player "failed to contribute
+in" would drag a nailed starter's rate down for being substituted. Below `MIN_DEFCON_MATCHES`
+(two, the same sample the 180-minute floor already admits a player on) the term is **dropped, not
+estimated**, and the reply prints `DC n/a`. No component is held to a stricter standard than the
+row itself.
+
+Goalkeepers get no term: FPL awards them none, and all 20 keepers with an hour behind them read 0
+in the live 2026-27 data. Save points and penalty saves are still not modelled, and both replies
+keep saying so — that sentence changed from disowning defcon to disowning only those two.
+
+**2026/27 rules, verified 2026-08-28.** Thresholds and points are unchanged from 2025/26
+(`~/dev/tapas-fpl-app/backend/FPL_RULES.md`, updated for the season transition, lists them under
+"Unchanged from 2025/26"). What did change is *when* the numbers are final: gameweek scores now
+settle at 09:00 UK on the day after the gameweek's last match rather than an hour after the
+whistle, so post-match Opta review can feed into BPS **and defensive contribution**. A hit rate
+feels that more than an average would — a review lifting a defender from 9 to 10 flips a whole
+match from miss to hit. Nothing was built for it: `DefensiveStatsSyncService` rewrites every match
+row on every run, so the next nightly sync replaces a provisional figure with the reviewed one and
+the exposure is bounded to roughly the 27 hours in between.
+
+The 2026/27 BPS changes (CBI now 1 point per 3 rather than per 2, no -1 for being tackled) move
+*bonus*, which arrives inside `total_points` and therefore inside `Pts/90` — the realised half of
+the Score, which needed no change. There is no double counting: realised points already contain
+the defcon points a player earned, exactly as they already contain his goals, and the Score blends
+the two halves at a weight rather than adding them.
+
+**Base rates to read a reply against**, from the live API after GW1 of 2026-27 (60+ minutes):
+defenders average 7.19 actions and clear 10 in **22.4%** of matches; midfielders average 7.15 and
+clear 12 in **14.0%**; forwards average 3.68 and cleared 12 in none; goalkeepers read 0. These
+reproduce the 2026-08-26 production run exactly — 22.4% of 85 defenders is the 19 that scored,
+14.0% of 86 midfielders is the 12 — so a defender showing `DC 40%` is genuinely well above the
+league, not a scaling error.
+
+**Both tools read it through the one shared formula**, which is why `CandidatePool` changed in the
+same commit series as `PickTools`: `ExpectedPoints` was extracted precisely so the squad builder
+and a picks list cannot value the same player differently in one conversation, and supplying the
+new keys to only one of them would have reintroduced that.
+
+**Verified:** 569 tests green against a freshly reset container. The suite was run after each task
+with no existing expectation edited, except one that had to change — the pick footer's disclosure
+sentence, which the work rewrites on purpose.
