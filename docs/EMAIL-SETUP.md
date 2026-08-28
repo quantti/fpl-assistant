@@ -402,15 +402,15 @@ thing anyone ever receives from you.
 Very little, because almost nothing here knows the hostname.
 `grep -rn "fly\.dev" backend/src frontend/src fly.toml .github` finds exactly one match.
 
-**4.1 `CORS_ORIGINS`.** The backend reads allowed origins from this secret
-(`application.yml:197`). Without the new origin the browser blocks every API call from the domain.
+**4.1 `CORS_ORIGINS` needs no change, and an earlier version of this file was wrong to say it
+did.** The frontend calls the API on relative paths (`fetch('/api/auth/signup')`) and Spring Boot
+serves that frontend as static resources from the same application — so a browser on
+`https://fpl-sidekick.com` is calling its own origin and CORS never enters the request. The secret
+governs *cross*-origin callers, which today means a local development frontend pointed at
+production; its existing localhost entries already cover that.
 
-```bash
-flyctl secrets set -a fpl-assistant \
-  CORS_ORIGINS="https://fpl-sidekick.com,https://www.fpl-sidekick.com,https://fpl-assistant.fly.dev"
-```
-
-Setting a secret restarts the app — do it in the same window as the Task 5 deploy, not twice.
+Add the domain to it only if something ever calls this API from another origin. Checked
+2026-08-28 by reading `frontend/src/auth/apiFetch.ts` — one `fetch(path, …)` with no base URL.
 
 **4.2 The deploy workflow's smoke test.** `.github/workflows/deploy.yml:135` curls the fly.dev
 health endpoint. Point it at the domain: the check exists to prove the route the public uses
