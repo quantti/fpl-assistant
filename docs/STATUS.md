@@ -2992,3 +2992,83 @@ the player's own match count (1 match -> 10% this season, 2 -> 30%, 3 -> 60%, 4 
 **Verified:** 573 tests green against a freshly reset container. The suite was run after each task
 with no existing expectation edited, except one that had to change — the pick footer's disclosure
 sentence, which the work rewrites on purpose.
+
+## Cross-season blending: one ramp replaces the GW5 switch (2026-08-28)
+
+Every ranking metric read **one** season. `SeasonResolver.betterMetricSeason` handed a caller the
+previous season until the season being played had five completed gameweeks, then that season and
+nothing else. Binary and league-wide: in GW4 a player's own four matches counted for nothing, in
+GW5 last season counted for nothing, and a player who had missed the opening rounds was judged
+from GW5 on however little he had — the switch counted the league's gameweeks, not his.
+
+Closes KAR-38 with KAR-11, KAR-39 and KAR-40.
+Spec: `docs/superpowers/specs/2026-08-28-cross-season-blending-design.md`.
+Plan: `docs/superpowers/plans/2026-08-28-cross-season-blending.md`.
+
+**The ramp**, owner's decision, keyed on the player's own qualifying matches (60+ minutes) this
+season: 1 → 10%, 2 → 30%, 3 → 60%, 4 → 80%, 5-7 → 90%, 8+ → 100%. Per player, not per gameweek,
+so someone who sat out three of the first four rounds does not get 80% on a single appearance.
+
+**Rates blend, evidence counts add.** `xg90` at two matches is 30% this season and 70% last;
+`mins`, `matches` and `defcon_matches` are both seasons together, because the floors that read
+them (`MIN_WINDOW_MINUTES`, `MIN_DEFCON_MATCHES`) ask how much evidence exists and evidence from
+either season counts. It lives in one class, `SeasonBlend`, so the ramp is written once —
+`ExpectedPoints`, `HorizonScorer` and `SquadSolver` did not change at all, which is the point:
+the blend produces exactly the row shape they already read.
+
+**A player with no previous record** is ranked on this season alone once the minutes floor is
+cleared, and every reply marks him. There is nothing to ramp from, and hiding him would be worse
+than showing him with his match count attached.
+
+### What the measurement said, and it is not comfortable
+
+Measured on vaastav's 2024-25 → 2025-26 (479 players bridged by name; nothing from 2024-25 was
+written to the database or the repository — the project holds 2025-26 and 2026-27 only). Today is
+2026-08-28 and 2026-27 has one completed gameweek, so the real pair cannot be measured yet; these
+are the two most recent completed seasons standing in for it.
+
+Predicting a player's later `xG/90` from his first *m* qualifying matches, RMSE, target = his next
+five:
+
+| m | ramp | this-only | last-only | ramp vs better baseline |
+|---|---|---|---|---|
+| 2 | 0.1083 | 0.1191 | 0.1109 | **+2.4%** |
+| 4 | 0.1330 | 0.1463 | 0.1239 | −7.3% |
+| 6 | 0.1411 | 0.1470 | 0.1236 | −14.1% |
+| 8 | 0.1325 | 0.1325 | 0.1056 | −25.5% |
+
+**The ramp beats both baselines at two matches and loses to last-season-only from three onward.**
+The same shape holds for `xA/90` and `xGC`, and on three different targets. The cause is sample
+size: a full previous season is 30+ matches and eight matches of this season is not, so for a
+*rate* the larger sample wins even though it is a season stale.
+
+Split by whether the player changed club (target = next five, `xG/90`) shows what the average
+hides: for a mover the ramp is neutral to slightly better (+1.1% at m=2, +2.0% at m=6, −0.4% at
+m=8), and the whole loss sits with players who stayed put (−32.1% at m=8). That is the case the
+ramp exists for — a new club, a new role, a promoted side — and RMSE over everyone averages it
+away.
+
+**Shipped as specified.** The table is the owner's decision and the plan's rule was that Task 0
+reports rather than tunes. Two things for the owner: reaching 100% at eight matches is early for a
+stable player, and on this evidence a ramp that topped out nearer 90% and much later would measure
+better for the majority. Re-measure on the real pair, 2025-26 → 2026-27, after GW10 — filed in
+Linear.
+
+### Provenance, which had to change shape
+
+The pick tools keep **one** banner. The previous season is named on every pick
+(`blend 30% 2026-27, 70% 2025-26 (2 mt this season)`) and once in the footer. A second
+`Data source:` line would claim every number below it is last season's, and under blending none
+purely is. The squad builder keeps its two lines and gains a blend sentence under the metrics
+line, with the weight on each starter where it is below 100%.
+
+`ExpectedStatsTools` is the opposite case and does get a second banner. It shows fixtures as
+rows, and a row cannot be weighted — so a short current-season window is *filled* from last
+season instead, each row labelled with its own season, the heading counting how many came from
+each. The season prefix appears only when the reply actually mixes two: a single-season window
+needs no prefix, because the banner above already names it.
+
+The system prompt's "Before GW5 / From GW5" rule is gone. The model reads the printed weight
+instead, which is per player and already correct; a gameweek number was always a worse proxy.
+
+**Verified:** 587 tests green against a freshly reset container.

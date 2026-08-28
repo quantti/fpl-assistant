@@ -37,6 +37,13 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
 - All DB queries filter by a season resolved through `SeasonResolver`, not by `is_current` directly. A season row is created weeks before its data is synced, so `WHERE season_id = (SELECT id FROM season WHERE is_current = true)` returns nothing across the changeover. The resolver prefers the current season once it holds data and otherwise falls back to the most recent season that does. **The one deliberate exception among the tools is `HistoricalTools` (`getTeamForm`, `getHeadToHead`), which must NOT filter through `SeasonResolver`** — spanning seasons is the point, and `pl_match_result` carries `season` on every row. Do not bolt season filtering onto those tools. **On the write side, `FootballDataSyncService` is the same kind of exception:** it stamps each row with the season derived from the payload (`season.startDate` on the match itself), compared against the season the database flags `is_current`, never with the season `SeasonResolver` resolves. The resolver falls back to a completed season for as long as tapas has not synced the new one, so keying the write guard on it left the current season's results unwritten for weeks after kickoff. Do not "fix" that back onto `SeasonResolver`.
 - Season data is never interchangeable, and every reply must attribute its numbers. One discipline, three schemes, one per knowledge layer:
   - **Stats tools** (`getGameweekInfo`, `getPlayerStats`, `getUpcomingFixtures`, `getPlayerExpectedStats`, `getTeamExpectedGoals`, `getDifferentialPicks`, `getCaptainCandidates`, `getFixtureDifficulty`): prefix every reply with `SeasonContext.provenance()`, which names the season and states whether it is the one being played. Fallback data must always be labelled historical — the system prompt instructs the model to attribute it by season and never call it current form. Later phases weight earlier seasons differently, and the current season by how far into it we are; that weighting depends on this provenance being explicit. One reply can carry two such lines: once the resolved season is the one being played, `getPlayerStats` shows the previous season's statistics beside it under `SeasonContext.previousSeasonProvenance(boolean)` — the prompt's early-season weighting rule needs both seasons on the card. In that dual-season reply the banner is not repeated: each block carries its own line and the surrounding text carries none.
+    **The two ranking tools (`getDifferentialPicks`, `getCaptainCandidates`) blend both seasons
+    per player and carry one banner only:** the previous season is named on every pick and in the
+    footer, not on a second `Data source:` line, because a second banner would claim every number
+    below it is last season's and under blending none purely is. `ExpectedStatsTools` is the
+    opposite case and does get a second line — it shows fixtures as rows, fills a short
+    current-season window from last season, labels each row with its own season, and the second
+    banner therefore describes a labelled block rather than the whole reply.
   - **RAG strategy tool** (`StrategyTools.searchStrategyDocs`): does NOT prefix with `SeasonContext.provenance()` — the corpus is not resolved through `SeasonResolver`, and a single banner line cannot describe a mix of season-long reference and dated timely documents. Instead every retrieved chunk carries its own attribution: document `title`, `section`, `kind` (`reference`/`timely`) and the `valid_from`/`valid_until` window, and the system prompt instructs the model to weigh `timely` content by age. This is the RAG-side counterpart of the provenance discipline, for the same reason. Do not "fix" this tool back into the banner convention.
   - **Historical tools** (`HistoricalTools.getTeamForm`, `getHeadToHead`): every match names its own season and the reply states the range covered; `getTeamForm` also reports the date of its most recent known match so a stalled sync shows up as visibly old data. Old results are evidence about tendencies, not statements about current form — a 2019/20 result must not read as recent, and the system prompt instructs the model to attribute by season and never call historical results current form.
 - Do NOT alter existing tapas tables. Only add new tables. **One deliberate exception, granted by
@@ -80,7 +87,15 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
   attribute one of them wrongly. Building the pool from the daily capture rather than the
   tapas `player` table is deliberate and is what keeps issue #50 from recurring here: it also
   means the tool works while tapas has not synced the season being played. Do not fold this
-  into the single-banner convention.
+  into the single-banner convention. Its metrics line is followed by the blend sentence, which
+  names both seasons and the ramp; each starter shows its own weight where that is under 100%.
+- **Cross-season weighting is one ramp in one place, `SeasonBlend`.** Every ranking metric blends
+  the season being played with the previous one on a weight driven by the player's own qualifying
+  matches this season (60+ minutes): 1 → 10%, 2 → 30%, 3 → 60%, 4 → 80%, 5-7 → 90%, 8+ → 100%.
+  Rates blend; evidence counts (`mins`, `matches`, `defcon_matches`) add, because the floors that
+  read them ask how much evidence exists. A player with no previous-season record is ranked on
+  this season alone once the minutes floor is cleared and the reply says so. Do not reintroduce a
+  single-season switch, and do not write the ramp a second time in SQL.
 - **Tests seed the data they assert on and never depend on production content.** The suite runs
   against a disposable container (`scripts/test-db.sh`), which holds the tapas schema
   (`scripts/dump-test-schema.sh` regenerates the dump) and nothing else. Anything reading

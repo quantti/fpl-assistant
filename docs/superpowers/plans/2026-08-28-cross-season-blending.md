@@ -5,7 +5,28 @@
 > tracked by the single `**PROGRESS:**` line below, per `AGENTS.md` — do **not** add per-step
 > checkboxes.
 
-**PROGRESS:** Task 1/7 done
+**PROGRESS:** Task 7/7 done
+
+## Outcome — execution (2026-08-28)
+
+Done on branch `cross-season-blending`, 587 tests green from a freshly reset container. Four
+deviations from the plan as written, all deliberate:
+
+1. **`ExpectedStatsTools` prefixes rows with their season only when the reply mixes two.** The
+   plan prefixed every row. On a single-season window that repeats the banner on every line for
+   no gain, and it broke two existing assertions that had every right to stand.
+2. **The totals labels were left alone** (`Totals over window`, `Attack over window`). The plan
+   renamed them to "over the fixtures shown"; that is churn which changes two more expectations
+   and says nothing new — the window simply spans two seasons now.
+3. **`SquadToolsCrossSeasonTest.theProvenanceLineNamesThePreviousSeasonNotTheThinCurrentOne`
+   became `theMetricsLineNamesThisSeasonAndTheBlendSentenceNamesLast`**, keeping the property it
+   guarded (the thin current season is never called completed) while dropping the expectation the
+   design removes.
+4. **`MetricSeasons` gained `previousCode()`**, so the four places that name the previous season
+   do not each write `previous().orElseThrow().code()`.
+
+Everything else went as planned, including the two SQL rewrites and the caller table — no caller
+was missed.
 
 ## Outcome — Task 0 (2026-08-28)
 
