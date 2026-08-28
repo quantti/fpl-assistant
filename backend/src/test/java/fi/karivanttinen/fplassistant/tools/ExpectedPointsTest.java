@@ -66,4 +66,63 @@ class ExpectedPointsTest {
         assertThat(ExpectedPoints.cleanSheetProbability(0.5))
                 .isCloseTo(Math.exp(-0.5), within(1e-9));
     }
+
+    private static Map<String, Object> defensiveRow(int elementType, int matches, int hits) {
+        Map<String, Object> row = row(elementType, 0, 0, null);
+        row.put("defcon_matches", matches);
+        row.put("defcon_hits_def", hits);
+        row.put("defcon_hits_mid", hits);
+        row.put("defcon_avg", BigDecimal.valueOf(9.0));
+        return row;
+    }
+
+    @Test
+    void clearingTheThresholdHalfTheTimeIsWorthHalfThePoints() {
+        double half = ExpectedPoints.perNinety(defensiveRow(2, 10, 5));
+        double never = ExpectedPoints.perNinety(defensiveRow(2, 10, 0));
+
+        assertThat(half - never).isCloseTo(0.5 * ExpectedPoints.DEFCON_POINTS, within(1e-9));
+    }
+
+    @Test
+    void aMidfielderIsJudgedOnAHigherThresholdThanADefender() {
+        assertThat(ExpectedPoints.defconThreshold(2)).isEqualTo(10);
+        assertThat(ExpectedPoints.defconThreshold(3)).isEqualTo(12);
+        assertThat(ExpectedPoints.defconThreshold(4)).isEqualTo(12);
+    }
+
+    @Test
+    void aGoalkeeperEarnsNoDefensiveContribution() {
+        // FPL awards it to outfield players only — all 20 keepers with an hour behind them read
+        // 0 in the live 2026-27 data. A keeper with hits must still score nothing from this term.
+        assertThat(ExpectedPoints.perNinety(defensiveRow(1, 10, 10)))
+                .isEqualTo(ExpectedPoints.perNinety(defensiveRow(1, 10, 0)));
+    }
+
+    @Test
+    void aRecordShorterThanTheWindowAdmitsIsNotReadAsARate() {
+        // One match at 100% is not a certainty worth a flat two points, and it would top every
+        // list. The floor is the two matches the minutes floor already admits a player on.
+        Map<String, Object> oneForOne = defensiveRow(2, 1, 1);
+
+        assertThat(ExpectedPoints.hasDefconSignal(oneForOne, 2)).isFalse();
+        assertThat(ExpectedPoints.perNinety(oneForOne))
+                .isEqualTo(ExpectedPoints.APPEARANCE_POINTS);
+    }
+
+    @Test
+    void aRowWithoutTheDefensiveColumnsScoresExactlyAsItDidBefore() {
+        // Every row seeded before these columns existed reads NULL. The term must vanish rather
+        // than estimate, or every existing expectation in the suite moves under it.
+        Map<String, Object> untouched = row(2, 0.4, 0.2, 0.9);
+
+        assertThat(ExpectedPoints.hasDefconSignal(untouched, 2)).isFalse();
+        assertThat(ExpectedPoints.perNinety(untouched)).isCloseTo(
+                ExpectedPoints.APPEARANCE_POINTS
+                        + 0.4 * ExpectedPoints.goalPoints(2)
+                        + 0.2 * ExpectedPoints.ASSIST_POINTS
+                        + ExpectedPoints.cleanSheetProbability(0.9)
+                                * ExpectedPoints.cleanSheetPoints(2),
+                within(1e-9));
+    }
 }
