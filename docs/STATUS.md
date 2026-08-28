@@ -2896,18 +2896,44 @@ and the squad builder stop understating ball-winning defenders and holding midfi
 
 Plan: `docs/superpowers/plans/2026-08-28-defcon-in-expected-points.md`.
 
-**A hit rate, not an average.** Defensive contribution pays 2 points at a threshold *per match* —
-10 clearances, blocks, interceptions and tackles for a defender, 12 of those plus recoveries for a
-midfielder or forward. A mean cannot say how often a player crossed it: one steady on 9.8 scores
-nothing while one averaging 9.5 with a wide spread scores often. The term is
-`hits / qualifying matches × 2`, read straight off the per-match rows in `player_fixture_stats`.
+**A modelled probability, not a count of past crossings.** Defensive contribution pays 2 points at
+a threshold *per match* — 10 clearances, blocks, interceptions and tackles for a defender, 12 of
+those plus recoveries for a midfielder or forward. The term is `P(actions >= threshold) x 2`,
+estimated from the player's mean actions per match.
 
-Counted over matches of 60 minutes or more, the same discipline the clean-sheet term uses — the
-actions arrive with the minutes, and a cameo counted as a match the player "failed to contribute
-in" would drag a nailed starter's rate down for being substituted. Below `MIN_DEFCON_MATCHES`
-(two, the same sample the 180-minute floor already admits a player on) the term is **dropped, not
-estimated**, and the reply prints `DC n/a`. No component is held to a stricter standard than the
-row itself.
+The first version counted crossings instead: `hits / qualifying matches`. That was wrong, and the
+owner caught it. A ranking wants how often a player *will* cross the threshold, and a count of
+past crossings estimates that poorly — it reads only "over or under" and throws the action counts
+away, so a defender who made 9 in every match scored identically to one who made 2, and a
+two-match record could only ever say 0%, 50% or 100%.
+
+The defence of counting was that a mean cannot express a threshold. True only of a mean used
+*linearly*; taken through a distribution it expresses it exactly. A player averaging 9.8 actions
+has a 49% chance of reaching 10, not none.
+
+**Negative binomial, not Poisson.** Across the backfilled 2025-26 season, within-player variance
+is **1.60x the mean** (p10 1.01, p90 2.51). Poisson assumes exactly 1.0, so it is the wrong
+distribution; the negative binomial is the Poisson generalised to admit that spread, and
+`DEFCON_DISPERSION` holds the measured figure.
+
+**Measured, not asserted.** Splitting each player's 2025-26 season in half and predicting the
+second from the first, the distribution beats the hit rate by **19% after 2 matches, 18% after 3,
+10% after 5, and draws level by 10** — it wins by most exactly where the sample is thin, which is
+where a ranking is most easily embarrassed. Calibration: at the league's own mean of 7.19 actions
+the model gives a defender 22.9%, and 22.4% of defenders actually reached 10 in GW1 of 2026-27.
+Midfielders come out 10.6% against a measured 14.0%, so the shared dispersion is mildly
+conservative for them; one value is kept rather than fitting a second to a single gameweek.
+
+The mean is taken over matches of 60 minutes or more, the same discipline the clean-sheet term
+uses — the actions arrive with the minutes, and a cameo would otherwise read as a match the player
+failed to contribute in. Below `MIN_DEFCON_MATCHES` (two, the same sample the 180-minute floor
+already admits a player on) the term is **dropped, not estimated**, and the reply prints `DC n/a`.
+No component is held to a stricter standard than the row itself.
+
+That floor was a long argument while the model was a hit rate, because a 2-for-2 record read as a
+certainty worth a flat 2 points. The distribution mostly dissolves it: a mean from two matches is
+noisy but not absurd. **KAR-38** removes the remaining edge by blending last season in on a ramp,
+at which point two matches are never read alone.
 
 Goalkeepers get no term: FPL awards them none, and all 20 keepers with an hour behind them read 0
 in the live 2026-27 data. Save points and penalty saves are still not modelled, and both replies
@@ -2941,6 +2967,12 @@ same commit series as `PickTools`: `ExpectedPoints` was extracted precisely so t
 and a picks list cannot value the same player differently in one conversation, and supplying the
 new keys to only one of them would have reintroduced that.
 
-**Verified:** 569 tests green against a freshly reset container. The suite was run after each task
+**Follow-up filed.** The same single-season defect runs through every ranking metric, not just
+this one, and the owner specified the fix: a weighted blend of both seasons on a ramp driven by
+the player's own match count (1 match -> 10% this season, 2 -> 30%, 3 -> 60%, 4 -> 80%, 5-7 ->
+90%, 8+ -> 100%). That is **KAR-38**, with KAR-11 (pick tools), KAR-39 (squad builder) and KAR-40
+(`ExpectedStatsTools`, which has no cross-season fallback at all) under it.
+
+**Verified:** 573 tests green against a freshly reset container. The suite was run after each task
 with no existing expectation edited, except one that had to change — the pick footer's disclosure
 sentence, which the work rewrites on purpose.

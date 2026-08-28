@@ -71,6 +71,28 @@ container. Three deviations from the plan as written, all deliberate:
    has no clean-sheet value but does have a threshold. Also pinned the rendered form
    (`DC 50% at 8.0 actions`) rather than just the rate.
 
+## Outcome — the model changed after review (2026-08-28)
+
+The plan's central design decision was wrong and was replaced before merge.
+
+It specified a hit rate, `hits / qualifying matches`, and argued that a mean cannot express a
+per-match threshold. The owner rejected that: what a ranking needs is how often a player *will*
+cross the threshold, and the historical average is the input to that rather than a rival to it.
+The argument in "Design decisions" attacked a mean used linearly, which nobody proposed.
+
+Replaced with a negative-binomial tail read from the player's mean actions per match. Measured on
+the backfilled 2025-26 season: within-player variance is 1.60x the mean (so Poisson is wrong and
+the negative binomial right), and against a held-out half-season the distribution beats the hit
+rate by 19% at 2 matches, 18% at 3, 10% at 5, and draws level by 10.
+
+Two consequences for the plan as written:
+
+- `defcon_hits_def` and `defcon_hits_mid` are gone. The query carries `defcon_matches` and
+  `defcon_avg` only, which also removes the two interpolated `%d` thresholds and with them the
+  argument-order hazard the review flagged.
+- The `MIN_DEFCON_MATCHES` debate, which took most of the review, was a symptom of the weaker
+  estimator rather than a question worth that much attention.
+
 ## Global Constraints
 
 - **The capture half is done. This plan writes no sync code and touches no sync class.**
