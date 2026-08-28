@@ -2887,3 +2887,108 @@ that the capture is fresh and tapas lags, which is why it is recorded rather tha
 
 The fix is to apply the same uniqueness discipline on the id branch that the name branch already
 has, or to refuse to bridge at all when the capture's season and the metric window's season differ.
+
+## Defensive contribution reaches xPts/90 (2026-08-28)
+
+The capture half shipped on 2026-08-26; this is the scoring half, and it closes KAR-29 (the
+migrated GitHub #46). `ExpectedPoints.perNinety` now carries a fourth term, so both the pick tools
+and the squad builder stop understating ball-winning defenders and holding midfielders.
+
+Plan: `docs/superpowers/plans/2026-08-28-defcon-in-expected-points.md`.
+
+**A modelled probability, not a count of past crossings.** Defensive contribution pays 2 points at
+a threshold *per match* — 10 clearances, blocks, interceptions and tackles for a defender, 12 of
+those plus recoveries for a midfielder or forward. The term is `P(actions >= threshold) x 2`,
+estimated from the player's mean actions per match.
+
+The first version counted crossings instead: `hits / qualifying matches`. That was wrong, and the
+owner caught it. A ranking wants how often a player *will* cross the threshold, and a count of
+past crossings estimates that poorly — it reads only "over or under" and throws the action counts
+away, so a defender who made 9 in every match scored identically to one who made 2, and a
+two-match record could only ever say 0%, 50% or 100%.
+
+The defence of counting was that a mean cannot express a threshold. True only of a mean used
+*linearly*; taken through a distribution it expresses it exactly. A player averaging 9.8 actions
+has a 49% chance of reaching 10, not none.
+
+**Negative binomial, not Poisson.** Over 2025-26, on matches of 60+ minutes, within-player
+variance is **1.34x the mean** at the median (1.38 for defenders and midfielders, 1.19 for
+forwards). Poisson assumes exactly 1.0, so it is the wrong distribution; the negative binomial is
+the Poisson generalised to admit that spread.
+
+`DEFCON_DISPERSION` is 1.6, deliberately above the measured 1.34. A first measurement said 1.60,
+but it was taken from data without minutes or zeros, and cameo appearances had inflated it; the
+review that re-measured on the correct population also found that prediction *improves* as the
+constant rises towards 2.0. The reason is that the mean the model reads is itself uncertain when
+it comes from three matches, and the constant is the only place that uncertainty can go. So 1.6 is
+a middle choice between the measured spread and the predictively best one, not tuned on the data it
+was tested on. The principled form — a posterior predictive whose spread widens by itself when the
+sample is short — belongs with KAR-38.
+
+**Measured, not asserted.** Predicting the rest of each player's 2025-26 season from his first
+few 60+ minute matches, the distribution's error is **28% lower than the hit rate's after 2
+matches, 24% after 3, 20% after 5 and 7% after 10** — it wins by most exactly where the sample is
+thin, which is where a ranking is most easily embarrassed. It also beats Poisson at every sample
+size.
+
+**Calibration, per player.** Over a held-out half-season the mean of the per-player predictions is
+0.216 against an actual 0.205, and within ±0.015 in every band of predicted probability below
+0.5. Above 0.5 it over-predicts by about 0.08 (27 players): regression to the mean, and those are
+the players a ranking puts at the top, so the best DC candidates are overrated by roughly 0.17
+points of `xPts/90`. Modest, and KAR-38's blending is the fix. Per position across the whole
+season: defenders 0.255 predicted against 0.251 actual, midfielders 0.167 against 0.157, forwards
+0.016 against 0.009. (An earlier check that pushed the *league* mean through the model gave
+midfielders 10.6% against 14.0% — that gap was Jensen's inequality, not miscalibration.)
+
+The mean is taken over matches of 60 minutes or more, the same discipline the clean-sheet term
+uses — the actions arrive with the minutes, and a cameo would otherwise read as a match the player
+failed to contribute in. Below `MIN_DEFCON_MATCHES` (two, the same sample the 180-minute floor
+already admits a player on) the term is **dropped, not estimated**, and the reply prints `DC n/a`.
+No component is held to a stricter standard than the row itself.
+
+That floor was a long argument while the model was a hit rate, because a 2-for-2 record read as a
+certainty worth a flat 2 points. The distribution mostly dissolves it: a mean from two matches is
+noisy but not absurd. **KAR-38** removes the remaining edge by blending last season in on a ramp,
+at which point two matches are never read alone.
+
+Goalkeepers get no term: FPL awards them none, and all 20 keepers with an hour behind them read 0
+in the live 2026-27 data. Save points and penalty saves are still not modelled, and both replies
+keep saying so — that sentence changed from disowning defcon to disowning only those two.
+
+**2026/27 rules, verified 2026-08-28.** Thresholds and points are unchanged from 2025/26
+(`~/dev/tapas-fpl-app/backend/FPL_RULES.md`, updated for the season transition, lists them under
+"Unchanged from 2025/26"). What did change is *when* the numbers are final: gameweek scores now
+settle at 09:00 UK on the day after the gameweek's last match rather than an hour after the
+whistle, so post-match Opta review can feed into BPS **and defensive contribution**. A hit rate
+feels that more than an average would — a review lifting a defender from 9 to 10 flips a whole
+match from miss to hit. Nothing was built for it: `DefensiveStatsSyncService` rewrites every match
+row on every run, so the next nightly sync replaces a provisional figure with the reviewed one and
+the exposure is bounded to roughly the 27 hours in between.
+
+The 2026/27 BPS changes (CBI now 1 point per 3 rather than per 2, no -1 for being tackled) move
+*bonus*, which arrives inside `total_points` and therefore inside `Pts/90` — the realised half of
+the Score, which needed no change. There is no double counting: realised points already contain
+the defcon points a player earned, exactly as they already contain his goals, and the Score blends
+the two halves at a weight rather than adding them.
+
+**Base rates to read a reply against**, from the live API after GW1 of 2026-27 (60+ minutes):
+defenders average 7.19 actions and clear 10 in **22.4%** of matches; midfielders average 7.15 and
+clear 12 in **14.0%**; forwards average 3.68 and cleared 12 in none; goalkeepers read 0. These
+reproduce the 2026-08-26 production run exactly — 22.4% of 85 defenders is the 19 that scored,
+14.0% of 86 midfielders is the 12 — so a defender showing `DC 40%` is genuinely well above the
+league, not a scaling error.
+
+**Both tools read it through the one shared formula**, which is why `CandidatePool` changed in the
+same commit series as `PickTools`: `ExpectedPoints` was extracted precisely so the squad builder
+and a picks list cannot value the same player differently in one conversation, and supplying the
+new keys to only one of them would have reintroduced that.
+
+**Follow-up filed.** The same single-season defect runs through every ranking metric, not just
+this one, and the owner specified the fix: a weighted blend of both seasons on a ramp driven by
+the player's own match count (1 match -> 10% this season, 2 -> 30%, 3 -> 60%, 4 -> 80%, 5-7 ->
+90%, 8+ -> 100%). That is **KAR-38**, with KAR-11 (pick tools), KAR-39 (squad builder) and KAR-40
+(`ExpectedStatsTools`, which has no cross-season fallback at all) under it.
+
+**Verified:** 573 tests green against a freshly reset container. The suite was run after each task
+with no existing expectation edited, except one that had to change — the pick footer's disclosure
+sentence, which the work rewrites on purpose.
