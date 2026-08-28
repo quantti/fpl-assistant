@@ -50,11 +50,11 @@ fpl:
     conversation-table-name: fpl_conversation_test
     message-table-name: fpl_message_test
     usage-table-name: fpl_usage_event_test
+    invite-code-table-name: fpl_invite_code_test
     invite-redemption-table-name: fpl_invite_redemption_test
   invite:
-    # A code the suite can present, and a cap two rows away rather than thirty. Production sets
-    # neither: an unset INVITE_CODE closes sign-up, which is the safe default.
-    code: test-invite-code
+    # The account cap, low so the tests can actually reach it. Codes themselves are rows the
+    # tests seed; there is no shared secret any more.
     max-accounts: 2
   daily-price:
     table-name: fpl_daily_price_test

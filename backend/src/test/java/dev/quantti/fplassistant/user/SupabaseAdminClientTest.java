@@ -35,6 +35,13 @@ class SupabaseAdminClientTest {
     static void startStub() throws IOException {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         // The stub encodes the outcome in the address it is asked to create.
+        // The confirmation mail is a second call after a successful create. Answered here so the
+        // test exercises the real sequence; a failure to send must not fail the sign-up, which
+        // the client's own catch is responsible for.
+        server.createContext("/auth/v1/resend", exchange -> {
+            exchange.sendResponseHeaders(200, -1);
+            exchange.close();
+        });
         server.createContext("/auth/v1/admin/users", exchange -> {
             String body = new String(exchange.getRequestBody().readAllBytes());
             int status;
