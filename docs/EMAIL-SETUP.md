@@ -111,14 +111,18 @@ In Namecheap's Host field you enter **only the subdomain part**; Namecheap adds
 `send.fpl-sidekick.com.fpl-sidekick.com`, which resolves to nothing and fails silently — no error
 message, just a domain that never verifies.
 
-| Resend shows | Type into Namecheap's Host field |
-|---|---|
-| `send.fpl-sidekick.com` | `send` |
-| `resend._domainkey.fpl-sidekick.com` | `resend._domainkey` |
-| `_dmarc.fpl-sidekick.com` | `_dmarc` |
+**Resend's dashboard already shows Host values with the domain stripped** — it displays
+`resend._domainkey.send`, not `resend._domainkey.send.fpl-sidekick.com`. So for Resend the rule is
+simply: **paste the Host verbatim, and add nothing.** The Value field likewise, in full.
 
-Rule: **strip `.fpl-sidekick.com` from the end of every Host value before pasting.** The Value
-field is the opposite — paste it exactly as given, in full.
+The trap is live for records you compose yourself, or copy from a provider that shows fully
+qualified names. If a Host you are about to paste ends in `.fpl-sidekick.com`, strip that suffix;
+if it does not, leave it alone.
+
+| Where it comes from | Resend shows | Type into Namecheap |
+|---|---|---|
+| Resend dashboard | `resend._domainkey.send` | `resend._domainkey.send` — verbatim |
+| Written out by hand | `_dmarc.fpl-sidekick.com` | `_dmarc` |
 
 One more Namecheap mechanic: an **MX record's priority goes in its own field**, not at the front
 of the value. `10 feedback-smtp...` pasted whole into Value is a broken record.
@@ -196,10 +200,26 @@ Domain    fpl-sidekick.com
 Region    EU (Ireland)
 ```
 
-**Add the apex, not a subdomain.** Resend creates the sending subdomain itself: the Return-Path
-defaults to `send.fpl-sidekick.com`, which is where the MX and SPF records go. That gets the
-benefit the earlier draft of this runbook was reaching for — the SPF lands on `send.` and cannot
-collide with Namecheap's apex SPF (Trap 2) — without you having to construct it by hand.
+**Add the apex. Do not add `send.fpl-sidekick.com`.** Resend prepends the sending subdomain
+itself: give it `fpl-sidekick.com` and the Return-Path becomes `send.fpl-sidekick.com`, which is
+where the MX and SPF records go. That gets the benefit an earlier draft of this runbook was
+reaching for — SPF on `send.`, unable to collide with Namecheap's apex SPF (Trap 2) — without
+constructing it by hand.
+
+**This was got wrong on 2026-08-28 and cost a verification cycle.** An earlier version of this
+file said to add `send.fpl-sidekick.com`. Resend then prepends its own subdomain and looks for
+everything one level deeper — `resend._domainkey.send.send.fpl-sidekick.com` — while the DNS
+records, written for the apex layout, sat at `resend._domainkey.fpl-sidekick.com`. The dashboard
+reports this as *Pending / Looking for DNS records*, which reads exactly like slow propagation and
+is not. **If a domain stays Pending for more than about half an hour, compare the Host Resend
+shows against the name that actually resolves** — one extra or missing label is the usual cause:
+
+```bash
+dig +short @dns1.registrar-servers.com TXT resend._domainkey.fpl-sidekick.com
+```
+
+The fix is to correct Resend, not the DNS: delete the domain, add the apex, and update the one
+DKIM TXT value Resend regenerates. The MX and SPF records on `send.` need no change.
 
 **You then send from an address at the verified domain**: `noreply@fpl-sidekick.com`. The `send.`
 subdomain is the bounce and return path, not the From address.
