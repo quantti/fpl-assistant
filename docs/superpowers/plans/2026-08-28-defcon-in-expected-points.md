@@ -6,6 +6,12 @@
 
 **PROGRESS:** Task 6/6 done
 
+> **The task bodies below describe a model that was replaced before merge.** Tasks 2–5 specify a
+> hit rate (`defconHitRate`, `defcon_hits_def`/`defcon_hits_mid`); what shipped is a
+> negative-binomial probability read from the mean (`defconProbability`, `defcon_avg`). See
+> "Outcome — the model changed after review" for why. The tasks are kept as written because the
+> plan is a record of what was planned, not of what exists — `docs/STATUS.md` is the latter.
+
 **Goal:** Put defensive-contribution points into `ExpectedPoints.perNinety`, so the pick tools and
 the squad builder stop understating ball-winning defenders and holding midfielders.
 
