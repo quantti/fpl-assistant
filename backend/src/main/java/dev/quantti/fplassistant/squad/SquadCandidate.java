@@ -12,7 +12,10 @@ import java.util.Map;
  *
  * @param metrics the raw metric row ({@code element_type}, {@code xg90}, {@code xa90},
  *        {@code xgc_per_match}, {@code pts90}, plus {@code defcon_matches} and
- *        {@code defcon_avg}) as {@code ExpectedPoints.perNinety} expects it;
+ *        {@code defcon_avg}) as {@code ExpectedPoints.perNinety} expects it, blended across
+ *        both seasons by {@code SeasonBlend}; it also carries {@code blend_weight},
+ *        {@code blend_matches} and {@code blend_has_previous}, which the reply prints and
+ *        {@code ExpectedPoints} ignores;
  *        empty for a {@link Tier#BODY}
  * @param minutesInWindow the player's minutes across the metric window
  * @param teamFixturesInWindow his club's distinct fixtures across the gameweek span his own

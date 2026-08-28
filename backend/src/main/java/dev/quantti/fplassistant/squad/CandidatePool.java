@@ -8,6 +8,8 @@ import java.util.Map;
 import java.util.Optional;
 
 import dev.quantti.fplassistant.tools.ExpectedPoints;
+import dev.quantti.fplassistant.tools.MetricSeasons;
+import dev.quantti.fplassistant.tools.SeasonBlend;
 import dev.quantti.fplassistant.tools.SeasonContext;
 import dev.quantti.fplassistant.tools.SeasonResolver;
 import org.springframework.beans.factory.annotation.Value;
@@ -41,11 +43,6 @@ public class CandidatePool {
         this.dailyTable = dailyTable;
     }
 
-    /** Which season the metrics come from, and how far back to read it. */
-    public record MetricWindow(int seasonId, String code, boolean isResolvedSeason,
-                               boolean beingPlayed, int windowLimit) {
-    }
-
     /**
      * The season and date of the most recent daily-price capture, read from the capture itself
      * rather than from {@link SeasonResolver}. During the changeover the resolver still names the
@@ -69,23 +66,6 @@ public class CandidatePool {
     }
 
     /**
-     * The season being played once it holds a real sample, the previous one until then — the
-     * same early-season rule the system prompt states, applied where the ordering is decided.
-     */
-    public MetricWindow metricWindow(SeasonContext season) {
-        int played = seasonResolver.completedGameweeks(season.seasonId());
-        Optional<SeasonContext> better = seasonResolver.betterMetricSeason(season, played,
-                ExpectedPoints.MIN_SAMPLE_GAMEWEEKS);
-        return better
-                .map(p -> new MetricWindow(p.seasonId(), p.code(), false, false,
-                        ExpectedPoints.WHOLE_SEASON))
-                .orElseGet(() -> new MetricWindow(season.seasonId(), season.code(), true,
-                        season.currentSeason(),
-                        season.currentSeason() ? ExpectedPoints.WINDOW_MATCHES
-                                : ExpectedPoints.WHOLE_SEASON));
-    }
-
-    /**
      * Everyone available on the capture date, each tagged with the tier his record earns.
      *
      * <p>Availability is read from the capture, never from tapas: {@code a} is fit, {@code d} is
@@ -105,15 +85,10 @@ public class CandidatePool {
      * entirely only because it joins with an {@code INNER JOIN} onto a pool that is not the thing
      * being returned.
      */
-    public List<SquadCandidate> load(Capture capture, MetricWindow window) {
+    public List<SquadCandidate> load(Capture capture, MetricSeasons metric) {
         if (capture == null) {
             return List.of();
         }
-        String metricKey = window.isResolvedSeason() ? "mp.id::text" : "LOWER(mp.web_name)";
-        String poolKey = window.isResolvedSeason() ? "pool.element_id::text" : "LOWER(pool.web_name)";
-        String metricUnique = window.isResolvedSeason() ? "" : "WHERE " + nameIsUnique("mp");
-        String poolUnique = window.isResolvedSeason() ? "" : "AND pool.name_count = 1";
-
         List<Map<String, Object>> rows = jdbc.queryForList("""
                 WITH pool AS (
                     SELECT element_id, web_name, full_name, team_id, team_short, team_name,
@@ -123,96 +98,112 @@ public class CandidatePool {
                     WHERE season = ? AND price_date = ? AND status IN ('a', 'd')
                 ),
                 recent AS (
-                    SELECT pfs.player_id, pfs.player_team_id, pfs.gameweek, pfs.minutes,
-                           pfs.total_points, pfs.expected_goals AS xg,
+                    SELECT pfs.season_id, pfs.player_id, pfs.player_team_id, pfs.gameweek,
+                           pfs.minutes, pfs.total_points, pfs.expected_goals AS xg,
                            pfs.expected_assists AS xa, pfs.expected_goals_conceded AS xgc,
                            pfs.defensive_contribution,
-                           ROW_NUMBER() OVER (PARTITION BY pfs.player_id
-                                              ORDER BY pfs.gameweek DESC, pfs.fixture_id DESC) AS rn
+                           ROW_NUMBER() OVER (PARTITION BY pfs.season_id, pfs.player_id
+                                              ORDER BY pfs.gameweek DESC, pfs.fixture_id DESC) AS rn,
+                           -- The ramp's input: every qualifying match of the season, not just the
+                           -- windowed ones.
+                           count(*) FILTER (WHERE pfs.minutes >= 60)
+                               OVER (PARTITION BY pfs.season_id, pfs.player_id) AS matches60
                     FROM player_fixture_stats pfs
-                    WHERE pfs.season_id = ?
+                    WHERE pfs.season_id IN (?, ?)
                 ),
                 windowed AS (
-                    SELECT player_id,
+                    SELECT season_id, player_id,
                            MIN(player_team_id) AS metric_team_id,
                            MIN(gameweek) AS min_gw,
                            MAX(gameweek) AS max_gw,
+                           min(matches60) AS matches60,
                            SUM(minutes) AS mins,
                            SUM(xg) * 90 / NULLIF(SUM(minutes), 0) AS xg90,
                            SUM(xa) * 90 / NULLIF(SUM(minutes), 0) AS xa90,
                            SUM(total_points) * 90.0 / NULLIF(SUM(minutes), 0) AS pts90,
                            SUM(xgc) FILTER (WHERE minutes >= 60)
                                / NULLIF(count(*) FILTER (WHERE minutes >= 60), 0) AS xgc_per_match,
-                           -- The mean is what the model needs; ExpectedPoints reads the chance
-                           -- of crossing the threshold out of it, and the match count says how
-                           -- much to believe the mean. The thresholds stay in Java.
+                           -- The mean is what the defcon model needs; ExpectedPoints reads the
+                           -- chance of crossing the threshold out of it, and the match count says
+                           -- how much to believe the mean.
                            count(*) FILTER (WHERE minutes >= 60
                                AND defensive_contribution IS NOT NULL) AS defcon_matches,
-                           AVG(defensive_contribution) FILTER (WHERE minutes >= 60)
-                               AS defcon_avg
+                           AVG(defensive_contribution) FILTER (WHERE minutes >= 60) AS defcon_avg
                     FROM recent
-                    WHERE rn <= %d
-                    GROUP BY player_id
-                    HAVING SUM(minutes) >= %d
+                    WHERE rn <= CASE WHEN season_id = ? THEN %d ELSE %d END
+                    GROUP BY season_id, player_id
                 ),
                 club_fixtures AS (
-                    -- The club's own fixtures between his first and last windowed gameweek,
-                    -- not a count of his rows: tapas omits a row entirely for a fixture he was
-                    -- not in the squad for, so a row count silently shrinks whenever a player
-                    -- misses part of the window and inflates his expected minutes as a result.
-                    SELECT w.player_id,
+                    -- The club's own fixtures between his first and last windowed gameweek, not a
+                    -- count of his rows: tapas omits a row entirely for a fixture he was not in
+                    -- the squad for, so a row count silently shrinks whenever a player misses part
+                    -- of the window and inflates his expected minutes as a result.
+                    SELECT w.season_id, w.player_id,
                            (SELECT count(*) FROM fixture f
-                            WHERE f.season_id = ?
+                            WHERE f.season_id = w.season_id
                               AND f.gameweek BETWEEN w.min_gw AND w.max_gw
                               AND (f.team_h = w.metric_team_id OR f.team_a = w.metric_team_id)
                            ) AS fixtures
                     FROM windowed w
                 ),
-                metrics AS (
-                    SELECT %s AS k, min(w.mins) AS mins, min(cf.fixtures) AS fixtures,
+                prev AS (
+                    SELECT LOWER(mp.web_name) AS k,
+                           min(w.matches60) AS matches60, min(w.mins) AS mins,
+                           min(cf.fixtures) AS fixtures,
                            min(w.xg90) AS xg90, min(w.xa90) AS xa90, min(w.pts90) AS pts90,
                            min(w.xgc_per_match) AS xgc_per_match,
-                           min(w.defcon_matches) AS defcon_matches,
-                           min(w.defcon_avg) AS defcon_avg
+                           min(w.defcon_matches) AS defcon_matches, min(w.defcon_avg) AS defcon_avg
                     FROM windowed w
-                    JOIN club_fixtures cf ON cf.player_id = w.player_id
-                    JOIN player mp ON mp.id = w.player_id AND mp.season_id = ?
-                    %s
+                    JOIN club_fixtures cf ON cf.season_id = w.season_id AND cf.player_id = w.player_id
+                    JOIN player mp ON mp.id = w.player_id AND mp.season_id = w.season_id
+                    WHERE w.season_id = ? AND %s
                     GROUP BY 1
                     HAVING count(*) = 1
                 )
-                SELECT pool.*, m.mins, m.fixtures, m.xg90, m.xa90, m.pts90, m.xgc_per_match,
-                       m.defcon_matches, m.defcon_avg
+                SELECT pool.*,
+                       c.matches60 AS cur_matches60, c.mins AS cur_mins,
+                       cc.fixtures AS cur_fixtures,
+                       c.xg90 AS cur_xg90, c.xa90 AS cur_xa90, c.pts90 AS cur_pts90,
+                       c.xgc_per_match AS cur_xgc_per_match,
+                       c.defcon_matches AS cur_defcon_matches, c.defcon_avg AS cur_defcon_avg,
+                       pv.matches60 AS prev_matches60, pv.mins AS prev_mins,
+                       pv.fixtures AS prev_fixtures,
+                       pv.xg90 AS prev_xg90, pv.xa90 AS prev_xa90, pv.pts90 AS prev_pts90,
+                       pv.xgc_per_match AS prev_xgc_per_match,
+                       pv.defcon_matches AS prev_defcon_matches, pv.defcon_avg AS prev_defcon_avg
                 FROM pool
-                LEFT JOIN metrics m ON m.k = %s %s
-                """.formatted(dailyTable, window.windowLimit(),
-                        ExpectedPoints.MIN_WINDOW_MINUTES, metricKey, metricUnique, poolKey,
-                        poolUnique),
-                capture.season(), capture.date(), window.seasonId(), window.seasonId(),
-                window.seasonId());
+                LEFT JOIN windowed c ON c.season_id = ? AND c.player_id = pool.element_id
+                LEFT JOIN club_fixtures cc ON cc.season_id = c.season_id AND cc.player_id = c.player_id
+                LEFT JOIN prev pv ON pv.k = LOWER(pool.web_name) AND pool.name_count = 1
+                """.formatted(dailyTable, metric.windowLimit(),
+                        ExpectedPoints.WHOLE_SEASON, nameIsUnique("mp")),
+                capture.season(), capture.date(),
+                metric.played().seasonId(), metric.previousSeasonId(),
+                metric.played().seasonId(),
+                metric.previousSeasonId(),
+                metric.played().seasonId());
 
         List<SquadCandidate> candidates = new ArrayList<>();
         for (Map<String, Object> row : rows) {
-            boolean rankable = row.get("mins") != null;
+            SeasonBlend.Blended blended = SeasonBlend.blend(
+                    SeasonBlend.side(row, SeasonBlend.CURRENT_PREFIX),
+                    SeasonBlend.side(row, SeasonBlend.PREVIOUS_PREFIX));
             String status = (String) row.get("status");
-            if (!rankable && !"a".equals(status)) {
+            if (blended == null && !"a".equals(status)) {
                 continue;
             }
-            candidates.add(toCandidate(row, rankable));
+            candidates.add(toCandidate(row, blended));
         }
         return candidates;
     }
 
-    private static SquadCandidate toCandidate(Map<String, Object> row, boolean rankable) {
+    private static SquadCandidate toCandidate(Map<String, Object> row,
+                                              SeasonBlend.Blended blended) {
+        boolean rankable = blended != null;
         Map<String, Object> metrics = new HashMap<>();
         if (rankable) {
+            metrics.putAll(blended.metrics());
             metrics.put("element_type", row.get("element_type"));
-            metrics.put("xg90", row.get("xg90"));
-            metrics.put("xa90", row.get("xa90"));
-            metrics.put("pts90", row.get("pts90"));
-            metrics.put("xgc_per_match", row.get("xgc_per_match"));
-            metrics.put("defcon_matches", row.get("defcon_matches"));
-            metrics.put("defcon_avg", row.get("defcon_avg"));
         }
         return new SquadCandidate(
                 asInt(row.get("element_id")),
@@ -226,8 +217,8 @@ public class CandidatePool {
                 (String) row.get("status"),
                 (String) row.get("news"),
                 asInt(row.get("team_id")),
-                asDouble(row.get("mins")),
-                asInt(row.get("fixtures")),
+                rankable ? asDouble(metrics.get("mins")) : 0,
+                rankable ? asInt(metrics.get("fixtures")) : 0,
                 metrics,
                 rankable ? SquadCandidate.Tier.RANKABLE : SquadCandidate.Tier.BODY);
     }
