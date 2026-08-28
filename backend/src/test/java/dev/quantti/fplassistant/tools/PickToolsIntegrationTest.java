@@ -3,6 +3,7 @@ package dev.quantti.fplassistant.tools;
 import java.util.List;
 
 import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -36,6 +37,18 @@ class PickToolsIntegrationTest {
     @BeforeEach
     void seed() {
         SharedStatsSeed.ensure(jdbc);
+        clearDefensiveContribution();
+    }
+
+    /**
+     * Before as well as after: {@code SharedStatsSeed.ensure} inserts ON CONFLICT DO NOTHING and the
+     * test container is long-lived, so a defensive-contribution value written by one case would
+     * otherwise survive into every later case and every later run.
+     */
+    @AfterEach
+    void clearDefensiveContribution() {
+        jdbc.update("UPDATE player_fixture_stats SET defensive_contribution = NULL"
+                + " WHERE season_id = 9026 AND player_id IN (9205, 9206)");
     }
 
     @Test
@@ -180,7 +193,7 @@ class PickToolsIntegrationTest {
     void theReplySaysWhichPointsTheExpectedModelDoesNotCover() {
         String result = tools.getDifferentialPicks("DEF", 100, 3);
 
-        assertThat(result).contains("xPts/90 covers goals, assists and clean sheets only");
+        assertThat(result).contains("Save points and penalty saves are still not in it");
         assertThat(result).contains("Do not call xPts/90 a complete projection");
         assertThat(result).doesNotContain("are not in the data");
     }
@@ -215,5 +228,34 @@ class PickToolsIntegrationTest {
         // The coverage line has to notice him: he has rows, so a count of "players with no rows"
         // would not, which is the drift this replaced.
         assertThat(result).containsPattern("Ranked from [0-9]+ of the [0-9]+ players matching");
+    }
+
+    @Test
+    void aDefenderWhoClearsTheDefensiveThresholdIsScoredForIt() {
+        // Ferreira has two seeded 90-minute fixtures. One over the ten-action threshold and one
+        // under it is a 50% hit rate, worth half of DEFCON_POINTS. Seeded here rather than in
+        // SharedStatsSeed so no other case's expected points move under it.
+        jdbc.update("UPDATE player_fixture_stats SET defensive_contribution = 12"
+                + " WHERE player_id = 9205 AND fixture_id = 9102 AND season_id = 9026");
+        jdbc.update("UPDATE player_fixture_stats SET defensive_contribution = 4"
+                + " WHERE player_id = 9205 AND fixture_id = 9104 AND season_id = 9026");
+
+        String reply = tools.getDifferentialPicks("DEF", 100, 3);
+
+        assertThat(reply).contains("Ferreira");
+        assertThat(reply).contains("DC 50%");
+    }
+
+    @Test
+    void aGoalkeeperIsNotGivenADefensiveContributionComponent() {
+        jdbc.update("UPDATE player_fixture_stats SET defensive_contribution = 15"
+                + " WHERE player_id = 9206 AND season_id = 9026");
+
+        String reply = tools.getDifferentialPicks("GK", 100, 3);
+
+        assertThat(reply).contains("Kaminski");
+        // ", DC " is the component separator. A bare "DC " would also match the footer's
+        // explanation of what DC means once the disclosure is rewritten.
+        assertThat(reply).doesNotContain(", DC ");
     }
 }
