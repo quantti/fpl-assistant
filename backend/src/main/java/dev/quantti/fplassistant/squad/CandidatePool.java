@@ -126,6 +126,7 @@ public class CandidatePool {
                     SELECT pfs.player_id, pfs.player_team_id, pfs.gameweek, pfs.minutes,
                            pfs.total_points, pfs.expected_goals AS xg,
                            pfs.expected_assists AS xa, pfs.expected_goals_conceded AS xgc,
+                           pfs.defensive_contribution,
                            ROW_NUMBER() OVER (PARTITION BY pfs.player_id
                                               ORDER BY pfs.gameweek DESC, pfs.fixture_id DESC) AS rn
                     FROM player_fixture_stats pfs
@@ -141,7 +142,19 @@ public class CandidatePool {
                            SUM(xa) * 90 / NULLIF(SUM(minutes), 0) AS xa90,
                            SUM(total_points) * 90.0 / NULLIF(SUM(minutes), 0) AS pts90,
                            SUM(xgc) FILTER (WHERE minutes >= 60)
-                               / NULLIF(count(*) FILTER (WHERE minutes >= 60), 0) AS xgc_per_match
+                               / NULLIF(count(*) FILTER (WHERE minutes >= 60), 0) AS xgc_per_match,
+                           -- Defensive contribution pays at a threshold per match, so what
+                           -- matters is how often the player crossed it, not his average. Both
+                           -- thresholds are counted because the position lives on player, not
+                           -- here; Java picks between them.
+                           count(*) FILTER (WHERE minutes >= 60
+                               AND defensive_contribution IS NOT NULL) AS defcon_matches,
+                           count(*) FILTER (WHERE minutes >= 60
+                               AND defensive_contribution >= %d) AS defcon_hits_def,
+                           count(*) FILTER (WHERE minutes >= 60
+                               AND defensive_contribution >= %d) AS defcon_hits_mid,
+                           AVG(defensive_contribution) FILTER (WHERE minutes >= 60)
+                               AS defcon_avg
                     FROM recent
                     WHERE rn <= %d
                     GROUP BY player_id
@@ -163,7 +176,11 @@ public class CandidatePool {
                 metrics AS (
                     SELECT %s AS k, min(w.mins) AS mins, min(cf.fixtures) AS fixtures,
                            min(w.xg90) AS xg90, min(w.xa90) AS xa90, min(w.pts90) AS pts90,
-                           min(w.xgc_per_match) AS xgc_per_match
+                           min(w.xgc_per_match) AS xgc_per_match,
+                           min(w.defcon_matches) AS defcon_matches,
+                           min(w.defcon_hits_def) AS defcon_hits_def,
+                           min(w.defcon_hits_mid) AS defcon_hits_mid,
+                           min(w.defcon_avg) AS defcon_avg
                     FROM windowed w
                     JOIN club_fixtures cf ON cf.player_id = w.player_id
                     JOIN player mp ON mp.id = w.player_id AND mp.season_id = ?
@@ -171,10 +188,13 @@ public class CandidatePool {
                     GROUP BY 1
                     HAVING count(*) = 1
                 )
-                SELECT pool.*, m.mins, m.fixtures, m.xg90, m.xa90, m.pts90, m.xgc_per_match
+                SELECT pool.*, m.mins, m.fixtures, m.xg90, m.xa90, m.pts90, m.xgc_per_match,
+                       m.defcon_matches, m.defcon_hits_def, m.defcon_hits_mid, m.defcon_avg
                 FROM pool
                 LEFT JOIN metrics m ON m.k = %s %s
-                """.formatted(dailyTable, window.windowLimit(), ExpectedPoints.MIN_WINDOW_MINUTES,
+                """.formatted(dailyTable,
+                        ExpectedPoints.DEFCON_THRESHOLD[2], ExpectedPoints.DEFCON_THRESHOLD[3],
+                        window.windowLimit(), ExpectedPoints.MIN_WINDOW_MINUTES,
                         metricKey, metricUnique, poolKey, poolUnique),
                 capture.season(), capture.date(), window.seasonId(), window.seasonId(),
                 window.seasonId());
@@ -199,6 +219,10 @@ public class CandidatePool {
             metrics.put("xa90", row.get("xa90"));
             metrics.put("pts90", row.get("pts90"));
             metrics.put("xgc_per_match", row.get("xgc_per_match"));
+            metrics.put("defcon_matches", row.get("defcon_matches"));
+            metrics.put("defcon_hits_def", row.get("defcon_hits_def"));
+            metrics.put("defcon_hits_mid", row.get("defcon_hits_mid"));
+            metrics.put("defcon_avg", row.get("defcon_avg"));
         }
         return new SquadCandidate(
                 asInt(row.get("element_id")),

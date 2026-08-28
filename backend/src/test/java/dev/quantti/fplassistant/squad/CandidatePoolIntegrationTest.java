@@ -7,6 +7,7 @@ import dev.quantti.fplassistant.testsupport.FictitiousTestData;
 import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
 import dev.quantti.fplassistant.tools.SeasonResolver;
 import org.junit.jupiter.api.AfterEach;
+import dev.quantti.fplassistant.tools.ExpectedPoints;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -16,6 +17,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.within;
 
 /**
  * The candidate pool, against the isolated daily-price table.
@@ -51,9 +53,12 @@ class CandidatePoolIntegrationTest {
      */
     private static final int KAMINSKI = 9206;
 
+    /** SharedStats' Ferreira: a defender with two 90-minute rows, so a defcon hit rate can be read. */
+    private static final int FERREIRA = 9205;
+
     /** Every element id this class writes into the daily-price table, for scoped cleanup. */
     private static final List<Integer> TEST_ELEMENT_IDS =
-            List.of(RANKABLE, BODY, INJURED, DOUBTFUL_NO_RECORD, OKAFOR, KAMINSKI);
+            List.of(RANKABLE, BODY, INJURED, DOUBTFUL_NO_RECORD, OKAFOR, KAMINSKI, FERREIRA);
 
     /**
      * The season the pool actually filters on, read at runtime rather than hardcoded.
@@ -93,6 +98,7 @@ class CandidatePoolIntegrationTest {
         insert(DOUBTFUL_NO_RECORD, "Doubtfultest", 40, 2, 0.1, "d", "Knock");
         insert(OKAFOR, "Okafor", 75, 3, 12.0, "a", null);
         insert(KAMINSKI, "Kaminski", 45, 1, 6.0, "a", null);
+        insert(FERREIRA, "Ferreira", 45, 2, 8.0, "a", null);
     }
 
     @AfterEach
@@ -108,8 +114,12 @@ class CandidatePoolIntegrationTest {
      */
     private void deleteTestRows() {
         jdbc.update("DELETE FROM " + table + " WHERE season = ?"
-                        + " AND element_id IN (?, ?, ?, ?, ?, ?)",
-                season, RANKABLE, BODY, INJURED, DOUBTFUL_NO_RECORD, OKAFOR, KAMINSKI);
+                        + " AND element_id IN (?, ?, ?, ?, ?, ?, ?)",
+                season, RANKABLE, BODY, INJURED, DOUBTFUL_NO_RECORD, OKAFOR, KAMINSKI, FERREIRA);
+        // SharedStatsSeed never overwrites and the container is long-lived, so a value written by the
+        // defcon case below would otherwise outlive it and reach every other test.
+        jdbc.update("UPDATE player_fixture_stats SET defensive_contribution = NULL"
+                + " WHERE season_id = 9026 AND player_id = ?", FERREIRA);
     }
 
     private void insert(int elementId, String webName, int nowCost, int elementType,
@@ -233,6 +243,26 @@ class CandidatePoolIntegrationTest {
 
     private SquadCandidate candidate(int elementId) {
         return load().stream().filter(c -> c.elementId() == elementId).findFirst().orElseThrow();
+    }
+
+    @Test
+    void theCandidateMetricsCarryTheDefensiveContributionRecord() {
+        // The squad builder and the pick tools share ExpectedPoints. If the pool does not supply
+        // these keys, the same defender is worth less here than in a picks list, in the same
+        // conversation.
+        jdbc.update("UPDATE player_fixture_stats SET defensive_contribution = 12"
+                + " WHERE player_id = ? AND fixture_id = 9102 AND season_id = 9026", FERREIRA);
+        jdbc.update("UPDATE player_fixture_stats SET defensive_contribution = 4"
+                + " WHERE player_id = ? AND fixture_id = 9104 AND season_id = 9026", FERREIRA);
+
+        SquadCandidate ferreira = load().stream()
+                .filter(c -> c.elementId() == FERREIRA)
+                .findFirst()
+                .orElseThrow();
+
+        assertThat(ExpectedPoints.hasDefconSignal(ferreira.metrics(), 2)).isTrue();
+        assertThat(ExpectedPoints.defconHitRate(ferreira.metrics(), 2))
+                .isCloseTo(0.5, within(1e-9));
     }
 
     private List<SquadCandidate> load() {
