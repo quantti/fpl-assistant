@@ -1,5 +1,6 @@
 package dev.quantti.fplassistant.tools;
 
+import dev.quantti.fplassistant.testsupport.NewSeasonSeed;
 import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -39,7 +40,7 @@ class PickToolsCrossSeasonTest {
     @BeforeEach
     void seed() {
         SharedStatsSeed.ensure(jdbc);
-        beginTheNewSeason();
+        NewSeasonSeed.begin(jdbc);
     }
 
     /**
@@ -49,11 +50,7 @@ class PickToolsCrossSeasonTest {
      */
     @AfterEach
     void endTheNewSeason() {
-        jdbc.update("DELETE FROM player WHERE season_id = ? AND id BETWEEN 9401 AND 9410", CURRENT);
-        jdbc.update("DELETE FROM player WHERE season_id = ? AND id = 9210",
-                SharedStatsSeed.POPULATED_SEASON_ID);
-        jdbc.update("DELETE FROM gameweek WHERE season_id = ? AND id = ?", CURRENT, GAMEWEEK);
-        jdbc.update("DELETE FROM team WHERE season_id = ? AND id = ?", CURRENT, TEAM);
+        NewSeasonSeed.end(jdbc);
     }
 
     /**
@@ -64,40 +61,6 @@ class PickToolsCrossSeasonTest {
      * <p>The element ids deliberately differ from last season's for the same players. That is not
      * tidiness: it is what FPL does every summer, and it is the reason the bridge cannot use ids.
      */
-    private void beginTheNewSeason() {
-        jdbc.execute("""
-                INSERT INTO gameweek (id, season_id, name, deadline_time, finished, data_checked,
-                                      is_current, is_next) VALUES
-                    (101, 9027, 'Gameweek 1', TIMESTAMPTZ '2026-08-21 17:30:00+00', true, true,
-                     true, false)
-                ON CONFLICT (id, season_id) DO NOTHING
-                """);
-        jdbc.execute("""
-                INSERT INTO team (id, season_id, code, name, short_name, strength) VALUES
-                    (9001, 9027, 9001, 'Ashfield Rovers', 'ASH', 4)
-                ON CONFLICT (id, season_id) DO NOTHING
-                """);
-        jdbc.execute("""
-                INSERT INTO player (id, season_id, team_id, first_name, second_name, web_name,
-                                    element_type, now_cost, status, total_points, minutes,
-                                    goals_scored, assists, form, selected_by_percent) VALUES
-                    (9401, 9027, 9001, 'Emeka', 'Okafor',   'Okafor',   3, 80, 'a', 12, 90, 1, 0, 6.0,  4.0),
-                    (9402, 9027, 9001, 'Diego', 'Vasquez',  'Vasquez',  4, 96, 'a', 15, 90, 2, 0, 7.5,  6.0),
-                    (9403, 9027, 9001, 'Tiago', 'Ferreira', 'Ferreira', 2, 45, 'a',  6, 90, 0, 0, 3.0,  5.0),
-                    -- Shares a web_name with a player who exists in last season's data too, so
-                    -- the name bridge has two candidates and no way to tell them apart.
-                    (9404, 9027, 9001, 'Nils',  'Rask',     'Rask',     3, 55, 'a',  4, 90, 0, 0, 2.0,  3.0),
-                    (9405, 9027, 9001, 'Otto',  'Rask',     'Rask',     2, 45, 'a',  3, 90, 0, 0, 1.5,  2.0)
-                ON CONFLICT (id, season_id) DO NOTHING
-                """);
-        jdbc.execute("""
-                INSERT INTO player (id, season_id, team_id, first_name, second_name, web_name,
-                                    element_type, now_cost, status, total_points, minutes,
-                                    goals_scored, assists, form, selected_by_percent) VALUES
-                    (9210, 9026, 9001, 'Nils', 'Rask', 'Rask', 3, 55, 'a', 30, 270, 1, 1, 4.0, 3.0)
-                ON CONFLICT (id, season_id) DO NOTHING
-                """);
-    }
 
     /**
      * The point of the whole path: this season's squad, judged on last season's football. The
@@ -116,28 +79,27 @@ class PickToolsCrossSeasonTest {
      * The banner names the season being played; every number below it is last season's. AGENTS.md
      * requires each block to carry its own attribution rather than leaving one line to cover both.
      */
+    /**
+     * The previous season is named on every pick and in the footer, not on a second banner — a
+     * second banner would claim every number below it is last season's, and none purely is.
+     */
     @Test
-    void theMetricsCarryTheirOwnProvenanceLineAndNotJustTheBanner() {
+    void theFooterAndEachPickNameThePreviousSeasonAndItsWeight() {
         String result = tools.getDifferentialPicks("any", 100, 3);
 
-        assertThat(result).contains("Data source: season " + SharedStatsSeed.POPULATED_SEASON_CODE
-                + " — a COMPLETED PREVIOUS season.");
-        assertThat(result).contains("The underlying numbers are " + SharedStatsSeed.POPULATED_SEASON_CODE
-                + "'s because this season has 0 completed gameweek(s)");
-        assertThat(result).contains("never call them this season's form");
+        assertThat(result).contains("Data source: season " + SharedStatsSeed.CURRENT_SEASON_CODE);
+        assertThat(result).doesNotContain("Data source: season " + SharedStatsSeed.POPULATED_SEASON_CODE);
+        assertThat(result).contains("The weight on " + SharedStatsSeed.CURRENT_SEASON_CODE + " rises");
+        assertThat(result).contains("blend 0% " + SharedStatsSeed.CURRENT_SEASON_CODE + ", 100% "
+                + SharedStatsSeed.POPULATED_SEASON_CODE + " (0 mt this season)");
     }
 
-    /**
-     * A finished season is read whole. Taking its last ten gameweeks would mean its run-in —
-     * rotation, coasting, relegated sides — and the earlier version did exactly that while
-     * calling it "the previous season".
-     */
     @Test
     void aFinishedSeasonIsReadWholeRatherThanByItsRunIn() {
         String result = tools.getCaptainCandidates(3);
 
-        assertThat(result).contains("Ranked by Score over all of " + SharedStatsSeed.POPULATED_SEASON_CODE);
-        assertThat(result).doesNotContain("last 10 matches");
+        assertThat(result).contains("last 10 matches in " + SharedStatsSeed.CURRENT_SEASON_CODE
+                + ", blended with all of " + SharedStatsSeed.POPULATED_SEASON_CODE);
     }
 
     /**
@@ -146,12 +108,10 @@ class PickToolsCrossSeasonTest {
      * change between seasons.
      */
     @Test
-    void lastSeasonsRealisedPointsAreWeightedLowForTheStatedReason() {
+    void realisedPointsCarryNothingUntilThisSeasonHasCompletedGameweeks() {
         String result = tools.getCaptainCandidates(3);
 
-        assertThat(result).contains("deliberately low");
-        assertThat(result).contains("change between seasons");
-        assertThat(result).doesNotContain("as the sample grows");
+        assertThat(result).contains("Realised points carry 0% of the weight here, rising towards");
     }
 
     /**
@@ -166,5 +126,35 @@ class PickToolsCrossSeasonTest {
 
         assertThat(result).doesNotContain(" Rask (");
         assertThat(result).containsPattern("Ranked from [0-9]+ of the [0-9]+ players matching");
+    }
+
+    /**
+     * Two full matches this season is 30% on the ramp. Ferreira's xG/90 last season is 0.05
+     * (0.05 + 0.05 across 180 minutes in SharedStatsSeed); two matches at 0.25 make 0.25 this season;
+     * the blend is 0.3 x 0.25 + 0.7 x 0.05 = 0.11.
+     */
+    @Test
+    void twoMatchesThisSeasonBlendAtThirtyPercentAndTheLineSaysSo() {
+        NewSeasonSeed.giveFerreiraTwoMatches(jdbc);
+
+        String result = tools.getDifferentialPicks("DEF", 100, 3);
+
+        assertThat(result).contains("Ferreira");
+        assertThat(result).contains("xG/90 0.11");
+        assertThat(result).contains("blend 30% " + SharedStatsSeed.CURRENT_SEASON_CODE + ", 70% "
+                + SharedStatsSeed.POPULATED_SEASON_CODE + " (2 mt this season)");
+        assertThat(result).contains("Ranked by Score over each player's last 10 matches in "
+                + SharedStatsSeed.CURRENT_SEASON_CODE + ", blended with all of "
+                + SharedStatsSeed.POPULATED_SEASON_CODE);
+    }
+
+    @Test
+    void aPlayerWithNoMatchesThisSeasonIsRankedOnLastSeasonAndTheLineSaysZero() {
+        String result = tools.getDifferentialPicks("DEF", 100, 3);
+
+        assertThat(result).contains("Ferreira");
+        assertThat(result).contains("xG/90 0.05");
+        assertThat(result).contains("blend 0% " + SharedStatsSeed.CURRENT_SEASON_CODE + ", 100% "
+                + SharedStatsSeed.POPULATED_SEASON_CODE + " (0 mt this season)");
     }
 }
