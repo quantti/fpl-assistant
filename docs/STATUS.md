@@ -3076,9 +3076,8 @@ instead, which is per player and already correct; a gameweek number was always a
 
 ## Email verification: the runbook moves to a real domain (2026-08-28)
 
-Owner decision: buy a domain rather than work around not having one. `docs/EMAIL-SETUP.md` is
-rewritten on that assumption, with `fplassistant.example` standing in until the real one is
-bought — `.example` is IANA-reserved, so nothing there can accidentally work against a wrong host.
+Owner decision: buy a domain rather than work around not having one. It is **`fpl-sidekick.com`**,
+registered at Namecheap the same day, and `docs/EMAIL-SETUP.md` is rewritten around it.
 
 **Most of the old runbook's difficulty was the missing domain.** SPF and DKIM live in DNS on the
 domain mail is sent *from*, the app answered only on `fpl-assistant.fly.dev`, and a `.fly.dev`
@@ -3099,6 +3098,14 @@ one match: the deploy workflow's smoke-test URL. Nothing else knows the hostname
 link's destination is Supabase's **Site URL** alone, because `SupabaseAdminClient` deliberately
 sends no `redirect_to` — one place decides, and it is a dashboard field rather than code. Besides
 the smoke test, the only change is the `CORS_ORIGINS` secret.
+
+**Its DNS was read rather than assumed**, and it carries two things that shape the work. The apex
+already has an SPF record — Namecheap's email forwarding — and a domain may have exactly one: a
+second makes it fail SPF outright, which is worse than having none. Sending from
+`send.fpl-sidekick.com` sidesteps that entirely, which turns the subdomain from a tidiness
+preference into the recommendation. And the A record points at Namecheap's parking page, so
+Task 1 is a *change* to that record, not an addition; leaving both would send roughly half of all
+requests to a parking page.
 
 ### Stale documentation corrected the same day
 

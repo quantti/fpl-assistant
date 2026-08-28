@@ -8,19 +8,39 @@ Rewritten 2026-08-28 on the owner's decision to buy a domain. The previous versi
 around *not* having one, and most of its difficulty came from that; with a domain the awkward
 options disappear and this becomes a sequence rather than a compromise.
 
-## The placeholder
+## The domain: `fpl-sidekick.com`
 
-The domain is not bought yet. Everywhere one is needed this file writes **`fplassistant.example`**
-— `.example` is reserved by IANA and can never be a real domain, so nothing here can accidentally
-work against the wrong host, and one search replaces every occurrence.
-
-Shell blocks set it once:
+Bought 2026-08-28, registered at Namecheap. Shell blocks below set it once:
 
 ```bash
-DOMAIN=fplassistant.example      # ← replace when the domain is bought
+DOMAIN=fpl-sidekick.com
 ```
 
-When the domain is known: `grep -rn fplassistant.example docs/` finds every place to change.
+**Its DNS as it stands today**, read on 2026-08-28 — this is the starting point, not a blank slate:
+
+```
+A       @            192.64.119.148                                   ← Namecheap parking page
+AAAA    @            (none)
+NS      @            dns1/dns2.registrar-servers.com                  ← Namecheap DNS
+MX      @            eforward1-5.registrar-servers.com                ← Namecheap email forwarding
+TXT     @            "v=spf1 include:spf.efwd.registrar-servers.com ~all"
+TXT     _dmarc       (none)
+```
+
+`https://fpl-sidekick.com` does not answer. Nothing is wrong with that — it is a parked domain.
+
+**Two things follow, and one of them is a trap.**
+
+**There is already an SPF record on the apex.** A domain may have exactly one: two SPF TXT records
+make the domain fail SPF outright, which is worse than having none. So the mail provider's
+`include:` must be *merged into* the existing record rather than added beside it — unless you send
+from a subdomain, which has its own SPF and cannot collide. That is the stronger of the two
+reasons to prefer `send.fpl-sidekick.com` in Task 2.2, and it is why that recommendation is not
+merely tidiness.
+
+**The MX records are Namecheap's email forwarding**, which is how mail *to* the domain reaches
+you. Sending through a provider does not need MX and does not disturb it. Keep it: DMARC reports
+go to a mailbox at this domain, and a support address is worth having.
 
 ## Where this stands
 
@@ -32,21 +52,22 @@ Verified against production on 2026-08-28, not copied forward from the previous 
 | **Deployed** | **yes** — master deploys on push; last deploy 2026-08-28, `/actuator/health` is `UP` |
 | `SUPABASE_SERVICE_ROLE_KEY`, `INVITE_CODE` | **set** as Fly secrets, status `Deployed` |
 | Public sign-up in Supabase | turned off 2026-08-26 |
-| Domain | **not bought** — this runbook's precondition |
+| Domain | **bought** — `fpl-sidekick.com`, parked at Namecheap, not yet pointed at the app |
 | Custom SMTP | not configured |
 | Site URL / redirect URLs | unverified; likely still Supabase's `http://localhost:3000` default |
 | Email rate limit | not raised — a probe hit `429 over_email_send_rate_limit` on 2026-08-26 |
 | Invite codes issued | unknown — check with `--list-invite-codes` before assuming |
 
-So sign-up is closed at two independent points: no invite code exists to give anyone, and no mail
-can be sent. Neither is a hazard while both hold.
+So sign-up is closed at two independent points: no mail can be sent, and there may well be no
+invite code to give anyone. Neither is a hazard while both hold — but do not treat the second as
+a guarantee without running `--list-invite-codes`.
 
 ## The decision this runbook assumes
 
 A domain can serve mail only, or mail *and* the app. **This runbook moves both**, and that is a
 choice worth stating.
 
-Serving mail from `noreply@fplassistant.example` while the confirmation link lands on
+Serving mail from `noreply@fpl-sidekick.com` while the confirmation link lands on
 `fpl-assistant.fly.dev` is a mismatch between the sender and the destination — the shape every
 phishing filter is built to notice, and the shape a cautious tester notices too. It costs
 deliverability and trust for no saving worth having, because the DNS work is done either way.
@@ -59,25 +80,31 @@ different plan.
 
 ## Task 1 — Point the domain at the app
 
-**1.1 Buy the domain.** Any registrar. What matters is that you can edit its DNS records; if the
-registrar's DNS is awkward, delegate to Cloudflare and edit there.
+**1.1 Done** — the domain is registered and its DNS is hosted at Namecheap, so records are edited
+in the Namecheap dashboard under *Domain List → Manage → Advanced DNS*.
 
 **1.2 Ask Fly for a certificate.** This tells Fly to expect the name and starts the ACME challenge.
 
 ```bash
 export PATH="$HOME/.fly/bin:$PATH"
-DOMAIN=fplassistant.example
+DOMAIN=fpl-sidekick.com
 flyctl certs create "$DOMAIN"      -a fpl-assistant
 flyctl certs create "www.$DOMAIN"  -a fpl-assistant
 ```
 
-**1.3 Add the DNS records.** The app's addresses today (`flyctl ips list -a fpl-assistant`):
+**1.3 Point the records at Fly.** The app's addresses today
+(`flyctl ips list -a fpl-assistant`):
 
 ```
-A     @      66.241.125.168
-AAAA  @      2a09:8280:1::16c:e5d7:0
+A     @      66.241.125.168              ← replaces the parking IP 192.64.119.148
+AAAA  @      2a09:8280:1::16c:e5d7:0     ← new; there is no AAAA today
 CNAME www    fpl-assistant.fly.dev
 ```
+
+The A record is a **change**, not an addition: remove Namecheap's parking record, or the domain
+will resolve to two hosts and roughly half of requests will reach the wrong one. Namecheap's
+Advanced DNS page may also carry a `CNAME www → parkingpage.namecheap.com` and a URL-redirect
+record; both must go.
 
 The IPv4 is Fly's **shared** address, which is fine for a normal HTTPS app. Re-read
 `flyctl ips list` before trusting the values above — a dedicated v4 (`flyctl ips allocate-v4`)
@@ -106,8 +133,8 @@ misremembered as a reason to avoid Resend.
 
 **2.2 Decide which name sends.** Two options, and the second is the better habit:
 
-- `noreply@fplassistant.example` — verify the apex domain.
-- `noreply@send.fplassistant.example` — verify a subdomain instead.
+- `noreply@fpl-sidekick.com` — verify the apex domain.
+- `noreply@send.fpl-sidekick.com` — verify a subdomain instead.
 
 The subdomain keeps transactional mail's sending reputation separate from the apex, so a future
 mistake with a marketing tool cannot damage the domain that carries your sign-in mail. It costs
@@ -117,13 +144,21 @@ one extra DNS record. **Recommended: the subdomain.**
 them exactly as given. They will look like:
 
 ```
-TXT    send            "v=spf1 include:<provider>.com ~all"
-CNAME  <sel>._domainkey.send   <provider-supplied target>     # DKIM
-TXT    _dmarc          "v=DMARC1; p=none; rua=mailto:dmarc@fplassistant.example"
+TXT    send                    "v=spf1 include:<provider>.com ~all"
+CNAME  <sel>._domainkey.send   <provider-supplied target>          # DKIM
+TXT    _dmarc                  "v=DMARC1; p=none; rua=mailto:dmarc@fpl-sidekick.com"
 ```
 
-DMARC at `p=none` reports without rejecting, which is what you want while nothing is proven.
-Tighten to `p=quarantine` after a few weeks of clean reports, not before.
+**The SPF record goes on `send`, not on `@`.** The apex already has one
+(`v=spf1 include:spf.efwd.registrar-servers.com ~all`, Namecheap's forwarding), and a second SPF
+record on the same name makes the domain fail SPF instead of passing it. Sending from the
+subdomain keeps the two apart. If you ever do send from the apex, the provider's `include:` must
+be edited *into* the existing string — one record, two includes — never added as a second row.
+
+DMARC belongs on `_dmarc` at the apex and covers subdomains too. `p=none` reports without
+rejecting, which is what you want while nothing is proven; tighten to `p=quarantine` after a few
+weeks of clean reports, not before. `rua=` needs a mailbox that exists — Namecheap's forwarding
+already gives you one.
 
 **2.4 Wait for the provider to report the domain verified.** Do not proceed on "records added" —
 proceed on the provider's own green tick. DNS propagation is minutes to hours.
@@ -141,7 +176,7 @@ All four of these are dashboard settings in the Supabase project.
 
 ```
 Enable Custom SMTP    yes
-Sender email          noreply@send.fplassistant.example
+Sender email          noreply@send.fpl-sidekick.com
 Sender name           FPL Assistant
 Host                  <provider SMTP host>
 Port                  587            (or 465 for implicit TLS — the provider will say)
@@ -160,9 +195,9 @@ Thirty an hour covers a test round.
 **3.3 Authentication → URL Configuration**
 
 ```
-Site URL          https://fplassistant.example
-Redirect URLs     https://fplassistant.example/**
-                  https://www.fplassistant.example/**
+Site URL          https://fpl-sidekick.com
+Redirect URLs     https://fpl-sidekick.com/**
+                  https://www.fpl-sidekick.com/**
                   https://fpl-assistant.fly.dev/**        ← keep during the move
                   http://localhost:5173/**                ← local development
 ```
@@ -193,7 +228,7 @@ the new domain.
 
 ```bash
 flyctl secrets set -a fpl-assistant \
-  CORS_ORIGINS="https://fplassistant.example,https://www.fplassistant.example,https://fpl-assistant.fly.dev"
+  CORS_ORIGINS="https://fpl-sidekick.com,https://www.fpl-sidekick.com,https://fpl-assistant.fly.dev"
 ```
 
 Setting a secret restarts the app. Do it in the same window as the deploy in Task 5 rather than
@@ -232,8 +267,8 @@ already signed in.
 Expected, in order:
 
 1. The form says **"Check your email"** — not a redirect into the app.
-2. The message arrives from `noreply@send.fplassistant.example`, within a minute.
-3. The link lands on `https://fplassistant.example`, signed in.
+2. The message arrives from `noreply@send.fpl-sidekick.com`, within a minute.
+3. The link lands on `https://fpl-sidekick.com`, signed in.
 4. Signing in *before* following the link says **"Confirm your email address first"**.
 
 **5.4 If it fails, read this order.** Each of these fails in a way that looks like a different one.
@@ -250,6 +285,11 @@ Expected, in order:
 
 **5.5 Then tighten.** Remove the `fpl-assistant.fly.dev` redirect URL once nothing uses it, and
 move DMARC to `p=quarantine` after a few weeks of clean reports.
+
+**5.6 One thing this runbook cannot check for you.** Deliverability is judged by the receiving
+side, not by your provider's dashboard. Send to a Gmail address and a non-Gmail one, and in Gmail
+open *Show original* to confirm `SPF: PASS`, `DKIM: PASS`, `DMARC: PASS`. A message that arrives
+in your own inbox proves less than those three lines do.
 
 ---
 
