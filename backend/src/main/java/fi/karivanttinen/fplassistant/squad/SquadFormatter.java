@@ -2,6 +2,8 @@ package fi.karivanttinen.fplassistant.squad;
 
 import java.util.List;
 import java.util.Locale;
+
+import fi.karivanttinen.fplassistant.tools.ExpectedPoints;
 import java.util.Map;
 
 /**
@@ -40,9 +42,13 @@ public final class SquadFormatter {
                                 int excludedForNoRecord, List<SquadCandidate> resolvedIncludes,
                                 List<SquadCandidate> resolvedExcludes,
                                 Map<Integer, Double> scores, Map<Integer, Double> expectedMinutes,
-                                boolean noCandidateWasScoreable) {
+                                boolean noCandidateWasScoreable, String blendNote) {
         StringBuilder out = new StringBuilder();
-        out.append(priceProvenance).append('\n').append(metricProvenance).append("\n\n");
+        out.append(priceProvenance).append('\n').append(metricProvenance).append('\n');
+        if (blendNote != null) {
+            out.append(blendNote).append('\n');
+        }
+        out.append('\n');
 
         if (noCandidateWasScoreable) {
             out.append("WARNING: no player in today's pool could be matched to a real fixture for"
@@ -158,6 +164,16 @@ public final class SquadFormatter {
         } else {
             line.append(String.format(Locale.ROOT, " — %.2f xPts",
                     scores.getOrDefault(player.elementId(), 0.0)));
+            Object hasPrevious = player.metrics().get("blend_has_previous");
+            if (hasPrevious != null) {
+                int pct = (int) Math.round(
+                        ExpectedPoints.numeric(player.metrics().get("blend_weight")) * 100);
+                if (!Boolean.TRUE.equals(hasPrevious)) {
+                    line.append(" (this season only — no previous record)");
+                } else if (pct < 100) {
+                    line.append(" (this season ").append(pct).append("%)");
+                }
+            }
         }
         if (player.isDoubtful()) {
             line.append(" — DOUBTFUL: ").append(player.news());

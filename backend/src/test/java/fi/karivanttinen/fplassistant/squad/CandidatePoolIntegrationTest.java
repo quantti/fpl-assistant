@@ -205,7 +205,7 @@ class CandidatePoolIntegrationTest {
             assertThat(capture.date()).isEqualTo(tomorrow);
 
             List<SquadCandidate> candidates =
-                    pool.load(capture, pool.metricWindow(seasonResolver.resolve()));
+                    pool.load(capture, seasonResolver.metricSeasons(seasonResolver.resolve()));
 
             assertThat(candidates).isNotEmpty();
             assertThat(candidates).extracting(SquadCandidate::elementId).contains(changeoverId);
@@ -270,7 +270,7 @@ class CandidatePoolIntegrationTest {
     private List<SquadCandidate> load() {
         var resolved = seasonResolver.resolve();
         CandidatePool.Capture capture = pool.latestCapture().orElseThrow();
-        return pool.load(capture, pool.metricWindow(resolved))
+        return pool.load(capture, seasonResolver.metricSeasons(resolved))
                 .stream()
                 .filter(c -> TEST_ELEMENT_IDS.contains(c.elementId()))
                 .toList();
