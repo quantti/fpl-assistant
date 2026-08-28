@@ -616,17 +616,56 @@ Update `**PROGRESS:**` to `Task 3/7 done`.
 - Consumes: `SeasonBlend`, `MetricSeasons`, `SeasonResolver.metricSeasons`.
 - Produces: pick lines carrying a blend segment; the footer's new first sentence.
 
-**Step 1: Write the failing test.** `PickToolsCrossSeasonTest.beginTheNewSeason()` already
-inserts the new season's gameweek 101, team 9001 and players 9401–9410 with new ids for last
-season's names — Ferreira is 9403 there and 9205 in `TapasSeed`'s populated season. Add a second
-team and two fixtures to it, and this case:
-
-In `beginTheNewSeason()`, after the existing team insert, add:
+**Step 1: Extract the new-season seed into a shared helper, then write the failing test.**
+`PickToolsCrossSeasonTest.beginTheNewSeason()` inserts the new season's gameweek 101, team 9001
+and players 9401–9405 (Ferreira is 9403 there and 9205 in `TapasSeed`'s populated season), plus
+last season's second Rask. Task 6 needs exactly the same seed for `ExpectedStatsTools`, so move
+it rather than copy it a third time. Create
+`backend/src/test/java/fi/karivanttinen/fplassistant/testsupport/NewSeasonSeed.java`:
 
 ```java
+package fi.karivanttinen.fplassistant.testsupport;
+
+import org.springframework.jdbc.core.JdbcTemplate;
+
+/**
+ * The season being played, as it looks in the first week: a gameweek, two clubs, a handful of
+ * players with new element ids for last season's names, and — new in the blending work — two
+ * played fixtures so a player can have matches this season. Nothing else, so the early-season
+ * path is exactly what the tools meet in August.
+ *
+ * <p>Shared by the pick-tools and expected-stats cross-season tests. {@code CandidatePool}'s
+ * cross-season test seeds its own, smaller version under different ids (gameweek 111, players
+ * 9421-9422) and is left alone.
+ *
+ * <p>Ids are scoped so {@link #end} can remove exactly these rows: the current season is
+ * tapas-owned and shared with {@link TapasSeed}, and a blanket delete on {@code season_id}
+ * would wipe another class's rows.
+ */
+public final class NewSeasonSeed {
+
+    public static final int GAMEWEEK = 101;
+    public static final int ASHFIELD = 9001;
+    public static final int NORTHMOOR_CITY = 9002;
+    public static final int FERREIRA = 9403;
+    public static final int FIXTURE_HOME = 9111;
+    public static final int FIXTURE_AWAY = 9112;
+
+    private NewSeasonSeed() {
+    }
+
+    public static void begin(JdbcTemplate jdbc) {
         jdbc.execute("""
-                INSERT INTO team (id, season_id, name, short_name) VALUES
-                    (9002, 9027, 'Northmoor City', 'NMC')
+                INSERT INTO gameweek (id, season_id, name, deadline_time, finished, data_checked,
+                                      is_current, is_next) VALUES
+                    (101, 9027, 'Gameweek 1', TIMESTAMPTZ '2026-08-21 17:30:00+00', true, true,
+                     true, false)
+                ON CONFLICT (id, season_id) DO NOTHING
+                """);
+        jdbc.execute("""
+                INSERT INTO team (id, season_id, code, name, short_name, strength) VALUES
+                    (9001, 9027, 9001, 'Ashfield Rovers', 'ASH', 4),
+                    (9002, 9027, 9002, 'Northmoor City', 'NMC', 3)
                 ON CONFLICT (id, season_id) DO NOTHING
                 """);
         jdbc.execute("""
@@ -639,30 +678,30 @@ In `beginTheNewSeason()`, after the existing team insert, add:
                         TIMESTAMPTZ '2026-08-16 14:00:00+00', true, true)
                 ON CONFLICT (id, season_id) DO NOTHING
                 """);
-```
+        jdbc.execute("""
+                INSERT INTO player (id, season_id, team_id, first_name, second_name, web_name,
+                                    element_type, now_cost, status, total_points, minutes,
+                                    goals_scored, assists, form, selected_by_percent) VALUES
+                    (9401, 9027, 9001, 'Emeka', 'Okafor',   'Okafor',   3, 80, 'a', 12, 90, 1, 0, 6.0,  4.0),
+                    (9402, 9027, 9001, 'Diego', 'Vasquez',  'Vasquez',  4, 96, 'a', 15, 90, 2, 0, 7.5,  6.0),
+                    (9403, 9027, 9001, 'Tiago', 'Ferreira', 'Ferreira', 2, 45, 'a',  6, 90, 0, 0, 3.0,  5.0),
+                    -- Shares a web_name with a player who exists in last season's data too, so
+                    -- the name bridge has two candidates and no way to tell them apart.
+                    (9404, 9027, 9001, 'Nils',  'Rask',     'Rask',     3, 55, 'a',  4, 90, 0, 0, 2.0,  3.0),
+                    (9405, 9027, 9001, 'Otto',  'Rask',     'Rask',     2, 45, 'a',  3, 90, 0, 0, 1.5,  2.0)
+                ON CONFLICT (id, season_id) DO NOTHING
+                """);
+        jdbc.execute("""
+                INSERT INTO player (id, season_id, team_id, first_name, second_name, web_name,
+                                    element_type, now_cost, status, total_points, minutes,
+                                    goals_scored, assists, form, selected_by_percent) VALUES
+                    (9210, 9026, 9001, 'Nils', 'Rask', 'Rask', 3, 55, 'a', 30, 270, 1, 1, 4.0, 3.0)
+                ON CONFLICT (id, season_id) DO NOTHING
+                """);
+    }
 
-(Match the `team` column list to what the class's existing team insert uses — copy that
-statement and change the id and names.)
-
-In `endTheNewSeason()`, add before the existing deletes:
-
-```java
-        jdbc.update("DELETE FROM player_fixture_stats WHERE season_id = ? AND fixture_id IN (9111, 9112)",
-                CURRENT);
-        jdbc.update("DELETE FROM fixture WHERE season_id = ? AND id IN (9111, 9112)", CURRENT);
-        jdbc.update("DELETE FROM team WHERE season_id = ? AND id = 9002", CURRENT);
-```
-
-And the case:
-
-```java
-    /**
-     * Two full matches this season is 30% on the owner's ramp. Ferreira's xG/90 last season is
-     * 0.05 (0.05 + 0.05 over 180 minutes in TapasSeed); two matches at 0.25 here make 0.25 this
-     * season; the blend is 0.3 × 0.25 + 0.7 × 0.05 = 0.11.
-     */
-    @Test
-    void twoMatchesThisSeasonBlendAtThirtyPercentAndTheLineSaysSo() {
+    /** Ferreira's two full matches this season: 0.25 xG in each, so 0.25 xG/90. */
+    public static void giveFerreiraTwoMatches(JdbcTemplate jdbc) {
         jdbc.execute("""
                 INSERT INTO player_fixture_stats (fixture_id, player_id, season_id, gameweek,
                         player_team_id, opponent_team_id, was_home, kickoff_time, minutes,
@@ -673,6 +712,35 @@ And the case:
                     (9112, 9403, 9027, 101, 9001, 9002, false, TIMESTAMPTZ '2026-08-16 14:00:00+00', 90, 6, 0, 0, 0.25, 0.00, 0.25, 1, 0, 0.80, 45)
                 ON CONFLICT (fixture_id, player_id, season_id) DO NOTHING
                 """);
+    }
+
+    public static void end(JdbcTemplate jdbc) {
+        jdbc.update("DELETE FROM player_fixture_stats WHERE season_id = 9027 AND fixture_id IN (9111, 9112)");
+        jdbc.update("DELETE FROM fixture WHERE season_id = 9027 AND id IN (9111, 9112)");
+        jdbc.update("DELETE FROM player WHERE season_id = 9027 AND id BETWEEN 9401 AND 9410");
+        jdbc.update("DELETE FROM player WHERE season_id = 9026 AND id = 9210");
+        jdbc.update("DELETE FROM gameweek WHERE season_id = 9027 AND id = 101");
+        jdbc.update("DELETE FROM team WHERE season_id = 9027 AND id IN (9001, 9002)");
+    }
+}
+```
+
+Then in `PickToolsCrossSeasonTest`: delete its private `beginTheNewSeason()` and the body of
+`endTheNewSeason()`, and call `NewSeasonSeed.begin(jdbc)` from `seed()` and
+`NewSeasonSeed.end(jdbc)` from `endTheNewSeason()`. Run the class once; it must still pass —
+the seed is the same rows plus one team and two fixtures nobody reads yet.
+
+Now the cases:
+
+```java
+    /**
+     * Two full matches this season is 30% on the owner's ramp. Ferreira's xG/90 last season is
+     * 0.05 (0.05 + 0.05 over 180 minutes in TapasSeed); two matches at 0.25 here make 0.25 this
+     * season; the blend is 0.3 × 0.25 + 0.7 × 0.05 = 0.11.
+     */
+    @Test
+    void twoMatchesThisSeasonBlendAtThirtyPercentAndTheLineSaysSo() {
+        NewSeasonSeed.giveFerreiraTwoMatches(jdbc);
 
         String result = tools.getDifferentialPicks("DEF", 100, 3);
 
@@ -928,16 +996,50 @@ the numbers cover.` (differentials) / `the reply says which season the numbers c
 with: `Numbers blend this season with last on a per-player weight that rises with his matches
 this season; each pick shows its weight.`
 
-**Step 8: Fix the wording assertions that moved.** In `PickToolsCrossSeasonTest`:
-`theMetricsCarryTheirOwnProvenanceLineAndNotJustTheBanner` asserted the second `Data source:`
-line and "never call them this season's form" — replace its body with assertions on the new
-footer sentence (`"The weight on " + CURRENT_SEASON_CODE + " rises"`) and the per-pick segment
-(`"100% " + POPULATED_SEASON_CODE`). `aFinishedSeasonIsReadWholeRatherThanByItsRunIn` asserted
-`"Ranked by Score over all of "` — now `", blended with all of " + POPULATED_SEASON_CODE`.
-`lastSeasonsRealisedPointsAreWeightedLowForTheStatedReason` asserted "deliberately low" — that
-sentence is gone (the realised weight is keyed on the season being played's gameweeks, 0 here);
-replace with `contains("Realised points carry 0% of the weight here")`. Read each existing
-assertion before editing; change only the ones that name removed text.
+**Step 8: Rewrite the three existing cases whose wording the footer no longer carries.** In
+`PickToolsCrossSeasonTest`, exactly these; the other two cases in the class pass unchanged.
+
+`theMetricsCarryTheirOwnProvenanceLineAndNotJustTheBanner` asserted a second `Data source:`
+line, "The underlying numbers are …" and "never call them this season's form". All three
+sentences are gone by design (spec §3). Replace the whole method:
+
+```java
+    /**
+     * The previous season is named on every pick and in the footer, not on a second banner — a
+     * second banner would claim every number below it is last season's, and none purely is.
+     */
+    @Test
+    void theFooterAndEachPickNameThePreviousSeasonAndItsWeight() {
+        String result = tools.getDifferentialPicks("any", 100, 3);
+
+        assertThat(result).contains("Data source: season " + TapasSeed.CURRENT_SEASON_CODE);
+        assertThat(result).doesNotContain("Data source: season " + TapasSeed.POPULATED_SEASON_CODE);
+        assertThat(result).contains("The weight on " + TapasSeed.CURRENT_SEASON_CODE + " rises");
+        assertThat(result).contains("blend 0% " + TapasSeed.CURRENT_SEASON_CODE + ", 100% "
+                + TapasSeed.POPULATED_SEASON_CODE + " (0 mt this season)");
+    }
+```
+
+`aFinishedSeasonIsReadWholeRatherThanByItsRunIn` asserted `"Ranked by Score over all of "` and
+`doesNotContain("last 10 matches")`. The new sentence contains "last 10 matches" (for the season
+being played) *and* "all of" (for the previous one), so the second assertion inverts. Replace the
+two assertions with:
+
+```java
+        assertThat(result).contains("last 10 matches in " + TapasSeed.CURRENT_SEASON_CODE
+                + ", blended with all of " + TapasSeed.POPULATED_SEASON_CODE);
+```
+
+`lastSeasonsRealisedPointsAreWeightedLowForTheStatedReason` asserted "deliberately low",
+"change between seasons" and `doesNotContain("as the sample grows")`. The realised weight is now
+keyed on the season being played's completed gameweeks — 0 here, so 0% — and the "rising towards"
+clause prints because that season is the one being played. Replace the three assertions with:
+
+```java
+        assertThat(result).contains("Realised points carry 0% of the weight here, rising towards");
+```
+
+and rename the method `realisedPointsCarryNothingUntilThisSeasonHasCompletedGameweeks`.
 
 **Step 9: Run the pick tests, then the whole suite.**
 
@@ -976,9 +1078,41 @@ Update `**PROGRESS:**` to `Task 4/7 done`.
 - Produces: `CandidatePool.load(Capture, MetricSeasons)`; `SquadFormatter.format(...)` gains a
   trailing `String blendNote` parameter (null when not blending).
 
-**Step 1: Write the failing test.** `CandidatePoolCrossSeasonTest` seeds a new season the
-same way `PickToolsCrossSeasonTest` does. Add the same second team and two fixtures to its seed
-and the same cleanup (Task 3 Step 1, with this class's constants), then:
+**Step 1: Write the failing test.** `CandidatePoolCrossSeasonTest` seeds its own, smaller new
+season — gameweek **111**, team 9001, and `BRIDGED = 9421`, a current-season "Okafor" whose
+last-season counterpart is `TapasSeed`'s Okafor (9201: three 90-minute matches, xG 0.55 + 0.45
++ 0.25 = 1.25 over 270 minutes, so 0.4167 xG/90). It does not seed Ferreira and uses different
+ids from `NewSeasonSeed`, so it is extended in place. In its `beginTheNewSeason()`, add after the
+team insert:
+
+```java
+        jdbc.execute("""
+                INSERT INTO team (id, season_id, code, name, short_name, strength) VALUES
+                    (9002, 9027, 9002, 'Northmoor City', 'NMC', 3)
+                ON CONFLICT (id, season_id) DO NOTHING
+                """);
+        jdbc.execute("""
+                INSERT INTO fixture (id, season_id, gameweek, code, team_h, team_a,
+                                     team_h_score, team_a_score, team_h_difficulty,
+                                     team_a_difficulty, kickoff_time, started, finished) VALUES
+                    (9121, 9027, 111, 9121, 9001, 9002, 1, 1, 2, 3,
+                        TIMESTAMPTZ '2026-08-15 14:00:00+00', true, true),
+                    (9122, 9027, 111, 9122, 9002, 9001, 0, 0, 3, 2,
+                        TIMESTAMPTZ '2026-08-16 14:00:00+00', true, true)
+                ON CONFLICT (id, season_id) DO NOTHING
+                """);
+```
+
+and in `cleanUp()`, before the existing deletes:
+
+```java
+        jdbc.update("DELETE FROM player_fixture_stats WHERE season_id = ? AND fixture_id IN (9121, 9122)", CURRENT);
+        jdbc.update("DELETE FROM fixture WHERE season_id = ? AND id IN (9121, 9122)", CURRENT);
+        jdbc.update("DELETE FROM team WHERE season_id = ? AND id = 9002", CURRENT);
+```
+
+(Fixture ids 9121/9122 rather than `NewSeasonSeed`'s 9111/9112, so the two classes never touch
+each other's rows.) Then the case:
 
 ```java
     @Test
@@ -989,27 +1123,38 @@ and the same cleanup (Task 3 Step 1, with this class's constants), then:
                         total_points, goals_scored, assists, expected_goals, expected_assists,
                         expected_goal_involvements, clean_sheets, goals_conceded,
                         expected_goals_conceded, value) VALUES
-                    (9111, 9403, 9027, 101, 9001, 9002, true,  TIMESTAMPTZ '2026-08-15 14:00:00+00', 90, 2, 0, 0, 0.25, 0.00, 0.25, 0, 1, 1.20, 45),
-                    (9112, 9403, 9027, 101, 9001, 9002, false, TIMESTAMPTZ '2026-08-16 14:00:00+00', 90, 6, 0, 0, 0.25, 0.00, 0.25, 1, 0, 0.80, 45)
+                    (9121, 9421, 9027, 111, 9001, 9002, true,  TIMESTAMPTZ '2026-08-15 14:00:00+00', 90, 2, 0, 0, 0.25, 0.00, 0.25, 0, 1, 1.20, 80),
+                    (9122, 9421, 9027, 111, 9001, 9002, false, TIMESTAMPTZ '2026-08-16 14:00:00+00', 90, 6, 0, 0, 0.25, 0.00, 0.25, 1, 0, 0.80, 80)
                 ON CONFLICT (fixture_id, player_id, season_id) DO NOTHING
                 """);
 
-        SquadCandidate ferreira = load().stream()
-                .filter(c -> c.webName().equals("Ferreira")).findFirst().orElseThrow();
+        SquadCandidate okafor = load().stream()
+                .filter(c -> c.elementId() == BRIDGED).findFirst().orElseThrow();
 
-        assertThat(ferreira.tier()).isEqualTo(SquadCandidate.Tier.RANKABLE);
-        assertThat(ferreira.metrics().get("blend_weight")).isEqualTo(0.30);
-        assertThat(ExpectedPoints.numeric(ferreira.metrics().get("xg90")))
-                .isCloseTo(0.3 * 0.25 + 0.7 * 0.05, within(1e-9));
-        // Both seasons' minutes and fixtures feed expected minutes per fixture.
-        assertThat(ferreira.minutesInWindow()).isEqualTo(360.0);
+        assertThat(okafor.tier()).isEqualTo(SquadCandidate.Tier.RANKABLE);
+        assertThat(okafor.metrics().get("blend_weight")).isEqualTo(0.30);
+        assertThat(ExpectedPoints.numeric(okafor.metrics().get("xg90")))
+                .isCloseTo(0.3 * 0.25 + 0.7 * (1.25 * 90 / 270), within(1e-9));
+        // Both seasons' minutes feed expected minutes per fixture: 180 now, 270 last season.
+        assertThat(okafor.minutesInWindow()).isEqualTo(450.0);
     }
 ```
 
-Use this class's existing `load()` helper (it calls `pool.load(capture, pool.metricWindow(...))`
-today — Step 3 renames that). The daily-table row for Ferreira must exist in the capture this
-class seeds; follow how the class inserts its other current-season candidates and add
-`FERREIRA = 9403` to its element-id list and cleanup.
+Import `fi.karivanttinen.fplassistant.tools.ExpectedPoints` and `static ...Assertions.within`.
+The class's `load()` helper calls `pool.load(capture, pool.metricWindow(resolved))` today; Step 3
+changes it to `pool.load(capture, seasonResolver.metricSeasons(resolved))`.
+
+**Every caller of the old shapes, so none is missed when Step 3 renames them:**
+
+| file | line | change |
+| --- | --- | --- |
+| `squad/SquadTools.java` | 95–96 | `MetricSeasons metric = seasonResolver.metricSeasons(season); … pool.load(capture, metric)` |
+| `squad/SquadTools.java` | 181 | `SquadFormatter.format(…, blendNote)` (Step 6) |
+| `test/…/squad/CandidatePoolIntegrationTest.java` | 208, 273 | `pool.metricWindow(x)` → `seasonResolver.metricSeasons(x)` (the class already autowires `seasonResolver`) |
+| `test/…/squad/CandidatePoolCrossSeasonTest.java` | 176 | same |
+| `test/…/squad/SquadFormatterTest.java` | 70, 282, 295 | append `null` as the new last argument to `SquadFormatter.format(…)` |
+| `test/…/squad/SquadToolsCrossSeasonTest.java` | 234–245 | rewrite `theProvenanceLineNamesThePreviousSeasonNotTheThinCurrentOne` — see Step 6 |
+| `test/…/squad/CandidatePoolMetricWindowTest.java` | whole file | delete (Step 8) |
 
 **Step 2: Run; expect failure** (`metricWindow` still returns a single season; no
 `blend_weight` key).
@@ -1111,6 +1256,31 @@ Update `SquadCandidate`'s javadoc key list to name `blend_weight`, `blend_matche
 and pass `blendNote` as the last argument of `SquadFormatter.format`. Delete the comment above
 the old block; its reasoning no longer applies.
 
+`SquadToolsCrossSeasonTest.theProvenanceLineNamesThePreviousSeasonNotTheThinCurrentOne` pinned
+that old block: it expects the metrics line to name the previous season as `COMPLETED PREVIOUS`.
+Under blending the metrics line is the season being played's own banner and the previous season
+is named in the blend sentence, so replace the method:
+
+```java
+    /**
+     * The metrics line names the season being played — it is the season every candidate
+     * belongs to — and the sentence under it says what last season contributes and how. The
+     * current, thin season must still never be called a completed one.
+     */
+    @Test
+    void theMetricsLineNamesThisSeasonAndTheBlendSentenceNamesLast() {
+        String output = tools.buildSquad("", "", "", 100.0, 5, "");
+
+        assertThat(output).contains("Starting XI");
+        assertThat(output).contains("Data source: season " + TapasSeed.CURRENT_SEASON_CODE
+                + " (the season currently being played)");
+        assertThat(output).contains("Underlying numbers blend " + TapasSeed.CURRENT_SEASON_CODE
+                + " with " + TapasSeed.POPULATED_SEASON_CODE);
+        assertThat(output).doesNotContain("Data source: season " + TapasSeed.CURRENT_SEASON_CODE
+                + " — a COMPLETED PREVIOUS season");
+    }
+```
+
 **Step 7: `SquadFormatter`.** Add `String blendNote` as the final parameter of `format`;
 after the two provenance lines, `if (blendNote != null) out.append(blendNote).append("\n");`
 before the blank line. In `line(...)`, after the xPts figure for a rankable player:
@@ -1207,10 +1377,29 @@ Update `**PROGRESS:**` to `Task 6/7 done`.
 - Produces: rows tagged with `season_code`; summary line counts per season; second provenance
   line when any previous-season row is shown.
 
-**Step 1: Write the failing test.** Seed the new season exactly as
-`PickToolsCrossSeasonTest.beginTheNewSeason` does (copy the method and its cleanup; Ferreira is
-9403 there), add the two current-season fixtures and `player_fixture_stats` rows from Task 3
-Step 1, and:
+**Step 1: Write the failing test.** The class seeds through the helper Task 3 extracted:
+
+```java
+    @Autowired
+    ExpectedStatsTools tools;
+
+    @Autowired
+    JdbcTemplate jdbc;
+
+    @BeforeEach
+    void seed() {
+        TapasSeed.ensure(jdbc);
+        NewSeasonSeed.begin(jdbc);
+        NewSeasonSeed.giveFerreiraTwoMatches(jdbc);
+    }
+
+    @AfterEach
+    void endTheNewSeason() {
+        NewSeasonSeed.end(jdbc);
+    }
+```
+
+and the cases:
 
 ```java
     @Test
