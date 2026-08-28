@@ -23,6 +23,10 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
 ## Key references
 
 - **Current status, deviations from the plan, known issues: `docs/STATUS.md`** — read this first when picking the work back up
+- **Issue tracking is in Linear, team `Kari`, identifiers `KAR-n`** — that is where the current
+  state of every open item lives. GitHub Issues are closed and locked: everything was migrated on
+  2026-08-28, each issue carries a comment naming its `KAR-n`, and nothing new is filed there.
+  Older `#n` references in code and docs point at the migrated originals; follow the comment.
 - **Setup, commands, DB connection details: `docs/DEVELOPMENT.md`**
 - Design spec: `docs/superpowers/specs/2026-06-27-fpl-assistant-design.md`
 - Phase 1 plan: `docs/superpowers/plans/2026-06-27-phase1-core-chatbot.md` — several steps are stale; check `docs/STATUS.md` before following one
@@ -78,7 +82,7 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
   from `player_fixture_stats` and carry `SeasonContext.provenance()`. The two sources have
   different freshness and, during the changeover, different seasons, so a single banner would
   attribute one of them wrongly. Building the pool from the daily capture rather than the
-  tapas `player` table is deliberate and is what keeps issue #50 from recurring here: it also
+  tapas `player` table is deliberate and is what keeps issue #50 (KAR-32) from recurring here: it also
   means the tool works while tapas has not synced the season being played. Do not fold this
   into the single-banner convention.
 - **Tests seed the data they assert on and never depend on production content.** The suite runs
@@ -99,7 +103,8 @@ that mattered.
   from the diff, and then 1–3 sentences. Never restate what the diff shows, never paste test
   output, never list every file touched.
 - **PR title:** one line. **PR body:** 8 lines at most — what changed, why, how it was verified,
-  and a link to the plan if there is one. No headings, no checklists, no findings dumps.
+  a link to the plan if there is one, and the Linear identifier it closes (`Closes KAR-n`). No
+  headings, no checklists, no findings dumps.
 - **Describe the change, not the project.** Environment limits, plan status, background the
   reader already lives with ("branch protection is unavailable on this plan") belong in
   `docs/TODO.md` or `docs/STATUS.md`. A PR body that explains the repository is padding.
