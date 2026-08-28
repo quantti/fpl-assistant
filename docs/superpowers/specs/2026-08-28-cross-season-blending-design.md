@@ -304,11 +304,17 @@ the weight, so the section is rewritten to:
   `2 from … 3 from …`, the second provenance line is present. N=2: no previous rows, no second
   line.
 - **`SeasonResolverTest`:** `betterMetricSeason` cases removed.
-- **Measurement (plan Task 0, not a test):** on vaastav's 2024-25 and 2025-26 seasons, predict
-  the rest of a player's 2025-26 `xG/90` and `xA/90` from (all of 2024-25, first m matches of
-  2025-26) with the ramp, against this-season-only and last-season-only, for m = 1…8. Reported in
-  `docs/STATUS.md`. The ramp is the owner's and is not tuned by this; the measurement says how
-  much it buys and whether any step is clearly off.
+- **Measurement (plan Task 0, not a test).** The tool blends 2025-26 with 2026-27. Checking the
+  ramp needs two *completed* seasons — a "last season" and a "this season" whose remainder is
+  known — and on 2026-08-28 the season being played has one round, so that pair does not yet
+  exist among the seasons the tool uses. The measurement therefore stands in the two most recent
+  completed seasons, 2024-25 and 2025-26, fetched once from vaastav's public archive and never
+  written to the database: predict the rest of a player's 2025-26 `xG/90` and `xA/90` from (all
+  of 2024-25, first m matches of 2025-26) with the ramp, against this-season-only and
+  last-season-only, for m = 1…8. Reported in `docs/STATUS.md`. The ramp is the owner's and is not
+  tuned by this; the measurement says how much it buys and whether any step is clearly off.
+  **Repeat it on the real pair, 2025-26 → 2026-27, once 2026-27 has ten completed gameweeks** —
+  filed as a follow-up ticket in Task 7.
 
 ### 9. Documentation
 

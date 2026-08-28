@@ -79,6 +79,16 @@ Read-only. Produces numbers for `docs/STATUS.md`; changes nothing in code. The r
 owner's, so a bad number here is information, not a reason to retune — but a step that is
 clearly off is worth reporting before it ships.
 
+**Which seasons, and why.** Today is 2026-08-28. The season being played is 2026-27, with one
+completed gameweek, and the tool blends it with 2025-26. A measurement of the ramp needs a
+"this season" whose remainder is already known, so it cannot be run on 2026-27 yet. It stands in
+the two most recent *completed* seasons instead — 2024-25 as "last season", 2025-26 as "this
+season" — from vaastav's public per-gameweek archive, downloaded once into the scratchpad.
+**Nothing from 2024-25 is written to the database or checked into the repository**; the project
+holds player statistics for 2025-26 and 2026-27 only, and that stays so. The same script is
+run again on the real pair (2025-26 → 2026-27) once 2026-27 has ten completed gameweeks; Task 7
+files that follow-up.
+
 **Files:** a throwaway script in the scratchpad; the outcome recorded in this file.
 
 **Step 1: Fetch vaastav's per-player, per-gameweek rows for both seasons.**
@@ -1381,7 +1391,8 @@ with no previous record is ranked on this season alone and says so. ExpectedStat
 short window from last season with every row labelled.
 
 One new class holds the ramp; ExpectedPoints and HorizonScorer are untouched. Measured against
-both single-season baselines on 2024-25 → 2025-26 (see STATUS).
+both single-season baselines on the two most recent completed seasons, 2024-25 → 2025-26, as a
+stand-in until 2026-27 has enough rounds to measure the real pair (see STATUS).
 
 Verified: full suite green against a freshly reset container.
 Plan: docs/superpowers/plans/2026-08-28-cross-season-blending.md
@@ -1390,7 +1401,9 @@ BODY
 )"
 ```
 
-Set KAR-38 and its children to In Review. Update `**PROGRESS:**` to `Task 7/7 done`.
+Set KAR-38 and its children to In Review. File one follow-up in Linear: *"Re-measure the
+cross-season ramp on 2025-26 → 2026-27 after GW10"*, pointing at Task 0's script and table, so
+the stand-in measurement is replaced by the real one. Update `**PROGRESS:**` to `Task 7/7 done`.
 
 ---
 
