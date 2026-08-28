@@ -230,17 +230,22 @@ class SquadToolsCrossSeasonTest {
                 xg + xa, xgc);
     }
 
+    /**
+     * The metrics line names the season being played — it is the season every candidate belongs
+     * to — and the sentence under it says what last season contributes and how much. The current,
+     * thin season must still never be called a completed one.
+     */
     @Test
-    void theProvenanceLineNamesThePreviousSeasonNotTheThinCurrentOne() {
+    void theMetricsLineNamesThisSeasonAndTheBlendSentenceNamesLast() {
         String output = tools.buildSquad("", "", "", 100.0, 5, "");
 
         assertThat(output).contains("Starting XI");
-        // The fix: the previous, actually-completed season is named as completed.
-        assertThat(output).contains("Data source: season " + SharedStatsSeed.POPULATED_SEASON_CODE
-                + " — a COMPLETED PREVIOUS season.");
-        // The bug: the resolved (current, too-thin) season must never be named as completed —
-        // that is a self-contradiction, since the price line above names it as the live season.
+        assertThat(output).contains("Data source: season " + SharedStatsSeed.CURRENT_SEASON_CODE
+                + " (the season currently being played)");
+        assertThat(output).contains("Underlying numbers blend " + SharedStatsSeed.CURRENT_SEASON_CODE
+                + " with " + SharedStatsSeed.POPULATED_SEASON_CODE);
         assertThat(output).doesNotContain("Data source: season " + SharedStatsSeed.CURRENT_SEASON_CODE
                 + " — a COMPLETED PREVIOUS season");
     }
+
 }

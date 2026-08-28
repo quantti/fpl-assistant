@@ -120,30 +120,25 @@ public class SeasonResolver {
     }
 
     /**
-     * Whether the previous season is a better source of metrics than the season being played,
-     * and its context if so. "Better" is not merely "has any data at all": a previous season
-     * with one synced gameweek is not evidence to prefer over this season's four, so the
-     * fallback only fires when the previous season actually holds more completed evidence than
-     * {@code played} — the season being played's own count, already known to the caller.
-     *
-     * <p>{@code PickTools} and {@code CandidatePool} stated this rule independently, and one of
-     * them lost the comparison against {@code played} in a later edit and fell back
-     * unconditionally whenever the season being played was thin — bridging to a previous season
-     * that was thinner still. It lives here once now so the two cannot drift apart again.
-     *
-     * @param played completed gameweeks the caller has already counted for {@code season}
-     * @param minSampleGameweeks completed gameweeks {@code season} needs before its own numbers
-     *        are preferred outright, without even consulting the previous season
+     * The seasons a ranking's metrics come from: the resolved season, and the one before it when
+     * the resolved season is being played. See {@link MetricSeasons}.
      */
-    public Optional<SeasonContext> betterMetricSeason(SeasonContext season, int played,
-                                                       int minSampleGameweeks) {
-        if (played >= minSampleGameweeks) {
-            return Optional.empty();
-        }
-        Optional<SeasonContext> previous = previousSeason(season);
-        if (previous.isPresent() && completedGameweeks(previous.get().seasonId()) > played) {
-            return previous;
-        }
-        return Optional.empty();
+    public MetricSeasons metricSeasons(SeasonContext season) {
+        Optional<SeasonContext> previous = season.currentSeason()
+                ? previousSeason(season) : Optional.empty();
+        return new MetricSeasons(season, previous, completedGameweeks(season.seasonId()),
+                latestGameweek(season.seasonId()));
     }
+
+    /**
+     * The newest gameweek the underlying data actually reaches. Printed so a stalled shared sync
+     * shows as visibly old data rather than ranking silently on weeks-old numbers.
+     */
+    public int latestGameweek(int seasonId) {
+        Integer gw = jdbc.queryForObject(
+                "SELECT COALESCE(max(gameweek), 0) FROM player_fixture_stats WHERE season_id = ?",
+                Integer.class, seasonId);
+        return gw == null ? 0 : gw;
+    }
+
 }

@@ -1,8 +1,10 @@
 package dev.quantti.fplassistant.tools;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -41,8 +43,9 @@ public class ExpectedStatsTools implements FplTool {
     }
 
     @Tool(description = """
-            Get a player's underlying expected stats over their last N fixtures in the
-            current season — expected goals (xG), expected assists (xA), expected goal
+            Get a player's underlying expected stats over their last N fixtures this season,
+            filled from last season when this season has fewer than N — every row names its
+            season — expected goals (xG), expected assists (xA), expected goal
             involvements (xGI), alongside actual goals, assists and minutes. Use this to
             judge whether a player is over- or under-performing their underlying numbers,
             not just their raw goal/assist counts. N is capped at 10. The reply begins with
@@ -86,12 +89,31 @@ public class ExpectedStatsTools implements FplTool {
                     LIMIT ?
                     """, season.seasonId(), playerId, limit);
 
-            if (rows.isEmpty()) {
+            List<Map<String, Object>> shown = new ArrayList<>(rows);
+            for (Map<String, Object> r : shown) {
+                r.put("season_code", season.code());
+            }
+            Optional<SeasonContext> previous = Optional.empty();
+            int fromPrevious = 0;
+            if (season.currentSeason() && shown.size() < limit) {
+                previous = seasonResolver.previousSeason(season);
+                if (previous.isPresent()) {
+                    List<Map<String, Object>> older = previousSeasonPlayerRows(
+                            previous.get(), webName, limit - shown.size());
+                    fromPrevious = older.size();
+                    shown.addAll(older);
+                }
+            }
+
+            if (shown.isEmpty()) {
                 return season.provenance() + "\nNo fixture-level expected stats yet for " + webName
                         + " in " + season.code() + "." + ambiguity;
             }
 
-            return season.provenance() + "\n\n" + formatPlayer(webName, rows) + ambiguity;
+            String header = season.provenance() + (fromPrevious > 0
+                    ? "\n" + previous.orElseThrow().previousSeasonProvenance(true) : "");
+            return header + "\n\n"
+                    + formatPlayer(webName, shown, season.code(), fromPrevious) + ambiguity;
         } catch (DataAccessException e) {
             log.error("getPlayerExpectedStats(\"{}\", {}) failed", playerName, lastN, e);
             return "Expected-stats data is temporarily unavailable (database error)."
@@ -100,7 +122,8 @@ public class ExpectedStatsTools implements FplTool {
     }
 
     @Tool(description = """
-            Get a team's expected output over their last N fixtures in the current season —
+            Get a team's expected output over their last N fixtures this season, filled from
+            last season when this season has fewer than N — every row names its season —
             attacking expected goals (xG), expected assists (xA) and expected goal
             involvements (xGI) aggregated across the team's players per fixture, plus actual
             goals scored, and defensively the expected goals against (xGA) and actual goals
@@ -152,12 +175,31 @@ public class ExpectedStatsTools implements FplTool {
                     LIMIT ?
                     """, season.seasonId(), teamId, limit);
 
-            if (fixtures.isEmpty()) {
+            List<Map<String, Object>> shown = new ArrayList<>(fixtures);
+            for (Map<String, Object> f : shown) {
+                f.put("season_code", season.code());
+            }
+            Optional<SeasonContext> previous = Optional.empty();
+            int fromPrevious = 0;
+            if (season.currentSeason() && shown.size() < limit) {
+                previous = seasonResolver.previousSeason(season);
+                if (previous.isPresent()) {
+                    List<Map<String, Object>> older = previousSeasonTeamRows(
+                            previous.get(), name, limit - shown.size());
+                    fromPrevious = older.size();
+                    shown.addAll(older);
+                }
+            }
+
+            if (shown.isEmpty()) {
                 return season.provenance() + "\nNo fixture-level expected stats yet for " + name
                         + " in " + season.code() + "." + ambiguity;
             }
 
-            return season.provenance() + "\n\n" + formatTeam(name, fixtures) + ambiguity;
+            String header = season.provenance() + (fromPrevious > 0
+                    ? "\n" + previous.orElseThrow().previousSeasonProvenance(true) : "");
+            return header + "\n\n"
+                    + formatTeam(name, shown, season.code(), fromPrevious) + ambiguity;
         } catch (DataAccessException e) {
             log.error("getTeamExpectedGoals(\"{}\", {}) failed", teamName, lastN, e);
             return "Expected-stats data is temporarily unavailable (database error)."
@@ -165,11 +207,95 @@ public class ExpectedStatsTools implements FplTool {
         }
     }
 
-    static String formatPlayer(String webName, List<Map<String, Object>> rows) {
+    /**
+     * Last season's fixtures for the same name, only when that name is unique there — the same
+     * bridge the ranking tools use, for the same reason: element ids are reassigned every summer
+     * and a guessed match attaches another player's football to this player's card.
+     */
+    private List<Map<String, Object>> previousSeasonPlayerRows(SeasonContext previous,
+                                                               String webName, int limit) {
+        List<Integer> ids = jdbc.queryForList("""
+                SELECT id FROM player WHERE season_id = ? AND LOWER(web_name) = LOWER(?)
+                """, Integer.class, previous.seasonId(), webName);
+        if (ids.size() != 1) {
+            return List.of();
+        }
+        List<Map<String, Object>> rows = jdbc.queryForList("""
+                SELECT pfs.gameweek, pfs.was_home, pfs.minutes,
+                       pfs.goals_scored, pfs.assists,
+                       pfs.expected_goals, pfs.expected_assists, pfs.expected_goal_involvements,
+                       opp.short_name AS opponent
+                FROM player_fixture_stats pfs
+                LEFT JOIN team opp ON opp.id = pfs.opponent_team_id AND opp.season_id = pfs.season_id
+                WHERE pfs.season_id = ? AND pfs.player_id = ?
+                ORDER BY pfs.kickoff_time DESC NULLS LAST
+                LIMIT ?
+                """, previous.seasonId(), ids.getFirst(), limit);
+        for (Map<String, Object> r : rows) {
+            r.put("season_code", previous.code());
+        }
+        return rows;
+    }
+
+    /** The same fill for a club, matched on its name in the previous season. */
+    private List<Map<String, Object>> previousSeasonTeamRows(SeasonContext previous, String name,
+                                                             int limit) {
+        List<Integer> ids = jdbc.queryForList("""
+                SELECT id FROM team WHERE season_id = ? AND LOWER(name) = LOWER(?)
+                """, Integer.class, previous.seasonId(), name);
+        if (ids.size() != 1) {
+            return List.of();
+        }
+        List<Map<String, Object>> rows = jdbc.queryForList("""
+                SELECT pfs.gameweek, pfs.was_home,
+                       opp.short_name AS opponent,
+                       COALESCE(SUM(pfs.expected_goals), 0) AS xg,
+                       COALESCE(SUM(pfs.expected_assists), 0) AS xa,
+                       COALESCE(SUM(pfs.expected_goal_involvements), 0) AS xgi,
+                       COALESCE(SUM(pfs.goals_scored), 0) AS goals,
+                       COALESCE(MAX(pfs.expected_goals_conceded), 0) AS xga,
+                       COALESCE(MAX(pfs.goals_conceded), 0) AS conceded
+                FROM player_fixture_stats pfs
+                LEFT JOIN team opp ON opp.id = pfs.opponent_team_id AND opp.season_id = pfs.season_id
+                WHERE pfs.season_id = ? AND pfs.player_team_id = ?
+                GROUP BY pfs.fixture_id, pfs.gameweek, pfs.was_home, opp.short_name
+                ORDER BY MAX(pfs.kickoff_time) DESC NULLS LAST
+                LIMIT ?
+                """, previous.seasonId(), ids.getFirst(), limit);
+        for (Map<String, Object> r : rows) {
+            r.put("season_code", previous.code());
+        }
+        return rows;
+    }
+
+    /** How many fixtures came from which season, for the heading. */
+    private static String windowLabel(List<Map<String, Object>> rows, String currentCode,
+                                      int fromPrevious) {
+        if (fromPrevious <= 0) {
+            return "";
+        }
+        String previousCode = String.valueOf(rows.getLast().get("season_code"));
+        return ": %d from %s, %d from %s".formatted(
+                rows.size() - fromPrevious, currentCode, fromPrevious, previousCode);
+    }
+
+    /**
+     * The row's season, printed only when the reply actually mixes two. A single-season window
+     * needs no prefix — the banner above already names the season, and repeating it on every
+     * line is noise the model has to read past.
+     */
+    private static String seasonPrefix(Map<String, Object> row, int fromPrevious) {
+        Object code = row.get("season_code");
+        return fromPrevious <= 0 || code == null ? "" : code + " ";
+    }
+
+    static String formatPlayer(String webName, List<Map<String, Object>> rows, String currentCode,
+                               int fromPrevious) {
         double xg = 0, xa = 0, xgi = 0;
         int goals = 0, assists = 0, minutes = 0;
         StringBuilder out = new StringBuilder("Expected stats for ").append(webName)
-                .append(" (last ").append(rows.size()).append(" fixtures):\n");
+                .append(" (last ").append(rows.size()).append(" fixtures")
+                .append(windowLabel(rows, currentCode, fromPrevious)).append("):\n");
         for (Map<String, Object> r : rows) {
             xg += num(r, "expected_goals");
             xa += num(r, "expected_assists");
@@ -177,8 +303,8 @@ public class ExpectedStatsTools implements FplTool {
             goals += (int) num(r, "goals_scored");
             assists += (int) num(r, "assists");
             minutes += (int) num(r, "minutes");
-            out.append("  GW%s vs %s %s: %d min, xG %.2f xA %.2f (G%d A%d)\n".formatted(
-                    r.get("gameweek"), opponent(r),
+            out.append("  %sGW%s vs %s %s: %d min, xG %.2f xA %.2f (G%d A%d)\n".formatted(
+                    seasonPrefix(r, fromPrevious), r.get("gameweek"), opponent(r),
                     Boolean.TRUE.equals(r.get("was_home")) ? "(H)" : "(A)",
                     (int) num(r, "minutes"),
                     num(r, "expected_goals"), num(r, "expected_assists"),
@@ -191,11 +317,13 @@ public class ExpectedStatsTools implements FplTool {
         return out.toString();
     }
 
-    static String formatTeam(String name, List<Map<String, Object>> fixtures) {
+    static String formatTeam(String name, List<Map<String, Object>> fixtures,
+                             String currentCode, int fromPrevious) {
         double totalXg = 0, totalXa = 0, totalXgi = 0, totalXga = 0;
         int totalGoals = 0, totalConceded = 0;
         StringBuilder out = new StringBuilder("Expected output for ").append(name)
-                .append(" (last ").append(fixtures.size()).append(" fixtures):\n");
+                .append(" (last ").append(fixtures.size()).append(" fixtures")
+                .append(windowLabel(fixtures, currentCode, fromPrevious)).append("):\n");
         for (Map<String, Object> f : fixtures) {
             double xg = num(f, "xg");
             double xa = num(f, "xa");
@@ -209,8 +337,8 @@ public class ExpectedStatsTools implements FplTool {
             totalXga += xga;
             totalGoals += goals;
             totalConceded += conceded;
-            out.append("  GW%s vs %s %s: xG %.2f xA %.2f xGI %.2f (scored %d) | xGA %.2f (conceded %d)\n"
-                    .formatted(f.get("gameweek"), opponent(f),
+            out.append("  %sGW%s vs %s %s: xG %.2f xA %.2f xGI %.2f (scored %d) | xGA %.2f (conceded %d)\n"
+                    .formatted(seasonPrefix(f, fromPrevious), f.get("gameweek"), opponent(f),
                             Boolean.TRUE.equals(f.get("was_home")) ? "(H)" : "(A)",
                             xg, xa, xgi, goals, xga, conceded));
         }

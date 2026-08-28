@@ -4,6 +4,7 @@ import java.time.LocalDate;
 import java.util.List;
 
 import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
+import dev.quantti.fplassistant.tools.ExpectedPoints;
 import dev.quantti.fplassistant.tools.SeasonResolver;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -15,6 +16,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.within;
 
 /**
  * {@link CandidatePool} when the season being played has begun but holds too little data to
@@ -84,6 +86,10 @@ class CandidatePoolCrossSeasonTest {
     @AfterEach
     void cleanUp() {
         deleteTestRows();
+        jdbc.update("DELETE FROM player_fixture_stats WHERE season_id = ? AND fixture_id IN (9121, 9122)",
+                CURRENT);
+        jdbc.update("DELETE FROM fixture WHERE season_id = ? AND id IN (9121, 9122)", CURRENT);
+        jdbc.update("DELETE FROM team WHERE season_id = ? AND id = 9002", CURRENT);
         jdbc.update("DELETE FROM player WHERE season_id = ? AND id IN (?, ?)", CURRENT, BRIDGED, AMBIGUOUS);
         jdbc.update("DELETE FROM gameweek WHERE season_id = ? AND id = ?", CURRENT, GAMEWEEK);
         jdbc.update("DELETE FROM team WHERE season_id = ? AND id = ?", CURRENT, TEAM);
@@ -109,7 +115,20 @@ class CandidatePoolCrossSeasonTest {
                 """);
         jdbc.execute("""
                 INSERT INTO team (id, season_id, code, name, short_name, strength) VALUES
-                    (9001, 9027, 9001, 'Ashfield Rovers', 'ASH', 4)
+                    (9001, 9027, 9001, 'Ashfield Rovers', 'ASH', 4),
+                    (9002, 9027, 9002, 'Northmoor City', 'NMC', 3)
+                ON CONFLICT (id, season_id) DO NOTHING
+                """);
+        // Two played fixtures so a candidate can have matches this season. Ids 9121/9122 rather
+        // than NewSeasonSeed's 9111/9112, so the two classes never touch each other's rows.
+        jdbc.execute("""
+                INSERT INTO fixture (id, season_id, gameweek, code, team_h, team_a,
+                                     team_h_score, team_a_score, team_h_difficulty,
+                                     team_a_difficulty, kickoff_time, started, finished) VALUES
+                    (9121, 9027, 111, 9121, 9001, 9002, 1, 1, 2, 3,
+                        TIMESTAMPTZ '2026-08-15 14:00:00+00', true, true),
+                    (9122, 9027, 111, 9122, 9002, 9001, 0, 0, 3, 2,
+                        TIMESTAMPTZ '2026-08-16 14:00:00+00', true, true)
                 ON CONFLICT (id, season_id) DO NOTHING
                 """);
         jdbc.execute("""
@@ -173,9 +192,38 @@ class CandidatePoolCrossSeasonTest {
     private List<SquadCandidate> load() {
         var resolved = seasonResolver.resolve();
         CandidatePool.Capture capture = pool.latestCapture().orElseThrow();
-        return pool.load(capture, pool.metricWindow(resolved))
+        return pool.load(capture, seasonResolver.metricSeasons(resolved))
                 .stream()
                 .filter(c -> c.elementId() == BRIDGED || c.elementId() == AMBIGUOUS)
                 .toList();
+    }
+
+    /**
+     * Two full matches this season is 30% on the ramp. SharedStats' Okafor (the bridge target) has
+     * 1.25 xG across 270 minutes last season — 0.4167 xG/90 — and 0.25 in each of two matches
+     * here, so the blend is 0.3 x 0.25 + 0.7 x 0.4167.
+     */
+    @Test
+    void twoMatchesThisSeasonBlendAtThirtyPercentInTheMetricsMap() {
+        jdbc.execute("""
+                INSERT INTO player_fixture_stats (fixture_id, player_id, season_id, gameweek,
+                        player_team_id, opponent_team_id, was_home, kickoff_time, minutes,
+                        total_points, goals_scored, assists, expected_goals, expected_assists,
+                        expected_goal_involvements, clean_sheets, goals_conceded,
+                        expected_goals_conceded, value) VALUES
+                    (9121, 9421, 9027, 111, 9001, 9002, true,  TIMESTAMPTZ '2026-08-15 14:00:00+00', 90, 2, 0, 0, 0.25, 0.00, 0.25, 0, 1, 1.20, 80),
+                    (9122, 9421, 9027, 111, 9001, 9002, false, TIMESTAMPTZ '2026-08-16 14:00:00+00', 90, 6, 0, 0, 0.25, 0.00, 0.25, 1, 0, 0.80, 80)
+                ON CONFLICT (fixture_id, player_id, season_id) DO NOTHING
+                """);
+
+        SquadCandidate okafor = load().stream()
+                .filter(c -> c.elementId() == BRIDGED).findFirst().orElseThrow();
+
+        assertThat(okafor.tier()).isEqualTo(SquadCandidate.Tier.RANKABLE);
+        assertThat(okafor.metrics().get("blend_weight")).isEqualTo(0.30);
+        assertThat(ExpectedPoints.numeric(okafor.metrics().get("xg90")))
+                .isCloseTo(0.3 * 0.25 + 0.7 * (1.25 * 90 / 270), within(1e-9));
+        // Both seasons' minutes feed expected minutes per fixture: 180 now, 270 last season.
+        assertThat(okafor.minutesInWindow()).isEqualTo(450.0);
     }
 }

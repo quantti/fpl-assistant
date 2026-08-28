@@ -10,6 +10,7 @@ import java.util.Map;
 import java.util.Optional;
 
 import dev.quantti.fplassistant.tools.DailyPriceSource;
+import dev.quantti.fplassistant.tools.MetricSeasons;
 import dev.quantti.fplassistant.tools.FplTool;
 import dev.quantti.fplassistant.tools.SeasonContext;
 import dev.quantti.fplassistant.tools.SeasonResolver;
@@ -92,8 +93,8 @@ public class SquadTools implements FplTool {
                 return "No player prices have been captured yet, so I cannot build a squad."
                         + " Tell the user the daily price capture has not run.";
             }
-            CandidatePool.MetricWindow window = pool.metricWindow(season);
-            List<SquadCandidate> candidates = pool.load(capture, window);
+            MetricSeasons metric = seasonResolver.metricSeasons(season);
+            List<SquadCandidate> candidates = pool.load(capture, metric);
             if (candidates.isEmpty()) {
                 return "No players are available to pick from today's capture.";
             }
@@ -168,21 +169,26 @@ public class SquadTools implements FplTool {
             int excludedForNoRecord = (int) candidates.stream()
                     .filter(c -> c.tier() == SquadCandidate.Tier.BODY).count();
 
-            // previousSeasonProvenance must be called on the previous season's own context, not
-            // on the resolved one: when isResolvedSeason() is false, "season" is the current,
-            // too-thin season, and naming it as the "COMPLETED PREVIOUS" one is exactly the
-            // misattribution this provenance discipline exists to prevent.
-            String metricProvenance = window.isResolvedSeason()
-                    ? season.provenance()
-                    : seasonResolver.previousSeason(season)
-                            .map(prev -> prev.previousSeasonProvenance(false))
-                            .orElseGet(season::provenance);
+            // The metrics line names the season every candidate belongs to; what last season
+            // contributes, and how much, is the sentence under it. A second "COMPLETED PREVIOUS"
+            // banner would claim every number below it is last season's, and under blending none
+            // purely is.
+            String metricProvenance = season.provenance();
+            String blendNote = metric.blending()
+                    ? "Underlying numbers blend " + metric.played().code() + " with "
+                            + metric.previousCode() + " per player: the weight on "
+                            + metric.played().code() + " rises with his own matches of an hour or"
+                            + " more this season — 1: 10%, 2: 30%, 3: 60%, 4: 80%, 5-7: 90%,"
+                            + " 8+: 100% — and each player below shows his where it is under"
+                            + " 100%. \"no " + metric.previousCode() + " record\" means he is"
+                            + " judged on " + metric.played().code() + " alone."
+                    : null;
 
             return SquadFormatter.format(solved.get(), constraints,
                     DailyPriceSource.provenance(capture.season(), capture.date(), LocalDate.now()),
                     metricProvenance,
                     excludedForNoRecord, pinned, excludedPlayers, scores, minutes,
-                    !anyCandidateHasFixtures);
+                    !anyCandidateHasFixtures, blendNote);
         } catch (DataAccessException e) {
             log.error("buildSquad failed", e);
             return "Squad data is temporarily unavailable (database error)."

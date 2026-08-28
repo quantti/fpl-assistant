@@ -51,13 +51,6 @@ public final class ExpectedPoints {
     public static final int MIN_WINDOW_MINUTES = 180;
 
     /**
-     * Completed gameweeks the season being played needs before its own numbers are used
-     * outright, without even consulting the previous season. See
-     * {@code SeasonResolver#betterMetricSeason}.
-     */
-    public static final int MIN_SAMPLE_GAMEWEEKS = 5;
-
-    /**
      * Defensive actions a player must reach in a match to be awarded {@link #DEFCON_POINTS},
      * indexed by {@code element_type}: 1=GK, 2=DEF, 3=MID, 4=FWD.
      *

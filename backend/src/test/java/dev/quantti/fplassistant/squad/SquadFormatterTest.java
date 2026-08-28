@@ -69,7 +69,7 @@ class SquadFormatterTest {
                                  List<SquadCandidate> resolvedExcludes) {
         return SquadFormatter.format(solved, constraints, "PRICE PROVENANCE",
                 "METRIC PROVENANCE", 12, resolvedIncludes, resolvedExcludes, Map.of(), Map.of(),
-                false);
+                false, null);
     }
 
     @Test
@@ -280,7 +280,7 @@ class SquadFormatterTest {
         Map<Integer, Double> minutes = Map.of(2, 45.0);
 
         String output = SquadFormatter.format(solved(), constraints(), "PRICE PROVENANCE",
-                "METRIC PROVENANCE", 12, resolvedMustInclude(), List.of(), scores, minutes, false);
+                "METRIC PROVENANCE", 12, resolvedMustInclude(), List.of(), scores, minutes, false, null);
 
         // Name1 (element id 1) is in the starting XI.
         assertThat(output).contains("4.50 xPts");
@@ -294,7 +294,7 @@ class SquadFormatterTest {
         // M4: an unscoreable horizon must be disclosed, not silently presented as a ranked squad.
         String output = SquadFormatter.format(solved(), constraints(), "PRICE PROVENANCE",
                 "METRIC PROVENANCE", 12, resolvedMustInclude(), List.of(), Map.of(), Map.of(),
-                true);
+                true, null);
 
         assertThat(output).containsIgnoringCase("arbitrary");
     }
