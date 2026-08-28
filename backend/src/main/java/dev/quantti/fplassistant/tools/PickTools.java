@@ -6,7 +6,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Optional;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -490,10 +489,9 @@ public class PickTools implements FplTool {
                 + (metric.played().currentSeason()
                         ? ", rising towards " + Math.round(MAX_REALISED_WEIGHT * 100)
                           + "% by gameweek " + FULL_WEIGHT_GAMEWEEK + " as the sample grows"
-                        : " — deliberately low: these are a previous season's returns, and"
-                          + " penalties, set-piece duty and a player's role all change between"
-                          + " seasons, so what he scored then is weaker evidence than how he"
-                          + " created chances")
+                        : " — a completed season's returns: penalties, set-piece duty and a"
+                          + " player's role all change between seasons, so read what he scored"
+                          + " then as last season's evidence, not this season's")
                 + ". Then average FDR of the next " + fixtureLimit + " fixtures, then "
                 + (ownershipTieBreak ? "ownership" : "total points") + ".\n");
         out.append("This is why both kinds of defender can appear: an attacking full-back earns"
