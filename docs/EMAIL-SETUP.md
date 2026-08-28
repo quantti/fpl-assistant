@@ -21,8 +21,11 @@ forward from an earlier version of this file.
 | Public sign-up in Supabase | turned off 2026-08-26 |
 | Domain | **bought** — `fpl-sidekick.com`, registered at Namecheap |
 | App on the domain | **serving** — both certificates Issued, `https://fpl-sidekick.com/actuator/health` returns 200 |
-| Parking A record | **still present** — see Trap 1; the one thing left in Task 1 |
-| Mail provider | **not set up** — Task 2, the remaining blocker |
+| Parking A record | **gone** — verified 2026-08-28, the apex now returns exactly one A record |
+| Resend DNS records | **all three live** — verified against the authoritative nameserver 2026-08-28 |
+| DMARC | **live**, one record, `p=none`, no `rua` |
+| Inbound mail to the domain | **dead** — the Custom MX switch removed the apex MX *and* SPF; see 2.8 |
+| Mail provider | Resend dashboard should now read **Verified** — check it |
 | Site URL / redirect URLs | unverified; likely still Supabase's `http://localhost:3000` default |
 | Email rate limit | not raised — a probe hit `429 over_email_send_rate_limit` on 2026-08-26 |
 | Invite codes issued | unknown — run `--list-invite-codes` rather than assuming |
@@ -60,7 +63,7 @@ magnitude. Choose mail on what breaks, not on what it costs.
 
 ---
 
-## The domain, and the three traps in it
+## The domain, and the four traps in it
 
 `fpl-sidekick.com`, registered at Namecheap, DNS hosted there too. Records are edited under
 **Domain List → Manage → Advanced DNS**.
@@ -120,15 +123,36 @@ field is the opposite — paste it exactly as given, in full.
 One more Namecheap mechanic: an **MX record's priority goes in its own field**, not at the front
 of the value. `10 feedback-smtp...` pasted whole into Value is a broken record.
 
+### Trap 4 — Namecheap will not let you add an MX record at all
+
+There is no MX option in the Host Records dropdown, and that is not a bug. Above the record list
+is a separate **MAIL SETTINGS** dropdown, currently set to **Email Forwarding**. While it is,
+Namecheap owns the MX records — it wrote the `eforward` ones itself — and refuses to let you add
+your own, including on a subdomain.
+
+Resend needs an MX record on `send.`, so this has to change to **Custom MX**. Task 2.3 does it,
+and does one thing first that matters: **write down the existing MX records before switching**,
+because the switch removes them.
+
+```
+10  eforward1.registrar-servers.com
+10  eforward2.registrar-servers.com
+10  eforward3.registrar-servers.com
+15  eforward4.registrar-servers.com
+20  eforward5.registrar-servers.com
+```
+
+Those are the values as of 2026-08-28 — confirm with `dig +short MX fpl-sidekick.com` before you
+touch anything, in case they have changed.
+
 ### What must not be touched
 
 ```
-MX   @   eforward1-5.registrar-servers.com    ← inbound mail; DMARC reports land here
 TXT  @   v=spf1 include:spf.efwd...           ← the apex SPF; leave it alone
 ```
 
-Namecheap's forwarding is how mail *to* the domain reaches you. Sending through Resend neither
-needs nor disturbs it, and you need a working inbox at this domain for DMARC reports.
+The apex SPF belongs to the forwarding service. Sending through Resend neither needs nor disturbs
+it.
 
 ---
 
@@ -163,25 +187,46 @@ curl -sS https://fpl-sidekick.com/actuator/health      # {"...","status":"UP"}
 
 **2.1 Create the account.** <https://resend.com>. Start on Free; you upgrade in 2.7.
 
-**2.2 Add the domain — and choose the region deliberately.**
+**2.2 Add the domain — and choose the region deliberately.** *(Done 2026-08-28.)*
 
 Dashboard → **Domains** → **Add Domain**.
 
 ```
-Domain    send.fpl-sidekick.com
+Domain    fpl-sidekick.com
 Region    EU (Ireland)
 ```
 
-Two decisions on one screen, both awkward to undo:
+**Add the apex, not a subdomain.** Resend creates the sending subdomain itself: the Return-Path
+defaults to `send.fpl-sidekick.com`, which is where the MX and SPF records go. That gets the
+benefit the earlier draft of this runbook was reaching for — the SPF lands on `send.` and cannot
+collide with Namecheap's apex SPF (Trap 2) — without you having to construct it by hand.
 
-- **The subdomain**, `send.`, not the apex. Trap 2 is the technical reason; the reputational one
-  is that a mistake later with some marketing tool on the apex then cannot damage the domain
-  carrying your sign-in mail.
-- **The region.** Your users and your app are in Europe, and mail metadata is personal data. Pick
-  the EU region. Changing it later means deleting the domain and verifying again.
+**You then send from an address at the verified domain**: `noreply@fpl-sidekick.com`. The `send.`
+subdomain is the bounce and return path, not the From address.
 
-**2.3 Add the three DNS records in Namecheap.** Resend shows them as soon as the domain is added.
-Read Trap 3 before pasting anything.
+**The region** matters and is awkward to undo: your users and your app are in Europe, and mail
+metadata is personal data. Changing it later means deleting the domain and verifying again.
+
+**2.3 Switch Mail Settings to Custom MX, then add the three records.**
+
+Namecheap → Advanced DNS. Before anything else:
+
+1. Run `dig +short MX fpl-sidekick.com` and keep the output. The switch below deletes those
+   records, and you will want them back in step 2.8.
+2. In **MAIL SETTINGS**, change **Email Forwarding** → **Custom MX**, and save. The MX option now
+   appears in the Host Records dropdown. This is Trap 4.
+
+Resend shows the three records as soon as the domain is added. Read Trap 3 before pasting
+anything.
+
+**As of 2026-08-28 one of the three is live and two are not**, which is Trap 4 doing exactly what
+it does:
+
+| Record | Host | State |
+|---|---|---|
+| DKIM TXT | `resend._domainkey` | **live** — `p=MIGf…` resolves |
+| SPF TXT | `send` | missing |
+| MX | `send` | missing — Namecheap offers no MX option until Mail Settings is Custom MX |
 
 | Type | Host (domain stripped) | Value | Priority |
 |---|---|---|---|
@@ -204,20 +249,22 @@ dig +short TXT resend._domainkey.fpl-sidekick.com
 Each must return what Resend showed. An empty answer means the record has not propagated yet, or
 the Host field carried a doubled domain (Trap 3).
 
-**2.5 Add DMARC.** One record, on the apex, covering subdomains too.
+**2.5 Add DMARC — without reports, for now.** One record, on the apex, covering subdomains too.
 
 | Type | Host | Value |
 |---|---|---|
-| TXT | `_dmarc` | `v=DMARC1; p=none; rua=mailto:dmarc@fpl-sidekick.com; fo=1` |
+| TXT | `_dmarc` | `v=DMARC1; p=none` |
 
-`p=none` reports without rejecting, which is what you want while nothing is proven. Tighten to
-`p=quarantine` only after a few weeks of clean reports.
+That is a complete, valid DMARC record. `p=none` states the policy and rejects nothing, which is
+what you want while nothing is proven; tighten to `p=quarantine` only after weeks of clean
+evidence.
 
-**The `rua` address has to exist, and it has to be at this domain.** An address in another domain
-— a Gmail address, say — needs an authorisation record on *that* domain's side, which you cannot
-add to `gmail.com`. Create `dmarc@fpl-sidekick.com` as a forwarder first: Namecheap → Domain List
-→ Manage → **Redirect Email**. Expect a daily XML attachment from every large mail provider; that
-is what the reports are.
+**Reports are deliberately left out until an inbox exists.** A `rua=` address has to exist *and*
+be at this domain — an address elsewhere, a Gmail one for instance, needs an authorisation record
+on *that* domain's side, which you cannot add to `gmail.com`. Since Trap 4 has just removed the
+forwarding that would have received them, adding `rua` now would point reports at a mailbox that
+does not exist. Step 2.8 restores inbound mail; add `rua` after that, and only once you have
+confirmed a test message actually arrives.
 
 ```bash
 dig +short TXT _dmarc.fpl-sidekick.com    # exactly one line
@@ -239,6 +286,42 @@ more care than an SMTP password ever gets.
 **2.7 Upgrade to Pro** before handing the invite code to anyone. The cost section above explains
 why the daily cap, and not the monthly total, is the reason.
 
+**2.8 Restore inbound mail, if you want it.** Optional, and nothing in the sign-up flow depends on
+it — but a product with users eventually needs an address people can write to, and DMARC reports
+need one too.
+
+**Confirmed 2026-08-28: the switch removed both.** The apex now has no MX records *and* no TXT
+SPF — Namecheap manages the forwarding SPF as part of the same bundle, so it went with the MX
+records. Public resolvers served the old values from cache for a while; the authoritative
+nameserver is the one to ask.
+
+Nothing about *sending* is affected, and that is worth being precise about rather than assumed:
+
+- **DKIM** signs as `fpl-sidekick.com` and the From header is at `fpl-sidekick.com`. Aligned.
+- **SPF** checks the envelope sender, which is `send.fpl-sidekick.com`, and that name has its own
+  SPF record. Under DMARC's default relaxed alignment a subdomain aligns with its parent. Aligned.
+
+Both mechanisms pass, so DMARC passes, with or without an apex SPF record.
+
+Under **Custom MX**, re-add the five apex records you recorded in 2.3:
+
+| Type | Host | Value | Priority |
+|---|---|---|---|
+| MX | `@` | `eforward1.registrar-servers.com` | `10` |
+| MX | `@` | `eforward2.registrar-servers.com` | `10` |
+| MX | `@` | `eforward3.registrar-servers.com` | `10` |
+| MX | `@` | `eforward4.registrar-servers.com` | `15` |
+| MX | `@` | `eforward5.registrar-servers.com` | `20` |
+
+Then Namecheap → Domain List → Manage → **Redirect Email**, and forward `dmarc@` to an address you
+read.
+
+**Whether forwarding still works in Custom MX mode is not documented by Namecheap, and this
+runbook does not claim it does.** Test it: send a message to `dmarc@fpl-sidekick.com` from an
+outside address and see whether it arrives. If it does, add `rua=mailto:dmarc@fpl-sidekick.com;
+fo=1` to the DMARC record from 2.5. If it does not, leave DMARC without reports — it loses you
+telemetry, nothing else — or move the domain's mail to a real mailbox provider later.
+
 **Done when:** the domain reads **Verified** in Resend, the three `dig` checks return what the
 dashboard shows, `_dmarc` returns exactly one line, and the API key is in your vault.
 
@@ -252,7 +335,7 @@ Four dashboard settings in the Supabase project.
 
 ```
 Enable Custom SMTP    yes
-Sender email          noreply@send.fpl-sidekick.com
+Sender email          noreply@fpl-sidekick.com
 Sender name           FPL Sidekick
 Host                  smtp.resend.com
 Port                  587
@@ -340,7 +423,7 @@ running it twice is safe.
 | Step | What should happen |
 |---|---|
 | Submit the form | Says **“Check your email”** — not a redirect into the app |
-| Inbox | Message from `noreply@send.fpl-sidekick.com`, within a minute |
+| Inbox | Message from `noreply@fpl-sidekick.com`, within a minute |
 | Follow the link | Lands on `https://fpl-sidekick.com`, signed in |
 | Sign in *before* confirming | Says **“Confirm your email address first”** |
 
@@ -386,7 +469,9 @@ Each of these fails in a way that looks like a different one.
 
 | Symptom | First thing to check |
 |---|---|
+| No MX option in Namecheap's dropdown | Trap 4 — Mail Settings is on Email Forwarding. Switch it to Custom MX (2.3) |
 | Domain never verifies in Resend | Trap 3 — a doubled domain in the Host field. `dig` the record and read what came back |
+| Mail to the domain stopped arriving | Expected after 2.3 removed the forwarding MX records; 2.8 restores them |
 | No mail at all | Supabase → Logs → Auth. A `429` is the rate limit (3.2); an SMTP auth error is the username or password (3.1 — the username is the literal `resend`) |
 | Mail arrives, link opens a blank page | Site URL (3.3) — almost always this |
 | Mail lands in spam | `dig` the SPF and DKIM records, then read `Show original` (5.3) to see which one failed |
