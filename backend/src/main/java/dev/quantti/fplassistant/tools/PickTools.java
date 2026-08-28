@@ -44,10 +44,14 @@ import org.springframework.stereotype.Component;
  * ({@link #MAX_REALISED_WEIGHT} at {@link #FULL_WEIGHT_GAMEWEEK}), so a hot start counts for
  * little in GW2 and a season of returns counts properly in GW20.
  *
- * <p>Not modelled: defensive-contribution points, save points and penalty saves. Only the first
- * of those is missing from the data — {@code player_fixture_stats} carries {@code saves} and
- * {@code penalties_saved}, and leaving them out is a choice, not a gap. Goalkeepers and
- * ball-winning defenders are understated either way, which the reply says.
+ * <p>Defensive contribution is modelled as a hit rate: the share of a player's hour-or-more
+ * matches in which he reached his position's action threshold, times the two points it pays. The
+ * average cannot stand in for it — the points land at a per-match threshold, so a defender steady
+ * on 9.8 actions scores nothing and one averaging 9.5 with a wide spread scores often.
+ *
+ * <p>Still not modelled: save points and penalty saves. {@code player_fixture_stats} carries
+ * {@code saves} and {@code penalties_saved}, so leaving them out is a choice, not a gap.
+ * Goalkeepers are understated, which the reply says.
  *
  * <p>The metrics come from whichever season has a real sample — the season being played once it
  * has {@link ExpectedPoints#MIN_SAMPLE_GAMEWEEKS} completed gameweeks, and the previous one until
@@ -112,7 +116,8 @@ public class PickTools implements FplTool {
             percent) whose underlying numbers and upcoming fixtures are favourable. Filters by
             position (1=GK, 2=DEF, 3=MID, 4=FWD, or "any"). Returns up to 10 players ranked by a
             Score: expected FPL points per 90 (xG and xA at that position's own goal and assist
-            values, plus the clean-sheet probability implied by expected goals conceded), blended
+            values, plus the clean-sheet probability implied by expected goals conceded and the
+            rate at which the player reaches the defensive-contribution threshold), blended
             with the points actually scored per 90 at a weight that rises as the season runs.
             Then the average difficulty of their next N fixtures, then ownership. NOT ranked by
             form: a recent points haul is a result, not a reason. Each pick shows the parts behind
@@ -156,7 +161,8 @@ public class PickTools implements FplTool {
             Suggest FPL captain candidates — midfielders and forwards with the strongest
             underlying attacking numbers and favourable upcoming fixtures. Returns up to 10
             players ranked by a Score: expected FPL points per 90 from xG and xA at that
-            position's own values, blended with the points actually scored per 90 at a weight
+            position's own values, plus the rate at which the player reaches the
+            defensive-contribution threshold, blended with the points actually scored per 90 at a weight
             that rises as the season runs. Then the average difficulty of their next N fixtures,
             then total points, each shown with ownership (so the user can see template vs
             differential captains). NOT ranked by form: a big gameweek is a result, not a reason,
@@ -270,6 +276,7 @@ public class PickTools implements FplTool {
                     SELECT pfs.player_id, pfs.minutes, pfs.total_points,
                            pfs.expected_goals AS xg, pfs.expected_assists AS xa,
                            pfs.expected_goals_conceded AS xgc,
+                           pfs.defensive_contribution,
                            -- fixture_id breaks the tie: a double gameweek gives one player two
                            -- rows with the same gameweek, and an unordered pair straddling the
                            -- window edge makes the same call return different numbers.
@@ -292,7 +299,21 @@ public class PickTools implements FplTool {
                            -- sheet: below that FPL awards none, and a cameo would otherwise
                            -- inherit the whole match's expected concession.
                            SUM(xgc) FILTER (WHERE minutes >= 60)
-                               / NULLIF(count(*) FILTER (WHERE minutes >= 60), 0) AS xgc_per_match
+                               / NULLIF(count(*) FILTER (WHERE minutes >= 60), 0) AS xgc_per_match,
+                           -- Defensive contribution pays at a threshold per match, so what
+                           -- matters is how often the player crossed it, not his average. Only
+                           -- matches he was on for an hour count, the same discipline the clean
+                           -- sheet uses: the actions arrive with the minutes. Both thresholds are
+                           -- counted because the position lives on player, not here; Java picks
+                           -- between them, so the rules of the game stay in one place.
+                           count(*) FILTER (WHERE minutes >= 60
+                               AND defensive_contribution IS NOT NULL) AS defcon_matches,
+                           count(*) FILTER (WHERE minutes >= 60
+                               AND defensive_contribution >= %d) AS defcon_hits_def,
+                           count(*) FILTER (WHERE minutes >= 60
+                               AND defensive_contribution >= %d) AS defcon_hits_mid,
+                           AVG(defensive_contribution) FILTER (WHERE minutes >= 60)
+                               AS defcon_avg
                     FROM recent
                     WHERE rn <= %d
                     GROUP BY player_id
@@ -301,19 +322,26 @@ public class PickTools implements FplTool {
                 metrics AS (
                     SELECT %s AS k, min(w.mins) AS mins, min(w.matches) AS matches,
                            min(w.xg90) AS xg90, min(w.xa90) AS xa90, min(w.pts90) AS pts90,
-                           min(w.xgc_per_match) AS xgc_per_match
+                           min(w.xgc_per_match) AS xgc_per_match,
+                           min(w.defcon_matches) AS defcon_matches,
+                           min(w.defcon_hits_def) AS defcon_hits_def,
+                           min(w.defcon_hits_mid) AS defcon_hits_mid,
+                           min(w.defcon_avg) AS defcon_avg
                     FROM windowed w
                     JOIN player mp ON mp.id = w.player_id AND mp.season_id = ?
                     %s
                     GROUP BY 1
                     HAVING count(*) = 1
                 )
-                SELECT pool.*, m.mins, m.matches, m.xg90, m.xa90, m.pts90, m.xgc_per_match
+                SELECT pool.*, m.mins, m.matches, m.xg90, m.xa90, m.pts90, m.xgc_per_match,
+                       m.defcon_matches, m.defcon_hits_def, m.defcon_hits_mid, m.defcon_avg
                 FROM pool
                 JOIN metrics m ON m.k = %s
                 %s
-                """.formatted(positionFilter(elementType, "p"), windowLimit(metric),
-                        ExpectedPoints.MIN_WINDOW_MINUTES, metricKey, metricUnique, poolKey, poolUnique),
+                """.formatted(positionFilter(elementType, "p"),
+                        ExpectedPoints.DEFCON_THRESHOLD[2], ExpectedPoints.DEFCON_THRESHOLD[3],
+                        windowLimit(metric), ExpectedPoints.MIN_WINDOW_MINUTES,
+                        metricKey, metricUnique, poolKey, poolUnique),
                 season.seasonId(), maxOwnership, metric.seasonId(), metric.seasonId());
     }
 
@@ -442,16 +470,26 @@ public class PickTools implements FplTool {
 
     /** The parts of xPts/90, so the model can say *why* a player ranks where they do. */
     private static String components(Map<String, Object> row, int position) {
-        String attacking = "xG/90 " + fixed(numeric(row.get("xg90")), 2)
-                + ", xA/90 " + fixed(numeric(row.get("xa90")), 2);
-        if (ExpectedPoints.cleanSheetPoints(position) == 0) {
-            return attacking;
+        StringBuilder parts = new StringBuilder("xG/90 " + fixed(numeric(row.get("xg90")), 2)
+                + ", xA/90 " + fixed(numeric(row.get("xa90")), 2));
+        if (ExpectedPoints.cleanSheetPoints(position) > 0) {
+            Object xgc = row.get("xgc_per_match");
+            parts.append(ExpectedPoints.hasCleanSheetSignal(xgc)
+                    ? ", CS %s%% at xGC %s".formatted(
+                            fixed(cleanSheetProbability(numeric(xgc)) * 100, 0),
+                            fixed(numeric(xgc), 2))
+                    : ", CS n/a");
         }
-        Object xgc = row.get("xgc_per_match");
-        return ExpectedPoints.hasCleanSheetSignal(xgc)
-                ? attacking + ", CS %s%% at xGC %s".formatted(
-                        fixed(cleanSheetProbability(numeric(xgc)) * 100, 0), fixed(numeric(xgc), 2))
-                : attacking + ", CS n/a";
+        // A forward has no clean-sheet value but does have a threshold, so this cannot sit
+        // behind the branch above.
+        if (ExpectedPoints.defconThreshold(position) > 0) {
+            parts.append(ExpectedPoints.hasDefconSignal(row, position)
+                    ? ", DC %s%% at %s actions".formatted(
+                            fixed(ExpectedPoints.defconHitRate(row, position) * 100, 0),
+                            fixed(numeric(row.get("defcon_avg")), 1))
+                    : ", DC n/a");
+        }
+        return parts.toString();
     }
 
     private String footer(MetricSeason metric, int fixtureLimit, boolean ownershipTieBreak,
@@ -498,10 +536,16 @@ public class PickTools implements FplTool {
                 .append(" of ").append(metric.code())
                 .append(". If that is well behind the gameweek being played, the statistics sync")
                 .append(" has stalled and these numbers are older than they look — say so.\n");
-        out.append("xPts/90 covers goals, assists and clean sheets only. Save points, penalty")
-                .append(" saves and defensive-contribution points are not in it, so goalkeepers")
-                .append(" and ball-winning defenders are understated; Pts/90 is where their real")
-                .append(" return shows up. Do not call xPts/90 a complete projection.\n")
+        out.append("xPts/90 covers goals, assists, clean sheets and defensive contribution. DC is")
+                .append(" the share of matches the player cleared his threshold in — ")
+                .append(ExpectedPoints.DEFCON_THRESHOLD[2])
+                .append(" defensive actions for a defender, ")
+                .append(ExpectedPoints.DEFCON_THRESHOLD[3])
+                .append(" for a midfielder or forward — counted over matches he played an hour")
+                .append(" of, and it reads n/a below ").append(ExpectedPoints.MIN_DEFCON_MATCHES)
+                .append(" such matches. Save points and penalty saves are still not in it, so")
+                .append(" goalkeepers are understated; Pts/90 is where their real return shows")
+                .append(" up. Do not call xPts/90 a complete projection.\n")
                 .append("Unavailable players (injured/suspended) are excluded.\n");
         return out.toString();
     }
