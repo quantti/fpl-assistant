@@ -2724,9 +2724,10 @@ the grant lives outside the diff that relies on it.
 
 ## Sign-up: email verification, and invite codes that are rows (2026-08-26)
 
-> **Not deployed, and it cannot work until the Supabase project is configured.** The remaining
-> steps are dashboard settings and a mail provider, none of which live in this repository:
-> `docs/EMAIL-SETUP.md` is the runbook, and #51 tracks it.
+> **Deployed since PR #52 merged, but it cannot deliver until the Supabase project has a mail
+> sender.** The remaining steps are DNS, a mail provider and dashboard settings, none of which
+> live in this repository: `docs/EMAIL-SETUP.md` is the runbook — rewritten 2026-08-28 around
+> owning a real domain — and KAR-33 tracks it.
 
 Two changes to the same door.
 
@@ -3072,3 +3073,45 @@ The system prompt's "Before GW5 / From GW5" rule is gone. The model reads the pr
 instead, which is per player and already correct; a gameweek number was always a worse proxy.
 
 **Verified:** 587 tests green against a freshly reset container.
+
+## Email verification: the runbook moves to a real domain (2026-08-28)
+
+Owner decision: buy a domain rather than work around not having one. `docs/EMAIL-SETUP.md` is
+rewritten on that assumption, with `fplassistant.example` standing in until the real one is
+bought — `.example` is IANA-reserved, so nothing there can accidentally work against a wrong host.
+
+**Most of the old runbook's difficulty was the missing domain.** SPF and DKIM live in DNS on the
+domain mail is sent *from*, the app answered only on `fpl-assistant.fly.dev`, and a `.fly.dev`
+subdomain is not yours to add TXT records to — so no provider could send as
+`noreply@fpl-assistant.fly.dev`. That forced a choice between Gmail SMTP as a stopgap and Resend's
+`onboarding@resend.dev`, which delivers only to the Resend account owner and is therefore useless
+for testers. With a domain both compromises disappear and the runbook becomes a sequence.
+
+**The domain carries the app as well as the mail.** Sending from `noreply@<domain>` while the
+confirmation link lands on `fpl-assistant.fly.dev` is a sender/destination mismatch — the shape
+phishing filters are built to notice, and a cautious tester notices it too. The DNS work is the
+same either way. Mail-only remains a valid intermediate and the runbook says which tasks to skip
+for it.
+
+**The move is small in this repository, and that was worth verifying rather than assuming.**
+`grep -rn "fly\.dev"` over `backend/src`, `frontend/src`, `fly.toml` and `.github` finds exactly
+one match: the deploy workflow's smoke-test URL. Nothing else knows the hostname. The confirmation
+link's destination is Supabase's **Site URL** alone, because `SupabaseAdminClient` deliberately
+sends no `redirect_to` — one place decides, and it is a dashboard field rather than code. Besides
+the smoke test, the only change is the `CORS_ORIGINS` secret.
+
+### Stale documentation corrected the same day
+
+Three claims were checked against production and were wrong:
+
+- `EMAIL-SETUP.md` and this file both said **not deployed**. PR #52 merged and master deploys on
+  push; `/actuator/health` answers `UP` and the deployed jar contains the `email_confirm: false`
+  plus `/auth/v1/resend` path.
+- `docs/TODO.md` said `SUPABASE_SERVICE_ROLE_KEY` and `INVITE_CODE` were **not set**. Both are set
+  and `Deployed` (`fly secrets list`, 2026-08-28). `INVITE_CODE` is vestigial anyway — codes have
+  been rows in `fpl_invite_code` since PR #52.
+- `docs/TODO.md` described email verification as **open**, with the note that `email_confirm: true`
+  creates confirmed accounts. That is the defect PR #52 fixed.
+
+`docs/TODO.md` also still called itself the working backlog. Issue tracking moved to Linear on
+2026-08-28; the file keeps its history and says so at the top.
