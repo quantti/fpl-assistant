@@ -90,15 +90,24 @@ public final class ExpectedPoints {
      * How much wider the spread of a player's per-match defensive actions is than a Poisson
      * process would give: {@code variance = DEFCON_DISPERSION * mean}.
      *
-     * <p>Measured at 1.60 (median within-player, p10 1.01, p90 2.51) across the backfilled
-     * 2025-26 season. Poisson assumes exactly 1.0, so Poisson is the wrong distribution here and
-     * a negative binomial is the right one — it is the Poisson generalised to admit this spread.
+     * <p>The within-player spread measured over 2025-26 (matches of 60+ minutes, players with 15
+     * or more of them) is 1.34 at the median — 1.38 for defenders and midfielders, 1.19 for
+     * forwards. Poisson assumes exactly 1.0, so Poisson is the wrong distribution here and a
+     * negative binomial is the right one: it is the Poisson generalised to admit this spread.
      *
-     * <p>Sanity check against the live 2026-27 data after GW1: at the measured league mean of
-     * 7.19 actions the model gives a defender a 22.9% chance of reaching 10, and 22.4% of
-     * defenders actually did. Midfielders come out 10.6% against a measured 14.0%, so the figure
-     * is slightly conservative for them; one shared value is kept rather than fitting a second
-     * to a single gameweek.
+     * <p>1.6 is deliberately above the measured figure. The mean this is applied to comes from a
+     * handful of matches and is itself uncertain, and the constant is the only place that
+     * uncertainty can go; on a held-out half of 2025-26, prediction error falls as the value
+     * rises from 1.0 to about 2.0 and flattens there. 1.6 is a middle choice, not an optimum,
+     * and was not tuned on the data it was tested on. A posterior-predictive form — where the
+     * spread widens by itself when the sample is short — is the principled version, and belongs
+     * with the cross-season blending work (KAR-38).
+     *
+     * <p>Calibrated per player, not per league: over a held-out half-season the mean of the
+     * per-player predictions is 0.216 against an actual 0.205, and within ±0.015 in every band
+     * of predicted probability below 0.5. Above 0.5 it over-predicts by about 0.08 — regression
+     * to the mean, which the blending work also addresses. Per position across the whole
+     * season: defenders 0.255 predicted against 0.251, midfielders 0.167 against 0.157.
      */
     public static final double DEFCON_DISPERSION = 1.6;
 
@@ -148,9 +157,9 @@ public final class ExpectedPoints {
      * <p><b>Modelled, not counted.</b> An earlier version divided past crossings by matches.
      * That reads only "over or under" and throws away the action counts themselves, so a
      * defender who made 9 in every match scored identically to one who made 2 — and on a
-     * two-match record the only possible answers were 0%, 50% and 100%. Measured against the
-     * second half of the 2025-26 season from the first, this estimator is 19% more accurate
-     * after 2 matches, 18% after 3, 10% after 5, and level by 10.
+     * two-match record the only possible answers were 0%, 50% and 100%. Predicting the rest of
+     * a player's 2025-26 season from his first few matches, this estimator's error is 28% lower
+     * after 2 matches, 24% after 3, 20% after 5 and 7% after 10.
      *
      * <p><b>Provisional for a day, new in 2026/27.</b> Gameweek scores are final at 09:00 UK on
      * the day after the gameweek's last match rather than an hour after the whistle, so that
