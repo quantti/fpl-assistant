@@ -81,9 +81,12 @@ cross the threshold, and the historical average is the input to that rather than
 The argument in "Design decisions" attacked a mean used linearly, which nobody proposed.
 
 Replaced with a negative-binomial tail read from the player's mean actions per match. Measured on
-the backfilled 2025-26 season: within-player variance is 1.60x the mean (so Poisson is wrong and
-the negative binomial right), and against a held-out half-season the distribution beats the hit
-rate by 19% at 2 matches, 18% at 3, 10% at 5, and draws level by 10.
+2025-26 (60+ minute matches): within-player variance is 1.34x the mean (so Poisson is wrong and
+the negative binomial right), and predicting the rest of a player's season from his first few
+matches the distribution's error is 28% lower than the hit rate's at 2 matches, 24% at 3, 20% at
+5 and 7% at 10. The constant in code is 1.6, above the measured figure on purpose — see
+`DEFCON_DISPERSION`'s javadoc. A first measurement of 1.60 came from data without minutes and
+was inflated by cameos; the second review caught that.
 
 Two consequences for the plan as written:
 

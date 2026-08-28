@@ -2911,18 +2911,34 @@ The defence of counting was that a mean cannot express a threshold. True only of
 *linearly*; taken through a distribution it expresses it exactly. A player averaging 9.8 actions
 has a 49% chance of reaching 10, not none.
 
-**Negative binomial, not Poisson.** Across the backfilled 2025-26 season, within-player variance
-is **1.60x the mean** (p10 1.01, p90 2.51). Poisson assumes exactly 1.0, so it is the wrong
-distribution; the negative binomial is the Poisson generalised to admit that spread, and
-`DEFCON_DISPERSION` holds the measured figure.
+**Negative binomial, not Poisson.** Over 2025-26, on matches of 60+ minutes, within-player
+variance is **1.34x the mean** at the median (1.38 for defenders and midfielders, 1.19 for
+forwards). Poisson assumes exactly 1.0, so it is the wrong distribution; the negative binomial is
+the Poisson generalised to admit that spread.
 
-**Measured, not asserted.** Splitting each player's 2025-26 season in half and predicting the
-second from the first, the distribution beats the hit rate by **19% after 2 matches, 18% after 3,
-10% after 5, and draws level by 10** — it wins by most exactly where the sample is thin, which is
-where a ranking is most easily embarrassed. Calibration: at the league's own mean of 7.19 actions
-the model gives a defender 22.9%, and 22.4% of defenders actually reached 10 in GW1 of 2026-27.
-Midfielders come out 10.6% against a measured 14.0%, so the shared dispersion is mildly
-conservative for them; one value is kept rather than fitting a second to a single gameweek.
+`DEFCON_DISPERSION` is 1.6, deliberately above the measured 1.34. A first measurement said 1.60,
+but it was taken from data without minutes or zeros, and cameo appearances had inflated it; the
+review that re-measured on the correct population also found that prediction *improves* as the
+constant rises towards 2.0. The reason is that the mean the model reads is itself uncertain when
+it comes from three matches, and the constant is the only place that uncertainty can go. So 1.6 is
+a middle choice between the measured spread and the predictively best one, not tuned on the data it
+was tested on. The principled form — a posterior predictive whose spread widens by itself when the
+sample is short — belongs with KAR-38.
+
+**Measured, not asserted.** Predicting the rest of each player's 2025-26 season from his first
+few 60+ minute matches, the distribution's error is **28% lower than the hit rate's after 2
+matches, 24% after 3, 20% after 5 and 7% after 10** — it wins by most exactly where the sample is
+thin, which is where a ranking is most easily embarrassed. It also beats Poisson at every sample
+size.
+
+**Calibration, per player.** Over a held-out half-season the mean of the per-player predictions is
+0.216 against an actual 0.205, and within ±0.015 in every band of predicted probability below
+0.5. Above 0.5 it over-predicts by about 0.08 (27 players): regression to the mean, and those are
+the players a ranking puts at the top, so the best DC candidates are overrated by roughly 0.17
+points of `xPts/90`. Modest, and KAR-38's blending is the fix. Per position across the whole
+season: defenders 0.255 predicted against 0.251 actual, midfielders 0.167 against 0.157, forwards
+0.016 against 0.009. (An earlier check that pushed the *league* mean through the model gave
+midfielders 10.6% against 14.0% — that gap was Jensen's inequality, not miscalibration.)
 
 The mean is taken over matches of 60 minutes or more, the same discipline the clean-sheet term
 uses — the actions arrive with the minutes, and a cameo would otherwise read as a match the player
