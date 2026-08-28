@@ -14,9 +14,27 @@ FPL prices update based on transfer activity. If a player's net transfers-in ove
 
 A player's current price therefore reflects recent market sentiment, and the trend (rising, falling, or steady) is a signal about how the manager base is behaving — not a prediction of future performance.
 
+## What you actually get back when you sell
+
+**A player's current price is not what you receive for him.** When you sell a player who has risen in price, you keep your purchase price plus **half the profit, rounded down to the nearest £0.1m**. The other half is lost. Losses, by contrast, are taken in full.
+
+- Bought at £7.0m, now £7.2m → you receive £7.1m
+- Bought at £7.0m, now £7.3m → you receive £7.1m (the half-rise rounds down)
+- Bought at £7.0m, now £7.5m → you receive £7.2m
+- Bought at £7.0m, now £6.6m → you receive £6.6m, the whole fall
+
+The same rule stated from the other direction: **your squad value gains £0.1m for every £0.2m a player rises.**
+
+Two consequences that change decisions:
+
+- **Selling price is personal, not public.** Two managers owning the same player at the same current price can have different selling prices, because they bought at different times. Your own selling prices are visible only on your own My Team page.
+- **Selling and buying back the same player costs real money.** Sell a player bought at £7.0m and now worth £7.5m, and you receive £7.2m; buying him back costs the full £7.5m. That £0.3m is gone. Never sell a player you intend to return to unless the move pays for that gap.
+
+The squad value FPL shows you already accounts for all of this — it is what your players are worth **to you**, not the sum of their current prices. Money available for transfers is that squad value plus the bank.
+
 ## Why price trends matter
 
-- **Buying before a rise locks in value.** If you transfer in a player whose price then rises, your squad value increases without any further action. Over a season, these gains compound into extra budget.
+- **Buying before a rise locks in value.** If you transfer in a player whose price then rises, your squad value increases without any further action — by half the rise, per the rule above. Over a season, these gains compound into extra budget.
 - **Selling before a fall protects value.** A player you own whose price is falling reduces your squad value. Selling them before the drop, or early in the drop, preserves the value you have.
 - **Team value creates flexibility.** A squad whose value has risen above the starting £100m can later afford premium players it could not afford at the start. A squad whose value has fallen below £100m is constrained and may be forced into cheaper replacements.
 
