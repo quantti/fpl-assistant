@@ -120,6 +120,28 @@ public class SeasonResolver {
     }
 
     /**
+     * The seasons a ranking's metrics come from: the resolved season, and the one before it when
+     * the resolved season is being played. See {@link MetricSeasons}.
+     */
+    public MetricSeasons metricSeasons(SeasonContext season) {
+        Optional<SeasonContext> previous = season.currentSeason()
+                ? previousSeason(season) : Optional.empty();
+        return new MetricSeasons(season, previous, completedGameweeks(season.seasonId()),
+                latestGameweek(season.seasonId()));
+    }
+
+    /**
+     * The newest gameweek the underlying data actually reaches. Printed so a stalled shared sync
+     * shows as visibly old data rather than ranking silently on weeks-old numbers.
+     */
+    public int latestGameweek(int seasonId) {
+        Integer gw = jdbc.queryForObject(
+                "SELECT COALESCE(max(gameweek), 0) FROM player_fixture_stats WHERE season_id = ?",
+                Integer.class, seasonId);
+        return gw == null ? 0 : gw;
+    }
+
+    /**
      * Whether the previous season is a better source of metrics than the season being played,
      * and its context if so. "Better" is not merely "has any data at all": a previous season
      * with one synced gameweek is not evidence to prefer over this season's four, so the
