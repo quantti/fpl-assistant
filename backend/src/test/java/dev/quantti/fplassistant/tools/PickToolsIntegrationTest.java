@@ -48,7 +48,7 @@ class PickToolsIntegrationTest {
     @AfterEach
     void clearDefensiveContribution() {
         jdbc.update("UPDATE player_fixture_stats SET defensive_contribution = NULL"
-                + " WHERE season_id = 9026 AND player_id IN (9205, 9206)");
+                + " WHERE season_id = 9026 AND player_id IN (9203, 9205, 9206)");
     }
 
     @Test
@@ -243,7 +243,27 @@ class PickToolsIntegrationTest {
         String reply = tools.getDifferentialPicks("DEF", 100, 3);
 
         assertThat(reply).contains("Ferreira");
-        assertThat(reply).contains("DC 50%");
+        // Pins the rendered form, not just the rate: 12 and 4 average to 8.0 actions.
+        assertThat(reply).contains("DC 50% at 8.0 actions");
+    }
+
+    /**
+     * A forward has no clean-sheet value but does have a defensive-contribution threshold, so the
+     * component must not sit behind the clean-sheet branch. Vasquez clears 12 in one of his three
+     * qualifying matches.
+     */
+    @Test
+    void aForwardIsGivenADefensiveContributionComponentDespiteHavingNoCleanSheetValue() {
+        jdbc.update("UPDATE player_fixture_stats SET defensive_contribution = 13"
+                + " WHERE player_id = 9203 AND fixture_id = 9101 AND season_id = 9026");
+        jdbc.update("UPDATE player_fixture_stats SET defensive_contribution = 5"
+                + " WHERE player_id = 9203 AND fixture_id IN (9103, 9110) AND season_id = 9026");
+
+        String reply = tools.getDifferentialPicks("FWD", 100, 3);
+
+        assertThat(reply).contains("Vasquez");
+        assertThat(reply).contains("DC 33%");
+        assertThat(reply).doesNotContain("CS ");
     }
 
     @Test
