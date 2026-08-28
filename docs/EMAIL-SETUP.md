@@ -203,8 +203,9 @@ Region    EU (Ireland)
 ```
 
 **Add the apex. Do not add `send.fpl-sidekick.com`.** Resend prepends the sending subdomain
-itself: give it `fpl-sidekick.com` and the Return-Path becomes `send.fpl-sidekick.com`, which is
-the name that carries Resend's SPF and MX — through a CNAME, see 2.3. That gets the benefit an earlier draft of this runbook was
+itself: give it `fpl-sidekick.com` and it sends through subdomains of it — `send.` and `rsend.`,
+both CNAMEs to Resend, see 2.3. The delivered mail's Return-Path read
+`…@rsend.fpl-sidekick.com` (2026-08-29), which is why `rsend` points at an Amazon SES SPF record. That gets the benefit an earlier draft of this runbook was
 reaching for — SPF on `send.`, unable to collide with Namecheap's apex SPF (Trap 2) — without
 constructing it by hand.
 
@@ -325,8 +326,8 @@ nameserver is the one to ask.
 Nothing about *sending* is affected, and that is worth being precise about rather than assumed:
 
 - **DKIM** signs as `fpl-sidekick.com` and the From header is at `fpl-sidekick.com`. Aligned.
-- **SPF** checks the envelope sender, which is `send.fpl-sidekick.com`, and that name resolves
-  through its CNAME to Resend's SPF record. Under DMARC's default relaxed alignment a subdomain
+- **SPF** checks the envelope sender, which is `rsend.fpl-sidekick.com` on the delivered mail, and
+  that name resolves through its CNAME to an SPF record naming the sending IPs. Under DMARC's default relaxed alignment a subdomain
   aligns with its parent. Aligned.
 
 Both mechanisms pass, so DMARC passes, with or without an apex SPF record.
