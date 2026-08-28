@@ -402,15 +402,25 @@ thing anyone ever receives from you.
 Very little, because almost nothing here knows the hostname.
 `grep -rn "fly\.dev" backend/src frontend/src fly.toml .github` finds exactly one match.
 
-**4.1 `CORS_ORIGINS` needs no change, and an earlier version of this file was wrong to say it
-did.** The frontend calls the API on relative paths (`fetch('/api/auth/signup')`) and Spring Boot
-serves that frontend as static resources from the same application — so a browser on
-`https://fpl-sidekick.com` is calling its own origin and CORS never enters the request. The secret
-governs *cross*-origin callers, which today means a local development frontend pointed at
-production; its existing localhost entries already cover that.
+**4.1 Add the domain to `CORS_ORIGINS`.** An earlier version of this file said the secret needed
+no change because the frontend calls the API on relative paths from the same origin. That reasoning
+was wrong in practice and cost a debugging round on 2026-08-28: sign-up refused a valid invite code
+with *"That invite code is not valid."*
 
-Add the domain to it only if something ever calls this API from another origin. Checked
-2026-08-28 by reading `frontend/src/auth/apiFetch.ts` — one `fetch(path, …)` with no base URL.
+What happens: a browser sends an `Origin` header on every `POST`, same-origin or not. Behind Fly's
+proxy the application sees itself as `http://…:8080`, so `Origin: https://fpl-sidekick.com` does not
+match its own address and Spring treats the request as cross-origin, checks it against
+`CORS_ORIGINS`, and answers `403 Invalid CORS request`. The frontend shows every `403` from the
+sign-up endpoint as an invalid code, so the real message is never seen. `curl` never reproduces it
+because `curl` sends no `Origin`; add `-H 'Origin: https://fpl-sidekick.com'` and it does.
+
+```bash
+flyctl secrets set -a fpl-assistant \
+  'CORS_ORIGINS=https://fpl-sidekick.com,https://fpl-assistant.fly.dev'
+```
+
+The machine restarts on a secret change; allow half a minute. Proof that it took: the same `curl`
+with the `Origin` header answers `400` (missing password) instead of `403`.
 
 **4.2 The deploy workflow's smoke test.** `.github/workflows/deploy.yml:135` curls the fly.dev
 health endpoint. Point it at the domain: the check exists to prove the route the public uses
@@ -522,8 +532,8 @@ Each of these fails in a way that looks like a different one.
 | DMARC reads as absent | Two `_dmarc` records, or one at the wrong Host (Traps 2 and 3) |
 | Link opens the app but not signed in | Redirect URLs (3.3) must include the exact origin |
 | Sign-up answers `503` | `SUPABASE_SERVICE_ROLE_KEY` — set as of 2026-08-28, so this means it was cleared |
-| Sign-up refuses every code | No code exists (5.1), the code is out of uses, or the 30-account cap is reached |
-| Browser console shows a CORS error | `CORS_ORIGINS` (4.1) |
+| Sign-up refuses every code, including one that exists in `fpl_invite_code` | The domain is missing from `CORS_ORIGINS` (4.1). The frontend shows every `403` as an invalid code; `curl -H 'Origin: https://fpl-sidekick.com'` reveals `Invalid CORS request` |
+| Sign-up refuses every code and `curl` with the `Origin` header answers `400` | No code exists (5.1), the code is out of uses, or the 30-account cap is reached |
 | Site works, then intermittently does not | Trap 1 — the parking A record was left in place |
 
 ## Why sign-up is two calls

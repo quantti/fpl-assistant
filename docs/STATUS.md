@@ -38,7 +38,7 @@ at `~/.fly/bin/flyctl` (not on PATH — `export PATH="$HOME/.fly/bin:$PATH"`), l
 
 ```
 fly secrets set DATABASE_URL=... DB_USER=... DB_PASSWORD=... OPENAI_API_KEY=... \
-    FOOTBALL_DATA_API_KEY=... SPRING_AI_PROVIDER=openai CORS_ORIGINS=https://fpl-assistant.fly.dev
+    FOOTBALL_DATA_API_KEY=... SPRING_AI_PROVIDER=openai CORS_ORIGINS=https://fpl-sidekick.com,https://fpl-assistant.fly.dev
 fly deploy --ha=false --remote-only
 ```
 
@@ -3097,7 +3097,13 @@ for it.
 one match: the deploy workflow's smoke-test URL. Nothing else knows the hostname. The confirmation
 link's destination is Supabase's **Site URL** alone, because `SupabaseAdminClient` deliberately
 sends no `redirect_to` — one place decides, and it is a dashboard field rather than code. Besides
-the smoke test, the only change is the `CORS_ORIGINS` secret.
+the smoke test, the only change is the `CORS_ORIGINS` secret — and that one is not optional, which
+was learned the slow way. The runbook first claimed the secret needed no change because the frontend
+is same-origin; the first sign-up on the domain then refused a valid code. A browser sends `Origin`
+on every `POST`, and behind Fly's proxy the application sees itself as `http://…:8080`, so its own
+`https://` origin reads as foreign and Spring answers `403 Invalid CORS request` — which the frontend
+displays as *"That invite code is not valid."* Found by adding `-H 'Origin: …'` to a `curl` that had
+been passing without it. The runbook's 4.1 now says so.
 
 **Its DNS was read rather than assumed**, and it carries two things that shape the work. The apex
 already has an SPF record — Namecheap's email forwarding — and a domain may have exactly one: a
