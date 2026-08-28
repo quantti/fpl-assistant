@@ -300,18 +300,15 @@ public class PickTools implements FplTool {
                            -- inherit the whole match's expected concession.
                            SUM(xgc) FILTER (WHERE minutes >= 60)
                                / NULLIF(count(*) FILTER (WHERE minutes >= 60), 0) AS xgc_per_match,
-                           -- Defensive contribution pays at a threshold per match, so what
-                           -- matters is how often the player crossed it, not his average. Only
-                           -- matches he was on for an hour count, the same discipline the clean
-                           -- sheet uses: the actions arrive with the minutes. Both thresholds are
-                           -- counted because the position lives on player, not here; Java picks
-                           -- between them, so the rules of the game stay in one place.
+                           -- Defensive contribution pays at a threshold per match. The mean is
+                           -- what the model needs — ExpectedPoints reads the chance of crossing
+                           -- the threshold out of it — and the count of matches says how much to
+                           -- believe the mean. Only matches he was on for an hour count, the
+                           -- same discipline the clean sheet uses: the actions arrive with the
+                           -- minutes. The thresholds themselves stay in Java, so no rule of the
+                           -- game is written into this SQL.
                            count(*) FILTER (WHERE minutes >= 60
                                AND defensive_contribution IS NOT NULL) AS defcon_matches,
-                           count(*) FILTER (WHERE minutes >= 60
-                               AND defensive_contribution >= %d) AS defcon_hits_def,
-                           count(*) FILTER (WHERE minutes >= 60
-                               AND defensive_contribution >= %d) AS defcon_hits_mid,
                            AVG(defensive_contribution) FILTER (WHERE minutes >= 60)
                                AS defcon_avg
                     FROM recent
@@ -324,8 +321,6 @@ public class PickTools implements FplTool {
                            min(w.xg90) AS xg90, min(w.xa90) AS xa90, min(w.pts90) AS pts90,
                            min(w.xgc_per_match) AS xgc_per_match,
                            min(w.defcon_matches) AS defcon_matches,
-                           min(w.defcon_hits_def) AS defcon_hits_def,
-                           min(w.defcon_hits_mid) AS defcon_hits_mid,
                            min(w.defcon_avg) AS defcon_avg
                     FROM windowed w
                     JOIN player mp ON mp.id = w.player_id AND mp.season_id = ?
@@ -334,14 +329,13 @@ public class PickTools implements FplTool {
                     HAVING count(*) = 1
                 )
                 SELECT pool.*, m.mins, m.matches, m.xg90, m.xa90, m.pts90, m.xgc_per_match,
-                       m.defcon_matches, m.defcon_hits_def, m.defcon_hits_mid, m.defcon_avg
+                       m.defcon_matches, m.defcon_avg
                 FROM pool
                 JOIN metrics m ON m.k = %s
                 %s
-                """.formatted(positionFilter(elementType, "p"),
-                        ExpectedPoints.DEFCON_THRESHOLD[2], ExpectedPoints.DEFCON_THRESHOLD[3],
-                        windowLimit(metric), ExpectedPoints.MIN_WINDOW_MINUTES,
-                        metricKey, metricUnique, poolKey, poolUnique),
+                """.formatted(positionFilter(elementType, "p"), windowLimit(metric),
+                        ExpectedPoints.MIN_WINDOW_MINUTES, metricKey, metricUnique, poolKey,
+                        poolUnique),
                 season.seasonId(), maxOwnership, metric.seasonId(), metric.seasonId());
     }
 
@@ -485,7 +479,7 @@ public class PickTools implements FplTool {
         if (ExpectedPoints.defconThreshold(position) > 0) {
             parts.append(ExpectedPoints.hasDefconSignal(row, position)
                     ? ", DC %s%% at %s actions".formatted(
-                            fixed(ExpectedPoints.defconHitRate(row, position) * 100, 0),
+                            fixed(ExpectedPoints.defconProbability(row, position) * 100, 0),
                             fixed(numeric(row.get("defcon_avg")), 1))
                     : ", DC n/a");
         }
