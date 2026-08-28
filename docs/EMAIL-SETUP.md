@@ -10,14 +10,14 @@ written around not having a domain at all, and one written before a provider was
 
 ## Where this stands
 
-Every row below was checked against production or live DNS on 2026-08-28. Nothing is copied
-forward from an earlier version of this file.
+Every row below was checked against production or live DNS on 2026-08-28 or 2026-08-29. Nothing
+is copied forward from an earlier version of this file.
 
 | | State |
 |---|---|
 | Backend, frontend, tests | done — merged in PR #52 |
 | Deployed | **yes** — master deploys on push; `/actuator/health` answers `UP` |
-| `SUPABASE_SERVICE_ROLE_KEY`, `INVITE_CODE` | **set** as Fly secrets, status `Deployed` |
+| `SUPABASE_SERVICE_ROLE_KEY` | **set** as a Fly secret, status `Deployed`. `INVITE_CODE` is also set but ignored since PR #52 — codes are table rows |
 | Public sign-up in Supabase | turned off 2026-08-26 |
 | Domain | **bought** — `fpl-sidekick.com`, registered at Namecheap |
 | App on the domain | **serving** — both certificates Issued, `https://fpl-sidekick.com/actuator/health` returns 200 |
@@ -26,12 +26,13 @@ forward from an earlier version of this file.
 | DMARC | **live**, one record, `p=none`, no `rua` |
 | Inbound mail to the domain | **dead** — the Custom MX switch removed the apex MX *and* SPF; see 2.8 |
 | Mail provider | Resend — domain **Verified** 2026-08-29; first confirmation mail delivered to Gmail's inbox |
-| Site URL / redirect URLs | unverified; likely still Supabase's `http://localhost:3000` default |
-| Email rate limit | not raised — a probe hit `429 over_email_send_rate_limit` on 2026-08-26 |
-| Invite codes issued | unknown — run `--list-invite-codes` rather than assuming |
+| Site URL / redirect URLs | **unverified** — the first confirmation mail was delivered 2026-08-29; following its link is the test (5.2) |
+| Email rate limit | **unknown** — a probe hit `429 over_email_send_rate_limit` on 2026-08-26, before custom SMTP; check 3.2 before a tester round |
+| Invite codes issued | `testi` — 10 places, `uses` 2 as of 2026-08-29: one account, one place burnt by the failed first attempt |
+| `CORS_ORIGINS` | **includes the domain** since 2026-08-28 — without it sign-up refuses every code (4.1) |
 
-Sign-up is closed at two independent points: no mail can be sent, and there may well be no invite
-code to give anyone. Neither is a hazard while both hold.
+Sign-up is open on the code `testi`. One account exists, created 2026-08-28 and unconfirmed until
+its link is followed.
 
 ## What this costs, and which plan to start on
 
