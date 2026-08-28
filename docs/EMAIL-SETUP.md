@@ -22,10 +22,10 @@ forward from an earlier version of this file.
 | Domain | **bought** — `fpl-sidekick.com`, registered at Namecheap |
 | App on the domain | **serving** — both certificates Issued, `https://fpl-sidekick.com/actuator/health` returns 200 |
 | Parking A record | **gone** — verified 2026-08-28, the apex now returns exactly one A record |
-| Resend DNS records | **all three live** — verified against the authoritative nameserver 2026-08-28 |
+| Resend DNS records | **all live, CNAME layout** — Resend shows every row Verified as of 2026-08-29 |
 | DMARC | **live**, one record, `p=none`, no `rua` |
 | Inbound mail to the domain | **dead** — the Custom MX switch removed the apex MX *and* SPF; see 2.8 |
-| Mail provider | Resend dashboard should now read **Verified** — check it |
+| Mail provider | Resend — domain **Verified** 2026-08-29; first confirmation mail delivered to Gmail's inbox |
 | Site URL / redirect URLs | unverified; likely still Supabase's `http://localhost:3000` default |
 | Email rate limit | not raised — a probe hit `429 over_email_send_rate_limit` on 2026-08-26 |
 | Invite codes issued | unknown — run `--list-invite-codes` rather than assuming |
@@ -124,8 +124,8 @@ if it does not, leave it alone.
 | Resend dashboard | `resend._domainkey.send` | `resend._domainkey.send` — verbatim |
 | Written out by hand | `_dmarc.fpl-sidekick.com` | `_dmarc` |
 
-One more Namecheap mechanic: an **MX record's priority goes in its own field**, not at the front
-of the value. `10 feedback-smtp...` pasted whole into Value is a broken record.
+One more Namecheap mechanic, relevant to 2.8: an **MX record's priority goes in its own field**,
+not at the front of the value. `10 eforward1...` pasted whole into Value is a broken record.
 
 ### Trap 4 — Namecheap will not let you add an MX record at all
 
@@ -134,9 +134,11 @@ is a separate **MAIL SETTINGS** dropdown, currently set to **Email Forwarding**.
 Namecheap owns the MX records — it wrote the `eforward` ones itself — and refuses to let you add
 your own, including on a subdomain.
 
-Resend needs an MX record on `send.`, so this has to change to **Custom MX**. Task 2.3 does it,
-and does one thing first that matters: **write down the existing MX records before switching**,
-because the switch removes them.
+Resend's current record set (2.3) is two CNAMEs and needs no MX record of your own, so this trap
+no longer blocks sending. It is kept because the switch to Custom MX was made on 2026-08-28 under
+the older TXT + MX layout, and because 2.8 — restoring inbound mail — needs Custom MX anyway. One
+thing matters before switching: **write down the existing MX records**, because the switch removes
+them.
 
 ```
 10  eforward1.registrar-servers.com
@@ -202,7 +204,7 @@ Region    EU (Ireland)
 
 **Add the apex. Do not add `send.fpl-sidekick.com`.** Resend prepends the sending subdomain
 itself: give it `fpl-sidekick.com` and the Return-Path becomes `send.fpl-sidekick.com`, which is
-where the MX and SPF records go. That gets the benefit an earlier draft of this runbook was
+the name that carries Resend's SPF and MX — through a CNAME, see 2.3. That gets the benefit an earlier draft of this runbook was
 reaching for — SPF on `send.`, unable to collide with Namecheap's apex SPF (Trap 2) — without
 constructing it by hand.
 
@@ -219,7 +221,7 @@ dig +short @dns1.registrar-servers.com TXT resend._domainkey.fpl-sidekick.com
 ```
 
 The fix is to correct Resend, not the DNS: delete the domain, add the apex, and update the one
-DKIM TXT value Resend regenerates. The MX and SPF records on `send.` need no change.
+DKIM TXT value Resend regenerates. The CNAMEs on `send` and `rsend` need no change.
 
 **You then send from an address at the verified domain**: `noreply@fpl-sidekick.com`. The `send.`
 subdomain is the bounce and return path, not the From address.
@@ -227,47 +229,52 @@ subdomain is the bounce and return path, not the From address.
 **The region** matters and is awkward to undo: your users and your app are in Europe, and mail
 metadata is personal data. Changing it later means deleting the domain and verifying again.
 
-**2.3 Switch Mail Settings to Custom MX, then add the three records.**
+**2.3 Add the four records.**
 
-Namecheap → Advanced DNS. Before anything else:
+Resend shows them as soon as the domain is added. Read Trap 3 before pasting anything. As of
+2026-08-29 the set is one TXT for DKIM, two CNAMEs under *Enable Sending*, and the DMARC record
+from 2.5:
 
-1. Run `dig +short MX fpl-sidekick.com` and keep the output. The switch below deletes those
-   records, and you will want them back in step 2.8.
-2. In **MAIL SETTINGS**, change **Email Forwarding** → **Custom MX**, and save. The MX option now
-   appears in the Host Records dropdown. This is Trap 4.
-
-Resend shows the three records as soon as the domain is added. Read Trap 3 before pasting
-anything.
-
-**As of 2026-08-28 one of the three is live and two are not**, which is Trap 4 doing exactly what
-it does:
-
-| Record | Host | State |
-|---|---|---|
-| DKIM TXT | `resend._domainkey` | **live** — `p=MIGf…` resolves |
-| SPF TXT | `send` | missing |
-| MX | `send` | missing — Namecheap offers no MX option until Mail Settings is Custom MX |
-
-| Type | Host (domain stripped) | Value | Priority |
+| Type | Host (domain stripped) | Value | TTL |
 |---|---|---|---|
-| MX | `send` | `feedback-smtp.eu-west-1.amazonses.com` | `10` |
-| TXT | `send` | `v=spf1 include:amazonses.com ~all` | — |
-| TXT | `resend._domainkey` | the long `p=...` key Resend generates | — |
+| TXT | `resend._domainkey` | the long `p=...` key Resend generates | Automatic |
+| CNAME | `send` | `send.forge.rmta.net` | Automatic |
+| CNAME | `rsend` | `rsend-euw1.forge.rmta.net` | Automatic |
 
-Take the exact values from your own dashboard: the DKIM key is generated per domain, and the MX
-target names the region you chose. TTL `Automatic` throughout.
+Take the exact values from your own dashboard: the DKIM key is generated per domain, and the
+`rsend` target names the region you chose (`euw1` is `eu-west-1`). Namecheap adds a trailing dot to
+CNAME values on save; that is correct.
+
+**This layout replaced an older one, and the change is what broke the first sign-up on
+2026-08-28.** Resend used to ask for an SPF TXT (`v=spf1 include:amazonses.com ~all`) and an MX
+(`feedback-smtp.eu-west-1.amazonses.com`) directly on `send`. Those were added and verified, and
+then the dashboard silently switched to asking for the CNAMEs above, with both marked *Pending*.
+Resend does not send from a domain whose sending records are pending: Supabase's SMTP call failed
+and GoTrue answered `500 Error sending confirmation email` for every attempt, while the app's log
+said only *"the confirmation email could not be sent (500)"*.
+
+**If the old records are present, delete them first.** A name can hold a CNAME or other records,
+never both. Namecheap accepted `CNAME send` beside `TXT send` and `MX send` without complaint, and
+the authoritative nameserver then answered all three — `dig TXT send.fpl-sidekick.com` returned the
+stale SES SPF instead of following the CNAME, and Resend stayed *Pending*. Remove the TXT from Host
+Records and the MX from **MAIL SETTINGS → Custom MX** (that is where Namecheap lists it), then
+press **Verify** in Resend.
 
 **2.4 Wait for verification.** Resend usually verifies within about 15 minutes of the records
 propagating. Check from the command line before blaming the dashboard:
 
 ```bash
-dig +short MX  send.fpl-sidekick.com
-dig +short TXT send.fpl-sidekick.com
+dig +short CNAME send.fpl-sidekick.com     # send.forge.rmta.net.  — and nothing else
+dig +short CNAME rsend.fpl-sidekick.com    # rsend-euw1.forge.rmta.net.
 dig +short TXT resend._domainkey.fpl-sidekick.com
+dig +short TXT send.fpl-sidekick.com       # the CNAME, then Resend's own v=spf1 — not amazonses
 ```
 
 Each must return what Resend showed. An empty answer means the record has not propagated yet, or
-the Host field carried a doubled domain (Trap 3).
+the Host field carried a doubled domain (Trap 3). A `TXT send` answer that names `amazonses.com` is
+the stale record from the old layout sitting beside the CNAME — delete it (2.3). Once every row is
+Verified, expect the rows to flick to *Pending* for a minute while Resend re-checks the whole
+domain; it settles by itself.
 
 **2.5 Add DMARC — without reports, for now.** One record, on the apex, covering subdomains too.
 
@@ -295,7 +302,7 @@ dig +short TXT _dmarc.fpl-sidekick.com    # exactly one line
 ```
 Name         supabase-smtp
 Permission   Sending access
-Domain       send.fpl-sidekick.com
+Domain       fpl-sidekick.com
 ```
 
 **The key is shown once.** Put it in your password vault before closing the dialog — it is the
@@ -318,8 +325,9 @@ nameserver is the one to ask.
 Nothing about *sending* is affected, and that is worth being precise about rather than assumed:
 
 - **DKIM** signs as `fpl-sidekick.com` and the From header is at `fpl-sidekick.com`. Aligned.
-- **SPF** checks the envelope sender, which is `send.fpl-sidekick.com`, and that name has its own
-  SPF record. Under DMARC's default relaxed alignment a subdomain aligns with its parent. Aligned.
+- **SPF** checks the envelope sender, which is `send.fpl-sidekick.com`, and that name resolves
+  through its CNAME to Resend's SPF record. Under DMARC's default relaxed alignment a subdomain
+  aligns with its parent. Aligned.
 
 Both mechanisms pass, so DMARC passes, with or without an apex SPF record.
 
@@ -524,9 +532,9 @@ Each of these fails in a way that looks like a different one.
 | Symptom | First thing to check |
 |---|---|
 | No MX option in Namecheap's dropdown | Trap 4 — Mail Settings is on Email Forwarding. Switch it to Custom MX (2.3) |
-| Domain never verifies in Resend | Trap 3 — a doubled domain in the Host field. `dig` the record and read what came back |
+| Domain never verifies in Resend | Trap 3 — a doubled domain in the Host field — or a stale `TXT`/`MX` on `send` beside the CNAME (2.3). `dig` the record and read what came back |
 | Mail to the domain stopped arriving | Expected after 2.3 removed the forwarding MX records; 2.8 restores them |
-| No mail at all | Supabase → Logs → Auth. A `429` is the rate limit (3.2); an SMTP auth error is the username or password (3.1 — the username is the literal `resend`) |
+| No mail at all, app log says `could not be sent (500)` | Resend shows a sending row *Pending* (2.3–2.4) — this happened 2026-08-28. Otherwise Supabase → Logs → Auth: a `429` is the rate limit (3.2); an SMTP auth error is the username or password (3.1 — the username is the literal `resend`) |
 | Mail arrives, link opens a blank page | Site URL (3.3) — almost always this |
 | Mail lands in spam | `dig` the SPF and DKIM records, then read `Show original` (5.3) to see which one failed |
 | DMARC reads as absent | Two `_dmarc` records, or one at the wrong Host (Traps 2 and 3) |

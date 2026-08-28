@@ -3105,6 +3105,18 @@ on every `POST`, and behind Fly's proxy the application sees itself as `http://�
 displays as *"That invite code is not valid."* Found by adding `-H 'Origin: …'` to a `curl` that had
 been passing without it. The runbook's 4.1 now says so.
 
+**The first confirmation mail then failed with `500 Error sending confirmation email`, and the
+cause was Resend's DNS layout changing under the runbook.** The domain had been verified with an
+SPF TXT and an MX on `send`; the dashboard then asked instead for two CNAMEs (`send` →
+`send.forge.rmta.net`, `rsend` → `rsend-euw1.forge.rmta.net`) and marked them *Pending*, and Resend
+does not send while they are. Adding the CNAMEs beside the old records was not enough — Namecheap
+allows a CNAME next to a TXT and MX at the same name, which DNS forbids, and the nameserver kept
+answering the stale SPF. Deleting the TXT and MX on `send` verified the domain within minutes;
+GoTrue's `/auth/v1/resend` then answered `200` and the mail landed in Gmail's inbox from
+`noreply@fpl-sidekick.com` (2026-08-29 00:00 UTC). The runbook's 2.3 and 2.4 describe the CNAME
+layout and the deletion. One place on the `testi` code was burned by the failed first attempt —
+`uses` reads 2 for one account.
+
 **Its DNS was read rather than assumed**, and it carries two things that shape the work. The apex
 already has an SPF record — Namecheap's email forwarding — and a domain may have exactly one: a
 second makes it fail SPF outright, which is worse than having none. Sending from
