@@ -3122,3 +3122,57 @@ Three claims were checked against production and were wrong:
 
 `docs/TODO.md` also still called itself the working backlog. Issue tracking moved to Linear on
 2026-08-28; the file keeps its history and says so at the top.
+
+## Resend chosen as the mail provider (2026-08-28)
+
+`docs/EMAIL-SETUP.md` is rewritten a third time, now concrete: Resend, sending from
+`send.fpl-sidekick.com`, with the exact DNS records, SMTP fields and verification commands.
+
+**The choice was re-made on the right basis.** The first recommendation was "Resend, because
+thirty testers fit the free tier" — the owner rejected the framing: the service has to be built
+for perhaps five thousand subscribers, not for the test round. That inverted the reasoning without
+changing the answer.
+
+At the scale being planned for, mail is a rounding error. Five thousand users at the measured
+EUR 0.0146 per message is thousands of euros a month in language-model cost; $20/month of email is
+a fraction of a percent of it. When cost does not decide, what breaks decides. Resend works today
+with no application and no waiting, and it keeps this project's sending reputation separate from
+`kurssialusta`'s.
+
+**Amazon SES was considered seriously and rejected for now**, having examined the neighbouring
+`kurssialusta` project, which is building on it. Two independent blockers: its production-access
+request is mid-conversation with AWS as of 2026-08-28, so the account is still in the sandbox and
+can only send to individually pre-verified recipient addresses — the exact opposite of a sign-up
+confirmation flow; and SES bounce and complaint rates are account-wide per region, so a marketing
+list of 25,000 messages a month sharing the account could suspend sending for sign-up mail that
+has nothing to do with it. SES is about 400× cheaper per message ($0.10 per 1,000 against
+Resend's effective rate), and that is the right trade to revisit **only if broadcasts to all users
+become a real feature** — at which point `kurssialusta` will already have the SES-plus-Listmonk
+stack and the expertise to run it.
+
+**Plan: start on Free, upgrade to Pro before the invite code is handed out.** The binding
+constraint on the free tier is not its 3,000 messages a month but its **100 a day**. Five thousand
+sign-ups over six months averages 28 a day, but launches do not average, and the day sign-ups
+spike is the day the cap silently drops the 101st confirmation.
+
+### Three traps, one of them measured
+
+The runbook now names three, and the first was verified rather than predicted:
+
+1. **The parking A record is still live**, alongside Fly's. Namecheap implements a URL Redirect
+   Record by pointing the apex at its own server, so the redirect *is* the second A record. Ten
+   straight requests to the apex returned 200 — and the parking address answers nothing at all, so
+   curl was silently retrying the other one. Certificate issuance did not clear it either: both
+   certificates are Issued and the fault remains.
+2. **One SPF record, and one DMARC record.** The apex already carries Namecheap's forwarding SPF.
+   The DMARC half of this rule came from reading `kurssialusta`'s runbook, which has the fault
+   live on its own domain: two `_dmarc` records make DMARC inert, and nothing warns you.
+3. **Namecheap appends the domain to the Host field.** Pasting `send.fpl-sidekick.com` verbatim
+   produces `send.fpl-sidekick.com.fpl-sidekick.com`, which fails silently — no error, just a
+   domain that never verifies.
+
+Traps 2 and 3 were both taken from `~/dev/kurssialusta/docs/vaihe-0-ses.md`, which is a more
+mature runbook for the same class of work. So was the correction that a DMARC `rua` address must
+exist and must be at the same domain — an address at `gmail.com` needs an authorisation record on
+Google's side that you cannot add. The earlier version of this file named
+`dmarc@fpl-sidekick.com` without saying it had to be created first.
