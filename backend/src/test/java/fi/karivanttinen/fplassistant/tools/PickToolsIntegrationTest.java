@@ -231,10 +231,9 @@ class PickToolsIntegrationTest {
     }
 
     @Test
-    void aDefenderWhoClearsTheDefensiveThresholdIsScoredForIt() {
-        // Ferreira has two seeded 90-minute fixtures. One over the ten-action threshold and one
-        // under it is a 50% hit rate, worth half of DEFCON_POINTS. Seeded here rather than in
-        // TapasSeed so no other case's expected points move under it.
+    void aDefenderWhoContributesDefensivelyIsScoredForIt() {
+        // Ferreira has two seeded 90-minute fixtures. Seeded here rather than in TapasSeed so no
+        // other case's expected points move under it.
         jdbc.update("UPDATE player_fixture_stats SET defensive_contribution = 12"
                 + " WHERE player_id = 9205 AND fixture_id = 9102 AND season_id = 9026");
         jdbc.update("UPDATE player_fixture_stats SET defensive_contribution = 4"
@@ -243,14 +242,14 @@ class PickToolsIntegrationTest {
         String reply = tools.getDifferentialPicks("DEF", 100, 3);
 
         assertThat(reply).contains("Ferreira");
-        // Pins the rendered form, not just the rate: 12 and 4 average to 8.0 actions.
-        assertThat(reply).contains("DC 50% at 8.0 actions");
+        // Pins the rendered form: 12 and 4 average to 8.0 actions, which the model turns into
+        // a 31% chance of reaching 10 in a match.
+        assertThat(reply).contains("DC 31% at 8.0 actions");
     }
 
     /**
      * A forward has no clean-sheet value but does have a defensive-contribution threshold, so the
-     * component must not sit behind the clean-sheet branch. Vasquez clears 12 in one of his three
-     * qualifying matches.
+     * component must not sit behind the clean-sheet branch.
      */
     @Test
     void aForwardIsGivenADefensiveContributionComponentDespiteHavingNoCleanSheetValue() {
@@ -262,7 +261,8 @@ class PickToolsIntegrationTest {
         String reply = tools.getDifferentialPicks("FWD", 100, 3);
 
         assertThat(reply).contains("Vasquez");
-        assertThat(reply).contains("DC 33%");
+        // 13, 5 and 5 average to 7.67 actions against a forward's threshold of 12.
+        assertThat(reply).contains("DC 14%");
         assertThat(reply).doesNotContain("CS ");
     }
 
