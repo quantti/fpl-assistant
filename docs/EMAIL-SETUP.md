@@ -427,16 +427,40 @@ deploy is green.
 
 ## Task 5 — Issue a code and test end to end
 
-**5.1 Check whether a code exists.** The table may be empty, and nobody can sign up until it is
-not.
+**5.1 Check whether a code exists, and create one — from Supabase, not over SSH.**
 
-```bash
-flyctl ssh console -a fpl-assistant -C "java -jar /app/app.jar --list-invite-codes"
-flyctl ssh console -a fpl-assistant -C "java -jar /app/app.jar --create-invite-code=testi:10"
+The table may be empty, and nobody can sign up until it is not.
+
+**Do not run the CLI flags against the running production machine.** An earlier version of this
+file said to, and that was a hazard rather than a shortcut: the app runs on a single 512 MB Fly
+machine with `-XX:MaxRAMPercentage=75`, so the live JVM already claims about 384 MB.
+`flyctl ssh console -C "java -jar /app/app.jar --list-invite-codes"` starts a *second* full Spring
+context in the same container, and the likely outcome is the kernel killing one of the two — most
+easily the one serving traffic. Verified against `fly status` and `fly.toml` on 2026-08-28.
+
+Use the Supabase SQL editor instead. Reading is free:
+
+```sql
+SELECT code, label, max_uses, uses, active, valid_until
+FROM fpl_invite_code
+ORDER BY code;
 ```
 
-`--create-invite-code` leaves an existing code untouched rather than resetting a live ceiling, so
-running it twice is safe.
+Creating a code is a plain insert, and that is not a shortcut around the CLI — it is what the CLI
+does. `InviteLedger.create` inserts the row with `code.trim()` and nothing else; the defaults on
+the table supply the rest (`uses` 0, `benefit_kind` `'access'`, `active` true):
+
+```sql
+INSERT INTO fpl_invite_code (code, label, max_uses)
+VALUES ('testi', 'testi', 10);
+```
+
+Name only the columns you mean, so the defaults apply — passing an explicit `NULL` for
+`benefit_kind` would violate its `NOT NULL`.
+
+The CLI remains the right tool anywhere it is not competing with the live app for memory: locally
+against `.env.supabase`, or on a machine sized for it. `--create-invite-code` leaves an existing
+code untouched rather than resetting a live ceiling, so running it twice is safe.
 
 **5.2 Sign up as a real tester** — an address you can read, on a device not already signed in.
 
