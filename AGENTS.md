@@ -72,6 +72,15 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
   names the season being played. Their provenance is two lines, not one: the squad block states
   the gameweek it was locked for and when it was fetched, and the statistics block carries
   `SeasonContext.provenance()`. Do not fold them into the single-banner convention.
+- **`SquadTools.buildSquad` is a fourth documented two-line-provenance exception**, alongside
+  the my-team tools. Its candidate pool — identity, club, price, ownership, availability —
+  comes from `fpl_daily_price` and carries `DailyPriceSource.provenance()`; its metrics come
+  from `player_fixture_stats` and carry `SeasonContext.provenance()`. The two sources have
+  different freshness and, during the changeover, different seasons, so a single banner would
+  attribute one of them wrongly. Building the pool from the daily capture rather than the
+  tapas `player` table is deliberate and is what keeps issue #50 from recurring here: it also
+  means the tool works while tapas has not synced the season being played. Do not fold this
+  into the single-banner convention.
 - **Tests seed the data they assert on and never depend on production content.** The suite runs
   against a disposable container (`scripts/test-db.sh`), which holds the tapas schema
   (`scripts/dump-test-schema.sh` regenerates the dump) and nothing else. Anything reading

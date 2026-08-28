@@ -2802,3 +2802,88 @@ code, so the billing phase reads the benefit from the join.
 `--create-invite-code=launch:10`, `--create-invite-code=podcast:100:discount_percent:50`,
 `--list-invite-codes`. Creating a code that exists leaves it untouched rather than resetting a live
 ceiling.
+
+
+## Squad builder — what it is and where it stands (2026-08-28, PR #54)
+
+`buildSquad` picks a whole FPL squad with a solver instead of prose. It exists because the model,
+asked for a wildcard squad with three players from each of three clubs, produced two answers that
+were not squads: three of fifteen slots were descriptions rather than players, a club constraint
+was claimed but not met, the stated total disagreed with the answer's own table by over £1m, and
+one player carried two different prices in the same conversation. Squad selection is constrained
+optimisation — fifteen players inside a budget, at fixed position quotas, at most three per club,
+around named pins — and prose cannot do it.
+
+**How it works.** The candidate pool comes from `fpl_daily_price`, never the weekly-synced tapas
+tables, so it carries no stale price or injury flag and survives the season changeover. Each
+player is scored on expected FPL points per fixture — the per-90 model scaled by the minutes he
+actually plays — summed over the next N gameweeks, so a double gameweek counts twice and a blank
+counts as nothing. `Feasibility` refuses an impossible request before the solve with a sentence
+naming the constraint and, where money is involved, the amount. An ojAlgo integer program then
+picks the fifteen and the eleven under FPL's own rules, the user's constraints, and three
+structural defaults that give way in a fixed order when they cannot all hold. The formatter prints
+every constraint beside what was actually achieved, with ✓ or ✗.
+
+**Two documented exceptions to project conventions**, both recorded in `AGENTS.md`: `SquadTools`
+carries two provenance lines rather than one, because prices and metrics come from sources of
+different freshness and one banner would attribute one of them to the wrong season; and the pool
+is built from the daily capture rather than the tapas `player` table, which is what keeps issue
+#50 from recurring here.
+
+**Deliberately not built**, so nobody mistakes the gaps for oversights:
+
+- Defensive-contribution points are absent from the scoring (#46), so goalkeepers and
+  ball-winning defenders are understated. The output says so.
+- Fixture difficulty is one multiplier on the whole score rather than a per-fixture clean-sheet
+  projection (#47).
+- Players with no minutes history — new signings, returns from long injury — can only enter as
+  bench bodies or by being named. A curated source for them is its own ticket.
+- Selling prices. FPL returns the purchase price plus half the profit and does not publish it, so
+  a wildcard squad is priced as fresh purchases and the figure errs toward the manager looking
+  poorer than they are. The output says so. Issue #53 covers the authenticated route.
+
+**Follow-ups filed from this work:** #55 (`PickTools.avgFdrByTeam` has the double-gameweek defect
+this branch fixed in `HorizonScorer`, and undervalues those clubs in production today), #56 (the
+suite never runs against an empty database, so schema-ordering bugs only reach CI), #57 (the
+minors the whole-branch review triaged as carry).
+
+## Squad builder (`squad-builder` branch) — known gap after the whole-branch fix wave (2026-08-28)
+
+A final reviewer read the branch as a whole, compiled and executed three probes, and found two
+merge-blocking defects and five more worth fixing before merge — a stale-pool bug during the
+season changeover, a constraint receipt that could certify an exclusion as met when it had
+silently done nothing, club quotas matching only `team_name` and not `team_short`, a missing
+pre-flight check for a pin colliding with a club quota, cross-season metric bridging with no
+comparison against the season being played, expected points missing from the output, duplicated
+window constants, and a silently unscored horizon. All eight were fixed in one pass, each with a
+test that fails without its fix.
+
+**One piece of the spec is deliberately still unimplemented.** `2026-08-27-squad-builder-design.md`'s
+Infeasibility section says that when the pre-flight passes but the solver still reports
+infeasible, "constraint groups are relaxed one at a time and re-solved; the group whose relaxation
+restores feasibility is named." That diagnosis is not built. `SquadTools.buildSquad`'s only
+fallback in that case is the generic sentence ("Those constraints cannot all be met at once...").
+The pre-flight (`Feasibility.check`) now covers every case the spec enumerates, including a pin
+colliding with a club quota, so the generic sentence should be rare — but it is still the whole
+answer whenever the solver, not the pre-flight, is what discovers the infeasibility. Left for a
+follow-up rather than added under this fix wave's scope.
+
+**A second gap, found by the re-review of that fix wave.** Decoupling the pool's season from the
+resolver's (the changeover fix) reopened a narrow cross-season hazard on the *metric* side.
+`CandidatePool.load` picks its bridge join key from `window.isResolvedSeason()` alone: when true it
+joins on the raw FPL element id, with no uniqueness guard — that guard exists only on the
+name-bridging branch. Before the fix, pool and metrics were always drawn from the same season, so an
+id match was always semantically an id match. Now the pool follows the capture's season while the
+metric window follows the resolved one, and FPL renumbers every element every season, so a mismatch
+between the two can pair a real current-season candidate with an unrelated same-numbered player's
+statistics.
+
+It does not fire in the changeover case the fix was written for: there the resolved season is
+completed, so `HorizonScorer.fixtureDifficulties` returns nothing, every score is zero, and the
+"could not score anyone" warning fires. The untested trigger is the inverse — a *stale* daily-price
+capture lagging behind an already-advanced resolved season, which needs the capture job to stall for
+longer than tapas takes to sync past five gameweeks. That inverts this project's usual assumption
+that the capture is fresh and tapas lags, which is why it is recorded rather than fixed here.
+
+The fix is to apply the same uniqueness discipline on the id branch that the name branch already
+has, or to refuse to bridge at all when the capture's season and the metric window's season differ.
