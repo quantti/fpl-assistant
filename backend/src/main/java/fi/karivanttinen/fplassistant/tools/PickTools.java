@@ -75,10 +75,10 @@ public class PickTools implements FplTool {
     private static final int MAX_PICKS = 10;
     private static final int MAX_FIXTURES = 5;
 
-    // Window and sample-size constants (WINDOW_MATCHES, WHOLE_SEASON, MIN_WINDOW_MINUTES,
-    // MIN_SAMPLE_GAMEWEEKS) live on ExpectedPoints now, shared with CandidatePool so the two
-    // tools cannot rank the same player two different ways in one conversation by drifting apart
-    // on what "recent form" means.
+    // Window constants (WINDOW_MATCHES, WHOLE_SEASON, MIN_WINDOW_MINUTES) live on
+    // ExpectedPoints, and the cross-season ramp on SeasonBlend — both shared with CandidatePool
+    // so the two tools cannot rank the same player two different ways in one conversation by
+    // drifting apart on what "recent form" means.
 
     /** Sinks players whose fixtures are unknown below any player with a real FDR. */
     private static final double UNKNOWN_FDR = Double.MAX_VALUE;
