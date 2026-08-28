@@ -3,6 +3,7 @@ package dev.quantti.fplassistant.tools;
 import java.util.List;
 
 import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -36,6 +37,18 @@ class PickToolsIntegrationTest {
     @BeforeEach
     void seed() {
         SharedStatsSeed.ensure(jdbc);
+        clearDefensiveContribution();
+    }
+
+    /**
+     * Before as well as after: {@code SharedStatsSeed.ensure} inserts ON CONFLICT DO NOTHING and the
+     * test container is long-lived, so a defensive-contribution value written by one case would
+     * otherwise survive into every later case and every later run.
+     */
+    @AfterEach
+    void clearDefensiveContribution() {
+        jdbc.update("UPDATE player_fixture_stats SET defensive_contribution = NULL"
+                + " WHERE season_id = 9026 AND player_id IN (9203, 9205, 9206)");
     }
 
     @Test
@@ -180,7 +193,11 @@ class PickToolsIntegrationTest {
     void theReplySaysWhichPointsTheExpectedModelDoesNotCover() {
         String result = tools.getDifferentialPicks("DEF", 100, 3);
 
-        assertThat(result).contains("xPts/90 covers goals, assists and clean sheets only");
+        assertThat(result).contains("Save points and penalty saves are still not in it");
+        // DC is a modelled chance, not a tally. The wording went stale once when the model
+        // changed and no test noticed, so the distinction is pinned here.
+        assertThat(result).contains("estimated chance of reaching");
+        assertThat(result).doesNotContain("share of matches");
         assertThat(result).contains("Do not call xPts/90 a complete projection");
         assertThat(result).doesNotContain("are not in the data");
     }
@@ -215,5 +232,54 @@ class PickToolsIntegrationTest {
         // The coverage line has to notice him: he has rows, so a count of "players with no rows"
         // would not, which is the drift this replaced.
         assertThat(result).containsPattern("Ranked from [0-9]+ of the [0-9]+ players matching");
+    }
+
+    @Test
+    void aDefenderWhoContributesDefensivelyIsScoredForIt() {
+        // Ferreira has two seeded 90-minute fixtures. Seeded here rather than in SharedStatsSeed so no
+        // other case's expected points move under it.
+        jdbc.update("UPDATE player_fixture_stats SET defensive_contribution = 12"
+                + " WHERE player_id = 9205 AND fixture_id = 9102 AND season_id = 9026");
+        jdbc.update("UPDATE player_fixture_stats SET defensive_contribution = 4"
+                + " WHERE player_id = 9205 AND fixture_id = 9104 AND season_id = 9026");
+
+        String reply = tools.getDifferentialPicks("DEF", 100, 3);
+
+        assertThat(reply).contains("Ferreira");
+        // Pins the rendered form: 12 and 4 average to 8.0 actions, which the model turns into
+        // a 31% chance of reaching 10 in a match.
+        assertThat(reply).contains("DC 31% at 8.0 actions");
+    }
+
+    /**
+     * A forward has no clean-sheet value but does have a defensive-contribution threshold, so the
+     * component must not sit behind the clean-sheet branch.
+     */
+    @Test
+    void aForwardIsGivenADefensiveContributionComponentDespiteHavingNoCleanSheetValue() {
+        jdbc.update("UPDATE player_fixture_stats SET defensive_contribution = 13"
+                + " WHERE player_id = 9203 AND fixture_id = 9101 AND season_id = 9026");
+        jdbc.update("UPDATE player_fixture_stats SET defensive_contribution = 5"
+                + " WHERE player_id = 9203 AND fixture_id IN (9103, 9110) AND season_id = 9026");
+
+        String reply = tools.getDifferentialPicks("FWD", 100, 3);
+
+        assertThat(reply).contains("Vasquez");
+        // 13, 5 and 5 average to 7.67 actions against a forward's threshold of 12.
+        assertThat(reply).contains("DC 14%");
+        assertThat(reply).doesNotContain("CS ");
+    }
+
+    @Test
+    void aGoalkeeperIsNotGivenADefensiveContributionComponent() {
+        jdbc.update("UPDATE player_fixture_stats SET defensive_contribution = 15"
+                + " WHERE player_id = 9206 AND season_id = 9026");
+
+        String reply = tools.getDifferentialPicks("GK", 100, 3);
+
+        assertThat(reply).contains("Kaminski");
+        // ", DC " is the component separator. A bare "DC " would also match the footer's
+        // explanation of what DC means once the disclosure is rewritten.
+        assertThat(reply).doesNotContain(", DC ");
     }
 }
