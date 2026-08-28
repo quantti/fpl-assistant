@@ -5,7 +5,58 @@
 > tracked by the single `**PROGRESS:**` line below, per `AGENTS.md` — do **not** add per-step
 > checkboxes.
 
-**PROGRESS:** Task 0/7 done — Task 0 is the measurement spike and does not count; Tasks 1–7 do.
+**PROGRESS:** Task 1/7 done
+
+## Outcome — Task 0 (2026-08-28)
+
+Measured on vaastav's 2024-25 → 2025-26 (479 players bridged by name), predicting each player's
+later `xG/90` and `xA/90` from his first *m* qualifying matches, three ways. **The ramp is worse
+than last-season-only from m = 3 onward, and the gap widens.** RMSE, target = next 5 qualifying
+matches, `xG/90`:
+
+| m | ramp | this-only | last-only | ramp vs better baseline |
+|---|---|---|---|---|
+| 1 | 0.1171 | 0.1171 | 0.1171 | 0.0% |
+| 2 | 0.1083 | 0.1191 | 0.1109 | **+2.4%** |
+| 3 | 0.1230 | 0.1542 | 0.1213 | −1.4% |
+| 4 | 0.1330 | 0.1463 | 0.1239 | −7.3% |
+| 5 | 0.1373 | 0.1438 | 0.1218 | −12.7% |
+| 6 | 0.1411 | 0.1470 | 0.1236 | −14.1% |
+| 8 | 0.1325 | 0.1325 | 0.1056 | −25.5% |
+
+The same shape holds for `xA/90` and `xGC`, and on three targets (rest of season, next 10, next
+5). The cause is sample size: a full previous season is 30+ matches, eight matches of this season
+is not, and for a rate the larger sample wins even though it is a season stale.
+
+**Split by whether the player changed club** (target = next 5, `xG/90`) shows what the average
+hides:
+
+| m | changed club (n≈30) | same club (n≈170) |
+|---|---|---|
+| 2 | +1.1% | +2.8% |
+| 4 | −5.8% | −7.6% |
+| 6 | **+2.0%** | −19.7% |
+| 8 | −0.4% | −32.1% |
+
+For a player who moved, last season carries no advantage and the ramp is neutral to slightly
+better — that is the case it was designed for. For a player at the same club it is clearly worse
+by m = 4.
+
+**Not acted on, by the plan's own rule:** `WEIGHT_BY_MATCHES` is the owner's and Task 0 reports
+rather than tunes. Two things worth the owner's attention:
+
+1. Reaching 100% at 8 matches is early for a stable player. On this evidence the crossover for
+   `xG/90` is well beyond 8; a ramp that topped out nearer 90% and much later would measure
+   better for the majority.
+2. What the measurement cannot see is the case the tools actually serve. It scores a *rate
+   estimate* against a *realised rate* over players whose situation mostly did not change. A
+   promoted-club player, a new role, a striker moved from wide — those are where last season
+   misleads and where a manager is most likely to ask. The club-change split is the closest
+   proxy available and there the ramp holds its own.
+
+Scripts: `ramp_measure.py`, `ramp_horizon.py` in the session scratchpad. Nothing from 2024-25 was
+written to the database or the repository. Re-run on 2025-26 → 2026-27 after GW10 (Task 7 files
+the ticket).
 
 **Goal:** Replace the binary previous-season/this-season switch in every ranking metric with a
 per-player weighted blend of both seasons, on the owner's ramp, and make `ExpectedStatsTools`
