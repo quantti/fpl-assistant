@@ -127,8 +127,9 @@ public final class SquadFormatter {
                             + " long injuries. Name them and I will build around them anyway.\n");
         }
 
-        out.append("\nDefensive-contribution points, save points and penalty saves are not in these"
-                + " numbers, so goalkeepers and ball-winning defenders are understated.\n");
+        out.append("\nSave points and penalty saves are not in these numbers, so goalkeepers are"
+                + " understated. Defensive contribution is included, as the share of matches a"
+                + " player reaches his position's action threshold in.\n");
 
         return out.toString();
     }
