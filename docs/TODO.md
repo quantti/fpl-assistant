@@ -1,8 +1,11 @@
 # TODO — deferred and not-done items
 
+> **Issue tracking moved to Linear (team `Kari`, identifiers `KAR-n`) on 2026-08-28.** That is
+> where the current state of every open item lives. This file is kept for the history and
+> reasoning it carries, and is no longer the working backlog — do not add items here.
+
 Consolidated list of code and documentation items that were decided but not built, or explicitly
-deferred. Detailed history and reasoning live in `docs/STATUS.md`; this file is the working
-backlog. Status column: `open` = not started, `in progress` = being worked on, `deferred` = pushed
+deferred. Detailed history and reasoning live in `docs/STATUS.md`. Status column: `open` = not started, `in progress` = being worked on, `deferred` = pushed
 to a later date or season by owner decision.
 
 ## This session (2026-08-18)
@@ -24,9 +27,9 @@ to a later date or season by owner decision.
 
 | Item | Type | Status | Notes |
 |---|---|---|---|
-| Email verification before the invite code comes off | Code | open | `email_confirm: true` creates confirmed accounts without sending anything, which is defensible only while the code and the 30-account cap are the gate. A permanent free tier reached without a code and without a verified address is refillable by anyone willing to register a new address. First thing to build when the tier opens up |
+| Email verification before the invite code comes off | Code | done | Built and merged in PR #52 (2026-08-26), deployed. Sign-up now creates the account with `email_confirm: false` and asks GoTrue to send its own confirmation mail — two calls, because `/auth/v1/signup` is refused to the service role while public sign-up is off. First confirmation mail delivered 2026-08-29 through Resend on `fpl-sidekick.com`, SPF/DKIM/DMARC all PASS; the link itself is still to be followed. Runbook: `docs/EMAIL-SETUP.md`, KAR-33 |
 | Whether 20 messages a week is the right number | Product | open | A judgement, not a derived figure. It is `QUOTA_FREE_MESSAGES_PER_WEEK` precisely so it can move from evidence once testers have used it |
-| `SUPABASE_SERVICE_ROLE_KEY` and `INVITE_CODE` as Fly secrets | Infra | open | Neither is set. Sign-up answers `503` until the service-role key is set, and refuses every code until `INVITE_CODE` is. Owner action: `fly secrets set` |
+| `SUPABASE_SERVICE_ROLE_KEY` and `INVITE_CODE` as Fly secrets | Infra | done | Both set and `Deployed`, verified against `fly secrets list` on 2026-08-28. `INVITE_CODE` itself is now vestigial: codes are rows in `fpl_invite_code` since PR #52, and the secret only matters to a deployment older than that |
 | Burnt invite slots have no admin path | Code | deferred | A failed Supabase call leaves a row with a null `user_id` — one slot, deliberately (see STATUS 2026-08-22). Released by hand: `DELETE FROM fpl_invite_redemption WHERE user_id IS NULL`. Not worth a UI at this size |
 | Duplicated `SUPABASE_URL` slash repair | Code | done | Closed 2026-08-25: `SupabaseAdminClient` calls `SecurityConfig.collapseDoubledSlash` (now public) instead of repeating its regex |
 

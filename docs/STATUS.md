@@ -38,7 +38,7 @@ at `~/.fly/bin/flyctl` (not on PATH — `export PATH="$HOME/.fly/bin:$PATH"`), l
 
 ```
 fly secrets set DATABASE_URL=... DB_USER=... DB_PASSWORD=... OPENAI_API_KEY=... \
-    FOOTBALL_DATA_API_KEY=... SPRING_AI_PROVIDER=openai CORS_ORIGINS=https://fpl-assistant.fly.dev
+    FOOTBALL_DATA_API_KEY=... SPRING_AI_PROVIDER=openai CORS_ORIGINS=https://fpl-sidekick.com,https://fpl-assistant.fly.dev
 fly deploy --ha=false --remote-only
 ```
 
@@ -2724,9 +2724,10 @@ the grant lives outside the diff that relies on it.
 
 ## Sign-up: email verification, and invite codes that are rows (2026-08-26)
 
-> **Not deployed, and it cannot work until the Supabase project is configured.** The remaining
-> steps are dashboard settings and a mail provider, none of which live in this repository:
-> `docs/EMAIL-SETUP.md` is the runbook, and #51 tracks it.
+> **Deployed since PR #52 merged, but it cannot deliver until the Supabase project has a mail
+> sender.** The remaining steps are DNS, a mail provider and dashboard settings, none of which
+> live in this repository: `docs/EMAIL-SETUP.md` is the runbook — rewritten 2026-08-28 around
+> owning a real domain — and KAR-33 tracks it.
 
 Two changes to the same door.
 
@@ -3072,3 +3073,171 @@ The system prompt's "Before GW5 / From GW5" rule is gone. The model reads the pr
 instead, which is per player and already correct; a gameweek number was always a worse proxy.
 
 **Verified:** 587 tests green against a freshly reset container.
+
+## Email verification: the runbook moves to a real domain (2026-08-28)
+
+Owner decision: buy a domain rather than work around not having one. It is **`fpl-sidekick.com`**,
+registered at Namecheap the same day, and `docs/EMAIL-SETUP.md` is rewritten around it.
+
+**Most of the old runbook's difficulty was the missing domain.** SPF and DKIM live in DNS on the
+domain mail is sent *from*, the app answered only on `fpl-assistant.fly.dev`, and a `.fly.dev`
+subdomain is not yours to add TXT records to — so no provider could send as
+`noreply@fpl-assistant.fly.dev`. That forced a choice between Gmail SMTP as a stopgap and Resend's
+`onboarding@resend.dev`, which delivers only to the Resend account owner and is therefore useless
+for testers. With a domain both compromises disappear and the runbook becomes a sequence.
+
+**The domain carries the app as well as the mail.** Sending from `noreply@<domain>` while the
+confirmation link lands on `fpl-assistant.fly.dev` is a sender/destination mismatch — the shape
+phishing filters are built to notice, and a cautious tester notices it too. The DNS work is the
+same either way. Mail-only remains a valid intermediate and the runbook says which tasks to skip
+for it.
+
+**The move is small in this repository, and that was worth verifying rather than assuming.**
+`grep -rn "fly\.dev"` over `backend/src`, `frontend/src`, `fly.toml` and `.github` finds exactly
+one match: the deploy workflow's smoke-test URL. Nothing else knows the hostname. The confirmation
+link's destination is Supabase's **Site URL** alone, because `SupabaseAdminClient` deliberately
+sends no `redirect_to` — one place decides, and it is a dashboard field rather than code. Besides
+the smoke test, the only change is the `CORS_ORIGINS` secret — and that one is not optional, which
+was learned the slow way. The runbook first claimed the secret needed no change because the frontend
+is same-origin; the first sign-up on the domain then refused a valid code. A browser sends `Origin`
+on every `POST`, and behind Fly's proxy the application sees itself as `http://…:8080`, so its own
+`https://` origin reads as foreign and Spring answers `403 Invalid CORS request` — which the frontend
+displays as *"That invite code is not valid."* Found by adding `-H 'Origin: …'` to a `curl` that had
+been passing without it. The runbook's 4.1 now says so.
+
+**The first confirmation mail then failed with `500 Error sending confirmation email`, and the
+cause was Resend's DNS layout changing under the runbook.** The domain had been verified with an
+SPF TXT and an MX on `send`; the dashboard then asked instead for two CNAMEs (`send` →
+`send.forge.rmta.net`, `rsend` → `rsend-euw1.forge.rmta.net`) and marked them *Pending*, and Resend
+does not send while they are. Adding the CNAMEs beside the old records was not enough — Namecheap
+allows a CNAME next to a TXT and MX at the same name, which DNS forbids, and the nameserver kept
+answering the stale SPF. Deleting the TXT and MX on `send` verified the domain within minutes;
+GoTrue's `/auth/v1/resend` then answered `200` and the mail landed in Gmail's inbox from
+`noreply@fpl-sidekick.com` (2026-08-29 00:00 UTC). The runbook's 2.3 and 2.4 describe the CNAME
+layout and the deletion. One place on the `testi` code was burned by the failed first attempt —
+`uses` reads 2 for one account.
+
+**Its DNS was read rather than assumed**, and it carries two things that shape the work. The apex
+already has an SPF record — Namecheap's email forwarding — and a domain may have exactly one: a
+second makes it fail SPF outright, which is worse than having none. Sending from
+`send.fpl-sidekick.com` sidesteps that entirely, which turns the subdomain from a tidiness
+preference into the recommendation. And the A record points at Namecheap's parking page, so
+Task 1 is a *change* to that record, not an addition; leaving both would send roughly half of all
+requests to a parking page.
+
+### Stale documentation corrected the same day
+
+Three claims were checked against production and were wrong:
+
+- `EMAIL-SETUP.md` and this file both said **not deployed**. PR #52 merged and master deploys on
+  push; `/actuator/health` answers `UP` and the deployed jar contains the `email_confirm: false`
+  plus `/auth/v1/resend` path.
+- `docs/TODO.md` said `SUPABASE_SERVICE_ROLE_KEY` and `INVITE_CODE` were **not set**. Both are set
+  and `Deployed` (`fly secrets list`, 2026-08-28). `INVITE_CODE` is vestigial anyway — codes have
+  been rows in `fpl_invite_code` since PR #52.
+- `docs/TODO.md` described email verification as **open**, with the note that `email_confirm: true`
+  creates confirmed accounts. That is the defect PR #52 fixed.
+
+`docs/TODO.md` also still called itself the working backlog. Issue tracking moved to Linear on
+2026-08-28; the file keeps its history and says so at the top.
+
+## Resend chosen as the mail provider (2026-08-28)
+
+`docs/EMAIL-SETUP.md` is rewritten a third time, now concrete: Resend, sending from
+`send.fpl-sidekick.com`, with the exact DNS records, SMTP fields and verification commands.
+
+**The choice was re-made on the right basis.** The first recommendation was "Resend, because
+thirty testers fit the free tier" — the owner rejected the framing: the service has to be built
+for perhaps five thousand subscribers, not for the test round. That inverted the reasoning without
+changing the answer.
+
+At the scale being planned for, mail is a rounding error. Five thousand users at the measured
+EUR 0.0146 per message is thousands of euros a month in language-model cost; $20/month of email is
+a fraction of a percent of it. When cost does not decide, what breaks decides. Resend works today
+with no application and no waiting, and it keeps this project's sending reputation separate from
+`kurssialusta`'s.
+
+**Amazon SES was considered seriously and rejected for now**, having examined the neighbouring
+`kurssialusta` project, which is building on it. Two independent blockers: its production-access
+request is mid-conversation with AWS as of 2026-08-28, so the account is still in the sandbox and
+can only send to individually pre-verified recipient addresses — the exact opposite of a sign-up
+confirmation flow; and SES bounce and complaint rates are account-wide per region, so a marketing
+list of 25,000 messages a month sharing the account could suspend sending for sign-up mail that
+has nothing to do with it. SES is about 400× cheaper per message ($0.10 per 1,000 against
+Resend's effective rate), and that is the right trade to revisit **only if broadcasts to all users
+become a real feature** — at which point `kurssialusta` will already have the SES-plus-Listmonk
+stack and the expertise to run it.
+
+**Plan: start on Free, upgrade to Pro before the invite code is handed out.** The binding
+constraint on the free tier is not its 3,000 messages a month but its **100 a day**. Five thousand
+sign-ups over six months averages 28 a day, but launches do not average, and the day sign-ups
+spike is the day the cap silently drops the 101st confirmation.
+
+### Three traps, one of them measured
+
+The runbook now names three, and the first was verified rather than predicted:
+
+1. **The parking A record is still live**, alongside Fly's. Namecheap implements a URL Redirect
+   Record by pointing the apex at its own server, so the redirect *is* the second A record. Ten
+   straight requests to the apex returned 200 — and the parking address answers nothing at all, so
+   curl was silently retrying the other one. Certificate issuance did not clear it either: both
+   certificates are Issued and the fault remains.
+2. **One SPF record, and one DMARC record.** The apex already carries Namecheap's forwarding SPF.
+   The DMARC half of this rule came from reading `kurssialusta`'s runbook, which has the fault
+   live on its own domain: two `_dmarc` records make DMARC inert, and nothing warns you.
+3. **Namecheap appends the domain to the Host field.** Pasting `send.fpl-sidekick.com` verbatim
+   produces `send.fpl-sidekick.com.fpl-sidekick.com`, which fails silently — no error, just a
+   domain that never verifies.
+
+Traps 2 and 3 were both taken from `~/dev/kurssialusta/docs/vaihe-0-ses.md`, which is a more
+mature runbook for the same class of work. So was the correction that a DMARC `rua` address must
+exist and must be at the same domain — an address at `gmail.com` needs an authorisation record on
+Google's side that you cannot add. The earlier version of this file named
+`dmarc@fpl-sidekick.com` without saying it had to be created first.
+
+## Announcing changes to every user: an export, not a sync (2026-08-29)
+
+The question was whether everyone Resend has sent mail to could land on a contact list at the
+same time, for the day a change to the service has to be announced. Resend does not do that:
+SMTP sends add nobody to an Audience; contacts arrive only through the API, a CSV, or by hand.
+
+Two ways to build the list, and the second was chosen. The first is an API call from
+`SignupController` as each account is created. It costs a second Resend key with contact-write
+permission as a Fly secret, a failure path that must not fail sign-up, and — the deciding
+point — a second copy of the list that starts drifting the moment an account is deleted in
+Supabase: the contact stays, and receives the announcement. The second is to have no list
+between announcements at all. `auth.users` already is the list, and
+`scripts/sql/export-mail-contacts.sql` reads it at the moment an announcement goes out — into a
+CSV, into an Audience, into a broadcast. It cannot drift because it does not persist. The cost
+is one manual step per announcement, which is the right trade for as long as announcements are
+rare. `docs/EMAIL-SETUP.md` Task 6 is the procedure.
+
+Three things had to be verified rather than assumed, and one of them changed the query:
+
+- **`confirmation_sent_at` means "mail was handed over", not "account exists".** Read from
+  GoTrue's `internal/api/mail.go`: `sendConfirmation` calls `sendEmail` first and stamps the
+  column only on success. That matches what the failed sign-up of 2026-08-28 left behind — an
+  account with the column `NULL`. `sendInvite` stamps the same column, so a dashboard invite is
+  covered; password recovery stamps `recovery_sent_at` instead, and the query tests both so it
+  stays right when that flow arrives.
+- **The Supabase SQL editor caps results at 100 rows by default**, the CSV download contains
+  only the rows the grid holds, and the only sign is a small *(Limited to only 100 rows)* beside
+  the row count. Read from Studio's source (`sql-editor-session-state.ts`, `limit: 100`; the
+  menu offers No limit / 100 / 500 / 1,000). The runbook now says to set *No limit* first.
+- **The dashboard CSV import always updates existing contacts** — the *skip* option exists only
+  in the API. That is what makes a one-column CSV a rule and not a preference: an `unsubscribed`
+  column set to false would resurrect everyone who had opted out.
+
+Also verified: Resend's Suppressions list adds hard bounces and spam complaints by itself and
+skips them on every later send, so a bouncing address needs nothing done to the account. The
+runbook's first draft said to delete the account; that would have destroyed a possibly active
+user's data to fix a statistic Resend had already fixed, and it is gone.
+
+The one honest limit of a broadcast: contacts who unsubscribed from an earlier announcement are
+skipped on the next, whatever it says. Accepted for rare, informational notices. A notice that
+must reach every account — a shutdown, a change to the terms — would need to go out
+transactionally through the Emails API, and that is code to write when such a notice exists.
+
+Pricing was re-read the same day: Audiences and Broadcasts are on the same account and the same
+verified domain, free to 1,000 contacts, $40/month at 5,000. The runbook had called Broadcasts a
+separate product at $40; at this project's size it is neither separate nor paid.

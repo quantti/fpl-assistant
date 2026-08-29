@@ -83,27 +83,37 @@ column — the tier is derived on every request, and Phase 5b adds the branch th
 subscription entitles an account to more.
 
 Sign-up is `POST /api/auth/signup`, the one route under `/api/**` that needs no token. It takes
-`{email, password, inviteCode}`, checks the code against `fpl.invite.code`, reserves a slot in
-`fpl_invite_redemption` against `fpl.invite.max-accounts`, and creates the account through
-Supabase's Admin API. Supabase's own public sign-up stays **off**: a code checked in the browser
-would be decoration.
+`{email, password, inviteCode}`, looks the code up in `fpl_invite_code` (case-insensitive),
+reserves a place in `fpl_invite_redemption` against both the code's own `max_uses` and the
+account cap `fpl.invite.max-accounts`, creates the account unconfirmed through Supabase's Admin
+API, and asks GoTrue to send the confirmation mail. Supabase's own public sign-up stays **off**: a
+code checked in the browser would be decoration.
 
-Production needs two secrets for any of it to work, and neither is in the repository:
+Codes are rows, not a secret (since PR #52). Create one with the CLI against `.env.supabase` —
+`--create-invite-code=launch:10`, `--list-invite-codes`, `--reconcile-invite-codes` — or with a
+plain `INSERT`, which is all the CLI does; `docs/EMAIL-SETUP.md` 5.1 has the SQL and explains why
+the CLI must not run on the production machine. The `INVITE_CODE` Fly secret still exists and is
+ignored.
+
+Production needs one secret for any of it to work, and it is not in the repository:
 
 ```bash
 fly secrets set SUPABASE_SERVICE_ROLE_KEY=...   # Project Settings -> API -> service_role
-fly secrets set INVITE_CODE=...                 # the code handed out to testers
 ```
 
-Either one unset closes sign-up rather than opening it — a missing service-role key answers
-`503`, a missing code refuses every submitted code with `403`. The account cap defaults to 30 and
-moves with `fly secrets set INVITE_MAX_ACCOUNTS=n`.
+Unset, it closes sign-up rather than opening it: the endpoint answers `503`. The account cap
+defaults to 30 and moves with `fly secrets set INVITE_MAX_ACCOUNTS=n`. The domain must also be in
+`CORS_ORIGINS`, or every sign-up is refused as an invalid code — `docs/EMAIL-SETUP.md` 4.1.
 
-A failed Supabase call leaves a reserved row with a null `user_id` — one burnt slot, chosen over
-an account nobody counted (see `InviteLedger`). Release burnt slots by hand:
+A failed Supabase call leaves a reserved row with a null `user_id` — one burnt place, chosen over
+an account nobody counted (see `InviteLedger`). Release burnt places by hand, then bring each
+code's counter back in line with its rows (what `--reconcile-invite-codes` does):
 
 ```sql
 DELETE FROM fpl_invite_redemption WHERE user_id IS NULL;
+UPDATE fpl_invite_code c
+   SET uses = (SELECT count(*) FROM fpl_invite_redemption r WHERE r.code_id = c.id)
+ WHERE c.uses <> (SELECT count(*) FROM fpl_invite_redemption r WHERE r.code_id = c.id);
 ```
 
 ## Per-user message limits
