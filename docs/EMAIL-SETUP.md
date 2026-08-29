@@ -30,6 +30,7 @@ is copied forward from an earlier version of this file.
 | Email rate limit | **unknown** — a probe hit `429 over_email_send_rate_limit` on 2026-08-26, before custom SMTP; check 3.2 before a tester round |
 | Invite codes issued | `testi` — 10 places, `uses` 2 as of 2026-08-29: one account, one place burnt by the failed first attempt |
 | `CORS_ORIGINS` | **includes the domain** since 2026-08-28 — without it sign-up refuses every code (4.1) |
+| Announcement list | **no Audience created yet** — Task 6 is the procedure, run when there is something to announce |
 
 Sign-up is open on the code `testi`. One account exists, created 2026-08-28 and unconfirmed until
 its link is followed.
@@ -52,12 +53,17 @@ nothing. That is the worst possible day to discover a cap.
 Start on Free while you test the flow with a handful of addresses; **upgrade before you hand the
 invite code to anyone.**
 
-**Broadcasts are a separate product.** If you ever want to email all your users at once, that is
-Resend's marketing product, priced per *contact* rather than per email — $40/month at 5,000
-contacts, whether you send once a month or ten times. Nothing here sets that up, and sign-up
-confirmation does not need it. Revisit if announcements become a real feature: at that point SES
-plus Listmonk costs roughly a tenth as much, and that exact stack is already being built in the
-`kurssialusta` project next door.
+**Broadcasts are priced separately, and at this size they are free.** Emailing every user at
+once — a service change, an outage, a price announcement — is Resend's marketing side, billed per
+*contact* rather than per message: **1,000 contacts cost nothing**, and the paid tiers start above
+that, reaching $40/month at 5,000 contacts whether you send once a month or ten times. It is the
+same Resend account and the same verified domain; nothing extra to set up and no second provider.
+
+Task 6 is the procedure. It needs no code, because the list of people to write to is `auth.users`
+and it is exported at the moment an announcement goes out. The thing to watch is the contact
+count, not the message count: crossing 1,000 users turns a free line item into a paid one, and at
+that point the SES-plus-Listmonk stack being built in the `kurssialusta` project next door costs
+roughly a tenth as much and is worth the comparison.
 
 For scale: at 5,000 users the language-model cost exceeds the mail cost by about three orders of
 magnitude. Choose mail on what breaks, not on what it costs.
@@ -508,6 +514,80 @@ arriving in your own inbox proves less than these three lines do.
 
 ---
 
+## Task 6 — Telling every user about a change
+
+Sign-up confirmation reaches one person at a time. This is the other direction: one message to
+everyone who has ever had mail from this project, for the day something about the service changes.
+Nothing here runs until there is something to announce — read it then, and work through it in one
+sitting.
+
+**No code, and no automatic sync — that is the decision, not an omission.** The obvious
+alternative is to add a Resend contact from `SignupController` as each account is created. It
+would need a second API key with contact-write permission, a failure path that must not fail
+sign-up, and it would create a second copy of the list that immediately starts drifting: an
+account deleted in Supabase stays a contact in Resend and receives the announcement anyway. The
+export below cannot drift, because the export *is* the list, read at the moment it is used. The
+cost is one manual step per announcement, which is the right trade while announcements are rare.
+Revisit when the manual step is the thing that hurts.
+
+**6.1 Export the addresses.** Paste `scripts/sql/export-mail-contacts.sql` into the Supabase SQL
+editor, run it, and use the result grid's **Download CSV**.
+
+The predicate doing the work is `confirmation_sent_at IS NOT NULL`. GoTrue stamps that column only
+once the message has actually been handed to the SMTP provider — an account whose send failed
+keeps it `NULL`, which is exactly what was observed on 2026-08-28 while Resend's sending records
+sat *Pending* (2.3). So it means *we have written to this address*, which is the question being
+asked, and it is a different set from *has an account*. Unconfirmed accounts belong in the export:
+they were sent the confirmation message.
+
+Read the row count before going further. If it is far below the number of accounts, the gap is a
+mail fault rather than an export fault — the commented sanity-check query at the bottom of the
+`.sql` file gives all three numbers side by side, and *When it fails* below diagnoses them.
+
+**6.2 Import into an Audience.** Resend → **Audiences**. Use the default audience or create one;
+either way use **the same one every time**, since re-importing is how the list stays current.
+Upload the CSV, confirm Resend has mapped the single column to `email`, and import. A dashboard
+import updates contacts it already holds, so running this before every announcement adds the new
+people and leaves the rest alone.
+
+**The CSV has exactly one column, and adding a second can undo an unsubscribe.** Resend also
+accepts `first_name`, `last_name` and `unsubscribed`. The last one is the hazard: because the
+import updates existing contacts, a column asserting `unsubscribed = false` would flip everyone
+who had opted out back into the list. Leaving the column out gives the import nothing to overwrite
+that flag with. Do not add it, and do not "fix" the export by including it.
+
+After the first import of an existing audience, check that the unsubscribed count has not fallen.
+That is the only symptom this mistake produces, and it produces no error.
+
+**6.3 Send the broadcast.** Resend → **Broadcasts** → new broadcast, against that audience.
+
+The From address must be at the verified domain. `noreply@fpl-sidekick.com` is the safe default and
+matches the confirmation mail. **If you use an address people can reply to, restore inbound mail
+first (2.8)** — the Custom MX switch removed the apex MX records, so a reply to any address at this
+domain currently goes nowhere, silently. An announcement inviting questions that then vanish is
+worse than one sent from `noreply@`.
+
+Send a test to yourself before sending to the audience, and re-read 5.3: a broadcast is judged on
+SPF, DKIM and DMARC exactly like a confirmation, and it goes to every user at once, so a
+misconfiguration is not a single lost message.
+
+**Unsubscribe is automatic, mandatory, and does not touch sign-up mail.** Resend adds an
+unsubscribe link to every broadcast and skips contacts who have used it. That link is a legal
+requirement, not a setting to look for. It applies only to broadcasts: confirmation mail goes out
+over SMTP through GoTrue and reaches an unsubscribed address normally, which is correct — a person
+who declines announcements has not declined the message that lets them log in.
+
+**One boundary worth keeping straight.** Telling users about changes to a service they use is
+service communication, and needs no separate consent under the GDPR. Sending the same audience
+marketing — offers, referrals, anything selling — does. The audience built here was assembled from
+people who signed up for the product, so it carries permission for the first and not the second.
+If marketing ever happens, it needs its own opt-in and its own audience.
+
+**Done when:** the row count in 6.1 matches `sent` from the sanity-check query, the audience holds
+that many contacts, a test send passes 5.3, and the broadcast is out.
+
+---
+
 ## Keeping it working
 
 Two numbers decide whether a sender keeps its reputation, and every provider watches them, Resend
@@ -523,9 +603,16 @@ climb only when something is wrong: a typo'd address retried forever, or mail pe
 expect. Check the Resend dashboard after the first real batch of sign-ups, and again whenever you
 raise the invite ceiling.
 
-This project needs no bounce webhooks. Sign-up confirmation is one message to one address a person
-just typed; there is no list to prune. That changes the day broadcasts appear — and so does the
-provider question.
+This project needs no bounce webhooks for sign-up confirmation: it is one message to one address a
+person just typed a moment earlier, and there is no list to prune.
+
+**Broadcasts (Task 6) are where those two numbers can actually be damaged**, because a broadcast
+goes to addresses collected months earlier, some of which have since died. Two things follow.
+Check the Resend dashboard after each broadcast rather than only after sign-up spikes. And be aware
+that the export in 6.1 re-derives the list from `auth.users` every time, so it has no memory of a
+bounce and will re-import a dead address on the next announcement — if the dashboard shows an
+address bouncing repeatedly, delete the account in Supabase, which is what removes it from every
+future export.
 
 ## When it fails, read in this order
 
@@ -545,6 +632,9 @@ Each of these fails in a way that looks like a different one.
 | Sign-up refuses every code, including one that exists in `fpl_invite_code` | The domain is missing from `CORS_ORIGINS` (4.1). The frontend shows every `403` as an invalid code; `curl -H 'Origin: https://fpl-sidekick.com'` reveals `Invalid CORS request` |
 | Sign-up refuses every code and `curl` with the `Origin` header answers `400` | No code exists (5.1), the code is out of uses, or the 30-account cap is reached |
 | Site works, then intermittently does not | Trap 1 — the parking A record was left in place |
+| The Task 6 export returns far fewer rows than there are accounts | Not an export fault. Those accounts were never sent mail — `confirmation_sent_at` is `NULL` because the send failed. Read this table from the top |
+| An announcement reached someone who had unsubscribed | The imported CSV carried an `unsubscribed` column and the import overwrote the flag (6.2). Export one column only |
+| Replies to an announcement never arrive | Expected — the apex has no MX records until 2.8 is done. Send announcements from `noreply@` until it is |
 
 ## Why sign-up is two calls
 
