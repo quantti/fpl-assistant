@@ -2,9 +2,13 @@ import { Loader } from '@mantine/core'
 import ChatView from './components/ChatView/ChatView'
 import SignIn from './components/SignIn/SignIn'
 import { useSession } from './auth/useSession'
+import { useKeyboardAwareViewport } from './hooks/useKeyboardAwareViewport'
 import { useRoute } from './router'
 
 export default function App() {
+  // Above both ChatView and SignIn: the sign-in form has the same iOS keyboard over its
+  // password field as the chat has over its composer.
+  useKeyboardAwareViewport()
   const { session, loading } = useSession()
   const route = useRoute()
 
