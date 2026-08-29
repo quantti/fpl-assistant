@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Progress is tracked on the single `**PROGRESS:**` line below, per `AGENTS.md` — no per-step checkboxes.
 
-**PROGRESS:** Task 0/4 done
+**PROGRESS:** Task 3/4 done — Task 1's WebKit check done (259770 still NEW, 2026-06-07); the device reproduction and Task 4's checklist are the owner's, on an iPhone
 
 **Goal:** On iPhone Safari, the composer stays visible above the software keyboard, and the thread keeps scrolling inside the shell, without changing anything on browsers that already honour `interactive-widget=resizes-content`.
 
