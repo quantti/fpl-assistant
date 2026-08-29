@@ -23,8 +23,10 @@ export default function MessageThread({ messages, streamingContent }: Props) {
     bottomRef.current?.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth' })
   }, [messages, streamingContent])
 
+  // data-thread: useKeyboardAwareViewport finds the scrolling element by it to keep the
+  // bottom pinned when the iOS keyboard shortens the shell.
   return (
-    <div className={classes.thread}>
+    <div className={classes.thread} data-thread>
       {messages.map((msg, i) =>
         msg.role === 'user' ? (
           <div key={i} className={typography.turn}>
