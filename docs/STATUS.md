@@ -3241,3 +3241,22 @@ transactionally through the Emails API, and that is code to write when such a no
 Pricing was re-read the same day: Audiences and Broadcasts are on the same account and the same
 verified domain, free to 1,000 contacts, $40/month at 5,000. The runbook had called Broadcasts a
 separate product at $40; at this project's size it is neither separate nor paid.
+
+## Production runs without reasoning, and what a model with it would cost (2026-08-29)
+
+Found while pricing Sol against Terra: `reasoning-effort: none` in `application.yml` is not a
+tuning choice but OpenAI's constraint — the GPT-5.6 family refuses function tools with any
+reasoning effort on Chat Completions, and Spring AI 2.0.1 has no Responses API (spring-ai #2962,
+open). Every production answer has been written without reasoning since the chat endpoint was
+built, which is a structural candidate for the uneven quality the owner has noticed, and Sol has
+the same restriction, so it would not buy a fix.
+
+`docs/LLM-PRICING.md` holds the full workings: list prices with cache terms for OpenAI, Anthropic,
+xAI, Google, DeepSeek and Mistral; per-message cost on the measured token profile (with the
+thinking-token assumption stated); the Artificial Analysis index beside each; and the paths to
+reasoning. Short version: Grok 4.6 is the first to trial (index above Sol, $6 output, reasoning
+with tools on Chat Completions through the existing OpenAI module by changing `chat.base-url`,
+EU endpoint), Sonnet 5 second. Two corrections to earlier notes on the way: OpenAI now charges
+GPT-5.6 cache writes at 1.25× and reports them only on the Responses API, so `total_tokens`
+undercounts them; and Anthropic prompt caching was never configured in this code, so a bare
+provider switch would pay full input on every turn.
