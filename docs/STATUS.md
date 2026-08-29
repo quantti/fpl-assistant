@@ -3241,3 +3241,53 @@ transactionally through the Emails API, and that is code to write when such a no
 Pricing was re-read the same day: Audiences and Broadcasts are on the same account and the same
 verified domain, free to 1,000 contacts, $40/month at 5,000. The runbook had called Broadcasts a
 separate product at $40; at this project's size it is neither separate nor paid.
+
+## iOS keyboard, and reading while the answer streams (KAR-22, KAR-46, 2026-08-29)
+
+Two scrolling faults in the chat, fixed together in PR #64 because they share the thread's
+scroll behaviour. Both wait on verification by hand before the PR leaves draft.
+
+**The composer under the iOS keyboard (KAR-22).** `index.html` asks for
+`interactive-widget=resizes-content`, which Chrome and Firefox honour by shrinking the window
+when the keyboard opens. WebKit does not — bug 259770 was still `NEW` on 2026-06-07, with a
+comment asking whether anyone is working on it — so on an iPhone `100dvh` stays full-height and
+the keyboard paints over the composer. The decision the ticket asked for is taken: a JavaScript
+fallback rather than accepting it, because FPL's audience is phone-first and this is the first
+thing an iPhone tester meets.
+
+The fallback is one tested pure function and one thin hook. `keyboardAwareHeight` reads the
+visual viewport's height against the window's and answers a shell height only for a
+keyboard-sized inset — at least 100 px, so the collapsing URL bar does not trigger it, and only
+at scale 1, so a pinch-zoom does not either. `useKeyboardAwareViewport` writes that as
+`--app-height` on `<html>` and removes it otherwise; `.shell`, `.root` and the sign-in page read
+`var(--app-height, 100dvh)`, so wherever the property is absent nothing has changed. It is
+mounted once in `App`, above both the chat and the sign-in form, whose password field sits under
+the same keyboard. The hook also undoes WebKit's scroll-to-reveal of the focused field
+(`window.scrollTo(0, 0)`), which with a shorter shell would only push the header off the top —
+if a device shows that fighting Safari as jitter, the documented alternative is to follow the
+scroll with `translateY(visualViewport.offsetTop)` instead of undoing it — and re-pins the
+thread to its bottom if it was there before the shell shrank.
+
+**Auto-scroll overriding the reader (KAR-46).** Owner report: while an answer streams you cannot
+scroll up to re-read, because `MessageThread` called `scrollIntoView` on every token
+unconditionally. Now a `scroll` listener records whether the reader is within 40 px of the
+bottom (`followsBottom`, tested), and the token-time scroll runs only then. Sending a message
+re-arms following so your own message always comes into view. While streaming the scroll is
+instant rather than smooth: a smooth scroll chasing a target that moves every token never
+settles, and mid-animation the "at the bottom" reading would flap and stop following on its own.
+Finished messages keep the smooth scroll, still gated on `prefers-reduced-motion`.
+
+**The frontend now has a test runner.** Vitest, Node environment, `npm test`, on a
+`vitest.config.ts` kept apart from `vite.config.ts` because that one refuses to load without the
+Supabase key. Ten tests over the two pure decisions; the hooks and components are verified by
+hand, which for a software keyboard is the only honest test. Details in `docs/DEVELOPMENT.md`.
+
+**Not yet verified on a device.** The plan's Task 4 checklist — composer above the keyboard,
+thread pinned or left alone as appropriate, no jitter while typing, sign-in field reachable,
+rotation, dismissal, Android unchanged — is the owner's, on an iPhone, and the KAR-46 check by
+hand on desktop (scroll up mid-stream, view stays; scroll down, it follows; send, it jumps).
+Results go here when they exist; until then PR #64 is a draft.
+
+One thing learned the cheap way: a JSX comment placed before the root element inside
+`return (...)` is a syntax error, and `Array.prototype.at` is ES2022 while `tsconfig` targets
+ES2020 — both caught by `tsc -b` before the commit, which is what it is for.
