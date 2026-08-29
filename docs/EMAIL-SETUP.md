@@ -30,7 +30,7 @@ is copied forward from an earlier version of this file.
 | Email rate limit | **unknown** — a probe hit `429 over_email_send_rate_limit` on 2026-08-26, before custom SMTP; check 3.2 before a tester round |
 | Invite codes issued | `testi` — 10 places, `uses` 2 as of 2026-08-29: one account, one place burnt by the failed first attempt |
 | `CORS_ORIGINS` | **includes the domain** since 2026-08-28 — without it sign-up refuses every code (4.1) |
-| Announcement list | **no Audience created yet** — Task 6 is the procedure, run when there is something to announce |
+| Announcement list | **never exported** — Task 6 is the procedure, run when there is something to announce |
 
 Sign-up is open on the code `testi`. One account exists, created 2026-08-28 and unconfirmed until
 its link is followed.
@@ -531,14 +531,19 @@ cost is one manual step per announcement, which is the right trade while announc
 Revisit when the manual step is the thing that hurts.
 
 **6.1 Export the addresses.** Paste `scripts/sql/export-mail-contacts.sql` into the Supabase SQL
-editor, run it, and use the result grid's **Download CSV**.
+editor. **Before running it, open the *Row limit* menu at the bottom of the results pane and set
+it to *No limit*.** The editor defaults to 100 rows, the CSV download contains only the rows the
+grid holds, and the one sign of truncation is a small *(Limited to only 100 rows)* beside the row
+count — confirmed from Studio's source on 2026-08-29. Then run the query and download the CSV.
 
-The predicate doing the work is `confirmation_sent_at IS NOT NULL`. GoTrue stamps that column only
-once the message has actually been handed to the SMTP provider — an account whose send failed
-keeps it `NULL`, which is exactly what was observed on 2026-08-28 while Resend's sending records
-sat *Pending* (2.3). So it means *we have written to this address*, which is the question being
-asked, and it is a different set from *has an account*. Unconfirmed accounts belong in the export:
-they were sent the confirmation message.
+The predicate doing the work is *a sent-at column is set*: `confirmation_sent_at`, which sign-up
+and a dashboard invite both stamp, or `recovery_sent_at`, which password recovery would stamp if
+the frontend had that flow. GoTrue sets these only after the message has actually been handed to
+the SMTP provider — read from its source, `sendConfirmation` sends first and stamps on success —
+so an account whose send failed keeps them `NULL`, which is exactly what was observed on
+2026-08-28 while Resend's sending records sat *Pending* (2.3). The column therefore means *we have
+written to this address*, which is the question being asked, and it is a different set from *has
+an account*. Unconfirmed accounts belong in the export: they were sent the confirmation message.
 
 Read the row count before going further. If it is far below the number of accounts, the gap is a
 mail fault rather than an export fault — the commented sanity-check query at the bottom of the
@@ -547,14 +552,15 @@ mail fault rather than an export fault — the commented sanity-check query at t
 **6.2 Import into an Audience.** Resend → **Audiences**. Use the default audience or create one;
 either way use **the same one every time**, since re-importing is how the list stays current.
 Upload the CSV, confirm Resend has mapped the single column to `email`, and import. A dashboard
-import updates contacts it already holds, so running this before every announcement adds the new
-people and leaves the rest alone.
+import always updates contacts it already holds — the *skip existing* choice exists only in the
+API — so running this before every announcement adds the new people and leaves the rest alone.
 
 **The CSV has exactly one column, and adding a second can undo an unsubscribe.** Resend also
 accepts `first_name`, `last_name` and `unsubscribed`. The last one is the hazard: because the
-import updates existing contacts, a column asserting `unsubscribed = false` would flip everyone
-who had opted out back into the list. Leaving the column out gives the import nothing to overwrite
-that flag with. Do not add it, and do not "fix" the export by including it.
+dashboard import updates existing contacts with whatever the file says, a column asserting
+`unsubscribed = false` would flip everyone who had opted out back into the list. Leaving the
+column out gives the import nothing to overwrite that flag with. Do not add it, and do not "fix"
+the export by including it.
 
 After the first import of an existing audience, check that the unsubscribed count has not fallen.
 That is the only symptom this mistake produces, and it produces no error.
@@ -571,17 +577,28 @@ Send a test to yourself before sending to the audience, and re-read 5.3: a broad
 SPF, DKIM and DMARC exactly like a confirmation, and it goes to every user at once, so a
 misconfiguration is not a single lost message.
 
-**Unsubscribe is automatic, mandatory, and does not touch sign-up mail.** Resend adds an
-unsubscribe link to every broadcast and skips contacts who have used it. That link is a legal
-requirement, not a setting to look for. It applies only to broadcasts: confirmation mail goes out
-over SMTP through GoTrue and reaches an unsubscribed address normally, which is correct — a person
-who declines announcements has not declined the message that lets them log in.
+**Put the Unsubscribe Footer in, and accept what it means.** The broadcast editor offers an
+*Unsubscribe Footer* block; it is not added for you. Include it — Resend replaces it with a
+per-contact link, records the click, and from then on **skips that contact on every broadcast**.
+That is the consequence to be clear-eyed about: a broadcast is not guaranteed to reach everyone.
+Someone who opted out of an earlier announcement will not receive the next one, even if it says
+the service is closing. For announcements that are rare and mostly informational, that is
+acceptable, and it is the trade this runbook makes. If a notice ever *must* reach every account —
+a shutdown, a change to the terms — a broadcast is the wrong tool, and reaching opted-out users
+means sending it transactionally through Resend's Emails API, which is code this project does not
+have. Decide that when the notice exists, not before.
+
+The footer touches only broadcasts: confirmation mail goes out over SMTP through GoTrue and reaches
+an unsubscribed address normally, which is correct — a person who declines announcements has not
+declined the message that lets them log in.
 
 **One boundary worth keeping straight.** Telling users about changes to a service they use is
-service communication, and needs no separate consent under the GDPR. Sending the same audience
-marketing — offers, referrals, anything selling — does. The audience built here was assembled from
-people who signed up for the product, so it carries permission for the first and not the second.
-If marketing ever happens, it needs its own opt-in and its own audience.
+service communication, and needs no separate consent under the GDPR; the unsubscribe link is
+good practice there rather than a legal requirement. Sending the same audience marketing — offers,
+referrals, anything selling — does need consent, and there the link is mandatory. The audience
+built here was assembled from people who signed up for the product, so it carries permission for
+the first and not the second. If marketing ever happens, it needs its own opt-in and its own
+audience.
 
 **Done when:** the row count in 6.1 matches `sent` from the sanity-check query, the audience holds
 that many contacts, a test send passes 5.3, and the broadcast is out.
@@ -607,12 +624,17 @@ This project needs no bounce webhooks for sign-up confirmation: it is one messag
 person just typed a moment earlier, and there is no list to prune.
 
 **Broadcasts (Task 6) are where those two numbers can actually be damaged**, because a broadcast
-goes to addresses collected months earlier, some of which have since died. Two things follow.
-Check the Resend dashboard after each broadcast rather than only after sign-up spikes. And be aware
-that the export in 6.1 re-derives the list from `auth.users` every time, so it has no memory of a
-bounce and will re-import a dead address on the next announcement — if the dashboard shows an
-address bouncing repeatedly, delete the account in Supabase, which is what removes it from every
-future export.
+goes to addresses collected months earlier, some of which have since died. Check the Resend
+dashboard after each broadcast rather than only after sign-up spikes.
+
+Dead addresses need nothing from you. Resend keeps a **Suppressions** list — an address a mailbox
+provider hard-bounces, or whose owner marks the mail as spam, is added to it automatically and
+skipped on every later send, transactional and broadcast alike, across all domains on the
+account. The export in 6.1 re-derives the list from `auth.users` each time and so will happily
+re-import a dead address; the suppression list is what stops it being sent to again, and the
+import does not clear it. **A bouncing address is not a reason to touch the account.** The person
+may be using the product every day with an inbox they abandoned; deleting the account over a
+bounce destroys their data to fix a mail statistic that Resend has already fixed.
 
 ## When it fails, read in this order
 
@@ -632,7 +654,9 @@ Each of these fails in a way that looks like a different one.
 | Sign-up refuses every code, including one that exists in `fpl_invite_code` | The domain is missing from `CORS_ORIGINS` (4.1). The frontend shows every `403` as an invalid code; `curl -H 'Origin: https://fpl-sidekick.com'` reveals `Invalid CORS request` |
 | Sign-up refuses every code and `curl` with the `Origin` header answers `400` | No code exists (5.1), the code is out of uses, or the 30-account cap is reached |
 | Site works, then intermittently does not | Trap 1 — the parking A record was left in place |
+| The Task 6 export returns exactly 100 rows, or a round number | The SQL editor's *Row limit* is still on its default (6.1). Set it to *No limit* and run again |
 | The Task 6 export returns far fewer rows than there are accounts | Not an export fault. Those accounts were never sent mail — `confirmation_sent_at` is `NULL` because the send failed. Read this table from the top |
+| Someone says they never got the announcement | Either they unsubscribed from an earlier one, or Resend's Suppressions list holds their address after a bounce. Both are visible in the Resend dashboard, and neither is fixed by re-importing |
 | An announcement reached someone who had unsubscribed | The imported CSV carried an `unsubscribed` column and the import overwrote the flag (6.2). Export one column only |
 | Replies to an announcement never arrive | Expected — the apex has no MX records until 2.8 is done. Send announcements from `noreply@` until it is |
 

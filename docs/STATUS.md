@@ -3194,3 +3194,50 @@ mature runbook for the same class of work. So was the correction that a DMARC `r
 exist and must be at the same domain — an address at `gmail.com` needs an authorisation record on
 Google's side that you cannot add. The earlier version of this file named
 `dmarc@fpl-sidekick.com` without saying it had to be created first.
+
+## Announcing changes to every user: an export, not a sync (2026-08-29)
+
+The question was whether everyone Resend has sent mail to could land on a contact list at the
+same time, for the day a change to the service has to be announced. Resend does not do that:
+SMTP sends add nobody to an Audience; contacts arrive only through the API, a CSV, or by hand.
+
+Two ways to build the list, and the second was chosen. The first is an API call from
+`SignupController` as each account is created. It costs a second Resend key with contact-write
+permission as a Fly secret, a failure path that must not fail sign-up, and — the deciding
+point — a second copy of the list that starts drifting the moment an account is deleted in
+Supabase: the contact stays, and receives the announcement. The second is to have no list
+between announcements at all. `auth.users` already is the list, and
+`scripts/sql/export-mail-contacts.sql` reads it at the moment an announcement goes out — into a
+CSV, into an Audience, into a broadcast. It cannot drift because it does not persist. The cost
+is one manual step per announcement, which is the right trade for as long as announcements are
+rare. `docs/EMAIL-SETUP.md` Task 6 is the procedure.
+
+Three things had to be verified rather than assumed, and one of them changed the query:
+
+- **`confirmation_sent_at` means "mail was handed over", not "account exists".** Read from
+  GoTrue's `internal/api/mail.go`: `sendConfirmation` calls `sendEmail` first and stamps the
+  column only on success. That matches what the failed sign-up of 2026-08-28 left behind — an
+  account with the column `NULL`. `sendInvite` stamps the same column, so a dashboard invite is
+  covered; password recovery stamps `recovery_sent_at` instead, and the query tests both so it
+  stays right when that flow arrives.
+- **The Supabase SQL editor caps results at 100 rows by default**, the CSV download contains
+  only the rows the grid holds, and the only sign is a small *(Limited to only 100 rows)* beside
+  the row count. Read from Studio's source (`sql-editor-session-state.ts`, `limit: 100`; the
+  menu offers No limit / 100 / 500 / 1,000). The runbook now says to set *No limit* first.
+- **The dashboard CSV import always updates existing contacts** — the *skip* option exists only
+  in the API. That is what makes a one-column CSV a rule and not a preference: an `unsubscribed`
+  column set to false would resurrect everyone who had opted out.
+
+Also verified: Resend's Suppressions list adds hard bounces and spam complaints by itself and
+skips them on every later send, so a bouncing address needs nothing done to the account. The
+runbook's first draft said to delete the account; that would have destroyed a possibly active
+user's data to fix a statistic Resend had already fixed, and it is gone.
+
+The one honest limit of a broadcast: contacts who unsubscribed from an earlier announcement are
+skipped on the next, whatever it says. Accepted for rare, informational notices. A notice that
+must reach every account — a shutdown, a change to the terms — would need to go out
+transactionally through the Emails API, and that is code to write when such a notice exists.
+
+Pricing was re-read the same day: Audiences and Broadcasts are on the same account and the same
+verified domain, free to 1,000 contacts, $40/month at 5,000. The runbook had called Broadcasts a
+separate product at $40; at this project's size it is neither separate nor paid.
