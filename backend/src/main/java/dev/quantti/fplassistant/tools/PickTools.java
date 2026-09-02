@@ -1,15 +1,18 @@
 package dev.quantti.fplassistant.tools;
 
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
@@ -18,8 +21,20 @@ import org.springframework.stereotype.Component;
  * Phase 4 pick-advice tools. {@link #getDifferentialPicks} and {@link #getCaptainCandidates} rank
  * on expected FPL points per 90 built from {@code player_fixture_stats}, blended with the points
  * a player actually scored, then on the average fixture-difficulty rating (FDR) of the next N
- * fixtures, then on ownership or points. Every reply is prefixed with
- * {@link SeasonContext#provenance()}.
+ * fixtures, then on ownership or minutes.
+ *
+ * <p><b>Two sources, two provenance lines</b> — the shape {@code SquadTools} and the my-team
+ * tools already use. The candidate pool (identity, club, price, ownership, availability, news)
+ * comes from {@code fpl_daily_price} at its latest capture and carries
+ * {@link DailyPriceSource#provenance}; the metrics come from {@code player_fixture_stats} and
+ * carry {@link SeasonContext#provenance()}. The weekly shared {@code player} table — measured 85
+ * days stale — supplies neither (KAR-32). Metrics attach by element id while the capture and the
+ * resolved season are the same season, and by unique {@code web_name} when they are not: during
+ * the changeover the capture already carries the new season under new element ids while the
+ * resolver still names the completed one, and FPL renumbers every player in between, so the id
+ * would name a different player. When nothing has been captured the tools refuse rather than
+ * fall back to the weekly table — a pool built from stale prices is the bug, not a degraded
+ * answer.
  *
  * <p><b>They used to rank on {@code form}, and that was the defect.</b> FPL's {@code form} is
  * average points per match over the last 30 days, so in GW2 it is GW1's scoreline and nothing
@@ -90,11 +105,20 @@ public class PickTools implements FplTool {
 
     private final JdbcTemplate jdbc;
     private final SeasonResolver seasonResolver;
+    private final DailyPriceSource daily;
+    private final String dailyTable;
 
-    public PickTools(JdbcTemplate jdbc, SeasonResolver seasonResolver) {
+    public PickTools(JdbcTemplate jdbc, SeasonResolver seasonResolver, DailyPriceSource daily,
+                     @Value("${fpl.daily-price.table-name}") String dailyTable) {
         this.jdbc = jdbc;
         this.seasonResolver = seasonResolver;
+        this.daily = daily;
+        this.dailyTable = dailyTable;
     }
+
+    /** Same sentence as SquadTools: a pool from the weekly table is the failure KAR-32 is about. */
+    private static final String NO_CAPTURE = "No player prices have been captured yet, so I cannot"
+            + " rank picks. Tell the user the daily price capture has not run.";
 
     @Tool(description = """
             Suggest differential FPL picks — players with low ownership (≤ maxOwnership
@@ -117,25 +141,32 @@ public class PickTools implements FplTool {
     public String getDifferentialPicks(String position, double maxOwnership, int nextN) {
         try {
             SeasonContext season = seasonResolver.resolve();
+            Optional<DailyPriceSource.Capture> captured = daily.latestCapture();
+            if (captured.isEmpty()) {
+                return NO_CAPTURE;
+            }
+            DailyPriceSource.Capture capture = captured.get();
+            String provenance = DailyPriceSource.provenance(capture.season(), capture.date(), LocalDate.now())
+                    + "\n" + season.provenance();
             Integer elementType = parsePosition(position);
             if (elementType == null) {
-                return season.provenance() + "\nUnrecognised position \"" + position
+                return provenance + "\nUnrecognised position \"" + position
                         + "\". Use 1/GK, 2/DEF, 3/MID, 4/FWD, or \"any\".";
             }
             int fixtureLimit = Math.max(1, Math.min(nextN, MAX_FIXTURES));
             MetricSeasons metric = seasonResolver.metricSeasons(season);
 
-            List<Map<String, Object>> rows = candidates(season, metric, elementType, maxOwnership);
+            List<Map<String, Object>> rows = candidates(capture, season, metric, elementType, maxOwnership);
             if (rows.isEmpty()) {
-                return season.provenance() + "\nNo differentials match those filters in "
+                return provenance + "\nNo differentials match those filters in "
                         + season.code() + " with a comparable underlying record"
                         + " (players who are injured or suspended are excluded, and so are"
                         + " players with under " + ExpectedPoints.MIN_WINDOW_MINUTES + " minutes of "
                         + metric.played().code() + " football to judge them on).";
             }
 
-            return season.provenance() + "\n\n"
-                    + formatPicks("Differential picks", rows, season, metric, fixtureLimit,
+            return provenance + "\n\n"
+                    + formatPicks("Differential picks", rows, capture, season, metric, fixtureLimit,
                             elementType, maxOwnership, true);
         } catch (DataAccessException e) {
             log.error("getDifferentialPicks(\"{}\", {}, {}) failed", position, maxOwnership, nextN, e);
@@ -163,20 +194,27 @@ public class PickTools implements FplTool {
     public String getCaptainCandidates(int nextN) {
         try {
             SeasonContext season = seasonResolver.resolve();
+            Optional<DailyPriceSource.Capture> captured = daily.latestCapture();
+            if (captured.isEmpty()) {
+                return NO_CAPTURE;
+            }
+            DailyPriceSource.Capture capture = captured.get();
+            String provenance = DailyPriceSource.provenance(capture.season(), capture.date(), LocalDate.now())
+                    + "\n" + season.provenance();
             int fixtureLimit = Math.max(1, Math.min(nextN, MAX_FIXTURES));
             MetricSeasons metric = seasonResolver.metricSeasons(season);
 
-            List<Map<String, Object>> rows = candidates(season, metric, ATTACKERS, 100.0);
+            List<Map<String, Object>> rows = candidates(capture, season, metric, ATTACKERS, 100.0);
             if (rows.isEmpty()) {
-                return season.provenance() + "\nNo captain candidates in " + season.code()
+                return provenance + "\nNo captain candidates in " + season.code()
                         + " have a comparable underlying record yet (players who are injured or"
                         + " suspended are excluded, and so are players with under "
                         + ExpectedPoints.MIN_WINDOW_MINUTES + " minutes of " + metric.played().code()
                         + " football to judge them on).";
             }
 
-            return season.provenance() + "\n\n"
-                    + formatPicks("Captain candidates", rows, season, metric, fixtureLimit,
+            return provenance + "\n\n"
+                    + formatPicks("Captain candidates", rows, capture, season, metric, fixtureLimit,
                             ATTACKERS, 100.0, false);
         } catch (DataAccessException e) {
             log.error("getCaptainCandidates({}) failed", nextN, e);
@@ -196,18 +234,25 @@ public class PickTools implements FplTool {
      * choose the pool, once in Java to order it — is how the two drift apart. A few hundred rows
      * is not worth that risk.
      */
-    private List<Map<String, Object>> candidates(SeasonContext season, MetricSeasons metric,
-                                                 int elementType, double maxOwnership) {
+    private List<Map<String, Object>> candidates(DailyPriceSource.Capture capture, SeasonContext season,
+                                                 MetricSeasons metric, int elementType, double maxOwnership) {
+        // Same season on both sides: FPL's element id is the join. Different seasons — the capture
+        // has moved on and the resolver has not — and the id names a different player, so the join
+        // is the name, and only where the name is unique on both sides.
+        boolean sameSeason = capture.season().equals(season.code());
+        String metricJoin = sameSeason
+                ? "c.player_id = pool.id"
+                : "c.k = LOWER(pool.web_name) AND c.unique_name AND pool.name_count = 1";
+
         List<Map<String, Object>> rows = jdbc.queryForList("""
                 WITH pool AS (
-                    SELECT p.id, p.season_id, p.web_name, p.element_type, p.now_cost,
-                           p.selected_by_percent, p.form, p.total_points, p.team_id, p.status,
-                           p.news, t.short_name AS team_short
-                    FROM player p
-                    JOIN team t ON t.id = p.team_id AND t.season_id = p.season_id
-                    WHERE p.season_id = ?
-                      AND p.status IN ('a', 'd')
-                      AND p.selected_by_percent <= ?
+                    SELECT d.element_id AS id, d.web_name, d.element_type, d.now_cost,
+                           d.selected_by_percent, d.team_id, d.team_short, d.status, d.news,
+                           COUNT(*) OVER (PARTITION BY LOWER(d.web_name)) AS name_count
+                    FROM %s d
+                    WHERE d.season = ? AND d.price_date = ?
+                      AND d.status IN ('a', 'd')
+                      AND d.selected_by_percent <= ?
                       %s
                 ),
                 recent AS (
@@ -255,6 +300,14 @@ public class PickTools implements FplTool {
                     WHERE rn <= CASE WHEN season_id = ? THEN %d ELSE %d END
                     GROUP BY season_id, player_id
                 ),
+                cur AS (
+                    -- The resolved season's window keyed for both joins: by element id when the
+                    -- capture is the same season, by name when it is not.
+                    SELECT w.*, LOWER(mp.web_name) AS k, %s AS unique_name
+                    FROM windowed w
+                    JOIN player mp ON mp.id = w.player_id AND mp.season_id = w.season_id
+                    WHERE w.season_id = ?
+                ),
                 prev AS (
                     -- Last season's row attached by name: element ids are reassigned every summer
                     -- and shared keeps no stable code. A name that is not unique in that season is
@@ -280,12 +333,14 @@ public class PickTools implements FplTool {
                        pv.pts90 AS prev_pts90, pv.xgc_per_match AS prev_xgc_per_match,
                        pv.defcon_matches AS prev_defcon_matches, pv.defcon_avg AS prev_defcon_avg
                 FROM pool
-                LEFT JOIN windowed c ON c.season_id = pool.season_id AND c.player_id = pool.id
-                LEFT JOIN prev pv ON pv.k = LOWER(pool.web_name) AND %s
-                """.formatted(positionFilter(elementType, "p"), metric.windowLimit(),
-                        ExpectedPoints.WHOLE_SEASON, nameIsUnique("mp"), nameIsUnique("pool")),
-                season.seasonId(), maxOwnership,
+                LEFT JOIN cur c ON %s
+                LEFT JOIN prev pv ON pv.k = LOWER(pool.web_name) AND pool.name_count = 1
+                """.formatted(dailyTable, positionFilter(elementType, "d"), metric.windowLimit(),
+                        ExpectedPoints.WHOLE_SEASON, nameIsUnique("mp"), nameIsUnique("mp"),
+                        metricJoin),
+                capture.season(), capture.date(), maxOwnership,
                 season.seasonId(), metric.previousSeasonId(),
+                season.seasonId(),
                 season.seasonId(),
                 metric.previousSeasonId());
 
@@ -339,16 +394,15 @@ public class PickTools implements FplTool {
      * minutes floor, and anyone with an ambiguous name, vanished from both the list and the
      * count. A subtraction cannot drift from the query it describes.
      */
-    private int poolSize(SeasonContext season, int elementType, double maxOwnership) {
+    private int poolSize(DailyPriceSource.Capture capture, int elementType, double maxOwnership) {
         Integer pool = jdbc.queryForObject("""
-                SELECT count(*) FROM player p
-                JOIN team t ON t.id = p.team_id AND t.season_id = p.season_id
-                WHERE p.season_id = ?
-                  AND p.status IN ('a', 'd')
-                  AND p.selected_by_percent <= ?
+                SELECT count(*) FROM %s d
+                WHERE d.season = ? AND d.price_date = ?
+                  AND d.status IN ('a', 'd')
+                  AND d.selected_by_percent <= ?
                   %s
-                """.formatted(positionFilter(elementType, "p")),
-                Integer.class, season.seasonId(), maxOwnership);
+                """.formatted(dailyTable, positionFilter(elementType, "d")),
+                Integer.class, capture.season(), capture.date(), maxOwnership);
         return pool == null ? 0 : pool;
     }
 
@@ -365,7 +419,8 @@ public class PickTools implements FplTool {
                 numeric(r.get("xg90")) > 0 || numeric(r.get("xa90")) > 0);
     }
 
-    private String formatPicks(String heading, List<Map<String, Object>> rows, SeasonContext season,
+    private String formatPicks(String heading, List<Map<String, Object>> rows,
+                               DailyPriceSource.Capture capture, SeasonContext season,
                                MetricSeasons metric, int fixtureLimit, int elementType,
                                double maxOwnership, boolean ownershipTieBreak) {
         Integer startGw = startGameweek(season.seasonId());
@@ -375,18 +430,17 @@ public class PickTools implements FplTool {
 
         StringBuilder out = new StringBuilder();
         out.append(heading).append(" (").append(metric.played().code()).append("):\n");
-        String qual = season.currentSeason() ? "" : " (" + season.code() + ")";
         for (Map<String, Object> r : ranked.subList(0, Math.min(MAX_PICKS, ranked.size()))) {
             int teamId = ((Number) r.get("team_id")).intValue();
             int position = ((Number) r.get("element_type")).intValue();
             Double avgFdr = fdrByTeam.get(teamId);
             out.append(String.format(Locale.ROOT,
-                    "  %s %s (%s) £%sm%s | Own %s%%%s | Score %s | xPts/90 %s (%s) | Pts/90 %s"
+                    "  %s %s (%s) £%sm | Own %s%% | Score %s | xPts/90 %s (%s) | Pts/90 %s"
                             + " | Mins %d (%d mt)%s | Avg FDR %s%s\n",
                     positionLabel(position),
                     r.get("web_name"), r.get("team_short"),
-                    fixed(((Number) r.get("now_cost")).intValue() / 10.0, 1), qual,
-                    r.get("selected_by_percent"), qual,
+                    fixed(((Number) r.get("now_cost")).intValue() / 10.0, 1),
+                    r.get("selected_by_percent"),
                     fixed(score(r, realisedWeight), 2),
                     fixed(expectedPointsPer90(r), 2),
                     components(r, position),
@@ -402,7 +456,7 @@ public class PickTools implements FplTool {
         }
         out.append(footer(metric, fixtureLimit, ownershipTieBreak, realisedWeight));
 
-        int pool = poolSize(season, elementType, maxOwnership);
+        int pool = poolSize(capture, elementType, maxOwnership);
         if (pool > rows.size()) {
             // Phrased as a coverage figure rather than a count of absentees. With no filters a
             // bare count is most of the game's fringe players, and "250 further players are not
