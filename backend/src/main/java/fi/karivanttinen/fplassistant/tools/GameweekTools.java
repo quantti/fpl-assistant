@@ -32,10 +32,11 @@ public class GameweekTools implements FplTool {
     @Tool(description = """
             Get current and next gameweek information: deadline (in UK time, as FPL
             publishes it), average score, highest score, most captained player ID,
-            most transferred in player ID. Gameweek status is judged against the clock at the
-            time of asking.
-            The reply begins with the season the numbers come from; if that is not the season
-            currently being played, tell the user the figures are historical.
+            most transferred in player ID. When the reply begins with "Data source: FPL's own
+            gameweek and fixture list", status is judged against the clock at the time of
+            asking; when it begins with "Data source: season ...", it came from the weekly
+            sync — status may lag, and if that is not the season currently being played, tell
+            the user the figures are historical.
             """)
     public String getGameweekInfo() {
         try {
@@ -122,19 +123,7 @@ public class GameweekTools implements FplTool {
     }
 
     private String formatGameweek(Map<String, Object> r) {
-        return """
-                %s (id=%s)
-                Status: %s
-                Deadline: %s
-                Average score: %s | Highest: %s
-                Most captained player_id: %s | Most transferred in: %s
-                """.formatted(
-                r.get("name"), r.get("id"),
-                status(r),
-                UkTime.format(r.get("deadline_time"), "deadline unknown"),
-                r.get("average_entry_score"), r.get("highest_score"),
-                r.get("most_captained"), r.get("most_transferred_in")
-        );
+        return formatCaptured(r, status(r));
     }
 
     /**

@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.Map;
 
 import fi.karivanttinen.fplassistant.price.DailyPriceSyncService;
+import fi.karivanttinen.fplassistant.tools.UkTime;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -66,11 +67,12 @@ public class ScheduleSyncService {
 
     /** @return gameweek rows plus fixture rows written, for logging and exit codes */
     public int sync() {
+        // Bootstrap first, and its guards before the second fetch: a refused capture should
+        // cost one request, not two, against an API this project is careful to be polite to.
         Map<String, Object> bootstrap = restClient.get().uri(bootstrapUrl).retrieve().body(OBJECT);
-        List<Map<String, Object>> fixtures = restClient.get().uri(fixturesUrl).retrieve().body(ARRAY);
-        LocalDate today = LocalDate.now(DailyPriceSyncService.UK);
-        if (bootstrap == null || fixtures == null) {
-            log.warn("schedule sync: empty response; nothing written");
+        LocalDate today = LocalDate.now(UkTime.zone());
+        if (bootstrap == null) {
+            log.warn("schedule sync: empty bootstrap response; nothing written");
             return 0;
         }
         if (DailyPriceSyncService.responseBelongsToAFinishedSeason(bootstrap, today)) {
@@ -79,6 +81,19 @@ public class ScheduleSyncService {
         }
         String season = DailyPriceSyncService.seasonCode(today);
         List<Object[]> gameweeks = toGameweekRows(bootstrap, season);
+        // The season code flips on July 1 but the 40-day grace above only trips once the last
+        // deadline is well past — for the first days of July FPL can still serve last season's
+        // schedule, and a snapshot written then would carry it under the new code until FPL
+        // resets. A payload whose newest deadline predates the coded period is last season's.
+        if (payloadPredatesTheSeason(gameweeks, today)) {
+            log.warn("schedule sync: every deadline predates the {} period; nothing written", season);
+            return 0;
+        }
+        List<Map<String, Object>> fixtures = restClient.get().uri(fixturesUrl).retrieve().body(ARRAY);
+        if (fixtures == null) {
+            log.warn("schedule sync: empty fixtures response; nothing written");
+            return 0;
+        }
         List<Object[]> fixtureRows = toFixtureRows(fixtures, teamsOf(bootstrap), season);
         // Both blocks, not just one: the write ends by deleting whatever this capture did not
         // carry, so an empty fixtures array (FPL has served one during maintenance) would
@@ -88,9 +103,68 @@ public class ScheduleSyncService {
                     gameweeks.size(), fixtureRows.size());
             return 0;
         }
+        // The two endpoints can straddle FPL's summer reset — one already on the new season,
+        // the other still serving the old — and the fixtures would then be stamped with the
+        // wrong season and their team ids resolved against the wrong teams block.
+        if (!fixturesBelongToTheEvents(fixtureRows, gameweeks)) {
+            log.warn("schedule sync: the fixtures list does not overlap the events' deadlines —"
+                    + " the two endpoints straddle a season; nothing written");
+            return 0;
+        }
         int written = tx.execute(status -> write(season, gameweeks, fixtureRows));
         log.info("schedule sync: {} rows captured for {}", written, season);
         return written;
+    }
+
+    /**
+     * Whether every deadline in the payload falls before the period the season code names.
+     * {@code seasonCode(today)} names the season whose period starts on July 1; a payload whose
+     * newest deadline is before that July 1 still describes the season that ended in May.
+     */
+    static boolean payloadPredatesTheSeason(List<Object[]> gameweekRows, LocalDate today) {
+        OffsetDateTime periodStart = LocalDate.of(
+                today.getMonthValue() >= 7 ? today.getYear() : today.getYear() - 1, 7, 1)
+                .atStartOfDay(UkTime.zone()).toOffsetDateTime();
+        return gameweekRows.stream()
+                .map(r -> (OffsetDateTime) r[3])
+                .noneMatch(deadline -> !deadline.isBefore(periodStart));
+    }
+
+    /**
+     * Whether the fixtures list describes the same season as the events block: at least one
+     * dated kickoff must fall inside the deadlines' span (padded — a round's matches trail its
+     * deadline by days, never by months). A list with only undated fixtures cannot be judged
+     * and is accepted.
+     */
+    static boolean fixturesBelongToTheEvents(List<Object[]> fixtureRows, List<Object[]> gameweekRows) {
+        OffsetDateTime first = null;
+        OffsetDateTime last = null;
+        for (Object[] gw : gameweekRows) {
+            OffsetDateTime deadline = (OffsetDateTime) gw[3];
+            if (first == null || deadline.isBefore(first)) {
+                first = deadline;
+            }
+            if (last == null || deadline.isAfter(last)) {
+                last = deadline;
+            }
+        }
+        if (first == null) {
+            return true;
+        }
+        OffsetDateTime from = first.minusDays(7);
+        OffsetDateTime to = last.plusDays(14);
+        boolean anyDated = false;
+        for (Object[] f : fixtureRows) {
+            OffsetDateTime kickoff = (OffsetDateTime) f[11];
+            if (kickoff == null) {
+                continue;
+            }
+            anyDated = true;
+            if (!kickoff.isBefore(from) && !kickoff.isAfter(to)) {
+                return true;
+            }
+        }
+        return !anyDated;
     }
 
     /**
@@ -221,12 +295,13 @@ public class ScheduleSyncService {
         return rows;
     }
 
+    // Delegates, not copies: the payload-coercion rules live in one place and cannot drift.
     private static Integer asInt(Object value) {
-        return value instanceof Number n ? n.intValue() : null;
+        return DailyPriceSyncService.asInt(value);
     }
 
     private static String asString(Object value) {
-        return value == null ? null : value.toString();
+        return DailyPriceSyncService.asString(value);
     }
 
     private static OffsetDateTime asTime(Object value) {

@@ -3278,3 +3278,17 @@ starts at `is_current` and can open a Tuesday answer with Saturday's finished sc
 Remaining before KAR-10 closes: merge, the first production capture
 (`--sync-schedule` from a machine with `.env.supabase`, expect 38 gameweeks), and the two
 production checks (next deadline and a team's fixtures both open with the capture banner).
+
+Review fixes (2026-09-02), same branch: a July-window guard — the season code flips on July 1
+but the 40-day finished-season grace trips only around July 3, so for those days FPL's
+still-old payload would have been written under the new code and stood as the latest snapshot;
+the sync now refuses any payload whose deadlines all predate the coded period, and refuses a
+fixtures list whose kickoffs fall nowhere near the events' deadlines (the two endpoints can
+straddle the summer reset). The finished-season fixture fallback became MAX(id) — the old
+MIN(id) opened a June answer with opening day's results labelled "Upcoming"; the header now
+says "Fixtures" when nothing listed is still to play. `ScheduleFreshnessCheck` mirrors the
+price capture's alert (02:10 capture, checked 06/12/18 UK; noisy across the summer reset by
+design). The start-gameweek derivation moved to `ScheduleSource.startGameweek` so the two
+tools share one deadline arithmetic, both tools' reply assembly is deduplicated, the capture
+timestamp read is defensive against pgjdbc type drift, and the test profile pins the FPL URLs
+to the fail-fast port like every other capture's.
