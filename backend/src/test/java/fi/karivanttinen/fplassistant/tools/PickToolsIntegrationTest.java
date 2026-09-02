@@ -231,6 +231,25 @@ class PickToolsIntegrationTest {
         assertThat(result).doesNotContain("Captain candidates");
     }
 
+    /** The capture's team_id is nullable; a row without one is excluded, not crashed on. */
+    @Test
+    void aCaptureRowWithoutATeamIsExcludedRatherThanCrashing() {
+        try {
+            jdbc.update("INSERT INTO " + table + " (season, price_date, element_id, web_name, full_name,"
+                    + " team_id, team_short, team_name, element_type, now_cost, cost_change_event,"
+                    + " cost_change_start, selected_by_percent, status, news)"
+                    + " VALUES (?, ?, 9209, 'Teamless', 'Teamless Fictitious', NULL, NULL, NULL, 3, 50,"
+                    + " 0, 0, 1.0, 'a', NULL)", season, TODAY);
+
+            String result = tools.getDifferentialPicks("MID", 100, 3);
+
+            assertThat(result).contains("Differential picks");
+            assertThat(result).doesNotContain("Teamless");
+        } finally {
+            jdbc.update("DELETE FROM " + table + " WHERE element_id = 9209");
+        }
+    }
+
     /**
      * The changeover: the capture already carries the new season under new element ids, while the
      * resolver still names the completed one. Metrics attach by unique name, and both lines say
@@ -254,6 +273,12 @@ class PickToolsIntegrationTest {
 
             assertThat(result).startsWith("Data source: FPL live prices for season " + captureSeason);
             assertThat(result).contains("Data source: season " + season + " — a COMPLETED PREVIOUS season");
+            // The clarifier: without it the season line's "not current" instruction reads as
+            // covering the capture's price and ownership too.
+            assertThat(result).contains("The season line above describes the metrics only");
+            // No FDR across the season boundary — team ids do not carry, so attaching the
+            // resolved season's fixtures would hand a club another club's difficulty.
+            assertThat(result).contains("FDR is n/a: the synced fixture table still holds " + season);
             assertThat(result).contains("Okafor (ASH) £9.0m");
             assertThat(result).containsPattern("Okafor .*xG/90 [0-9]\\.[0-9]{2}");
         } finally {

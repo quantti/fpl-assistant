@@ -4,6 +4,7 @@ import java.time.LocalDate;
 import java.util.Optional;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -24,6 +25,12 @@ class DailyPriceSourceCaptureTest {
     @Autowired DailyPriceSource source;
     @Value("${fpl.daily-price.table-name}") String table;
 
+    /**
+     * Before as well as after: the row is dated fifty years ahead, so one killed JVM between the
+     * INSERT and the cleanup would leave it as the "latest capture" every later run of every
+     * latestCapture() reader sees, in a container that outlives the run.
+     */
+    @BeforeEach
     @AfterEach
     void cleanUp() {
         jdbc.update("DELETE FROM " + table + " WHERE season = ? AND element_id = ?", SEASON, ELEMENT);

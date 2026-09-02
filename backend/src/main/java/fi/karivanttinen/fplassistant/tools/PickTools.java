@@ -146,8 +146,7 @@ public class PickTools implements FplTool {
                 return NO_CAPTURE;
             }
             DailyPriceSource.Capture capture = captured.get();
-            String provenance = DailyPriceSource.provenance(capture.season(), capture.date(), LocalDate.now())
-                    + "\n" + season.provenance();
+            String provenance = provenanceFor(capture, season);
             Integer elementType = parsePosition(position);
             if (elementType == null) {
                 return provenance + "\nUnrecognised position \"" + position
@@ -159,7 +158,7 @@ public class PickTools implements FplTool {
             List<Map<String, Object>> rows = candidates(capture, season, metric, elementType, maxOwnership);
             if (rows.isEmpty()) {
                 return provenance + "\nNo differentials match those filters in "
-                        + season.code() + " with a comparable underlying record"
+                        + capture.season() + " with a comparable underlying record"
                         + " (players who are injured or suspended are excluded, and so are"
                         + " players with under " + ExpectedPoints.MIN_WINDOW_MINUTES + " minutes of "
                         + metric.played().code() + " football to judge them on).";
@@ -199,14 +198,13 @@ public class PickTools implements FplTool {
                 return NO_CAPTURE;
             }
             DailyPriceSource.Capture capture = captured.get();
-            String provenance = DailyPriceSource.provenance(capture.season(), capture.date(), LocalDate.now())
-                    + "\n" + season.provenance();
+            String provenance = provenanceFor(capture, season);
             int fixtureLimit = Math.max(1, Math.min(nextN, MAX_FIXTURES));
             MetricSeasons metric = seasonResolver.metricSeasons(season);
 
             List<Map<String, Object>> rows = candidates(capture, season, metric, ATTACKERS, 100.0);
             if (rows.isEmpty()) {
-                return provenance + "\nNo captain candidates in " + season.code()
+                return provenance + "\nNo captain candidates in " + capture.season()
                         + " have a comparable underlying record yet (players who are injured or"
                         + " suspended are excluded, and so are players with under "
                         + ExpectedPoints.MIN_WINDOW_MINUTES + " minutes of " + metric.played().code()
@@ -227,6 +225,25 @@ public class PickTools implements FplTool {
     private static final int ATTACKERS = -1;
 
     /**
+     * The two provenance lines, and — during the changeover, when the capture already carries the
+     * new season while the resolver still names the completed one — a third line telling the model
+     * which line governs which numbers. Without it the season line's "do not call this current"
+     * instruction reads as covering the whole reply, and today's price from the capture gets
+     * hedged as last season's. The age is judged on the UK calendar, like every other
+     * daily-capture tool: FPL's day turns at 00:00 UK, not at the container's midnight.
+     */
+    private static String provenanceFor(DailyPriceSource.Capture capture, SeasonContext season) {
+        String provenance = DailyPriceSource.provenance(capture.season(), capture.date(),
+                LocalDate.now(UkTime.zone())) + "\n" + season.provenance();
+        if (!capture.season().equals(season.code())) {
+            provenance += "\nThe season line above describes the metrics only: price, ownership"
+                    + " and availability on every pick are today's, from the capture, and may be"
+                    + " quoted as current.";
+        }
+        return provenance;
+    }
+
+    /**
      * The candidate pool, already carrying each player's underlying numbers.
      *
      * <p>The whole qualifying pool comes back and is ranked in Java rather than cut in SQL. The
@@ -245,14 +262,24 @@ public class PickTools implements FplTool {
                 : "c.k = LOWER(pool.web_name) AND c.unique_name AND pool.name_count = 1";
 
         List<Map<String, Object>> rows = jdbc.queryForList("""
-                WITH pool AS (
+                WITH whole_capture AS (
+                    -- The whole capture day, before any filter: name uniqueness must be judged
+                    -- against every player FPL published, or a twin hidden by the status,
+                    -- ownership or position filter would leave his namesake looking unique and
+                    -- inheriting his record — the failure the name bridge exists to prevent.
                     SELECT d.element_id AS id, d.web_name, d.element_type, d.now_cost,
                            d.selected_by_percent, d.team_id, d.team_short, d.status, d.news,
                            COUNT(*) OVER (PARTITION BY LOWER(d.web_name)) AS name_count
                     FROM %s d
                     WHERE d.season = ? AND d.price_date = ?
-                      AND d.status IN ('a', 'd')
-                      AND d.selected_by_percent <= ?
+                ),
+                pool AS (
+                    -- team_id and element_type are nullable in the capture; a row without them
+                    -- cannot be positioned or given a fixture, so it is excluded, not crashed on.
+                    SELECT * FROM whole_capture wc
+                    WHERE wc.status IN ('a', 'd')
+                      AND wc.selected_by_percent <= ?
+                      AND wc.team_id IS NOT NULL AND wc.element_type IS NOT NULL
                       %s
                 ),
                 recent AS (
@@ -302,10 +329,13 @@ public class PickTools implements FplTool {
                 ),
                 cur AS (
                     -- The resolved season's window keyed for both joins: by element id when the
-                    -- capture is the same season, by name when it is not.
+                    -- capture is the same season, by name when it is not. LEFT JOIN: the weekly
+                    -- player table is only needed for the name key, and a player with fixture
+                    -- statistics but no weekly row yet (a January signing under the sync lag this
+                    -- tool exists to route around) must not lose his metrics on the id path.
                     SELECT w.*, LOWER(mp.web_name) AS k, %s AS unique_name
                     FROM windowed w
-                    JOIN player mp ON mp.id = w.player_id AND mp.season_id = w.season_id
+                    LEFT JOIN player mp ON mp.id = w.player_id AND mp.season_id = w.season_id
                     WHERE w.season_id = ?
                 ),
                 prev AS (
@@ -335,7 +365,7 @@ public class PickTools implements FplTool {
                 FROM pool
                 LEFT JOIN cur c ON %s
                 LEFT JOIN prev pv ON pv.k = LOWER(pool.web_name) AND pool.name_count = 1
-                """.formatted(dailyTable, positionFilter(elementType, "d"), metric.windowLimit(),
+                """.formatted(dailyTable, positionFilter(elementType, "wc"), metric.windowLimit(),
                         ExpectedPoints.WHOLE_SEASON, nameIsUnique("mp"), nameIsUnique("mp"),
                         metricJoin),
                 capture.season(), capture.date(), maxOwnership,
@@ -400,6 +430,7 @@ public class PickTools implements FplTool {
                 WHERE d.season = ? AND d.price_date = ?
                   AND d.status IN ('a', 'd')
                   AND d.selected_by_percent <= ?
+                  AND d.team_id IS NOT NULL AND d.element_type IS NOT NULL
                   %s
                 """.formatted(dailyTable, positionFilter(elementType, "d")),
                 Integer.class, capture.season(), capture.date(), maxOwnership);
@@ -423,8 +454,14 @@ public class PickTools implements FplTool {
                                DailyPriceSource.Capture capture, SeasonContext season,
                                MetricSeasons metric, int fixtureLimit, int elementType,
                                double maxOwnership, boolean ownershipTieBreak) {
-        Integer startGw = startGameweek(season.seasonId());
-        Map<Integer, Double> fdrByTeam = avgFdrByTeam(season.seasonId(), startGw, fixtureLimit);
+        // FDR only when the fixture table and the pool are the same season: FPL renumbers team
+        // ids every summer, so during the changeover the resolved season's fixtures would hand a
+        // new-season club another club's difficulty. No FDR is better than a wrong one.
+        boolean sameSeason = capture.season().equals(season.code());
+        Integer startGw = sameSeason ? startGameweek(season.seasonId()) : null;
+        Map<Integer, Double> fdrByTeam = sameSeason
+                ? avgFdrByTeam(season.seasonId(), startGw, fixtureLimit)
+                : Map.of();
         double realisedWeight = realisedWeight(metric.playedGameweeks());
         List<Map<String, Object>> ranked = rank(rows, fdrByTeam, ownershipTieBreak, realisedWeight);
 
@@ -451,8 +488,13 @@ public class PickTools implements FplTool {
                     availability(r)));
         }
         if (fdrByTeam.isEmpty()) {
-            out.append("\n(No upcoming fixtures found — FDR is n/a and the ranking falls back to"
-                    + " the score alone. Fixtures for this season may not be scheduled yet.)\n");
+            out.append(sameSeason
+                    ? "\n(No upcoming fixtures found — FDR is n/a and the ranking falls back to"
+                        + " the score alone. Fixtures for this season may not be scheduled yet.)\n"
+                    : "\n(FDR is n/a: the synced fixture table still holds " + season.code()
+                        + " while these players are the " + capture.season() + " capture, and team"
+                        + " ids do not carry across seasons. The ranking falls back to the score"
+                        + " alone.)\n");
         }
         out.append(footer(metric, fixtureLimit, ownershipTieBreak, realisedWeight));
 
