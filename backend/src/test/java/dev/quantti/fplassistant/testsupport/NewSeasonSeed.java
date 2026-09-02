@@ -73,6 +73,18 @@ public final class NewSeasonSeed {
                     (9210, 9026, 9001, 'Nils', 'Rask', 'Rask', 3, 55, 'a', 30, 270, 1, 1, 4.0, 3.0)
                 ON CONFLICT (id, season_id) DO NOTHING
                 """);
+        // A judgeable last-season record for the Rask name, so the ambiguity cases prove the
+        // bridge is *blocked* rather than passing because there was nothing to attach.
+        jdbc.execute("""
+                INSERT INTO player_fixture_stats (fixture_id, player_id, season_id, gameweek,
+                        player_team_id, opponent_team_id, was_home, kickoff_time, minutes,
+                        total_points, goals_scored, assists, expected_goals, expected_assists,
+                        expected_goal_involvements, clean_sheets, goals_conceded,
+                        expected_goals_conceded, value) VALUES
+                    (9101, 9210, 9026, 1, 9001, 9002, true,  TIMESTAMPTZ '2025-08-16 14:00:00+00', 90, 5, 0, 1, 0.30, 0.20, 0.50, 0, 1, 1.10, 55),
+                    (9103, 9210, 9026, 2, 9001, 9002, false, TIMESTAMPTZ '2025-08-23 14:00:00+00', 90, 6, 1, 0, 0.40, 0.10, 0.50, 0, 1, 0.90, 55)
+                ON CONFLICT (fixture_id, player_id, season_id) DO NOTHING
+                """);
     }
 
     /** Ferreira's two full matches this season: 0.25 xG in each, so 0.25 xG/90. */
@@ -94,6 +106,7 @@ public final class NewSeasonSeed {
                 + " AND fixture_id IN (9111, 9112)");
         jdbc.update("DELETE FROM fixture WHERE season_id = 9027 AND id IN (9111, 9112)");
         jdbc.update("DELETE FROM player WHERE season_id = 9027 AND id BETWEEN 9401 AND 9410");
+        jdbc.update("DELETE FROM player_fixture_stats WHERE season_id = 9026 AND player_id = 9210");
         jdbc.update("DELETE FROM player WHERE season_id = 9026 AND id = 9210");
         jdbc.update("DELETE FROM gameweek WHERE season_id = 9027 AND id = 101");
         jdbc.update("DELETE FROM team WHERE season_id = 9027 AND id IN (9001, 9002)");
