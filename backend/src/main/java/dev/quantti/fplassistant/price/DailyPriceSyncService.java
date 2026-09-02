@@ -44,7 +44,7 @@ public class DailyPriceSyncService {
     private static final Logger log = LoggerFactory.getLogger(DailyPriceSyncService.class);
 
     /** FPL applies price changes at 00:00 UK, so "today" is a UK calendar date. */
-    public static final ZoneId UK = ZoneId.of("Europe/London");
+    static final ZoneId UK = ZoneId.of("Europe/London");
     private static final int BATCH_SIZE = 1000;
 
     /**
@@ -281,11 +281,11 @@ public class DailyPriceSyncService {
         return value == null ? 0 : value;
     }
 
-    private static Integer asInt(Object value) {
+    public static Integer asInt(Object value) {
         return value instanceof Number n ? n.intValue() : null;
     }
 
-    private static String asString(Object value) {
+    public static String asString(Object value) {
         return value == null ? null : value.toString();
     }
 

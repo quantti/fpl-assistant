@@ -2,12 +2,13 @@ package dev.quantti.fplassistant.schedule;
 
 import java.time.Instant;
 import java.time.LocalDate;
-import java.time.ZoneId;
+import java.time.OffsetDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+import dev.quantti.fplassistant.tools.UkTime;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
@@ -22,8 +23,6 @@ import org.springframework.stereotype.Component;
  */
 @Component
 public class ScheduleSource {
-
-    private static final ZoneId UK = ZoneId.of("Europe/London");
 
     public record Snapshot(String season, Instant capturedAt) {
     }
@@ -58,15 +57,46 @@ public class ScheduleSource {
             return Optional.empty();
         }
         Map<String, Object> row = rows.getFirst();
-        // pgjdbc hands a TIMESTAMPTZ back as java.sql.Timestamp from an untyped getObject —
-        // UkTime.format documents the same fact. Not OffsetDateTime; that cast throws.
-        Instant at = ((java.sql.Timestamp) row.get("captured_at")).toInstant();
-        return Optional.of(new Snapshot((String) row.get("season"), at));
+        return Optional.of(new Snapshot((String) row.get("season"), instantOf(row.get("captured_at"))));
+    }
+
+    /**
+     * pgjdbc usually hands a TIMESTAMPTZ back as {@code java.sql.Timestamp} from an untyped
+     * getObject, but {@code UkTime}'s javadoc records that it can be an {@code OffsetDateTime}
+     * depending on configuration — and a blind cast would escape the tools'
+     * {@code catch (DataAccessException)} as a raw ClassCastException.
+     */
+    private static Instant instantOf(Object value) {
+        return switch (value) {
+            case java.sql.Timestamp ts -> ts.toInstant();
+            case OffsetDateTime odt -> odt.toInstant();
+            case Instant i -> i;
+            default -> throw new IllegalStateException(
+                    "captured_at came back as " + (value == null ? "null" : value.getClass().getName()));
+        };
+    }
+
+    /**
+     * The gameweek the fixture listing starts from: the round being played (latest passed
+     * deadline, unfinished), else the next round, else the season's last — a finished season
+     * lists its final round rather than opening day. This is deliberately not the same question
+     * {@code GameweekTools} answers with its current/next scan: that reports the round being
+     * played even once it is finished, this names where an "upcoming fixtures" answer begins.
+     * One derivation here so the two tools cannot disagree on the deadline arithmetic.
+     */
+    public Integer startGameweek(String season) {
+        return jdbc.queryForObject("""
+                SELECT COALESCE(
+                    (SELECT MAX(id) FROM %1$s WHERE season = ? AND deadline_time <= now() AND finished = false),
+                    (SELECT MIN(id) FROM %1$s WHERE season = ? AND deadline_time > now()),
+                    (SELECT MAX(id) FROM %1$s WHERE season = ?))
+                """.formatted(gameweekTable),
+                Integer.class, season, season, season);
     }
 
     public static String provenance(String season, Instant capturedAt, Instant now) {
         long daysOld = Math.max(0, ChronoUnit.DAYS.between(
-                LocalDate.ofInstant(capturedAt, UK), LocalDate.ofInstant(now, UK)));
+                LocalDate.ofInstant(capturedAt, UkTime.zone()), LocalDate.ofInstant(now, UkTime.zone())));
         String age = switch ((int) Math.min(daysOld, 2)) {
             case 0 -> "captured today";
             case 1 -> "captured yesterday";

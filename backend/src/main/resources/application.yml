@@ -203,6 +203,9 @@ fpl:
     # bounds how old scores and postponements can be.
     fetch-at: "0 10 2 * * *"
     fetch-zone: Europe/London
+    # Freshness alert (ScheduleFreshnessCheck), same cadence and reasoning as the price one:
+    # a silently dead capture must be an ERROR in the log, not an ageing provenance line.
+    check-at: "0 0 6,12,18 * * *"
     scheduled: true
 
 cors:
