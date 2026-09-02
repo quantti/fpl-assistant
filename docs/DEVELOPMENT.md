@@ -73,6 +73,7 @@ set -a; source .env.test; set +a
 ./gradlew bootRun                                 # serves on :8080
 ./gradlew bootRun --args="--ingest"               # reload the RAG corpus, then exit
 ./gradlew bootRun --args="--sync-prices"          # capture today's FPL prices, then exit
+./gradlew bootRun --args="--sync-schedule"        # capture FPL gameweeks and fixtures, then exit
 ```
 
 ## The free tier and sign-up

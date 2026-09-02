@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Progress is tracked on the single `**PROGRESS:**` line below, per `AGENTS.md` — no per-step checkboxes.
 
-**PROGRESS:** Task 0/7 done
+**PROGRESS:** Task 7/7 done — suite green; remaining: PR merge, the first production capture (`--sync-schedule`), and the two production checks in Task 7 Step 6
 
 **Goal:** `getGameweekInfo` and `getUpcomingFixtures` answer for the season being played — deadlines, current/next gameweek, upcoming fixtures with FDR and kickoff — from a daily capture of FPL's own `bootstrap-static.events` and `/api/fixtures/`, so they keep working across the season changeover and whenever tapas' weekly sync lags.
 
