@@ -151,7 +151,7 @@ public class PickTools implements FplTool {
             position's own values, plus the rate at which the player reaches the
             defensive-contribution threshold, blended with the points actually scored per 90 at a weight
             that rises as the season runs. Then the average difficulty of their next N fixtures,
-            then total points, each shown with ownership (so the user can see template vs
+            then minutes played, each shown with ownership (so the user can see template vs
             differential captains). Numbers blend this season with last on a per-player weight
             that rises with his matches this season, and each pick shows its weight.
             NOT ranked by form: a big gameweek is a result, not a reason,
@@ -493,7 +493,7 @@ public class PickTools implements FplTool {
                           + " player's role all change between seasons, so read what he scored"
                           + " then as last season's evidence, not this season's")
                 + ". Then average FDR of the next " + fixtureLimit + " fixtures, then "
-                + (ownershipTieBreak ? "ownership" : "total points") + ".\n");
+                + (ownershipTieBreak ? "ownership" : "minutes played") + ".\n");
         out.append("This is why both kinds of defender can appear: an attacking full-back earns"
                 + " through xG and xA, a defender at a mean side through the clean-sheet term."
                 + " Read the bracket to see which, and say so — they are not interchangeable"
@@ -593,7 +593,7 @@ public class PickTools implements FplTool {
         });
         Comparator<Map<String, Object>> tieBreak = ownershipTieBreak
                 ? Comparator.comparingDouble(r -> numeric(r.get("selected_by_percent")))
-                : Comparator.comparingDouble((Map<String, Object> r) -> numeric(r.get("total_points"))).reversed();
+                : Comparator.comparingDouble((Map<String, Object> r) -> numeric(r.get("mins"))).reversed();
 
         List<Map<String, Object>> sorted = new ArrayList<>(rows);
         sorted.sort(byScore.thenComparing(byFdr).thenComparing(tieBreak));
