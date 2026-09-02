@@ -98,4 +98,29 @@ class FixtureToolsCaptureTest {
         assertThat(result).doesNotContain("GW2:");
         assertThat(result).contains("GW3: vs SEL (H)");
     }
+
+    /**
+     * End of season: every deadline passed and every round finished. The listing is the last
+     * round's results under the neutral "Fixtures" header — the old MIN(id) fallback opened a
+     * June answer with opening day's scores labelled "Upcoming".
+     */
+    @Test
+    void aFinishedSeasonListsItsLastRoundNotOpeningDay() {
+        OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
+        jdbc.update("UPDATE " + gameweekTable + " SET finished = true, deadline_time = ?"
+                + " WHERE season = ? AND id = 2", now.minusDays(20), SEASON);
+        jdbc.update("UPDATE " + gameweekTable + " SET finished = true, deadline_time = ?"
+                + " WHERE season = ? AND id = 3", now.minusDays(10), SEASON);
+        jdbc.update("UPDATE " + fixtureTable + " SET finished = true, started = true,"
+                + " kickoff_time = ?, team_h_score = 1, team_a_score = 0"
+                + " WHERE season = ? AND id IN (2, 3, 4)", now.minusDays(9), SEASON);
+
+        String result = tools.getUpcomingFixtures("Ashfield", 2);
+
+        assertThat(result).contains("Fixtures for Ashfield Rovers");
+        assertThat(result).doesNotContain("Upcoming fixtures");
+        assertThat(result).contains("GW3:");
+        assertThat(result).doesNotContain("GW1:");
+        assertThat(result).doesNotContain("GW2:");
+    }
 }

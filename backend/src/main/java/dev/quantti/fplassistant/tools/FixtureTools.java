@@ -96,23 +96,9 @@ public class FixtureTools implements FplTool {
                     ORDER BY f.gameweek NULLS LAST, f.kickoff_time
                     """, teamId, season.seasonId(), teamId, teamId, startGw);
 
-            FixtureWindow window = window(rows, gwLimit);
-
-            if (window.scheduled().isEmpty() && window.postponed().isEmpty()) {
-                return season.provenance() + "\nNo upcoming fixtures found for " + resolvedName;
-            }
-
             String header = season.currentSeason() ? "Upcoming fixtures" : "Fixtures";
-            StringBuilder out = new StringBuilder(season.provenance())
-                    .append("\n\n%s for %s (%s):\n".formatted(header, resolvedName, resolvedShort))
-                    .append(window.scheduled().stream().map(this::formatFixture)
-                            .collect(Collectors.joining("\n")));
-            if (!window.postponed().isEmpty()) {
-                out.append("\nPostponed, no rescheduled gameweek yet:\n")
-                        .append(window.postponed().stream().map(this::formatFixture)
-                                .collect(Collectors.joining("\n")));
-            }
-            return out.toString();
+            return render(season.provenance(), header, resolvedName, resolvedShort,
+                    window(rows, gwLimit));
         } catch (DataAccessException e) {
             log.error("getUpcomingFixtures(\"{}\", {}) failed", teamName, nextN, e);
             return "Fixture data is temporarily unavailable (database error)."
@@ -122,9 +108,9 @@ public class FixtureTools implements FplTool {
 
     /**
      * The capture path. The team is resolved from the capture's own denormalised names, the
-     * starting gameweek from deadlines against the clock (latest passed and unfinished, else
-     * next, else first), and the rows carry the same aliases the tapas query produces so
-     * {@link #window} and {@link #formatFixture} serve both paths.
+     * starting gameweek by {@link ScheduleSource#startGameweek} (deadlines against the clock),
+     * and the rows carry the same aliases the tapas query produces so {@link #window} and
+     * {@link #formatFixture} serve both paths.
      */
     private String fromCapture(ScheduleSource.Snapshot snapshot, String teamName, String pattern, int gwLimit) {
         String provenance = ScheduleSource.provenance(snapshot.season(), snapshot.capturedAt(), Instant.now());
@@ -145,14 +131,7 @@ public class FixtureTools implements FplTool {
         String resolvedName = (String) teams.getFirst().get("team_name");
         String resolvedShort = (String) teams.getFirst().get("team_short");
 
-        // The gameweek being played (latest passed deadline, unfinished), else the next, else the first.
-        Integer startGw = jdbc.queryForObject("""
-                SELECT COALESCE(
-                    (SELECT MAX(id) FROM %1$s WHERE season = ? AND deadline_time <= now() AND finished = false),
-                    (SELECT MIN(id) FROM %1$s WHERE season = ? AND deadline_time > now()),
-                    (SELECT MIN(id) FROM %1$s WHERE season = ?))
-                """.formatted(schedule.gameweekTable()),
-                Integer.class, snapshot.season(), snapshot.season(), snapshot.season());
+        Integer startGw = schedule.startGameweek(snapshot.season());
         if (startGw == null) {
             return provenance + "\nNo gameweek data captured for this season.";
         }
@@ -169,15 +148,27 @@ public class FixtureTools implements FplTool {
                 teamId, snapshot.season(), teamId, teamId, startGw);
 
         FixtureWindow window = window(rows, gwLimit);
+        // A finished season's listing is its last round's results, not "upcoming" anything.
+        boolean anyUpcoming = window.scheduled().stream()
+                .anyMatch(r -> !Boolean.TRUE.equals(r.get("finished")));
+        return render(provenance, anyUpcoming ? "Upcoming fixtures" : "Fixtures",
+                resolvedName, resolvedShort, window);
+    }
+
+    /** One reply shape for both paths, so the postponed block and the empty answer cannot drift. */
+    private String render(String provenance, String header, String resolvedName,
+                          String resolvedShort, FixtureWindow window) {
         if (window.scheduled().isEmpty() && window.postponed().isEmpty()) {
             return provenance + "\nNo upcoming fixtures found for " + resolvedName;
         }
         StringBuilder out = new StringBuilder(provenance)
-                .append("\n\nUpcoming fixtures for %s (%s):\n".formatted(resolvedName, resolvedShort))
-                .append(window.scheduled().stream().map(this::formatFixture).collect(Collectors.joining("\n")));
+                .append("\n\n%s for %s (%s):\n".formatted(header, resolvedName, resolvedShort))
+                .append(window.scheduled().stream().map(this::formatFixture)
+                        .collect(Collectors.joining("\n")));
         if (!window.postponed().isEmpty()) {
             out.append("\nPostponed, no rescheduled gameweek yet:\n")
-                    .append(window.postponed().stream().map(this::formatFixture).collect(Collectors.joining("\n")));
+                    .append(window.postponed().stream().map(this::formatFixture)
+                            .collect(Collectors.joining("\n")));
         }
         return out.toString();
     }
