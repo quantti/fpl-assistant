@@ -165,6 +165,18 @@ class PickToolsCrossSeasonTest {
     }
 
     /**
+     * The position filter hides the midfield Rask, leaving one Rask in the pool — but name
+     * uniqueness is judged against the whole capture day, not the filtered pool, so the
+     * defender must still not inherit last season's Rask record.
+     */
+    @Test
+    void aTwinHiddenByTheFilterStillBlocksTheNameBridge() {
+        String result = tools.getDifferentialPicks("DEF", 100, 3);
+
+        assertThat(result).doesNotContain(" Rask (");
+    }
+
+    /**
      * Two full matches this season is 30% on the ramp. Ferreira's xG/90 last season is 0.05
      * (0.05 + 0.05 across 180 minutes in SharedStatsSeed); two matches at 0.25 make 0.25 this season;
      * the blend is 0.3 x 0.25 + 0.7 x 0.05 = 0.11.
