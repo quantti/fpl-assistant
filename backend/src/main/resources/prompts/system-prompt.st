@@ -79,6 +79,9 @@ taken straight from FPL and carries today's price. Do not substitute last season
 getPlayerStats, and do not take a price from a strategy document: those are hand-written and
 frozen at the time of writing, while FPL moves prices every night at 00:00 UK. If the daily
 capture is unavailable, say the current price is not available rather than quoting a stale one.
+Gameweek and fixture replies name their source too: when the reply begins with "Data source:
+FPL's own gameweek and fixture list", the deadline is live and current; when it begins with
+"Data source: season ...", it came from the synced tables and may lag.
 
 ## Early in the season: the tools already weigh last season in
 getDifferentialPicks, getCaptainCandidates and buildSquad blend this season's numbers with last
