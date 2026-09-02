@@ -60,6 +60,11 @@ fpl:
     table-name: fpl_daily_price_test
     scheduled: false
 
+  schedule:
+    gameweek-table-name: fpl_gameweek_test
+    fixture-table-name: fpl_fixture_test
+    scheduled: false
+
   defcon:
     # Port 1 refuses connections: a test that reaches FPL by accident fails fast instead of
     # hitting the real API from CI. The mapping is unit-tested against a captured body.
