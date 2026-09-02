@@ -191,6 +191,20 @@ fpl:
     # the freshness check.
     scheduled: true
 
+  schedule:
+    gameweek-table-name: fpl_gameweek
+    fixture-table-name: fpl_fixture
+    # FPL's own fixture list: every fixture of the season with event, kickoff, difficulty and
+    # scores. Gameweeks come from bootstrap-static's `events` block, already fetched for prices.
+    fixtures-url: https://fantasy.premierleague.com/api/fixtures/
+    # Ten minutes after the price capture, on the same clock and for the same reason: the
+    # machine is up, FPL's overnight jobs have settled. Gameweek status is not read from this
+    # capture's flags but derived from deadlines at the time of asking, so the cadence only
+    # bounds how old scores and postponements can be.
+    fetch-at: "0 10 2 * * *"
+    fetch-zone: Europe/London
+    scheduled: true
+
 cors:
   # Dev origins included so the Vite dev server (any local port) can talk to this backend
   # through the proxy without a CORS 403: the proxy forwards the browser's Origin header.
