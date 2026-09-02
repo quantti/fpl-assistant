@@ -44,7 +44,7 @@ public class DailyPriceSyncService {
     private static final Logger log = LoggerFactory.getLogger(DailyPriceSyncService.class);
 
     /** FPL applies price changes at 00:00 UK, so "today" is a UK calendar date. */
-    static final ZoneId UK = ZoneId.of("Europe/London");
+    public static final ZoneId UK = ZoneId.of("Europe/London");
     private static final int BATCH_SIZE = 1000;
 
     /**
@@ -192,7 +192,7 @@ public class DailyPriceSyncService {
      * FPL seasons run August to May, so July onwards already belongs to the season about to
      * start. Matches the {@code YYYY-YY} form the rest of this codebase uses (e.g. 2026-27).
      */
-    static String seasonCode(LocalDate date) {
+    public static String seasonCode(LocalDate date) {
         int startYear = date.getMonthValue() >= 7 ? date.getYear() : date.getYear() - 1;
         return "%d-%02d".formatted(startYear, (startYear + 1) % 100);
     }
@@ -205,7 +205,7 @@ public class DailyPriceSyncService {
      *
      * <p>Takes the date rather than reading the clock so the rule can be pinned in tests.
      */
-    static boolean responseBelongsToAFinishedSeason(Map<String, Object> body, LocalDate today) {
+    public static boolean responseBelongsToAFinishedSeason(Map<String, Object> body, LocalDate today) {
         Object events = body.get("events");
         if (!(events instanceof List<?> eventList) || eventList.isEmpty()) {
             return false;
