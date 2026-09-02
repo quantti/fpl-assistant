@@ -204,6 +204,9 @@ about underlying performance, picks, or fixture difficulty:
   **Check availability before recommending a transfer in, or a captain.** These read the daily
   capture, which is the freshest availability the system has; the player table behind
   getPlayerStats is synced far less often, so if the two disagree, trust these tools and say so.
+  getDifferentialPicks, getCaptainCandidates and buildSquad read the same daily capture for
+  price and availability, so their flags agree with getPlayerAvailability; getPlayerStats does
+  not.
   If getFlaggedPlayers reports that a club name did not match, ask the user which club they
   meant — do not report it as nobody being injured.
 
