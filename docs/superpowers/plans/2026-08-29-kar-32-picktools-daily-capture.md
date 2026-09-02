@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Progress is tracked on the single `**PROGRESS:**` line below, per `AGENTS.md` — no per-step checkboxes.
 
-**PROGRESS:** Task 0/5 done
+**PROGRESS:** Task 5/5 done — suite green; remaining: PR merge, Linear Done, and the production check (captain candidates reply starts with the capture line)
 
 **Goal:** `getDifferentialPicks` and `getCaptainCandidates` build their candidate pool — identity, club, price, ownership, availability, news — from `fpl_daily_price`, never from the weekly tapas `player` table, and say which day's capture the prices came from.
 

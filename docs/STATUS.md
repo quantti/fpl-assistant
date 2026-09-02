@@ -3241,3 +3241,38 @@ transactionally through the Emails API, and that is code to write when such a no
 Pricing was re-read the same day: Audiences and Broadcasts are on the same account and the same
 verified domain, free to 1,000 contacts, $40/month at 5,000. The runbook had called Broadcasts a
 separate product at $40; at this project's size it is neither separate nor paid.
+
+## Pick tools read the daily capture (KAR-32, 2026-09-02)
+
+`getDifferentialPicks` and `getCaptainCandidates` now build their candidate pool — identity,
+club, price, ownership, availability, news — from `fpl_daily_price` at its latest capture,
+never from the weekly tapas `player` table (measured 85 days stale, the ticket's complaint).
+Metrics still come from `player_fixture_stats`. The reply carries two provenance lines, the
+documented `SquadTools` shape: the capture's (`DailyPriceSource.provenance()`, season + capture
+date), then the metrics' (`SeasonContext.provenance()`). Two sources, not two seasons — the
+one-season-banner rule for these tools stands.
+
+Three decisions taken in the plan, none contested:
+
+- **No fallback to the tapas pool when nothing has been captured.** The tools refuse with the
+  same sentence `SquadTools` uses. A pool built from stale prices *is* the bug, and labelling it
+  does not make a wrong price right; `DailyPriceFreshnessCheck` alerts when the capture misses,
+  so "no capture" is a first-day-in-production state.
+- **The captain tie-break moved from `total_points` to blended minutes.** The capture does not
+  carry `total_points`, and total points ≈ pts/90 × minutes, so what the old tie-break rewarded
+  between equal Scores was playing time — `mins` (already blended, already printed) keeps that
+  intent without adding a column to a time series.
+- **Ownership comes from the capture** — `selected_by_percent` is captured daily, so the
+  ticket's staleness question resolves to "no staleness note needed".
+
+The metric join depends on the seasons matching: by element id while the capture and the
+resolved season are the same season, by unique `web_name` when they are not. During the
+changeover the capture already carries the new season under new element ids while the resolver
+still names the completed one, and FPL renumbers every player in between — an id join across
+that boundary attaches the completed season's numbers to whichever new player inherited the id.
+
+Follow-ups filed while planning, not in this change: `squad/CandidatePool.load` has exactly that
+changeover gap (KAR-45; the fix is the same `sameSeason ? id : name` clause, and its private
+`latestCapture()` should then delegate to `DailyPriceSource.latestCapture()`), and
+`PickTools.avgFdrByTeam` still reads the tapas `fixture` table until KAR-10 gives it an
+FPL-sourced alternative.
