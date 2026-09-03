@@ -4,6 +4,7 @@ import java.time.LocalDate;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -54,6 +55,27 @@ public class DailyPriceSource {
     LocalDate latestCaptureDate() {
         return jdbc.queryForObject(
                 "SELECT MAX(price_date) FROM %s".formatted(table), LocalDate.class);
+    }
+
+    /** The season and date of the most recent capture, read from the capture itself. */
+    public record Capture(String season, LocalDate date) {
+    }
+
+    /**
+     * The most recent capture, or empty when nothing has been captured yet. Read from the table
+     * rather than resolved through {@code SeasonResolver}: during the changeover the resolver still
+     * names the completed season while the capture already carries the new one, and a reader that
+     * filtered the daily table on the resolver's season would find nothing at all.
+     */
+    public Optional<Capture> latestCapture() {
+        List<Map<String, Object>> rows = jdbc.queryForList(
+                "SELECT season, price_date FROM " + table + " ORDER BY price_date DESC LIMIT 1");
+        if (rows.isEmpty()) {
+            return Optional.empty();
+        }
+        Map<String, Object> row = rows.getFirst();
+        return Optional.of(new Capture((String) row.get("season"),
+                ((java.sql.Date) row.get("price_date")).toLocalDate()));
     }
 
     /**

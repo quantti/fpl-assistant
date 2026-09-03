@@ -30,7 +30,6 @@ class PickToolsRankingTest {
         row.put("element_type", elementType);
         row.put("team_id", 1);
         row.put("selected_by_percent", BigDecimal.valueOf(5.0));
-        row.put("total_points", 50);
         row.put("mins", 810);
         row.put("matches", 9);
         row.put("xg90", BigDecimal.ZERO);
@@ -196,12 +195,14 @@ class PickToolsRankingTest {
         assertThat(ranked.getFirst().get("web_name")).isEqualTo("Differential");
     }
 
+    /** Between two equal Scores the captain pick is the one who plays more — the old total-points
+     *  tie-break rewarded the same thing, since total points is rate times minutes. */
     @Test
-    void equalScoresAndFixturesFallBackToMorePointsForCaptains() {
+    void equalScoresAndFixturesFallBackToMoreMinutesForCaptains() {
         Map<String, Object> fewer = attacker("Fewer", 3, 0.40, 0.20, 4.0);
-        fewer.put("total_points", 80);
+        fewer.put("mins", 450.0);
         Map<String, Object> more = attacker("More", 3, 0.40, 0.20, 4.0);
-        more.put("total_points", 200);
+        more.put("mins", 900.0);
 
         List<Map<String, Object>> ranked =
                 PickTools.rank(List.of(fewer, more), Map.of(1, 3.0), false, 0.2);
