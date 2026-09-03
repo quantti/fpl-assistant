@@ -192,7 +192,7 @@ public class DailyPriceSyncService {
      * FPL seasons run August to May, so July onwards already belongs to the season about to
      * start. Matches the {@code YYYY-YY} form the rest of this codebase uses (e.g. 2026-27).
      */
-    static String seasonCode(LocalDate date) {
+    public static String seasonCode(LocalDate date) {
         int startYear = date.getMonthValue() >= 7 ? date.getYear() : date.getYear() - 1;
         return "%d-%02d".formatted(startYear, (startYear + 1) % 100);
     }
@@ -205,7 +205,7 @@ public class DailyPriceSyncService {
      *
      * <p>Takes the date rather than reading the clock so the rule can be pinned in tests.
      */
-    static boolean responseBelongsToAFinishedSeason(Map<String, Object> body, LocalDate today) {
+    public static boolean responseBelongsToAFinishedSeason(Map<String, Object> body, LocalDate today) {
         Object events = body.get("events");
         if (!(events instanceof List<?> eventList) || eventList.isEmpty()) {
             return false;
@@ -281,11 +281,11 @@ public class DailyPriceSyncService {
         return value == null ? 0 : value;
     }
 
-    private static Integer asInt(Object value) {
+    public static Integer asInt(Object value) {
         return value instanceof Number n ? n.intValue() : null;
     }
 
-    private static String asString(Object value) {
+    public static String asString(Object value) {
         return value == null ? null : value.toString();
     }
 
