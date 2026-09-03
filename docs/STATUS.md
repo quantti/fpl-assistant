@@ -3260,3 +3260,12 @@ EU endpoint), Sonnet 5 second. Two corrections to earlier notes on the way: Open
 GPT-5.6 cache writes at 1.25× and reports them only on the Responses API, so `total_tokens`
 undercounts them; and Anthropic prompt caching was never configured in this code, so a bare
 provider switch would pay full input on every turn.
+
+Re-checked 2026-09-03, on the owner's question whether reasoning is reachable by leaving Spring
+AI. It is — LangChain4j's `OpenAiOfficialResponsesChatModel` speaks the Responses API with tools
+and `reasoningEffort` — but the migration would buy the dearest reasoning in the band, so the
+answer stays "switch model, not framework". The trial order changed: Gemini 3.8 Flash (GA
+2026-09-02, index 59, $0.75/$3.75 promotional to year-end) is now first, Grok 4.6 second,
+Sonnet 5 third — Sonnet's scheduled September increase was cancelled and $2/$10 stands.
+`docs/LLM-PRICING.md` carries the updated tables and the Gemini caveats (promo end, EU data
+location, thinking + tools in `spring-ai-google-genai` unverified).
