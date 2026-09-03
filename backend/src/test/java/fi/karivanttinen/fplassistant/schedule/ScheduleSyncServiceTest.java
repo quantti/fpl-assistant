@@ -1,0 +1,162 @@
+package fi.karivanttinen.fplassistant.schedule;
+
+import java.io.InputStream;
+import java.time.OffsetDateTime;
+import java.util.List;
+import java.util.Map;
+
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+class ScheduleSyncServiceTest {
+
+    private static Map<String, Object> bootstrap() throws Exception {
+        try (InputStream in = ScheduleSyncServiceTest.class.getResourceAsStream("/fpl-bootstrap-events-fixture.json")) {
+            return new ObjectMapper().readValue(in, new TypeReference<>() { });
+        }
+    }
+
+    private static List<Map<String, Object>> fixtures() throws Exception {
+        try (InputStream in = ScheduleSyncServiceTest.class.getResourceAsStream("/fpl-fixtures-fixture.json")) {
+            return new ObjectMapper().readValue(in, new TypeReference<>() { });
+        }
+    }
+
+    @Test
+    void mapsEveryEventToAGameweekRow() throws Exception {
+        List<Object[]> rows = ScheduleSyncService.toGameweekRows(bootstrap(), "2026-27");
+
+        assertThat(rows).hasSize(3);
+        Object[] gw1 = rows.getFirst();
+        assertThat(gw1[0]).isEqualTo("2026-27");
+        assertThat(gw1[1]).isEqualTo(1);
+        assertThat(gw1[2]).isEqualTo("Gameweek 1");
+        assertThat(gw1[3]).isEqualTo(OffsetDateTime.parse("2026-08-14T17:30:00Z"));
+        assertThat(gw1[4]).isEqualTo(true);    // finished
+        assertThat(gw1[8]).isEqualTo(57);      // average_entry_score
+        assertThat(gw1[10]).isEqualTo(381);    // most_captained
+    }
+
+    @Test
+    void anEventWithoutADeadlineIsSkippedRatherThanWrittenWithoutOne() throws Exception {
+        Map<String, Object> body = bootstrap();
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> events = (List<Map<String, Object>>) body.get("events");
+        events.getFirst().put("deadline_time", null);
+
+        assertThat(ScheduleSyncService.toGameweekRows(body, "2026-27")).hasSize(2);
+    }
+
+    @Test
+    void mapsFixturesWithTeamNamesFromTheBootstrapTeamsBlock() throws Exception {
+        Map<Integer, String[]> teams = ScheduleSyncService.teamsOf(bootstrap());
+        List<Object[]> rows = ScheduleSyncService.toFixtureRows(fixtures(), teams, "2026-27");
+
+        assertThat(rows).hasSize(3);
+        Object[] played = rows.getFirst();
+        assertThat(played[1]).isEqualTo(1);
+        assertThat(played[2]).isEqualTo(1);              // gameweek
+        assertThat(played[3]).isEqualTo(1);              // team_h
+        assertThat(played[5]).isEqualTo("Arsenal");      // team_h_name
+        assertThat(played[8]).isEqualTo("AVL");          // team_a_short
+        assertThat(played[9]).isEqualTo(3);              // team_h_difficulty
+        assertThat(played[11]).isEqualTo(OffsetDateTime.parse("2026-08-15T14:00:00Z"));
+        assertThat(played[13]).isEqualTo(true);          // finished
+        assertThat(played[14]).isEqualTo(3);             // team_h_score
+    }
+
+    @Test
+    void aPostponedFixtureKeepsNullGameweekAndKickoff() throws Exception {
+        List<Object[]> rows = ScheduleSyncService.toFixtureRows(fixtures(),
+                ScheduleSyncService.teamsOf(bootstrap()), "2026-27");
+        Object[] postponed = rows.get(2);
+
+        assertThat(postponed[2]).isNull();
+        assertThat(postponed[11]).isNull();
+        assertThat(postponed[14]).isNull();
+    }
+
+    @Test
+    void aTeamMissingFromTheBootstrapBlockLeavesNullNamesNotAnException() throws Exception {
+        List<Object[]> rows = ScheduleSyncService.toFixtureRows(fixtures(), Map.of(), "2026-27");
+
+        assertThat(rows.getFirst()[5]).isNull();
+        assertThat(rows.getFirst()[6]).isNull();
+    }
+
+    private static Object[] gameweekWithDeadline(String deadline) {
+        Object[] row = new Object[12];
+        row[3] = OffsetDateTime.parse(deadline);
+        return row;
+    }
+
+    private static Object[] fixtureWithKickoff(String kickoff) {
+        Object[] row = new Object[16];
+        row[11] = kickoff == null ? null : OffsetDateTime.parse(kickoff);
+        return row;
+    }
+
+    /**
+     * The season code flips on July 1 but FPL can serve last season's schedule for days after —
+     * a payload whose deadlines all predate the coded period must be refused, or the whole old
+     * season is written under the new code and stands as the "latest" snapshot.
+     */
+    @Test
+    void lastSeasonsPayloadIsRefusedOnceTheCodeHasFlippedToJuly() {
+        List<Object[]> gameweeks = List.<Object[]>of(gameweekWithDeadline("2026-05-24T14:00:00Z"));
+
+        assertThat(ScheduleSyncService.payloadPredatesTheSeason(gameweeks, java.time.LocalDate.of(2026, 7, 1)))
+                .isTrue();
+    }
+
+    @Test
+    void theSamePayloadIsStillAcceptedOnJuneThirtieth() {
+        List<Object[]> gameweeks = List.<Object[]>of(gameweekWithDeadline("2026-05-24T14:00:00Z"));
+
+        assertThat(ScheduleSyncService.payloadPredatesTheSeason(gameweeks, java.time.LocalDate.of(2026, 6, 30)))
+                .isFalse();
+    }
+
+    @Test
+    void aNewSeasonsPayloadIsAcceptedInAugust() {
+        List<Object[]> gameweeks = List.<Object[]>of(gameweekWithDeadline("2026-08-14T17:30:00Z"));
+
+        assertThat(ScheduleSyncService.payloadPredatesTheSeason(gameweeks, java.time.LocalDate.of(2026, 8, 1)))
+                .isFalse();
+    }
+
+    /**
+     * The two endpoints can straddle FPL's summer reset: events already the new season, the
+     * fixtures list still the old one. No kickoff then falls anywhere near the deadlines, and
+     * the pair must be refused rather than stamped with one season's code.
+     */
+    @Test
+    void aFixturesListFromAnotherSeasonThanTheEventsIsRefused() {
+        List<Object[]> events = List.<Object[]>of(
+                gameweekWithDeadline("2026-08-14T17:30:00Z"), gameweekWithDeadline("2027-05-23T14:00:00Z"));
+        List<Object[]> lastSeason = List.<Object[]>of(fixtureWithKickoff("2026-05-15T14:00:00Z"));
+
+        assertThat(ScheduleSyncService.fixturesBelongToTheEvents(lastSeason, events)).isFalse();
+    }
+
+    @Test
+    void aFixturesListInsideTheDeadlineSpanIsAccepted() {
+        List<Object[]> events = List.<Object[]>of(
+                gameweekWithDeadline("2026-08-14T17:30:00Z"), gameweekWithDeadline("2027-05-23T14:00:00Z"));
+        List<Object[]> sameSeason = List.<Object[]>of(
+                fixtureWithKickoff("2026-08-15T14:00:00Z"), fixtureWithKickoff(null));
+
+        assertThat(ScheduleSyncService.fixturesBelongToTheEvents(sameSeason, events)).isTrue();
+    }
+
+    @Test
+    void anAllPostponedListCannotBeJudgedAndIsAccepted() {
+        List<Object[]> events = List.<Object[]>of(gameweekWithDeadline("2026-08-14T17:30:00Z"));
+        List<Object[]> undated = List.<Object[]>of(fixtureWithKickoff(null));
+
+        assertThat(ScheduleSyncService.fixturesBelongToTheEvents(undated, events)).isTrue();
+    }
+}

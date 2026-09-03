@@ -3295,3 +3295,54 @@ changeover gap (KAR-45; the fix is the same `sameSeason ? id : name` clause, and
 `latestCapture()` should then delegate to `DailyPriceSource.latestCapture()`), and
 `PickTools.avgFdrByTeam` still reads the tapas `fixture` table until KAR-10 gives it an
 FPL-sourced alternative.
+
+## Gameweeks and fixtures captured from FPL (KAR-10, 2026-09-02)
+
+`getGameweekInfo` and `getUpcomingFixtures` now answer from two new snapshot tables,
+`fpl_gameweek` and `fpl_fixture`, captured daily at 02:10 UK from FPL's own
+`bootstrap-static.events` and `/api/fixtures/` by `ScheduleSyncService` — the schedule
+counterpart of the price capture: season code from the UK date, team names from the payload,
+owing tapas nothing. Four decisions from the plan:
+
+- **Snapshot, not a dated series.** One row per (season, id), overwritten daily; rows FPL no
+  longer publishes are deleted in the same transaction. Prices need history, a fixture list
+  needs to be current.
+- **Capture first, tapas as fallback**, chosen by whether the capture holds rows. The tapas
+  path is unchanged underneath, so the pre-first-capture state and the existing tests keep
+  working, each under its own provenance line.
+- **Gameweek status is derived from `deadline_time` against the clock at read time**, never
+  from the captured `is_current` flag — FPL flips it at the deadline, so a 02:10 capture would
+  carry yesterday's flag for most of Saturday. The stored flags are reference only.
+- **Scope is the two tools the ticket names.** Still on tapas' `fixture` table:
+  `FixtureDifficultyTools`, `PickTools.avgFdrByTeam`, `HorizonScorer`, `SquadEnrichment` —
+  a follow-up once the capture has run for a while.
+
+The write deletes by id-array (`NOT (id = ANY(?))`), not by comparing `captured_at` to `now()`:
+the deletion must be correct even outside the transaction (`sync()` calls `write()` on `this`,
+so `@Transactional` would be inert under self-invocation — a `TransactionTemplate` wraps it
+instead), and a clock-keyed deletion in autocommit would have deleted every row just written.
+An empty gameweeks *or* fixtures payload writes nothing at all: the write ends by deleting what
+the capture did not carry, so an empty array served during FPL maintenance would otherwise wipe
+the season instead of leaving yesterday's rows standing.
+
+One behavioural difference between the paths, deliberate: the capture path starts the fixture
+list at the next unfinished round (judged by deadline and `finished`), while the tapas path
+starts at `is_current` and can open a Tuesday answer with Saturday's finished scores.
+
+Remaining before KAR-10 closes: merge, the first production capture
+(`--sync-schedule` from a machine with `.env.supabase`, expect 38 gameweeks), and the two
+production checks (next deadline and a team's fixtures both open with the capture banner).
+
+Review fixes (2026-09-02), same branch: a July-window guard — the season code flips on July 1
+but the 40-day finished-season grace trips only around July 3, so for those days FPL's
+still-old payload would have been written under the new code and stood as the latest snapshot;
+the sync now refuses any payload whose deadlines all predate the coded period, and refuses a
+fixtures list whose kickoffs fall nowhere near the events' deadlines (the two endpoints can
+straddle the summer reset). The finished-season fixture fallback became MAX(id) — the old
+MIN(id) opened a June answer with opening day's results labelled "Upcoming"; the header now
+says "Fixtures" when nothing listed is still to play. `ScheduleFreshnessCheck` mirrors the
+price capture's alert (02:10 capture, checked 06/12/18 UK; noisy across the summer reset by
+design). The start-gameweek derivation moved to `ScheduleSource.startGameweek` so the two
+tools share one deadline arithmetic, both tools' reply assembly is deduplicated, the capture
+timestamp read is defensive against pgjdbc type drift, and the test profile pins the FPL URLs
+to the fail-fast port like every other capture's.
