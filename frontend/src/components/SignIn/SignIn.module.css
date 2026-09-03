@@ -2,7 +2,8 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 100dvh;
+  /* See ChatView.module.css: --app-height exists only while the iOS keyboard is up. */
+  min-height: var(--app-height, 100dvh);
   padding: var(--space-24);
   background: var(--paper);
   color: var(--ink);
