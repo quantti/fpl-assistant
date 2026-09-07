@@ -79,6 +79,26 @@ class ChatServiceTest {
                         .build());
     }
 
+    /** A usage chunk as the google-genai path emits it: GoogleGenAiUsage, not DefaultUsage. */
+    private static ChatResponse geminiUsage(Integer prompt, Integer candidates,
+                                            Integer thoughts, Integer cached) {
+        var builder = com.google.genai.types.GenerateContentResponseUsageMetadata.builder()
+                .promptTokenCount(prompt)
+                .candidatesTokenCount(candidates)
+                .totalTokenCount(prompt + candidates + (thoughts == null ? 0 : thoughts));
+        if (thoughts != null) {
+            builder = builder.thoughtsTokenCount(thoughts);
+        }
+        if (cached != null) {
+            builder = builder.cachedContentTokenCount(cached);
+        }
+        return new ChatResponse(List.of(),
+                ChatResponseMetadata.builder()
+                        .usage(org.springframework.ai.google.genai.metadata.GoogleGenAiUsage
+                                .from(builder.build()))
+                        .build());
+    }
+
     /** Nothing to record: the usage callback must not fire with an empty measurement. */
     private static final java.util.function.Consumer<TokenUsage> IGNORE_USAGE = usage -> {};
 
@@ -262,6 +282,58 @@ class ChatServiceTest {
                 .verifyComplete();
 
         assertThat(reported.getLast()).isEqualTo(new TokenUsage(null, 1000, 400, null, 200));
+    }
+
+    /**
+     * Gemini reports the prompt with cache reads counted inside it (like OpenAI) and thinking
+     * tokens beside the completion, not in it. Stored: the uncached remainder, and an output
+     * that includes the thoughts — they are billed as output, and total_tokens is a generated
+     * sum of the four columns, so a thought not stored here is a thought not billed anywhere.
+     */
+    @Test
+    void geminiThoughtsLandInOutputAndCachedInsideThePromptIsUnfolded() {
+        provider = "google-genai";
+        ChatService service = service(List.of(), Flux.just(
+                response("text"),
+                geminiUsage(7550, 700, 1500, 4450)));
+
+        List<TokenUsage> reported = new java.util.ArrayList<>();
+        StepVerifier.create(service.stream(List.of(new ChatTurn(ChatTurn.USER, "hi")), USER, reported::add))
+                .expectNext("text")
+                .verifyComplete();
+
+        assertThat(reported.getLast())
+                .as("7550 prompt less 4450 cached is 3100 uncached; 700 answer plus 1500 thoughts is 2200 out")
+                .isEqualTo(new TokenUsage(null, 3100, 4450, null, 2200));
+    }
+
+    @Test
+    void geminiWithoutThoughtsKeepsThePlainCompletionCount() {
+        provider = "google-genai";
+        ChatService service = service(List.of(), Flux.just(
+                response("text"),
+                geminiUsage(1000, 700, null, null)));
+
+        List<TokenUsage> reported = new java.util.ArrayList<>();
+        StepVerifier.create(service.stream(List.of(new ChatTurn(ChatTurn.USER, "hi")), USER, reported::add))
+                .expectNext("text")
+                .verifyComplete();
+
+        assertThat(reported.getLast()).isEqualTo(new TokenUsage(null, 1000, null, null, 700));
+    }
+
+    /** A cache miss is a measurement: zero reads must be stored as zero, not null. */
+    @Test
+    void geminiCacheMissIsRecordedAsZeroNotNull() {
+        provider = "google-genai";
+        ChatService service = service(List.of(), Flux.just(
+                geminiUsage(1000, 700, 1500, 0)));
+
+        List<TokenUsage> reported = new java.util.ArrayList<>();
+        StepVerifier.create(service.stream(List.of(new ChatTurn(ChatTurn.USER, "hi")), USER, reported::add))
+                .verifyComplete();
+
+        assertThat(reported.getLast()).isEqualTo(new TokenUsage(null, 1000, 0, null, 2200));
     }
 
     /**
