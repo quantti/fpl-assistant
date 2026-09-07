@@ -390,7 +390,10 @@ FROM fpl_usage_event WHERE event_type = 'chat' AND model LIKE 'gemini%';
 
    Compare against the AI Studio usage console for the same key and day. Pass: our
    `total_tokens` within a few percent of Google's billed figure. Fail: a systematic gap —
-   most likely thoughts double- or un-counted; fix in `ChatService`, re-run.
+   most likely thoughts double- or un-counted; fix in `ChatService`, re-run. A shortfall that
+   scales with tool use is KAR-48 (usage is not accumulated across tool-call round trips in
+   Spring AI 2.0 — all providers, not the Gemini normalisation); measure it, don't chase it
+   here.
 3. **Cache reads.** `cached_tokens` should become non-zero on consecutive turns (implicit
    caching; the ~4.5k-token static prefix is below the 32,768 explicit-cache floor, so
    implicit is the only mechanism). If it stays zero, the $0.011/message estimate rises to

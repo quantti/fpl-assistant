@@ -104,12 +104,13 @@ public class ChatService {
      * Merges field by field, keeping the largest number a provider has reported for each, and
      * the model name from whichever chunk carried one.
      *
-     * <p>Both providers report usage cumulatively per chunk (Spring AI runs chunk usage through
-     * {@code UsageCalculator.getCumulativeUsage}, across tool-call round trips as well), so the
-     * largest value seen is the total — and a trailing chunk carrying an empty measurement
-     * cannot erase it. What this cannot survive is a provider reporting deltas meant to be
-     * summed; Task 8 checks the recorded numbers against a real answer, which is the only way to
-     * know.
+     * <p>Providers report usage cumulatively per chunk within one request, so the largest value
+     * seen is that request's total — and a trailing chunk carrying an empty measurement cannot
+     * erase it. Across tool-call round trips it is NOT cumulative since Spring AI 2.0 (the tool
+     * loop moved to the client-layer ToolCallingAdvisor, which re-invokes the model per round
+     * trip; the models call UsageCalculator.getCumulativeUsage with a null previous — a no-op),
+     * so keeping the richest chunk records the biggest round trip, not the turn's sum, and
+     * tool-using turns undercount. Tracked as KAR-48; the fix needs round-trip boundaries.
      *
      * <p>A reported <em>zero</em> is kept, not discarded. A cache miss reports zero cache reads,
      * and that is a measurement — the one Task 8 exists to make. What gets skipped is a chunk
@@ -178,8 +179,9 @@ public class ChatService {
      * cached part — a chunk that reports the prompt without cache details followed by one that
      * reports both leaves the un-normalised prompt beside a populated cache figure. The generated
      * total then counts the cached tokens twice, which is the exact double-count the
-     * normalisation exists to prevent. Usage is cumulative per chunk on both providers, so the
-     * richest chunk is the complete one.
+     * normalisation exists to prevent. Usage is cumulative per chunk within one request, so the
+     * richest chunk is that request's complete measurement — and, across tool-call round trips,
+     * the biggest request rather than the turn's sum (KAR-48).
      *
      * <p>The model name is carried across regardless: it arrives on chunks that measure nothing.
      */
