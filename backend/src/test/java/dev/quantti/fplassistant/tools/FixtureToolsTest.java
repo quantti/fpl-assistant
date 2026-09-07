@@ -8,6 +8,7 @@ import dev.quantti.fplassistant.testsupport.TapasSeed;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 
@@ -25,9 +26,19 @@ class FixtureToolsTest {
     @Autowired
     JdbcTemplate jdbc;
 
+    @Value("${fpl.schedule.gameweek-table-name}")
+    String scheduleGameweekTable;
+
+    @Value("${fpl.schedule.fixture-table-name}")
+    String scheduleFixtureTable;
+
     @BeforeEach
     void seed() {
         TapasSeed.ensure(jdbc);
+        // The tapas path is what this class tests; it is taken only while no schedule capture
+        // exists. This project's own _test tables, so clearing them is allowed.
+        jdbc.update("DELETE FROM " + scheduleFixtureTable);
+        jdbc.update("DELETE FROM " + scheduleGameweekTable);
     }
 
     @Test

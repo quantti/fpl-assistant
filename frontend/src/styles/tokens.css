@@ -170,3 +170,22 @@
   outline: 2px solid var(--pitch) !important;
   outline-offset: 2px;
 }
+
+/* iOS Safari auto-zooms the page when a focused control renders under 16px,
+   and the zoom never reverses on blur: the layout ends up wider than the
+   visual viewport — horizontal wobble, controls pushed off the right edge —
+   and the keyboard-inset fix disengages by design (keyboardAwareHeight
+   refuses to fight what it reads as a pinch-zoom, scale > 1.01). Found on
+   device during the KAR-22 staging checklist, 2026-09-04. Mantine's default
+   input size is sm = 14px, set as an inline --input-fz on the input
+   *wrapper*; declaring the variable on the control element itself overrides
+   the inherited value with no !important (the MessageInput --input-bg
+   mechanism). The bare font-size line covers non-Mantine controls, where no
+   higher-specificity dependency rule competes. Gated to coarse pointers so
+   desktop keeps the designed sizes. */
+@media (pointer: coarse) {
+  input, textarea, select {
+    --input-fz: 1rem;
+    font-size: 1rem;
+  }
+}

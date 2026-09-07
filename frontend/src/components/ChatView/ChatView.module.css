@@ -14,13 +14,19 @@
  * ordinary in-flow flex child below a height-bounded root, never overlapped
  * by `.thread`, so Task 4's `env(safe-area-inset-bottom)` on the composer's
  * own box is all that's needed — nothing here clips or duplicates it.
+ *
+ * `--app-height` is written by useKeyboardAwareViewport only while an iOS
+ * software keyboard is up — WebKit ignores interactive-widget=resizes-content
+ * (bug 259770), so dvh stays full-height there and the keyboard would cover
+ * the composer. Elsewhere the property is absent and the fallback is exactly
+ * what it was.
  */
 /* The shell is the sidebar plus the reading column. The column keeps the
    height-bounded behaviour described above; the shell only puts the two side
    by side. */
 .shell {
   display: flex;
-  height: 100dvh;
+  height: var(--app-height, 100dvh);
   background: var(--paper);
 }
 
@@ -31,7 +37,7 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  height: 100dvh;
+  height: var(--app-height, 100dvh);
   background: var(--paper);
   color: var(--ink);
 }

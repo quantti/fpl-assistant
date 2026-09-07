@@ -1,11 +1,14 @@
 package dev.quantti.fplassistant.tools;
 
+import java.time.LocalDate;
+
 import dev.quantti.fplassistant.testsupport.NewSeasonSeed;
 import dev.quantti.fplassistant.testsupport.TapasSeed;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
@@ -31,6 +34,8 @@ class PickToolsCrossSeasonTest {
     private static final int CURRENT = TapasSeed.CURRENT_SEASON_ID;
     private static final int GAMEWEEK = 101;
     private static final int TEAM = 9001;
+    private static final LocalDate TODAY = LocalDate.now();
+    private static final int[] NEW_SEASON_ELEMENTS = {9401, 9402, 9403, 9404, 9405};
 
     @Autowired
     PickTools tools;
@@ -38,10 +43,23 @@ class PickToolsCrossSeasonTest {
     @Autowired
     JdbcTemplate jdbc;
 
+    @Autowired
+    SeasonResolver seasonResolver;
+
+    @Value("${fpl.daily-price.table-name}")
+    String table;
+
     @BeforeEach
     void seed() {
         TapasSeed.ensure(jdbc);
         NewSeasonSeed.begin(jdbc);
+        String season = seasonResolver.resolve().code();   // the new season, once begin() has run
+        deleteDailyRows();
+        daily(season, 9401, "Okafor",   3, 80, 4.0);
+        daily(season, 9402, "Vasquez",  4, 96, 6.0);
+        daily(season, 9403, "Ferreira", 2, 45, 5.0);
+        daily(season, 9404, "Rask",     3, 55, 3.0);
+        daily(season, 9405, "Rask",     2, 45, 2.0);
     }
 
     /**
@@ -51,7 +69,23 @@ class PickToolsCrossSeasonTest {
      */
     @AfterEach
     void endTheNewSeason() {
+        deleteDailyRows();
         NewSeasonSeed.end(jdbc);
+    }
+
+    private void daily(String season, int elementId, String webName, int elementType, int nowCost,
+                       double ownership) {
+        jdbc.update("INSERT INTO " + table + " (season, price_date, element_id, web_name, full_name,"
+                        + " team_id, team_short, team_name, element_type, now_cost, cost_change_event,"
+                        + " cost_change_start, selected_by_percent, status, news)"
+                        + " VALUES (?, ?, ?, ?, ?, 9001, 'ASH', 'Ashfield Rovers', ?, ?, 0, 0, ?, 'a', NULL)",
+                season, TODAY, elementId, webName, webName + " Fictitious", elementType, nowCost, ownership);
+    }
+
+    private void deleteDailyRows() {
+        for (int id : NEW_SEASON_ELEMENTS) {
+            jdbc.update("DELETE FROM " + table + " WHERE element_id = ?", id);
+        }
     }
 
     /**
@@ -88,6 +122,7 @@ class PickToolsCrossSeasonTest {
     void theFooterAndEachPickNameThePreviousSeasonAndItsWeight() {
         String result = tools.getDifferentialPicks("any", 100, 3);
 
+        assertThat(result).startsWith("Data source: FPL live prices for season " + TapasSeed.CURRENT_SEASON_CODE);
         assertThat(result).contains("Data source: season " + TapasSeed.CURRENT_SEASON_CODE);
         assertThat(result).doesNotContain("Data source: season " + TapasSeed.POPULATED_SEASON_CODE);
         assertThat(result).contains("The weight on " + TapasSeed.CURRENT_SEASON_CODE + " rises");
@@ -127,6 +162,18 @@ class PickToolsCrossSeasonTest {
 
         assertThat(result).doesNotContain(" Rask (");
         assertThat(result).containsPattern("Ranked from [0-9]+ of the [0-9]+ players matching");
+    }
+
+    /**
+     * The position filter hides the midfield Rask, leaving one Rask in the pool — but name
+     * uniqueness is judged against the whole capture day, not the filtered pool, so the
+     * defender must still not inherit last season's Rask record.
+     */
+    @Test
+    void aTwinHiddenByTheFilterStillBlocksTheNameBridge() {
+        String result = tools.getDifferentialPicks("DEF", 100, 3);
+
+        assertThat(result).doesNotContain(" Rask (");
     }
 
     /**

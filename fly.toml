@@ -13,12 +13,14 @@ primary_region = 'cdg'
   force_https = true
   # Pinned explicitly — flyctl defaults have shifted between versions. Machines stop when
   # idle; the first request after idle pays a JVM cold start (tens of seconds on 512MB).
-  # Always-on since 2026-08-18: the cold-start window caused repeated client errors in the
-  # frontend-vs-prod dev loop (requests during boot fail at the proxy after ~8s). Cost:
-  # one 512MB VM running 24/7. Revert: auto_stop_machines = 'stop', min_machines_running = 0.
-  auto_stop_machines = false
+  # Cold start is enabled for the time being (owner, 2026-09-07): the app is development-only
+  # right now, so the wait is acceptable and the VM does not run 24/7. When the actual product
+  # launches, remove it: auto_stop_machines = false, min_machines_running = 1 (that was the
+  # setting 2026-08-18 → 2026-09-07, because the cold-start window caused client errors in the
+  # frontend-vs-prod dev loop — requests during boot fail at the proxy after ~8s).
+  auto_stop_machines = 'stop'
   auto_start_machines = true
-  min_machines_running = 1
+  min_machines_running = 0
 
   [[http_service.checks]]
     # Spring Boot cold start comfortably exceeds the plan's original 10s.
