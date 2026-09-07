@@ -21,7 +21,7 @@ container.
 any decision" section. This plan implements the trial's engineering half and the switch it
 gates. **Ticket: KAR-47.**
 
-**PROGRESS:** Task 2/5 done
+**PROGRESS:** Task 3/5 done
 
 ## Global Constraints
 
