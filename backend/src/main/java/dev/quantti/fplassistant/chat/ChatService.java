@@ -11,6 +11,7 @@ import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.metadata.ChatResponseMetadata;
 import org.springframework.ai.chat.metadata.Usage;
 import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.google.genai.metadata.GoogleGenAiUsage;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
@@ -35,15 +36,18 @@ public class ChatService {
         this.chatClient = chatClient;
         this.tools = tools;
         this.fplAllowance = fplAllowance;
-        // The two providers count a cached prompt differently, and the difference decides whether
+        // The providers count a cached prompt differently, and the difference decides whether
         // a total is right or double: Anthropic reports input_tokens as the uncached remainder
         // with cache reads counted beside it, while OpenAI folds cached tokens into prompt_tokens
         // and reports them again under prompt_tokens_details. Spring AI hands both to us in the
         // same two fields — verified against OpenAiChatModel.getDefaultUsage, which maps
         // promptTokensDetails().cachedTokens() straight into the cache-read slot — so the
         // normalisation belongs here. What is stored is always the uncached remainder, which is
-        // what lets total_tokens add the columns up.
-        this.cachedCountedInsideInput = "openai".equalsIgnoreCase(provider);
+        // what lets total_tokens add the columns up. Gemini counts like OpenAI:
+        // cachedContentTokenCount is a subset of promptTokenCount (verified against
+        // GoogleGenAiUsage in Spring AI 2.0.0).
+        this.cachedCountedInsideInput = "openai".equalsIgnoreCase(provider)
+                || "google-genai".equalsIgnoreCase(provider);
     }
 
     /**
@@ -100,12 +104,13 @@ public class ChatService {
      * Merges field by field, keeping the largest number a provider has reported for each, and
      * the model name from whichever chunk carried one.
      *
-     * <p>Both providers report usage cumulatively per chunk (Spring AI runs chunk usage through
-     * {@code UsageCalculator.getCumulativeUsage}, across tool-call round trips as well), so the
-     * largest value seen is the total — and a trailing chunk carrying an empty measurement
-     * cannot erase it. What this cannot survive is a provider reporting deltas meant to be
-     * summed; Task 8 checks the recorded numbers against a real answer, which is the only way to
-     * know.
+     * <p>Providers report usage cumulatively per chunk within one request, so the largest value
+     * seen is that request's total — and a trailing chunk carrying an empty measurement cannot
+     * erase it. Across tool-call round trips it is NOT cumulative since Spring AI 2.0 (the tool
+     * loop moved to the client-layer ToolCallingAdvisor, which re-invokes the model per round
+     * trip; the models call UsageCalculator.getCumulativeUsage with a null previous — a no-op),
+     * so keeping the richest chunk records the biggest round trip, not the turn's sum, and
+     * tool-using turns undercount. Tracked as KAR-48; the fix needs round-trip boundaries.
      *
      * <p>A reported <em>zero</em> is kept, not discarded. A cache miss reports zero cache reads,
      * and that is a measurement — the one Task 8 exists to make. What gets skipped is a chunk
@@ -123,6 +128,13 @@ public class ChatService {
         Usage usage = metadata.getUsage();
         Integer prompt = usage == null ? null : usage.getPromptTokens();
         Integer completion = usage == null ? null : usage.getCompletionTokens();
+        // Gemini reports thinking tokens beside the completion, not in it, and bills them as
+        // output. Verified against GoogleGenAiUsage in Spring AI 2.0.0: getCompletionTokens()
+        // is candidatesTokenCount alone. total_tokens is a generated sum of the four stored
+        // columns, so a thought left out here is never billed anywhere.
+        if (usage instanceof GoogleGenAiUsage gemini && gemini.getThoughtsTokenCount() != null) {
+            completion = (completion == null ? 0 : completion) + gemini.getThoughtsTokenCount();
+        }
         Long cacheReads = usage == null ? null : usage.getCacheReadInputTokens();
         Long cacheWrites = usage == null ? null : usage.getCacheWriteInputTokens();
 
@@ -167,8 +179,9 @@ public class ChatService {
      * cached part — a chunk that reports the prompt without cache details followed by one that
      * reports both leaves the un-normalised prompt beside a populated cache figure. The generated
      * total then counts the cached tokens twice, which is the exact double-count the
-     * normalisation exists to prevent. Usage is cumulative per chunk on both providers, so the
-     * richest chunk is the complete one.
+     * normalisation exists to prevent. Usage is cumulative per chunk within one request, so the
+     * richest chunk is that request's complete measurement — and, across tool-call round trips,
+     * the biggest request rather than the turn's sum (KAR-48).
      *
      * <p>The model name is carried across regardless: it arrives on chunks that measure nothing.
      */
