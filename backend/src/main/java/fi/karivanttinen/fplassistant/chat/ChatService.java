@@ -11,6 +11,7 @@ import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.metadata.ChatResponseMetadata;
 import org.springframework.ai.chat.metadata.Usage;
 import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.google.genai.metadata.GoogleGenAiUsage;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
@@ -35,15 +36,18 @@ public class ChatService {
         this.chatClient = chatClient;
         this.tools = tools;
         this.fplAllowance = fplAllowance;
-        // The two providers count a cached prompt differently, and the difference decides whether
+        // The providers count a cached prompt differently, and the difference decides whether
         // a total is right or double: Anthropic reports input_tokens as the uncached remainder
         // with cache reads counted beside it, while OpenAI folds cached tokens into prompt_tokens
         // and reports them again under prompt_tokens_details. Spring AI hands both to us in the
         // same two fields — verified against OpenAiChatModel.getDefaultUsage, which maps
         // promptTokensDetails().cachedTokens() straight into the cache-read slot — so the
         // normalisation belongs here. What is stored is always the uncached remainder, which is
-        // what lets total_tokens add the columns up.
-        this.cachedCountedInsideInput = "openai".equalsIgnoreCase(provider);
+        // what lets total_tokens add the columns up. Gemini counts like OpenAI:
+        // cachedContentTokenCount is a subset of promptTokenCount (verified against
+        // GoogleGenAiUsage in Spring AI 2.0.0).
+        this.cachedCountedInsideInput = "openai".equalsIgnoreCase(provider)
+                || "google-genai".equalsIgnoreCase(provider);
     }
 
     /**
@@ -123,6 +127,13 @@ public class ChatService {
         Usage usage = metadata.getUsage();
         Integer prompt = usage == null ? null : usage.getPromptTokens();
         Integer completion = usage == null ? null : usage.getCompletionTokens();
+        // Gemini reports thinking tokens beside the completion, not in it, and bills them as
+        // output. Verified against GoogleGenAiUsage in Spring AI 2.0.0: getCompletionTokens()
+        // is candidatesTokenCount alone. total_tokens is a generated sum of the four stored
+        // columns, so a thought left out here is never billed anywhere.
+        if (usage instanceof GoogleGenAiUsage gemini && gemini.getThoughtsTokenCount() != null) {
+            completion = (completion == null ? 0 : completion) + gemini.getThoughtsTokenCount();
+        }
         Long cacheReads = usage == null ? null : usage.getCacheReadInputTokens();
         Long cacheWrites = usage == null ? null : usage.getCacheWriteInputTokens();
 
