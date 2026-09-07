@@ -25,8 +25,9 @@ spring:
         prepareThreshold: 0
   ai:
     model:
-      # Activates only the selected provider's chat autoconfiguration, so the
-      # unused provider's missing API key can't fail context startup.
+      # Activates only the selected provider's chat autoconfiguration (anthropic,
+      # openai or google-genai), so the unused providers' missing API keys can't
+      # fail context startup.
       chat: ${SPRING_AI_PROVIDER:anthropic}
       # Gated separately from chat above so provider switching stays predictable: RAG
       # embeddings always use OpenAI regardless of SPRING_AI_PROVIDER, because Anthropic
@@ -50,6 +51,19 @@ spring:
           reasoning-effort: none
       embedding:
         model: text-embedding-3-small
+    google:
+      genai:
+        api-key: ${GEMINI_API_KEY:}
+        chat:
+          # Env-swappable because the trial compares depths and point releases without a
+          # rebuild — docs/LLM-PRICING.md, "The trial, before any decision", step 2.
+          model: ${GEMINI_MODEL:gemini-3.8-flash}
+          max-output-tokens: ${FPL_MAX_TOKENS:1500}
+          # Applies to the visible answer; thinking tokens are budgeted separately by the
+          # level below and land on the bill as output tokens all the same.
+          # LOW to start: the cost model in docs/LLM-PRICING.md assumes ~1,500 thinking
+          # tokens/turn, and the trial raises this only if answers need it.
+          thinking-level: ${GEMINI_THINKING_LEVEL:LOW}
     vectorstore:
       pgvector:
         table-name: fpl_embeddings
