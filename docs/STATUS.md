@@ -3405,3 +3405,20 @@ design). The start-gameweek derivation moved to `ScheduleSource.startGameweek` s
 tools share one deadline arithmetic, both tools' reply assembly is deduplicated, the capture
 timestamp read is defensive against pgjdbc type drift, and the test profile pins the FPL URLs
 to the fail-fast port like every other capture's.
+
+## Staging app, and both apps scale to zero (2026-09-07)
+
+`fpl-assistant-staging` exists for device testing against a real deploy (created during the
+PR #69 iPhone checklist; it caught the iOS focus auto-zoom bug fixed in `4f062ec`). It shares
+the production Supabase with the capture schedulers disabled via secrets
+(`FPL_DAILYPRICE_SCHEDULED` / `FPL_SCHEDULE_SCHEDULED` / `FPL_DEFCON_SCHEDULED` = false), and
+deploys with `fly deploy -c fly.staging.toml --ha=false --remote-only --build-arg
+VITE_SUPABASE_ANON_KEY=...` (same build-arg as `deploy.yml`).
+
+Cold start is enabled for the time being, on both apps (`auto_stop_machines = 'stop'`,
+`min_machines_running = 0`). When we launch the actual product, we will remove the cold start;
+right now the app is in development use only, so the cold start is acceptable — the machines
+stop when idle instead of running 24/7, and the first request pays a JVM cold start (tens of
+seconds on 512MB). This reverses the 2026-08-18 always-on decision for production, which was
+made for the frontend-vs-prod dev loop; the revert values are in the `fly.toml` comment. The
+production setting takes effect on the next master deploy.
