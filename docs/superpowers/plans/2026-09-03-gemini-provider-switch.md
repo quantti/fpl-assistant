@@ -14,7 +14,7 @@ changes — all of that is provider-agnostic Spring AI. The switch itself is an 
 done only after the trial and only by the owner.
 
 **Tech Stack:** Spring AI 2.0.0 `spring-ai-starter-model-google-genai` (in the 2.0.0 BOM),
-Gemini Developer API (`GOOGLE_API_KEY`), JUnit 5 + Mockito against the disposable test
+Gemini Developer API (`GEMINI_API_KEY`), JUnit 5 + Mockito against the disposable test
 container.
 
 **Spec:** `docs/LLM-PRICING.md` — the 2026-09-03 re-check (PR #67) and its "The trial, before
@@ -94,7 +94,7 @@ other block explains its gotcha):
 ```yaml
     google:
       genai:
-        api-key: ${GOOGLE_API_KEY:}
+        api-key: ${GEMINI_API_KEY:}
         chat:
           # Env-swappable because the trial compares depths and point releases without a
           # rebuild — docs/LLM-PRICING.md, "The trial, before any decision", step 2.
@@ -326,12 +326,12 @@ Anthropic line has):
 
 `.env.supabase.example`:
 ```
-GOOGLE_API_KEY=
+GEMINI_API_KEY=
 ```
 
 `.env.test.example`:
 ```
-GOOGLE_API_KEY=not-used-no-test-calls-a-chat-model
+GEMINI_API_KEY=not-used-no-test-calls-a-chat-model
 ```
 
 **Step 2: DEVELOPMENT.md**
@@ -340,7 +340,7 @@ In "LLM provider", change `(`anthropic` or `openai`)` to
 `(`anthropic`, `openai` or `google-genai`)` and append one sentence to the first paragraph:
 
 ```
-`google-genai` runs Gemini through the Developer API (`GOOGLE_API_KEY`); thinking depth is
+`google-genai` runs Gemini through the Developer API (`GEMINI_API_KEY`); thinking depth is
 `GEMINI_THINKING_LEVEL` (`LOW` default).
 ```
 
@@ -357,7 +357,7 @@ change.
 
 ```bash
 git add backend/.env.supabase.example backend/.env.test.example docs/DEVELOPMENT.md AGENTS.md
-git commit -m "docs: wire GOOGLE_API_KEY and the google-genai provider option"
+git commit -m "docs: wire GEMINI_API_KEY and the google-genai provider option"
 ```
 
 Then push the branch and open the PR (`Closes` the Linear ticket if one is filed): Tasks 1–3
@@ -369,7 +369,7 @@ are the whole code change; Tasks 4–5 run against this branch and produce no co
 
 Owner-run with the agent watching; nothing here is CI-able, and nothing here touches
 production config. Run the app locally: `backend/.env.supabase` plus
-`SPRING_AI_PROVIDER=google-genai` and a real `GOOGLE_API_KEY` (AI Studio). Chat turns write
+`SPRING_AI_PROVIDER=google-genai` and a real `GEMINI_API_KEY` (AI Studio). Chat turns write
 real rows to `fpl_conversation`/`fpl_usage_event` under the owner's account — same as the
 Phase 5a measurement, acceptable and dated.
 
@@ -412,7 +412,7 @@ stay, or trial Grok next. No production change in this task.**
 1. Merge the PR (owner). Then:
 
 ```bash
-fly secrets set GOOGLE_API_KEY=<key> SPRING_AI_PROVIDER=google-genai
+fly secrets set GEMINI_API_KEY=<key> SPRING_AI_PROVIDER=google-genai
 ```
 
    One command, one restart — `fly secrets set` redeploys. `OPENAI_API_KEY` stays set:
