@@ -1,0 +1,11 @@
+[
+  {"id": 1, "code": 2561895, "event": 1, "finished": true, "finished_provisional": true, "started": true,
+   "kickoff_time": "2026-08-15T14:00:00Z", "minutes": 90, "team_a": 2, "team_a_score": 1,
+   "team_h": 1, "team_h_score": 3, "team_h_difficulty": 3, "team_a_difficulty": 4},
+  {"id": 12, "code": 2561906, "event": 2, "finished": false, "finished_provisional": false, "started": false,
+   "kickoff_time": "2026-08-23T13:00:00Z", "minutes": 0, "team_a": 1, "team_a_score": null,
+   "team_h": 3, "team_h_score": null, "team_h_difficulty": 5, "team_a_difficulty": 2},
+  {"id": 21, "code": 2561915, "event": null, "finished": false, "finished_provisional": false, "started": false,
+   "kickoff_time": null, "minutes": 0, "team_a": 3, "team_a_score": null,
+   "team_h": 2, "team_h_score": null, "team_h_difficulty": 2, "team_a_difficulty": 3}
+]

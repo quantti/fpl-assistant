@@ -3260,3 +3260,165 @@ EU endpoint), Sonnet 5 second. Two corrections to earlier notes on the way: Open
 GPT-5.6 cache writes at 1.25× and reports them only on the Responses API, so `total_tokens`
 undercounts them; and Anthropic prompt caching was never configured in this code, so a bare
 provider switch would pay full input on every turn.
+
+Re-checked 2026-09-03, on the owner's question whether reasoning is reachable by leaving Spring
+AI. It is — LangChain4j's `OpenAiOfficialResponsesChatModel` speaks the Responses API with tools
+and `reasoningEffort` — but the migration would buy the dearest reasoning in the band, so the
+answer stays "switch model, not framework". The trial order changed: Gemini 3.8 Flash (GA
+2026-09-02, index 59, $0.75/$3.75 promotional to year-end) is now first, Grok 4.6 second,
+Sonnet 5 third — Sonnet's scheduled September increase was cancelled and $2/$10 stands.
+`docs/LLM-PRICING.md` carries the updated tables and the Gemini caveats (promo end, EU data
+location, thinking + tools in `spring-ai-google-genai` unverified).
+
+## iOS keyboard, and reading while the answer streams (KAR-22, KAR-46, 2026-08-29)
+
+Two scrolling faults in the chat, fixed together in PR #64 because they share the thread's
+scroll behaviour. Both wait on verification by hand before the PR leaves draft.
+
+**The composer under the iOS keyboard (KAR-22).** `index.html` asks for
+`interactive-widget=resizes-content`, which Chrome and Firefox honour by shrinking the window
+when the keyboard opens. WebKit does not — bug 259770 was still `NEW` on 2026-06-07, with a
+comment asking whether anyone is working on it — so on an iPhone `100dvh` stays full-height and
+the keyboard paints over the composer. The decision the ticket asked for is taken: a JavaScript
+fallback rather than accepting it, because FPL's audience is phone-first and this is the first
+thing an iPhone tester meets.
+
+The fallback is one tested pure function and one thin hook. `keyboardAwareHeight` reads the
+visual viewport's height against the window's and answers a shell height only for a
+keyboard-sized inset — at least 100 px, so the collapsing URL bar does not trigger it, and only
+at scale 1, so a pinch-zoom does not either. `useKeyboardAwareViewport` writes that as
+`--app-height` on `<html>` and removes it otherwise; `.shell`, `.root` and the sign-in page read
+`var(--app-height, 100dvh)`, so wherever the property is absent nothing has changed. It is
+mounted once in `App`, above both the chat and the sign-in form, whose password field sits under
+the same keyboard. The hook also undoes WebKit's scroll-to-reveal of the focused field
+(`window.scrollTo(0, 0)`), which with a shorter shell would only push the header off the top —
+if a device shows that fighting Safari as jitter, the documented alternative is to follow the
+scroll with `translateY(visualViewport.offsetTop)` instead of undoing it — and re-pins the
+thread to its bottom if it was there before the shell shrank.
+
+**Auto-scroll overriding the reader (KAR-46).** Owner report: while an answer streams you cannot
+scroll up to re-read, because `MessageThread` called `scrollIntoView` on every token
+unconditionally. Now a `scroll` listener records whether the reader is within 40 px of the
+bottom (`followsBottom`, tested), and the token-time scroll runs only then. Sending a message
+re-arms following so your own message always comes into view. While streaming the scroll is
+instant rather than smooth: a smooth scroll chasing a target that moves every token never
+settles, and mid-animation the "at the bottom" reading would flap and stop following on its own.
+Finished messages keep the smooth scroll, still gated on `prefers-reduced-motion`.
+
+**The frontend now has a test runner.** Vitest, Node environment, `npm test`, on a
+`vitest.config.ts` kept apart from `vite.config.ts` because that one refuses to load without the
+Supabase key. Ten tests over the two pure decisions; the hooks and components are verified by
+hand, which for a software keyboard is the only honest test. Details in `docs/DEVELOPMENT.md`.
+
+**Not yet verified on a device.** The plan's Task 4 checklist — composer above the keyboard,
+thread pinned or left alone as appropriate, no jitter while typing, sign-in field reachable,
+rotation, dismissal, Android unchanged — is the owner's, on an iPhone, and the KAR-46 check by
+hand on desktop (scroll up mid-stream, view stays; scroll down, it follows; send, it jumps).
+Results go here when they exist; until then PR #64 is a draft.
+
+One thing learned the cheap way: a JSX comment placed before the root element inside
+`return (...)` is a syntax error, and `Array.prototype.at` is ES2022 while `tsconfig` targets
+ES2020 — both caught by `tsc -b` before the commit, which is what it is for.
+
+## Pick tools read the daily capture (KAR-32, 2026-09-02)
+
+`getDifferentialPicks` and `getCaptainCandidates` now build their candidate pool — identity,
+club, price, ownership, availability, news — from `fpl_daily_price` at its latest capture,
+never from the weekly tapas `player` table (measured 85 days stale, the ticket's complaint).
+Metrics still come from `player_fixture_stats`. The reply carries two provenance lines, the
+documented `SquadTools` shape: the capture's (`DailyPriceSource.provenance()`, season + capture
+date), then the metrics' (`SeasonContext.provenance()`). Two sources, not two seasons — the
+one-season-banner rule for these tools stands.
+
+Three decisions taken in the plan, none contested:
+
+- **No fallback to the tapas pool when nothing has been captured.** The tools refuse with the
+  same sentence `SquadTools` uses. A pool built from stale prices *is* the bug, and labelling it
+  does not make a wrong price right; `DailyPriceFreshnessCheck` alerts when the capture misses,
+  so "no capture" is a first-day-in-production state.
+- **The captain tie-break moved from `total_points` to blended minutes.** The capture does not
+  carry `total_points`, and total points ≈ pts/90 × minutes, so what the old tie-break rewarded
+  between equal Scores was playing time — `mins` (already blended, already printed) keeps that
+  intent without adding a column to a time series.
+- **Ownership comes from the capture** — `selected_by_percent` is captured daily, so the
+  ticket's staleness question resolves to "no staleness note needed".
+
+The metric join depends on the seasons matching: by element id while the capture and the
+resolved season are the same season, by unique `web_name` when they are not. During the
+changeover the capture already carries the new season under new element ids while the resolver
+still names the completed one, and FPL renumbers every player in between — an id join across
+that boundary attaches the completed season's numbers to whichever new player inherited the id.
+
+Follow-ups filed while planning, not in this change: `squad/CandidatePool.load` has exactly that
+changeover gap (KAR-45; the fix is the same `sameSeason ? id : name` clause, and its private
+`latestCapture()` should then delegate to `DailyPriceSource.latestCapture()`), and
+`PickTools.avgFdrByTeam` still reads the tapas `fixture` table until KAR-10 gives it an
+FPL-sourced alternative.
+
+## Gameweeks and fixtures captured from FPL (KAR-10, 2026-09-02)
+
+`getGameweekInfo` and `getUpcomingFixtures` now answer from two new snapshot tables,
+`fpl_gameweek` and `fpl_fixture`, captured daily at 02:10 UK from FPL's own
+`bootstrap-static.events` and `/api/fixtures/` by `ScheduleSyncService` — the schedule
+counterpart of the price capture: season code from the UK date, team names from the payload,
+owing tapas nothing. Four decisions from the plan:
+
+- **Snapshot, not a dated series.** One row per (season, id), overwritten daily; rows FPL no
+  longer publishes are deleted in the same transaction. Prices need history, a fixture list
+  needs to be current.
+- **Capture first, tapas as fallback**, chosen by whether the capture holds rows. The tapas
+  path is unchanged underneath, so the pre-first-capture state and the existing tests keep
+  working, each under its own provenance line.
+- **Gameweek status is derived from `deadline_time` against the clock at read time**, never
+  from the captured `is_current` flag — FPL flips it at the deadline, so a 02:10 capture would
+  carry yesterday's flag for most of Saturday. The stored flags are reference only.
+- **Scope is the two tools the ticket names.** Still on tapas' `fixture` table:
+  `FixtureDifficultyTools`, `PickTools.avgFdrByTeam`, `HorizonScorer`, `SquadEnrichment` —
+  a follow-up once the capture has run for a while.
+
+The write deletes by id-array (`NOT (id = ANY(?))`), not by comparing `captured_at` to `now()`:
+the deletion must be correct even outside the transaction (`sync()` calls `write()` on `this`,
+so `@Transactional` would be inert under self-invocation — a `TransactionTemplate` wraps it
+instead), and a clock-keyed deletion in autocommit would have deleted every row just written.
+An empty gameweeks *or* fixtures payload writes nothing at all: the write ends by deleting what
+the capture did not carry, so an empty array served during FPL maintenance would otherwise wipe
+the season instead of leaving yesterday's rows standing.
+
+One behavioural difference between the paths, deliberate: the capture path starts the fixture
+list at the next unfinished round (judged by deadline and `finished`), while the tapas path
+starts at `is_current` and can open a Tuesday answer with Saturday's finished scores.
+
+Remaining before KAR-10 closes: merge, the first production capture
+(`--sync-schedule` from a machine with `.env.supabase`, expect 38 gameweeks), and the two
+production checks (next deadline and a team's fixtures both open with the capture banner).
+
+Review fixes (2026-09-02), same branch: a July-window guard — the season code flips on July 1
+but the 40-day finished-season grace trips only around July 3, so for those days FPL's
+still-old payload would have been written under the new code and stood as the latest snapshot;
+the sync now refuses any payload whose deadlines all predate the coded period, and refuses a
+fixtures list whose kickoffs fall nowhere near the events' deadlines (the two endpoints can
+straddle the summer reset). The finished-season fixture fallback became MAX(id) — the old
+MIN(id) opened a June answer with opening day's results labelled "Upcoming"; the header now
+says "Fixtures" when nothing listed is still to play. `ScheduleFreshnessCheck` mirrors the
+price capture's alert (02:10 capture, checked 06/12/18 UK; noisy across the summer reset by
+design). The start-gameweek derivation moved to `ScheduleSource.startGameweek` so the two
+tools share one deadline arithmetic, both tools' reply assembly is deduplicated, the capture
+timestamp read is defensive against pgjdbc type drift, and the test profile pins the FPL URLs
+to the fail-fast port like every other capture's.
+
+## Staging app, and both apps scale to zero (2026-09-07)
+
+`fpl-assistant-staging` exists for device testing against a real deploy (created during the
+PR #69 iPhone checklist; it caught the iOS focus auto-zoom bug fixed in `4f062ec`). It shares
+the production Supabase with the capture schedulers disabled via secrets
+(`FPL_DAILYPRICE_SCHEDULED` / `FPL_SCHEDULE_SCHEDULED` / `FPL_DEFCON_SCHEDULED` = false), and
+deploys with `fly deploy -c fly.staging.toml --ha=false --remote-only --build-arg
+VITE_SUPABASE_ANON_KEY=...` (same build-arg as `deploy.yml`).
+
+Cold start is enabled for the time being, on both apps (`auto_stop_machines = 'stop'`,
+`min_machines_running = 0`). When we launch the actual product, we will remove the cold start;
+right now the app is in development use only, so the cold start is acceptable — the machines
+stop when idle instead of running 24/7, and the first request pays a JVM cold start (tens of
+seconds on 512MB). This reverses the 2026-08-18 always-on decision for production, which was
+made for the frontend-vs-prod dev loop; the revert values are in the `fly.toml` comment. The
+production setting takes effect on the next master deploy.

@@ -99,7 +99,7 @@ public class ExpectedStatsTools implements FplTool {
                 previous = seasonResolver.previousSeason(season);
                 if (previous.isPresent()) {
                     List<Map<String, Object>> older = previousSeasonPlayerRows(
-                            previous.get(), webName, limit - shown.size());
+                            previous.get(), season.seasonId(), webName, limit - shown.size());
                     fromPrevious = older.size();
                     shown.addAll(older);
                 }
@@ -208,12 +208,21 @@ public class ExpectedStatsTools implements FplTool {
     }
 
     /**
-     * Last season's fixtures for the same name, only when that name is unique there — the same
-     * bridge the ranking tools use, for the same reason: element ids are reassigned every summer
-     * and a guessed match attaches another player's football to this player's card.
+     * Last season's fixtures for the same name, only when that name is unique in BOTH seasons —
+     * the same bridge the ranking tools use, for the same reason: element ids are reassigned
+     * every summer and a guessed match attaches another player's football to this player's card.
+     * One player of the name last season and two this season still leaves unknown which of the
+     * two he became, so that fill would be a guess either way round.
      */
     private List<Map<String, Object>> previousSeasonPlayerRows(SeasonContext previous,
+                                                               int currentSeasonId,
                                                                String webName, int limit) {
+        Integer twins = jdbc.queryForObject("""
+                SELECT count(*) FROM player WHERE season_id = ? AND LOWER(web_name) = LOWER(?)
+                """, Integer.class, currentSeasonId, webName);
+        if (twins == null || twins != 1) {
+            return List.of();
+        }
         List<Integer> ids = jdbc.queryForList("""
                 SELECT id FROM player WHERE season_id = ? AND LOWER(web_name) = LOWER(?)
                 """, Integer.class, previous.seasonId(), webName);

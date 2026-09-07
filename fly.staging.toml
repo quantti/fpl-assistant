@@ -1,0 +1,29 @@
+# Staging copy of fly.toml — deploy with `fly deploy -c fly.staging.toml`.
+# Differences from production: app name, and scale-to-zero. The staging app is used only
+# during device-test sessions, so it stops when idle and the first request pays the JVM
+# cold start (tens of seconds on 512MB) — accepted, per the owner (2026-09-07). Keep the
+# capture schedulers disabled via secrets (FPL_DAILYPRICE_SCHEDULED etc.): staging shares
+# the production Supabase and must not double-write the shared tables.
+app = 'fpl-assistant-staging'
+primary_region = 'cdg'
+
+[build]
+  dockerfile = 'Dockerfile'
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[http_service.checks]]
+    grace_period = '20s'
+    interval = '15s'
+    method = 'GET'
+    path = '/actuator/health'
+    timeout = '5s'
+
+[[vm]]
+  memory = '512mb'
+  cpus = 1

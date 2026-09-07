@@ -1,5 +1,6 @@
 package fi.karivanttinen.fplassistant.tools;
 
+import fi.karivanttinen.fplassistant.schedule.ScheduleSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;
@@ -7,11 +8,13 @@ import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -22,10 +25,12 @@ public class FixtureTools implements FplTool {
 
     private final JdbcTemplate jdbc;
     private final SeasonResolver seasonResolver;
+    private final ScheduleSource schedule;
 
-    public FixtureTools(JdbcTemplate jdbc, SeasonResolver seasonResolver) {
+    public FixtureTools(JdbcTemplate jdbc, SeasonResolver seasonResolver, ScheduleSource schedule) {
         this.jdbc = jdbc;
         this.seasonResolver = seasonResolver;
+        this.schedule = schedule;
     }
 
     @Tool(description = """
@@ -35,14 +40,20 @@ public class FixtureTools implements FplTool {
             and home/away status. nextN controls how many gameweeks to include (max 10);
             a double gameweek counts as one gameweek with multiple fixtures. Fixtures
             postponed without a rescheduled gameweek are listed separately.
-            The reply begins with the season the fixtures come from; if that is not the
-            season currently being played, tell the user the fixtures are historical.
+            The reply begins with which source the fixtures come from — FPL's own list
+            captured daily when available, otherwise the synced season — and the season.
             """)
     public String getUpcomingFixtures(String teamName, int nextN) {
         try {
-            SeasonContext season = seasonResolver.resolve();
             int gwLimit = Math.max(1, Math.min(nextN, 10));
             String pattern = "%" + LikePatterns.escape(teamName.toLowerCase(Locale.ROOT)) + "%";
+
+            Optional<ScheduleSource.Snapshot> captured = schedule.latest();
+            if (captured.isPresent()) {
+                return fromCapture(captured.get(), teamName, pattern, gwLimit);
+            }
+
+            SeasonContext season = seasonResolver.resolve();
 
             List<Map<String, Object>> teams = jdbc.queryForList("""
                     SELECT id, name, short_name FROM team
@@ -85,28 +96,81 @@ public class FixtureTools implements FplTool {
                     ORDER BY f.gameweek NULLS LAST, f.kickoff_time
                     """, teamId, season.seasonId(), teamId, teamId, startGw);
 
-            FixtureWindow window = window(rows, gwLimit);
-
-            if (window.scheduled().isEmpty() && window.postponed().isEmpty()) {
-                return season.provenance() + "\nNo upcoming fixtures found for " + resolvedName;
-            }
-
             String header = season.currentSeason() ? "Upcoming fixtures" : "Fixtures";
-            StringBuilder out = new StringBuilder(season.provenance())
-                    .append("\n\n%s for %s (%s):\n".formatted(header, resolvedName, resolvedShort))
-                    .append(window.scheduled().stream().map(this::formatFixture)
-                            .collect(Collectors.joining("\n")));
-            if (!window.postponed().isEmpty()) {
-                out.append("\nPostponed, no rescheduled gameweek yet:\n")
-                        .append(window.postponed().stream().map(this::formatFixture)
-                                .collect(Collectors.joining("\n")));
-            }
-            return out.toString();
+            return render(season.provenance(), header, resolvedName, resolvedShort,
+                    window(rows, gwLimit));
         } catch (DataAccessException e) {
             log.error("getUpcomingFixtures(\"{}\", {}) failed", teamName, nextN, e);
             return "Fixture data is temporarily unavailable (database error)."
                     + " Tell the user and suggest asking again shortly.";
         }
+    }
+
+    /**
+     * The capture path. The team is resolved from the capture's own denormalised names, the
+     * starting gameweek by {@link ScheduleSource#startGameweek} (deadlines against the clock),
+     * and the rows carry the same aliases the tapas query produces so {@link #window} and
+     * {@link #formatFixture} serve both paths.
+     */
+    private String fromCapture(ScheduleSource.Snapshot snapshot, String teamName, String pattern, int gwLimit) {
+        String provenance = ScheduleSource.provenance(snapshot.season(), snapshot.capturedAt(), Instant.now());
+        List<Map<String, Object>> teams = jdbc.queryForList("""
+                SELECT team_id, team_name, team_short FROM (
+                    SELECT team_h AS team_id, team_h_name AS team_name, team_h_short AS team_short FROM %1$s WHERE season = ?
+                    UNION
+                    SELECT team_a, team_a_name, team_a_short FROM %1$s WHERE season = ?
+                ) t
+                WHERE LOWER(team_name) LIKE ? OR LOWER(team_short) = LOWER(?)
+                ORDER BY team_name LIMIT 1
+                """.formatted(schedule.fixtureTable()),
+                snapshot.season(), snapshot.season(), pattern, teamName);
+        if (teams.isEmpty()) {
+            return provenance + "\nTeam not found: " + teamName;
+        }
+        int teamId = ((Number) teams.getFirst().get("team_id")).intValue();
+        String resolvedName = (String) teams.getFirst().get("team_name");
+        String resolvedShort = (String) teams.getFirst().get("team_short");
+
+        Integer startGw = schedule.startGameweek(snapshot.season());
+        if (startGw == null) {
+            return provenance + "\nNo gameweek data captured for this season.";
+        }
+
+        List<Map<String, Object>> rows = jdbc.queryForList("""
+                SELECT gameweek, team_h_short AS home_short, team_a_short AS away_short,
+                       team_h_difficulty, team_a_difficulty, kickoff_time, finished,
+                       team_h_score, team_a_score, team_h = ? AS is_home
+                FROM %s
+                WHERE season = ? AND (team_h = ? OR team_a = ?)
+                  AND (gameweek >= ? OR (gameweek IS NULL AND finished = false))
+                ORDER BY gameweek NULLS LAST, kickoff_time
+                """.formatted(schedule.fixtureTable()),
+                teamId, snapshot.season(), teamId, teamId, startGw);
+
+        FixtureWindow window = window(rows, gwLimit);
+        // A finished season's listing is its last round's results, not "upcoming" anything.
+        boolean anyUpcoming = window.scheduled().stream()
+                .anyMatch(r -> !Boolean.TRUE.equals(r.get("finished")));
+        return render(provenance, anyUpcoming ? "Upcoming fixtures" : "Fixtures",
+                resolvedName, resolvedShort, window);
+    }
+
+    /** One reply shape for both paths, so the postponed block and the empty answer cannot drift. */
+    private String render(String provenance, String header, String resolvedName,
+                          String resolvedShort, FixtureWindow window) {
+        if (window.scheduled().isEmpty() && window.postponed().isEmpty()) {
+            return provenance + "\nNo upcoming fixtures found for " + resolvedName;
+        }
+        StringBuilder out = new StringBuilder(provenance)
+                .append("\n\n%s for %s (%s):\n".formatted(header, resolvedName, resolvedShort))
+                .append(window.scheduled().stream().map(this::formatFixture)
+                        .collect(Collectors.joining("\n")));
+        if (!window.postponed().isEmpty()) {
+            out.append("\nPostponed, no rescheduled gameweek yet:\n")
+                    .append(window.postponed().stream().map(this::formatFixture)
+                            .collect(Collectors.joining("\n")));
+        }
+        return out.toString();
     }
 
     record FixtureWindow(List<Map<String, Object>> scheduled, List<Map<String, Object>> postponed) {}

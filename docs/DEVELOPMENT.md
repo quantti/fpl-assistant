@@ -73,7 +73,22 @@ set -a; source .env.test; set +a
 ./gradlew bootRun                                 # serves on :8080
 ./gradlew bootRun --args="--ingest"               # reload the RAG corpus, then exit
 ./gradlew bootRun --args="--sync-prices"          # capture today's FPL prices, then exit
+./gradlew bootRun --args="--sync-schedule"        # capture FPL gameweeks and fixtures, then exit
 ```
+
+Frontend, from `frontend/`:
+
+```bash
+npm run dev                                       # Vite on :5173, /api proxied to :8080
+npm test                                          # vitest: the pure decisions in src/**/*.test.ts
+npm run build                                     # contrast check, tsc -b, vite build
+```
+
+`npm test` runs on `vitest.config.ts`, kept apart from `vite.config.ts` because that file
+refuses to load without `VITE_SUPABASE_ANON_KEY`; a unit test needs no key. The suite is
+Node-only — no DOM — and covers the pure functions behind the UI (`viewportHeight`,
+`MessageThread/follow`), not the components. The pre-push hook does not run it; run it
+before pushing frontend work.
 
 ## The free tier and sign-up
 
