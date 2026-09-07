@@ -58,6 +58,15 @@ fpl:
     max-accounts: 2
   daily-price:
     table-name: fpl_daily_price_test
+    # Port 1 refuses connections: a test that reaches FPL by accident fails fast instead of
+    # hitting the real API from CI — the same pin every other FPL URL here carries.
+    bootstrap-url: http://127.0.0.1:1/bootstrap-static/
+    scheduled: false
+
+  schedule:
+    gameweek-table-name: fpl_gameweek_test
+    fixture-table-name: fpl_fixture_test
+    fixtures-url: http://127.0.0.1:1/fixtures/
     scheduled: false
 
   defcon:

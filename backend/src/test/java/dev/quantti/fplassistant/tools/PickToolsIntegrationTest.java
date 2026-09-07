@@ -1,12 +1,15 @@
 package dev.quantti.fplassistant.tools;
 
-import java.util.List;
+import java.time.LocalDate;
+import java.util.Optional;
 
 import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
@@ -20,10 +23,16 @@ import static org.assertj.core.api.Assertions.assertThat;
  * behaviour and what these tests assert. The ranking composite itself is pinned by
  * {@link PickToolsRankingTest}; here the seeded fixtures give the FDR map something real to
  * resolve, which production data never did.
+ *
+ * <p>The candidate pool comes from the daily price capture (KAR-32), so every case seeds the
+ * seeded players into it under the resolved season and today's date.
  */
 @SpringBootTest
 @ActiveProfiles("test")
 class PickToolsIntegrationTest {
+
+    private static final LocalDate TODAY = LocalDate.now();
+    private static final int[] SEEDED = {9201, 9202, 9203, 9204, 9205, 9206, 9207, 9208};
 
     @Autowired
     PickTools tools;
@@ -34,10 +43,35 @@ class PickToolsIntegrationTest {
     @Autowired
     SeasonResolver seasonResolver;
 
+    @Value("${fpl.daily-price.table-name}")
+    String table;
+
+    /** The resolved season's code, which the capture rows must carry for the id join to apply. */
+    String season;
+
     @BeforeEach
     void seed() {
         SharedStatsSeed.ensure(jdbc);
         clearDefensiveContribution();
+        season = seasonResolver.resolve().code();
+        deleteDailyRows();
+        // SharedStatsSeed's players under their own element ids, so metrics attach by id. Okafor is
+        // priced differently from the shared row (82 vs 75) so a test can tell which table a
+        // price came from.
+        daily(9201, "Okafor",    9001, "ASH", 3, 82, 12.50, "a", null);
+        daily(9202, "Bramley",   9002, "NMC", 3, 55,  3.20, "a", null);
+        daily(9203, "Vasquez",   9001, "ASH", 4, 96, 25.00, "a", null);
+        daily(9204, "Halvorsen", 9003, "NMU", 4, 84,  2.00, "i", "Knee injury - expected back late September");
+        daily(9205, "Ferreira",  9003, "NMU", 2, 45,  8.00, "a", null);
+        daily(9206, "Kaminski",  9004, "SEL", 1, 45,  6.00, "a", null);
+        daily(9207, "Novak",     9005, "WBA", 3, 60, 50.00, "a", null);
+        daily(9208, "Halloran",  9003, "NMU", 2, 45,  4.00, "a", null);
+    }
+
+    @AfterEach
+    void cleanUp() {
+        clearDefensiveContribution();
+        deleteDailyRows();
     }
 
     /**
@@ -45,10 +79,25 @@ class PickToolsIntegrationTest {
      * test container is long-lived, so a defensive-contribution value written by one case would
      * otherwise survive into every later case and every later run.
      */
-    @AfterEach
-    void clearDefensiveContribution() {
+    private void clearDefensiveContribution() {
         jdbc.update("UPDATE player_fixture_stats SET defensive_contribution = NULL"
                 + " WHERE season_id = 9026 AND player_id IN (9203, 9205, 9206)");
+    }
+
+    private void daily(int elementId, String webName, int teamId, String teamShort, int elementType,
+                       int nowCost, double ownership, String status, String news) {
+        jdbc.update("INSERT INTO " + table + " (season, price_date, element_id, web_name, full_name,"
+                        + " team_id, team_short, team_name, element_type, now_cost, cost_change_event,"
+                        + " cost_change_start, selected_by_percent, status, news)"
+                        + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?)",
+                season, TODAY, elementId, webName, webName + " Fictitious", teamId, teamShort,
+                teamShort + " Fictitious FC", elementType, nowCost, ownership, status, news);
+    }
+
+    private void deleteDailyRows() {
+        for (int id : SEEDED) {
+            jdbc.update("DELETE FROM " + table + " WHERE element_id = ?", id);
+        }
     }
 
     @Test
@@ -112,32 +161,129 @@ class PickToolsIntegrationTest {
 
     /**
      * Form is a rolling average that stays high for weeks after an injury, so a pick tool that
-     * ignores {@code status} recommends players who cannot play. The seed carries one such
-     * player: the highest form in the league, and unavailable.
+     * ignores availability recommends players who cannot play. The capture carries one such
+     * player, flagged {@code i} on the day the tool reads.
      */
     @Test
     void unavailablePlayersAreNeverRecommended() {
-        int seasonId = seasonResolver.resolve().seasonId();
-        // web_name is not unique, so a name shared with an available player proves nothing —
-        // it would appear in the output legitimately. Guard only on unambiguously-out names.
-        List<String> unavailable = jdbc.queryForList("""
-                SELECT web_name FROM player
-                WHERE season_id = ? AND form > 0 AND status NOT IN ('a', 'd')
-                  AND web_name NOT IN (
-                      SELECT web_name FROM player WHERE season_id = ? AND status IN ('a', 'd'))
-                """, String.class, seasonId, seasonId);
-        assertThat(unavailable)
-                .as("expected some injured/suspended players to guard against")
-                .contains(SharedStatsSeed.INJURED_PLAYER);
-
         String differentials = tools.getDifferentialPicks("any", 100, 5);
         String captains = tools.getCaptainCandidates(5);
 
-        for (String name : unavailable) {
-            assertThat(differentials).doesNotContain(" " + name + " (");
-            assertThat(captains).doesNotContain(" " + name + " (");
-        }
+        assertThat(differentials).doesNotContain(" " + SharedStatsSeed.INJURED_PLAYER + " (");
+        assertThat(captains).doesNotContain(" " + SharedStatsSeed.INJURED_PLAYER + " (");
         assertThat(differentials).contains("Unavailable players (injured/suspended) are excluded");
+    }
+
+    /** The price printed is the capture's, not the weekly table's. */
+    @Test
+    void thePriceComesFromTheDailyCapture() {
+        String result = tools.getDifferentialPicks("MID", 100, 3);
+
+        assertThat(result).contains("Okafor (ASH) £8.2m");
+        assertThat(result).doesNotContain("£7.5m");
+    }
+
+    /** Flagged in today's capture, fit in the weekly table: the capture wins. */
+    @Test
+    void aPlayerFlaggedInTheCaptureIsExcludedWhateverTheWeeklyTableSays() {
+        jdbc.update("UPDATE " + table + " SET status = 'i', news = 'Hamstring' WHERE element_id = 9203");
+
+        String result = tools.getCaptainCandidates(3);
+
+        assertThat(result).doesNotContain("Vasquez");
+        assertThat(result).contains("Okafor");
+    }
+
+    @Test
+    void aDoubtfulPlayerIsListedWithTheCapturesNews() {
+        jdbc.update("UPDATE " + table + " SET status = 'd', news = 'Knock - 75% chance of playing'"
+                + " WHERE element_id = 9201");
+
+        String result = tools.getDifferentialPicks("MID", 100, 3);
+
+        assertThat(result).contains("Okafor").contains("DOUBTFUL: Knock - 75% chance of playing");
+    }
+
+    @Test
+    void provenanceIsTheCaptureLineThenTheMetricsBanner() {
+        String result = tools.getCaptainCandidates(3);
+        String[] lines = result.split("\n");
+
+        assertThat(lines[0]).startsWith("Data source: FPL live prices for season " + season)
+                .contains("captured today");
+        assertThat(lines[1]).startsWith("Data source: season " + season);
+    }
+
+    /**
+     * With nothing captured the tool says so rather than reading the weekly table. A stubbed
+     * source rather than an emptied table: the daily-price table is shared by every class in the
+     * suite, and a blanket DELETE would be the one thing here that could break another test.
+     */
+    @Test
+    void refusesWhenNoCaptureExists() {
+        DailyPriceSource empty = Mockito.mock(DailyPriceSource.class);
+        Mockito.when(empty.latestCapture()).thenReturn(Optional.empty());
+        PickTools withoutCapture = new PickTools(jdbc, seasonResolver, empty, table);
+
+        String result = withoutCapture.getCaptainCandidates(3);
+
+        assertThat(result).contains("No player prices have been captured yet");
+        assertThat(result).doesNotContain("Captain candidates");
+    }
+
+    /** The capture's team_id is nullable; a row without one is excluded, not crashed on. */
+    @Test
+    void aCaptureRowWithoutATeamIsExcludedRatherThanCrashing() {
+        try {
+            jdbc.update("INSERT INTO " + table + " (season, price_date, element_id, web_name, full_name,"
+                    + " team_id, team_short, team_name, element_type, now_cost, cost_change_event,"
+                    + " cost_change_start, selected_by_percent, status, news)"
+                    + " VALUES (?, ?, 9209, 'Teamless', 'Teamless Fictitious', NULL, NULL, NULL, 3, 50,"
+                    + " 0, 0, 1.0, 'a', NULL)", season, TODAY);
+
+            String result = tools.getDifferentialPicks("MID", 100, 3);
+
+            assertThat(result).contains("Differential picks");
+            assertThat(result).doesNotContain("Teamless");
+        } finally {
+            jdbc.update("DELETE FROM " + table + " WHERE element_id = 9209");
+        }
+    }
+
+    /**
+     * The changeover: the capture already carries the new season under new element ids, while the
+     * resolver still names the completed one. Metrics attach by unique name, and both lines say
+     * which season they are.
+     */
+    @Test
+    void aCaptureFromANewerSeasonIsBridgedToTheResolvedSeasonByName() {
+        String captureSeason = "T-2099-00";
+        int newOkafor = 9601;
+        int newBramley = 9602;
+        try {
+            jdbc.update("INSERT INTO " + table + " (season, price_date, element_id, web_name, full_name,"
+                    + " team_id, team_short, team_name, element_type, now_cost, cost_change_event,"
+                    + " cost_change_start, selected_by_percent, status, news) VALUES"
+                    + " (?, ?, ?, 'Okafor', 'Okafor Fictitious', 9001, 'ASH', 'Ashfield', 3, 90, 0, 0, 10.0, 'a', NULL),"
+                    + " (?, ?, ?, 'Bramley', 'Bramley Fictitious', 9002, 'NMC', 'Northmoor', 3, 60, 0, 0, 2.0, 'a', NULL)",
+                    captureSeason, TODAY.plusDays(1), newOkafor,
+                    captureSeason, TODAY.plusDays(1), newBramley);
+
+            String result = tools.getDifferentialPicks("MID", 100, 3);
+
+            assertThat(result).startsWith("Data source: FPL live prices for season " + captureSeason);
+            assertThat(result).contains("Data source: season " + season + " — a COMPLETED PREVIOUS season");
+            // The clarifier: without it the season line's "not current" instruction reads as
+            // covering the capture's price and ownership too.
+            assertThat(result).contains("The season line above describes the metrics only");
+            // No FDR across the season boundary — team ids do not carry, so attaching the
+            // resolved season's fixtures would hand a club another club's difficulty.
+            assertThat(result).contains("FDR is n/a: the synced fixture table still holds " + season);
+            assertThat(result).contains("Okafor (ASH) £9.0m");
+            assertThat(result).containsPattern("Okafor .*xG/90 [0-9]\\.[0-9]{2}");
+        } finally {
+            jdbc.update("DELETE FROM " + table + " WHERE season = ?", captureSeason);
+        }
     }
 
     /**
