@@ -46,8 +46,10 @@ public class MiniLeagueTools implements FplTool {
             user does not - the part that changes advice. focus="nearby" (default) returns the
             managers ranked just above and below the user, focus="top10" the league leaders (any
             N, capped at ten teams), and focus="entry:12345" one specific team. Squads are the
-            ones locked at the last deadline. Only call this when the user brings up a
-            mini-league.
+            ones locked at the last deadline. If either manager played a Free Hit, the reply
+            separates that gameweek's scoring-pick differences from continuing-squad differences
+            for future advice, or warns when the continuing squad cannot be verified. Transfers
+            since the deadline are not visible. Only call this when the user brings up a mini-league.
             """)
     public String getMiniLeagueOpponents(int leagueId,
                                          @ToolParam(required = false) String focus,
