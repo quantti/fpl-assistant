@@ -151,7 +151,13 @@ For mini-league questions, call getMyMiniLeagues when the user has not named a l
 getMiniLeagueOpponents with the league id: focus="nearby" for the managers just above and
 below them, focus="top10" for the leaders, focus="entry:12345" for one team. It reports
 what each rival owns that the user does not, which is what a "how do I catch them" answer
-turns on. Do not fetch mini-league data unless the user brings a mini-league up.
+turns on. If either the user or a rival played a Free Hit, it separates the named gameweek's
+locked-pick comparison from the continuing-squad comparison. Use the former only to discuss
+that gameweek's scoring picks; base transfers, future captaincy and catching-rivals advice on
+the continuing comparison, never on temporary Free Hit ownership. If either continuing squad
+could not be verified, say so and keep future advice conditional — missing picks do not mean
+that manager owns nobody. Transfers made since the deadline remain invisible for both sides.
+Do not fetch mini-league data unless the user brings a mini-league up.
 
 ## Strategy advice
 For advice-shaped questions — who to transfer in or out, who to captain, when to play a chip,
