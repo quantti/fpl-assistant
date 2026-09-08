@@ -3473,11 +3473,36 @@ Verified with five new `MyTeamServiceTest` cases (both blocks present and ordere
 gameweek 1, a spent request budget, and wildcard as the negative case) plus the full suite,
 629/629.
 
-Left open: `MiniLeagueService` has the same blind spot on both sides of the diff it renders, not
-just an opponent's. `opponents()` builds the user's own owned-element set via
-`ownedElements(entryId, event, budget)`, which reads the locked squad for `event` straight off
-`MyTeamService.lockedSquad` — the same `squadCache` entry `getMyTeam` populates with the Free Hit
-fifteen — so under an active Free Hit the "what each rival owns that you do not" comparison runs
-against a squad the user does not keep. The same call does the same thing for every opponent row,
-so a rival on a Free Hit is compared the same way. Out of scope for this change, noted on the
-KAR-49 ticket for separate triage.
+Originally left open in PR #71 (resolved by the follow-up below): `MiniLeagueService` had the
+same blind spot on both sides of the diff it rendered, not just an opponent's. `opponents()` built
+the user's own owned-element set via `ownedElements(entryId, event, budget)`, reading the locked
+squad for `event` straight off `MyTeamService.lockedSquad` — the same `squadCache` entry
+`getMyTeam` populates with the Free Hit fifteen. Both sides of the "what each rival owns that you
+do not" comparison could therefore describe a squad the manager does not keep.
+
+## Mini-league comparisons separate Free Hit and continuing ownership (2026-09-08)
+
+The follow-up to PR #71 applies the Free Hit distinction to both managers in
+`getMiniLeagueOpponents`, across `nearby`, `topN` and `entry:`. When either side played a Free Hit,
+the reply preserves a labelled comparison of the named gameweek's locked picks and adds a
+separate comparison of their continuing squads. Each Free Hit manager's continuing squad comes
+from Gameweek N-1 picks, explicitly labelled as restored for transfers at the Gameweek N
+deadline. Non-Free Hit squads need no extra fetch. Only differences are rendered, not another
+fifteen-player card for each rival; points and ranks remain tied to the locked gameweek.
+
+Both gameweeks use `MyTeamService.lockedSquad` and its existing cache and per-turn budget. Missing,
+empty or unreachable previous picks, a Gameweek 1 Free Hit, or a spent budget leave continuing
+ownership unknown — never an empty team and never a fallback to the Free Hit picks. The reply
+names which side is unknown and withholds the continuing comparison. The user's warning also
+survives when the budget prevents fetching standings at all. Additional Free Hit requests may
+reduce the number of rivals shown; the fifteen-call budget and omitted-team warning are unchanged.
+
+The tool description and system prompt now distinguish current-gameweek scoring evidence from
+future transfer/captaincy/mini-league advice, require conditional advice when either continuing
+squad is unknown, and note that post-deadline transfers remain invisible for both managers.
+
+Verified: 25 added `MiniLeagueServiceTest` cases cover either/both Free Hits in every focus mode,
+404/503/empty previous picks, Gameweek 1, spent budgets, shared-cache reuse with `getMyTeam`, a
+failed bootstrap refresh without an immediate retry, and wildcard/bench boost/triple captain as
+negative cases. Full `./gradlew cleanTest test`: 656 tests passed against the disposable local
+database.

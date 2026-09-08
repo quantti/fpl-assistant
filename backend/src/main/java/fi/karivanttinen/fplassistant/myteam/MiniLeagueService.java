@@ -142,16 +142,16 @@ public class MiniLeagueService {
         }
         int event = summary.currentEvent();
 
-        Set<Integer> mine = ownedElements(entryId, event, budget);
-        if (mine.isEmpty()) {
+        OwnedSquads mine = ownedSquads(entryId, event, budget);
+        if (mine == null) {
             return "The user's own squad could not be read, so there is nothing to compare the"
                     + " league against. Suggest trying again shortly.";
         }
 
         Focus parsed = parseFocus(focus);
-        return switch (parsed) {
+        return header(league.get(), summary, event) + freeHitNote("User", mine, event) + switch (parsed) {
             case Focus.OneEntry(int opponentEntry) ->
-                    renderSingle(league.get(), opponentEntry, event, mine, budget);
+                    renderSingle(opponentEntry, event, mine, budget);
             case Focus.Top(int requested) ->
                     renderSlice(league.get(), summary, event, mine, budget, requested, true);
             case Focus.Nearby ignored ->
@@ -194,8 +194,11 @@ public class MiniLeagueService {
 
     // ---------------------------------------------------------------- rendering
 
+    /** An empty continuing set means unknown ownership, never that the manager owns nobody. */
+    private record OwnedSquads(Set<Integer> locked, Set<Integer> continuing, boolean freeHit) { }
+
     private String renderSlice(ClassicLeague league, EntrySummary summary, int event,
-                               Set<Integer> mine, FplBudget budget, int requested, boolean fromTop) {
+                               OwnedSquads mine, FplBudget budget, int requested, boolean fromTop) {
         int wanted = Math.min(requested, maxOpponents);
         List<StandingsRow> rows;
         StandingsPage page;
@@ -213,7 +216,7 @@ public class MiniLeagueService {
             rows = nearbyRows(page.rows(), summary.id());
         }
 
-        StringBuilder out = new StringBuilder(header(league, summary, event));
+        StringBuilder out = new StringBuilder();
         if (requested > maxOpponents && requested != Integer.MAX_VALUE) {
             out.append("Asked for ").append(requested).append(" teams; ").append(maxOpponents)
                     .append(" is the maximum this tool fetches, so these are the top ")
@@ -243,24 +246,22 @@ public class MiniLeagueService {
         return out.toString();
     }
 
-    private String renderSingle(ClassicLeague league, int opponentEntry, int event,
-                                Set<Integer> mine, FplBudget budget) {
+    private String renderSingle(int opponentEntry, int event, OwnedSquads mine, FplBudget budget) {
         EntrySummary opponent = entryOrNull(opponentEntry, budget);
         if (opponent == null) {
             return "Entry " + opponentEntry + " could not be read from FPL.";
         }
-        Set<Integer> theirs = ownedElements(opponentEntry, event, budget);
-        if (theirs.isEmpty()) {
+        OwnedSquads theirs = ownedSquads(opponentEntry, event, budget);
+        if (theirs == null) {
             return "Entry " + opponentEntry + " has no squad published for gameweek " + event + ".";
         }
-        StringBuilder out = new StringBuilder(league.name() + " (id " + league.id() + ")\n");
+        StringBuilder out = new StringBuilder();
         out.append(opponent.teamName()).append(" (entry ").append(opponentEntry).append(")");
         if (opponent.totalPoints() != null) {
             out.append(" - ").append(opponent.totalPoints()).append(" pts");
         }
         out.append("\n");
-        out.append("Owns that the user does not: ").append(difference(theirs, mine, budget))
-                .append("\n");
+        out.append(comparison(theirs, mine, event, budget));
         return out.toString();
     }
 
@@ -274,23 +275,63 @@ public class MiniLeagueService {
         }
         out.append(".\nStandings and squads as at Gameweek ").append(event)
                 .append("; fetched ").append(UkTime.format(Instant.now(), "just now"))
-                .append(". Squads are the ones locked at that deadline.\n");
+                .append(". Locked picks describe that gameweek only; transfers since that deadline")
+                .append(" are not visible.\n");
         return out.toString();
     }
 
     /** One opponent, or null when their squad could not be read within the budget. */
-    private String opponentLine(StandingsRow row, int event, Set<Integer> mine, FplBudget budget) {
-        Set<Integer> theirs = ownedElements(row.entryId(), event, budget);
-        if (theirs.isEmpty()) {
+    private String opponentLine(StandingsRow row, int event, OwnedSquads mine, FplBudget budget) {
+        OwnedSquads theirs = ownedSquads(row.entryId(), event, budget);
+        if (theirs == null) {
             return null;
         }
         return " " + ordinal(row.rank()) + "  " + row.entryName() + "  " + row.totalPoints()
-                + " pts (+" + row.eventPoints() + " GW" + event + ") - owns that the user does not: "
-                + difference(theirs, mine, budget) + "\n";
+                + " pts (+" + row.eventPoints() + " GW" + event + ") - "
+                + comparison(theirs, mine, event, budget);
     }
 
-    private String difference(Set<Integer> theirs, Set<Integer> mine, FplBudget budget) {
+    private String comparison(OwnedSquads theirs, OwnedSquads mine, int event, FplBudget budget) {
+        boolean freeHit = mine.freeHit() || theirs.freeHit();
         Optional<FplBootstrap.Snapshot> snapshot = myTeam.bootstrap(budget);
+        StringBuilder out = new StringBuilder();
+        if (freeHit) {
+            out.append("Gameweek ").append(event).append(" locked picks only - ");
+        }
+        out.append("owns that the user does not: ")
+                .append(difference(theirs.locked(), mine.locked(), snapshot)).append("\n");
+        if (freeHit) {
+            out.append(freeHitNote("Opponent", theirs, event));
+            if (mine.continuing().isEmpty() || theirs.continuing().isEmpty()) {
+                out.append("Continuing-squad comparison unavailable; keep forward-looking advice")
+                        .append(" conditional rather than using the Free Hit picks.\n");
+            } else {
+                out.append("Continuing squads - owns that the user does not: ")
+                        .append(difference(theirs.continuing(), mine.continuing(), snapshot))
+                        .append("\n");
+            }
+        }
+        return out.toString();
+    }
+
+    private static String freeHitNote(String subject, OwnedSquads squad, int event) {
+        if (!squad.freeHit()) {
+            return "";
+        }
+        String prefix = subject + ": FREE HIT in Gameweek " + event + " (one-week scoring picks only); ";
+        if (squad.continuing().isEmpty()) {
+            String reason = event <= 1 ? "Gameweek 1 has no earlier squad"
+                    : "Gameweek " + (event - 1) + " picks could not be read"
+                            + " (missing, unreachable or request limit)";
+            return prefix + "continuing squad unavailable: " + reason
+                    + "; keep forward-looking advice conditional.\n";
+        }
+        return prefix + "continuing squad restored for transfers at the Gameweek " + event
+                + " deadline from Gameweek " + (event - 1) + " picks.\n";
+    }
+
+    private String difference(Set<Integer> theirs, Set<Integer> mine,
+                              Optional<FplBootstrap.Snapshot> snapshot) {
         List<String> names = new ArrayList<>();
         for (Integer element : theirs) {
             if (mine.contains(element)) {
@@ -310,15 +351,31 @@ public class MiniLeagueService {
                 EntrySummary summary) ? summary : null;
     }
 
-    /** The element ids in a manager's locked squad, empty when it could not be read. */
-    private Set<Integer> ownedElements(int entryId, int event, FplBudget budget) {
+    /** Locked and continuing ownership, or null when the locked squad could not be read. */
+    private OwnedSquads ownedSquads(int entryId, int event, FplBudget budget) {
         if (myTeam.lockedSquad(entryId, event, budget)
                 instanceof FplEntryClient.Result.Ok<Optional<LockedSquad>>(Optional<LockedSquad> squad)
-                && squad.isPresent()) {
-            return squad.get().picks().stream().map(Pick::element)
-                    .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+                && squad.isPresent() && !squad.get().picks().isEmpty()) {
+            Set<Integer> locked = elements(squad.get());
+            if (!"freehit".equals(squad.get().activeChip())) {
+                return new OwnedSquads(locked, locked, false);
+            }
+            // The same previous-deadline squad getMyTeam uses: Free Hit transfers never touch
+            // the saved fifteen. Read through its cache and budget, not a separate FPL path.
+            Set<Integer> continuing = Set.of();
+            if (event > 1 && myTeam.lockedSquad(entryId, event - 1, budget)
+                    instanceof FplEntryClient.Result.Ok<Optional<LockedSquad>>(
+                            Optional<LockedSquad> previous) && previous.isPresent()) {
+                continuing = elements(previous.get());
+            }
+            return new OwnedSquads(locked, continuing, true);
         }
-        return Set.of();
+        return null;
+    }
+
+    private static Set<Integer> elements(LockedSquad squad) {
+        return squad.picks().stream().map(Pick::element)
+                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
     }
 
     private StandingsPage standings(int leagueId, int page, FplBudget budget) {
