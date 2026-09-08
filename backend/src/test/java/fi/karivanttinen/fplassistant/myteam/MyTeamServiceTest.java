@@ -58,6 +58,9 @@ class MyTeamServiceTest {
     /** The gameweek being played; the next deadline is always the one after it. */
     private int currentEvent = 1;
     private String chipsPlayed = "[]";
+    private String activeChip = null;
+    /** Body for the previous gameweek's picks; null makes the stub answer 404. */
+    private String previousPicks = null;
 
     @BeforeEach
     void startStub() throws IOException {
@@ -71,8 +74,14 @@ class MyTeamServiceTest {
                 respond(exchange, 200, bootstrap());
             } else if (path.endsWith("/history/")) {
                 respond(exchange, 200, "{\"chips\": " + chipsPlayed + "}");
+            } else if (currentEvent > 1 && path.contains("/event/" + (currentEvent - 1) + "/picks/")) {
+                if (previousPicks == null) {
+                    respond(exchange, 404, "{}");
+                } else {
+                    respond(exchange, 200, previousPicks);
+                }
             } else if (path.contains("/event/" + currentEvent + "/picks/")) {
-                respond(exchange, 200, PICKS);
+                respond(exchange, 200, picks());
             } else if (path.startsWith("/entry/" + OTHER_ENTRY)) {
                 respond(exchange, 200, entryBody(OTHER_ENTRY, "Second Team"));
             } else {
@@ -129,7 +138,121 @@ class MyTeamServiceTest {
                 .contains("selling prices")
                 .contains("Salah (LIV, MID) GBP 12.6m - CAPTAIN")
                 .contains("Bench")
-                .contains("Flagged: Salah (LIV) - doubtful");
+                .contains("Flagged: Salah (LIV) - doubtful")
+                .doesNotContain("Continuing squad");
+    }
+
+    /**
+     * At the Free Hit deadline FPL locks its picks for scoring and restores the previous squad
+     * for transfers, but serves the scoring picks as "the" event squad all week — so the card
+     * must show both and say which is which.
+     */
+    @Test
+    void aFreeHitCardShowsTheContinuingSquadBesideIt() {
+        currentEvent = 4;
+        activeChip = "freehit";
+        previousPicks = PREVIOUS_PICKS;
+        storeTeamId(ENTRY);
+        MyTeamService service = service();
+
+        String card = service.render(service.myTeam(USER, budget()));
+
+        assertThat(card)
+                .contains("FREE HIT squad for Gameweek 4")
+                .contains("These picks score in Gameweek 4 only and do not carry forward")
+                .contains("At the Gameweek 4 deadline, FPL restored the continuing squad")
+                .contains("Continuing squad (restored for transfers at the Gameweek 4 deadline"
+                        + " from the Gameweek 3 picks)")
+                .contains("apply to THIS squad")
+                .contains("Restored bank was GBP 0.5m")
+                .contains("These were the FREE HIT squad's funds and did not carry forward")
+                .contains("the continuing squad's bank is shown with that block below");
+        assertThat(card).containsSubsequence(
+                "FREE HIT squad", "Salah", "Continuing squad", "Wood (NFO, FWD)");
+    }
+
+    /** FPL down or GW-1 picks missing must not silently render the FH squad as the real team. */
+    @Test
+    void aFreeHitWhosePreviousPicksAre404GetsAWarningNotAContinuingBlock() {
+        currentEvent = 4;
+        activeChip = "freehit";
+        previousPicks = null;   // the stub answers 404 for GW3
+        storeTeamId(ENTRY);
+        MyTeamService service = service();
+
+        String card = service.render(service.myTeam(USER, budget()));
+
+        assertThat(card)
+                .contains("FREE HIT squad for Gameweek 4")
+                .contains("picks above do not carry forward")
+                .contains("squad used for transfers and future Gameweeks could not be shown")
+                .contains("no picks for Gameweek 3")
+                .doesNotContain("Continuing squad (restored for transfers")
+                .as("the card must not promise a block it does not deliver")
+                .doesNotContain("FPL restored the continuing squad");
+    }
+
+    /** There is no gameweek zero: a GW1 Free Hit must say so, not fetch. */
+    @Test
+    void aFreeHitInGameweekOneSaysThereIsNoEarlierSquad() {
+        currentEvent = 1;
+        activeChip = "freehit";
+        storeTeamId(ENTRY);
+        MyTeamService service = service();
+
+        String card = service.render(service.myTeam(USER, budget()));
+
+        assertThat(card)
+                .contains("FREE HIT squad for Gameweek 1")
+                .contains("no earlier squad");
+        assertThat(requests.keySet())
+                .as("no gameweek-zero fetch is attempted")
+                .noneMatch(path -> path.contains("/event/0/picks/"));
+    }
+
+    /**
+     * A starved budget must refuse the previous-gameweek fetch honestly - not fall back to
+     * treating the Free Hit fifteen as the continuing squad. Entry, this gameweek's picks and
+     * bootstrap consume the three units before the GW3 fetch is attempted, so its refusal is the
+     * budget, not a 404 - {@code previousPicks} is left set to a body that would succeed if it
+     * were ever requested.
+     */
+    @Test
+    void aFreeHitWhoseReturningSquadFetchIsRefusedByBudgetGetsAWarning() {
+        currentEvent = 4;
+        activeChip = "freehit";
+        previousPicks = PREVIOUS_PICKS;
+        storeTeamId(ENTRY);
+        MyTeamService service = service();
+
+        String card = service.render(service.myTeam(USER, new FplBudget(3)));
+
+        assertThat(card)
+                .contains("FREE HIT squad for Gameweek 4")
+                .contains("squad used for transfers and future Gameweeks could not be shown")
+                .contains("could not be reached")
+                .doesNotContain("Continuing squad (restored for transfers");
+        assertThat(requests.keySet())
+                .as("the budget, not the network, is what stops the GW3 fetch")
+                .noneMatch(path -> path.contains("/event/3/picks/"));
+    }
+
+    /** A wildcard squad persists past its gameweek, so it needs none of the Free Hit handling. */
+    @Test
+    void aWildcardSquadGetsNoFreeHitHandling() {
+        currentEvent = 4;
+        activeChip = "wildcard";
+        storeTeamId(ENTRY);
+        MyTeamService service = service();
+
+        String card = service.render(service.myTeam(USER, budget()));
+
+        assertThat(card)
+                .doesNotContain("FREE HIT")
+                .doesNotContain("Continuing squad");
+        assertThat(requests.keySet())
+                .as("a wildcard squad persists, so the previous gameweek is never fetched")
+                .noneMatch(path -> path.contains("/event/3/picks/"));
     }
 
     /**
@@ -242,12 +365,26 @@ class MyTeamServiceTest {
                 """.formatted(id, name, currentEvent);
     }
 
+    private String picks() {
+        return PICKS.formatted(activeChip == null ? "null" : "\"" + activeChip + "\"");
+    }
+
     private static final String PICKS = """
-            {"active_chip": null,
+            {"active_chip": %s,
              "entry_history": {"bank": 12, "value": 1003, "points": 55},
              "picks": [
                {"element": 302, "position": 1, "multiplier": 2, "is_captain": true,
                 "is_vice_captain": false, "element_type": 3},
+               {"element": 17, "position": 12, "multiplier": 0, "is_captain": false,
+                "is_vice_captain": true, "element_type": 1}]}
+            """;
+
+    private static final String PREVIOUS_PICKS = """
+            {"active_chip": null,
+             "entry_history": {"bank": 5, "value": 995, "points": 48},
+             "picks": [
+               {"element": 44, "position": 1, "multiplier": 2, "is_captain": true,
+                "is_vice_captain": false, "element_type": 4},
                {"element": 17, "position": 12, "multiplier": 0, "is_captain": false,
                 "is_vice_captain": true, "element_type": 1}]}
             """;
@@ -265,7 +402,10 @@ class MyTeamServiceTest {
                 "chance_of_playing_next_round": 75},
                {"id": 17, "web_name": "Sels", "team": 4, "element_type": 1, "now_cost": 50,
                 "form": "2.0", "total_points": 2, "points_per_game": "2.0",
-                "selected_by_percent": "18.3", "status": "a", "news": ""}],
+                "selected_by_percent": "18.3", "status": "a", "news": ""},
+               {"id": 44, "web_name": "Wood", "team": 4, "element_type": 4, "now_cost": 71,
+                "form": "5.0", "total_points": 18, "points_per_game": "6.0",
+                "selected_by_percent": "25.0", "status": "a", "news": ""}],
              "chips": [{"name": "wildcard", "start_event": 2, "stop_event": 19},
                        {"name": "bboost", "start_event": 1, "stop_event": 19},
                        {"name": "3xc", "start_event": 1, "stop_event": 19},

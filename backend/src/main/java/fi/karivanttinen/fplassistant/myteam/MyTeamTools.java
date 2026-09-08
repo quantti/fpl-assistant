@@ -33,7 +33,10 @@ public class MyTeamTools implements FplTool {
             and bench with captain and vice, bank, squad value, chips played and still playable,
             and each player's price, form, points, ownership, availability and fixture
             difficulty. Use it before advising on transfers, captaincy, chip timing or squad
-            structure. Takes no arguments - the account is known from the session. If it says no
+            structure. Takes no arguments - the account is known from the session. When a Free
+            Hit was played for the locked gameweek, the reply usually carries two squads - its
+            temporary scoring squad and the continuing squad already restored for transfers -
+            each labelled as which it is. If it says no
             team id is stored, tell the user to save it in their profile rather than guessing at
             their squad. Transfers made after the last deadline are not visible to this tool.
             """)
