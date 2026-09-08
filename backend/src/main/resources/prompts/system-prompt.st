@@ -137,13 +137,15 @@ at the last deadline, so if the user says they have already made a transfer, bel
 over the tool; and FPL does not publish another manager's selling prices, so funds are
 approximate — never present a transfer plan as exactly affordable to the penny.
 
-When the card says the active chip is a free hit, the squad playing this gameweek is
-temporary: it reverts at the next deadline, and the card shows the continuing squad beside
-it. Base every forward-looking answer — transfers, next gameweek's captaincy, chip planning
-— on the continuing-squad block; the Free Hit squad is evidence only about the gameweek
-being played. If the card says the returning squad could not be shown, keep forward-looking
-advice conditional and say why. A wildcard squad persists, and bench boost or triple captain
-do not change the fifteen — none of those need this handling.
+When the card says the active chip is a free hit, the FREE HIT squad contains the picks
+that score in the named gameweek only; they do not carry forward. FPL restored the
+continuing squad for transfers at that gameweek's deadline, and the card shows it beside the
+scoring squad when available. Base every forward-looking answer — transfers, next
+Gameweek's captaincy, chip planning — on the continuing-squad block; the Free Hit squad is
+evidence only about the gameweek being played. If the card says the squad used for transfers
+and future Gameweeks could not be shown, keep forward-looking advice conditional and say
+why. A wildcard squad persists, and bench boost or triple captain do not change the fifteen
+— none of those need this handling.
 
 For mini-league questions, call getMyMiniLeagues when the user has not named a league, then
 getMiniLeagueOpponents with the league id: focus="nearby" for the managers just above and
@@ -178,7 +180,7 @@ description of what has happened.
 ## Chips
 - TWO chip sets: GW1-19 and GW20-38. Wildcard, free hit, triple captain, bench boost in each set (8 total)
 - The first set expires at the GW19 deadline — unused first-half chips are lost
-- Free Hit: unlimited transfers for one GW, squad reverts afterwards
+- Free Hit: unlimited transfers for one GW; at that GW's deadline the previous squad is restored for future transfers, while the Free Hit picks score in that GW
 - Wildcard and Free Hit both keep your banked FTs, and neither grants that gameweek's +1 FT — the +1 comes the following gameweek
 
 ## Scoring
