@@ -57,8 +57,8 @@ public class MyTeamService {
          * @param event the gameweek the squad was locked for
          * @param chipEvent the gameweek the chip list answers for — the next deadline, since
          *        that is what a chip activated now would be played on
-         * @param continuing the squad that returns after a Free Hit gameweek; null when no Free
-         *        Hit is active
+         * @param continuing the squad restored at a Free Hit gameweek's deadline; null when no
+         *        Free Hit was played
          */
         record Squad(EntrySummary entry, int event, Optional<Instant> deadline, LockedSquad locked,
                      List<SquadPlayer> players, int chipEvent, List<String> playableChips,
@@ -81,19 +81,20 @@ public class MyTeamService {
     }
 
     /**
-     * The team that comes back once a Free Hit gameweek is over. Present only while one is
-     * active. The previous deadline's picks are exactly the returning fifteen: transfers made
-     * inside the Free Hit window belong to the Free Hit team alone. That also requires gameweek
-     * N-1 to not itself have been a Free Hit, which holds only because FPL forbids playing a
-     * Free Hit in both GW19 and GW20 — the one point in the season where two Free Hits could
-     * otherwise fall back-to-back (~/dev/tapas-fpl-app/backend/FPL_RULES.md:95).
+     * The team restored for transfers at a Free Hit gameweek's deadline. Present only when one
+     * was played for the locked gameweek. The previous deadline's picks are exactly the restored
+     * fifteen: transfers made inside the Free Hit window belong to the Free Hit team alone. That
+     * also requires gameweek N-1 to not itself have been a Free Hit, which holds only because FPL
+     * forbids playing a Free Hit in both GW19 and GW20 — the one point in the season where two
+     * Free Hits could otherwise fall back-to-back
+     * (~/dev/tapas-fpl-app/backend/FPL_RULES.md:95).
      */
     public sealed interface Continuing {
         record Squad(int event, LockedSquad locked, List<SquadPlayer> players)
                 implements Continuing {
         }
 
-        /** A Free Hit is active but the returning squad could not be shown; the reason is rendered. */
+        /** A Free Hit was played but the continuing squad could not be reconstructed. */
         record Unknown(String reason) implements Continuing {
         }
     }
@@ -204,8 +205,9 @@ public class MyTeamService {
             return new Result.Unavailable();
         }
 
-        // A Free Hit squad reverts at the next deadline, so the previous gameweek's picks — the
-        // team that comes back — are fetched and rendered beside it. KAR-49.
+        // At a Free Hit gameweek's deadline, FPL locks the temporary picks for scoring and
+        // restores the previous squad for transfers. Fetch those previous-gameweek picks and
+        // render both. KAR-49.
         Continuing continuing = null;
         LockedSquad previousSquad = null;
         if ("freehit".equals(locked.activeChip())) {
@@ -351,9 +353,16 @@ public class MyTeamService {
                 out.append(" (deadline ").append(UkTime.format(deadline, "unknown")).append(")"));
         out.append("; fetched ").append(UkTime.format(squad.fetchedAt(), "just now")).append(".\n");
         if (freeHit) {
-            out.append("This squad plays Gameweek ").append(squad.event()).append(" only - it reverts ")
-                    .append(continuingShown ? "to the continuing squad below at the next deadline.\n"
-                            : "at the next deadline.\n");
+            out.append("These picks score in Gameweek ").append(squad.event())
+                    .append(" only and do not carry forward.");
+            if (continuingShown) {
+                out.append(" At the Gameweek ").append(squad.event())
+                        .append(" deadline, FPL restored the continuing squad used for transfers")
+                        .append(" and future Gameweeks; it is shown below.\n");
+            } else {
+                out.append(" The squad used for transfers and future Gameweeks could not be")
+                        .append(" reconstructed here.\n");
+            }
         }
         out.append("Team: ").append(squad.entry().teamName())
                 .append(" (entry ").append(squad.entry().id()).append(")");
@@ -371,10 +380,10 @@ public class MyTeamService {
         out.append("Bank ").append(money(bank)).append(", squad value ").append(money(value))
                 .append(", total ").append(money(bank + value)).append(".");
         if (freeHit) {
-            out.append(" These are the FREE HIT squad's funds and disappear when it reverts;")
+            out.append(" These were the FREE HIT squad's funds and did not carry forward;")
                     .append(continuingShown
-                            ? " the continuing squad's own bank is shown with that block below.\n"
-                            : " the continuing squad's own bank is not shown here.\n");
+                            ? " the continuing squad's bank is shown with that block below.\n"
+                            : " the continuing squad's bank could not be shown here.\n");
         } else {
             out.append(" FPL does not publish another manager's selling prices or free-transfer")
                     .append(" count, so treat available funds as approximate.\n");
@@ -407,24 +416,25 @@ public class MyTeamService {
         switch (squad.continuing()) {
             case null -> { }
             case Continuing.Squad(int event, LockedSquad previous, List<SquadPlayer> players) -> {
-                out.append("\nContinuing squad (as locked at the Gameweek ").append(event)
-                        .append(" deadline) - the team that returns after Gameweek ")
-                        .append(squad.event())
-                        .append(". Transfers and all forward-looking advice apply to THIS squad, not")
-                        .append(" the Free Hit one. Captain and bench order are Gameweek ").append(event)
-                        .append(" choices; only the fifteen players carry over. Prices and")
+                out.append("\nContinuing squad (restored for transfers at the Gameweek ")
+                        .append(squad.event()).append(" deadline from the Gameweek ").append(event)
+                        .append(" picks). Transfers and all forward-looking advice apply to THIS")
+                        .append(" squad, not the Free Hit one. Captain and bench order shown are")
+                        .append(" Gameweek ").append(event)
+                        .append(" choices; only the fifteen players were restored. Prices and")
                         .append(" statistics on the lines below are today's, from the same source")
-                        .append(" as above. Bank then was ")
-                        .append(money(previous.bank()))
-                        .append(" (approximate - the Free Hit's transfers are undone when it")
-                        .append(" reverts).\n");
+                        .append(" as above. Restored bank was ").append(money(previous.bank()))
+                        .append(" (approximate - transfers made since the Free Hit deadline are")
+                        .append(" not visible).\n");
                 appendPicks(out, players);
             }
             case Continuing.Unknown(String reason) ->
-                    out.append("\nA Free Hit is active, so this squad reverts at the next deadline,")
-                            .append(" but the returning squad could not be shown: ").append(reason)
-                            .append(". Base transfers and forward-looking advice on the squad that")
-                            .append(" returns, and say its exact makeup could not be verified.\n");
+                    out.append("\nA Free Hit was played for Gameweek ").append(squad.event())
+                            .append(", so the picks above do not carry forward, but the squad used")
+                            .append(" for transfers and future Gameweeks could not be shown: ")
+                            .append(reason)
+                            .append(". Keep transfers and forward-looking advice conditional, and")
+                            .append(" say its exact makeup could not be verified.\n");
         }
         return out.toString();
     }

@@ -5,16 +5,23 @@
 
 **PROGRESS:** Task 4/4 done
 
-**Goal:** When a Free Hit is the active chip, `getMyTeam` shows the continuing squad (the team
-that returns after the gameweek) beside the one-week Free Hit squad, and the system prompt bases
-forward-looking advice on the continuing squad.
+> **PR review correction (2026-09-08):** The original execution steps below say the squad
+> reverts "at the next deadline", from the perspective of activating the chip before Gameweek
+> `N`. `getMyTeam` runs after that Gameweek `N` deadline: FPL has already restored the continuing
+> squad for transfers while the event endpoint keeps serving the Free Hit picks that score in
+> `N`. Runtime text, tests and STATUS use that corrected timeline; do not copy the historical
+> wording from the task snippets.
+
+**Goal:** When a Free Hit was played for the locked gameweek, `getMyTeam` shows the continuing
+squad already restored for transfers beside the one-gameweek Free Hit scoring picks, and the
+system prompt bases forward-looking advice on the continuing squad.
 
 **Architecture:** Two layers, per the ticket. (1) `MyTeamService.myTeam()` fetches the previous
 gameweek's picks when `activeChip == "freehit"` — transfers made in the FH window belong to the
-FH team only, so the previous GW's picks are exactly the team that comes back — and renders a
-second, labelled squad block through the same enrichment path. (2) The system prompt instructs
-the model to base transfers / next-GW captaincy / chip planning on the continuing block. No
-schema, DB, or frontend changes.
+FH team only, so the previous GW's picks are exactly the squad restored at the Free Hit deadline
+— and renders a second, labelled squad block through the same enrichment path. (2) The system
+prompt instructs the model to base transfers / next-GW captaincy / chip planning on the
+continuing block. No schema, DB, or frontend changes.
 
 **Tech Stack:** Spring Boot 4.1, Java 25 (sealed interfaces, record patterns, switch with `when`
 guards and `case null`), JUnit 5 + AssertJ, `com.sun.net.httpserver.HttpServer` stub (existing

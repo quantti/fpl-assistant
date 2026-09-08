@@ -143,8 +143,9 @@ class MyTeamServiceTest {
     }
 
     /**
-     * A Free Hit squad plays one gameweek and reverts, and FPL serves it as "the" squad all
-     * week — so the card must show the team that comes back, and say which is which.
+     * At the Free Hit deadline FPL locks its picks for scoring and restores the previous squad
+     * for transfers, but serves the scoring picks as "the" event squad all week — so the card
+     * must show both and say which is which.
      */
     @Test
     void aFreeHitCardShowsTheContinuingSquadBesideIt() {
@@ -158,12 +159,14 @@ class MyTeamServiceTest {
 
         assertThat(card)
                 .contains("FREE HIT squad for Gameweek 4")
-                .contains("reverts to the continuing squad")
-                .contains("Continuing squad (as locked at the Gameweek 3 deadline)")
+                .contains("These picks score in Gameweek 4 only and do not carry forward")
+                .contains("At the Gameweek 4 deadline, FPL restored the continuing squad")
+                .contains("Continuing squad (restored for transfers at the Gameweek 4 deadline"
+                        + " from the Gameweek 3 picks)")
                 .contains("apply to THIS squad")
-                .contains("Bank then was GBP 0.5m")
-                .contains("These are the FREE HIT squad's funds and disappear when it reverts")
-                .contains("the continuing squad's own bank is shown with that block below");
+                .contains("Restored bank was GBP 0.5m")
+                .contains("These were the FREE HIT squad's funds and did not carry forward")
+                .contains("the continuing squad's bank is shown with that block below");
         assertThat(card).containsSubsequence(
                 "FREE HIT squad", "Salah", "Continuing squad", "Wood (NFO, FWD)");
     }
@@ -181,11 +184,12 @@ class MyTeamServiceTest {
 
         assertThat(card)
                 .contains("FREE HIT squad for Gameweek 4")
-                .contains("returning squad could not be shown")
+                .contains("picks above do not carry forward")
+                .contains("squad used for transfers and future Gameweeks could not be shown")
                 .contains("no picks for Gameweek 3")
-                .doesNotContain("Continuing squad (as locked")
+                .doesNotContain("Continuing squad (restored for transfers")
                 .as("the card must not promise a block it does not deliver")
-                .doesNotContain("reverts to the continuing squad below");
+                .doesNotContain("FPL restored the continuing squad");
     }
 
     /** There is no gameweek zero: a GW1 Free Hit must say so, not fetch. */
@@ -225,9 +229,9 @@ class MyTeamServiceTest {
 
         assertThat(card)
                 .contains("FREE HIT squad for Gameweek 4")
-                .contains("returning squad could not be shown")
+                .contains("squad used for transfers and future Gameweeks could not be shown")
                 .contains("could not be reached")
-                .doesNotContain("Continuing squad (as locked");
+                .doesNotContain("Continuing squad (restored for transfers");
         assertThat(requests.keySet())
                 .as("the budget, not the network, is what stops the GW3 fetch")
                 .noneMatch(path -> path.contains("/event/3/picks/"));
