@@ -58,6 +58,9 @@ class MyTeamServiceTest {
     /** The gameweek being played; the next deadline is always the one after it. */
     private int currentEvent = 1;
     private String chipsPlayed = "[]";
+    private String activeChip = null;
+    /** Body for the previous gameweek's picks; null makes the stub answer 404. */
+    private String previousPicks = null;
 
     @BeforeEach
     void startStub() throws IOException {
@@ -71,8 +74,14 @@ class MyTeamServiceTest {
                 respond(exchange, 200, bootstrap());
             } else if (path.endsWith("/history/")) {
                 respond(exchange, 200, "{\"chips\": " + chipsPlayed + "}");
+            } else if (currentEvent > 1 && path.contains("/event/" + (currentEvent - 1) + "/picks/")) {
+                if (previousPicks == null) {
+                    respond(exchange, 404, "{}");
+                } else {
+                    respond(exchange, 200, previousPicks);
+                }
             } else if (path.contains("/event/" + currentEvent + "/picks/")) {
-                respond(exchange, 200, PICKS);
+                respond(exchange, 200, picks());
             } else if (path.startsWith("/entry/" + OTHER_ENTRY)) {
                 respond(exchange, 200, entryBody(OTHER_ENTRY, "Second Team"));
             } else {
@@ -129,7 +138,32 @@ class MyTeamServiceTest {
                 .contains("selling prices")
                 .contains("Salah (LIV, MID) GBP 12.6m - CAPTAIN")
                 .contains("Bench")
-                .contains("Flagged: Salah (LIV) - doubtful");
+                .contains("Flagged: Salah (LIV) - doubtful")
+                .doesNotContain("Continuing squad");
+    }
+
+    /**
+     * A Free Hit squad plays one gameweek and reverts, and FPL serves it as "the" squad all
+     * week — so the card must show the team that comes back, and say which is which.
+     */
+    @Test
+    void aFreeHitCardShowsTheContinuingSquadBesideIt() {
+        currentEvent = 4;
+        activeChip = "freehit";
+        previousPicks = PREVIOUS_PICKS;
+        storeTeamId(ENTRY);
+        MyTeamService service = service();
+
+        String card = service.render(service.myTeam(USER, budget()));
+
+        assertThat(card)
+                .contains("FREE HIT squad for Gameweek 4")
+                .contains("reverts to the continuing squad")
+                .contains("Continuing squad (as locked at the Gameweek 3 deadline)")
+                .contains("apply to THIS squad")
+                .contains("Bank then was GBP 0.5m");
+        assertThat(card).containsSubsequence(
+                "FREE HIT squad", "Salah", "Continuing squad", "Wood (NFO, FWD)");
     }
 
     /**
@@ -242,12 +276,26 @@ class MyTeamServiceTest {
                 """.formatted(id, name, currentEvent);
     }
 
+    private String picks() {
+        return PICKS.formatted(activeChip == null ? "null" : "\"" + activeChip + "\"");
+    }
+
     private static final String PICKS = """
-            {"active_chip": null,
+            {"active_chip": %s,
              "entry_history": {"bank": 12, "value": 1003, "points": 55},
              "picks": [
                {"element": 302, "position": 1, "multiplier": 2, "is_captain": true,
                 "is_vice_captain": false, "element_type": 3},
+               {"element": 17, "position": 12, "multiplier": 0, "is_captain": false,
+                "is_vice_captain": true, "element_type": 1}]}
+            """;
+
+    private static final String PREVIOUS_PICKS = """
+            {"active_chip": null,
+             "entry_history": {"bank": 5, "value": 995, "points": 48},
+             "picks": [
+               {"element": 44, "position": 1, "multiplier": 2, "is_captain": true,
+                "is_vice_captain": false, "element_type": 4},
                {"element": 17, "position": 12, "multiplier": 0, "is_captain": false,
                 "is_vice_captain": true, "element_type": 1}]}
             """;
@@ -265,7 +313,10 @@ class MyTeamServiceTest {
                 "chance_of_playing_next_round": 75},
                {"id": 17, "web_name": "Sels", "team": 4, "element_type": 1, "now_cost": 50,
                 "form": "2.0", "total_points": 2, "points_per_game": "2.0",
-                "selected_by_percent": "18.3", "status": "a", "news": ""}],
+                "selected_by_percent": "18.3", "status": "a", "news": ""},
+               {"id": 44, "web_name": "Wood", "team": 4, "element_type": 4, "now_cost": 71,
+                "form": "5.0", "total_points": 18, "points_per_game": "6.0",
+                "selected_by_percent": "25.0", "status": "a", "news": ""}],
              "chips": [{"name": "wildcard", "start_event": 2, "stop_event": 19},
                        {"name": "bboost", "start_event": 1, "stop_event": 19},
                        {"name": "3xc", "start_event": 1, "stop_event": 19},
