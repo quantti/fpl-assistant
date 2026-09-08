@@ -293,12 +293,13 @@ public class MiniLeagueService {
 
     private String comparison(OwnedSquads theirs, OwnedSquads mine, int event, FplBudget budget) {
         boolean freeHit = mine.freeHit() || theirs.freeHit();
+        Optional<FplBootstrap.Snapshot> snapshot = myTeam.bootstrap(budget);
         StringBuilder out = new StringBuilder();
         if (freeHit) {
             out.append("Gameweek ").append(event).append(" locked picks only - ");
         }
         out.append("owns that the user does not: ")
-                .append(difference(theirs.locked(), mine.locked(), budget)).append("\n");
+                .append(difference(theirs.locked(), mine.locked(), snapshot)).append("\n");
         if (freeHit) {
             out.append(freeHitNote("Opponent", theirs, event));
             if (mine.continuing().isEmpty() || theirs.continuing().isEmpty()) {
@@ -306,7 +307,7 @@ public class MiniLeagueService {
                         .append(" conditional rather than using the Free Hit picks.\n");
             } else {
                 out.append("Continuing squads - owns that the user does not: ")
-                        .append(difference(theirs.continuing(), mine.continuing(), budget))
+                        .append(difference(theirs.continuing(), mine.continuing(), snapshot))
                         .append("\n");
             }
         }
@@ -329,8 +330,8 @@ public class MiniLeagueService {
                 + " deadline from Gameweek " + (event - 1) + " picks.\n";
     }
 
-    private String difference(Set<Integer> theirs, Set<Integer> mine, FplBudget budget) {
-        Optional<FplBootstrap.Snapshot> snapshot = myTeam.bootstrap(budget);
+    private String difference(Set<Integer> theirs, Set<Integer> mine,
+                              Optional<FplBootstrap.Snapshot> snapshot) {
         List<String> names = new ArrayList<>();
         for (Integer element : theirs) {
             if (mine.contains(element)) {

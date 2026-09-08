@@ -3501,7 +3501,8 @@ The tool description and system prompt now distinguish current-gameweek scoring 
 future transfer/captaincy/mini-league advice, require conditional advice when either continuing
 squad is unknown, and note that post-deadline transfers remain invisible for both managers.
 
-Verified: 24 added `MiniLeagueServiceTest` cases cover either/both Free Hits in every focus mode,
-404/503/empty previous picks, Gameweek 1, spent budgets, shared-cache reuse with `getMyTeam`, and
-wildcard/bench boost/triple captain as negative cases. Full `./gradlew cleanTest test`: 655 tests
-passed against the disposable local database.
+Verified: 25 added `MiniLeagueServiceTest` cases cover either/both Free Hits in every focus mode,
+404/503/empty previous picks, Gameweek 1, spent budgets, shared-cache reuse with `getMyTeam`, a
+failed bootstrap refresh without an immediate retry, and wildcard/bench boost/triple captain as
+negative cases. Full `./gradlew cleanTest test`: 656 tests passed against the disposable local
+database.
