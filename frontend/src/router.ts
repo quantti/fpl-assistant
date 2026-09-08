@@ -1,15 +1,15 @@
 import { useEffect, useState } from 'react'
 
 /**
- * Two pages, one history entry each — a router, not a routing library.
+ * A few pages, one history entry each — a router, not a routing library.
  *
- * The application has three top-level views and no route parameters: which conversation is
+ * The application has four top-level views and no route parameters: which conversation is
  * open is state, not an address, because a conversation is chosen from the list beside it. A
  * dependency that solves nested routes, loaders and lazy segments would be answering questions
  * nobody here is asking. Spring's SpaForwardingController already makes a deep link to /usage
  * load the application.
  */
-export type Route = '/' | '/usage' | '/settings'
+export type Route = '/' | '/my-team' | '/usage' | '/settings'
 
 export function navigate(route: Route) {
   if (window.location.pathname !== route) {
@@ -33,5 +33,5 @@ export function useRoute(): Route {
 
 function current(): Route {
   const path = window.location.pathname
-  return path === '/usage' || path === '/settings' ? path : '/'
+  return path === '/my-team' || path === '/usage' || path === '/settings' ? path : '/'
 }

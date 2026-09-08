@@ -31,5 +31,7 @@ export default function App() {
     )
   }
 
-  return session ? <ChatView route={route} /> : <SignIn />
+  // A different account can arrive from another tab without an intervening sign-out. Reset
+  // account-owned state and abort its pending loads, but keep it on this user's token refresh.
+  return session ? <ChatView key={session.user.id} route={route} /> : <SignIn />
 }

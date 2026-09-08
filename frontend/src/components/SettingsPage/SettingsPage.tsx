@@ -111,9 +111,8 @@ export default function SettingsPage() {
       <form className={classes.form} onSubmit={save}>
         <TextInput
           label="FPL team id"
-          description={'Optional. Nothing uses it yet — it is stored so a later version can'
-            + ' answer questions about your own squad. Find it in the address of your points'
-            + ' page on fantasy.premierleague.com.'}
+          description={'Optional. Used by My team and by chat answers about your own squad.'
+            + ' Find it in the address of your points page on fantasy.premierleague.com.'}
           value={teamId}
           onChange={event => setTeamId(event.currentTarget.value.trim())}
           inputMode="numeric"
