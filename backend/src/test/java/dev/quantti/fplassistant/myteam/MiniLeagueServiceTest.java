@@ -68,6 +68,7 @@ class MiniLeagueServiceTest {
     private final Map<Integer, String> activeChips = new ConcurrentHashMap<>();
     private final Map<Integer, String> previousPicks = new ConcurrentHashMap<>();
     private int missingPreviousStatus = 404;
+    private int bootstrapStatus = 200;
 
     @BeforeEach
     void startStub() throws IOException {
@@ -76,7 +77,7 @@ class MiniLeagueServiceTest {
             String path = exchange.getRequestURI().getPath();
             requests.computeIfAbsent(path, ignored -> new AtomicInteger()).incrementAndGet();
             if (path.equals("/bootstrap-static/")) {
-                respond(exchange, 200, bootstrap());
+                respond(exchange, bootstrapStatus, bootstrapStatus == 200 ? bootstrap() : "{}");
             } else if (path.startsWith("/leagues-classic/")) {
                 respond(exchange, 200, standings(page(exchange)));
             } else if (path.endsWith("/history/")) {
@@ -325,6 +326,25 @@ class MiniLeagueServiceTest {
     }
 
     @Test
+    void aFailedBootstrapRefreshIsNotRetriedForTheContinuingComparison() {
+        currentEvent = 4;
+        activeChips.put(ENTRY, "freehit");
+        activeChips.put(2001, "freehit");
+        previousPicks.put(ENTRY, picks(null, 355, 44));
+        previousPicks.put(2001, picks(null, 17, 44));
+        MyTeamService myTeam = myTeamService(0);
+        myTeam.bootstrap(new FplBudget(1));
+        bootstrapStatus = 503;
+
+        String answer = miniLeagues(myTeam).opponents(USER, MINI_LEAGUE, "top1", budget());
+
+        assertThat(answer).contains(
+                "Gameweek 4 locked picks only - owns that the user does not: Haaland",
+                "Continuing squads - owns that the user does not: Sels");
+        assertThat(requests.get("/bootstrap-static/").get()).isEqualTo(2);
+    }
+
+    @Test
     void extraFreeHitFetchesStayWithinTheExistingTurnBudget() {
         currentEvent = 4;
         IntStream.rangeClosed(2001, 2011).forEach(entry -> {
@@ -387,8 +407,12 @@ class MiniLeagueServiceTest {
     }
 
     private MyTeamService myTeamService() {
+        return myTeamService(360);
+    }
+
+    private MyTeamService myTeamService(long bootstrapTtlMinutes) {
         return new MyTeamService(profiles, client(), new FplBootstrap(RestClient.builder(),
-                base() + "/bootstrap-static/", 360), enrichment, 5, 100);
+                base() + "/bootstrap-static/", bootstrapTtlMinutes), enrichment, 5, 100);
     }
 
     private FplEntryClient client() {
