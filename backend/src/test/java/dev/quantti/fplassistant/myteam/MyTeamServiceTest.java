@@ -166,6 +166,42 @@ class MyTeamServiceTest {
                 "FREE HIT squad", "Salah", "Continuing squad", "Wood (NFO, FWD)");
     }
 
+    /** FPL down or GW-1 picks missing must not silently render the FH squad as the real team. */
+    @Test
+    void aFreeHitWhosePreviousPicksAre404GetsAWarningNotAContinuingBlock() {
+        currentEvent = 4;
+        activeChip = "freehit";
+        previousPicks = null;   // the stub answers 404 for GW3
+        storeTeamId(ENTRY);
+        MyTeamService service = service();
+
+        String card = service.render(service.myTeam(USER, budget()));
+
+        assertThat(card)
+                .contains("FREE HIT squad for Gameweek 4")
+                .contains("returning squad could not be shown")
+                .contains("no picks for Gameweek 3")
+                .doesNotContain("Continuing squad (as locked");
+    }
+
+    /** There is no gameweek zero: a GW1 Free Hit must say so, not fetch. */
+    @Test
+    void aFreeHitInGameweekOneSaysThereIsNoEarlierSquad() {
+        currentEvent = 1;
+        activeChip = "freehit";
+        storeTeamId(ENTRY);
+        MyTeamService service = service();
+
+        String card = service.render(service.myTeam(USER, budget()));
+
+        assertThat(card)
+                .contains("FREE HIT squad for Gameweek 1")
+                .contains("no earlier squad");
+        assertThat(requests.keySet())
+                .as("no gameweek-zero fetch is attempted")
+                .noneMatch(path -> path.contains("/event/0/picks/"));
+    }
+
     /**
      * Chips answer for the <b>next deadline</b>, not for the gameweek being played. During GW1 a
      * manager can absolutely activate a wildcard — it is played on GW2, which is where FPL's own
