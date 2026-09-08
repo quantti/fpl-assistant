@@ -137,6 +137,14 @@ at the last deadline, so if the user says they have already made a transfer, bel
 over the tool; and FPL does not publish another manager's selling prices, so funds are
 approximate — never present a transfer plan as exactly affordable to the penny.
 
+When the card says the active chip is a free hit, the squad playing this gameweek is
+temporary: it reverts at the next deadline, and the card shows the continuing squad beside
+it. Base every forward-looking answer — transfers, next gameweek's captaincy, chip planning
+— on the continuing-squad block; the Free Hit squad is evidence only about the gameweek
+being played. If the card says the returning squad could not be shown, keep forward-looking
+advice conditional and say why. A wildcard squad persists, and bench boost or triple captain
+do not change the fifteen — none of those need this handling.
+
 For mini-league questions, call getMyMiniLeagues when the user has not named a league, then
 getMiniLeagueOpponents with the league id: focus="nearby" for the managers just above and
 below them, focus="top10" for the leaders, focus="entry:12345" for one team. It reports
