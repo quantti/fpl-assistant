@@ -83,7 +83,10 @@ public class MyTeamService {
     /**
      * The team that comes back once a Free Hit gameweek is over. Present only while one is
      * active. The previous deadline's picks are exactly the returning fifteen: transfers made
-     * inside the Free Hit window belong to the Free Hit team alone.
+     * inside the Free Hit window belong to the Free Hit team alone. That also requires gameweek
+     * N-1 to not itself have been a Free Hit, which holds only because FPL forbids playing a
+     * Free Hit in both GW19 and GW20 — the one point in the season two could otherwise fall back
+     * to back (~/dev/tapas-fpl-app/backend/FPL_RULES.md:95).
      */
     public sealed interface Continuing {
         record Squad(int event, LockedSquad locked, List<SquadPlayer> players)
@@ -210,15 +213,14 @@ public class MyTeamService {
                 continuing = new Continuing.Unknown(
                         "a Free Hit in Gameweek 1 has no earlier squad to return to");
             } else {
+                String noPreviousPicks = "FPL publishes no picks for Gameweek " + (event - 1);
                 switch (lockedSquad(entryId, event - 1, budget)) {
                     case FplEntryClient.Result.Ok<Optional<LockedSquad>>(Optional<LockedSquad> squad)
                             when squad.isPresent() -> previousSquad = squad.get();
                     case FplEntryClient.Result.Ok<Optional<LockedSquad>> ignored ->
-                            continuing = new Continuing.Unknown(
-                                    "FPL publishes no picks for Gameweek " + (event - 1));
+                            continuing = new Continuing.Unknown(noPreviousPicks);
                     case FplEntryClient.Result.NotFound<Optional<LockedSquad>> ignored ->
-                            continuing = new Continuing.Unknown(
-                                    "FPL publishes no picks for Gameweek " + (event - 1));
+                            continuing = new Continuing.Unknown(noPreviousPicks);
                     case FplEntryClient.Result.Unavailable<Optional<LockedSquad>> ignored ->
                             continuing = new Continuing.Unknown(
                                     "FPL could not be reached for it just now");
@@ -341,15 +343,17 @@ public class MyTeamService {
 
     private String renderSquad(Result.Squad squad) {
         StringBuilder out = new StringBuilder();
-        boolean freeHit = squad.continuing() != null;
+        boolean freeHit = "freehit".equals(squad.locked().activeChip());
+        boolean continuingShown = squad.continuing() instanceof Continuing.Squad;
         out.append(freeHit ? "FREE HIT squad for Gameweek " : "Squad as locked for Gameweek ")
                 .append(squad.event());
         squad.deadline().ifPresent(deadline ->
                 out.append(" (deadline ").append(UkTime.format(deadline, "unknown")).append(")"));
         out.append("; fetched ").append(UkTime.format(squad.fetchedAt(), "just now")).append(".\n");
         if (freeHit) {
-            out.append("This squad plays Gameweek ").append(squad.event())
-                    .append(" only - it reverts to the continuing squad below at the next deadline.\n");
+            out.append("This squad plays Gameweek ").append(squad.event()).append(" only - it reverts ")
+                    .append(continuingShown ? "to the continuing squad below at the next deadline.\n"
+                            : "at the next deadline.\n");
         }
         out.append("Team: ").append(squad.entry().teamName())
                 .append(" (entry ").append(squad.entry().id()).append(")");
@@ -365,9 +369,16 @@ public class MyTeamService {
         int bank = squad.locked().bank();
         int value = squad.locked().value();
         out.append("Bank ").append(money(bank)).append(", squad value ").append(money(value))
-                .append(", total ").append(money(bank + value))
-                .append(". FPL does not publish another manager's selling prices or free-transfer")
-                .append(" count, so treat available funds as approximate.\n");
+                .append(", total ").append(money(bank + value)).append(".");
+        if (freeHit) {
+            out.append(" These are the FREE HIT squad's funds and disappear when it reverts;")
+                    .append(continuingShown
+                            ? " the continuing squad's own bank is shown with that block below.\n"
+                            : " the continuing squad's own bank is not shown here.\n");
+        } else {
+            out.append(" FPL does not publish another manager's selling prices or free-transfer")
+                    .append(" count, so treat available funds as approximate.\n");
+        }
 
         out.append("Active chip: ")
                 .append(squad.locked().activeChip() == null ? "none"
@@ -401,7 +412,9 @@ public class MyTeamService {
                         .append(squad.event())
                         .append(". Transfers and all forward-looking advice apply to THIS squad, not")
                         .append(" the Free Hit one. Captain and bench order are Gameweek ").append(event)
-                        .append(" choices; only the fifteen players carry over. Bank then was ")
+                        .append(" choices; only the fifteen players carry over. Prices and")
+                        .append(" statistics on the lines below are today's, from the same source")
+                        .append(" as above. Bank then was ")
                         .append(money(previous.bank()))
                         .append(" (approximate - the Free Hit's transfers are undone when it")
                         .append(" reverts).\n");
