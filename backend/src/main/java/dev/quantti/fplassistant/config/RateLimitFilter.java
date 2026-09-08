@@ -34,8 +34,8 @@ public class RateLimitFilter extends OncePerRequestFilter {
      * buys, though — the limit below is a shared constant, not a number chosen for account
      * creation. It blunts a script; the invite code and the account cap are the actual gate.
      */
-    private static final java.util.Set<String> RATE_LIMITED_PATHS =
-            java.util.Set.of("/api/chat", "/api/profile/fpl-team-id", "/api/auth/signup");
+    private static final java.util.Set<String> RATE_LIMITED_PATHS = java.util.Set.of(
+            "/api/chat", "/api/my-team", "/api/profile/fpl-team-id", "/api/auth/signup");
 
     static final int MAX_REQUESTS_PER_MINUTE = 20;
     private static final long WINDOW_MS = 60_000;
