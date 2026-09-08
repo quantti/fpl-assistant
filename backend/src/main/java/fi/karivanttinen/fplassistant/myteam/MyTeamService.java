@@ -85,8 +85,8 @@ public class MyTeamService {
      * active. The previous deadline's picks are exactly the returning fifteen: transfers made
      * inside the Free Hit window belong to the Free Hit team alone. That also requires gameweek
      * N-1 to not itself have been a Free Hit, which holds only because FPL forbids playing a
-     * Free Hit in both GW19 and GW20 — the one point in the season two could otherwise fall back
-     * to back (~/dev/tapas-fpl-app/backend/FPL_RULES.md:95).
+     * Free Hit in both GW19 and GW20 — the one point in the season where two Free Hits could
+     * otherwise fall back-to-back (~/dev/tapas-fpl-app/backend/FPL_RULES.md:95).
      */
     public sealed interface Continuing {
         record Squad(int event, LockedSquad locked, List<SquadPlayer> players)
