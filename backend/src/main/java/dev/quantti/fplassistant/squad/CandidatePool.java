@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+import dev.quantti.fplassistant.tools.DailyPriceSource;
 import dev.quantti.fplassistant.tools.ExpectedPoints;
 import dev.quantti.fplassistant.tools.MetricSeasons;
 import dev.quantti.fplassistant.tools.SeasonBlend;
@@ -33,12 +34,14 @@ public class CandidatePool {
 
     private final JdbcTemplate jdbc;
     private final SeasonResolver seasonResolver;
+    private final DailyPriceSource daily;
     private final String dailyTable;
 
-    public CandidatePool(JdbcTemplate jdbc, SeasonResolver seasonResolver,
+    public CandidatePool(JdbcTemplate jdbc, SeasonResolver seasonResolver, DailyPriceSource daily,
                          @Value("${fpl.daily-price.table-name}") String dailyTable) {
         this.jdbc = jdbc;
         this.seasonResolver = seasonResolver;
+        this.daily = daily;
         this.dailyTable = dailyTable;
     }
 
@@ -54,14 +57,7 @@ public class CandidatePool {
     }
 
     public Optional<Capture> latestCapture() {
-        List<Map<String, Object>> rows = jdbc.queryForList(
-                "SELECT season, price_date FROM " + dailyTable + " ORDER BY price_date DESC LIMIT 1");
-        if (rows.isEmpty()) {
-            return Optional.empty();
-        }
-        Map<String, Object> row = rows.getFirst();
-        return Optional.of(new Capture((String) row.get("season"),
-                ((java.sql.Date) row.get("price_date")).toLocalDate()));
+        return daily.latestCapture().map(capture -> new Capture(capture.season(), capture.date()));
     }
 
     /**
@@ -88,13 +84,26 @@ public class CandidatePool {
         if (capture == null) {
             return List.of();
         }
+        // FPL reassigns element ids every season. They are the strongest key within one season,
+        // but across the changeover the same number names a different player and only an
+        // unambiguous name may bridge the capture to the completed season's metrics.
+        boolean sameSeason = capture.season().equals(metric.played().code());
+        String metricJoin = sameSeason
+                ? "c.player_id = pool.element_id"
+                : "c.k = LOWER(pool.web_name) AND c.unique_name AND pool.name_count = 1";
+
         List<Map<String, Object>> rows = jdbc.queryForList("""
-                WITH pool AS (
+                WITH whole_capture AS (
+                    -- Count names before availability filtering. An injured namesake is not a
+                    -- candidate, but still makes identity ambiguous and must block the bridge.
                     SELECT element_id, web_name, full_name, team_id, team_short, team_name,
                            element_type, now_cost, selected_by_percent, status, news,
                            COUNT(*) OVER (PARTITION BY LOWER(web_name)) AS name_count
                     FROM %s
-                    WHERE season = ? AND price_date = ? AND status IN ('a', 'd')
+                    WHERE season = ? AND price_date = ?
+                ),
+                pool AS (
+                    SELECT * FROM whole_capture WHERE status IN ('a', 'd')
                 ),
                 recent AS (
                     SELECT pfs.season_id, pfs.player_id, pfs.player_team_id, pfs.gameweek,
@@ -145,6 +154,15 @@ public class CandidatePool {
                            ) AS fixtures
                     FROM windowed w
                 ),
+                cur AS (
+                    -- The played season keyed for both possible joins. The weekly player row is
+                    -- needed only for the cross-season name bridge, so keep it a LEFT JOIN: same-
+                    -- season fixture metrics can exist before that row lands.
+                    SELECT w.*, LOWER(mp.web_name) AS k, %s AS unique_name
+                    FROM windowed w
+                    LEFT JOIN player mp ON mp.id = w.player_id AND mp.season_id = w.season_id
+                    WHERE w.season_id = ?
+                ),
                 prev AS (
                     SELECT LOWER(mp.web_name) AS k,
                            min(w.matches60) AS matches60, min(w.mins) AS mins,
@@ -171,16 +189,17 @@ public class CandidatePool {
                        pv.xgc_per_match AS prev_xgc_per_match,
                        pv.defcon_matches AS prev_defcon_matches, pv.defcon_avg AS prev_defcon_avg
                 FROM pool
-                LEFT JOIN windowed c ON c.season_id = ? AND c.player_id = pool.element_id
+                LEFT JOIN cur c ON %s
                 LEFT JOIN club_fixtures cc ON cc.season_id = c.season_id AND cc.player_id = c.player_id
                 LEFT JOIN prev pv ON pv.k = LOWER(pool.web_name) AND pool.name_count = 1
                 """.formatted(dailyTable, metric.windowLimit(),
-                        ExpectedPoints.WHOLE_SEASON, nameIsUnique("mp")),
+                        ExpectedPoints.WHOLE_SEASON, nameIsUnique("mp"), nameIsUnique("mp"),
+                        metricJoin),
                 capture.season(), capture.date(),
                 metric.played().seasonId(), metric.previousSeasonId(),
                 metric.played().seasonId(),
-                metric.previousSeasonId(),
-                metric.played().seasonId());
+                metric.played().seasonId(),
+                metric.previousSeasonId());
 
         List<SquadCandidate> candidates = new ArrayList<>();
         for (Map<String, Object> row : rows) {
