@@ -3529,3 +3529,53 @@ reader while retaining its public `Capture` API. Verification against the dispos
 the focused candidate/pick/squad/blend run passed 91 tests, and full `./gradlew cleanTest test`
 passed 664/664. The new regression first failed with swapped Okafor/Bramley minutes and an
 incorrectly admitted doubtful newcomer before the join fix.
+
+## My team is a read-only page (KAR-14, 2026-09-08)
+
+Signed-in users can now open `/my-team` from the app menu and see their published squad, bank,
+recorded squad value, captain and bench order, player market prices and availability, and chip
+availability without sending a chat message. Authenticated `GET /api/my-team` maps the existing
+`MyTeamService` result to a page-only DTO: the JWT alone selects the account, and manager legal
+name, leagues and unused statistical enrichment never cross the endpoint. It spends no message
+quota or LLM call, carries `Cache-Control: no-store`, and shares the existing 20/minute per-IP
+bucket because an uncached load does call FPL.
+
+Free Hit presentation follows the continuing-first decision. The squad restored at the Free Hit
+deadline and its own funds are the primary view; the temporary scoring fifteen and their funds
+stay in a native disclosure, closed by default. If the continuing squad cannot be reconstructed,
+the primary area says so and remains empty rather than substituting the Free Hit team. Captain and
+bench labels name the source gameweek, so previous-gameweek choices do not read as a new lineup
+recommendation.
+
+The page also keeps the limits visible: picks are the named locked-gameweek snapshot and omit
+post-deadline transfers; recorded bank/value are not recomputed from current market prices;
+selling prices and free-transfer counts are unavailable. `loadedAt` is labelled “Loaded”, not
+“FPL updated”: `MyTeamService` assembles it even from cache, bootstrap details may be six hours old,
+and a failed refresh may preserve an older player snapshot.
+
+Verification used only the disposable database and deterministic browser fixtures. The focused
+my-team/mini-league/rate-limit/SPA run passed, the full backend suite passed 682/682, frontend
+Vitest passed 27/27, and the production frontend build and contrast gate passed. Headless Chromium
+covered the deep link, menu and Back/Forward, save/change/remove in Settings, unchanged chat state,
+normal/Free Hit/unknown/error responses, retry and route/sign-out aborts, disclosure pointer and
+keyboard operation without another request, dark mode, and 390×844 plus 844×390 layouts with long
+content. No physical iOS or Android device was claimed.
+
+### Plan-conformance review — fixes applied (2026-09-08)
+
+A cross-tab account replacement exposed a missing reset: Supabase can replace signed-in user A
+with B without a signed-out render, so the unkeyed shell kept A's squad and disclosure state and
+could still publish A's pending response. `App` now keys the signed-in shell by `session.user.id`,
+clearing account-owned state and aborting its requests on a user change, but not on token refresh.
+The new key regression failed before the fix; browser fixtures verify both already-loaded and
+pending-request replacements, and that a same-user refresh neither resets nor refetches the page.
+
+The unstyled player lists now retain explicit list semantics for Safari. Two partial-state wording
+fixes keep the page honest when a Free Hit's continuing picks cannot be loaded: unknown chips no
+longer claim the squad is known, and the post-deadline transfer limitation is always visible.
+Controller tests also verify null player/deadline fields and absent continuing funds through the
+actual HTTP serializer, with a non-default request budget.
+
+After review: backend 683/683, frontend 33/33, production build and contrast gate passed. The
+headless Chromium fixture checks were rerun with cross-tab replacement and both sources unknown.
+Actual Safari/VoiceOver and physical-device checks remain unverified.

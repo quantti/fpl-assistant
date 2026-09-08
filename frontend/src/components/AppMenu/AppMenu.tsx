@@ -8,7 +8,7 @@ interface Props {
 }
 
 /**
- * Everything that is not the conversation: the usage page, the theme, and signing out.
+ * Everything that is not the conversation: My team, usage, settings, theme, and signing out.
  *
  * There is no "Sign in" item, and there cannot be: the menu lives inside the signed-in shell, so
  * anyone who can open it is already signed in.
@@ -27,6 +27,7 @@ export default function AppMenu({ route }: Props) {
         {route !== '/' && (
           <Menu.Item onClick={() => navigate('/')}>Back to chat</Menu.Item>
         )}
+        <Menu.Item onClick={() => navigate('/my-team')}>My team</Menu.Item>
         <Menu.Item onClick={() => navigate('/usage')}>Usage</Menu.Item>
         <Menu.Item onClick={() => navigate('/settings')}>Settings</Menu.Item>
         <Menu.Item onClick={() => setColorScheme(scheme === 'dark' ? 'light' : 'dark')}>
