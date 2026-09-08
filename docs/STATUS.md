@@ -3465,6 +3465,11 @@ Verified with three new `MyTeamServiceTest` cases (both blocks present and order
 the 404 case, and the gameweek-1 case asserting no previous-picks request is made) plus the full
 suite, 629/629.
 
-Left open: `getMiniLeagueOpponents` diffs an opponent's picks against their own history and has
-the same blind spot when an opponent is on a Free Hit — out of scope for this change, noted on
-the KAR-49 ticket for separate triage.
+Left open: `MiniLeagueService` has the same blind spot on both sides of the diff it renders, not
+just an opponent's. `opponents()` builds the user's own owned-element set via
+`ownedElements(entryId, event, budget)`, which reads the locked squad for `event` straight off
+`MyTeamService.lockedSquad` — the same `squadCache` entry `getMyTeam` populates with the Free Hit
+fifteen — so under an active Free Hit the "what each rival owns that you do not" comparison runs
+against a squad the user does not keep. The same call does the same thing for every opponent row,
+so a rival on a Free Hit is compared the same way. Out of scope for this change, noted on the
+KAR-49 ticket for separate triage.

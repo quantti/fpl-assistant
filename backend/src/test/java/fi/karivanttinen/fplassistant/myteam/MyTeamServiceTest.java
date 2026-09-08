@@ -161,7 +161,9 @@ class MyTeamServiceTest {
                 .contains("reverts to the continuing squad")
                 .contains("Continuing squad (as locked at the Gameweek 3 deadline)")
                 .contains("apply to THIS squad")
-                .contains("Bank then was GBP 0.5m");
+                .contains("Bank then was GBP 0.5m")
+                .contains("These are the FREE HIT squad's funds and disappear when it reverts")
+                .contains("the continuing squad's own bank is shown with that block below");
         assertThat(card).containsSubsequence(
                 "FREE HIT squad", "Salah", "Continuing squad", "Wood (NFO, FWD)");
     }
@@ -181,7 +183,9 @@ class MyTeamServiceTest {
                 .contains("FREE HIT squad for Gameweek 4")
                 .contains("returning squad could not be shown")
                 .contains("no picks for Gameweek 3")
-                .doesNotContain("Continuing squad (as locked");
+                .doesNotContain("Continuing squad (as locked")
+                .as("the card must not promise a block it does not deliver")
+                .doesNotContain("reverts to the continuing squad below");
     }
 
     /** There is no gameweek zero: a GW1 Free Hit must say so, not fetch. */
@@ -200,6 +204,51 @@ class MyTeamServiceTest {
         assertThat(requests.keySet())
                 .as("no gameweek-zero fetch is attempted")
                 .noneMatch(path -> path.contains("/event/0/picks/"));
+    }
+
+    /**
+     * A starved budget must refuse the previous-gameweek fetch honestly - not fall back to
+     * treating the Free Hit fifteen as the continuing squad. Entry, this gameweek's picks and
+     * bootstrap consume the three units before the GW3 fetch is attempted, so its refusal is the
+     * budget, not a 404 - {@code previousPicks} is left set to a body that would succeed if it
+     * were ever requested.
+     */
+    @Test
+    void aFreeHitWhoseReturningSquadFetchIsRefusedByBudgetGetsAWarning() {
+        currentEvent = 4;
+        activeChip = "freehit";
+        previousPicks = PREVIOUS_PICKS;
+        storeTeamId(ENTRY);
+        MyTeamService service = service();
+
+        String card = service.render(service.myTeam(USER, new FplBudget(3)));
+
+        assertThat(card)
+                .contains("FREE HIT squad for Gameweek 4")
+                .contains("returning squad could not be shown")
+                .contains("could not be reached")
+                .doesNotContain("Continuing squad (as locked");
+        assertThat(requests.keySet())
+                .as("the budget, not the network, is what stops the GW3 fetch")
+                .noneMatch(path -> path.contains("/event/3/picks/"));
+    }
+
+    /** A wildcard squad persists past its gameweek, so it needs none of the Free Hit handling. */
+    @Test
+    void aWildcardSquadGetsNoFreeHitHandling() {
+        currentEvent = 4;
+        activeChip = "wildcard";
+        storeTeamId(ENTRY);
+        MyTeamService service = service();
+
+        String card = service.render(service.myTeam(USER, budget()));
+
+        assertThat(card)
+                .doesNotContain("FREE HIT")
+                .doesNotContain("Continuing squad");
+        assertThat(requests.keySet())
+                .as("a wildcard squad persists, so the previous gameweek is never fetched")
+                .noneMatch(path -> path.contains("/event/3/picks/"));
     }
 
     /**
