@@ -89,6 +89,10 @@ public class MyTeamService {
         record Squad(int event, LockedSquad locked, List<SquadPlayer> players)
                 implements Continuing {
         }
+
+        /** A Free Hit is active but the returning squad could not be shown; the reason is rendered. */
+        record Unknown(String reason) implements Continuing {
+        }
     }
 
     private final UserProfileService profiles;
@@ -199,12 +203,26 @@ public class MyTeamService {
 
         // A Free Hit squad reverts at the next deadline, so the previous gameweek's picks — the
         // team that comes back — are fetched and rendered beside it. KAR-49.
+        Continuing continuing = null;
         LockedSquad previousSquad = null;
-        if ("freehit".equals(locked.activeChip()) && event > 1) {
-            if (lockedSquad(entryId, event - 1, budget)
-                    instanceof FplEntryClient.Result.Ok<Optional<LockedSquad>>(Optional<LockedSquad> squad)
-                    && squad.isPresent()) {
-                previousSquad = squad.get();
+        if ("freehit".equals(locked.activeChip())) {
+            if (event <= 1) {
+                continuing = new Continuing.Unknown(
+                        "a Free Hit in Gameweek 1 has no earlier squad to return to");
+            } else {
+                switch (lockedSquad(entryId, event - 1, budget)) {
+                    case FplEntryClient.Result.Ok<Optional<LockedSquad>>(Optional<LockedSquad> squad)
+                            when squad.isPresent() -> previousSquad = squad.get();
+                    case FplEntryClient.Result.Ok<Optional<LockedSquad>> ignored ->
+                            continuing = new Continuing.Unknown(
+                                    "FPL publishes no picks for Gameweek " + (event - 1));
+                    case FplEntryClient.Result.NotFound<Optional<LockedSquad>> ignored ->
+                            continuing = new Continuing.Unknown(
+                                    "FPL publishes no picks for Gameweek " + (event - 1));
+                    case FplEntryClient.Result.Unavailable<Optional<LockedSquad>> ignored ->
+                            continuing = new Continuing.Unknown(
+                                    "FPL could not be reached for it just now");
+                }
             }
         }
 
@@ -216,9 +234,10 @@ public class MyTeamService {
         SquadEnrichment.Enrichment depth = enrichment.forElements(elementIds);
 
         List<SquadPlayer> players = squadPlayers(locked, snapshot.get(), depth);
-        Continuing continuing = previousSquad == null ? null
-                : new Continuing.Squad(event - 1, previousSquad,
-                        squadPlayers(previousSquad, snapshot.get(), depth));
+        if (previousSquad != null) {
+            continuing = new Continuing.Squad(event - 1, previousSquad,
+                    squadPlayers(previousSquad, snapshot.get(), depth));
+        }
 
         // Chips are the one part of the card that may be missing without spoiling it, so a
         // spent budget or a failed call drops them rather than failing the answer.
@@ -374,16 +393,25 @@ public class MyTeamService {
 
         appendPicks(out, squad.players());
 
-        if (squad.continuing() instanceof Continuing.Squad(
-                int event, LockedSquad previous, List<SquadPlayer> players)) {
-            out.append("\nContinuing squad (as locked at the Gameweek ").append(event)
-                    .append(" deadline) - the team that returns after Gameweek ").append(squad.event())
-                    .append(". Transfers and all forward-looking advice apply to THIS squad, not the")
-                    .append(" Free Hit one. Captain and bench order are Gameweek ").append(event)
-                    .append(" choices; only the fifteen players carry over. Bank then was ")
-                    .append(money(previous.bank()))
-                    .append(" (approximate - the Free Hit's transfers are undone when it reverts).\n");
-            appendPicks(out, players);
+        switch (squad.continuing()) {
+            case null -> { }
+            case Continuing.Squad(int event, LockedSquad previous, List<SquadPlayer> players) -> {
+                out.append("\nContinuing squad (as locked at the Gameweek ").append(event)
+                        .append(" deadline) - the team that returns after Gameweek ")
+                        .append(squad.event())
+                        .append(". Transfers and all forward-looking advice apply to THIS squad, not")
+                        .append(" the Free Hit one. Captain and bench order are Gameweek ").append(event)
+                        .append(" choices; only the fifteen players carry over. Bank then was ")
+                        .append(money(previous.bank()))
+                        .append(" (approximate - the Free Hit's transfers are undone when it")
+                        .append(" reverts).\n");
+                appendPicks(out, players);
+            }
+            case Continuing.Unknown(String reason) ->
+                    out.append("\nA Free Hit is active, so this squad reverts at the next deadline,")
+                            .append(" but the returning squad could not be shown: ").append(reason)
+                            .append(". Base transfers and forward-looking advice on the squad that")
+                            .append(" returns, and say its exact makeup could not be verified.\n");
         }
         return out.toString();
     }
