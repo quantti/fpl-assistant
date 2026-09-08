@@ -3,7 +3,7 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development
 > (recommended) or superpowers:executing-plans to implement this plan task-by-task.
 
-**PROGRESS:** Task 0/4 done
+**PROGRESS:** Task 3/4 done
 
 **Goal:** When a Free Hit is the active chip, `getMyTeam` shows the continuing squad (the team
 that returns after the gameweek) beside the one-week Free Hit squad, and the system prompt bases
@@ -579,14 +579,29 @@ git commit -m "feat: ground forward-looking advice on the continuing squad"
 ### Task 4: STATUS entry, branch push, PR
 
 **Files:**
-- Modify: `docs/STATUS.md` (add a dated entry at the top of the log, matching the existing
-  entry format in that file — read it first)
+- Modify: `docs/STATUS.md` — **append** a new section at the very END of the file.
 
-**Step 1: Write the STATUS entry.** 3-6 lines under a `2026-09-XX` heading in the file's
-existing style: KAR-49 fixed — `getMyTeam` now shows the continuing squad beside an active
-Free Hit and the prompt bases forward-looking advice on it; note that
-`getMiniLeagueOpponents` still diffs an opponent's FH squad as if it persisted (same blind
-spot, out of scope here, tracked in the KAR-49 ticket's closing note).
+> Corrected during execution: an earlier draft of this task said "add a dated entry at the top
+> of the log" in "3-6 lines". Both were wrong. `docs/STATUS.md` is a ~3400-line append-only log
+> whose opening lines are a Phase 1 header block; entries are appended at the end as
+> `## <what changed> (KAR-n, YYYY-MM-DD)` sections of roughly 15-30 lines of prose. See
+> `## Pick tools read the daily capture (KAR-32, 2026-09-02)` and
+> `## Gameweeks and fixtures captured from FPL (KAR-10, 2026-09-02)` for the register.
+
+**Step 1: Write the STATUS entry.** Append at the end of the file under a heading of the house
+form `## <what changed> (KAR-49, 2026-09-08)`, in prose matching the surrounding entries:
+
+- what the change does now — `getMyTeam` renders the Free Hit squad labelled one-week-only
+  beside a "Continuing squad" block built from the previous deadline's picks (exactly the
+  returning fifteen, because transfers made inside the Free Hit window belong to the Free Hit
+  team alone), and the system prompt bases transfers, next-gameweek captaincy and chip planning
+  on the continuing block;
+- the decisions worth recording — why the previous gameweek's picks are the right source; why
+  the unfetchable cases (Free Hit in GW1, a 404, FPL unreachable) render a labelled warning
+  rather than falling back silently; why wildcard, bench boost and triple captain need no such
+  handling;
+- the follow-up left open — `getMiniLeagueOpponents` diffs an opponent's Free Hit squad with the
+  same blind spot, out of scope here and noted in the KAR-49 ticket.
 
 **Step 2: Commit.**
 

@@ -3422,3 +3422,49 @@ stop when idle instead of running 24/7, and the first request pays a JVM cold st
 seconds on 512MB). This reverses the 2026-08-18 always-on decision for production, which was
 made for the frontend-vs-prod dev loop; the revert values are in the `fly.toml` comment. The
 production setting takes effect on the next master deploy.
+
+## getMyTeam separates the Free Hit squad from the continuing one (KAR-49, 2026-09-08)
+
+A Free Hit chip gives unlimited transfers for one gameweek, after which the manager's previous
+squad returns — but FPL's `/entry/{id}/event/{gw}/picks/` keeps serving the Free Hit fifteen
+until the *next* deadline passes. `getMyTeam` was reading that endpoint at face value, so for a
+whole week every forward-looking answer — transfers, next-gameweek captaincy, chip planning —
+was built on players the manager does not keep. The signal was already in the reply
+(`FplEntryClient` parses `active_chip`, and the card printed `Active chip: free hit`); nothing
+acted on it.
+
+`MyTeamService.myTeam()` now checks the locked squad's active chip, and when it is `freehit`
+also fetches gameweek `N-1`'s picks through the existing cached `lockedSquad(entryId, event - 1,
+budget)` path — the same call the tool already makes for any other gameweek, so it costs one
+more unit of the per-turn FPL budget and lands in the same `squadCache` keyed `entryId@event`.
+Those picks are exactly the returning squad: transfers made inside the Free Hit window belong to
+the Free Hit team alone and never touch the saved squad underneath. The reply now carries two
+labelled blocks — `FREE HIT squad for Gameweek N`, with a sentence that it plays that gameweek
+only, and `Continuing squad (as locked at the Gameweek N deadline)` — both enriched through one
+`enrichment.forElements()` call over the union of their element ids, sharing the `squadPlayers`
+and `appendPicks` helpers that used to serve only the single block.
+
+Three cases can't produce a continuing squad: a Free Hit in gameweek 1 (no earlier squad exists,
+and the tool does not attempt the fetch — guarded on `currentEvent > 1` so no test can hit a
+nonsensical `/event/0/picks/` route), FPL publishing no picks for the previous gameweek, and FPL
+being unreachable. The first cut of this fix left those to fall back silently to the old
+single-block card — the original bug, just narrowed to three cases instead of every Free Hit
+week. A `Continuing` sealed interface now has two variants, `Known` and `Unknown(String
+reason)`; `Unknown` renders a warning containing `returning squad could not be shown` plus the
+reason instead of a second block, so the gap is visible rather than silently reintroduced.
+Wildcard, bench boost and triple captain need none of this: a wildcard squad persists past its
+gameweek, and the other two chips don't change the fifteen at all.
+
+The system prompt (`## The user's own team`) now tells the model a Free Hit squad is temporary
+evidence about the gameweek being played only, that transfers/captaincy/chip planning must be
+grounded on the continuing block, and that when the card reports the returning squad could not
+be shown it should keep advice conditional and say why rather than defaulting to the Free Hit
+fifteen. `MyTeamTools`' `@Tool` description was updated to mention the two-squad reply.
+
+Verified with three new `MyTeamServiceTest` cases (both blocks present and ordered correctly,
+the 404 case, and the gameweek-1 case asserting no previous-picks request is made) plus the full
+suite, 629/629.
+
+Left open: `getMiniLeagueOpponents` diffs an opponent's picks against their own history and has
+the same blind spot when an opponent is on a Free Hit — out of scope for this change, noted on
+the KAR-49 ticket for separate triage.
