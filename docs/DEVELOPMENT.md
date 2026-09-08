@@ -353,6 +353,13 @@ grep -oE "Caused by: [^<]{0,200}" build/test-results/test/TEST-<fqcn>.xml
 chat time — a documented exception to "external APIs only at sync time", because a squad is per
 user and per gameweek. Nothing is stored: the caches are in-process TTL maps.
 
+The read-only page at `/my-team` uses authenticated `GET /api/my-team` and the same
+`MyTeamService`, caches and FPL timeouts. The endpoint takes no account or team parameter: the
+verified JWT selects the user and their stored FPL entry. It does not call the LLM or usage
+accounting, but it does share the 20/minute per-IP limit because an uncached page load spends FPL
+requests. Browser/shared caching is disabled with `Cache-Control: no-store`; that does not disable
+the service's in-process caches.
+
 Two things about the numbers surprise people:
 
 - **`bank` and `value` are in 0.1m units** (`1003` = £100.3m), and `value` excludes the bank.
@@ -362,7 +369,10 @@ Two things about the numbers surprise people:
 
 The squad is the one **locked at the last deadline** — FPL serves picks only for a gameweek whose
 deadline has passed, so a transfer made since is invisible. That is normal for most of the week,
-not a bug.
+not a bug. During a Free Hit the page makes the restored continuing squad primary and keeps the
+temporary scoring squad in a closed disclosure. If the continuing picks cannot be reconstructed,
+the primary area stays explicitly unavailable; it never substitutes the Free Hit fifteen or their
+funds.
 
 Configuration lives under `fpl.myteam` in `application.yml`: the four FPL URLs, the cache TTLs,
 `max-requests-per-turn` (15) and `max-opponents` (10). The per-turn budget is created in

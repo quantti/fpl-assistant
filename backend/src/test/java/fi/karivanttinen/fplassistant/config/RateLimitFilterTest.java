@@ -2,6 +2,7 @@ package fi.karivanttinen.fplassistant.config;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.mock.web.MockHttpServletResponse;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -69,5 +70,28 @@ class RateLimitFilterTest {
         }
         assertThat(filter.allow("1.2.3.4", now)).isFalse();
         assertThat(filter.allow("1.2.3.4", now + 60_001)).isTrue();
+    }
+
+    /** The page spends FPL calls, so it shares the existing outbound-cost bucket with chat. */
+    @Test
+    void myTeamAndChatShareOneBucket() throws Exception {
+        RateLimitFilter filter = new RateLimitFilter();
+        String ip = "198.51.100.44";
+
+        for (int i = 0; i < RateLimitFilter.MAX_REQUESTS_PER_MINUTE - 1; i++) {
+            assertThat(filter("/api/chat", ip, filter)).isEqualTo(204);
+        }
+        assertThat(filter("/api/my-team", ip, filter)).isEqualTo(204);
+        assertThat(filter("/api/chat", ip, filter)).isEqualTo(429);
+    }
+
+    private static int filter(String path, String ip, RateLimitFilter filter) throws Exception {
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", path);
+        request.addHeader("Fly-Client-IP", ip);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        filter.doFilterInternal(request, response,
+                (ignoredRequest, servletResponse) ->
+                        ((jakarta.servlet.http.HttpServletResponse) servletResponse).setStatus(204));
+        return response.getStatus();
     }
 }

@@ -48,6 +48,20 @@ class SpaForwardingTest {
                 .andExpect(forwardedUrl("/index.html"));
     }
 
+    @Test
+    void theMyTeamDeepLinkLoadsTheApplication() throws Exception {
+        mockMvc.perform(get("/my-team"))
+                .andExpect(status().isOk())
+                .andExpect(forwardedUrl("/index.html"));
+    }
+
+    @Test
+    void theMyTeamApiIsNeverForwardedToTheApplication() throws Exception {
+        mockMvc.perform(get("/api/my-team").header("Fly-Client-IP", "192.0.2.201"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(forwardedUrl(null));
+    }
+
     /**
      * A missing asset must 404 rather than answer with the index page under a JavaScript content
      * type — the browser would then report a syntax error instead of a missing file.

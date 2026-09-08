@@ -7,6 +7,7 @@ import AppMenu from '../AppMenu/AppMenu'
 import ConversationSidebar from '../ConversationSidebar/ConversationSidebar'
 import MessageThread from '../MessageThread/MessageThread'
 import MessageInput from '../MessageInput/MessageInput'
+import MyTeamPage from '../MyTeamPage/MyTeamPage'
 import SettingsPage from '../SettingsPage/SettingsPage'
 import UsagePage from '../UsagePage/UsagePage'
 import classes from './ChatView.module.css'
@@ -116,7 +117,9 @@ export default function ChatView({ route }: Props) {
           </div>
           <AppMenu route={route} />
         </div>
-        {route === '/usage' ? (
+        {route === '/my-team' ? (
+          <MyTeamPage />
+        ) : route === '/usage' ? (
           <UsagePage />
         ) : route === '/settings' ? (
           <SettingsPage />

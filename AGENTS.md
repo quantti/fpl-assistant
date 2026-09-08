@@ -79,11 +79,14 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
 - **The my-team tools (`getMyTeam`, `getMyMiniLeagues`, `getMiniLeagueOpponents`) are a third
   documented chat-time exception to "external APIs only at sync time"**, alongside
   `FplEntryLookup`: a manager's squad is per user and per gameweek, so there is nothing to
-  pre-sync. They also fetch `bootstrap-static` (cached app-wide for six hours) because it is the
+  pre-sync. The authenticated `GET /api/my-team` page endpoint reuses `MyTeamService` under the
+  same on-demand exception; its account comes only from the JWT, it uses a fresh bounded
+  `FplBudget`, and its response is `no-store`. It never calls the LLM or spends message quota.
+  These reads also fetch `bootstrap-static` (cached app-wide for six hours) because it is the
   only source certain to be on the same season as the `element` ids in a manager's picks — FPL
   renumbers every player every season, so filling a squad from an unsynced database names
   *different players*. Supabase adds fixture difficulty and xG/xA only while `SeasonResolver`
-  names the season being played. Their provenance is two lines, not one: the squad block states
+  names the season being played. The tools' provenance is two lines, not one: the squad block states
   the gameweek it was locked for and when it was fetched, and the statistics block carries
   `SeasonContext.provenance()`. Do not fold them into the single-banner convention.
 - **`SquadTools.buildSquad` is a fourth documented two-line-provenance exception**, alongside
