@@ -3445,11 +3445,11 @@ only, and `Continuing squad (as locked at the Gameweek N deadline)` — both enr
 and `appendPicks` helpers that used to serve only the single block.
 
 Three cases can't produce a continuing squad: a Free Hit in gameweek 1 (no earlier squad exists,
-and the tool does not attempt the fetch — guarded on `currentEvent > 1` so no test can hit a
+and the tool does not attempt the fetch — guarded on `event <= 1` so no test can hit a
 nonsensical `/event/0/picks/` route), FPL publishing no picks for the previous gameweek, and FPL
 being unreachable. The first cut of this fix left those to fall back silently to the old
 single-block card — the original bug, just narrowed to three cases instead of every Free Hit
-week. A `Continuing` sealed interface now has two variants, `Known` and `Unknown(String
+week. A `Continuing` sealed interface now has two variants, `Squad` and `Unknown(String
 reason)`; `Unknown` renders a warning containing `returning squad could not be shown` plus the
 reason instead of a second block, so the gap is visible rather than silently reintroduced.
 Wildcard, bench boost and triple captain need none of this: a wildcard squad persists past its

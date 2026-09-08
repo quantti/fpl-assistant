@@ -3,7 +3,7 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development
 > (recommended) or superpowers:executing-plans to implement this plan task-by-task.
 
-**PROGRESS:** Task 3/4 done
+**PROGRESS:** Task 4/4 done
 
 **Goal:** When a Free Hit is the active chip, `getMyTeam` shows the continuing squad (the team
 that returns after the gameweek) beside the one-week Free Hit squad, and the system prompt bases
