@@ -57,11 +57,14 @@ public class MyTeamService {
          * @param event the gameweek the squad was locked for
          * @param chipEvent the gameweek the chip list answers for — the next deadline, since
          *        that is what a chip activated now would be played on
+         * @param continuing the squad restored at a Free Hit gameweek's deadline; null when no
+         *        Free Hit was played
          */
         record Squad(EntrySummary entry, int event, Optional<Instant> deadline, LockedSquad locked,
                      List<SquadPlayer> players, int chipEvent, List<String> playableChips,
                      List<String> chipsOpeningLater, Integer chipsOpenAt, boolean chipsKnown,
-                     SquadEnrichment.Enrichment enrichment, Instant fetchedAt) implements Result {
+                     SquadEnrichment.Enrichment enrichment, Continuing continuing,
+                     Instant fetchedAt) implements Result {
         }
 
         record NoTeamId() implements Result { }
@@ -75,6 +78,25 @@ public class MyTeamService {
     }
 
     public record SquadPlayer(Pick pick, FplBootstrap.Element element, SquadEnrichment.Depth depth) {
+    }
+
+    /**
+     * The team restored for transfers at a Free Hit gameweek's deadline. Present only when one
+     * was played for the locked gameweek. The previous deadline's picks are exactly the restored
+     * fifteen: transfers made inside the Free Hit window belong to the Free Hit team alone. That
+     * also requires gameweek N-1 to not itself have been a Free Hit, which holds only because FPL
+     * forbids playing a Free Hit in both GW19 and GW20 — the one point in the season where two
+     * Free Hits could otherwise fall back-to-back
+     * (~/dev/upstream-stats-app/backend/FPL_RULES.md:95).
+     */
+    public sealed interface Continuing {
+        record Squad(int event, LockedSquad locked, List<SquadPlayer> players)
+                implements Continuing {
+        }
+
+        /** A Free Hit was played but the continuing squad could not be reconstructed. */
+        record Unknown(String reason) implements Continuing {
+        }
     }
 
     private final UserProfileService profiles;
@@ -183,14 +205,42 @@ public class MyTeamService {
             return new Result.Unavailable();
         }
 
-        Set<Integer> elementIds = locked.picks().stream().map(Pick::element)
-                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+        // At a Free Hit gameweek's deadline, FPL locks the temporary picks for scoring and
+        // restores the previous squad for transfers. Fetch those previous-gameweek picks and
+        // render both. KAR-49.
+        Continuing continuing = null;
+        LockedSquad previousSquad = null;
+        if ("freehit".equals(locked.activeChip())) {
+            if (event <= 1) {
+                continuing = new Continuing.Unknown(
+                        "a Free Hit in Gameweek 1 has no earlier squad to return to");
+            } else {
+                String noPreviousPicks = "FPL publishes no picks for Gameweek " + (event - 1);
+                switch (lockedSquad(entryId, event - 1, budget)) {
+                    case FplEntryClient.Result.Ok<Optional<LockedSquad>>(Optional<LockedSquad> squad)
+                            when squad.isPresent() -> previousSquad = squad.get();
+                    case FplEntryClient.Result.Ok<Optional<LockedSquad>> ignored ->
+                            continuing = new Continuing.Unknown(noPreviousPicks);
+                    case FplEntryClient.Result.NotFound<Optional<LockedSquad>> ignored ->
+                            continuing = new Continuing.Unknown(noPreviousPicks);
+                    case FplEntryClient.Result.Unavailable<Optional<LockedSquad>> ignored ->
+                            continuing = new Continuing.Unknown(
+                                    "FPL could not be reached for it just now");
+                }
+            }
+        }
+
+        Set<Integer> elementIds = new LinkedHashSet<>();
+        locked.picks().forEach(pick -> elementIds.add(pick.element()));
+        if (previousSquad != null) {
+            previousSquad.picks().forEach(pick -> elementIds.add(pick.element()));
+        }
         SquadEnrichment.Enrichment depth = enrichment.forElements(elementIds);
 
-        List<SquadPlayer> players = new ArrayList<>();
-        for (Pick pick : locked.picks().stream().sorted(Comparator.comparingInt(Pick::position)).toList()) {
-            FplBootstrap.Element element = snapshot.get().element(pick.element()).orElse(null);
-            players.add(new SquadPlayer(pick, element, depth.of(pick.element())));
+        List<SquadPlayer> players = squadPlayers(locked, snapshot.get(), depth);
+        if (previousSquad != null) {
+            continuing = new Continuing.Squad(event - 1, previousSquad,
+                    squadPlayers(previousSquad, snapshot.get(), depth));
         }
 
         // Chips are the one part of the card that may be missing without spoiling it, so a
@@ -209,7 +259,7 @@ public class MyTeamService {
 
         return new Result.Squad(summary, event, snapshot.get().deadline(event), locked, players,
                 chipEvent, chips.playable(), chips.openingLater(), chips.opensAt(), chips.known(),
-                depth, Instant.now());
+                depth, continuing, Instant.now());
     }
 
     private record Chips(List<String> playable, List<String> openingLater, Integer opensAt,
@@ -261,6 +311,17 @@ public class MyTeamService {
         return new Chips(playable, openingLater, openingLater.isEmpty() ? null : opensAt, true);
     }
 
+    private static List<SquadPlayer> squadPlayers(LockedSquad squad, FplBootstrap.Snapshot snapshot,
+                                                  SquadEnrichment.Enrichment depth) {
+        List<SquadPlayer> players = new ArrayList<>();
+        for (Pick pick : squad.picks().stream()
+                .sorted(Comparator.comparingInt(Pick::position)).toList()) {
+            players.add(new SquadPlayer(pick, snapshot.element(pick.element()).orElse(null),
+                    depth.of(pick.element())));
+        }
+        return players;
+    }
+
     // ---------------------------------------------------------------- rendering
 
     public String render(Result result) {
@@ -284,10 +345,25 @@ public class MyTeamService {
 
     private String renderSquad(Result.Squad squad) {
         StringBuilder out = new StringBuilder();
-        out.append("Squad as locked for Gameweek ").append(squad.event());
+        boolean freeHit = "freehit".equals(squad.locked().activeChip());
+        boolean continuingShown = squad.continuing() instanceof Continuing.Squad;
+        out.append(freeHit ? "FREE HIT squad for Gameweek " : "Squad as locked for Gameweek ")
+                .append(squad.event());
         squad.deadline().ifPresent(deadline ->
                 out.append(" (deadline ").append(UkTime.format(deadline, "unknown")).append(")"));
         out.append("; fetched ").append(UkTime.format(squad.fetchedAt(), "just now")).append(".\n");
+        if (freeHit) {
+            out.append("These picks score in Gameweek ").append(squad.event())
+                    .append(" only and do not carry forward.");
+            if (continuingShown) {
+                out.append(" At the Gameweek ").append(squad.event())
+                        .append(" deadline, FPL restored the continuing squad used for transfers")
+                        .append(" and future Gameweeks; it is shown below.\n");
+            } else {
+                out.append(" The squad used for transfers and future Gameweeks could not be")
+                        .append(" reconstructed here.\n");
+            }
+        }
         out.append("Team: ").append(squad.entry().teamName())
                 .append(" (entry ").append(squad.entry().id()).append(")");
         if (squad.entry().overallRank() != null) {
@@ -302,9 +378,16 @@ public class MyTeamService {
         int bank = squad.locked().bank();
         int value = squad.locked().value();
         out.append("Bank ").append(money(bank)).append(", squad value ").append(money(value))
-                .append(", total ").append(money(bank + value))
-                .append(". FPL does not publish another manager's selling prices or free-transfer")
-                .append(" count, so treat available funds as approximate.\n");
+                .append(", total ").append(money(bank + value)).append(".");
+        if (freeHit) {
+            out.append(" These were the FREE HIT squad's funds and did not carry forward;")
+                    .append(continuingShown
+                            ? " the continuing squad's bank is shown with that block below.\n"
+                            : " the continuing squad's bank could not be shown here.\n");
+        } else {
+            out.append(" FPL does not publish another manager's selling prices or free-transfer")
+                    .append(" count, so treat available funds as approximate.\n");
+        }
 
         out.append("Active chip: ")
                 .append(squad.locked().activeChip() == null ? "none"
@@ -328,14 +411,42 @@ public class MyTeamService {
                         + " database has not been loaded with " + squad.enrichment().season().currentSeasonCode()
                         + " data.").append("\n");
 
+        appendPicks(out, squad.players());
+
+        switch (squad.continuing()) {
+            case null -> { }
+            case Continuing.Squad(int event, LockedSquad previous, List<SquadPlayer> players) -> {
+                out.append("\nContinuing squad (restored for transfers at the Gameweek ")
+                        .append(squad.event()).append(" deadline from the Gameweek ").append(event)
+                        .append(" picks). Transfers and all forward-looking advice apply to THIS")
+                        .append(" squad, not the Free Hit one. Captain and bench order shown are")
+                        .append(" Gameweek ").append(event)
+                        .append(" choices; only the fifteen players were restored. Prices and")
+                        .append(" statistics on the lines below are today's, from the same source")
+                        .append(" as above. Restored bank was ").append(money(previous.bank()))
+                        .append(" (approximate - transfers made since the Free Hit deadline are")
+                        .append(" not visible).\n");
+                appendPicks(out, players);
+            }
+            case Continuing.Unknown(String reason) ->
+                    out.append("\nA Free Hit was played for Gameweek ").append(squad.event())
+                            .append(", so the picks above do not carry forward, but the squad used")
+                            .append(" for transfers and future Gameweeks could not be shown: ")
+                            .append(reason)
+                            .append(". Keep transfers and forward-looking advice conditional, and")
+                            .append(" say its exact makeup could not be verified.\n");
+        }
+        return out.toString();
+    }
+
+    private static void appendPicks(StringBuilder out, List<SquadPlayer> players) {
         out.append("Starting XI\n");
-        squad.players().stream().filter(player -> player.pick().starting())
+        players.stream().filter(player -> player.pick().starting())
                 .forEach(player -> out.append(line(player)));
         out.append("Bench\n");
-        squad.players().stream().filter(player -> !player.pick().starting())
+        players.stream().filter(player -> !player.pick().starting())
                 .forEach(player -> out.append(line(player)));
-
-        String flagged = squad.players().stream()
+        String flagged = players.stream()
                 .filter(player -> player.element() != null && player.element().availability() != null)
                 .map(player -> player.element().webName() + " (" + player.element().teamShort()
                         + ") - " + player.element().availability())
@@ -343,7 +454,6 @@ public class MyTeamService {
         if (flagged != null) {
             out.append("Flagged: ").append(flagged).append("\n");
         }
-        return out.toString();
     }
 
     private static String line(SquadPlayer player) {
