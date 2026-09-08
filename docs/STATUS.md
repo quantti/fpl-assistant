@@ -3506,3 +3506,26 @@ Verified: 25 added `MiniLeagueServiceTest` cases cover either/both Free Hits in 
 failed bootstrap refresh without an immediate retry, and wildcard/bench boost/triple captain as
 negative cases. Full `./gradlew cleanTest test`: 656 tests passed against the disposable local
 database.
+
+## Candidate metrics are safe across the season changeover (KAR-45, 2026-09-08)
+
+`CandidatePool` used to attach the resolved completed season's metrics to the daily capture by
+`element_id` even when that capture had already moved to the new season. FPL reassigns those ids
+every summer, so a new player could inherit an unrelated player's minutes and underlying numbers.
+The pool now uses ids only when the capture and metric season agree; across seasons it joins on a
+case-insensitive `web_name` that is unique on both sides. The club-fixture denominator remains
+keyed to the metric row that actually matched, never to the capture's reassigned player or team id.
+
+Both ambiguity checks see their complete populations. Capture-side name counts run before
+availability filtering, so an injured namesake cannot make a fit player look unique; metric-side
+uniqueness checks every `player` row in that season, including a namesake with no fixture stats.
+A missing or ambiguous match never removes a fit purchasable player: it remains a `BODY` with no
+metrics, while a doubtful player with no rankable record stays excluded. Same-season joins still
+use ids, and a `LEFT JOIN` to the weekly player table preserves fixture metrics that arrive before
+the corresponding weekly player row.
+
+`CandidatePool.latestCapture()` now delegates to the shared `DailyPriceSource.latestCapture()`
+reader while retaining its public `Capture` API. Verification against the disposable database:
+the focused candidate/pick/squad/blend run passed 91 tests, and full `./gradlew cleanTest test`
+passed 664/664. The new regression first failed with swapped Okafor/Bramley minutes and an
+incorrectly admitted doubtful newcomer before the join fix.
