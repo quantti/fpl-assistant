@@ -335,8 +335,10 @@ class PickToolsRankingTest {
         HorizonFixtures.ClubWindow unrated = window(2, 2, null);
         assertThat(unrated.count()).isEqualTo(2);
         assertThat(unrated.averageDifficulty()).isEmpty();
-        Map<String, Object> rated = pick("Rated", 1, 1, 3.0);
-        Map<String, Object> unknownFdr = pick("UnknownFdr", 2, 2, 3.0);
+        // UnknownFdr holds the lower element id, so the id tie-break alone would put it first:
+        // only the FDR comparator can produce the order asserted below.
+        Map<String, Object> rated = pick("Rated", 2, 1, 3.0);
+        Map<String, Object> unknownFdr = pick("UnknownFdr", 1, 2, 3.0);
 
         List<Map<String, Object>> ranked = PickTools.rank(List.of(unknownFdr, rated),
                 windows(window(1, 5, 5), unrated), true, 0.0);
