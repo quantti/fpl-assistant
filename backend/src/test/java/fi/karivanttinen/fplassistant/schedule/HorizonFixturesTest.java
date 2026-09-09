@@ -223,7 +223,7 @@ class HorizonFixturesTest {
         int underway = fixtureFor(seeded, club, 5);
         int opponent = opponentOf(seeded, underway, club);
         ScheduleSource.View view = view(CAPTURED,
-                played(seeded, underway, AS_OF.plus(200, ChronoUnit.DAYS)));
+                played(seeded, underway, AS_OF.plus(200, ChronoUnit.DAYS), true));
 
         HorizonFixtures.Result result = HorizonFixtures.derive(view, AS_OF, SEASON, 5);
 
@@ -237,6 +237,34 @@ class HorizonFixturesTest {
         assertThat(result.club(opponent).count()).isEqualTo(4);
     }
 
+    /**
+     * The ordinary state of a match that has kicked off and has not been finalised yet: started
+     * without finished. It is played all the same, so it is neither counted nor a reason to call
+     * the club unknown, and the window does not stretch to make room for it.
+     */
+    @Test
+    void aKickedOffFixtureIsIgnoredBeforeFplMarksItFinished() {
+        int club = RankingSeed.team(7);
+        List<ScheduleSource.FixtureRow> seeded = RankingSeed.fixtures(CAPTURED, FIRST_DEADLINE);
+        int underway = fixtureFor(seeded, club, 5);
+        int opponent = opponentOf(seeded, underway, club);
+        ScheduleSource.View view = view(CAPTURED,
+                played(seeded, underway, AS_OF.plus(200, ChronoUnit.DAYS), false));
+
+        HorizonFixtures.Result result = HorizonFixtures.derive(view, AS_OF, SEASON, 5);
+
+        assertThat(result.startGameweek()).isEqualTo(4);
+        assertThat(result.endGameweek()).isEqualTo(8);
+        assertThat(result.club(club).known()).isTrue();
+        assertThat(result.club(club).count()).isEqualTo(4);
+        assertThat(result.club(club).fixtures()).extracting(HorizonFixtures.Fixture::gameweek)
+                .containsExactly(4, 6, 7, 8);
+        assertThat(result.club(club).fixtures()).extracting(HorizonFixtures.Fixture::id)
+                .doesNotContain(underway);
+        assertThat(result.club(opponent).known()).isTrue();
+        assertThat(result.club(opponent).count()).isEqualTo(4);
+    }
+
     /** Rule 1 before rule 2: a played fixture is out of the reckoning, gameweek or no gameweek. */
     @Test
     void aPlayedFixtureWithNoGameweekIsIgnoredRatherThanUnknown() {
@@ -244,7 +272,8 @@ class HorizonFixturesTest {
         List<ScheduleSource.FixtureRow> seeded = RankingSeed.fixtures(CAPTURED, FIRST_DEADLINE);
         int withdrawn = fixtureFor(seeded, club, 6);
         ScheduleSource.View view = view(CAPTURED,
-                unassigned(played(seeded, withdrawn, AS_OF.plus(200, ChronoUnit.DAYS)), withdrawn));
+                unassigned(played(seeded, withdrawn, AS_OF.plus(200, ChronoUnit.DAYS), true),
+                        withdrawn));
 
         HorizonFixtures.Result result = HorizonFixtures.derive(view, AS_OF, SEASON, 5);
 
@@ -518,11 +547,15 @@ class HorizonFixturesTest {
                 row.homeDifficulty(), row.awayDifficulty(), row.capturedAt()));
     }
 
-    /** Started and finished, with a kickoff the flags contradict. */
+    /**
+     * Started, with a kickoff the flags contradict; {@code finished} says whether FPL has also
+     * finalised it. Started without finished is the ordinary state of a match in progress.
+     */
     private static List<ScheduleSource.FixtureRow> played(
-            List<ScheduleSource.FixtureRow> rows, int fixtureId, Instant kickoff) {
+            List<ScheduleSource.FixtureRow> rows, int fixtureId, Instant kickoff,
+            boolean finished) {
         return replaced(rows, fixtureId, row -> new ScheduleSource.FixtureRow(row.id(),
-                row.gameweek(), row.homeTeamId(), row.awayTeamId(), kickoff, true, true,
+                row.gameweek(), row.homeTeamId(), row.awayTeamId(), kickoff, true, finished,
                 row.homeDifficulty(), row.awayDifficulty(), row.capturedAt()));
     }
 

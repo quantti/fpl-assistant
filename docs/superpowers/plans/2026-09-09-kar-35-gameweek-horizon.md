@@ -213,7 +213,7 @@ Verification ran from `backend/` with `backend/.env.test` only, against the disp
 `fpl-test-db` container. The plan's focused selection (`*PickTools*`, `*Horizon*`, `*Schedule*`,
 `*CandidatePool*`, `*Squad*`, `*ExpectedPoints*`, `*SeasonBlend*`) passed 282 tests with 0
 failures, 0 errors and 0 skipped in 52 seconds. The full `./gradlew cleanTest test` passed 765
-tests with 0 failures, 0 errors and 0 skipped in 1 minute 10 seconds; that run includes
+tests with 0 failures, 0 errors and 0 skipped in 1 minute 13 seconds; that run includes
 `IngestionServiceTest`, `IngestionIntegrationTest` and `StrategyToolsIntegrationTest`, so
 test-corpus chunking and retrieval are unchanged.
 

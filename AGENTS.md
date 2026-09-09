@@ -164,9 +164,9 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
   attribute one of them wrongly. Building the pool from the daily capture rather than the
   tapas `player` table is deliberate and is what keeps issue #50 (KAR-32) from recurring here: it also
   means the tool works while tapas has not synced the season being played. Do not fold this
-  into the single-banner convention. Its metrics line is followed by the blend sentence, which
-  names both seasons and the ramp, and by a `Schedule evidence:` sentence and a `Horizon:` line
-  naming the editable range. The pool may buy a fit role-ineligible/BODY player for the bench,
+  into the single-banner convention. Its metrics line is followed by the schedule source line,
+  then the blend sentence, which names both seasons and the ramp, and by a `Schedule evidence:`
+  sentence and a `Horizon:` line naming the editable range. The pool may buy a fit role-ineligible/BODY player for the bench,
   and a doubtful player only when an underlying record exists. A named pin requires membership of
   the fifteen, not a start: `SquadSolver.rulesOfTheGame` forces every role-ineligible or BODY
   player's `x_i` to zero in every entry path, and so does the playable-club set — a club with no

@@ -3741,8 +3741,9 @@ season banner — historical metrics stay labelled historical even when today's 
 month's fixtures are the season being played, and during the changeover one clarification sentence
 says the price line and the schedule line both describe the season being played. A separate
 `Schedule evidence:` sentence carries the exact capture instant, the `asOf` instant it was judged
-at, the editable gameweek range with any end-of-season truncation, and the players or clubs the
-schedule alone removed. `system-prompt.st` and `AGENTS.md` were updated to match.
+at, the editable gameweek range and the players or clubs the schedule alone removed; end-of-season
+truncation is disclosed in the pick footer's evidence sentence and, in the squad reply, on its own
+`Horizon:` line. `system-prompt.st` and `AGENTS.md` were updated to match.
 
 Acceptance, each row of the plan's matrix mapped to the test that pins it:
 double keeps six fixtures and the fifth gameweek → `HorizonFixturesTest`
@@ -3793,7 +3794,7 @@ Verification used the local disposable PostgreSQL container and `backend/.env.te
 plan's focused selection (`*PickTools*`, `*Horizon*`, `*Schedule*`, `*CandidatePool*`, `*Squad*`,
 `*ExpectedPoints*`, `*SeasonBlend*`) passed 282 tests with 0 failures, 0 errors and 0 skipped in
 52 seconds. The full `./gradlew cleanTest test` passed 765 tests with 0 failures, 0 errors and 0
-skipped in 1 minute 10 seconds; it includes `IngestionServiceTest`, `IngestionIntegrationTest` and
+skipped in 1 minute 13 seconds; it includes `IngestionServiceTest`, `IngestionIntegrationTest` and
 `StrategyToolsIntegrationTest`, so test-corpus chunking and retrieval are unaffected.
 
 Honest limits. Fixture difficulty is still FPL's coarse 1–5 FDR: a tie-break in the pick lists and
