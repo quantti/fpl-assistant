@@ -70,6 +70,10 @@ public class ScheduleFreshnessCheck {
                                 + " when FPL still serves the finished season and the sync refuses"
                                 + " to write.)",
                         latestDay, ChronoUnit.DAYS.between(latestDay, now.toLocalDate()));
+            } else if (latestDay.isAfter(now.toLocalDate())) {
+                log.warn("{} has a capture dated {} — in the future relative to this container's"
+                        + " clock. Ranking tools will reject it until the clock catches up.",
+                        gameweekTable, latestDay);
             }
         } catch (DataAccessException e) {
             // The check must never do more than fail to run; the capture itself is unaffected.
@@ -83,9 +87,21 @@ public class ScheduleFreshnessCheck {
      * check, on the schedule's own clock.
      */
     static boolean isStale(LocalDate latestCaptureDay, LocalDateTime nowUk) {
-        LocalDate expected = nowUk.toLocalTime().isBefore(CAPTURE_SETTLED)
+        return latestCaptureDay.isBefore(expectedDate(nowUk));
+    }
+
+    /**
+     * Strict predicate for selection evidence. Unlike the alert's lower-bound check, this
+     * rejects both future captures and a capture dated today before today's run is due.
+     */
+    public static boolean isFresh(LocalDate captured, Instant asOf) {
+        return captured != null && captured.equals(
+                expectedDate(LocalDateTime.ofInstant(asOf, UkTime.zone())));
+    }
+
+    private static LocalDate expectedDate(LocalDateTime nowUk) {
+        return nowUk.toLocalTime().isBefore(CAPTURE_SETTLED)
                 ? nowUk.toLocalDate().minusDays(1)
                 : nowUk.toLocalDate();
-        return latestCaptureDay.isBefore(expected);
     }
 }

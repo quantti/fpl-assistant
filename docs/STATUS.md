@@ -3579,3 +3579,132 @@ actual HTTP serializer, with a non-default request budget.
 After review: backend 683/683, frontend 33/33, production build and contrast gate passed. The
 headless Chromium fixture checks were rerun with cross-tab replacement and both sources unknown.
 Actual Safari/VoiceOver and physical-device checks remain unverified.
+
+## Minutes reliability: research and supporting strategy (KAR-31, 2026-09-09)
+
+The owner requires defender recommendations to favour reliable 60+ involvement, not merely high
+per-90 returns. Research is in
+`docs/superpowers/specs/2026-09-09-kar-31-minutes-reliability-research.md`: appearance and clean-sheet
+points have a real boundary at 60, so neither an average-minutes filter nor scaling the whole
+90-minute score is enough. DefCon has no such eligibility rule. Numerical scoring and primary
+selection are still unimplemented; the calibration and final planning decision are recorded below.
+KAR-31 remains open.
+
+The supporting RAG guide, `strategy-minutes-and-rotation.md`, covers reliability-first defender
+selection, captaincy, risky alternatives, missing evidence and changed roles. It distinguishes
+historical frequency from a forecast and forbids inventing probabilities absent from the tools.
+The defender, differential and captain guides point to it. Review added the red-card exception:
+a dismissal does not protect a clean sheet from later team concessions as a substitution does.
+
+Verification: 23 ingestion/retrieval tests passed against the disposable database. The checked-in
+corpus ingested as 23 documents / 201 chunks, including nine new-guide chunks; real-embedding
+queries for defenders and captains both retrieved the relevant new sections. This is not a live-chat
+quality check. Production embeddings were not changed: the normal `--ingest` reload is still needed,
+and a deploy alone does not reload them.
+
+## Minutes calibration: history helps, but no safety gate passed (KAR-31, 2026-09-09)
+
+The requested measurement and implementation plan are now recorded:
+`docs/analysis/2026-09-09-kar-31-minutes-calibration.md` and
+`docs/superpowers/plans/2026-09-09-kar-31-minutes-reliability.md`. The reproducible Python experiment
+uses pinned public vaastav CSVs only: 2022/23 prior/history, 2023/24 cutoff grid, 2024/25 selection,
+then a frozen 2025/26 holdout. No production data or scoring code was changed.
+
+The 60-minute mean filter admitted 2,386 holdout opportunities and 25.16% of known outcomes stayed
+below 60. Mean >=90 was much more selective: 482 admissions, 8.51% misses, 8.66% comparable-pool
+coverage, but a descriptive upper risk endpoint of 11.34%. No candidate met the working 5%/10%
+selection criteria. The 15% comparison selected on development also failed its holdout criterion:
+12.93% observed risk, 15.59% upper. No threshold was retuned to turn those near misses into passes.
+
+This is defender-only, history-only, and gameweek-frozen against the final schedule and proxy
+cutoffs, not a reconstruction of historical availability or a verified deadline replay. A missing
+row stays unknown. The audit caught default-zero starts in 136 early 2022/23 fixtures and ten exact
+2025/26 duplicates; neither can silently distort the rates. Four holdout target rows were unknown.
+
+Appearance and clean-sheet eligibility need their own terms; realised points must also become
+per-fixture; DefCon must not acquire a false 60-minute eligibility rule. The earlier interpretation
+that primary selection must wait for a passing 10% gate is superseded by the planning decision
+below: that experimental risk budget was not the owner's requirement. The negative measurement
+is unchanged. Even the modest scoring-diagnostic improvement cannot be attributed to components
+alone because its smoothing differs from the linear comparator.
+
+The frozen source/result hashes and full aggregate tables are under `docs/analysis/kar-31/`; raw
+CSV files stay outside the repository and database. All 24 synthetic analysis tests passed,
+covering chronology, DGW freezing, missing rows, transfers, name collisions, the 59/60 boundary
+and artifact mismatch rejection. The 2025/26 holdout is now consumed, not a fresh test set for
+another tuned threshold.
+
+## Pick-ranking implementation plans ready (KAR-31 and KAR-35, 2026-09-09)
+
+The owner asked to continue until both urgent tickets had implementation-ready plans. Execute:
+
+1. `docs/superpowers/plans/2026-09-09-kar-31-minutes-reliability.md` — seven tasks: coherent
+   schedule/freshness, shared batch metrics and club history, exposure/eligibility, per-fixture
+   components, pick ranking, a non-relaxable squad XI rule, and seeded verification/docs.
+2. `docs/superpowers/plans/2026-09-09-kar-35-gameweek-horizon.md` — five tasks: DGW regressions,
+   shared calendar-GW horizon, real pick-score totals, the same fixture population/eligibility in
+   the squad solver, and source attribution/acceptance.
+
+**Primary selection is now specified, not left for another product decision.** A fresh daily
+`a` flag plus complete, same-season current-club evidence is required: up to ten latest completed
+fixtures, at least 180 minutes, every fixture at least 60. Previous-season minutes do not meet
+that current-role floor. This applies to every primary pick/XI position; pins and solver defaults
+cannot bypass it. One sub-60 result blocks selection until it leaves the window. Short windows
+show their actual support; missing/stale data, early season and injuries can leave no primary
+list or legal XI. Bench eligibility remains distinct.
+
+This is a conservative **observed-history policy**, not a calibrated probability or a guarantee.
+Its future miss rate and live coverage are unmeasured; no experiment percentage is transferred
+to it and no holdout was retuned. The assistant-defined 10% experiment criterion is not a new
+product obligation. The plan deliberately accepts abstention instead of silently weakening
+"reliably 60+" to an average-minute filter.
+
+The source contract also fixes a concrete upstream trap: `player_fixture_stats.player_team_id`
+is stamped from the current bootstrap club across historical rows. Resolve actual historical
+club membership from season-scoped canonical fixture sides plus `was_home`/opponent consistency,
+not `MIN(player_team_id)`. Enumerate expected fixtures independently; missing results remain
+unknown. Review also caught a leading-gap shortcut: the first surviving PFS/daily row cannot
+prove registration. Only a positive different-club observation can bound the new spell; without
+one, enumerate from season start before taking the latest ten. A newcomer with unknown arrival
+can therefore wait ten complete fixtures. A coherent full schedule is necessary to distinguish
+a blank or a short history from a partial capture. No new table or chat-time external call is planned.
+
+KAR-35 begins at the **first future deadline**, not remaining fixtures in an already-locked GW.
+It counts all fixtures in the same calendar window for every club and multiplies the pick's
+per-fixture composite by that count; fixing average FDR alone would not reward a double. Squad
+scoring shares that fixture list and expected components but retains its expected-only FDR-adjusted
+objective. Unknown schedules never become zero forecasts or primary XI players. These replies
+will name daily-capture, metric and schedule sources separately. The unrelated fixture-listing
+API and KAR-30's matchup model stay out of scope.
+
+The plans have source-level read-only reviews and explicit seeded acceptance cases, including
+the corrected leading-gap case; final review found no remaining actionable gaps. All 24 offline
+synthetic analysis tests pass; document links and whitespace checks pass. The backend suite was
+not rerun for these plan-only changes. Both plans
+remain at implementation Task 0; no production scoring, database or embedding change, issue
+closure, push or deployment occurred.
+
+## Minutes-aware ranking implementation outcome (KAR-31, 2026-09-09)
+
+Implementation Tasks 1–7 are complete in the current worktree, superseding the planning-state
+notes above. Ranking reads now share one repeatable-read daily/metric/schedule snapshot; primary
+picks and every generated-squad XI place share the same **consistent observed 60+ history** gate.
+It requires fresh, coherent current-season/current-club evidence, at least 180 minutes and 60+ in
+every expected fixture of the latest up-to-ten window. A sub-60 fixture blocks selection until ten
+later completed club fixtures in that spell move it out; short qualifying windows remain labelled
+small samples, stale or incomplete evidence causes abstention, and neither prior-season evidence
+nor solver relaxation can
+certify the role. Per-fixture expected scoring now models appearance, 60+-conditional clean sheets,
+minutes-scaled attack and short/long DefCon exposure; passing remains historical evidence, not a
+future-start guarantee or calibrated personal probability.
+
+Verification used the local disposable PostgreSQL database. The plan's focused Gradle selection
+passed 267 tests with 0 failures in 42 seconds. The full `./gradlew cleanTest test` passed 702 tests
+with 0 failures, 0 errors, 0 skipped in 1 minute 9 seconds, using `backend/.env.test` →
+`localhost:55432`. All 24 offline Python analysis tests passed. The focused run included
+`IngestionService` and `StrategyToolsIntegration`, proving test-corpus chunking and retrieval
+regressions only; it did not reload production embeddings or measure a live selection error rate.
+
+An independent reviewer compared the whole diff with `origin/master` and reported
+`No actionable findings.` The review was read-only and the reviewer ran no tests. No production
+ingestion or deployment was performed.

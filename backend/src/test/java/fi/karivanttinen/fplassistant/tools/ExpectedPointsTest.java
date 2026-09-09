@@ -145,6 +145,81 @@ class ExpectedPointsTest {
     }
 
     @Test
+    void perFixturePreservesTheSixtyMinuteAppearanceAndCleanSheetBoundary() {
+        Map<String, Object> defender = row(2, 0, 0, -Math.log(0.40));
+        SeasonBlend.Exposure everySixty = exposure(2, 2, 2, 120);
+        SeasonBlend.Exposure ninetyAndThirty = exposure(2, 2, 1, 120);
+
+        ExpectedPoints.PerFixture reliable = ExpectedPoints.perFixture(defender, everySixty)
+                .orElseThrow();
+        ExpectedPoints.PerFixture mixed = ExpectedPoints.perFixture(defender, ninetyAndThirty)
+                .orElseThrow();
+
+        assertThat(reliable.appearance() + reliable.cleanSheet()).isCloseTo(3.60, within(1e-9));
+        assertThat(mixed.appearance() + mixed.cleanSheet()).isCloseTo(2.30, within(1e-9));
+    }
+
+    @Test
+    void attackingReturnsScaleByExpectedMinutesWithoutScalingAppearanceAgain() {
+        Map<String, Object> forward = row(4, 0.5, 0.2, null);
+        ExpectedPoints.PerFixture projection = ExpectedPoints.perFixture(
+                forward, exposure(2, 2, 1, 120)).orElseThrow();
+
+        assertThat(projection.appearance()).isEqualTo(1.5);
+        assertThat(projection.attack()).isCloseTo(
+                (4 * 0.5 + 3 * 0.2) * 60 / 90, within(1e-9));
+    }
+
+    @Test
+    void zeroExposureIsARealZeroWhileUnknownExposureHasNoProjection() {
+        Map<String, Object> defender = row(2, 1, 1, null);
+
+        ExpectedPoints.PerFixture zero = ExpectedPoints.perFixture(
+                defender, exposure(2, 0, 0, 0)).orElseThrow();
+
+        assertThat(zero.points()).isZero();
+        assertThat(zero.appearance()).isZero();
+        assertThat(zero.attack()).isZero();
+        assertThat(zero.cleanSheet()).isZero();
+        assertThat(ExpectedPoints.perFixture(defender, null)).isEmpty();
+    }
+
+    @Test
+    void defconUsesShortAndLongExposureSeparatelyAndLabelsMissingClassesPartial() {
+        Map<String, Object> defender = row(2, 0, 0, null);
+        defender.put("defcon_short_avg", 10.0);
+        defender.put("defcon_short_matches", 2);
+        defender.put("defcon_long_avg", 0.0);
+        defender.put("defcon_long_matches", 2);
+
+        ExpectedPoints.PerFixture both = ExpectedPoints.perFixture(
+                defender, exposure(4, 4, 2, 240)).orElseThrow();
+        assertThat(both.defensiveContribution()).isCloseTo(
+                2 * 0.5 * ExpectedPoints.thresholdProbability(10, 10), within(1e-9));
+        assertThat(both.partialDefcon()).isFalse();
+
+        defender.remove("defcon_short_avg");
+        defender.put("defcon_short_matches", 1);
+        ExpectedPoints.PerFixture partial = ExpectedPoints.perFixture(
+                defender, exposure(4, 4, 2, 240)).orElseThrow();
+        assertThat(partial.partialDefcon()).isTrue();
+        assertThat(partial.defensiveContribution()).isZero();
+    }
+
+    @Test
+    void knownZeroDefconIsKnownAndGoalkeepersStillReceiveNone() {
+        Map<String, Object> defender = defensiveRow(2, 2, 0.0);
+        assertThat(ExpectedPoints.hasDefconSignal(defender, 2)).isTrue();
+        assertThat(ExpectedPoints.defconProbability(defender, 2)).isZero();
+
+        Map<String, Object> goalkeeper = row(1, 0, 0, 1.0);
+        goalkeeper.put("defcon_short_avg", 20.0);
+        goalkeeper.put("defcon_short_matches", 10);
+        assertThat(ExpectedPoints.perFixture(goalkeeper, exposure(2, 2, 0, 80))
+                .orElseThrow().defensiveContribution()).isZero();
+    }
+
+    @Test
     void aRowWithoutTheDefensiveColumnsScoresExactlyAsItDidBefore() {
         // Every row seeded before these columns existed reads NULL. The term must vanish rather
         // than estimate, or every existing expectation in the suite moves under it.
@@ -158,5 +233,15 @@ class ExpectedPointsTest {
                         + ExpectedPoints.cleanSheetProbability(0.9)
                                 * ExpectedPoints.cleanSheetPoints(2),
                 within(1e-9));
+    }
+
+    private static SeasonBlend.Exposure exposure(int fixtures, int appearances,
+                                                  int sixty, int minutes) {
+        double n = fixtures;
+        double appearanceRate = appearances / n;
+        double sixtyRate = sixty / n;
+        return new SeasonBlend.Exposure(fixtures, appearances, sixty, minutes,
+                appearanceRate, sixtyRate, appearanceRate - sixtyRate,
+                minutes / n, 0);
     }
 }

@@ -54,6 +54,7 @@ public final class Feasibility {
                 () -> clubsHaveEnoughPlayers(pool, constraints),
                 () -> poolCanFillEveryPosition(pool),
                 () -> pinsNeverExcluded(pinned, excluded),
+                () -> eligiblePlayersCanFillTheXi(pool, constraints, excluded),
                 () -> budgetCoversThePinsAndTheCheapestCompletion(pool, constraints, pinned));
     }
 
@@ -256,6 +257,63 @@ public final class Feasibility {
             }
         }
         return Optional.empty();
+    }
+
+    private static Optional<String> eligiblePlayersCanFillTheXi(
+            List<SquadCandidate> pool, SquadConstraints constraints,
+            List<SquadCandidate> excluded) {
+        Set<Integer> excludedIds = excluded.stream().map(SquadCandidate::elementId)
+                .collect(Collectors.toSet());
+        int[] eligible = new int[POSITION_QUOTAS.length];
+        pool.stream().filter(SquadCandidate::mayStart)
+                .filter(player -> !excludedIds.contains(player.elementId()))
+                .forEach(player -> {
+                    if (player.elementType() >= 1 && player.elementType() < eligible.length) {
+                        eligible[player.elementType()]++;
+                    }
+                });
+
+        SquadConstraints.Formation formation = constraints.formation();
+        if (eligible[1] < SquadSolver.GK_IN_XI) {
+            return minutesCapacity("goalkeeper", SquadSolver.GK_IN_XI, eligible[1], formation);
+        }
+        if (formation != null) {
+            int[] required = {0, SquadSolver.GK_IN_XI,
+                    formation.def(), formation.mid(), formation.fwd()};
+            for (int type = 2; type <= 4; type++) {
+                if (eligible[type] < required[type]) {
+                    return minutesCapacity(POSITION_NAMES[type], required[type], eligible[type], formation);
+                }
+            }
+            return Optional.empty();
+        }
+
+        for (int defenders = SquadSolver.MIN_DEF_IN_XI;
+             defenders <= POSITION_QUOTAS[2]; defenders++) {
+            for (int forwards = SquadSolver.MIN_FWD_IN_XI;
+                 forwards <= POSITION_QUOTAS[4]; forwards++) {
+                int midfielders = SquadSolver.XI_SIZE - SquadSolver.GK_IN_XI
+                        - defenders - forwards;
+                if (midfielders >= 2 && midfielders <= POSITION_QUOTAS[3]
+                        && eligible[2] >= defenders && eligible[3] >= midfielders
+                        && eligible[4] >= forwards) {
+                    return Optional.empty();
+                }
+            }
+        }
+        return Optional.of("The available pool cannot form a legal starting XI under the"
+                + " consistent observed 60+ history restriction after the stated exclusions."
+                + " This is a minutes-evidence and formation constraint; changing the budget"
+                + " alone does not make an ineligible starter eligible.");
+    }
+
+    private static Optional<String> minutesCapacity(String position, int required, int available,
+                                                     SquadConstraints.Formation formation) {
+        return Optional.of("The " + (formation == null ? "starting XI" : formation.label())
+                + " needs " + required + " " + position + (required == 1 ? "" : "s")
+                + " with consistent observed 60+ history, but only " + available
+                + " qualify after the stated exclusions. Pins may still sit on the bench;"
+                + " neither a pin nor a higher budget can waive the XI restriction.");
     }
 
     /**

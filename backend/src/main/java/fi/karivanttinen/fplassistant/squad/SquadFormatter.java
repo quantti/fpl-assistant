@@ -1,10 +1,12 @@
 package fi.karivanttinen.fplassistant.squad;
 
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 import fi.karivanttinen.fplassistant.tools.ExpectedPoints;
-import java.util.Map;
+import fi.karivanttinen.fplassistant.tools.UkTime;
 
 /**
  * Renders a solved squad.
@@ -30,9 +32,9 @@ public final class SquadFormatter {
      *        before this method ever runs, so the two lists are always the same length
      * @param resolvedExcludes {@code mustExclude} resolved the same way, index-parallel with
      *        {@code constraints.mustExclude()}
-     * @param scores expected points over the horizon, keyed by element id — the same map
-     *        {@code SquadTools} already built to feed the solver
-     * @param expectedMinutes expected minutes per club fixture, keyed by element id
+     * @param projections expected points over the horizon plus whether the projection is known;
+     *        the solver receives zero weight for an unavailable projection, but the reply does
+     *        not mislabel that absence as a numeric forecast
      * @param noCandidateWasScoreable true when not one rankable candidate in the whole pool found
      *        a fixture to score against, so every score is zero and this squad is an arbitrary
      *        legal fifteen rather than a ranked one
@@ -41,7 +43,7 @@ public final class SquadFormatter {
                                 String priceProvenance, String metricProvenance,
                                 int excludedForNoRecord, List<SquadCandidate> resolvedIncludes,
                                 List<SquadCandidate> resolvedExcludes,
-                                Map<Integer, Double> scores, Map<Integer, Double> expectedMinutes,
+                                Map<Integer, HorizonScorer.Projection> projections,
                                 boolean noCandidateWasScoreable, String blendNote) {
         StringBuilder out = new StringBuilder();
         out.append(priceProvenance).append('\n').append(metricProvenance).append('\n');
@@ -51,11 +53,10 @@ public final class SquadFormatter {
         out.append('\n');
 
         if (noCandidateWasScoreable) {
-            out.append("WARNING: no player in today's pool could be matched to a real fixture for"
-                    + " this horizon, so every expected-points figure below is zero. This is an"
-                    + " arbitrary legal fifteen, not a ranked selection — the pick of players, the"
-                    + " captain and the bench order carry no signal. Say so rather than presenting"
-                    + " it as a ranked squad.\n\n");
+            out.append("WARNING: no player in today's pool has a usable horizon projection."
+                    + " Figures below are n/a, not zero-point forecasts; any legal fifteen would"
+                    + " be unranked, so do not present the names, captain or bench order as a"
+                    + " model preference.\n\n");
         }
 
         out.append("Constraints\n");
@@ -99,15 +100,15 @@ public final class SquadFormatter {
 
         out.append("Starting XI (").append(solved.formation()).append(")\n");
         for (SquadCandidate player : solved.startingXi()) {
-            out.append("  ").append(line(player, scores)).append('\n');
+            out.append("  ").append(line(player, projections)).append('\n');
         }
 
         out.append("\nBench, in substitution order\n");
         int order = 1;
         for (SquadCandidate player : solved.bench()) {
             String prefix = player.elementType() == 1 ? "  " : "  " + order++ + ". ";
-            out.append(prefix).append(line(player, scores))
-                    .append(benchMinutesNote(player, expectedMinutes)).append('\n');
+            out.append(prefix).append(line(player, projections))
+                    .append(benchMinutesNote(player)).append('\n');
         }
 
         out.append("\nCaptain: ").append(solved.captain().webName())
@@ -130,12 +131,13 @@ public final class SquadFormatter {
             out.append("\n").append(excludedForNoRecord)
                     .append(" players were left out of the ranking because they have too little"
                             + " playing history to judge — new signings, and players back from"
-                            + " long injuries. Name them and I will build around them anyway.\n");
+                            + " long injuries. A named fit player may be carried on the bench, but"
+                            + " a pin does not make them eligible for the XI.\n");
         }
 
         out.append("\nSave points and penalty saves are not in these numbers, so goalkeepers are"
-                + " understated. Defensive contribution is included, as each player's estimated"
-                + " chance of reaching his position's action threshold in a match.\n");
+                + " understated. Defensive contribution is included where its appearance-class"
+                + " evidence is available; partial expected-point rows are labelled.\n");
 
         return out.toString();
     }
@@ -148,22 +150,26 @@ public final class SquadFormatter {
         };
     }
 
-    /**
-     * @param scores expected points over the horizon, keyed by element id — printed for every
-     *        real player so the model has something to quote when asked "why this squad?"
-     *        instead of reaching elsewhere or inventing a reason.
-     */
-    private static String line(SquadCandidate player, Map<Integer, Double> scores) {
+    private static String line(SquadCandidate player,
+                               Map<Integer, HorizonScorer.Projection> projections) {
         StringBuilder line = new StringBuilder();
         line.append(POSITION_ABBR[player.elementType()])
                 .append("  ").append(player.webName())
                 .append(" (").append(player.clubShort()).append(") £")
                 .append(Feasibility.money(player.nowCost()));
+        HorizonScorer.Projection projection = projections.get(player.elementId());
         if (player.tier() == SquadCandidate.Tier.BODY) {
-            line.append(" — bench body, no playing record, worth nothing in this model");
+            line.append(" — bench body, no rankable ability record; unscored");
         } else {
-            line.append(String.format(Locale.ROOT, " — %.2f xPts",
-                    scores.getOrDefault(player.elementId(), 0.0)));
+            if (projection == null || !projection.available()) {
+                line.append(" — xPts n/a (projection unavailable)");
+            } else {
+                line.append(String.format(Locale.ROOT, " — %.2f xPts",
+                        projection.optimizerPoints()));
+                if (projection.partial()) {
+                    line.append(" (partial: one or more expected components unavailable)");
+                }
+            }
             Object hasPrevious = player.metrics().get("blend_has_previous");
             if (hasPrevious != null) {
                 int pct = (int) Math.round(
@@ -175,6 +181,32 @@ public final class SquadFormatter {
                 }
             }
         }
+        if (!player.mayStart()) {
+            line.append(" — bench only: ").append(player.eligibility().reason());
+        }
+        if (player.minutesWindow() != null) {
+            line.append(" — observed current-club 60+ ")
+                    .append(player.minutesWindow().sixtyPlus()).append('/')
+                    .append(player.minutesWindow().expected()).append(", ")
+                    .append(player.minutesWindow().totalMinutes()).append(" mins");
+            if (player.minutesWindow().firstKickoff() != null
+                    && player.minutesWindow().lastKickoff() != null) {
+                LocalDate first = LocalDate.ofInstant(
+                        player.minutesWindow().firstKickoff(), UkTime.zone());
+                LocalDate last = LocalDate.ofInstant(
+                        player.minutesWindow().lastKickoff(), UkTime.zone());
+                line.append(", ").append(first);
+                if (!first.equals(last)) {
+                    line.append(" to ").append(last);
+                }
+            }
+            if (!player.minutesWindow().complete()) {
+                line.append(" (").append(player.minutesWindow().reason()).append(')');
+            } else if (player.minutesWindow().expected() < ExpectedPoints.WINDOW_MATCHES) {
+                line.append(" (short window: ").append(player.minutesWindow().expected())
+                        .append(" fixtures)");
+            }
+        }
         if (player.isDoubtful()) {
             line.append(" — DOUBTFUL: ").append(player.news());
         }
@@ -182,15 +214,14 @@ public final class SquadFormatter {
     }
 
     /**
-     * Expected minutes per club fixture, printed on bench rows only. The XI already clears the
-     * minutes floor by construction (row 14), so the number is uninteresting there; on the bench
-     * it is the whole trade the spec asks to make visible — cheapness against playing time.
+     * Blended expected minutes per club fixture, printed on bench rows only. Raw current-club
+     * evidence is printed separately on every row and alone controls XI eligibility.
      */
-    private static String benchMinutesNote(SquadCandidate player, Map<Integer, Double> expectedMinutes) {
-        if (player.tier() == SquadCandidate.Tier.BODY) {
-            return "";
+    private static String benchMinutesNote(SquadCandidate player) {
+        if (player.exposure() == null) {
+            return ", expected mins/fixture n/a";
         }
-        double minutes = expectedMinutes.getOrDefault(player.elementId(), 0.0);
-        return String.format(Locale.ROOT, ", %.0f expected mins/fixture", minutes);
+        return String.format(Locale.ROOT, ", %.0f expected mins/fixture",
+                player.expectedMinutes());
     }
 }

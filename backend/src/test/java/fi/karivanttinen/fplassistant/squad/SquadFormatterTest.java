@@ -17,9 +17,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class SquadFormatterTest {
 
     private static SquadCandidate player(int id, String club, int type, int cost) {
-        return new SquadCandidate(id, "Name" + id, "Full Name " + id, club, club.substring(0, 3),
-                type, cost, 10.0, "a", null, club.hashCode(), 900, 10,
-                Map.of("element_type", type), SquadCandidate.Tier.RANKABLE);
+        return SquadCandidateTestData.eligible(id, "Name" + id, club, type, cost, 10.0,
+                Map.of("element_type", type));
     }
 
     private static SolvedSquad solved() {
@@ -68,7 +67,7 @@ class SquadFormatterTest {
                                  List<SquadCandidate> resolvedIncludes,
                                  List<SquadCandidate> resolvedExcludes) {
         return SquadFormatter.format(solved, constraints, "PRICE PROVENANCE",
-                "METRIC PROVENANCE", 12, resolvedIncludes, resolvedExcludes, Map.of(), Map.of(),
+                "METRIC PROVENANCE", 12, resolvedIncludes, resolvedExcludes, Map.of(),
                 false, null);
     }
 
@@ -108,6 +107,14 @@ class SquadFormatterTest {
     }
 
     @Test
+    void printsObservedDateRangeAndLabelsAShortWindow() {
+        String output = format(solved(), constraints());
+
+        assertThat(output).contains("2026-08-01 to 2026-08-03")
+                .contains("short window: 3 fixtures");
+    }
+
+    @Test
     void namesTheCaptainAndTheViceCaptain() {
         String output = format(solved(), constraints());
 
@@ -119,7 +126,7 @@ class SquadFormatterTest {
         String output = format(solved(), constraints());
 
         assertThat(output).contains("12 players were left out");
-        assertThat(output).containsIgnoringCase("name them");
+        assertThat(output).containsIgnoringCase("pin does not make them eligible");
     }
 
     @Test
@@ -152,9 +159,8 @@ class SquadFormatterTest {
     @Test
     void labelsBodyTierPlayersAsNoPlayingRecord() {
         // A body player has no playing history to judge; explain that in the output
-        SquadCandidate body = new SquadCandidate(99, "BodyName", "Body Full", "Arsenal", "Ars",
-                1, 40, 0.0, "a", null, 1, 0, 0,
-                Map.of(), SquadCandidate.Tier.BODY);
+        SquadCandidate body =
+                SquadCandidateTestData.body(99, "BodyName", "Arsenal", 1, 40);
         List<SquadCandidate> squad = List.of(body, player(2, "Brentford", 1, 40),
                 player(3, "Arsenal", 2, 60), player(4, "Arsenal", 2, 55),
                 player(5, "Chelsea", 2, 50), player(6, "Everton", 2, 45),
@@ -171,15 +177,16 @@ class SquadFormatterTest {
 
         String output = format(withBody, constraints());
 
-        assertThat(output).contains("bench body, no playing record");
+        assertThat(output).contains("bench body, no rankable ability record; unscored");
     }
 
     @Test
     void markDoubtfulPlayersWithTheirNews() {
         // A doubtful player (d status) is marked in the output with their news
-        SquadCandidate doubtful = new SquadCandidate(98, "DoubtfulName", "Doubtful Full", "Arsenal", "Ars",
-                2, 50, 10.0, "d", "Ankle injury", 1, 900, 10,
-                Map.of("element_type", 2), SquadCandidate.Tier.RANKABLE);
+        SquadCandidate doubtful = SquadCandidateTestData.withStatus(
+                SquadCandidateTestData.eligible(98, "DoubtfulName", "Arsenal", 2, 50, 10.0,
+                        Map.of("element_type", 2)),
+                "d", "Ankle injury");
         List<SquadCandidate> squad = List.of(
                 player(1, "Arsenal", 1, 50), player(2, "Brentford", 1, 40),
                 doubtful, player(4, "Arsenal", 2, 55),
@@ -206,9 +213,8 @@ class SquadFormatterTest {
     @Test
     void marksUnmetConstraintsWithFailureIndicator() {
         // When a constraint is not met, mark it with ✗ instead of ✓
-        SquadCandidate other = new SquadCandidate(99, "WrongClub", "Wrong Club", "Manchester United", "Mun",
-                1, 40, 10.0, "a", null, 10, 900, 10,
-                Map.of("element_type", 1), SquadCandidate.Tier.RANKABLE);
+        SquadCandidate other = SquadCandidateTestData.eligible(99, "WrongClub",
+                "Manchester United", 1, 40, 10.0, Map.of("element_type", 1));
         List<SquadCandidate> squad = List.of(
                 other, player(2, "Brentford", 1, 40),
                 player(3, "Arsenal", 2, 60), player(4, "Arsenal", 2, 55),
@@ -276,33 +282,48 @@ class SquadFormatterTest {
         // I6: the output must carry expected points per player and expected minutes on bench
         // rows, so the model has something to quote when asked "why this squad?" instead of
         // reaching elsewhere or inventing a reason.
-        Map<Integer, Double> scores = Map.of(1, 4.5, 2, 1.2);
-        Map<Integer, Double> minutes = Map.of(2, 45.0);
+        Map<Integer, HorizonScorer.Projection> projections = Map.of(
+                1, new HorizonScorer.Projection(4.5, true, false),
+                2, new HorizonScorer.Projection(1.2, true, false));
 
         String output = SquadFormatter.format(solved(), constraints(), "PRICE PROVENANCE",
-                "METRIC PROVENANCE", 12, resolvedMustInclude(), List.of(), scores, minutes, false, null);
+                "METRIC PROVENANCE", 12, resolvedMustInclude(), List.of(), projections,
+                false, null);
 
         // Name1 (element id 1) is in the starting XI.
         assertThat(output).contains("4.50 xPts");
         // Name2 (element id 2) is on the bench.
         assertThat(output).contains("1.20 xPts");
-        assertThat(output).contains("45 expected mins/fixture");
+        assertThat(output).contains("90 expected mins/fixture");
+    }
+
+    @Test
+    void labelsAPartialProjectionInsteadOfPresentingItAsComplete() {
+        Map<Integer, HorizonScorer.Projection> projections = Map.of(
+                1, new HorizonScorer.Projection(4.5, true, true));
+
+        String output = SquadFormatter.format(solved(), constraints(), "PRICE PROVENANCE",
+                "METRIC PROVENANCE", 12, resolvedMustInclude(), List.of(), projections,
+                false, null);
+
+        assertThat(output).contains("4.50 xPts")
+                .contains("partial: one or more expected components unavailable");
     }
 
     @Test
     void warnsWhenNoCandidateCouldBeScored() {
         // M4: an unscoreable horizon must be disclosed, not silently presented as a ranked squad.
         String output = SquadFormatter.format(solved(), constraints(), "PRICE PROVENANCE",
-                "METRIC PROVENANCE", 12, resolvedMustInclude(), List.of(), Map.of(), Map.of(),
+                "METRIC PROVENANCE", 12, resolvedMustInclude(), List.of(), Map.of(),
                 true, null);
 
-        assertThat(output).containsIgnoringCase("arbitrary");
+        assertThat(output).contains("n/a").containsIgnoringCase("unranked");
     }
 
     @Test
     void saysNothingAboutAnUnscoreableHorizonWhenScoringWorked() {
         String output = format(solved(), constraints());
 
-        assertThat(output).doesNotContainIgnoringCase("arbitrary");
+        assertThat(output).doesNotContainIgnoringCase("unranked");
     }
 }

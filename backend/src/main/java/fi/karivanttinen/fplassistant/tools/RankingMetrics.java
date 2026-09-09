@@ -1,0 +1,948 @@
+package fi.karivanttinen.fplassistant.tools;
+
+import java.sql.Timestamp;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+
+import fi.karivanttinen.fplassistant.price.DailyPriceFreshnessCheck;
+import fi.karivanttinen.fplassistant.schedule.ScheduleFreshnessCheck;
+import fi.karivanttinen.fplassistant.schedule.ScheduleSource;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Component;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionTemplate;
+
+/**
+ * One transactionally coherent read for every ranking consumer. Identity is anchored to the
+ * complete daily capture, while minutes membership is reconstructed from season-scoped canonical
+ * fixture sides rather than the unreliable {@code player_team_id} stamped on PFS history.
+ */
+@Component
+public class RankingMetrics {
+
+    public enum WindowReason {
+        COMPLETE,
+        PRICE_CAPTURE_STALE,
+        SOURCE_SEASON_MISMATCH,
+        SCHEDULE_CAPTURE_MISSING,
+        SCHEDULE_CAPTURE_STALE,
+        SCHEDULE_INCOMPLETE,
+        INVALID_CAPTURE_IDENTITY,
+        CLUB_NOT_IN_SCHEDULE,
+        UNMAPPABLE_HISTORY,
+        CONTRADICTORY_OPPONENT,
+        LATEST_CLUB_MISMATCH,
+        RESULT_PENDING,
+        FINISHED_WITHOUT_CHRONOLOGY,
+        MULTIPLE_CLUBS,
+        NO_VERIFIED_CLUB,
+        MISSING_OBSERVATION,
+        INVALID_MINUTES
+    }
+
+    public record FixtureOutcome(int fixtureId, Instant kickoff, Integer minutes) {
+    }
+
+    public record MinutesWindow(boolean complete, WindowReason reason, Integer clubId,
+                                Instant firstKickoff, Instant lastKickoff,
+                                int expected, int observed, int totalMinutes,
+                                int appearances, int sixtyPlus,
+                                List<FixtureOutcome> latestTwo) {
+        public MinutesWindow {
+            Objects.requireNonNull(reason);
+            latestTwo = List.copyOf(latestTwo);
+            if (complete != (reason == WindowReason.COMPLETE)) {
+                throw new IllegalArgumentException("window completeness and reason disagree");
+            }
+        }
+    }
+
+    public record CapturePlayer(int elementId, String webName, String fullName,
+                                Integer teamId, String teamShort, String teamName,
+                                Integer position, int nowCost, Double ownership,
+                                String status, String news, Instant capturedAt,
+                                int captureNameCount) {
+        public boolean hasValidIdentity() {
+            return teamId != null && teamId > 0 && position != null
+                    && position >= 1 && position <= 4;
+        }
+    }
+
+    /** Per-season ability, exposure and the exact fixture population that supplied them. */
+    public record SeasonMetrics(SeasonContext season, Integer playerId, Integer position,
+                                Map<String, Object> ability, MinutesWindow window,
+                                SeasonBlend.Exposure exposure) {
+        public SeasonMetrics {
+            ability = Map.copyOf(ability);
+        }
+    }
+
+    /** One row for every element id in the capture, before any consumer-specific filtering. */
+    public record Candidate(CapturePlayer capture, SeasonMetrics current,
+                            SeasonMetrics previous, SeasonBlend.Blended blended,
+                            MinutesModel.Eligibility eligibility) {
+    }
+
+    public record Snapshot(Instant asOf, DailyPriceSource.Capture capture,
+                           MetricSeasons metricSeasons, ScheduleSource.View schedule,
+                           List<Candidate> candidates) {
+        public Snapshot {
+            candidates = List.copyOf(candidates);
+        }
+    }
+
+    private record SeasonPlayer(int id, String webName, int position) {
+    }
+
+    private record CanonicalSource(String table, String seasonColumn, Object seasonValue) {
+    }
+
+    private record CanonicalFixture(int id, Integer gameweek, int home, int away,
+                                    Instant kickoff, boolean started, boolean finished,
+                                    Integer homeDifficulty, Integer awayDifficulty) {
+        boolean involves(int club) {
+            return home == club || away == club;
+        }
+    }
+
+    private record ClubObservation(int club, Instant latestKickoff, int latestFixtureId) {
+    }
+
+    private static final class Aggregate {
+        int expected;
+        int observed;
+        int invalidMinutes;
+        int usableRows;
+        int totalMinutes;
+        int appearances;
+        int sixtyPlus;
+        double points;
+        double xg;
+        double xa;
+        double xgc;
+        int xgcCount;
+        double shortDefcon;
+        int shortDefconCount;
+        double longDefcon;
+        int longDefconCount;
+
+        void add(Aggregate other) {
+            expected += other.expected;
+            observed += other.observed;
+            invalidMinutes += other.invalidMinutes;
+            usableRows += other.usableRows;
+            totalMinutes += other.totalMinutes;
+            appearances += other.appearances;
+            sixtyPlus += other.sixtyPlus;
+            points += other.points;
+            xg += other.xg;
+            xa += other.xa;
+            xgc += other.xgc;
+            xgcCount += other.xgcCount;
+            shortDefcon += other.shortDefcon;
+            shortDefconCount += other.shortDefconCount;
+            longDefcon += other.longDefcon;
+            longDefconCount += other.longDefconCount;
+        }
+    }
+
+    private static final class History {
+        int invalidMappings;
+        int contradictions;
+        int wholeSeasonSixty;
+        final Aggregate ability = new Aggregate();
+        final List<ClubObservation> clubs = new ArrayList<>();
+
+        ClubObservation latestClub() {
+            return clubs.stream().max(CHRONOLOGY).orElse(null);
+        }
+
+        Instant latestDifferentClub(int currentClub) {
+            return clubs.stream().filter(club -> club.club() != currentClub)
+                    .max(CHRONOLOGY).map(ClubObservation::latestKickoff).orElse(null);
+        }
+    }
+
+    private record Target(int playerId, CanonicalFixture fixture) {
+    }
+
+    private static final Comparator<ClubObservation> CHRONOLOGY = Comparator
+            .comparing(ClubObservation::latestKickoff)
+            .thenComparingInt(ClubObservation::latestFixtureId);
+    private static final Comparator<CanonicalFixture> NEWEST_FIXTURE = Comparator
+            .comparing(CanonicalFixture::kickoff, Comparator.nullsLast(Comparator.naturalOrder()))
+            .thenComparingInt(CanonicalFixture::id).reversed();
+
+    private final JdbcTemplate jdbc;
+    private final ScheduleSource schedules;
+    private final String dailyTable;
+    private final Clock clock;
+    private final TransactionTemplate readTransaction;
+
+    public RankingMetrics(JdbcTemplate jdbc, ScheduleSource schedules,
+                          PlatformTransactionManager transactionManager,
+                          ObjectProvider<Clock> clock,
+                          @Value("${fpl.daily-price.table-name}") String dailyTable) {
+        this.jdbc = jdbc;
+        this.schedules = schedules;
+        this.dailyTable = dailyTable;
+        this.clock = clock.getIfAvailable(Clock::systemUTC);
+        this.readTransaction = new TransactionTemplate(transactionManager);
+        this.readTransaction.setReadOnly(true);
+        this.readTransaction.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);
+    }
+
+    /** Reads one immutable snapshot under one database snapshot and one chosen clock instant. */
+    public Snapshot load(DailyPriceSource.Capture capture, MetricSeasons metricSeasons) {
+        Objects.requireNonNull(capture);
+        Objects.requireNonNull(metricSeasons);
+        return readTransaction.execute(status -> loadInside(capture, metricSeasons, clock.instant()));
+    }
+
+    private Snapshot loadInside(DailyPriceSource.Capture capture, MetricSeasons metric, Instant asOf) {
+        ScheduleSource.View schedule = schedules.readView();
+        List<CapturePlayer> capturePlayers = loadCapture(capture);
+        Map<String, List<SeasonPlayer>> currentPopulation = loadPlayerPopulation(metric.played().seasonId());
+        Map<String, List<SeasonPlayer>> previousPopulation = metric.previous().isPresent()
+                ? loadPlayerPopulation(metric.previousSeasonId()) : Map.of();
+
+        Map<Integer, Integer> currentIds = new HashMap<>();
+        Map<Integer, Integer> previousIds = new HashMap<>();
+        Map<Integer, Integer> currentPositions = new HashMap<>();
+        Map<Integer, Integer> previousPositions = new HashMap<>();
+        boolean sameSeason = capture.season().equals(metric.played().code());
+        for (CapturePlayer player : capturePlayers) {
+            if (sameSeason) {
+                currentIds.put(player.elementId(), player.elementId());
+                if (player.position() != null) {
+                    currentPositions.put(player.elementId(), player.position());
+                }
+            } else {
+                SeasonPlayer bridged = uniqueBridge(player, currentPopulation);
+                if (bridged != null) {
+                    currentIds.put(player.elementId(), bridged.id());
+                    currentPositions.put(player.elementId(), bridged.position());
+                }
+            }
+            SeasonPlayer prior = uniqueBridge(player, previousPopulation);
+            if (prior != null) {
+                previousIds.put(player.elementId(), prior.id());
+                previousPositions.put(player.elementId(), prior.position());
+            }
+        }
+
+        Map<Integer, SeasonMetrics> currentMetrics;
+        if (metric.played().currentSeason()) {
+            currentMetrics = buildCurrentMetrics(capture, metric.played(), schedule, capturePlayers,
+                    currentIds, currentPositions, asOf);
+        } else {
+            CanonicalSource source = new CanonicalSource("fixture", "season_id",
+                    metric.played().seasonId());
+            List<CanonicalFixture> fixtures = loadCanonicalFixtures(source);
+            currentMetrics = buildHistoricalMetrics(metric.played(), source, fixtures,
+                    new HashSet<>(currentIds.values()), currentPositionsByPlayer(
+                            capturePlayers, currentIds, currentPositions));
+        }
+
+        Map<Integer, SeasonMetrics> previousMetrics = Map.of();
+        if (metric.previous().isPresent()) {
+            SeasonContext previous = metric.previous().orElseThrow();
+            CanonicalSource source = new CanonicalSource("fixture", "season_id", previous.seasonId());
+            previousMetrics = buildHistoricalMetrics(previous, source, loadCanonicalFixtures(source),
+                    new HashSet<>(previousIds.values()), currentPositionsByPlayer(
+                            capturePlayers, previousIds, previousPositions));
+        }
+
+        List<Candidate> candidates = new ArrayList<>(capturePlayers.size());
+        for (CapturePlayer player : capturePlayers) {
+            Integer currentId = currentIds.get(player.elementId());
+            Integer previousId = previousIds.get(player.elementId());
+            SeasonMetrics current = currentId == null ? null : currentMetrics.get(currentId);
+            SeasonMetrics previous = previousId == null ? null : previousMetrics.get(previousId);
+            Map<String, Object> currentAbility = current == null || current.ability().isEmpty()
+                    ? null : current.ability();
+            Map<String, Object> previousAbility = previous == null || previous.ability().isEmpty()
+                    ? null : previous.ability();
+            if (previousAbility != null
+                    && !sameDefconDefinition(player.position(), previous.position())) {
+                previousAbility = withoutDefcon(previousAbility);
+            }
+            SeasonBlend.Blended blended = SeasonBlend.blend(
+                    currentAbility, previousAbility,
+                    current == null ? null : current.exposure(),
+                    previous == null ? null : previous.exposure(),
+                    metric.played().currentSeason());
+            candidates.add(new Candidate(player, current, previous, blended,
+                    MinutesModel.eligibility(player,
+                            current == null ? null : current.window(),
+                            metric.played().currentSeason())));
+        }
+        return new Snapshot(asOf, capture, metric, schedule, candidates);
+    }
+
+    private List<CapturePlayer> loadCapture(DailyPriceSource.Capture capture) {
+        return jdbc.query("""
+                SELECT element_id, web_name, full_name, team_id, team_short, team_name,
+                       element_type, now_cost, selected_by_percent, status, news, captured_at,
+                       count(*) OVER (PARTITION BY LOWER(web_name)) AS name_count
+                FROM %s WHERE season = ? AND price_date = ? ORDER BY element_id
+                """.formatted(dailyTable), (rs, rowNum) -> new CapturePlayer(
+                        rs.getInt("element_id"), rs.getString("web_name"),
+                        rs.getString("full_name"), nullableInteger(rs.getObject("team_id")),
+                        rs.getString("team_short"), rs.getString("team_name"),
+                        nullableInteger(rs.getObject("element_type")), rs.getInt("now_cost"),
+                        nullableDouble(rs.getObject("selected_by_percent")),
+                        rs.getString("status"), rs.getString("news"),
+                        instant(rs.getObject("captured_at")), rs.getInt("name_count")),
+                capture.season(), capture.date());
+    }
+
+    private Map<String, List<SeasonPlayer>> loadPlayerPopulation(int seasonId) {
+        if (seasonId < 0) {
+            return Map.of();
+        }
+        Map<String, List<SeasonPlayer>> byName = new HashMap<>();
+        for (Map<String, Object> row : jdbc.queryForList(
+                "SELECT id, web_name, element_type FROM player WHERE season_id = ?", seasonId)) {
+            byName.computeIfAbsent(key(String.valueOf(row.get("web_name"))),
+                    ignored -> new ArrayList<>()).add(new SeasonPlayer(
+                            integer(row.get("id")), String.valueOf(row.get("web_name")),
+                            integer(row.get("element_type"))));
+        }
+        return byName;
+    }
+
+    private static SeasonPlayer uniqueBridge(CapturePlayer player,
+                                               Map<String, List<SeasonPlayer>> population) {
+        if (player.captureNameCount() != 1) {
+            return null;
+        }
+        List<SeasonPlayer> matches = population.getOrDefault(key(player.webName()), List.of());
+        return matches.size() == 1 ? matches.getFirst() : null;
+    }
+
+    private Map<Integer, SeasonMetrics> buildCurrentMetrics(
+            DailyPriceSource.Capture capture, SeasonContext season, ScheduleSource.View schedule,
+            List<CapturePlayer> players, Map<Integer, Integer> ids,
+            Map<Integer, Integer> positions, Instant asOf) {
+        WindowReason sourceFailure = currentSourceFailure(capture, season, schedule, asOf);
+        if (sourceFailure != null) {
+            Map<Integer, SeasonMetrics> unavailable = new HashMap<>();
+            for (CapturePlayer player : players) {
+                Integer id = ids.get(player.elementId());
+                if (id != null) {
+                    unavailable.put(id, new SeasonMetrics(season, id, positions.get(player.elementId()),
+                            Map.of(), emptyWindow(sourceFailure, player.teamId()), null));
+                }
+            }
+            return unavailable;
+        }
+
+        ScheduleSource.Snapshot selected = schedule.snapshot().orElseThrow();
+        CanonicalSource source = new CanonicalSource(schedules.fixtureTable(), "season",
+                selected.season());
+        List<CanonicalFixture> fixtures = schedule.fixtures().stream()
+                .map(row -> new CanonicalFixture(row.id(), row.gameweek(), row.homeTeamId(),
+                        row.awayTeamId(), row.kickoff(), row.started(), row.finished(),
+                        row.homeDifficulty(), row.awayDifficulty()))
+                .toList();
+        Set<Integer> playerIds = new HashSet<>(ids.values());
+        Map<Integer, History> history = loadHistory(source, season.seasonId(), playerIds, asOf);
+        Map<Integer, Map<Integer, Instant>> dailyMembership = loadDailyMembership(
+                capture.season(), playerIds, asOf);
+        Set<Integer> scheduleClubs = new HashSet<>();
+        fixtures.forEach(fixture -> {
+            scheduleClubs.add(fixture.home());
+            scheduleClubs.add(fixture.away());
+        });
+
+        Map<Integer, List<CanonicalFixture>> expected = new HashMap<>();
+        Map<Integer, WindowReason> baseReasons = new HashMap<>();
+        Map<Integer, Integer> clubs = new HashMap<>();
+        for (CapturePlayer player : players) {
+            Integer playerId = ids.get(player.elementId());
+            if (playerId == null) {
+                continue;
+            }
+            Integer club = player.teamId();
+            clubs.put(playerId, club);
+            if (!player.hasValidIdentity() || player.capturedAt().isAfter(asOf)) {
+                baseReasons.put(playerId, WindowReason.INVALID_CAPTURE_IDENTITY);
+                expected.put(playerId, List.of());
+                continue;
+            }
+            if (!scheduleClubs.contains(club)) {
+                baseReasons.put(playerId, WindowReason.CLUB_NOT_IN_SCHEDULE);
+                expected.put(playerId, List.of());
+                continue;
+            }
+
+            History record = history.getOrDefault(playerId, new History());
+            if (record.invalidMappings > 0) {
+                baseReasons.put(playerId, WindowReason.UNMAPPABLE_HISTORY);
+            } else if (record.contradictions > 0) {
+                baseReasons.put(playerId, WindowReason.CONTRADICTORY_OPPONENT);
+            } else if (record.latestClub() != null && record.latestClub().club() != club) {
+                baseReasons.put(playerId, WindowReason.LATEST_CLUB_MISMATCH);
+            }
+            Instant fence = later(record.latestDifferentClub(club),
+                    latestDifferentDaily(dailyMembership.get(playerId), club, scheduleClubs));
+            List<CanonicalFixture> clubFixtures = fixtures.stream()
+                    .filter(fixture -> fixture.involves(club))
+                    .toList();
+            if (clubFixtures.stream().anyMatch(fixture -> fixture.finished()
+                    && fixture.kickoff() == null)) {
+                baseReasons.putIfAbsent(playerId, WindowReason.FINISHED_WITHOUT_CHRONOLOGY);
+            }
+            List<CanonicalFixture> completed = clubFixtures.stream()
+                    .filter(CanonicalFixture::finished)
+                    .filter(fixture -> fixture.kickoff() != null)
+                    .filter(fixture -> !fixture.kickoff().isAfter(asOf))
+                    .filter(fixture -> fence == null || fixture.kickoff().isAfter(fence))
+                    .sorted(NEWEST_FIXTURE)
+                    .limit(ExpectedPoints.WINDOW_MATCHES)
+                    .toList();
+            expected.put(playerId, completed);
+
+            Instant oldest = completed.isEmpty() ? null : completed.getLast().kickoff();
+            boolean pending = clubFixtures.stream()
+                    .filter(fixture -> !fixture.finished() && fixture.kickoff() != null)
+                    .filter(fixture -> !fixture.kickoff().isAfter(asOf))
+                    .filter(fixture -> fence == null || fixture.kickoff().isAfter(fence))
+                    .anyMatch(fixture -> completed.size() < ExpectedPoints.WINDOW_MATCHES
+                            || !fixture.kickoff().isBefore(oldest));
+            if (pending) {
+                baseReasons.putIfAbsent(playerId, WindowReason.RESULT_PENDING);
+            }
+        }
+
+        Map<Integer, Aggregate> aggregates = loadTargetAggregates(season.seasonId(), expected);
+        Map<Integer, List<FixtureOutcome>> outcomes = loadLatestOutcomes(season.seasonId(), expected);
+        Map<Integer, SeasonMetrics> result = new HashMap<>();
+        for (CapturePlayer player : players) {
+            Integer playerId = ids.get(player.elementId());
+            if (playerId == null) {
+                continue;
+            }
+            Aggregate aggregate = aggregates.getOrDefault(playerId, new Aggregate());
+            History record = history.getOrDefault(playerId, new History());
+            Map<String, Object> ability = ability(aggregate, record.wholeSeasonSixty);
+            MinutesWindow window = window(clubs.get(playerId), expected.getOrDefault(playerId, List.of()),
+                    aggregate, outcomes.getOrDefault(playerId, List.of()), baseReasons.get(playerId));
+            result.put(playerId, new SeasonMetrics(season, playerId,
+                    positions.get(player.elementId()), ability, window, exposure(window, aggregate)));
+        }
+        return result;
+    }
+
+    private WindowReason currentSourceFailure(DailyPriceSource.Capture capture,
+                                              SeasonContext season, ScheduleSource.View schedule,
+                                              Instant asOf) {
+        if (!DailyPriceFreshnessCheck.isFresh(capture.date(), asOf)) {
+            return WindowReason.PRICE_CAPTURE_STALE;
+        }
+        if (!capture.season().equals(season.code())) {
+            return WindowReason.SOURCE_SEASON_MISMATCH;
+        }
+        if (schedule.snapshot().isEmpty()) {
+            return WindowReason.SCHEDULE_CAPTURE_MISSING;
+        }
+        if (!schedule.snapshot().orElseThrow().season().equals(season.code())) {
+            return WindowReason.SOURCE_SEASON_MISMATCH;
+        }
+        if (!schedule.completeness().complete()) {
+            return WindowReason.SCHEDULE_INCOMPLETE;
+        }
+        LocalDate capturedDay = LocalDate.ofInstant(
+                schedule.snapshot().orElseThrow().capturedAt(), UkTime.zone());
+        return ScheduleFreshnessCheck.isFresh(capturedDay, asOf)
+                ? null : WindowReason.SCHEDULE_CAPTURE_STALE;
+    }
+
+    private Map<Integer, SeasonMetrics> buildHistoricalMetrics(
+            SeasonContext season, CanonicalSource source, List<CanonicalFixture> fixtures,
+            Set<Integer> playerIds, Map<Integer, Integer> positions) {
+        if (playerIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<Integer, History> histories = loadHistory(source, season.seasonId(), playerIds, null);
+        Map<Integer, List<CanonicalFixture>> expected = new HashMap<>();
+        Map<Integer, WindowReason> baseReasons = new HashMap<>();
+        Map<Integer, Integer> clubs = new HashMap<>();
+        for (int playerId : playerIds) {
+            History history = histories.getOrDefault(playerId, new History());
+            if (history.invalidMappings > 0) {
+                baseReasons.put(playerId, WindowReason.UNMAPPABLE_HISTORY);
+            } else if (history.contradictions > 0) {
+                baseReasons.put(playerId, WindowReason.CONTRADICTORY_OPPONENT);
+            } else if (history.clubs.isEmpty()) {
+                baseReasons.put(playerId, WindowReason.NO_VERIFIED_CLUB);
+            } else if (history.clubs.size() != 1) {
+                baseReasons.put(playerId, WindowReason.MULTIPLE_CLUBS);
+            }
+            if (history.clubs.size() == 1) {
+                int club = history.clubs.getFirst().club();
+                clubs.put(playerId, club);
+                List<CanonicalFixture> all = fixtures.stream().filter(fixture -> fixture.involves(club))
+                        .sorted(NEWEST_FIXTURE).toList();
+                if (all.stream().anyMatch(fixture -> !fixture.finished() || fixture.kickoff() == null)) {
+                    baseReasons.putIfAbsent(playerId, WindowReason.FINISHED_WITHOUT_CHRONOLOGY);
+                }
+                expected.put(playerId, all.stream().filter(CanonicalFixture::finished)
+                        .filter(fixture -> fixture.kickoff() != null).toList());
+            } else {
+                expected.put(playerId, List.of());
+            }
+        }
+        Map<Integer, Aggregate> coverage = loadTargetAggregates(season.seasonId(), expected);
+        Map<Integer, List<FixtureOutcome>> outcomes = loadLatestOutcomes(season.seasonId(), expected);
+        Map<Integer, SeasonMetrics> result = new HashMap<>();
+        for (int playerId : playerIds) {
+            History history = histories.getOrDefault(playerId, new History());
+            Aggregate aggregate = coverage.getOrDefault(playerId, new Aggregate());
+            MinutesWindow window = window(clubs.get(playerId), expected.getOrDefault(playerId, List.of()),
+                    aggregate, outcomes.getOrDefault(playerId, List.of()), baseReasons.get(playerId));
+            result.put(playerId, new SeasonMetrics(season, playerId, positions.get(playerId),
+                    ability(history.ability, history.wholeSeasonSixty), window,
+                    exposure(window, aggregate)));
+        }
+        return result;
+    }
+
+    private Map<Integer, History> loadHistory(CanonicalSource source, int seasonId,
+                                              Set<Integer> playerIds, Instant asOf) {
+        if (playerIds.isEmpty()) {
+            return Map.of();
+        }
+        String ids = placeholders(playerIds.size());
+        String cutoff = asOf == null ? "" : " AND (f.kickoff_time IS NULL OR f.kickoff_time <= ?)";
+        String sql = """
+                WITH mapped AS (
+                    SELECT p.player_id, p.fixture_id, p.minutes, p.total_points,
+                           p.expected_goals, p.expected_assists, p.expected_goals_conceded,
+                           p.defensive_contribution, p.opponent_team_id, p.was_home,
+                           f.id AS canonical_id, f.team_h, f.team_a, f.kickoff_time, f.finished,
+                           CASE WHEN p.was_home THEN f.team_h ELSE f.team_a END AS actual_club,
+                           CASE WHEN p.was_home THEN f.team_a ELSE f.team_h END AS actual_opponent
+                    FROM player_fixture_stats p
+                    LEFT JOIN %s f ON f.id = p.fixture_id AND f.%s = ?
+                    WHERE p.season_id = ? AND p.player_id IN (%s)%s
+                ), grouped AS (
+                    SELECT player_id, actual_club,
+                           count(*) FILTER (WHERE canonical_id IS NULL
+                               OR (COALESCE(finished, false) AND kickoff_time IS NULL)) AS invalid_mapping,
+                           count(*) FILTER (WHERE canonical_id IS NOT NULL
+                               AND COALESCE(finished, false) AND kickoff_time IS NOT NULL
+                               AND opponent_team_id <> actual_opponent) AS contradictions,
+                           count(*) FILTER (WHERE canonical_id IS NOT NULL
+                               AND COALESCE(finished, false) AND kickoff_time IS NOT NULL
+                               AND opponent_team_id = actual_opponent) AS valid_rows,
+                           max(kickoff_time) FILTER (WHERE canonical_id IS NOT NULL
+                               AND COALESCE(finished, false) AND kickoff_time IS NOT NULL
+                               AND opponent_team_id = actual_opponent) AS latest_kickoff,
+                           (array_agg(fixture_id ORDER BY kickoff_time DESC, fixture_id DESC)
+                               FILTER (WHERE canonical_id IS NOT NULL AND COALESCE(finished, false)
+                                   AND kickoff_time IS NOT NULL
+                                   AND opponent_team_id = actual_opponent))[1] AS latest_fixture_id,
+                           count(*) FILTER (WHERE canonical_id IS NOT NULL
+                               AND COALESCE(finished, false) AND kickoff_time IS NOT NULL
+                               AND opponent_team_id = actual_opponent AND minutes >= 60
+                               AND minutes <= 90) AS matches60,
+                           count(*) FILTER (WHERE canonical_id IS NOT NULL
+                               AND COALESCE(finished, false) AND kickoff_time IS NOT NULL
+                               AND opponent_team_id = actual_opponent
+                               AND minutes BETWEEN 0 AND 90) AS usable_rows,
+                           COALESCE(sum(minutes) FILTER (WHERE canonical_id IS NOT NULL
+                               AND COALESCE(finished, false) AND kickoff_time IS NOT NULL
+                               AND opponent_team_id = actual_opponent
+                               AND minutes BETWEEN 0 AND 90), 0) AS mins,
+                           count(*) FILTER (WHERE canonical_id IS NOT NULL
+                               AND COALESCE(finished, false) AND kickoff_time IS NOT NULL
+                               AND opponent_team_id = actual_opponent AND minutes BETWEEN 1 AND 90) AS appearances,
+                           COALESCE(sum(total_points) FILTER (WHERE canonical_id IS NOT NULL
+                               AND COALESCE(finished, false) AND kickoff_time IS NOT NULL
+                               AND opponent_team_id = actual_opponent
+                               AND minutes BETWEEN 0 AND 90), 0) AS points,
+                           COALESCE(sum(expected_goals) FILTER (WHERE canonical_id IS NOT NULL
+                               AND COALESCE(finished, false) AND kickoff_time IS NOT NULL
+                               AND opponent_team_id = actual_opponent
+                               AND minutes BETWEEN 0 AND 90), 0) AS xg,
+                           COALESCE(sum(expected_assists) FILTER (WHERE canonical_id IS NOT NULL
+                               AND COALESCE(finished, false) AND kickoff_time IS NOT NULL
+                               AND opponent_team_id = actual_opponent
+                               AND minutes BETWEEN 0 AND 90), 0) AS xa,
+                           COALESCE(sum(expected_goals_conceded) FILTER (WHERE canonical_id IS NOT NULL
+                               AND COALESCE(finished, false) AND kickoff_time IS NOT NULL
+                               AND opponent_team_id = actual_opponent AND minutes BETWEEN 60 AND 90), 0) AS xgc,
+                           count(*) FILTER (WHERE canonical_id IS NOT NULL
+                               AND COALESCE(finished, false) AND kickoff_time IS NOT NULL
+                               AND opponent_team_id = actual_opponent AND minutes BETWEEN 60 AND 90) AS xgc_count,
+                           COALESCE(sum(defensive_contribution) FILTER (WHERE canonical_id IS NOT NULL
+                               AND COALESCE(finished, false) AND kickoff_time IS NOT NULL
+                               AND opponent_team_id = actual_opponent AND minutes BETWEEN 1 AND 59
+                               AND defensive_contribution IS NOT NULL), 0) AS short_dc,
+                           count(*) FILTER (WHERE canonical_id IS NOT NULL
+                               AND COALESCE(finished, false) AND kickoff_time IS NOT NULL
+                               AND opponent_team_id = actual_opponent AND minutes BETWEEN 1 AND 59
+                               AND defensive_contribution IS NOT NULL) AS short_dc_count,
+                           COALESCE(sum(defensive_contribution) FILTER (WHERE canonical_id IS NOT NULL
+                               AND COALESCE(finished, false) AND kickoff_time IS NOT NULL
+                               AND opponent_team_id = actual_opponent AND minutes BETWEEN 60 AND 90
+                               AND defensive_contribution IS NOT NULL), 0) AS long_dc,
+                           count(*) FILTER (WHERE canonical_id IS NOT NULL
+                               AND COALESCE(finished, false) AND kickoff_time IS NOT NULL
+                               AND opponent_team_id = actual_opponent AND minutes BETWEEN 60 AND 90
+                               AND defensive_contribution IS NOT NULL) AS long_dc_count
+                    FROM mapped GROUP BY player_id, actual_club
+                ) SELECT * FROM grouped
+                """.formatted(source.table(), source.seasonColumn(), ids, cutoff);
+        List<Object> args = new ArrayList<>();
+        args.add(source.seasonValue());
+        args.add(seasonId);
+        args.addAll(playerIds);
+        if (asOf != null) {
+            args.add(Timestamp.from(asOf));
+        }
+        Map<Integer, History> histories = new HashMap<>();
+        for (Map<String, Object> row : jdbc.queryForList(sql, args.toArray())) {
+            int playerId = integer(row.get("player_id"));
+            History history = histories.computeIfAbsent(playerId, ignored -> new History());
+            history.invalidMappings += integer(row.get("invalid_mapping"));
+            history.contradictions += integer(row.get("contradictions"));
+            history.wholeSeasonSixty += integer(row.get("matches60"));
+            int validRows = integer(row.get("valid_rows"));
+            Integer club = nullableInteger(row.get("actual_club"));
+            Instant latest = nullableInstant(row.get("latest_kickoff"));
+            Integer latestFixture = nullableInteger(row.get("latest_fixture_id"));
+            if (validRows > 0 && club != null && latest != null && latestFixture != null) {
+                history.clubs.add(new ClubObservation(club, latest, latestFixture));
+            }
+            history.ability.add(aggregate(row, 0));
+        }
+        return histories;
+    }
+
+    private Map<Integer, Map<Integer, Instant>> loadDailyMembership(
+            String season, Set<Integer> playerIds, Instant asOf) {
+        if (playerIds.isEmpty()) {
+            return Map.of();
+        }
+        List<Object> args = new ArrayList<>();
+        args.add(season);
+        args.add(Timestamp.from(asOf));
+        args.addAll(playerIds);
+        Map<Integer, Map<Integer, Instant>> memberships = new HashMap<>();
+        for (Map<String, Object> row : jdbc.queryForList("""
+                SELECT element_id, team_id, max(captured_at) AS last_seen
+                FROM %s WHERE season = ? AND captured_at <= ? AND team_id IS NOT NULL
+                  AND team_id > 0 AND element_id IN (%s)
+                GROUP BY element_id, team_id
+                """.formatted(dailyTable, placeholders(playerIds.size())), args.toArray())) {
+            memberships.computeIfAbsent(integer(row.get("element_id")), ignored -> new HashMap<>())
+                    .put(integer(row.get("team_id")), instant(row.get("last_seen")));
+        }
+        return memberships;
+    }
+
+    private Map<Integer, Aggregate> loadTargetAggregates(
+            int seasonId, Map<Integer, List<CanonicalFixture>> expected) {
+        List<Target> targets = flatten(expected, false);
+        Map<Integer, Aggregate> aggregates = new HashMap<>();
+        expected.keySet().forEach(id -> aggregates.put(id, new Aggregate()));
+        if (targets.isEmpty()) {
+            return aggregates;
+        }
+        List<Object> args = new ArrayList<>(targets.size() * 2 + 1);
+        String values = targetValues(targets, args, false);
+        args.add(seasonId);
+        String sql = """
+                WITH expected(player_id, fixture_id) AS (VALUES %s)
+                SELECT e.player_id, count(*) AS expected,
+                       count(p.player_id) AS observed,
+                       count(*) FILTER (WHERE p.player_id IS NOT NULL
+                           AND (p.minutes < 0 OR p.minutes > 90)) AS invalid_minutes,
+                       count(*) FILTER (WHERE p.minutes BETWEEN 0 AND 90) AS usable_rows,
+                       COALESCE(sum(p.minutes) FILTER (WHERE p.minutes BETWEEN 0 AND 90), 0) AS mins,
+                       count(*) FILTER (WHERE p.minutes BETWEEN 1 AND 90) AS appearances,
+                       count(*) FILTER (WHERE p.minutes BETWEEN 60 AND 90) AS matches60,
+                       COALESCE(sum(p.total_points) FILTER (WHERE p.minutes BETWEEN 0 AND 90), 0) AS points,
+                       COALESCE(sum(p.expected_goals) FILTER (WHERE p.minutes BETWEEN 0 AND 90), 0) AS xg,
+                       COALESCE(sum(p.expected_assists) FILTER (WHERE p.minutes BETWEEN 0 AND 90), 0) AS xa,
+                       COALESCE(sum(p.expected_goals_conceded)
+                           FILTER (WHERE p.minutes BETWEEN 60 AND 90), 0) AS xgc,
+                       count(*) FILTER (WHERE p.minutes BETWEEN 60 AND 90) AS xgc_count,
+                       COALESCE(sum(p.defensive_contribution)
+                           FILTER (WHERE p.minutes BETWEEN 1 AND 59
+                               AND p.defensive_contribution IS NOT NULL), 0) AS short_dc,
+                       count(*) FILTER (WHERE p.minutes BETWEEN 1 AND 59
+                           AND p.defensive_contribution IS NOT NULL) AS short_dc_count,
+                       COALESCE(sum(p.defensive_contribution)
+                           FILTER (WHERE p.minutes BETWEEN 60 AND 90
+                               AND p.defensive_contribution IS NOT NULL), 0) AS long_dc,
+                       count(*) FILTER (WHERE p.minutes BETWEEN 60 AND 90
+                           AND p.defensive_contribution IS NOT NULL) AS long_dc_count
+                FROM expected e LEFT JOIN player_fixture_stats p
+                  ON p.season_id = ? AND p.player_id = e.player_id AND p.fixture_id = e.fixture_id
+                GROUP BY e.player_id
+                """.formatted(values);
+        for (Map<String, Object> row : jdbc.queryForList(sql, args.toArray())) {
+            aggregates.put(integer(row.get("player_id")), aggregate(row, integer(row.get("expected"))));
+        }
+        return aggregates;
+    }
+
+    private Map<Integer, List<FixtureOutcome>> loadLatestOutcomes(
+            int seasonId, Map<Integer, List<CanonicalFixture>> expected) {
+        List<Target> targets = flatten(expected, true);
+        if (targets.isEmpty()) {
+            return Map.of();
+        }
+        List<Object> args = new ArrayList<>(targets.size() * 3 + 1);
+        String values = targetValues(targets, args, true);
+        args.add(seasonId);
+        Map<Integer, List<FixtureOutcome>> outcomes = new HashMap<>();
+        for (Map<String, Object> row : jdbc.queryForList("""
+                WITH expected(player_id, fixture_id, kickoff) AS (VALUES %s)
+                SELECT e.player_id, e.fixture_id, e.kickoff, p.minutes
+                FROM expected e LEFT JOIN player_fixture_stats p
+                  ON p.season_id = ? AND p.player_id = e.player_id AND p.fixture_id = e.fixture_id
+                ORDER BY e.player_id, e.kickoff DESC, e.fixture_id DESC
+                """.formatted(values), args.toArray())) {
+            outcomes.computeIfAbsent(integer(row.get("player_id")), ignored -> new ArrayList<>())
+                    .add(new FixtureOutcome(integer(row.get("fixture_id")),
+                            instant(row.get("kickoff")), nullableInteger(row.get("minutes"))));
+        }
+        return outcomes;
+    }
+
+    private static List<Target> flatten(Map<Integer, List<CanonicalFixture>> expected,
+                                        boolean latestTwoOnly) {
+        List<Target> targets = new ArrayList<>();
+        expected.forEach((playerId, fixtures) -> {
+            List<CanonicalFixture> selected = fixtures.stream().sorted(NEWEST_FIXTURE)
+                    .limit(latestTwoOnly ? 2 : Long.MAX_VALUE).toList();
+            selected.forEach(fixture -> targets.add(new Target(playerId, fixture)));
+        });
+        return targets;
+    }
+
+    private static String targetValues(List<Target> targets, List<Object> args, boolean kickoff) {
+        List<String> rows = new ArrayList<>(targets.size());
+        for (Target target : targets) {
+            rows.add(kickoff ? "(?, ?, ?::timestamptz)" : "(?, ?)");
+            args.add(target.playerId());
+            args.add(target.fixture().id());
+            if (kickoff) {
+                args.add(Timestamp.from(target.fixture().kickoff()));
+            }
+        }
+        return String.join(",", rows);
+    }
+
+    private static Aggregate aggregate(Map<String, Object> row, int expected) {
+        Aggregate aggregate = new Aggregate();
+        aggregate.expected = expected;
+        aggregate.observed = integer(row.get("observed"));
+        aggregate.invalidMinutes = integer(row.get("invalid_minutes"));
+        aggregate.usableRows = integer(row.get("usable_rows"));
+        aggregate.totalMinutes = integer(row.get("mins"));
+        aggregate.appearances = integer(row.get("appearances"));
+        aggregate.sixtyPlus = integer(row.get("matches60"));
+        aggregate.points = number(row.get("points"));
+        aggregate.xg = number(row.get("xg"));
+        aggregate.xa = number(row.get("xa"));
+        aggregate.xgc = number(row.get("xgc"));
+        aggregate.xgcCount = integer(row.get("xgc_count"));
+        aggregate.shortDefcon = number(row.get("short_dc"));
+        aggregate.shortDefconCount = integer(row.get("short_dc_count"));
+        aggregate.longDefcon = number(row.get("long_dc"));
+        aggregate.longDefconCount = integer(row.get("long_dc_count"));
+        return aggregate;
+    }
+
+    private static Map<String, Object> ability(Aggregate aggregate, int wholeSeasonSixty) {
+        if (aggregate.usableRows == 0) {
+            return Map.of();
+        }
+        Map<String, Object> metrics = new LinkedHashMap<>();
+        metrics.put("mins", aggregate.totalMinutes);
+        metrics.put("matches", aggregate.appearances);
+        metrics.put("matches60", wholeSeasonSixty);
+        if (aggregate.totalMinutes > 0) {
+            metrics.put("xg90", aggregate.xg * 90 / aggregate.totalMinutes);
+            metrics.put("xa90", aggregate.xa * 90 / aggregate.totalMinutes);
+            metrics.put("pts90", aggregate.points * 90 / aggregate.totalMinutes);
+        }
+        if (aggregate.xgcCount > 0) {
+            metrics.put("xgc_per_match", aggregate.xgc / aggregate.xgcCount);
+        }
+        metrics.put("defcon_short_matches", aggregate.shortDefconCount);
+        if (aggregate.shortDefconCount > 0) {
+            metrics.put("defcon_short_avg", aggregate.shortDefcon / aggregate.shortDefconCount);
+        }
+        metrics.put("defcon_matches", aggregate.longDefconCount);
+        if (aggregate.longDefconCount > 0) {
+            double mean = aggregate.longDefcon / aggregate.longDefconCount;
+            metrics.put("defcon_avg", mean);
+            metrics.put("defcon_long_avg", mean);
+        }
+        metrics.put("defcon_long_matches", aggregate.longDefconCount);
+        return metrics;
+    }
+
+    private static MinutesWindow window(Integer club, List<CanonicalFixture> expected,
+                                        Aggregate aggregate, List<FixtureOutcome> outcomes,
+                                        WindowReason baseReason) {
+        WindowReason reason = baseReason;
+        if (reason == null && aggregate.invalidMinutes > 0) {
+            reason = WindowReason.INVALID_MINUTES;
+        }
+        if (reason == null && aggregate.observed != expected.size()) {
+            reason = WindowReason.MISSING_OBSERVATION;
+        }
+        if (reason == null) {
+            reason = WindowReason.COMPLETE;
+        }
+        Instant first = expected.stream().map(CanonicalFixture::kickoff)
+                .min(Comparator.naturalOrder()).orElse(null);
+        Instant last = expected.stream().map(CanonicalFixture::kickoff)
+                .max(Comparator.naturalOrder()).orElse(null);
+        return new MinutesWindow(reason == WindowReason.COMPLETE, reason, club, first, last,
+                expected.size(), aggregate.observed, aggregate.totalMinutes,
+                aggregate.appearances, aggregate.sixtyPlus, outcomes);
+    }
+
+    private static MinutesWindow emptyWindow(WindowReason reason, Integer club) {
+        return new MinutesWindow(false, reason, club, null, null,
+                0, 0, 0, 0, 0, List.of());
+    }
+
+    private static SeasonBlend.Exposure exposure(MinutesWindow window, Aggregate aggregate) {
+        if (!window.complete() || window.expected() == 0) {
+            return null;
+        }
+        double fixtures = window.expected();
+        double appearanceRate = window.appearances() / fixtures;
+        double sixtyRate = window.sixtyPlus() / fixtures;
+        return new SeasonBlend.Exposure(window.expected(), window.appearances(), window.sixtyPlus(),
+                window.totalMinutes(), appearanceRate, sixtyRate,
+                appearanceRate - sixtyRate, window.totalMinutes() / fixtures,
+                aggregate.points / fixtures);
+    }
+
+    private List<CanonicalFixture> loadCanonicalFixtures(CanonicalSource source) {
+        return jdbc.query("""
+                SELECT id, gameweek, team_h, team_a, kickoff_time, started, finished,
+                       team_h_difficulty, team_a_difficulty
+                FROM %s WHERE %s = ? ORDER BY id
+                """.formatted(source.table(), source.seasonColumn()), (rs, rowNum) ->
+                        new CanonicalFixture(rs.getInt("id"),
+                                nullableInteger(rs.getObject("gameweek")), rs.getInt("team_h"),
+                                rs.getInt("team_a"), nullableInstant(rs.getObject("kickoff_time")),
+                                rs.getBoolean("started"), rs.getBoolean("finished"),
+                                nullableInteger(rs.getObject("team_h_difficulty")),
+                                nullableInteger(rs.getObject("team_a_difficulty"))),
+                source.seasonValue());
+    }
+
+    private static Map<Integer, Integer> currentPositionsByPlayer(
+            List<CapturePlayer> players, Map<Integer, Integer> ids,
+            Map<Integer, Integer> positionsByElement) {
+        Map<Integer, Integer> positions = new HashMap<>();
+        for (CapturePlayer player : players) {
+            Integer id = ids.get(player.elementId());
+            if (id != null) {
+                positions.put(id, positionsByElement.get(player.elementId()));
+            }
+        }
+        return positions;
+    }
+
+    private static Instant latestDifferentDaily(Map<Integer, Instant> membership, int club,
+                                                Set<Integer> scheduleClubs) {
+        if (membership == null) {
+            return null;
+        }
+        return membership.entrySet().stream()
+                .filter(entry -> entry.getKey() != club && scheduleClubs.contains(entry.getKey()))
+                .map(Map.Entry::getValue).max(Comparator.naturalOrder()).orElse(null);
+    }
+
+    private static Instant later(Instant first, Instant second) {
+        if (first == null) return second;
+        if (second == null) return first;
+        return first.isAfter(second) ? first : second;
+    }
+
+    private static boolean sameDefconDefinition(Integer current, Integer previous) {
+        return defconFamily(current) >= 0 && defconFamily(current) == defconFamily(previous);
+    }
+
+    private static int defconFamily(Integer position) {
+        if (position == null) return -1;
+        return switch (position) {
+            case 1 -> 0;
+            case 2 -> 1;
+            case 3, 4 -> 2;
+            default -> -1;
+        };
+    }
+
+    private static Map<String, Object> withoutDefcon(Map<String, Object> source) {
+        Map<String, Object> copy = new HashMap<>(source);
+        copy.keySet().removeIf(key -> key.startsWith("defcon_"));
+        return copy;
+    }
+
+    private static String placeholders(int count) {
+        return String.join(",", java.util.Collections.nCopies(count, "?"));
+    }
+
+    private static String key(String name) {
+        return name == null ? "" : name.toLowerCase(Locale.ROOT);
+    }
+
+    private static int integer(Object value) {
+        return value instanceof Number number ? number.intValue() : 0;
+    }
+
+    private static double number(Object value) {
+        return value instanceof Number number ? number.doubleValue() : 0;
+    }
+
+    private static Integer nullableInteger(Object value) {
+        return value instanceof Number number ? number.intValue() : null;
+    }
+
+    private static Double nullableDouble(Object value) {
+        return value instanceof Number number ? number.doubleValue() : null;
+    }
+
+    private static Instant nullableInstant(Object value) {
+        return value == null ? null : instant(value);
+    }
+
+    private static Instant instant(Object value) {
+        return switch (value) {
+            case Timestamp timestamp -> timestamp.toInstant();
+            case java.time.OffsetDateTime offset -> offset.toInstant();
+            case Instant instant -> instant;
+            default -> throw new IllegalStateException("Expected timestamp, got "
+                    + (value == null ? "null" : value.getClass().getName()));
+        };
+    }
+}
