@@ -1,5 +1,6 @@
 package dev.quantti.fplassistant.schedule;
 
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 
@@ -30,5 +31,30 @@ class ScheduleFreshnessCheckTest {
     @Test
     void aTwoDayOldCaptureIsStaleEvenBeforeTheWindow() {
         assertThat(ScheduleFreshnessCheck.isStale(TODAY.minusDays(2), TODAY.atTime(2, 30))).isTrue();
+    }
+
+    @Test
+    void strictFreshnessUsesTheThreeAmUkCutoverInGmtAndBst() {
+        LocalDate winterYesterday = LocalDate.of(2026, 1, 14);
+        assertThat(ScheduleFreshnessCheck.isFresh(winterYesterday,
+                Instant.parse("2026-01-15T02:59:59Z"))).isTrue();
+        assertThat(ScheduleFreshnessCheck.isFresh(winterYesterday,
+                Instant.parse("2026-01-15T03:00:00Z"))).isFalse();
+        assertThat(ScheduleFreshnessCheck.isFresh(winterYesterday.plusDays(1),
+                Instant.parse("2026-01-15T03:00:00Z"))).isTrue();
+
+        LocalDate summerYesterday = LocalDate.of(2026, 7, 14);
+        assertThat(ScheduleFreshnessCheck.isFresh(summerYesterday,
+                Instant.parse("2026-07-15T01:59:59Z"))).isTrue();
+        assertThat(ScheduleFreshnessCheck.isFresh(summerYesterday,
+                Instant.parse("2026-07-15T02:00:00Z"))).isFalse();
+        assertThat(ScheduleFreshnessCheck.isFresh(summerYesterday.plusDays(1),
+                Instant.parse("2026-07-15T02:00:00Z"))).isTrue();
+    }
+
+    @Test
+    void aFutureCaptureIsNotFresh() {
+        assertThat(ScheduleFreshnessCheck.isFresh(TODAY.plusDays(1),
+                Instant.parse("2026-09-15T11:00:00Z"))).isFalse();
     }
 }

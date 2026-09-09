@@ -35,6 +35,8 @@ class PickToolsRankingTest {
         row.put("xg90", BigDecimal.ZERO);
         row.put("xa90", BigDecimal.ZERO);
         row.put("pts90", BigDecimal.ZERO);
+        row.put("expected_per_fixture", 0.0);
+        row.put("points_per_fixture", 0.0);
         return row;
     }
 
@@ -46,6 +48,8 @@ class PickToolsRankingTest {
         row.put("xa90", BigDecimal.valueOf(xa90));
         row.put("xgc_per_match", BigDecimal.valueOf(xgc));
         row.put("pts90", BigDecimal.valueOf(pts90));
+        row.put("expected_per_fixture", ExpectedPoints.perNinety(row));
+        row.put("points_per_fixture", pts90);
         return row;
     }
 
@@ -59,6 +63,8 @@ class PickToolsRankingTest {
         row.put("xg90", BigDecimal.valueOf(xg90));
         row.put("xa90", BigDecimal.valueOf(xa90));
         row.put("pts90", BigDecimal.valueOf(pts90));
+        row.put("expected_per_fixture", ExpectedPoints.perNinety(row));
+        row.put("points_per_fixture", pts90);
         return row;
     }
 
@@ -94,6 +100,15 @@ class PickToolsRankingTest {
                 Map.of(1, 3.0), true, lateSeason);
 
         assertThat(ranked.getFirst().get("web_name")).isEqualTo("Returns");
+    }
+
+    @Test
+    void scoreBlendsTwoPerFixtureFiguresWithoutAddingAppearanceAgain() {
+        Map<String, Object> player = attacker("PerFixture", 3, 0.4, 0.2, 2.0);
+        player.put("expected_per_fixture", 4.0);
+        player.put("points_per_fixture", 2.0);
+
+        assertThat(PickTools.score(player, 0.5)).isEqualTo(3.0);
     }
 
     @Test

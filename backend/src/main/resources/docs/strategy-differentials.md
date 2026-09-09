@@ -38,7 +38,7 @@ Lower ownership = higher rank impact on a haul, and bigger rank loss on a blank.
 Pass all five → real differential. Pass four → watch-list. Pass three or fewer → a punt (and punts tank seasons).
 
 1. **Strong underlying numbers**: xG, xA, shots on target, big chances above what ownership implies; look for the gap between doing and scoring.
-2. **Minutes reliability**: 70+ minutes most games, ideally 80+; a starter who only plays every other week is not a differential.
+2. **Minutes reliability**: 70+ minutes most games, ideally 80+; a starter who only plays every other week is not a differential. These are strategic preferences, not forecast probabilities. The primary ranking's **consistent observed 60+ history** gate requires fresh available status and complete same-season, current-club evidence: at least 180 minutes and 60+ in every expected fixture of the latest up-to-ten window. One sub-60 fixture blocks until ten later completed club fixtures in that spell move it out. Short complete windows can qualify but remain labelled small samples; stale or incomplete evidence means abstention, and passing never guarantees the next start. See `strategy-minutes-and-rotation.md`.
 3. **Favourable upcoming fixtures**: a 4-Gameweek run rated ~2 or better defensively; rollercoaster fixtures = coin flip.
 4. **Clear role**: set-piece taker, penalty taker, primary creator, goal-scoring forward — a defined route to points, not "might pop up with a goal".
 5. **A reason for low ownership**: small team nobody watches (green light) vs benched twice last month (red flag). Missing this step is the most common error.
