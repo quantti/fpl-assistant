@@ -54,6 +54,12 @@ class PickToolsIntegrationTest {
     private static final int ZERO = 13_007;
     private static final int NO_RECORD = 13_008;
     private static final int UNAVAILABLE = 13_009;
+    private static final int DOUBLE_MID = 13_010;
+    private static final int NEAR_MID = 13_011;
+    private static final int FAR_MID = 13_012;
+
+    /** A midweek second leg, after every gameweek-6 kickoff the seeded schedule lays down. */
+    private static final Instant SECOND_LEG_KICKOFF = Instant.parse("2026-09-29T18:00:00Z");
 
     @TestConfiguration
     static class FixedClock {
@@ -239,5 +245,89 @@ class PickToolsIntegrationTest {
         assertThat(result).contains("availability risk 2")
                 .contains("observed minutes risk 2")
                 .contains("unknown current evidence 1");
+    }
+
+    /**
+     * A club that plays twice inside the five editable gameweeks has six fixtures in the window,
+     * not five. Taking the next five fixtures instead drops the last gameweek it was asked about.
+     */
+    @Test
+    void theAverageFdrCoversEveryFixtureOfADoubleGameweekWindow() {
+        int club = RankingSeed.team(1);
+        ScheduleSource.FixtureRow secondLeg = laterFixtureAgainstAnUnusedClub(club);
+        moveToGameweek(secondLeg.id(), 6, SECOND_LEG_KICKOFF);
+        for (int gameweek = 4; gameweek <= 7; gameweek++) {
+            setClubDifficulty(club, fixtureFor(club, gameweek), 2);
+        }
+        setClubDifficulty(club, secondLeg.id(), 2);
+        setClubDifficulty(club, fixtureFor(club, 8), 5);
+
+        String line = lineFor(tools.getDifferentialPicks("any", 10, 5), " Reliable (");
+
+        assertThat(line).contains("Avg FDR 2.5");
+    }
+
+    /**
+     * Three midfielders identical but for their expected goals, so the per-fixture order is
+     * Faraway, Nearly, Doubler by construction. Over the window Doubler plays six times and the
+     * other two five, which must lift him past Nearly without letting him overtake Faraway.
+     */
+    @Test
+    void aDoubleGameweekOutranksACloseSingleButNotAFarBetterOne() {
+        seedPlayer(DOUBLE_MID, "Doubler", 10, 3, 50, 5.0, "a", 90, 0.52, 0, 1.0, null);
+        seedPlayer(NEAR_MID, "Nearly", 11, 3, 50, 5.0, "a", 90, 0.62, 0, 1.0, null);
+        seedPlayer(FAR_MID, "Faraway", 12, 3, 50, 5.0, "a", 90, 1.00, 0, 1.0, null);
+        moveToGameweek(laterFixtureAgainstAnUnusedClub(RankingSeed.team(10)).id(), 6,
+                SECOND_LEG_KICKOFF);
+
+        String reply = tools.getDifferentialPicks("MID", 100, 5);
+
+        assertThat(reply).contains(" Doubler (", " Nearly (", " Faraway (");
+        assertThat(reply.indexOf(" Faraway ("))
+                .as("one far better fixture still beats two lesser ones")
+                .isLessThan(reply.indexOf(" Doubler ("));
+        assertThat(reply.indexOf(" Doubler ("))
+                .as("two fixtures beat one slightly better fixture")
+                .isLessThan(reply.indexOf(" Nearly ("));
+    }
+
+    /** A later fixture of this club against a club none of the seeded players belongs to. */
+    private static ScheduleSource.FixtureRow laterFixtureAgainstAnUnusedClub(int club) {
+        return RankingSeed.fixtures(CAPTURED_AT, FIRST_DEADLINE).stream()
+                .filter(row -> row.gameweek() > 8)
+                .filter(row -> row.homeTeamId() == club || row.awayTeamId() == club)
+                .filter(row -> (row.homeTeamId() == club ? row.awayTeamId() : row.homeTeamId())
+                        >= RankingSeed.team(13))
+                .findFirst().orElseThrow();
+    }
+
+    private static int fixtureFor(int club, int gameweek) {
+        return RankingSeed.fixtures(CAPTURED_AT, FIRST_DEADLINE).stream()
+                .filter(row -> row.gameweek() == gameweek)
+                .filter(row -> row.homeTeamId() == club || row.awayTeamId() == club)
+                .mapToInt(ScheduleSource.FixtureRow::id).findFirst().orElseThrow();
+    }
+
+    private void moveToGameweek(int fixtureId, int gameweek, Instant kickoff) {
+        jdbc.update("UPDATE " + scheduleSource.fixtureTable()
+                        + " SET gameweek = ?, kickoff_time = ? WHERE season = ? AND id = ?",
+                gameweek, Timestamp.from(kickoff), SEASON, fixtureId);
+    }
+
+    /** Sets this club's own side of the fixture's difficulty, leaving the opponent's alone. */
+    private void setClubDifficulty(int club, int fixtureId, int difficulty) {
+        jdbc.update("UPDATE " + scheduleSource.fixtureTable()
+                        + " SET team_h_difficulty ="
+                        + " CASE WHEN team_h = ? THEN ? ELSE team_h_difficulty END,"
+                        + " team_a_difficulty ="
+                        + " CASE WHEN team_a = ? THEN ? ELSE team_a_difficulty END"
+                        + " WHERE season = ? AND id = ?",
+                club, difficulty, club, difficulty, SEASON, fixtureId);
+    }
+
+    private static String lineFor(String reply, String marker) {
+        return reply.lines().filter(line -> line.contains(marker)).findFirst()
+                .orElseThrow(() -> new AssertionError(
+                        "no pick line matching '" + marker + "' in:\n" + reply));
     }
 }
