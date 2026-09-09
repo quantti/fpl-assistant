@@ -1,6 +1,7 @@
 package dev.quantti.fplassistant.tools;
 
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * FPL's own scoring applied to expected numbers — the one figure that compares a forward with a
@@ -14,8 +15,8 @@ import java.util.Map;
  * squad building must agree about what a player is worth; two copies would not.
  *
  * <p>Not modelled: save points and penalty saves, so goalkeepers are understated and callers say
- * so. Defensive-contribution points are modelled — see {@link #defconPerNinety} — from the
- * per-match rows {@code player_fixture_stats} carries; a row without them simply loses the term.
+ * so. Defensive contribution is modelled from short- and long-appearance action rates in
+ * {@link #perFixture}; a missing required class is labelled partial rather than read as zero.
  */
 public final class ExpectedPoints {
 
@@ -26,8 +27,8 @@ public final class ExpectedPoints {
     public static final double APPEARANCE_POINTS = 2;
 
     /**
-     * Matches of underlying data read per player when the metrics come from the season being
-     * played: recent form, which is what "last 10" should mean.
+     * Latest completed current-club fixtures read per player when metrics come from the season
+     * being played. This is a bounded evidence window, not FPL's points-based "form".
      *
      * <p>A finished season is read whole instead ({@link #WHOLE_SEASON}). Taking its last ten
      * gameweeks means GW28-38 — the run-in, where a side chasing Europe rotates, a safe
@@ -44,9 +45,9 @@ public final class ExpectedPoints {
     public static final int WHOLE_SEASON = 60;
 
     /**
-     * Minutes a player must have inside the window to be ranked at all. Two full matches: below
-     * that, a per-90 figure is arithmetic on noise, and a cameo with one big chance outranks a
-     * regular starter.
+     * Minimum minutes for both the ability floor and the separate current-role gate. The latter
+     * additionally requires complete current-season evidence and 60+ in every expected fixture;
+     * cross-season aggregate minutes cannot satisfy it.
      */
     public static final int MIN_WINDOW_MINUTES = 180;
 
@@ -71,11 +72,9 @@ public final class ExpectedPoints {
     public static final double DEFCON_POINTS = 2;
 
     /**
-     * Matches of 60 minutes or more the mean must rest on before it is read at all.
-     *
-     * <p>Two, which is the same sample {@link #MIN_WINDOW_MINUTES} already admits a player to the
-     * ranking on: no single component is held to a stricter standard than the row itself. Below
-     * it the term is dropped rather than estimated, and callers print {@code DC n/a}.
+     * Observations in each used appearance class that a DefCon action mean must rest on.
+     * Below it that class is unavailable rather than estimated; another class may remain valid,
+     * and callers label the combined component partial.
      */
     public static final int MIN_DEFCON_MATCHES = 2;
 
@@ -104,12 +103,89 @@ public final class ExpectedPoints {
      */
     public static final double DEFCON_DISPERSION = 1.6;
 
+    public record PerFixture(double points, double appearance, double attack,
+                             Double cleanSheet, double defensiveContribution,
+                             boolean partialDefcon) {
+    }
+
     private ExpectedPoints() {
     }
 
     /**
-     * Expected FPL points per 90 minutes. Appearance points are a constant and do not affect the
-     * order — they are here so the number reads as points rather than as an index.
+     * Expected components over one fixture at the supplied observed exposure rates. The xGC
+     * clean-sheet term remains a season-average conditional approximation; when that signal was
+     * never populated it is absent rather than treated as a certain clean sheet.
+     */
+    public static Optional<PerFixture> perFixture(Map<String, Object> row,
+                                                   SeasonBlend.Exposure exposure) {
+        if (exposure == null) {
+            return Optional.empty();
+        }
+        int position = ((Number) row.get("element_type")).intValue();
+        double appearance = exposure.appearanceRate() + exposure.sixtyRate();
+        double attack = (goalPoints(position) * numeric(row.get("xg90"))
+                + ASSIST_POINTS * numeric(row.get("xa90"))) * exposure.expectedMinutes() / 90;
+
+        Double cleanSheet = 0.0;
+        if (cleanSheetPoints(position) > 0) {
+            Object xgc = row.get("xgc_per_match");
+            if (exposure.sixtyRate() == 0) {
+                cleanSheet = 0.0;
+            } else {
+                cleanSheet = hasCleanSheetSignal(xgc)
+                        ? cleanSheetPoints(position) * exposure.sixtyRate()
+                                * cleanSheetProbability(numeric(xgc))
+                        : null;
+            }
+        }
+
+        DefconFixture defcon = defconPerFixture(row, position, exposure);
+        double points = appearance + attack + (cleanSheet == null ? 0 : cleanSheet)
+                + defcon.points();
+        return Optional.of(new PerFixture(points, appearance, attack, cleanSheet,
+                defcon.points(), defcon.partial()));
+    }
+
+    private record DefconFixture(double points, boolean partial) {
+    }
+
+    private static DefconFixture defconPerFixture(Map<String, Object> row, int position,
+                                                   SeasonBlend.Exposure exposure) {
+        if (defconThreshold(position) == 0) {
+            return new DefconFixture(0, false);
+        }
+        double weightedTail = 0;
+        boolean partial = false;
+        if (exposure.shortRate() > 0) {
+            if (hasClassSignal(row, "defcon_short_avg", "defcon_short_matches")) {
+                weightedTail += exposure.shortRate() * thresholdProbability(
+                        numeric(row.get("defcon_short_avg")), defconThreshold(position));
+            } else {
+                partial = true;
+            }
+        }
+        if (exposure.sixtyRate() > 0) {
+            String mean = row.containsKey("defcon_long_avg") ? "defcon_long_avg" : "defcon_avg";
+            String count = row.containsKey("defcon_long_matches")
+                    ? "defcon_long_matches" : "defcon_matches";
+            if (hasClassSignal(row, mean, count)) {
+                weightedTail += exposure.sixtyRate() * thresholdProbability(
+                        numeric(row.get(mean)), defconThreshold(position));
+            } else {
+                partial = true;
+            }
+        }
+        return new DefconFixture(DEFCON_POINTS * weightedTail, partial);
+    }
+
+    private static boolean hasClassSignal(Map<String, Object> row, String meanKey, String countKey) {
+        return numeric(row.get(countKey)) >= MIN_DEFCON_MATCHES
+                && row.get(meanKey) instanceof Number && numeric(row.get(meanKey)) >= 0;
+    }
+
+    /**
+     * Legacy explanatory per-90 statistic. Rankings use {@link #perFixture} so appearance and
+     * clean-sheet boundaries are not smoothed into a mean-minutes multiplier.
      */
     public static double perNinety(Map<String, Object> row) {
         int position = ((Number) row.get("element_type")).intValue();
@@ -124,14 +200,10 @@ public final class ExpectedPoints {
     }
 
     /**
-     * Expected defensive-contribution points per qualifying match, from how often the player
-     * has actually crossed the threshold rather than from his average.
+     * Legacy long-appearance defensive-contribution term for {@link #perNinety}, estimated from
+     * the player's action mean rather than a coarse count of past threshold crossings.
      *
-     * <p>Per match rather than per 90, like the clean-sheet term beside it: both are the chance
-     * of a per-match event, counted over matches of an hour or more, and both are added to a
-     * per-90 figure on the understanding that a player who qualifies has played most of the 90.
-     *
-     * <p>The average answers this once it is read through a distribution. The points land at a
+     * <p>The average answers the threshold question once read through a distribution. The points land at a
      * per-match threshold, so the question is how often the player clears it — and a defender
      * averaging 9.8 actions clears 10 about half the time, which neither the bare average nor a
      * tally of past crossings says on its own.
@@ -201,7 +273,8 @@ public final class ExpectedPoints {
     public static boolean hasDefconSignal(Map<String, Object> row, int position) {
         return defconThreshold(position) > 0
                 && numeric(row.get("defcon_matches")) >= MIN_DEFCON_MATCHES
-                && numeric(row.get("defcon_avg")) > 0;
+                && row.get("defcon_avg") instanceof Number
+                && numeric(row.get("defcon_avg")) >= 0;
     }
 
     /** Bounds-guarded like {@link #goalPoints}: an unknown element type earns no term. */

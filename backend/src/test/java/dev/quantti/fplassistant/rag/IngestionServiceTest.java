@@ -2,7 +2,9 @@ package dev.quantti.fplassistant.rag;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.document.Document;
+import org.springframework.core.io.ClassPathResource;
 
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -321,6 +323,41 @@ class IngestionServiceTest {
         assertThat(chunks).hasSize(1);
         assertThat(chunks.get(0).getText()).startsWith("Bench Boost Playbook\n");
         assertThat(chunks.get(0).getMetadata().get("section")).isEqualTo("Bench Boost Playbook");
+    }
+
+    @Test
+    void minutesStrategyKeepsRulesAndReliabilityCaveatsInSelfContainedChunks() throws Exception {
+        String file = "strategy-minutes-and-rotation.md";
+        String markdown = new ClassPathResource("docs/" + file)
+                .getContentAsString(StandardCharsets.UTF_8);
+        IngestionService.FrontMatter fm = IngestionService.parseFrontMatter(markdown, file);
+        List<Document> chunks = IngestionService.chunk(IngestionService.stripFrontMatter(markdown), fm, file);
+
+        assertThat(chunks).isNotEmpty().allSatisfy(chunk -> {
+            assertThat(chunk.getMetadata()).containsEntry("title", fm.title())
+                    .containsEntry("kind", "reference")
+                    .containsEntry("valid_from", "2026-09-09")
+                    .doesNotContainKey("valid_until");
+            assertThat(chunk.getText()).startsWith(fm.title())
+                    .doesNotContain("valid_from:");
+        });
+        assertThat(chunks).filteredOn(c -> "Why 60 minutes changes a defender's value"
+                        .equals(c.getMetadata().get("section")))
+                .singleElement().satisfies(chunk -> assertThat(chunk.getText())
+                        .contains("Appearance points", "1–59", "60+",
+                                "sent off", "a later team goal removes the clean sheet",
+                                "Defensive contribution has no 60-minute eligibility rule"));
+        assertThat(chunks).filteredOn(c -> "Choosing reliable defenders before attacking upside"
+                        .equals(c.getMetadata().get("section")))
+                .singleElement().satisfies(chunk -> assertThat(chunk.getText())
+                        .contains("reliable first choice", "instead of filling the list",
+                                "no universal probability cutoff"));
+        assertThat(chunks).filteredOn(c -> "The primary-list rule used by the ranking tools"
+                        .equals(c.getMetadata().get("section")))
+                .singleElement().satisfies(chunk -> assertThat(chunk.getText())
+                        .contains("latest up to ten completed fixtures", "at least 180",
+                                "reached 60 in every", "ten later completed club fixtures",
+                                "never satisfy this current-role gate", "not a calibrated"));
     }
 
     @Test

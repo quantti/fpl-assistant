@@ -124,6 +124,49 @@ class SeasonBlendTest {
     }
 
     @Test
+    void exposureRatesBlendByTheRampRatherThanByUnequalFixtureCounts() {
+        Map<String, Object> cur = season(180, 2, 0.60, 0.20, 1.0, 9.0, 2);
+        Map<String, Object> prev = season(2700, 30, 0.20, 0.10, 1.5, 6.0, 30);
+        SeasonBlend.Exposure current = exposure(2, 2, 2, 180, 8);
+        SeasonBlend.Exposure previous = exposure(38, 30, 28, 2500, 152);
+
+        SeasonBlend.Blended blended = SeasonBlend.blend(
+                cur, prev, current, previous, true);
+
+        assertThat(blended.exposure().appearanceRate())
+                .isCloseTo(0.3 * 1.0 + 0.7 * (30.0 / 38), within(1e-9));
+        assertThat(blended.exposure().sixtyRate())
+                .isCloseTo(0.3 * 1.0 + 0.7 * (28.0 / 38), within(1e-9));
+        assertThat(blended.exposure().fixtures()).isEqualTo(40);
+        assertThat(blended.metrics().get("points_per_fixture"))
+                .isEqualTo(blended.exposure().pointsPerFixture());
+    }
+
+    @Test
+    void aLiveProjectionNeedsCurrentExposureButDoesNotNeedPreviousExposure() {
+        Map<String, Object> cur = season(180, 0, 0.60, 0.20, 1.0, 9.0, 2);
+        Map<String, Object> prev = season(2700, 30, 0.20, 0.10, 1.5, 6.0, 30);
+        SeasonBlend.Exposure current = exposure(3, 3, 3, 180, 9);
+        SeasonBlend.Exposure previous = exposure(38, 38, 38, 3420, 190);
+
+        assertThat(SeasonBlend.blend(cur, prev, null, previous, true).exposure()).isNull();
+        assertThat(SeasonBlend.blend(cur, prev, current, null, true).exposure())
+                .isEqualTo(current);
+        assertThat(SeasonBlend.blend(cur, prev, null, previous, false).exposure())
+                .isEqualTo(previous);
+    }
+
+    @Test
+    void exposureBundlesEnforceTheOfficialMinuteBounds() {
+        assertThat(exposure(5, 4, 3, 250, 20).sixtyRate()).isLessThanOrEqualTo(
+                exposure(5, 4, 3, 250, 20).appearanceRate());
+        org.assertj.core.api.Assertions.assertThatThrownBy(
+                () -> new SeasonBlend.Exposure(2, 1, 2, 120, 0.5, 1.0,
+                        -0.5, 60, 2))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
     void sideSplitsAPrefixedQueryRow() {
         Map<String, Object> row = new HashMap<>();
         row.put("web_name", "Ferreira");
@@ -138,5 +181,15 @@ class SeasonBlendTest {
                 .containsEntry("xg90", BigDecimal.valueOf(0.4))
                 .doesNotContainKey("web_name");
         assertThat(SeasonBlend.side(row, SeasonBlend.PREVIOUS_PREFIX)).isNull();
+    }
+
+    private static SeasonBlend.Exposure exposure(int fixtures, int appearances, int sixty,
+                                                  int minutes, double points) {
+        double n = fixtures;
+        double appearanceRate = appearances / n;
+        double sixtyRate = sixty / n;
+        return new SeasonBlend.Exposure(fixtures, appearances, sixty, minutes,
+                appearanceRate, sixtyRate, appearanceRate - sixtyRate,
+                minutes / n, points / n);
     }
 }

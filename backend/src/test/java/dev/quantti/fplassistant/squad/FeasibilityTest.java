@@ -18,10 +18,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class FeasibilityTest {
 
     private static SquadCandidate player(int id, String name, String club, int type, int cost) {
-        return new SquadCandidate(id, name, name + " Fictitious", club, club.substring(0, 3),
-                type, cost, 5.0, "a", null, club.hashCode(), 900, 10,
-                Map.of("element_type", type, "xg90", 0.0, "xa90", 0.0, "pts90", 0.0),
-                SquadCandidate.Tier.RANKABLE);
+        return SquadCandidateTestData.eligible(id, name, club, type, cost, 5.0,
+                Map.of("element_type", type, "xg90", 0.0, "xa90", 0.0, "pts90", 0.0));
     }
 
     /** A pool wide enough that nothing fails for lack of players unless a test means it to. */
@@ -229,6 +227,40 @@ class FeasibilityTest {
                 withFormation(new SquadConstraints.Formation(3, 4, 3)), List.of());
 
         assertThat(refusal).isEmpty();
+    }
+
+    @Test
+    void refusesWhenEligiblePlayersCannotFormAnEleven() {
+        List<SquadCandidate> pool = new ArrayList<>(deepPool());
+        for (int index = 0; index < pool.size(); index++) {
+            if (pool.get(index).elementType() == 1) {
+                pool.set(index, SquadCandidateTestData.ineligible(pool.get(index),
+                        dev.quantti.fplassistant.tools.MinutesModel.Eligibility.MINUTES_RISK));
+            }
+        }
+
+        Optional<String> refusal = Feasibility.check(pool, constraints(List.of(), 1000), List.of());
+
+        assertThat(refusal).hasValueSatisfying(message -> assertThat(message)
+                .contains("goalkeeper").contains("60+").contains("budget"));
+    }
+
+    @Test
+    void forcedFormationRequiresEnoughEligiblePlayersInEveryPosition() {
+        List<SquadCandidate> pool = new ArrayList<>(deepPool());
+        int leftEligible = 0;
+        for (int index = 0; index < pool.size(); index++) {
+            if (pool.get(index).elementType() == 4 && leftEligible++ >= 1) {
+                pool.set(index, SquadCandidateTestData.ineligible(pool.get(index),
+                        dev.quantti.fplassistant.tools.MinutesModel.Eligibility.MINUTES_RISK));
+            }
+        }
+
+        Optional<String> refusal = Feasibility.check(pool,
+                withFormation(new SquadConstraints.Formation(3, 4, 3)), List.of());
+
+        assertThat(refusal).hasValueSatisfying(message -> assertThat(message)
+                .contains("3-4-3").contains("3 forwards").contains("only 1"));
     }
 
     @Test

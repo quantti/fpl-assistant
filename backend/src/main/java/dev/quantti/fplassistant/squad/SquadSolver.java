@@ -42,7 +42,6 @@ public final class SquadSolver {
 
     static final String RELAXED_TEMPLATE = "template minimum";
     static final String RELAXED_PREMIUM = "premium range";
-    static final String RELAXED_STARTERS_PLAY = "starters must play";
 
     private SquadSolver() {
     }
@@ -87,24 +86,14 @@ public final class SquadSolver {
     }
 
     /**
-     * Solves with the three structural defaults applied, dropping them one at a time when they
-     * cannot all hold.
-     *
-     * <p><b>User constraints never give way; structural defaults do.</b> The user asked for their
-     * constraints and did not ask for the defaults, so a request that cannot satisfy both keeps
-     * the request. The order is deliberate: the template minimum protects rank and is the
-     * softest, the premium range shapes the squad, and the rule that starters must actually play
-     * is given up last because a non-player in the XI is the failure the minutes model exists to
-     * prevent.
-     *
-     * @param expectedMinutes per club fixture, keyed by element id, from {@code HorizonScorer}
+     * Solves with template and premium defaults, dropping them in that order when necessary.
+     * User constraints and the observed-history XI rule never give way.
      */
     public static Optional<SolvedSquad> solveWithDefaults(List<SquadCandidate> pool,
                                                           Map<Integer, Double> scores,
                                                           SquadConstraints constraints,
-                                                          List<SquadCandidate> pinned,
-                                                          Map<Integer, Double> expectedMinutes) {
-        return solveWithDefaults(pool, scores, constraints, pinned, List.of(), expectedMinutes);
+                                                          List<SquadCandidate> pinned) {
+        return solveWithDefaults(pool, scores, constraints, pinned, List.of());
     }
 
     /**
@@ -117,14 +106,13 @@ public final class SquadSolver {
                                                           Map<Integer, Double> scores,
                                                           SquadConstraints constraints,
                                                           List<SquadCandidate> pinned,
-                                                          List<SquadCandidate> excluded,
-                                                          Map<Integer, Double> expectedMinutes) {
-        List<String> ladder = List.of(RELAXED_TEMPLATE, RELAXED_PREMIUM, RELAXED_STARTERS_PLAY);
+                                                          List<SquadCandidate> excluded) {
+        List<String> ladder = List.of(RELAXED_TEMPLATE, RELAXED_PREMIUM);
         List<String> given = new ArrayList<>();
 
         for (int step = 0; step <= ladder.size(); step++) {
             Optional<SolvedSquad> solved = attempt(pool, scores, constraints, pinned, excluded,
-                    expectedMinutes, List.copyOf(given));
+                    List.copyOf(given));
             if (solved.isPresent()) {
                 return solved;
             }
@@ -140,7 +128,6 @@ public final class SquadSolver {
                                                  SquadConstraints constraints,
                                                  List<SquadCandidate> pinned,
                                                  List<SquadCandidate> excluded,
-                                                 Map<Integer, Double> expectedMinutes,
                                                  List<String> relaxed) {
         if (pool.isEmpty()) {
             return Optional.empty();
@@ -158,7 +145,7 @@ public final class SquadSolver {
 
         rulesOfTheGame(model, pool, inSquad, inXi, constraints);
         userConstraints(model, pool, inSquad, constraints, pinned, excluded);
-        structuralDefaults(model, pool, inSquad, inXi, expectedMinutes, relaxed);
+        structuralDefaults(model, pool, inSquad, relaxed);
 
         Optimisation.Result result = model.maximise();
         if (!result.getState().isFeasible()) {
@@ -214,9 +201,7 @@ public final class SquadSolver {
      * it plainly: pure template finishes mid-rank, pure contrarian finishes bottom.
      */
     private static void structuralDefaults(ExpressionsBasedModel model, List<SquadCandidate> pool,
-                                           List<Variable> inSquad, List<Variable> inXi,
-                                           Map<Integer, Double> expectedMinutes,
-                                           List<String> relaxed) {
+                                           List<Variable> inSquad, List<String> relaxed) {
         if (!relaxed.contains(RELAXED_PREMIUM)) {
             var premiums = model.newExpression("premiums")
                     .lower(MIN_PREMIUMS).upper(MAX_PREMIUMS);
@@ -232,18 +217,6 @@ public final class SquadSolver {
             for (int i = 0; i < pool.size(); i++) {
                 if (pool.get(i).ownership() >= TEMPLATE_OWNERSHIP) {
                     template.set(inSquad.get(i), 1);
-                }
-            }
-        }
-
-        if (!relaxed.contains(RELAXED_STARTERS_PLAY)) {
-            // The floor is on the XI, never on the fifteen. The bench carries no minutes
-            // requirement at all: there, cheapness competes against playing time through the
-            // objective's bench weight, and the cheapest body is sometimes the right pick.
-            for (int i = 0; i < pool.size(); i++) {
-                double minutes = expectedMinutes.getOrDefault(pool.get(i).elementId(), 0.0);
-                if (minutes < HorizonScorer.XI_MIN_EXPECTED_MINUTES) {
-                    inXi.get(i).level(0);
                 }
             }
         }
@@ -321,9 +294,9 @@ public final class SquadSolver {
             model.newExpression("xi-subset-" + candidate.elementId()).upper(0)
                     .set(x, 1).set(s, -1);
 
-            // A body is bought, never started. He is asserted to be worth nothing, and starting
-            // him would be a claim about him that nothing supports.
-            if (candidate.tier() == SquadCandidate.Tier.BODY) {
+            // Ability and XI permission are deliberately separate. This row is part of the
+            // rules of the game so no pin, user constraint or relaxation path can bypass it.
+            if (!candidate.mayStart()) {
                 x.level(0);
             }
         }

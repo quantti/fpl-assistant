@@ -230,20 +230,13 @@ class SquadToolsCrossSeasonTest {
                 xg + xa, xgc);
     }
 
-    /**
-     * The metrics line names the season being played — it is the season every candidate belongs
-     * to — and the sentence under it says what last season contributes and how much. The current,
-     * thin season must still never be called a completed one.
-     */
+    /** Historical ability can inform a projection, but cannot certify a current role. */
     @Test
-    void theMetricsLineNamesThisSeasonAndTheBlendSentenceNamesLast() {
+    void historicalOnlyEvidenceRefusesInsteadOfInventingAnEligibleEleven() {
         String output = tools.buildSquad("", "", "", 100.0, 5, "");
 
-        assertThat(output).contains("Starting XI");
-        assertThat(output).contains("Data source: season " + TapasSeed.CURRENT_SEASON_CODE
-                + " (the season currently being played)");
-        assertThat(output).contains("Underlying numbers blend " + TapasSeed.CURRENT_SEASON_CODE
-                + " with " + TapasSeed.POPULATED_SEASON_CODE);
+        assertThat(output).doesNotContain("Starting XI");
+        assertThat(output).contains("60+").containsIgnoringCase("budget");
         assertThat(output).doesNotContain("Data source: season " + TapasSeed.CURRENT_SEASON_CODE
                 + " — a COMPLETED PREVIOUS season");
     }
