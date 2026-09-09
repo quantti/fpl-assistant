@@ -276,8 +276,8 @@ rather than presenting it as the current position.
   quote the per-fixture Score when comparing quality and the horizon Score when comparing what a
   squad slot is worth over the window. Players whose club is known to play nothing in the window,
   and players whose club window could not be read at all, are excluded and counted separately;
-  those are two different findings, and neither is a forecast of zero points. Every reply names
-  the editable gameweek range it scored over and says when the season ends before the gameweeks
+  those are two different findings, and neither is a forecast of zero points. Ranked replies name
+  the editable gameweek range they scored over and say when the season ends before the gameweeks
   asked for, so use that range rather than assuming the next N rounds from today.
 
   **Three sources are attributed, and they are not interchangeable:** the daily price capture
