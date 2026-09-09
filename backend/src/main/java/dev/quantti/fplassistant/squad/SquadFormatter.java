@@ -4,6 +4,7 @@ import java.time.LocalDate;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 
 import dev.quantti.fplassistant.schedule.HorizonFixtures;
 import dev.quantti.fplassistant.tools.ExpectedPoints;
@@ -35,7 +36,9 @@ public final class SquadFormatter {
      *        {@code constraints.mustExclude()}
      * @param scheduleProvenance the schedule capture's own source line — the third of the three,
      *        printed under the price and metric lines and carrying the changeover clarification
-     *        when the capture and the metric season are not the same season
+     *        when the capture and the metric season are not the same season. Required, like its
+     *        two siblings: every reply names all three sources, and before the first capture the
+     *        caller passes a line that says so rather than omitting it
      * @param projections expected points over the horizon plus whether the projection is known;
      *        the solver receives zero weight for an unavailable projection, but the reply does
      *        not mislabel that absence as a numeric forecast
@@ -53,11 +56,13 @@ public final class SquadFormatter {
                                 Map<Integer, HorizonScorer.Projection> projections,
                                 boolean noCandidateWasScoreable, String blendNote,
                                 HorizonFixtures.Result horizon) {
+        // All three source lines are required, and the third is the one a future caller is
+        // likeliest to forget: an optional schedule line would let an unattributed reply compile.
         StringBuilder out = new StringBuilder();
-        out.append(priceProvenance).append('\n').append(metricProvenance).append('\n');
-        if (scheduleProvenance != null) {
-            out.append(scheduleProvenance).append('\n');
-        }
+        out.append(Objects.requireNonNull(priceProvenance, "priceProvenance")).append('\n')
+                .append(Objects.requireNonNull(metricProvenance, "metricProvenance")).append('\n')
+                .append(Objects.requireNonNull(scheduleProvenance, "scheduleProvenance"))
+                .append('\n');
         if (blendNote != null) {
             out.append(blendNote).append('\n');
         }
