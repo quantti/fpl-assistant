@@ -14,6 +14,7 @@ import java.util.stream.Collectors;
 import fi.karivanttinen.fplassistant.tools.DailyPriceSource;
 import fi.karivanttinen.fplassistant.schedule.HorizonFixtures;
 import fi.karivanttinen.fplassistant.schedule.ScheduleFreshnessCheck;
+import fi.karivanttinen.fplassistant.schedule.ScheduleSource;
 import fi.karivanttinen.fplassistant.tools.MetricSeasons;
 import fi.karivanttinen.fplassistant.tools.FplTool;
 import fi.karivanttinen.fplassistant.tools.RankingMetrics;
@@ -35,10 +36,13 @@ import org.springframework.stereotype.Component;
  * claimed a club constraint it had not met, and produced a total that did not match its own
  * table. None of those are prompt failures; they are the wrong tool for the job.
  *
- * <p><b>Provenance is two lines.</b> Prices, clubs, ownership and availability come from the
- * daily capture; metrics come from {@code player_fixture_stats}, which may be a season behind.
- * One banner cannot describe both, and a price attributed to the wrong season is the error the
- * provenance convention exists to prevent. This is a documented exception, like
+ * <p><b>Provenance is three lines.</b> Prices, clubs, ownership and availability come from the
+ * daily capture; metrics come from {@code player_fixture_stats}, which may be a season behind;
+ * the fixtures every projection is summed over come from the FPL schedule capture. One banner
+ * cannot describe three sources, and a price or a fixture attributed to the wrong season is the
+ * error the provenance convention exists to prevent. The schedule line is a <em>source</em> line,
+ * not a second season banner: historical metrics stay labelled historical even when prices and
+ * future fixtures are the season being played. This is a documented exception, like
  * {@code MyTeamTools}.
  */
 @Component
@@ -88,8 +92,11 @@ public class SquadTools implements FplTool {
             coarse captured-schedule FDR, summed over the club's fixtures in that same window —
             a double gameweek adds one, a blank removes one. A fixture with no published FDR is
             scored at a neutral 3 and labelled. Unknown projections have zero optimiser weight but
-            are printed n/a/unscored, never as a zero forecast. NOT ranked on form. The reply gives
-            price, metric, schedule and observed-window evidence; relay a refusal as written.
+            are printed n/a/unscored, never as a zero forecast. NOT ranked on form. The reply
+            attributes three sources — the daily price capture, the metric season and the FPL
+            schedule capture — and adds observed-window evidence; the metric season line covers
+            the metrics only, while price and fixtures come from the other two. Relay a refusal as
+            written.
             """)
     public String buildSquad(String mustInclude, String mustExclude, String clubQuota,
                              double budget, int nextN, String formation) {
@@ -115,14 +122,23 @@ public class SquadTools implements FplTool {
             MetricSeasons metric = seasonResolver.metricSeasons(season);
             CandidatePool.Pool loaded = pool.load(capture, metric);
             List<SquadCandidate> candidates = loaded.candidates();
+            // One derivation for the whole call, shared by scoring, the XI gate and the reply —
+            // the same call PickTools makes, so the two tools cannot disagree about which
+            // fixtures a club plays. The capture's own season governs, not the resolver's. It is
+            // derived here, before the first refusal, because every reply that names a source
+            // also names the window that source produced.
+            HorizonFixtures.Result horizon = HorizonFixtures.derive(loaded.snapshot().schedule(),
+                    loaded.snapshot().asOf(), capture.season(), constraints.horizon());
+            Set<Integer> playableClubs = playableClubs(horizon);
             LocalDate snapshotDay = LocalDate.ofInstant(
                     loaded.snapshot().asOf(), UkTime.zone());
             String priceProvenance = DailyPriceSource.provenance(
                     capture.season(), capture.date(), snapshotDay);
             String metricProvenance = season.provenance();
-            String scheduleNote = scheduleEvidence(loaded.snapshot());
+            String scheduleProvenance = scheduleProvenance(loaded.snapshot(), capture, season);
+            String scheduleNote = scheduleEvidence(loaded.snapshot(), horizon);
             String evidenceHeader = priceProvenance + "\n" + metricProvenance
-                    + "\n" + scheduleNote;
+                    + "\n" + scheduleProvenance + "\n" + scheduleNote;
             if (candidates.isEmpty()) {
                 return evidenceHeader + "\nNo players are available to pick from today's capture.";
             }
@@ -160,13 +176,6 @@ public class SquadTools implements FplTool {
                 }
                 excludedPlayers.add(resolved.player());
             }
-
-            // One derivation for the whole call, shared by scoring, the XI gate and the reply —
-            // the same call PickTools makes, so the two tools cannot disagree about which
-            // fixtures a club plays. The capture's own season governs, not the resolver's.
-            HorizonFixtures.Result horizon = HorizonFixtures.derive(loaded.snapshot().schedule(),
-                    loaded.snapshot().asOf(), capture.season(), constraints.horizon());
-            Set<Integer> playableClubs = playableClubs(horizon);
 
             Optional<String> refusal = Feasibility.check(candidates, constraints, pinned,
                     excludedPlayers, playableClubs, horizon);
@@ -218,7 +227,7 @@ public class SquadTools implements FplTool {
             blendNote += " " + scheduleNote;
 
             return SquadFormatter.format(solved.get(), constraints,
-                    priceProvenance, metricProvenance,
+                    priceProvenance, metricProvenance, scheduleProvenance,
                     excludedForNoRecord, pinned, excludedPlayers, projections,
                     !anyCandidateWasScoreable, blendNote, horizon);
         } catch (DataAccessException e) {
@@ -240,19 +249,77 @@ public class SquadTools implements FplTool {
                 .collect(Collectors.toUnmodifiableSet());
     }
 
-    private static String scheduleEvidence(RankingMetrics.Snapshot snapshot) {
+    /**
+     * The schedule capture's own {@code Data source:} line — the third source, on the capture's
+     * own season rather than the resolved one, for the reason {@code ScheduleSource} documents.
+     * During the changeover it is followed by the clarification the pick tools carry: without it
+     * the metric line's "COMPLETED PREVIOUS season" reads as covering the price and the fixtures
+     * printed under it. Before the first capture the line says so rather than being left out.
+     */
+    private static String scheduleProvenance(RankingMetrics.Snapshot snapshot,
+                                             CandidatePool.Capture capture, SeasonContext season) {
+        var captured = snapshot.schedule().snapshot();
+        StringBuilder line = new StringBuilder(captured
+                .map(selected -> ScheduleSource.provenance(selected.season(),
+                        selected.capturedAt(), snapshot.asOf()))
+                .orElse("Data source: no FPL gameweek and fixture capture exists, so this reply"
+                        + " has no schedule to count fixtures in."));
+        if (!capture.season().equals(season.code())) {
+            line.append("\nThe season line above describes the metrics only: price, ownership and"
+                    + " availability are today's, from the daily capture, and may be quoted as"
+                    + " current.");
+            if (captured.isPresent()) {
+                line.append(" The schedule line, like the price line, describes the season being"
+                        + " played: the fixtures every projection is summed over come from that"
+                        + " capture, never from the metric season.");
+            }
+        }
+        return line.toString();
+    }
+
+    /**
+     * What the schedule actually supported, beside the source line that names it: the exact
+     * capture instant, the instant it was judged at, and how many captured clubs the window
+     * leaves startable. The {@code Horizon:} line below states the requested and actual span.
+     */
+    private static String scheduleEvidence(RankingMetrics.Snapshot snapshot,
+                                           HorizonFixtures.Result horizon) {
+        return captureEvidence(snapshot) + " " + clubEvidence(horizon);
+    }
+
+    private static String captureEvidence(RankingMetrics.Snapshot snapshot) {
         if (snapshot.schedule().snapshot().isEmpty()) {
-            return "Schedule evidence: no FPL schedule capture is available.";
+            return "Schedule evidence: no FPL schedule capture is available, judged as of "
+                    + snapshot.asOf() + ".";
         }
         var selected = snapshot.schedule().snapshot().orElseThrow();
         LocalDate capturedDay = LocalDate.ofInstant(selected.capturedAt(), UkTime.zone());
         boolean fresh = ScheduleFreshnessCheck.isFresh(capturedDay, snapshot.asOf());
         if (snapshot.schedule().completeness().complete() && fresh) {
-            return "Schedule evidence: complete FPL capture at " + selected.capturedAt() + ".";
+            return "Schedule evidence: complete FPL capture at " + selected.capturedAt()
+                    + ", judged as of " + snapshot.asOf() + ".";
         }
-        return "Schedule evidence: FPL capture at " + selected.capturedAt()
-                + "; structure " + snapshot.schedule().completeness().reason()
+        return "Schedule evidence: FPL capture at " + selected.capturedAt() + ", judged as of "
+                + snapshot.asOf() + "; structure " + snapshot.schedule().completeness().reason()
                 + (fresh ? ", fresh for this snapshot." : ", not fresh for this snapshot.");
+    }
+
+    /** Clubs counted three ways, because a blank and an unreadable window are not the same. */
+    private static String clubEvidence(HorizonFixtures.Result horizon) {
+        if (horizon.status() != HorizonFixtures.Status.KNOWN) {
+            return "No editable window ("
+                    + SquadFormatter.horizonReason(horizon.reason())
+                    + "), so no club has a countable fixture and none is a zero.";
+        }
+        long playable = horizon.clubs().values().stream()
+                .filter(window -> window.known() && window.count() >= 1).count();
+        long blank = horizon.clubs().values().stream()
+                .filter(window -> window.known() && window.count() == 0).count();
+        long unreadable = horizon.clubs().values().stream()
+                .filter(window -> !window.known()).count();
+        return playable + " of " + horizon.clubs().size() + " captured clubs play at least once in "
+                + SquadFormatter.gameweekRange(horizon) + " (blank across it: " + blank
+                + "; window unreadable: " + unreadable + ").";
     }
 
     private record Resolution(SquadCandidate player, String refusal) {

@@ -3708,3 +3708,100 @@ regressions only; it did not reload production embeddings or measure a live sele
 An independent reviewer compared the whole diff with `origin/master` and reported
 `No actionable findings.` The review was read-only and the reviewer ran no tests. No production
 ingestion or deployment was performed.
+
+## Gameweek-horizon ranking implementation outcome (KAR-35, 2026-09-09)
+
+Implementation Tasks 1–5 are complete in the current worktree on `plan/kar-35-gameweek-horizon`.
+The bug had two halves and both are fixed. `ROW_NUMBER <= N` took a club's next N *fixtures*, so a
+club that doubled inside the window silently lost the last gameweek the caller had asked about;
+and even with every fixture kept, averaging their difficulty gave the extra match no advantage in
+the primary Score at all. The window is now N **calendar gameweeks** per club, derived once per
+call by `schedule/HorizonFixtures`, and the pick Score is the per-fixture composite **totalled**
+over the fixtures the club actually plays in it. A double is an extra opportunity rather than an
+unconditional win — 3 twice beats 5 once and still loses to 8 once — and a blank simply
+contributes nothing. `SquadTools`, `HorizonScorer`, `SquadSolver` and `Feasibility` score and gate
+on the same fixture population and the playable-club set it produces; the two tools can no longer
+disagree about which fixtures a club plays. Objectives stay distinct: picks blend expected and
+realised per fixture, the squad objective remains expected-only with its existing coarse FDR
+multiplier.
+
+The window opens at the **first deadline strictly after** the ranking snapshot's `asOf`, on the
+daily capture's own season. That is a product choice, not an unfinished question: these tools
+recommend transfers, captains and a starting XI, so a round that is already locked cannot benefit
+the new selection, and at an exact deadline that round is excluded. A known window holding no
+fixtures is a real zero; a window that could not be read is not a zero at all, and the two are
+counted, scored and printed apart everywhere — pick exclusion counters, bench rows, refusals. Past
+the final deadline the answer is "no editable gameweek", never a replayed GW38 or an invented
+GW39.
+
+Both ranking replies now attribute **three sources**, not two: the daily price capture
+(`DailyPriceSource.provenance()`), the metric season (`SeasonContext.provenance()`) and the
+schedule capture (`ScheduleSource.provenance()`). The third is a *source* line, not a second
+season banner — historical metrics stay labelled historical even when today's price and next
+month's fixtures are the season being played, and during the changeover one clarification sentence
+says the price line and the schedule line both describe the season being played. A separate
+`Schedule evidence:` sentence carries the exact capture instant, the `asOf` instant it was judged
+at, the editable gameweek range with any end-of-season truncation, and the players or clubs the
+schedule alone removed. `system-prompt.st` and `AGENTS.md` were updated to match.
+
+Acceptance, each row of the plan's matrix mapped to the test that pins it:
+double keeps six fixtures and the fifth gameweek → `HorizonFixturesTest`
+`aDoubleGameweekAddsAFixtureWithoutLosingTheLastGameweek`; blank without extension →
+`aBlankGameweekShortensTheListWithoutExtendingTheWindow` and `HorizonScorerIntegrationTest`
+`aBlankGameweekRemovesAFixtureRatherThanPullingALaterOneIn`; 3×2 beats 5×1 despite worse FDR →
+`PickToolsRankingTest.twoFixturesBeatOneSlightlyBetterOneEvenWithHarderOpponents` and
+`PickToolsIntegrationTest.aDoubleGameweekOutranksACloseSingleButNotAFarBetterOne`; 3×2 loses to
+8×1 → `PickToolsRankingTest.twoFixturesDoNotBeatOneFarBetterOne`; the arithmetic rows (pick 6,
+squad 8) → `PickToolsRankingTest.theHorizonScoreIsThePerFixtureBlendTimesTheFixtureCount` and
+`HorizonScorerTest.fourPointsAcrossAnFdrTwoAndAnFdrFourFixtureIsEightPoints`; unrounded ordering
+and the element-id tie → `equalRoundedHorizonScoresAreOrderedOnTheirRawValues` and
+`anExactTieIsBrokenByTheLowerElementId`; missing FDR on one leg →
+`PickToolsRankingTest.aDoubleWithOneUnratedLegKeepsItsCountAndSortsAfterAnyKnownAverage`,
+`HorizonScorerTest.aDoubleGameweekLegWithNoPublishedFdrKeepsTheCountAndGoesNeutralAlone`,
+`HorizonFixturesTest.anUnratedFixtureStillCountsButLeavesNoAverageDifficulty`; the exact deadline →
+`HorizonFixturesTest.theWindowOpensAtTheFirstDeadlineStrictlyAfterAsOf`,
+`aRemainingMatchOfTheJustLockedRoundIsNotCounted` and
+`HorizonFixturesIntegrationTest.staleCapturedCurrentAndNextFlagsDoNotMoveTheWindow`; nextN=5 from
+GW37 → `HorizonFixturesTest.theSeasonEndTruncatesTheWindowAndThenLeavesNoEditableGameweek`,
+`PickToolsIntegrationTest.theFooterNamesTheEditableRangeAndDisclosesTruncation`,
+`SquadFormatterTest.disclosesThatTheHorizonRanOutOfSeasonBeforeTheGameweeksAsked`; after the GW38
+deadline → `PickToolsIntegrationTest.afterTheFinalDeadlineThereIsNoHorizonRatherThanAForecastOfZero`,
+`SquadToolsIntegrationTest.afterTheFinalDeadlineTheReplyRefusesAndNamesTheMissingGameweek`,
+`FeasibilityTest.refusesAfterTheFinalDeadlineByNamingTheMissingGameweekRatherThanTheSquad`; one
+club unresolved → `HorizonFixturesTest.anOutstandingFixtureWithNoGameweekMakesBothItsClubsUnknown`,
+`PickToolsIntegrationTest.horizonExclusionsSeparateAKnownBlankFromAnUnresolvedSchedule`,
+`SquadToolsIntegrationTest.aClubWithAnUnresolvedFixtureIsBoughtForTheBenchAtNotApplicable`;
+unknown-or-zero horizon keeps players out of the XI while preserving n/a versus zero →
+`SquadFormatterTest.tellsABlankedClubApartFromAnUnreadableOneOnEveryBenchRow`,
+`SquadSolverRulesTest.theDirectSolverWillNotStartAPlayerWhoseClubHasNoFixture`,
+`SquadSolverConstraintsTest.theDefaultedSolverWillNotStartAPlayerWhoseClubHasNoFixture` and
+`noRelaxationStepEverAdmitsAnUnplayableClubsPlayerToTheXi`; the capture/metric changeover →
+`HorizonFixturesTest.aCaptureOfAnotherSeasonIsNotThisSeasonsHorizon`,
+`CandidatePoolChangeoverTest.reusedIdsDoNotGiveUnmatchedPlayersSomeoneElsesMetrics`,
+`PickToolsCrossSeasonTest` and `SquadToolsCrossSeasonTest`; no qualifying candidates →
+`PickToolsIntegrationTest.absurdOwnershipAndUnknownPositionReturnFactualMessages`,
+`FeasibilityTest.refusesWhenEligiblePlayersCannotFormAnEleven` and
+`SquadToolsCrossSeasonTest.historicalOnlyEvidenceRefusesInsteadOfInventingAnEligibleEleven`. Every
+row was already pinned; Task 5 added only the three-source attribution assertions
+(`PickToolsIntegrationTest.bothRepliesAttributeThePriceMetricAndScheduleSources` and
+`aRefusalWithNoQualifyingPlayerStillNamesAllThreeSources`,
+`SquadToolsIntegrationTest.theReplyAttributesThePriceMetricAndScheduleSources` and
+`aRefusalCarriesTheSameThreeSourceHeader`,
+`SquadFormatterTest.carriesAllThreeProvenanceLinesInSourceOrder`).
+
+Verification used the local disposable PostgreSQL container and `backend/.env.test` only. The
+plan's focused selection (`*PickTools*`, `*Horizon*`, `*Schedule*`, `*CandidatePool*`, `*Squad*`,
+`*ExpectedPoints*`, `*SeasonBlend*`) passed 282 tests with 0 failures, 0 errors and 0 skipped in
+52 seconds. The full `./gradlew cleanTest test` passed 765 tests with 0 failures, 0 errors and 0
+skipped in 1 minute 10 seconds; it includes `IngestionServiceTest`, `IngestionIntegrationTest` and
+`StrategyToolsIntegrationTest`, so test-corpus chunking and retrieval are unaffected.
+
+Honest limits. Fixture difficulty is still FPL's coarse 1–5 FDR: a tie-break in the pick lists and
+a single whole-score multiplier in the squad objective, where a hard fixture should move the
+clean-sheet term far more than the attacking ones. KAR-30's opponent-specific clean-sheet model is
+not implemented and nothing here is a calibration claim — the horizon Score is arithmetic over an
+observed record and a published schedule, not a forecast with a measured error. A known window is
+also only as good as the capture: rescheduling after 02:10 UK is invisible until the next one. The
+strategy corpus was reviewed and deliberately left unedited, because no sentence in it became
+inaccurate; nothing was re-ingested. Nothing was committed to `master`, pushed or deployed, and no
+production or Supabase query was run.

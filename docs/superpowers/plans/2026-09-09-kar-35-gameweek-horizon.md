@@ -1,6 +1,6 @@
 # KAR-35 — count every fixture in an editable gameweek horizon
 
-**PROGRESS:** Plan ready; implementation Task 0/5 done.
+**PROGRESS:** Implementation Task 5/5 done.
 
 Issue: [KAR-35](https://linear.app/quantti/issue/KAR-35).
 Implement after [KAR-31](2026-09-09-kar-31-minutes-reliability.md), which supplies per-fixture scores,
@@ -194,3 +194,33 @@ Update this progress line and STATUS once each task is complete. Submit a featur
 closes KAR-35 only after both fixture membership and primary-score DGW advantage are verified.
 Never push master; leave deployment and any explicit production corpus reload to the normal
 reviewed workflow. No implementation decision remains open in this plan.
+
+### Outcome
+
+All five tasks are implemented on `plan/kar-35-gameweek-horizon`. `schedule/HorizonFixtures`
+derives one calendar-gameweek window per club from the first deadline strictly after the ranking
+snapshot's `asOf`, on the daily capture's own season. `PickTools` ranks on
+`Score/fixture × counted fixtures` with average FDR as a tie-break, and counts known-zero and
+unknown-horizon players apart instead of ranking them at an invented zero. `SquadTools`,
+`HorizonScorer`, `SquadSolver` and `Feasibility` share that same fixture population and the
+playable-club set it produces, as an explicit solver and capacity input; bench rows keep a real
+zero and an `n/a` apart. Task 5 added the third source line, `ScheduleSource.provenance()`, to
+both ranking replies including their refusal paths, extended the `Schedule evidence:` sentence
+with the `asOf` instant, the editable range and the schedule-caused exclusions, and updated the
+tool descriptions, class javadoc, `system-prompt.st` and `AGENTS.md`.
+
+Verification ran from `backend/` with `backend/.env.test` only, against the disposable
+`fpl-test-db` container. The plan's focused selection (`*PickTools*`, `*Horizon*`, `*Schedule*`,
+`*CandidatePool*`, `*Squad*`, `*ExpectedPoints*`, `*SeasonBlend*`) passed 282 tests with 0
+failures, 0 errors and 0 skipped in 52 seconds. The full `./gradlew cleanTest test` passed 765
+tests with 0 failures, 0 errors and 0 skipped in 1 minute 10 seconds; that run includes
+`IngestionServiceTest`, `IngestionIntegrationTest` and `StrategyToolsIntegrationTest`, so
+test-corpus chunking and retrieval are unchanged.
+
+Not done, deliberately: no `realdata` oracle was added, no production or Supabase query was run,
+no chat-time external API call was introduced, no sync writer was touched, nothing was deployed
+and no strategy corpus was reloaded or re-ingested. The strategy corpus was reviewed and left
+unedited — no sentence in it became inaccurate, so changing it would only have created drift
+against the embeddings already in production. The FDR treatment remains the existing coarse
+whole-score multiplier; KAR-30's opponent-specific clean-sheet model is still out of scope, and
+nothing here is a calibration claim.

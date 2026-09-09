@@ -211,6 +211,36 @@ class SquadToolsIntegrationTest {
     }
 
     /**
+     * Three sources, in source order, with the schedule's evidence sentence carrying the exact
+     * capture instant, the instant it was judged at and what the window leaves startable.
+     */
+    @Test
+    void theReplyAttributesThePriceMetricAndScheduleSources() {
+        String output = tools.buildSquad("", "", "", 100.0, 5, "");
+
+        assertThat(output)
+                .contains("Data source: FPL live prices for season " + SEASON)
+                .contains("Data source: season " + SEASON)
+                .contains("Data source: FPL's own gameweek and fixture list for season " + SEASON
+                        + ", captured today")
+                .contains("complete FPL capture at " + CAPTURED_AT + ", judged as of " + AS_OF)
+                .contains("20 of 20 captured clubs play at least once in GW4–8");
+        assertThat(output.indexOf("Data source: season " + SEASON))
+                .isLessThan(output.indexOf("Data source: FPL's own gameweek"));
+    }
+
+    /** A refusal reaches the same evidence header, so it names all three sources too. */
+    @Test
+    void aRefusalCarriesTheSameThreeSourceHeader() {
+        String output = tools.buildSquad("", "", "Ashfield Rovers:4", 100.0, 5, "");
+
+        assertThat(output).doesNotContain("Starting XI")
+                .contains("Data source: FPL live prices for season " + SEASON)
+                .contains("Data source: season " + SEASON)
+                .contains("Data source: FPL's own gameweek and fixture list for season " + SEASON);
+    }
+
+    /**
      * The window this fixture's schedule actually offers: the clock sits between gameweek 3's
      * deadline and gameweek 4's, so five calendar gameweeks are GW4 to GW8.
      */
