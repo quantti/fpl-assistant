@@ -8,6 +8,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.ActiveProfiles;
 
 import java.time.Clock;
@@ -27,6 +28,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 @SpringBootTest
 @ActiveProfiles("test")
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 class StrategyToolsIntegrationTest {
 
     @Autowired
@@ -68,6 +70,25 @@ class StrategyToolsIntegrationTest {
         assertThat(result).contains("valid 2026-08-21 (no expiry)");
         assertThat(result).contains("When to bench boost");
         assertThat(result).contains("all 15 players' points");
+    }
+
+    @Test
+    void realCorpusRetrievesMinutesGuidanceForDefendersAndCaptains() {
+        // Seed the checked-in documents into the isolated store, not the production embeddings.
+        ingestionService.ingest("classpath:docs/*.md");
+
+        String defenders = strategyTools.searchStrategyDocs(
+                "What strict latest-ten current-club 60-minute history rule should primary"
+                        + " defender picks pass, and what happens after one short appearance?");
+        assertThat(defenders).contains("FPL Minutes Security, Rotation and the 60-Minute Rule")
+                .contains("The primary-list rule used by the ranking tools")
+                .contains("ten later completed club fixtures");
+
+        String captains = strategyTools.searchStrategyDocs(
+                "How should minutes security and rotation risk affect captain selection"
+                        + " when a short cameo prevents the vice-captain taking over?");
+        assertThat(captains).contains("FPL Minutes Security, Rotation and the 60-Minute Rule")
+                .contains("Captaincy, differentials and bench choices");
     }
 
     @Test

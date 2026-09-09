@@ -1,0 +1,1039 @@
+{
+  "cutoff_grid": {
+    "mean_minutes": [
+      51.0,
+      75.3,
+      88.32105263157895,
+      90.0
+    ],
+    "sixty": [
+      0.525,
+      0.8,
+      1.0
+    ],
+    "smoothed": [
+      0.49119841010563,
+      0.7206613670187666,
+      0.8873280336854332,
+      0.96619841010563
+    ],
+    "smoothed_recent": [
+      0.49119841010563,
+      0.7206613670187666,
+      0.8873280336854332,
+      0.96619841010563
+    ],
+    "starts": [
+      0.5,
+      0.8888888888888888,
+      1.0
+    ]
+  },
+  "development_audit": {
+    "below_minutes_floor": 2909,
+    "comparable_opportunities": 5695,
+    "known_defender_opportunities": 8877,
+    "known_outcomes": 5691,
+    "short_current_history": 273,
+    "unknown_outcomes": 4
+  },
+  "development_baselines": [
+    {
+      "admitted": 5695,
+      "admitted_fixtures_per_gw_min_median_max": [
+        129,
+        156.5,
+        204
+      ],
+      "admitted_players_per_gw_min_median_max": [
+        129,
+        156.5,
+        170
+      ],
+      "comparable": 5695,
+      "coverage": 1.0,
+      "cutoff": null,
+      "gameweeks": 36,
+      "observed": 5691,
+      "player_gameweek_coverage": 1.0,
+      "player_gameweeks": 5614,
+      "players": 181,
+      "precision": 0.4630117729748726,
+      "recall": 1.0,
+      "risk": 0.5369882270251274,
+      "short_minutes": 661,
+      "sub60": 3056,
+      "unknown": 4,
+      "upper_risk": 0.5525059665871122,
+      "variant": "all_comparable",
+      "worst_case_risk": 0.5373134328358209,
+      "zero_minutes": 2395
+    },
+    {
+      "admitted": 2381,
+      "admitted_fixtures_per_gw_min_median_max": [
+        41,
+        66.5,
+        78
+      ],
+      "admitted_players_per_gw_min_median_max": [
+        41,
+        66.0,
+        78
+      ],
+      "comparable": 5695,
+      "coverage": 0.41808604038630376,
+      "cutoff": 60,
+      "gameweeks": 36,
+      "observed": 2380,
+      "player_gameweek_coverage": 0.4185963662272889,
+      "player_gameweeks": 2350,
+      "players": 120,
+      "precision": 0.7684873949579831,
+      "recall": 0.6941176470588235,
+      "risk": 0.23151260504201682,
+      "short_minutes": 178,
+      "sub60": 551,
+      "unknown": 1,
+      "upper_risk": 0.24920978017145726,
+      "variant": "mean_minutes",
+      "worst_case_risk": 0.23183536329273416,
+      "zero_minutes": 373
+    }
+  ],
+  "development_calibration": {
+    "sixty": {
+      "bins": [
+        {
+          "n": 2589,
+          "observed": 0.18771726535341832,
+          "predicted": 0.26485496932335306,
+          "range": [
+            0,
+            0.5
+          ]
+        },
+        {
+          "n": 452,
+          "observed": 0.37610619469026546,
+          "predicted": 0.5240996065015046,
+          "range": [
+            0.5,
+            0.6
+          ]
+        },
+        {
+          "n": 400,
+          "observed": 0.5975,
+          "predicted": 0.6190231725146199,
+          "range": [
+            0.6,
+            0.7
+          ]
+        },
+        {
+          "n": 368,
+          "observed": 0.6168478260869565,
+          "predicted": 0.7173378702644292,
+          "range": [
+            0.7,
+            0.8
+          ]
+        },
+        {
+          "n": 527,
+          "observed": 0.6280834914611005,
+          "predicted": 0.81394960780677,
+          "range": [
+            0.8,
+            0.9
+          ]
+        },
+        {
+          "n": 1355,
+          "observed": 0.8723247232472324,
+          "predicted": 0.9630779145606582,
+          "range": [
+            0.9,
+            1
+          ]
+        }
+      ],
+      "brier": 0.180276854217683,
+      "n": 5691,
+      "prior_brier": 0.26796498565966964
+    },
+    "smoothed": {
+      "bins": [
+        {
+          "n": 2883,
+          "observed": 0.21436004162330904,
+          "predicted": 0.29266082943482113,
+          "range": [
+            0,
+            0.5
+          ]
+        },
+        {
+          "n": 506,
+          "observed": 0.4782608695652174,
+          "predicted": 0.551457670823376,
+          "range": [
+            0.5,
+            0.6
+          ]
+        },
+        {
+          "n": 444,
+          "observed": 0.6373873873873874,
+          "predicted": 0.6434011573548991,
+          "range": [
+            0.6,
+            0.7
+          ]
+        },
+        {
+          "n": 586,
+          "observed": 0.6638225255972696,
+          "predicted": 0.7368350002799485,
+          "range": [
+            0.7,
+            0.8
+          ]
+        },
+        {
+          "n": 1272,
+          "observed": 0.8671383647798742,
+          "predicted": 0.8509041931986687,
+          "range": [
+            0.8,
+            0.9
+          ]
+        },
+        {
+          "n": 0,
+          "observed": null,
+          "predicted": null,
+          "range": [
+            0.9,
+            1
+          ]
+        }
+      ],
+      "brier": 0.17646358813721602,
+      "n": 5691,
+      "prior_brier": 0.26796498565966964
+    }
+  },
+  "development_candidates": [
+    {
+      "admitted": 2802,
+      "admitted_fixtures_per_gw_min_median_max": [
+        55,
+        79.0,
+        90
+      ],
+      "admitted_players_per_gw_min_median_max": [
+        55,
+        76.0,
+        90
+      ],
+      "comparable": 5695,
+      "coverage": 0.49201053555750657,
+      "cutoff": 51.0,
+      "gameweeks": 36,
+      "observed": 2801,
+      "player_gameweek_coverage": 0.49216245101531886,
+      "player_gameweeks": 2763,
+      "players": 129,
+      "precision": 0.7272402713316672,
+      "recall": 0.7730550284629981,
+      "risk": 0.27275972866833276,
+      "short_minutes": 241,
+      "sub60": 764,
+      "unknown": 1,
+      "upper_risk": 0.28981741494604973,
+      "variant": "mean_minutes",
+      "worst_case_risk": 0.27301927194860814,
+      "zero_minutes": 523
+    },
+    {
+      "admitted": 1495,
+      "admitted_fixtures_per_gw_min_median_max": [
+        31,
+        42.0,
+        51
+      ],
+      "admitted_players_per_gw_min_median_max": [
+        31,
+        41.0,
+        50
+      ],
+      "comparable": 5695,
+      "coverage": 0.26251097453906935,
+      "cutoff": 75.3,
+      "gameweeks": 36,
+      "observed": 1495,
+      "player_gameweek_coverage": 0.26255789098681864,
+      "player_gameweeks": 1474,
+      "players": 97,
+      "precision": 0.8615384615384616,
+      "recall": 0.4888045540796964,
+      "risk": 0.13846153846153847,
+      "short_minutes": 75,
+      "sub60": 207,
+      "unknown": 0,
+      "upper_risk": 0.15689794144164856,
+      "variant": "mean_minutes",
+      "worst_case_risk": 0.13846153846153847,
+      "zero_minutes": 132
+    },
+    {
+      "admitted": 659,
+      "admitted_fixtures_per_gw_min_median_max": [
+        11,
+        18.0,
+        26
+      ],
+      "admitted_players_per_gw_min_median_max": [
+        11,
+        18.0,
+        23
+      ],
+      "comparable": 5695,
+      "coverage": 0.11571553994732221,
+      "cutoff": 88.32105263157895,
+      "gameweeks": 36,
+      "observed": 659,
+      "player_gameweek_coverage": 0.1150694691841824,
+      "player_gameweeks": 646,
+      "players": 66,
+      "precision": 0.91350531107739,
+      "recall": 0.22846299810246679,
+      "risk": 0.08649468892261002,
+      "short_minutes": 27,
+      "sub60": 57,
+      "unknown": 0,
+      "upper_risk": 0.11042390591336901,
+      "variant": "mean_minutes",
+      "worst_case_risk": 0.08649468892261002,
+      "zero_minutes": 30
+    },
+    {
+      "admitted": 494,
+      "admitted_fixtures_per_gw_min_median_max": [
+        7,
+        14.0,
+        20
+      ],
+      "admitted_players_per_gw_min_median_max": [
+        7,
+        14.0,
+        20
+      ],
+      "comparable": 5695,
+      "coverage": 0.08674275680421423,
+      "cutoff": 90.0,
+      "gameweeks": 36,
+      "observed": 494,
+      "player_gameweek_coverage": 0.08692554328464552,
+      "player_gameweeks": 488,
+      "players": 53,
+      "precision": 0.9210526315789473,
+      "recall": 0.17267552182163187,
+      "risk": 0.07894736842105263,
+      "short_minutes": 18,
+      "sub60": 39,
+      "unknown": 0,
+      "upper_risk": 0.10610527509745878,
+      "variant": "mean_minutes",
+      "worst_case_risk": 0.07894736842105263,
+      "zero_minutes": 21
+    },
+    {
+      "admitted": 3258,
+      "admitted_fixtures_per_gw_min_median_max": [
+        69,
+        91.0,
+        110
+      ],
+      "admitted_players_per_gw_min_median_max": [
+        69,
+        90.0,
+        97
+      ],
+      "comparable": 5695,
+      "coverage": 0.5720807726075505,
+      "cutoff": 0.5,
+      "gameweeks": 36,
+      "observed": 3257,
+      "player_gameweek_coverage": 0.5724973281083007,
+      "player_gameweeks": 3214,
+      "players": 142,
+      "precision": 0.6680994780472828,
+      "recall": 0.8258064516129032,
+      "risk": 0.33190052195271724,
+      "short_minutes": 303,
+      "sub60": 1081,
+      "unknown": 1,
+      "upper_risk": 0.3515389257694629,
+      "variant": "starts",
+      "worst_case_risk": 0.33210558624923264,
+      "zero_minutes": 778
+    },
+    {
+      "admitted": 1559,
+      "admitted_fixtures_per_gw_min_median_max": [
+        29,
+        43.0,
+        51
+      ],
+      "admitted_players_per_gw_min_median_max": [
+        29,
+        43.0,
+        51
+      ],
+      "comparable": 5695,
+      "coverage": 0.2737489025460931,
+      "cutoff": 0.8888888888888888,
+      "gameweeks": 36,
+      "observed": 1559,
+      "player_gameweek_coverage": 0.2737798361239758,
+      "player_gameweeks": 1537,
+      "players": 101,
+      "precision": 0.8460551635663887,
+      "recall": 0.5005692599620494,
+      "risk": 0.1539448364336113,
+      "short_minutes": 86,
+      "sub60": 240,
+      "unknown": 0,
+      "upper_risk": 0.17270820805839995,
+      "variant": "starts",
+      "worst_case_risk": 0.1539448364336113,
+      "zero_minutes": 154
+    },
+    {
+      "admitted": 899,
+      "admitted_fixtures_per_gw_min_median_max": [
+        10,
+        24.5,
+        35
+      ],
+      "admitted_players_per_gw_min_median_max": [
+        10,
+        24.5,
+        33
+      ],
+      "comparable": 5695,
+      "coverage": 0.1578577699736611,
+      "cutoff": 1.0,
+      "gameweeks": 36,
+      "observed": 899,
+      "player_gameweek_coverage": 0.1572853580334877,
+      "player_gameweeks": 883,
+      "players": 80,
+      "precision": 0.8743047830923248,
+      "recall": 0.298292220113852,
+      "risk": 0.12569521690767518,
+      "short_minutes": 44,
+      "sub60": 113,
+      "unknown": 0,
+      "upper_risk": 0.14897025472318187,
+      "variant": "starts",
+      "worst_case_risk": 0.12569521690767518,
+      "zero_minutes": 69
+    },
+    {
+      "admitted": 2818,
+      "admitted_fixtures_per_gw_min_median_max": [
+        56,
+        78.5,
+        92
+      ],
+      "admitted_players_per_gw_min_median_max": [
+        56,
+        77.0,
+        92
+      ],
+      "comparable": 5695,
+      "coverage": 0.4948200175592625,
+      "cutoff": 0.525,
+      "gameweeks": 36,
+      "observed": 2817,
+      "player_gameweek_coverage": 0.4953687210545066,
+      "player_gameweeks": 2781,
+      "players": 129,
+      "precision": 0.7192048278310259,
+      "recall": 0.7688804554079697,
+      "risk": 0.2807951721689741,
+      "short_minutes": 228,
+      "sub60": 791,
+      "unknown": 1,
+      "upper_risk": 0.2979364227160151,
+      "variant": "sixty",
+      "worst_case_risk": 0.28105039034776436,
+      "zero_minutes": 563
+    },
+    {
+      "admitted": 1882,
+      "admitted_fixtures_per_gw_min_median_max": [
+        36,
+        53.0,
+        64
+      ],
+      "admitted_players_per_gw_min_median_max": [
+        36,
+        53.0,
+        61
+      ],
+      "comparable": 5695,
+      "coverage": 0.3304653204565408,
+      "cutoff": 0.8,
+      "gameweeks": 36,
+      "observed": 1882,
+      "player_gameweek_coverage": 0.33060206626291416,
+      "player_gameweeks": 1856,
+      "players": 110,
+      "precision": 0.803931987247609,
+      "recall": 0.5741935483870968,
+      "risk": 0.19606801275239108,
+      "short_minutes": 123,
+      "sub60": 369,
+      "unknown": 0,
+      "upper_risk": 0.2146165981631053,
+      "variant": "sixty",
+      "worst_case_risk": 0.19606801275239108,
+      "zero_minutes": 246
+    },
+    {
+      "admitted": 769,
+      "admitted_fixtures_per_gw_min_median_max": [
+        10,
+        22.0,
+        30
+      ],
+      "admitted_players_per_gw_min_median_max": [
+        10,
+        22.0,
+        27
+      ],
+      "comparable": 5695,
+      "coverage": 0.1350307287093942,
+      "cutoff": 1.0,
+      "gameweeks": 36,
+      "observed": 769,
+      "player_gameweek_coverage": 0.13448521553259707,
+      "player_gameweeks": 755,
+      "players": 75,
+      "precision": 0.8985695708712613,
+      "recall": 0.26223908918406075,
+      "risk": 0.10143042912873862,
+      "short_minutes": 33,
+      "sub60": 78,
+      "unknown": 0,
+      "upper_risk": 0.12478801694648535,
+      "variant": "sixty",
+      "worst_case_risk": 0.10143042912873862,
+      "zero_minutes": 45
+    },
+    {
+      "admitted": 2819,
+      "admitted_fixtures_per_gw_min_median_max": [
+        56,
+        78.5,
+        91
+      ],
+      "admitted_players_per_gw_min_median_max": [
+        56,
+        77.0,
+        91
+      ],
+      "comparable": 5695,
+      "coverage": 0.49499561018437227,
+      "cutoff": 0.49119841010563,
+      "gameweeks": 36,
+      "observed": 2818,
+      "player_gameweek_coverage": 0.4955468471677948,
+      "player_gameweeks": 2782,
+      "players": 129,
+      "precision": 0.7178850248403124,
+      "recall": 0.7677419354838709,
+      "risk": 0.2821149751596877,
+      "short_minutes": 226,
+      "sub60": 795,
+      "unknown": 1,
+      "upper_risk": 0.2992744072000995,
+      "variant": "smoothed",
+      "worst_case_risk": 0.28236963462220643,
+      "zero_minutes": 569
+    },
+    {
+      "admitted": 1826,
+      "admitted_fixtures_per_gw_min_median_max": [
+        26,
+        52.0,
+        63
+      ],
+      "admitted_players_per_gw_min_median_max": [
+        26,
+        51.5,
+        61
+      ],
+      "comparable": 5695,
+      "coverage": 0.3206321334503951,
+      "cutoff": 0.7206613670187666,
+      "gameweeks": 36,
+      "observed": 1826,
+      "player_gameweek_coverage": 0.32062700391877447,
+      "player_gameweeks": 1800,
+      "players": 109,
+      "precision": 0.803395399780942,
+      "recall": 0.5567362428842505,
+      "risk": 0.19660460021905804,
+      "short_minutes": 117,
+      "sub60": 359,
+      "unknown": 0,
+      "upper_risk": 0.2154623691397034,
+      "variant": "smoothed",
+      "worst_case_risk": 0.19660460021905804,
+      "zero_minutes": 242
+    },
+    {
+      "admitted": 638,
+      "admitted_fixtures_per_gw_min_median_max": [
+        0,
+        21.5,
+        30
+      ],
+      "admitted_players_per_gw_min_median_max": [
+        0,
+        21.5,
+        27
+      ],
+      "comparable": 5695,
+      "coverage": 0.11202809482001756,
+      "cutoff": 0.8873280336854332,
+      "gameweeks": 29,
+      "observed": 638,
+      "player_gameweek_coverage": 0.11115069469184183,
+      "player_gameweeks": 624,
+      "players": 65,
+      "precision": 0.9028213166144201,
+      "recall": 0.21859582542694497,
+      "risk": 0.09717868338557993,
+      "short_minutes": 27,
+      "sub60": 62,
+      "unknown": 0,
+      "upper_risk": 0.12263111018500022,
+      "variant": "smoothed",
+      "worst_case_risk": 0.09717868338557993,
+      "zero_minutes": 35
+    },
+    {
+      "admitted": 0,
+      "admitted_fixtures_per_gw_min_median_max": [
+        0,
+        0.0,
+        0
+      ],
+      "admitted_players_per_gw_min_median_max": [
+        0,
+        0.0,
+        0
+      ],
+      "comparable": 5695,
+      "coverage": 0.0,
+      "cutoff": 0.96619841010563,
+      "gameweeks": 0,
+      "observed": 0,
+      "player_gameweek_coverage": 0.0,
+      "player_gameweeks": 0,
+      "players": 0,
+      "precision": null,
+      "recall": 0.0,
+      "risk": null,
+      "short_minutes": 0,
+      "sub60": 0,
+      "unknown": 0,
+      "upper_risk": null,
+      "variant": "smoothed",
+      "worst_case_risk": null,
+      "zero_minutes": 0
+    },
+    {
+      "admitted": 1910,
+      "admitted_fixtures_per_gw_min_median_max": [
+        37,
+        53.0,
+        63
+      ],
+      "admitted_players_per_gw_min_median_max": [
+        37,
+        53.0,
+        63
+      ],
+      "comparable": 5695,
+      "coverage": 0.3353819139596137,
+      "cutoff": 0.49119841010563,
+      "gameweeks": 36,
+      "observed": 1910,
+      "player_gameweek_coverage": 0.3363021018881368,
+      "player_gameweeks": 1888,
+      "players": 125,
+      "precision": 0.8596858638743455,
+      "recall": 0.6231499051233397,
+      "risk": 0.14031413612565444,
+      "short_minutes": 123,
+      "sub60": 268,
+      "unknown": 0,
+      "upper_risk": 0.15661305605855455,
+      "variant": "smoothed_recent",
+      "worst_case_risk": 0.14031413612565444,
+      "zero_minutes": 145
+    },
+    {
+      "admitted": 1483,
+      "admitted_fixtures_per_gw_min_median_max": [
+        19,
+        41.5,
+        53
+      ],
+      "admitted_players_per_gw_min_median_max": [
+        19,
+        41.0,
+        50
+      ],
+      "comparable": 5695,
+      "coverage": 0.2604038630377524,
+      "cutoff": 0.7206613670187666,
+      "gameweeks": 36,
+      "observed": 1483,
+      "player_gameweek_coverage": 0.26059850374064836,
+      "player_gameweeks": 1463,
+      "players": 105,
+      "precision": 0.8739042481456507,
+      "recall": 0.49184060721062617,
+      "risk": 0.1260957518543493,
+      "short_minutes": 82,
+      "sub60": 187,
+      "unknown": 0,
+      "upper_risk": 0.14396263382043314,
+      "variant": "smoothed_recent",
+      "worst_case_risk": 0.1260957518543493,
+      "zero_minutes": 105
+    },
+    {
+      "admitted": 637,
+      "admitted_fixtures_per_gw_min_median_max": [
+        0,
+        21.5,
+        30
+      ],
+      "admitted_players_per_gw_min_median_max": [
+        0,
+        21.5,
+        27
+      ],
+      "comparable": 5695,
+      "coverage": 0.11185250219490782,
+      "cutoff": 0.8873280336854332,
+      "gameweeks": 28,
+      "observed": 637,
+      "player_gameweek_coverage": 0.11097256857855362,
+      "player_gameweeks": 623,
+      "players": 65,
+      "precision": 0.902668759811617,
+      "recall": 0.21821631878557876,
+      "risk": 0.09733124018838304,
+      "short_minutes": 27,
+      "sub60": 62,
+      "unknown": 0,
+      "upper_risk": 0.12282055271706464,
+      "variant": "smoothed_recent",
+      "worst_case_risk": 0.09733124018838304,
+      "zero_minutes": 35
+    },
+    {
+      "admitted": 0,
+      "admitted_fixtures_per_gw_min_median_max": [
+        0,
+        0.0,
+        0
+      ],
+      "admitted_players_per_gw_min_median_max": [
+        0,
+        0.0,
+        0
+      ],
+      "comparable": 5695,
+      "coverage": 0.0,
+      "cutoff": 0.96619841010563,
+      "gameweeks": 0,
+      "observed": 0,
+      "player_gameweek_coverage": 0.0,
+      "player_gameweeks": 0,
+      "players": 0,
+      "precision": null,
+      "recall": 0.0,
+      "risk": null,
+      "short_minutes": 0,
+      "sub60": 0,
+      "unknown": 0,
+      "upper_risk": null,
+      "variant": "smoothed_recent",
+      "worst_case_risk": null,
+      "zero_minutes": 0
+    }
+  ],
+  "prior": {
+    "mean_minutes": 30.234781661766306,
+    "observations": 9183,
+    "play": 0.4111945987150169,
+    "sixty": 0.32396820211259936
+  },
+  "protocol": {
+    "bootstrap_block": 4,
+    "bootstrap_draws": 2000,
+    "cutoff_minutes_before_gw": 90,
+    "grid_season": "2023-24",
+    "holdout_season": "2025-26",
+    "minimum_admitted": 200,
+    "minimum_coverage": 0.05,
+    "minimum_current_observations": 2,
+    "minimum_gameweeks": 20,
+    "minimum_minutes": 180,
+    "minimum_players": 20,
+    "primary_risk_budget": 0.1,
+    "prior_season": "2022-23",
+    "pseudo_fixtures": 2,
+    "publication_hours_after_kickoff": 27,
+    "quantiles": [
+      0.5,
+      0.75,
+      0.9,
+      0.95,
+      0.99,
+      1.0
+    ],
+    "recent_veto_fixtures": 2,
+    "risk_budgets": [
+      0.05,
+      0.1,
+      0.15
+    ],
+    "seed": 31060,
+    "selection_season": "2024-25",
+    "source_revision": "9779cdbc0c07f6c900c2d0c181ddf6bb9c800f88",
+    "window": 10
+  },
+  "script_sha256": "7e0e2fbdf05fccd6f593129ad9d41b2b810ae0264c14d1417707b59bc64ad307",
+  "season_blend_sha256": "45fa8914ddbb1f9f585580473de6f2e8019c95029321b508fc80f00866596d46",
+  "selections": {
+    "0.05": null,
+    "0.1": null,
+    "0.15": {
+      "admitted": 1483,
+      "admitted_fixtures_per_gw_min_median_max": [
+        19,
+        41.5,
+        53
+      ],
+      "admitted_players_per_gw_min_median_max": [
+        19,
+        41.0,
+        50
+      ],
+      "comparable": 5695,
+      "coverage": 0.2604038630377524,
+      "cutoff": 0.7206613670187666,
+      "gameweeks": 36,
+      "observed": 1483,
+      "player_gameweek_coverage": 0.26059850374064836,
+      "player_gameweeks": 1463,
+      "players": 105,
+      "precision": 0.8739042481456507,
+      "recall": 0.49184060721062617,
+      "risk": 0.1260957518543493,
+      "short_minutes": 82,
+      "sub60": 187,
+      "unknown": 0,
+      "upper_risk": 0.14396263382043314,
+      "variant": "smoothed_recent",
+      "worst_case_risk": 0.1260957518543493,
+      "zero_minutes": 105
+    }
+  },
+  "sources": {
+    "2022-23": {
+      "exact_duplicates_removed": 0,
+      "explicit_zero_rows": 15160,
+      "finished_fixtures": 380,
+      "fixture_sha256": "e783060da73700d4ec6fd12acec4568524eac8bb3ba3ccd8ce68a374dadba8f8",
+      "fixtures_without_rows": 0,
+      "manager_rows_removed": 0,
+      "player_sha256": "b78a6d0456141f9033c32fc4122931baae780ac4a4938683451b1fce7a4fdd15",
+      "players": 778,
+      "unfinished_fixtures": 0,
+      "unique_rows": 26505,
+      "unknown_starts_fixtures": 136
+    },
+    "2023-24": {
+      "exact_duplicates_removed": 0,
+      "explicit_zero_rows": 18341,
+      "finished_fixtures": 380,
+      "fixture_sha256": "d8521bdbb80edb5141bc17df71bf6026275f2e56fd6a6dc6041b3ae23a39ce6a",
+      "fixtures_without_rows": 0,
+      "manager_rows_removed": 0,
+      "player_sha256": "e9c09c8856f1c86b4f920f46ddd5033af83409439dfda53be925df2a3e7c8a9e",
+      "players": 865,
+      "unfinished_fixtures": 0,
+      "unique_rows": 29725,
+      "unknown_starts_fixtures": 0
+    },
+    "2024-25": {
+      "exact_duplicates_removed": 0,
+      "explicit_zero_rows": 15717,
+      "finished_fixtures": 380,
+      "fixture_sha256": "ce696e187569ca7c45da2562811d3c38f525b58e65575531be37bebd0769ee28",
+      "fixtures_without_rows": 0,
+      "manager_rows_removed": 322,
+      "player_sha256": "5bbbcba6353b4c72ad273adcc8e3aa451946a826564679788f45b1cb3325b84e",
+      "players": 784,
+      "unfinished_fixtures": 0,
+      "unique_rows": 27283,
+      "unknown_starts_fixtures": 0
+    }
+  },
+  "training_audit": {
+    "below_minutes_floor": 3138,
+    "comparable_opportunities": 5909,
+    "known_defender_opportunities": 9331,
+    "known_outcomes": 5905,
+    "short_current_history": 284,
+    "unknown_outcomes": 4
+  },
+  "training_calibration": {
+    "sixty": {
+      "bins": [
+        {
+          "n": 2609,
+          "observed": 0.2265235722499042,
+          "predicted": 0.2503741084477932,
+          "range": [
+            0,
+            0.5
+          ]
+        },
+        {
+          "n": 529,
+          "observed": 0.41965973534971646,
+          "predicted": 0.5253118668212315,
+          "range": [
+            0.5,
+            0.6
+          ]
+        },
+        {
+          "n": 478,
+          "observed": 0.4497907949790795,
+          "predicted": 0.6208141498992908,
+          "range": [
+            0.6,
+            0.7
+          ]
+        },
+        {
+          "n": 460,
+          "observed": 0.5391304347826087,
+          "predicted": 0.7139631272916623,
+          "range": [
+            0.7,
+            0.8
+          ]
+        },
+        {
+          "n": 514,
+          "observed": 0.6595330739299611,
+          "predicted": 0.8165578756030926,
+          "range": [
+            0.8,
+            0.9
+          ]
+        },
+        {
+          "n": 1315,
+          "observed": 0.8319391634980988,
+          "predicted": 0.9609773364018411,
+          "range": [
+            0.9,
+            1
+          ]
+        }
+      ],
+      "brier": 0.19833864653952094,
+      "n": 5905,
+      "prior_brier": 0.26646941476989844
+    },
+    "smoothed": {
+      "bins": [
+        {
+          "n": 2963,
+          "observed": 0.25480931488356395,
+          "predicted": 0.28494734900992336,
+          "range": [
+            0,
+            0.5
+          ]
+        },
+        {
+          "n": 552,
+          "observed": 0.4365942028985507,
+          "predicted": 0.5542853933186627,
+          "range": [
+            0.5,
+            0.6
+          ]
+        },
+        {
+          "n": 551,
+          "observed": 0.5716878402903811,
+          "predicted": 0.6401379683221274,
+          "range": [
+            0.6,
+            0.7
+          ]
+        },
+        {
+          "n": 605,
+          "observed": 0.6462809917355372,
+          "predicted": 0.7331223059293317,
+          "range": [
+            0.7,
+            0.8
+          ]
+        },
+        {
+          "n": 1230,
+          "observed": 0.8170731707317073,
+          "predicted": 0.8498482608423412,
+          "range": [
+            0.8,
+            0.9
+          ]
+        },
+        {
+          "n": 4,
+          "observed": 0.5,
+          "predicted": 0.94119841010563,
+          "range": [
+            0.9,
+            1
+          ]
+        }
+      ],
+      "brier": 0.19299722040726744,
+      "n": 5905,
+      "prior_brier": 0.26646941476989844
+    }
+  }
+}

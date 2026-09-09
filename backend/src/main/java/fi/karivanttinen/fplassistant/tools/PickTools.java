@@ -3,25 +3,25 @@ package fi.karivanttinen.fplassistant.tools;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 
+import fi.karivanttinen.fplassistant.schedule.ScheduleFreshnessCheck;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataAccessException;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
 /**
- * Phase 4 pick-advice tools. {@link #getDifferentialPicks} and {@link #getCaptainCandidates} rank
- * on expected FPL points per 90 built from {@code player_fixture_stats}, blended with the points
- * a player actually scored, then on the average fixture-difficulty rating (FDR) of the next N
- * fixtures, then on ownership or minutes.
+ * Pick-advice tools. {@link #getDifferentialPicks} and {@link #getCaptainCandidates} rank
+ * eligible players on expected FPL points per fixture, blended with realised points per fixture,
+ * then on average fixture difficulty from the same captured schedule, then ownership or observed
+ * minutes. Role eligibility is a separate hard current-season evidence rule, not a score.
  *
  * <p><b>Two sources, two provenance lines</b> — the shape {@code SquadTools} and the my-team
  * tools already use. The candidate pool (identity, club, price, ownership, availability, news)
@@ -42,21 +42,16 @@ import org.springframework.stereotype.Component;
  * nothing, and the model relayed the ordering as though it were a case. A points haul is a
  * result, not a reason.
  *
- * <p>The scale is FPL's own scoring, which is what makes one number fair across positions and
- * across the two kinds of defender. A goal is worth 6 to a defender and 4 to a forward; a clean
- * sheet is worth 4 to a defender, 1 to a midfielder and nothing to a forward. So
- * {@code xPts/90 = appearance + xG/90 × goal points + xA/90 × 3 + P(clean sheet) × clean-sheet
- * points}, with {@code P(clean sheet) = exp(-xGC)} — the Poisson probability that a side with
- * that expected concession keeps one. An attacking wing-back earns through the first two terms
- * and a defender at a mean side through the last, and neither is judged on the other's strength.
+ * <p>The scale is FPL's own scoring, which makes one number fair across positions and across the
+ * two kinds of defender. Per-fixture appearance points are {@code P(play) + P(60+)}, attack is
+ * scaled by expected minutes, clean sheets are conditional on reaching 60, and DefCon uses
+ * separate short- and long-appearance exposure. A goal is worth 6 to a defender and 4 to a
+ * forward; a clean sheet is worth 4 to a defender, 1 to a midfielder and nothing to a forward.
  *
- * <p><b>Realised points are blended in, weighted by how far the season has run.</b> Underlying
- * numbers are the better guide to what will happen next, but a player's actual return is
- * evidence too, and it stops being a small sample as the season goes on: penalties, set pieces,
- * bonus points and defensive contributions are all real points the model above cannot see. The
- * weight rises from nothing in the opening weeks to half by the season's midpoint
- * ({@link #MAX_REALISED_WEIGHT} at {@link #FULL_WEIGHT_GAMEWEEK}), so a hot start counts for
- * little in GW2 and a season of returns counts properly in GW20.
+ * <p><b>Realised points per fixture are blended in, weighted by how far the season has run.</b>
+ * Underlying numbers are the better guide to what happens next, but actual return is evidence too.
+ * The weight rises from nothing in the opening weeks to half by the season's midpoint
+ * ({@link #MAX_REALISED_WEIGHT} at {@link #FULL_WEIGHT_GAMEWEEK}).
  *
  * <p>Defensive contribution is modelled as a probability: the chance a player reaches his
  * position's action threshold in a match, read from his average actions through a negative
@@ -75,12 +70,11 @@ import org.springframework.stereotype.Component;
  * that is not unique in either season loses the previous-season side rather than being guessed —
  * a wrong metric attached to a recommendation is the failure this class exists to prevent.
  *
- * <p>Both tools exclude players who are injured, suspended or otherwise out ({@code status} not
- * in {@code a}/{@code d}) and label the doubtful ones with their news line. Recommending a player
- * who cannot play is worse than recommending nobody.
- *
- * <p>The FDR of every team is fetched in one query and reused across the candidate pool, rather
- * than one query per player: a pool of candidates shares at most 20 clubs.
+ * <p>Primary lists require today's {@code a} flag and a complete same-season current-club window:
+ * at least 180 observed minutes and 60+ in every expected completed fixture, up to the latest ten.
+ * Doubtful, stale, partial and inconsistent evidence is excluded rather than weakened into a
+ * probability claim. One short appearance remains in the latest-ten window for a deliberately
+ * conservative recovery wait. Passing this historical rule never guarantees the next lineup.
  */
 @Component
 public class PickTools implements FplTool {
@@ -103,17 +97,15 @@ public class PickTools implements FplTool {
     /** Completed gameweeks at which realised points reach that weight — the season's midpoint. */
     private static final int FULL_WEIGHT_GAMEWEEK = 19;
 
-    private final JdbcTemplate jdbc;
     private final SeasonResolver seasonResolver;
     private final DailyPriceSource daily;
-    private final String dailyTable;
+    private final RankingMetrics rankingMetrics;
 
-    public PickTools(JdbcTemplate jdbc, SeasonResolver seasonResolver, DailyPriceSource daily,
-                     @Value("${fpl.daily-price.table-name}") String dailyTable) {
-        this.jdbc = jdbc;
+    public PickTools(SeasonResolver seasonResolver, DailyPriceSource daily,
+                     RankingMetrics rankingMetrics) {
         this.seasonResolver = seasonResolver;
         this.daily = daily;
-        this.dailyTable = dailyTable;
+        this.rankingMetrics = rankingMetrics;
     }
 
     /** Same sentence as SquadTools: a pool from the weekly table is the failure KAR-32 is about. */
@@ -121,22 +113,26 @@ public class PickTools implements FplTool {
             + " rank picks. Tell the user the daily price capture has not run.";
 
     @Tool(description = """
-            Suggest differential FPL picks — players with low ownership (≤ maxOwnership
-            percent) whose underlying numbers and upcoming fixtures are favourable. Filters by
-            position (1=GK, 2=DEF, 3=MID, 4=FWD, or "any"). Returns up to 10 players ranked by a
-            Score: expected FPL points per 90 (xG and xA at that position's own goal and assist
-            values, plus the clean-sheet probability implied by expected goals conceded and the
-            rate at which the player reaches the defensive-contribution threshold), blended
-            with the points actually scored per 90 at a weight that rises as the season runs.
-            Then the average difficulty of their next N fixtures, then ownership. Numbers blend this
-            season with last on a per-player weight that rises with his matches this season, and
-            each pick shows its weight. NOT ranked by form: a recent points haul is a result, not
-            a reason. Each pick shows the parts behind
-            its expected points, so a defender who attacks and a defender at a mean side are
-            distinguishable. The reply says which season the numbers cover. Players who are
-            injured, suspended or otherwise unavailable are excluded; doubtful players are
-            included and flagged. Use for differential/pick questions and combine with strategy
-            docs. The reply begins with the season the numbers come from.
+            Suggest differential FPL picks at or below maxOwnership, optionally filtered by
+            position (1=GK, 2=DEF, 3=MID, 4=FWD, or "any"). Returns up to 10 eligible players.
+            Eligibility is the consistent observed 60+ history rule. The selected daily capture
+            must be fresh and say available ('a'), with valid position/club; it, the current metric
+            season and the fresh complete schedule must be the same season with coherent identity.
+            The complete current-club window includes every expected completed fixture, latest ten
+            at most, with at least 180 current-season minutes and 60+ in every fixture. Known zeros
+            count. Only a verified different-club observation fences the spell; otherwise expected
+            fixtures start at season start. Doubtful, stale, missing, pending or inconsistent data
+            causes abstention; last-season history cannot certify a current role. One sub-60 fixture
+            blocks until ten later completed club fixtures in that spell move it out. A short
+            complete window can qualify after clearing the floor, but is labelled as a small
+            sample. This history does not guarantee the next start.
+            Ranking uses expected FPL points per fixture — appearance and 60+ chances, attack
+            scaled by expected minutes, 60+-conditional clean sheets and short/long DefCon —
+            blended with realised points per fixture, then FDR from that same schedule, then
+            ownership. Ability and usable exposure rates can blend seasons on the shared ramp;
+            raw current-role eligibility never does. NOT ranked by form. The reply shows source
+            dates, window evidence, exclusions and partial components. Use for pick/differential
+            questions with strategy guidance; do not fill an empty list with ineligible names.
             """)
     public String getDifferentialPicks(String position, double maxOwnership, int nextN) {
         try {
@@ -146,27 +142,27 @@ public class PickTools implements FplTool {
                 return NO_CAPTURE;
             }
             DailyPriceSource.Capture capture = captured.get();
-            String provenance = provenanceFor(capture, season);
             Integer elementType = parsePosition(position);
             if (elementType == null) {
-                return provenance + "\nUnrecognised position \"" + position
+                return provenanceFor(capture, season, LocalDate.now(UkTime.zone()))
+                        + "\nUnrecognised position \"" + position
                         + "\". Use 1/GK, 2/DEF, 3/MID, 4/FWD, or \"any\".";
             }
             int fixtureLimit = Math.max(1, Math.min(nextN, MAX_FIXTURES));
             MetricSeasons metric = seasonResolver.metricSeasons(season);
 
-            List<Map<String, Object>> rows = candidates(capture, season, metric, elementType, maxOwnership);
-            if (rows.isEmpty()) {
-                return provenance + "\nNo differentials match those filters in "
-                        + capture.season() + " with a comparable underlying record"
-                        + " (players who are injured or suspended are excluded, and so are"
-                        + " players with under " + ExpectedPoints.MIN_WINDOW_MINUTES + " minutes of "
-                        + metric.played().code() + " football to judge them on).";
+            RankingMetrics.Snapshot snapshot = rankingMetrics.load(capture, metric);
+            String provenance = provenanceFor(capture, season,
+                    LocalDate.ofInstant(snapshot.asOf(), UkTime.zone()));
+            Selection selection = candidates(snapshot, elementType, maxOwnership);
+            if (selection.rows().isEmpty()) {
+                return provenance + "\n" + scheduleEvidence(snapshot) + "\n"
+                        + noQualifyingPlayers("differentials", capture.season(), selection);
             }
 
             return provenance + "\n\n"
-                    + formatPicks("Differential picks", rows, capture, season, metric, fixtureLimit,
-                            elementType, maxOwnership, true);
+                    + formatPicks("Differential picks", selection, snapshot, metric,
+                            fixtureLimit, true);
         } catch (DataAccessException e) {
             log.error("getDifferentialPicks(\"{}\", {}, {}) failed", position, maxOwnership, nextN, e);
             return "Pick data is temporarily unavailable (database error)."
@@ -175,20 +171,25 @@ public class PickTools implements FplTool {
     }
 
     @Tool(description = """
-            Suggest FPL captain candidates — midfielders and forwards with the strongest
-            underlying attacking numbers and favourable upcoming fixtures. Returns up to 10
-            players ranked by a Score: expected FPL points per 90 from xG and xA at that
-            position's own values, plus the rate at which the player reaches the
-            defensive-contribution threshold, blended with the points actually scored per 90 at a weight
-            that rises as the season runs. Then the average difficulty of their next N fixtures,
-            then minutes played, each shown with ownership (so the user can see template vs
-            differential captains). Numbers blend this season with last on a per-player weight
-            that rises with his matches this season, and each pick shows its weight.
-            NOT ranked by form: a big gameweek is a result, not a reason,
-            and the reply says which season the numbers cover. Players who are injured, suspended or otherwise
-            unavailable are excluded; doubtful players are included and flagged. Use for
-            captaincy questions and combine with strategy docs. The reply begins with the season
-            the numbers come from.
+            Suggest up to 10 FPL captain candidates from midfielders and forwards. Primary
+            candidates must pass the consistent observed 60+ history rule. The selected daily
+            capture must be fresh and say available ('a'), with valid position/club; it, the current
+            metric season and fresh complete schedule must be the same season with coherent
+            identity. The complete current-club window includes every expected completed fixture,
+            latest ten at most, with at least 180 current-season minutes and 60+ in every fixture.
+            Known zeros count. Only a verified different-club observation fences the spell;
+            otherwise expected fixtures start at season start. Doubtful, stale, missing, pending or
+            inconsistent data causes abstention; last-season minutes cannot certify today's role.
+            One sub-60 fixture blocks until ten later completed club fixtures in that spell move it
+            out. A short complete window can qualify after clearing the floor, but is labelled as
+            a small sample. This history does not guarantee the next lineup.
+            Ranking uses expected FPL points per fixture — appearance and 60+ chances, attack
+            scaled by expected minutes, 60+-conditional clean sheets and short/long DefCon —
+            blended with realised points per fixture, then FDR from the same schedule, then
+            observed minutes. Ability and usable exposure rates may blend seasons; raw current
+            eligibility never does. NOT ranked by form. The reply shows ownership, source dates,
+            window evidence, exclusions and partial components. Use with captaincy strategy;
+            never add an ineligible fallback when the qualifying list is empty.
             """)
     public String getCaptainCandidates(int nextN) {
         try {
@@ -198,22 +199,21 @@ public class PickTools implements FplTool {
                 return NO_CAPTURE;
             }
             DailyPriceSource.Capture capture = captured.get();
-            String provenance = provenanceFor(capture, season);
             int fixtureLimit = Math.max(1, Math.min(nextN, MAX_FIXTURES));
             MetricSeasons metric = seasonResolver.metricSeasons(season);
 
-            List<Map<String, Object>> rows = candidates(capture, season, metric, ATTACKERS, 100.0);
-            if (rows.isEmpty()) {
-                return provenance + "\nNo captain candidates in " + capture.season()
-                        + " have a comparable underlying record yet (players who are injured or"
-                        + " suspended are excluded, and so are players with under "
-                        + ExpectedPoints.MIN_WINDOW_MINUTES + " minutes of " + metric.played().code()
-                        + " football to judge them on).";
+            RankingMetrics.Snapshot snapshot = rankingMetrics.load(capture, metric);
+            String provenance = provenanceFor(capture, season,
+                    LocalDate.ofInstant(snapshot.asOf(), UkTime.zone()));
+            Selection selection = candidates(snapshot, ATTACKERS, 100.0);
+            if (selection.rows().isEmpty()) {
+                return provenance + "\n" + scheduleEvidence(snapshot) + "\n"
+                        + noQualifyingPlayers("captain candidates", capture.season(), selection);
             }
 
             return provenance + "\n\n"
-                    + formatPicks("Captain candidates", rows, capture, season, metric, fixtureLimit,
-                            ATTACKERS, 100.0, false);
+                    + formatPicks("Captain candidates", selection, snapshot, metric,
+                            fixtureLimit, false);
         } catch (DataAccessException e) {
             log.error("getCaptainCandidates({}) failed", nextN, e);
             return "Pick data is temporarily unavailable (database error)."
@@ -224,6 +224,11 @@ public class PickTools implements FplTool {
     /** Position filter meaning "midfielders and forwards" — the only positions worth captaining. */
     private static final int ATTACKERS = -1;
 
+    private record Selection(List<Map<String, Object>> rows,
+                             Map<MinutesModel.Eligibility, Integer> exclusions,
+                             int matchingCapturePlayers) {
+    }
+
     /**
      * The two provenance lines, and — during the changeover, when the capture already carries the
      * new season while the resolver still names the completed one — a third line telling the model
@@ -232,9 +237,10 @@ public class PickTools implements FplTool {
      * hedged as last season's. The age is judged on the UK calendar, like every other
      * daily-capture tool: FPL's day turns at 00:00 UK, not at the container's midnight.
      */
-    private static String provenanceFor(DailyPriceSource.Capture capture, SeasonContext season) {
-        String provenance = DailyPriceSource.provenance(capture.season(), capture.date(),
-                LocalDate.now(UkTime.zone())) + "\n" + season.provenance();
+    private static String provenanceFor(DailyPriceSource.Capture capture, SeasonContext season,
+                                        LocalDate today) {
+        String provenance = DailyPriceSource.provenance(capture.season(), capture.date(), today)
+                + "\n" + season.provenance();
         if (!capture.season().equals(season.code())) {
             provenance += "\nThe season line above describes the metrics only: price, ownership"
                     + " and availability on every pick are today's, from the capture, and may be"
@@ -243,198 +249,96 @@ public class PickTools implements FplTool {
         return provenance;
     }
 
-    /**
-     * The candidate pool, already carrying each player's underlying numbers.
-     *
-     * <p>The whole qualifying pool comes back and is ranked in Java rather than cut in SQL. The
-     * score is FPL's scoring applied to expected numbers, and writing it twice — once in SQL to
-     * choose the pool, once in Java to order it — is how the two drift apart. A few hundred rows
-     * is not worth that risk.
-     */
-    private List<Map<String, Object>> candidates(DailyPriceSource.Capture capture, SeasonContext season,
-                                                 MetricSeasons metric, int elementType, double maxOwnership) {
-        // Same season on both sides: FPL's element id is the join. Different seasons — the capture
-        // has moved on and the resolver has not — and the id names a different player, so the join
-        // is the name, and only where the name is unique on both sides.
-        boolean sameSeason = capture.season().equals(season.code());
-        String metricJoin = sameSeason
-                ? "c.player_id = pool.id"
-                : "c.k = LOWER(pool.web_name) AND c.unique_name AND pool.name_count = 1";
-
-        List<Map<String, Object>> rows = jdbc.queryForList("""
-                WITH whole_capture AS (
-                    -- The whole capture day, before any filter: name uniqueness must be judged
-                    -- against every player FPL published, or a twin hidden by the status,
-                    -- ownership or position filter would leave his namesake looking unique and
-                    -- inheriting his record — the failure the name bridge exists to prevent.
-                    SELECT d.element_id AS id, d.web_name, d.element_type, d.now_cost,
-                           d.selected_by_percent, d.team_id, d.team_short, d.status, d.news,
-                           COUNT(*) OVER (PARTITION BY LOWER(d.web_name)) AS name_count
-                    FROM %s d
-                    WHERE d.season = ? AND d.price_date = ?
-                ),
-                pool AS (
-                    -- team_id and element_type are nullable in the capture; a row without them
-                    -- cannot be positioned or given a fixture, so it is excluded, not crashed on.
-                    SELECT * FROM whole_capture wc
-                    WHERE wc.status IN ('a', 'd')
-                      AND wc.selected_by_percent <= ?
-                      AND wc.team_id IS NOT NULL AND wc.element_type IS NOT NULL
-                      %s
-                ),
-                recent AS (
-                    SELECT pfs.season_id, pfs.player_id, pfs.minutes, pfs.total_points,
-                           pfs.expected_goals AS xg, pfs.expected_assists AS xa,
-                           pfs.expected_goals_conceded AS xgc,
-                           pfs.defensive_contribution,
-                           -- fixture_id breaks the tie: a double gameweek gives one player two
-                           -- rows with the same gameweek, and an unordered pair straddling the
-                           -- window edge makes the same call return different numbers.
-                           ROW_NUMBER() OVER (PARTITION BY pfs.season_id, pfs.player_id
-                                              ORDER BY pfs.gameweek DESC, pfs.fixture_id DESC) AS rn,
-                           -- The ramp's input: every qualifying match of the season, not just the
-                           -- windowed ones. A player with 12 has reached full weight even though
-                           -- only the last 10 feed his rates.
-                           count(*) FILTER (WHERE pfs.minutes >= 60)
-                               OVER (PARTITION BY pfs.season_id, pfs.player_id) AS matches60
-                    FROM player_fixture_stats pfs
-                    WHERE pfs.season_id IN (?, ?)
-                ),
-                windowed AS (
-                    SELECT season_id, player_id,
-                           min(matches60) AS matches60,
-                           SUM(minutes) AS mins,
-                           -- Appearances, not rows. tapas writes a row for every fixture in the
-                           -- squad, including the ones a player watched, so counting rows would
-                           -- print "450 mins (10 mt)" for someone who played five.
-                           count(*) FILTER (WHERE minutes > 0) AS matches,
-                           SUM(xg) * 90 / NULLIF(SUM(minutes), 0) AS xg90,
-                           SUM(xa) * 90 / NULLIF(SUM(minutes), 0) AS xa90,
-                           SUM(total_points) * 90.0 / NULLIF(SUM(minutes), 0) AS pts90,
-                           -- Only matches the player was on for an hour count towards the clean
-                           -- sheet: below that FPL awards none, and a cameo would otherwise
-                           -- inherit the whole match's expected concession.
-                           SUM(xgc) FILTER (WHERE minutes >= 60)
-                               / NULLIF(count(*) FILTER (WHERE minutes >= 60), 0) AS xgc_per_match,
-                           -- The mean is what the defcon model needs; ExpectedPoints reads the
-                           -- chance of crossing the threshold out of it, and the match count says
-                           -- how much to believe the mean.
-                           count(*) FILTER (WHERE minutes >= 60
-                               AND defensive_contribution IS NOT NULL) AS defcon_matches,
-                           AVG(defensive_contribution) FILTER (WHERE minutes >= 60) AS defcon_avg
-                    FROM recent
-                    -- Recent form for the season being played, the whole of the previous one.
-                    WHERE rn <= CASE WHEN season_id = ? THEN %d ELSE %d END
-                    GROUP BY season_id, player_id
-                ),
-                cur AS (
-                    -- The resolved season's window keyed for both joins: by element id when the
-                    -- capture is the same season, by name when it is not. LEFT JOIN: the weekly
-                    -- player table is only needed for the name key, and a player with fixture
-                    -- statistics but no weekly row yet (a January signing under the sync lag this
-                    -- tool exists to route around) must not lose his metrics on the id path.
-                    SELECT w.*, LOWER(mp.web_name) AS k, %s AS unique_name
-                    FROM windowed w
-                    LEFT JOIN player mp ON mp.id = w.player_id AND mp.season_id = w.season_id
-                    WHERE w.season_id = ?
-                ),
-                prev AS (
-                    -- Last season's row attached by name: element ids are reassigned every summer
-                    -- and tapas keeps no stable code. A name that is not unique in that season is
-                    -- dropped rather than guessed.
-                    SELECT LOWER(mp.web_name) AS k,
-                           min(w.matches60) AS matches60, min(w.mins) AS mins,
-                           min(w.matches) AS matches, min(w.xg90) AS xg90, min(w.xa90) AS xa90,
-                           min(w.pts90) AS pts90, min(w.xgc_per_match) AS xgc_per_match,
-                           min(w.defcon_matches) AS defcon_matches, min(w.defcon_avg) AS defcon_avg
-                    FROM windowed w
-                    JOIN player mp ON mp.id = w.player_id AND mp.season_id = w.season_id
-                    WHERE w.season_id = ? AND %s
-                    GROUP BY 1
-                    HAVING count(*) = 1
-                )
-                SELECT pool.*,
-                       c.matches60 AS cur_matches60, c.mins AS cur_mins, c.matches AS cur_matches,
-                       c.xg90 AS cur_xg90, c.xa90 AS cur_xa90, c.pts90 AS cur_pts90,
-                       c.xgc_per_match AS cur_xgc_per_match,
-                       c.defcon_matches AS cur_defcon_matches, c.defcon_avg AS cur_defcon_avg,
-                       pv.matches60 AS prev_matches60, pv.mins AS prev_mins,
-                       pv.matches AS prev_matches, pv.xg90 AS prev_xg90, pv.xa90 AS prev_xa90,
-                       pv.pts90 AS prev_pts90, pv.xgc_per_match AS prev_xgc_per_match,
-                       pv.defcon_matches AS prev_defcon_matches, pv.defcon_avg AS prev_defcon_avg
-                FROM pool
-                LEFT JOIN cur c ON %s
-                LEFT JOIN prev pv ON pv.k = LOWER(pool.web_name) AND pool.name_count = 1
-                """.formatted(dailyTable, positionFilter(elementType, "wc"), metric.windowLimit(),
-                        ExpectedPoints.WHOLE_SEASON, nameIsUnique("mp"), nameIsUnique("mp"),
-                        metricJoin),
-                capture.season(), capture.date(), maxOwnership,
-                season.seasonId(), metric.previousSeasonId(),
-                season.seasonId(),
-                season.seasonId(),
-                metric.previousSeasonId());
-
-        List<Map<String, Object>> ranked = new ArrayList<>();
-        for (Map<String, Object> row : rows) {
-            SeasonBlend.Blended blended = SeasonBlend.blend(
-                    SeasonBlend.side(row, SeasonBlend.CURRENT_PREFIX),
-                    SeasonBlend.side(row, SeasonBlend.PREVIOUS_PREFIX));
-            if (blended == null) {
-                continue;   // no comparable record — counted by the coverage line, not listed
-            }
-            row.putAll(blended.metrics());
-            ranked.add(row);
+    private static String scheduleEvidence(RankingMetrics.Snapshot snapshot) {
+        if (snapshot.schedule().snapshot().isEmpty()) {
+            return "Schedule evidence: no FPL schedule capture is available.";
         }
-        return ranked;
+        var selected = snapshot.schedule().snapshot().orElseThrow();
+        LocalDate capturedDay = LocalDate.ofInstant(selected.capturedAt(), UkTime.zone());
+        boolean fresh = ScheduleFreshnessCheck.isFresh(capturedDay, snapshot.asOf());
+        if (snapshot.schedule().completeness().complete() && fresh) {
+            return "Schedule evidence: complete FPL schedule capture at "
+                    + selected.capturedAt() + ".";
+        }
+        return "Schedule evidence: FPL schedule capture at " + selected.capturedAt()
+                + "; structure " + snapshot.schedule().completeness().reason()
+                + (fresh ? ", fresh for this snapshot." : ", not fresh for this snapshot.");
     }
 
-    /**
-     * A name that belongs to exactly one player in that row's own season. Checked against the
-     * whole squad, not the filtered pool: the position and ownership filters would otherwise
-     * hide a collision by admitting only one of the pair, and the minutes floor would hide
-     * another by dropping one of them before the check ran.
-     */
-    private static String nameIsUnique(String alias) {
-        return """
-                NOT EXISTS (
-                    SELECT 1 FROM player twin
-                    WHERE twin.season_id = %s.season_id
-                      AND LOWER(twin.web_name) = LOWER(%s.web_name)
-                      AND twin.id <> %s.id
-                )""".formatted(alias, alias, alias);
+    /** Consumer filters are applied only after RankingMetrics has seen the whole capture. */
+    private static Selection candidates(RankingMetrics.Snapshot snapshot,
+                                        int elementType, double maxOwnership) {
+        List<Map<String, Object>> rows = new ArrayList<>();
+        Map<MinutesModel.Eligibility, Integer> exclusions =
+                new EnumMap<>(MinutesModel.Eligibility.class);
+        int matching = 0;
+        for (RankingMetrics.Candidate candidate : snapshot.candidates()) {
+            RankingMetrics.CapturePlayer player = candidate.capture();
+            if (!matchesFilter(player, elementType, maxOwnership)) {
+                continue;
+            }
+            matching++;
+            if (candidate.eligibility() != MinutesModel.Eligibility.ELIGIBLE
+                    || candidate.blended() == null || candidate.blended().exposure() == null) {
+                MinutesModel.Eligibility reason = candidate.eligibility()
+                        == MinutesModel.Eligibility.ELIGIBLE
+                                ? MinutesModel.Eligibility.UNKNOWN_CURRENT_EVIDENCE
+                                : candidate.eligibility();
+                exclusions.merge(reason, 1, Integer::sum);
+                continue;
+            }
+            Map<String, Object> row = new HashMap<>();
+            row.put("id", player.elementId());
+            row.put("web_name", player.webName());
+            row.put("element_type", player.position());
+            row.put("now_cost", player.nowCost());
+            row.put("selected_by_percent", player.ownership());
+            row.put("team_id", player.teamId());
+            row.put("team_short", player.teamShort());
+            row.put("status", player.status());
+            row.put("news", player.news());
+            row.putAll(candidate.blended().metrics());
+            ExpectedPoints.PerFixture projection = ExpectedPoints.perFixture(
+                    row, candidate.blended().exposure()).orElseThrow();
+            row.put("expected_per_fixture", projection.points());
+            row.put("points_per_fixture", candidate.blended().exposure().pointsPerFixture());
+            row.put("current_window_minutes", candidate.current().window().totalMinutes());
+            row.put("projection", projection);
+            row.put("ranking_candidate", candidate);
+            rows.add(row);
+        }
+        return new Selection(List.copyOf(rows), Map.copyOf(exclusions), matching);
     }
 
-    private static String positionFilter(int elementType, String alias) {
-        return switch (elementType) {
-            case ATTACKERS -> "AND " + alias + ".element_type IN (3, 4)";
-            case 0 -> "";
-            default -> "AND " + alias + ".element_type = " + elementType;
-        };
+    private static boolean matchesFilter(RankingMetrics.CapturePlayer player,
+                                         int elementType, double maxOwnership) {
+        if (player.position() == null || player.position() < 1 || player.position() > 4
+                || player.ownership() == null || player.ownership() > maxOwnership) {
+            return false;
+        }
+        return elementType == 0 || (elementType == ATTACKERS
+                ? player.position() == 3 || player.position() == 4
+                : player.position() == elementType);
     }
 
-    /**
-     * How many players matched the filters at all, ranked or not, so the reply can state its own
-     * coverage. Reported rather than swallowed: a promoted side's defence and a summer signing
-     * are exactly the picks a user asks about, and silently omitting them reads as "no such
-     * option".
-     *
-     * <p>The count is the pool; the shortfall is inferred by subtraction rather than by a second
-     * query reproducing the pool's reasons. An earlier version did reproduce them and got it
-     * wrong — it counted only players with no per-fixture rows at all, so anyone under the
-     * minutes floor, and anyone with an ambiguous name, vanished from both the list and the
-     * count. A subtraction cannot drift from the query it describes.
-     */
-    private int poolSize(DailyPriceSource.Capture capture, int elementType, double maxOwnership) {
-        Integer pool = jdbc.queryForObject("""
-                SELECT count(*) FROM %s d
-                WHERE d.season = ? AND d.price_date = ?
-                  AND d.status IN ('a', 'd')
-                  AND d.selected_by_percent <= ?
-                  AND d.team_id IS NOT NULL AND d.element_type IS NOT NULL
-                  %s
-                """.formatted(dailyTable, positionFilter(elementType, "d")),
-                Integer.class, capture.season(), capture.date(), maxOwnership);
-        return pool == null ? 0 : pool;
+    private static String noQualifyingPlayers(String kind, String season, Selection selection) {
+        return "No " + kind + " qualify in " + season
+                + " under the consistent observed 60+ history rule. Checked "
+                + selection.matchingCapturePlayers() + " matching capture players. Exclusions: "
+                + exclusionCounts(selection.exclusions()) + ". Missing or stale evidence is"
+                + " unjudged, not evidence of poor football ability; use the player stats and"
+                + " availability tools to discuss a named risky player.";
+    }
+
+    private static String exclusionCounts(Map<MinutesModel.Eligibility, Integer> counts) {
+        return "availability risk " + counts.getOrDefault(
+                MinutesModel.Eligibility.AVAILABILITY_RISK, 0)
+                + ", observed minutes risk " + counts.getOrDefault(
+                        MinutesModel.Eligibility.MINUTES_RISK, 0)
+                + ", insufficient current evidence " + counts.getOrDefault(
+                        MinutesModel.Eligibility.INSUFFICIENT_CURRENT_EVIDENCE, 0)
+                + ", unknown current evidence " + counts.getOrDefault(
+                        MinutesModel.Eligibility.UNKNOWN_CURRENT_EVIDENCE, 0);
     }
 
     /**
@@ -450,72 +354,50 @@ public class PickTools implements FplTool {
                 numeric(r.get("xg90")) > 0 || numeric(r.get("xa90")) > 0);
     }
 
-    private String formatPicks(String heading, List<Map<String, Object>> rows,
-                               DailyPriceSource.Capture capture, SeasonContext season,
-                               MetricSeasons metric, int fixtureLimit, int elementType,
-                               double maxOwnership, boolean ownershipTieBreak) {
-        // FDR only when the fixture table and the pool are the same season: FPL renumbers team
-        // ids every summer, so during the changeover the resolved season's fixtures would hand a
-        // new-season club another club's difficulty. No FDR is better than a wrong one.
-        boolean sameSeason = capture.season().equals(season.code());
-        Integer startGw = sameSeason ? startGameweek(season.seasonId()) : null;
-        Map<Integer, Double> fdrByTeam = sameSeason
-                ? avgFdrByTeam(season.seasonId(), startGw, fixtureLimit)
-                : Map.of();
+    private String formatPicks(String heading, Selection selection,
+                               RankingMetrics.Snapshot snapshot, MetricSeasons metric,
+                               int fixtureLimit, boolean ownershipTieBreak) {
+        List<Map<String, Object>> rows = selection.rows();
+        Map<Integer, Double> fdrByTeam = avgFdrByTeam(snapshot, fixtureLimit);
         double realisedWeight = realisedWeight(metric.playedGameweeks());
         List<Map<String, Object>> ranked = rank(rows, fdrByTeam, ownershipTieBreak, realisedWeight);
 
         StringBuilder out = new StringBuilder();
-        out.append(heading).append(" (").append(metric.played().code()).append("):\n");
-        for (Map<String, Object> r : ranked.subList(0, Math.min(MAX_PICKS, ranked.size()))) {
-            int teamId = ((Number) r.get("team_id")).intValue();
-            int position = ((Number) r.get("element_type")).intValue();
+        out.append(heading).append(" (").append(metric.played().code()).append("):\n")
+                .append(scheduleEvidence(snapshot)).append('\n');
+        for (Map<String, Object> row : ranked.subList(0, Math.min(MAX_PICKS, ranked.size()))) {
+            int teamId = ((Number) row.get("team_id")).intValue();
+            int position = ((Number) row.get("element_type")).intValue();
             Double avgFdr = fdrByTeam.get(teamId);
+            RankingMetrics.Candidate candidate =
+                    (RankingMetrics.Candidate) row.get("ranking_candidate");
+            RankingMetrics.MinutesWindow window = candidate.current().window();
             out.append(String.format(Locale.ROOT,
-                    "  %s %s (%s) £%sm | Own %s%% | Score %s | xPts/90 %s (%s) | Pts/90 %s"
-                            + " | Mins %d (%d mt)%s | Avg FDR %s%s\n",
-                    positionLabel(position),
-                    r.get("web_name"), r.get("team_short"),
-                    fixed(((Number) r.get("now_cost")).intValue() / 10.0, 1),
-                    r.get("selected_by_percent"),
-                    fixed(score(r, realisedWeight), 2),
-                    fixed(expectedPointsPer90(r), 2),
-                    components(r, position),
-                    fixed(pointsPer90(r), 2),
-                    Math.round(numeric(r.get("mins"))), Math.round(numeric(r.get("matches"))),
-                    blendSegment(r, metric),
-                    avgFdr == null ? "n/a" : fixed(avgFdr, 1),
-                    availability(r)));
+                    "  %s %s (%s) £%sm | Own %s%% | Score/fixture %s | expected/fixture %s"
+                            + " (%s) | realised points/fixture %s | observed current-club 60+ %d/%d,"
+                            + " %d mins, %s%s%s | Avg FDR %s\n",
+                    positionLabel(position), row.get("web_name"), row.get("team_short"),
+                    fixed(((Number) row.get("now_cost")).intValue() / 10.0, 1),
+                    row.get("selected_by_percent"), fixed(score(row, realisedWeight), 2),
+                    fixed(numeric(row.get("expected_per_fixture")), 2), components(row),
+                    fixed(numeric(row.get("points_per_fixture")), 2),
+                    window.sixtyPlus(), window.expected(), window.totalMinutes(), dateRange(window),
+                    window.expected() < ExpectedPoints.WINDOW_MATCHES
+                            ? " (short window: " + window.expected() + " fixtures)" : "",
+                    blendSegment(row, metric) + exposureSegment(candidate, metric),
+                    avgFdr == null ? "n/a" : fixed(avgFdr, 1)));
         }
         if (fdrByTeam.isEmpty()) {
-            out.append(sameSeason
-                    ? "\n(No upcoming fixtures found — FDR is n/a and the ranking falls back to"
-                        + " the score alone. Fixtures for this season may not be scheduled yet.)\n"
-                    : "\n(FDR is n/a: the synced fixture table still holds " + season.code()
-                        + " while these players are the " + capture.season() + " capture, and team"
-                        + " ids do not carry across seasons. The ranking falls back to the score"
-                        + " alone.)\n");
+            out.append("\n(No unfinished fixtures with FDR were found in the verified schedule;"
+                    + " FDR is n/a and the ranking falls back to the per-fixture score.)\n");
         }
         out.append(footer(metric, fixtureLimit, ownershipTieBreak, realisedWeight));
-
-        int pool = poolSize(capture, elementType, maxOwnership);
-        if (pool > rows.size()) {
-            // Phrased as a coverage figure rather than a count of absentees. With no filters a
-            // bare count is most of the game's fringe players, and "250 further players are not
-            // listed" reads as 250 picks being withheld.
-            out.append("Ranked from ").append(rows.size()).append(" of the ").append(pool)
-                    .append(" players matching these filters; the rest have no comparable ")
-                    .append(metric.played().code())
-                    .append(" record — new to the league, too few minutes to judge, or a name")
-                    .append(" that is not unique in its season. If the user asks about someone")
-                    .append(" absent, that is why: they are unjudged, not judged and rejected.\n");
-        }
+        out.append("Eligible after filters: ").append(rows.size()).append(" of ")
+                .append(selection.matchingCapturePlayers()).append(". Exclusions: ")
+                .append(exclusionCounts(selection.exclusions())).append(".\n");
         if (noUnderlyingSignal(ranked)) {
-            out.append("WARNING: every player here has xG/90 and xA/90 of 0.00. That is a column")
-                    .append(" that was never populated for ").append(metric.played().code())
-                    .append(", not a league of players who create nothing — the ranking has")
-                    .append(" fallen back to fixtures and ownership. Tell the user the underlying")
-                    .append(" numbers are unavailable rather than presenting this as form.\n");
+            out.append("WARNING: every player here has xG/90 and xA/90 of 0.00. Treat the")
+                    .append(" underlying attacking columns as unavailable rather than as form.\n");
         }
         return out.toString();
     }
@@ -543,89 +425,75 @@ public class PickTools implements FplTool {
                 + " (" + matches + " mt this season)";
     }
 
-    /** The parts of xPts/90, so the model can say *why* a player ranks where they do. */
-    private static String components(Map<String, Object> row, int position) {
-        StringBuilder parts = new StringBuilder("xG/90 " + fixed(numeric(row.get("xg90")), 2)
-                + ", xA/90 " + fixed(numeric(row.get("xa90")), 2));
-        if (ExpectedPoints.cleanSheetPoints(position) > 0) {
-            Object xgc = row.get("xgc_per_match");
-            parts.append(ExpectedPoints.hasCleanSheetSignal(xgc)
-                    ? ", CS %s%% at xGC %s".formatted(
-                            fixed(cleanSheetProbability(numeric(xgc)) * 100, 0),
-                            fixed(numeric(xgc), 2))
-                    : ", CS n/a");
+    private static String components(Map<String, Object> row) {
+        ExpectedPoints.PerFixture projection =
+                (ExpectedPoints.PerFixture) row.get("projection");
+        return "appearance " + fixed(projection.appearance(), 2)
+                + ", attack " + fixed(projection.attack(), 2)
+                + (projection.cleanSheet() == null
+                        ? ", CS n/a"
+                        : ", CS " + fixed(projection.cleanSheet(), 2)
+                                + " (season-average conditional at xGC "
+                                + fixed(numeric(row.get("xgc_per_match")), 2) + ")")
+                + ", DC " + fixed(projection.defensiveContribution(), 2)
+                + (projection.partialDefcon() ? " (partial: a minutes class lacks two known rows)" : "");
+    }
+
+    private static String exposureSegment(RankingMetrics.Candidate candidate,
+                                          MetricSeasons metric) {
+        if (!metric.blending()) {
+            return "";
         }
-        // A forward has no clean-sheet value but does have a threshold, so this cannot sit
-        // behind the branch above.
-        if (ExpectedPoints.defconThreshold(position) > 0) {
-            parts.append(ExpectedPoints.hasDefconSignal(row, position)
-                    ? ", DC %s%% at %s actions".formatted(
-                            fixed(ExpectedPoints.defconProbability(row, position) * 100, 0),
-                            fixed(numeric(row.get("defcon_avg")), 1))
-                    : ", DC n/a");
+        if (candidate.previous() == null || candidate.previous().exposure() == null) {
+            return candidate.previous() != null && !candidate.previous().ability().isEmpty()
+                    ? " | prior exposure unavailable; prior ability still blends" : "";
         }
-        return parts.toString();
+        int pct = (int) Math.round(candidate.blended().weight() * 100);
+        return " | exposure blend " + pct + "% " + metric.played().code() + ", "
+                + (100 - pct) + "% " + metric.previousCode();
+    }
+
+    private static String dateRange(RankingMetrics.MinutesWindow window) {
+        if (window.firstKickoff() == null || window.lastKickoff() == null) {
+            return "no completed fixture dates";
+        }
+        LocalDate first = LocalDate.ofInstant(window.firstKickoff(), UkTime.zone());
+        LocalDate last = LocalDate.ofInstant(window.lastKickoff(), UkTime.zone());
+        return first.equals(last) ? first.toString() : first + " to " + last;
     }
 
     private String footer(MetricSeasons metric, int fixtureLimit, boolean ownershipTieBreak,
                           double realisedWeight) {
-        String span = metric.blending()
-                ? "each player's last " + ExpectedPoints.WINDOW_MATCHES + " matches in "
-                        + metric.played().code() + ", blended with all of " + metric.previousCode()
-                : metric.played().currentSeason()
-                        ? "each player's last " + ExpectedPoints.WINDOW_MATCHES + " matches in "
-                                + metric.played().code()
-                        : "all of " + metric.played().code();
-        StringBuilder out = new StringBuilder("\nRanked by Score over "
-                + span + ". Score blends xPts/90 —"
-                + " expected FPL points per 90, built from xG, xA and the clean-sheet probability"
-                + " implied by expected goals conceded, each valued at that position's own points"
-                + " — with Pts/90, the points actually scored. Realised points carry "
-                + Math.round(realisedWeight * 100) + "% of the weight here"
-                + (metric.played().currentSeason()
-                        ? ", rising towards " + Math.round(MAX_REALISED_WEIGHT * 100)
-                          + "% by gameweek " + FULL_WEIGHT_GAMEWEEK + " as the sample grows"
-                        : " — a completed season's returns: penalties, set-piece duty and a"
-                          + " player's role all change between seasons, so read what he scored"
-                          + " then as last season's evidence, not this season's")
-                + ". Then average FDR of the next " + fixtureLimit + " fixtures, then "
-                + (ownershipTieBreak ? "ownership" : "minutes played") + ".\n");
-        out.append("This is why both kinds of defender can appear: an attacking full-back earns"
-                + " through xG and xA, a defender at a mean side through the clean-sheet term."
-                + " Read the bracket to see which, and say so — they are not interchangeable"
-                + " picks.\n");
+        StringBuilder out = new StringBuilder("\nRanked by a per-fixture Score: expected components"
+                + " carry " + Math.round((1 - realisedWeight) * 100)
+                + "% and observed points per comparable club fixture carry "
+                + Math.round(realisedWeight * 100) + "%. The realised weight keeps its existing"
+                + " gameweek ramp and reaches at most " + Math.round(MAX_REALISED_WEIGHT * 100)
+                + "%. Appearance uses P(play)+P(60+); attack scales by observed expected minutes;"
+                + " clean sheets use P(60+) and a season-average conditional exp(-xGC)"
+                + " approximation. Then average FDR of the next " + fixtureLimit
+                + " unfinished fixtures, then "
+                + (ownershipTieBreak ? "ownership" : "current-window minutes") + ". This score"
+                + " is per fixture and does not by itself reward a double gameweek.\n");
         if (metric.blending()) {
-            String cur = metric.played().code();
-            String prev = metric.previousCode();
-            out.append("The weight on ").append(cur).append(" rises with each player's own")
-                    .append(" matches of an hour or more this season — 1: 10%, 2: 30%, 3: 60%,")
-                    .append(" 4: 80%, 5-7: 90%, 8+: 100% — and each pick shows its own. Below")
-                    .append(" 50% the judgement leans on ").append(prev)
-                    .append(" and you should say so. A player marked \"no ").append(prev)
-                    .append(" record\" is ranked on ").append(cur)
-                    .append(" alone; treat him with the caution his match count deserves.\n");
-        } else if (!metric.played().currentSeason()) {
-            out.append("This season is not under way in the data yet, so these are ")
-                    .append(metric.played().code())
-                    .append("'s numbers over the whole season. Attribute them to it and never")
-                    .append(" call them current form.\n");
+            out.append("Ability and usable exposure rates follow the one player-specific ramp:"
+                    + " 1 qualifying current-season match 10%, 2: 30%, 3: 60%, 4: 80%,"
+                    + " 5-7: 90%, 8+: 100%. Raw current-club 60+ counts printed on each row are"
+                    + " observed frequencies, not blended probabilities.\n");
         }
-        out.append("The most recent gameweek in this data is ").append(metric.latestGameweek())
-                .append(" of ").append(metric.played().code())
-                .append(". If that is well behind the gameweek being played, the statistics sync")
-                .append(" has stalled and these numbers are older than they look — say so.\n");
-        out.append("xPts/90 covers goals, assists, clean sheets and defensive contribution. DC is")
-                .append(" his estimated chance of reaching the defensive-contribution threshold")
-                .append(" in a match — ").append(ExpectedPoints.DEFCON_THRESHOLD[2])
-                .append(" defensive actions for a defender, ")
-                .append(ExpectedPoints.DEFCON_THRESHOLD[3])
-                .append(" for a midfielder or forward — modelled from his average actions over")
-                .append(" matches he played an hour of, not counted from how often he has")
-                .append(" managed it before. It reads n/a below ")
-                .append(ExpectedPoints.MIN_DEFCON_MATCHES).append(" such matches. Save points and penalty saves are still not in it, so")
-                .append(" goalkeepers are understated; Pts/90 is where their real return shows")
-                .append(" up. Do not call xPts/90 a complete projection.\n")
-                .append("Unavailable players (injured/suspended) are excluded.\n");
+        out.append("Only fresh available players with a complete current-club window, at least " )
+                .append(ExpectedPoints.MIN_WINDOW_MINUTES)
+                .append(" current-season minutes and 60+ in every fixture qualify. A short")
+                .append(" complete window is labelled; this consistent observed 60+ history is")
+                .append(" not a guarantee of the next start. Missing/stale rows abstain rather")
+                .append(" than borrowing last season as current-role proof.\n")
+                .append("DefCon has no 60-minute eligibility rule: short and long appearance")
+                .append(" action means contribute separately when each has at least ")
+                .append(ExpectedPoints.MIN_DEFCON_MATCHES)
+                .append(" known observations. Save and penalty-save points remain omitted, so")
+                .append(" goalkeepers are understated. The latest metric gameweek is ")
+                .append(metric.latestGameweek()).append(" of ").append(metric.played().code())
+                .append(".\n");
         return out.toString();
     }
 
@@ -661,21 +529,21 @@ public class PickTools implements FplTool {
         return ExpectedPoints.perNinety(row);
     }
 
-    static double pointsPer90(Map<String, Object> row) {
-        return numeric(row.get("pts90"));
+    static double pointsPerFixture(Map<String, Object> row) {
+        return numeric(row.get("points_per_fixture"));
     }
 
-    /** What the list is ordered on: the expected model, weighted against what actually happened. */
+    /** Both sides are per fixture; appearance points already sit inside observed total points. */
     static double score(Map<String, Object> row, double realisedWeight) {
-        return expectedPointsPer90(row) * (1 - realisedWeight)
-                + pointsPer90(row) * realisedWeight;
+        return numeric(row.get("expected_per_fixture")) * (1 - realisedWeight)
+                + pointsPerFixture(row) * realisedWeight;
     }
 
     /**
      * Orders the candidate pool on the composite the tool descriptions promise.
      *
-     * <p>Done in Java rather than SQL because the FDR is not a column: it is an aggregate over
-     * each team's next N fixtures, resolved once per team in {@link #avgFdrByTeam}.
+     * <p>Done in Java because FDR is an aggregate over the shared captured schedule rather than
+     * a player column.
      */
     static List<Map<String, Object>> rank(List<Map<String, Object>> rows,
                                           Map<Integer, Double> fdrByTeam,
@@ -689,78 +557,47 @@ public class PickTools implements FplTool {
         });
         Comparator<Map<String, Object>> tieBreak = ownershipTieBreak
                 ? Comparator.comparingDouble(r -> numeric(r.get("selected_by_percent")))
-                : Comparator.comparingDouble((Map<String, Object> r) -> numeric(r.get("mins"))).reversed();
+                : Comparator.comparingDouble((Map<String, Object> r) -> numeric(
+                        r.containsKey("current_window_minutes")
+                                ? r.get("current_window_minutes") : r.get("mins"))).reversed();
 
         List<Map<String, Object>> sorted = new ArrayList<>(rows);
         sorted.sort(byScore.thenComparing(byFdr).thenComparing(tieBreak));
         return sorted;
     }
 
-    /** Available players carry no marker; doubtful ones carry their news so the model can relay it. */
-    private static String availability(Map<String, Object> r) {
-        if (!"d".equals(String.valueOf(r.get("status")))) {
-            return "";
-        }
-        Object news = r.get("news");
-        String detail = (news == null || news.toString().isBlank()) ? "" : ": " + news;
-        return " | DOUBTFUL" + detail;
+    private record TeamFdr(Integer gameweek, java.time.Instant kickoff, int fixtureId,
+                           Integer difficulty) {
     }
 
-    /**
-     * Average FDR of each team's next N fixtures, for every team at once. One query for the whole
-     * candidate pool — a pool of 60 players shares at most 20 clubs, and asking per player made
-     * the same request up to ten times.
-     *
-     * @return team id -> average FDR; a team with no upcoming fixtures is simply absent
-     */
-    private Map<Integer, Double> avgFdrByTeam(int seasonId, Integer startGw, int fixtureLimit) {
-        Map<Integer, Double> byTeam = new HashMap<>();
-        if (startGw == null) {
-            return byTeam;
-        }
-        try {
-            List<Map<String, Object>> rows = jdbc.queryForList("""
-                    SELECT team_id, AVG(fdr) AS avg_fdr
-                    FROM (
-                        SELECT team_id, fdr,
-                               ROW_NUMBER() OVER (PARTITION BY team_id ORDER BY gameweek, kickoff_time) AS rn
-                        FROM (
-                            SELECT team_h AS team_id, team_h_difficulty AS fdr, gameweek, kickoff_time
-                            FROM fixture
-                            WHERE season_id = ? AND gameweek >= ? AND finished = false
-                            UNION ALL
-                            SELECT team_a, team_a_difficulty, gameweek, kickoff_time
-                            FROM fixture
-                            WHERE season_id = ? AND gameweek >= ? AND finished = false
-                        ) both_sides
-                    ) ranked
-                    WHERE rn <= ?
-                    GROUP BY team_id
-                    """, seasonId, startGw, seasonId, startGw, fixtureLimit);
-            for (Map<String, Object> r : rows) {
-                Object avg = r.get("avg_fdr");
-                if (avg != null) {
-                    byTeam.put(((Number) r.get("team_id")).intValue(), ((Number) avg).doubleValue());
-                }
+    /** The existing next-N FDR tie-break, now read from the same coherent schedule snapshot. */
+    private static Map<Integer, Double> avgFdrByTeam(RankingMetrics.Snapshot snapshot,
+                                                     int fixtureLimit) {
+        Map<Integer, List<TeamFdr>> fixtures = new HashMap<>();
+        for (var fixture : snapshot.schedule().fixtures()) {
+            if (fixture.finished()) {
+                continue;
             }
-        } catch (DataAccessException e) {
-            log.warn("Could not resolve upcoming FDR for season {}; picks will show n/a", seasonId, e);
+            fixtures.computeIfAbsent(fixture.homeTeamId(), ignored -> new ArrayList<>())
+                    .add(new TeamFdr(fixture.gameweek(), fixture.kickoff(), fixture.id(),
+                            fixture.homeDifficulty()));
+            fixtures.computeIfAbsent(fixture.awayTeamId(), ignored -> new ArrayList<>())
+                    .add(new TeamFdr(fixture.gameweek(), fixture.kickoff(), fixture.id(),
+                            fixture.awayDifficulty()));
         }
-        return byTeam;
-    }
-
-    /** The gameweek to start counting from: current, else next, else GW1 — same fallback as FixtureTools. */
-    private Integer startGameweek(int seasonId) {
-        try {
-            return jdbc.queryForObject("""
-                    SELECT COALESCE(
-                        (SELECT id FROM gameweek WHERE season_id = ? AND is_current = true ORDER BY id LIMIT 1),
-                        (SELECT id FROM gameweek WHERE season_id = ? AND is_next = true ORDER BY id LIMIT 1),
-                        (SELECT MIN(id) FROM gameweek WHERE season_id = ?))
-                    """, Integer.class, seasonId, seasonId, seasonId);
-        } catch (DataAccessException e) {
-            return null;
-        }
+        Comparator<TeamFdr> order = Comparator
+                .comparing(TeamFdr::gameweek, Comparator.nullsLast(Comparator.naturalOrder()))
+                .thenComparing(TeamFdr::kickoff, Comparator.nullsLast(Comparator.naturalOrder()))
+                .thenComparingInt(TeamFdr::fixtureId);
+        Map<Integer, Double> averages = new HashMap<>();
+        fixtures.forEach((team, rows) -> {
+            List<Integer> selected = rows.stream().sorted(order).limit(fixtureLimit)
+                    .map(TeamFdr::difficulty).filter(java.util.Objects::nonNull).toList();
+            if (!selected.isEmpty()) {
+                averages.put(team, selected.stream().mapToInt(Integer::intValue).average().orElseThrow());
+            }
+        });
+        return averages;
     }
 
     /** Delegates to {@link ExpectedPoints#numeric}, which this and the squad builder now share. */

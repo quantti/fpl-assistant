@@ -109,8 +109,8 @@ class CandidatePoolChangeoverTest {
         assertThat(okafor.ownership()).isEqualTo(7.25);
         assertThat(okafor.status()).isEqualTo("a");
         assertThat(okafor.tier()).isEqualTo(SquadCandidate.Tier.RANKABLE);
-        assertThat(okafor.minutesInWindow()).isEqualTo(270.0);
-        assertThat(okafor.teamFixturesInWindow()).isEqualTo(3);
+        assertThat(okafor.minutesWindow().totalMinutes()).isEqualTo(270);
+        assertThat(okafor.minutesWindow().expected()).isEqualTo(3);
         assertThat(ExpectedPoints.numeric(okafor.metrics().get("xg90")))
                 .isCloseTo(1.25 * 90 / 270, within(1e-9));
 
@@ -125,8 +125,8 @@ class CandidatePoolChangeoverTest {
         assertThat(bramley.status()).isEqualTo("d");
         assertThat(bramley.news()).isEqualTo("75% chance of playing");
         assertThat(bramley.tier()).isEqualTo(SquadCandidate.Tier.RANKABLE);
-        assertThat(bramley.minutesInWindow()).isEqualTo(180.0);
-        assertThat(bramley.teamFixturesInWindow()).isEqualTo(2);
+        assertThat(bramley.minutesWindow().totalMinutes()).isEqualTo(180);
+        assertThat(bramley.minutesWindow().expected()).isEqualTo(2);
         assertThat(ExpectedPoints.numeric(bramley.metrics().get("xg90")))
                 .isCloseTo(0.75 * 90 / 180, within(1e-9));
     }
@@ -145,8 +145,8 @@ class CandidatePoolChangeoverTest {
         SquadCandidate newcomer = candidates.getFirst();
         assertThat(newcomer.tier()).isEqualTo(SquadCandidate.Tier.BODY);
         assertThat(newcomer.metrics()).isEmpty();
-        assertThat(newcomer.minutesInWindow()).isZero();
-        assertThat(newcomer.teamFixturesInWindow()).isZero();
+        assertThat(newcomer.minutesWindow()).isNull();
+        assertThat(newcomer.exposure()).isNull();
     }
 
     @Test
@@ -220,14 +220,14 @@ class CandidatePoolChangeoverTest {
         SquadCandidate renamed = candidate(candidates, OKAFOR_OLD_ID);
         assertThat(renamed.webName()).isEqualTo("Summername");
         assertThat(renamed.tier()).isEqualTo(SquadCandidate.Tier.RANKABLE);
-        assertThat(renamed.minutesInWindow()).isEqualTo(270.0);
+        assertThat(renamed.minutesWindow().totalMinutes()).isEqualTo(270);
         assertThat(ExpectedPoints.numeric(renamed.metrics().get("xg90")))
                 .isCloseTo(1.25 * 90 / 270, within(1e-9));
 
         SquadCandidate missingWeekly = candidate(candidates, NO_WEEKLY_PLAYER);
         assertThat(missingWeekly.tier()).isEqualTo(SquadCandidate.Tier.RANKABLE);
-        assertThat(missingWeekly.minutesInWindow()).isEqualTo(180.0);
-        assertThat(missingWeekly.teamFixturesInWindow()).isEqualTo(3);
+        assertThat(missingWeekly.minutesWindow().totalMinutes()).isEqualTo(180);
+        assertThat(missingWeekly.minutesWindow().expected()).isEqualTo(3);
         assertThat(ExpectedPoints.numeric(missingWeekly.metrics().get("xg90")))
                 .isCloseTo(0.30, within(1e-9));
     }
@@ -267,7 +267,8 @@ class CandidatePoolChangeoverTest {
     }
 
     private List<SquadCandidate> candidates(String captureSeason) {
-        return pool.load(new CandidatePool.Capture(captureSeason, CAPTURE_DATE), metric).stream()
+        return pool.load(new CandidatePool.Capture(captureSeason, CAPTURE_DATE), metric)
+                .candidates().stream()
                 .filter(candidate -> DAILY_IDS.contains(candidate.elementId()))
                 .toList();
     }

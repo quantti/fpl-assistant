@@ -68,6 +68,38 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
 - Player prices stored as integers ×10 (`now_cost=75` = £7.5m). `element_type`: 1=GK, 2=DEF, 3=MID, 4=FWD.
 - External APIs (vaastav CSVs, football-data.org, FPL `bootstrap-static`) are hit only at sync time, never at chat time — everything queries Supabase.
 - **Today's price and today's injury flags come from `fpl_daily_price`, not from the tapas `player` table.** That table is synced weekly by `tapas-fpl-app` and was measured 85 days stale; `fpl_daily_price` is captured daily at 02:00 UK from FPL's own API (prices change at 00:00 UK) and owes tapas nothing, so it also survives the season changeover. It carries `status`/`news` — the availability picture — and `penalties_order`/`direct_fk_order`/`corners_order` — the set-piece picture — alongside `now_cost`. Set-piece duty lives here rather than in the strategy corpus because a written list of takers is written before anyone has taken one, and the first weeks of a season revise it. Dated rows, so it answers *when* a flag appeared; it cannot be backfilled, since FPL publishes only today's state. **The daily-capture tools (`getPriceHistory`, `getPlayerAvailability`, `getFlaggedPlayers`, `getSetPieceTakers`) are a documented exception like `HistoricalTools`: they use `DailyPriceSource.provenance()` (season + capture date) instead of `SeasonContext.provenance()`, because the resolver would attribute changeover-window data to the wrong season. Do not "fix" them back onto `SeasonContext.provenance()`.** **`GameweekTools` and `FixtureTools` are the same kind of exception when a schedule capture exists: they read `fpl_gameweek`/`fpl_fixture` (FPL's own `events` and `/api/fixtures/`, captured daily at 02:10 UK) under `ScheduleSource.provenance()`, and fall back to the tapas tables under `SeasonContext.provenance()` only before the first capture. Gameweek status on the capture path is derived from `deadline_time` against the clock, never from the captured `is_current` flag.** `PickTools` (`getDifferentialPicks`, `getCaptainCandidates`) reads its candidate pool from this table too, beside `SquadTools.buildSquad`: metrics attach by element id while the capture and the resolved season are the same season, and by unique `web_name` when they are not. Note that `element_id` in this table is season-scoped (FPL renumbers every season) — every query keyed on it must also filter on `season`.
+- **Ranking reads are one coherent snapshot, `RankingMetrics`.** `PickTools` and `CandidatePool`
+  load the whole selected daily capture, its current/previous metric evidence and one immutable
+  `ScheduleSource.View` inside a read-only `REPEATABLE_READ` transaction; do not reintroduce
+  per-player SQL or read FDR/minutes from a second schedule. Selection evidence accepts only the
+  exact UK capture expected at that instant (after the price/schedule cutovers); yesterday's or a
+  future-dated capture is unusable. The daily capture, current metric season and schedule must name
+  the same season. A ranking schedule must be one timestamp-coherent full league: 38 events, 380
+  directed fixtures and 20 clubs, with unique ids/pairings and valid assigned gameweeks. Nullable
+  gameweek/kickoff remains valid for genuinely unscheduled fixtures.
+- **Primary role eligibility is one hard current-season observed-history rule, `MinutesModel`.**
+  Call it **consistent observed 60+ history**. The selected daily capture must be fresh and say
+  `status = 'a'`, with a valid position and club; identity/current club must be coherent across the
+  same-season sources. The latest up-to-ten completed fixtures for that current-club spell must be
+  complete: at least 180 current-season minutes and 60+ in every expected fixture. Known zero-minute
+  rows stay in the denominator. Previous-season minutes and blended exposure never certify the
+  current role; missing/stale/pending/invalid data means abstention. A sub-60 fixture blocks primary
+  selection until ten later completed club fixtures in that spell move it out; an injury return,
+  new manager or convenient recent-form boundary does not reset the window. Only a verified
+  different-club observation fences a new spell. Without one, enumerate from season start: a first
+  PFS/daily appearance is not a registration date, and a newcomer may need ten complete fixtures.
+  A short complete window may qualify after clearing the same floor, but its `N/N` support is
+  labelled and remains a small sample. This is conservative history, not a
+  calibrated probability or a future-start guarantee; never add a bypass or fill a list with
+  ineligible names.
+- **Expected ranking points are per fixture, not a whole score multiplied by mean minutes.**
+  `SeasonBlend.Exposure` is an indivisible bundle of appearance, 60+, short-appearance,
+  expected-minutes and realised-points rates. `ExpectedPoints.perFixture` uses `P(play)+P(60+)`,
+  scales attack by expected minutes, makes clean sheets conditional on 60+, and gives DefCon
+  separate short/long exposure. Known zero DefCon is evidence; unavailable components print
+  partial/n/a rather than zero. Pick lists blend expected and realised per fixture; their FDR is
+  only a tie-break until KAR-35. `HorizonScorer` uses the same expected components and the captured
+  schedule with its existing coarse FDR objective, never an outer minutes multiplier.
 - Tools query Supabase via `JdbcTemplate`, annotated with Spring AI `@Tool`.
 - **No `@Tool` method takes a parameter that identifies an account.** The model fills tool
   parameters from the conversation, so a `userId` (or a team id) in a tool's schema is a working
@@ -98,14 +130,22 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
   tapas `player` table is deliberate and is what keeps issue #50 (KAR-32) from recurring here: it also
   means the tool works while tapas has not synced the season being played. Do not fold this
   into the single-banner convention. Its metrics line is followed by the blend sentence, which
-  names both seasons and the ramp; each starter shows its own weight where that is under 100%.
-- **Cross-season weighting is one ramp in one place, `SeasonBlend`.** Every ranking metric blends
-  the season being played with the previous one on a weight driven by the player's own qualifying
-  matches this season (60+ minutes): 1 → 10%, 2 → 30%, 3 → 60%, 4 → 80%, 5-7 → 90%, 8+ → 100%.
-  Rates blend; evidence counts (`mins`, `matches`, `defcon_matches`) add, because the floors that
-  read them ask how much evidence exists. A player with no previous-season record is ranked on
-  this season alone once the minutes floor is cleared and the reply says so. Do not reintroduce a
-  single-season switch, and do not write the ramp a second time in SQL.
+  names both seasons and the ramp. The pool may buy a fit role-ineligible/BODY player for the bench,
+  and a doubtful player only when an underlying record exists. A named pin requires membership of
+  the fifteen, not a start: `SquadSolver.rulesOfTheGame` forces every role-ineligible or BODY
+  player's `x_i` to zero in every entry path. This XI rule is never on the relaxation ladder: only
+  template and premium defaults may give way. Unknown projections have zero optimiser weight but
+  must display `n/a`/unscored, and infeasibility must name the minutes rule plus the interacting
+  constraints, never imply that budget alone fixes it.
+- **Cross-season weighting is one ramp in one place, `SeasonBlend`.** Ability and usable exposure
+  rates blend the season being played with the previous one on a weight driven by the player's own
+  qualifying matches this season (60+ minutes): 1 → 10%, 2 → 30%, 3 → 60%, 4 → 80%, 5-7 → 90%,
+  8+ → 100%. Exposure rates travel as one bundle; never blend each term independently or divide
+  added cross-season minutes by added fixture counts. Evidence counts used by ability/DefCon floors
+  may add, but raw current-role eligibility above never does. Unknown current exposure cannot be
+  borrowed from a previous season. A player with no previous-season record is ranked on this
+  season alone once its floor is cleared and the reply says so. Do not reintroduce a single-season
+  switch, and do not write the ramp a second time in SQL.
 - **Tests seed the data they assert on and never depend on production content.** The suite runs
   against a disposable container (`scripts/test-db.sh`), which holds the tapas schema
   (`scripts/dump-test-schema.sh` regenerates the dump) and nothing else. Anything reading
@@ -114,7 +154,20 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
   synced season as its oracle is tagged `realdata` and excluded from `./gradlew test` — there is
   exactly one, and adding another should feel like a decision, not a convenience.
 
+## Task execution
+
+- **Split large work into bounded parts.** Do not hand one agent an entire multi-hour plan or a
+  broad ticket with many independent tasks. Divide it into smaller dependency-ordered units, give
+  each agent one clear unit with its own verification, and return control to the orchestrating
+  agent between units. Keep sequential work sequential when agents share a working tree.
+
 ## Commits and pull requests
+
+A ticket implementation is not complete while it exists only in the working tree. Finish every
+implemented ticket in this order: commit the verified change, push its dedicated feature branch to
+GitHub, open a pull request targeting `master`, and then review the pull request. Apply review fixes
+as new commits on the same feature branch, push them, and re-review as needed. Never push the ticket
+directly to `master`; the owner merges the reviewed PR.
 
 Short. The narrative belongs in `docs/STATUS.md` and the plan's outcome blocks, not in git
 metadata — nobody reads a git log for a design discussion, and a long message hides the one line

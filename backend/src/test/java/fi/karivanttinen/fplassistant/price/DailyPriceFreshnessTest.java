@@ -1,5 +1,6 @@
 package fi.karivanttinen.fplassistant.price;
 
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 
@@ -50,12 +51,32 @@ class DailyPriceFreshnessTest {
     }
 
     @Test
-    void aRowDatedInTheFutureIsNotStale() {
-        // Can only come from a machine with a skewed clock (a manual --sync-prices). The rule
-        // reports it as fresh — the check logs a separate skew warning for it — rather than
-        // compounding one bad clock with a second, false alarm.
-        assertThat(DailyPriceFreshnessCheck.isStale(
-                LocalDate.of(2026, 9, 12), LocalDateTime.of(2026, 9, 11, 6, 0)))
-                .isFalse();
+    void aRowDatedInTheFutureIsNotStaleButIsNotUsableAsFreshEvidence() {
+        // Can only come from a machine with a skewed clock (a manual --sync-prices). The alert
+        // keeps its separate warning, while ranking evidence applies the stricter predicate.
+        LocalDate future = LocalDate.of(2026, 9, 12);
+        LocalDateTime now = LocalDateTime.of(2026, 9, 11, 6, 0);
+        assertThat(DailyPriceFreshnessCheck.isStale(future, now)).isFalse();
+        assertThat(DailyPriceFreshnessCheck.isFresh(future,
+                Instant.parse("2026-09-11T05:00:00Z"))).isFalse();
+    }
+
+    @Test
+    void strictFreshnessUsesTheTwoAmUkCutoverInGmtAndBst() {
+        LocalDate winterYesterday = LocalDate.of(2026, 1, 14);
+        assertThat(DailyPriceFreshnessCheck.isFresh(winterYesterday,
+                Instant.parse("2026-01-15T01:59:59Z"))).isTrue();
+        assertThat(DailyPriceFreshnessCheck.isFresh(winterYesterday,
+                Instant.parse("2026-01-15T02:00:00Z"))).isFalse();
+        assertThat(DailyPriceFreshnessCheck.isFresh(winterYesterday.plusDays(1),
+                Instant.parse("2026-01-15T02:00:00Z"))).isTrue();
+
+        LocalDate summerYesterday = LocalDate.of(2026, 7, 14);
+        assertThat(DailyPriceFreshnessCheck.isFresh(summerYesterday,
+                Instant.parse("2026-07-15T00:59:59Z"))).isTrue();
+        assertThat(DailyPriceFreshnessCheck.isFresh(summerYesterday,
+                Instant.parse("2026-07-15T01:00:00Z"))).isFalse();
+        assertThat(DailyPriceFreshnessCheck.isFresh(summerYesterday.plusDays(1),
+                Instant.parse("2026-07-15T01:00:00Z"))).isTrue();
     }
 }

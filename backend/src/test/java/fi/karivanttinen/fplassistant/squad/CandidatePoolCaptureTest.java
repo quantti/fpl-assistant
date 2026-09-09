@@ -4,9 +4,8 @@ import java.time.LocalDate;
 import java.util.Optional;
 
 import fi.karivanttinen.fplassistant.tools.DailyPriceSource;
-import fi.karivanttinen.fplassistant.tools.SeasonResolver;
+import fi.karivanttinen.fplassistant.tools.RankingMetrics;
 import org.junit.jupiter.api.Test;
-import org.springframework.jdbc.core.JdbcTemplate;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
@@ -19,10 +18,9 @@ class CandidatePoolCaptureTest {
 
     @Test
     void mapsTheSharedSourcesCaptureWithoutChangingItsSeasonOrDate() {
-        JdbcTemplate jdbc = mock(JdbcTemplate.class);
-        SeasonResolver seasonResolver = mock(SeasonResolver.class);
         DailyPriceSource daily = mock(DailyPriceSource.class);
-        CandidatePool pool = new CandidatePool(jdbc, seasonResolver, daily, "unused_table");
+        RankingMetrics rankingMetrics = mock(RankingMetrics.class);
+        CandidatePool pool = new CandidatePool(daily, rankingMetrics);
         LocalDate date = LocalDate.of(2026, 9, 8);
         when(daily.latestCapture())
                 .thenReturn(Optional.of(new DailyPriceSource.Capture("2026-27", date)));
@@ -31,20 +29,19 @@ class CandidatePoolCaptureTest {
                 .contains(new CandidatePool.Capture("2026-27", date));
         verify(daily).latestCapture();
         verifyNoMoreInteractions(daily);
-        verifyNoInteractions(jdbc, seasonResolver);
+        verifyNoInteractions(rankingMetrics);
     }
 
     @Test
     void keepsAnEmptySharedCaptureEmpty() {
-        JdbcTemplate jdbc = mock(JdbcTemplate.class);
-        SeasonResolver seasonResolver = mock(SeasonResolver.class);
         DailyPriceSource daily = mock(DailyPriceSource.class);
-        CandidatePool pool = new CandidatePool(jdbc, seasonResolver, daily, "unused_table");
+        RankingMetrics rankingMetrics = mock(RankingMetrics.class);
+        CandidatePool pool = new CandidatePool(daily, rankingMetrics);
         when(daily.latestCapture()).thenReturn(Optional.empty());
 
         assertThat(pool.latestCapture()).isEmpty();
         verify(daily).latestCapture();
         verifyNoMoreInteractions(daily);
-        verifyNoInteractions(jdbc, seasonResolver);
+        verifyNoInteractions(rankingMetrics);
     }
 }

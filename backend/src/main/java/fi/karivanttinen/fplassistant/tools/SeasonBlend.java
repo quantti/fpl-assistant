@@ -17,10 +17,10 @@ import java.util.Map;
  * <p>The ramp is the owner's (KAR-38), keyed on the <b>player's own</b> qualifying matches — 60
  * minutes or more, the same bar the clean-sheet and defensive-contribution terms use.
  *
- * <p><b>Rates blend; evidence counts add.</b> {@code xg90} at two matches is 30% this season and
- * 70% last, but {@code mins} is both seasons' minutes together, because the floors that read it
- * ({@link ExpectedPoints#MIN_WINDOW_MINUTES}, {@link ExpectedPoints#MIN_DEFCON_MATCHES}) ask how
- * much evidence exists, and evidence from either season counts.
+ * <p><b>Ability rates blend; their evidence counts add.</b> {@code xg90} at two matches is 30%
+ * this season and 70% last. The exposure rates used by per-fixture scoring travel together in one
+ * {@link Exposure} bundle on the same ramp; they are never reconstructed from summed minutes and
+ * fixture counts. None of this can satisfy {@link MinutesModel}'s raw current-role gate.
  *
  * <p>A player with no previous record is ranked on this season alone once the floor is cleared,
  * and {@link Blended#hasPrevious()} is false so the reply can say so. His {@link Blended#weight()}
@@ -48,17 +48,35 @@ public final class SeasonBlend {
     public static final String PREVIOUS_PREFIX = "prev_";
 
     /** Per-90 and per-match figures: weighted. */
-    static final List<String> RATE_KEYS =
-            List.of("xg90", "xa90", "pts90", "xgc_per_match", "defcon_avg");
+    static final List<String> RATE_KEYS = List.of(
+            "xg90", "xa90", "pts90", "xgc_per_match", "defcon_avg",
+            "defcon_short_avg", "defcon_long_avg");
 
-    /** Evidence counts: added. {@code fixtures} exists only on the squad builder's rows. */
-    static final List<String> COUNT_KEYS = List.of("mins", "matches", "fixtures", "defcon_matches");
+    /** Evidence counts are added; rates are never reconstructed from these cross-season sums. */
+    static final List<String> COUNT_KEYS = List.of(
+            "mins", "matches", "fixtures", "defcon_matches",
+            "defcon_short_matches", "defcon_long_matches");
 
     /** The ramp's input, read from the current side only. */
     static final String MATCHES_THIS_SEASON = "matches60";
 
+    public record Exposure(int fixtures, int appearances, int sixtyPlus, int totalMinutes,
+                           double appearanceRate, double sixtyRate, double shortRate,
+                           double expectedMinutes, double pointsPerFixture) {
+        public Exposure {
+            double epsilon = 1e-9;
+            if (fixtures <= 0 || appearanceRate < -epsilon || sixtyRate < -epsilon
+                    || sixtyRate > appearanceRate + epsilon || appearanceRate > 1 + epsilon
+                    || expectedMinutes + epsilon < 60 * sixtyRate
+                    || expectedMinutes > 90 * appearanceRate + epsilon) {
+                throw new IllegalArgumentException("invalid per-fixture exposure bundle");
+            }
+        }
+    }
+
     public record Blended(Map<String, Object> metrics, double weight, int matchesThisSeason,
-                          boolean hasPrevious) {
+                          boolean hasPrevious, Exposure exposure,
+                          boolean hasPreviousExposure) {
     }
 
     private SeasonBlend() {
@@ -72,9 +90,20 @@ public final class SeasonBlend {
     /**
      * @param current this season's aggregate for the player, or null when he has no row in it
      * @param previous last season's aggregate, or null when he has none there
-     * @return the merged record, or null when the two together are under the minutes floor
+     * @return the merged ability record, or null when its combined evidence is under the floor
      */
     public static Blended blend(Map<String, Object> current, Map<String, Object> previous) {
+        return blend(current, previous, null, null, true);
+    }
+
+    /**
+     * Ability rates and exposure rates share the ramp, but exposure is an indivisible bundle.
+     * A live season with unknown current exposure cannot inherit a numeric projection from last
+     * season; previous exposure remains explanation only in that case.
+     */
+    public static Blended blend(Map<String, Object> current, Map<String, Object> previous,
+                                Exposure currentExposure, Exposure previousExposure,
+                                boolean currentSeason) {
         if (current == null && previous == null) {
             return null;
         }
@@ -99,10 +128,23 @@ public final class SeasonBlend {
         if (ExpectedPoints.numeric(out.get("mins")) < ExpectedPoints.MIN_WINDOW_MINUTES) {
             return null;
         }
+        Exposure exposure = blendExposure(currentExposure, previousExposure, tableWeight,
+                currentSeason);
+        if (exposure != null) {
+            out.put("appearance_rate", exposure.appearanceRate());
+            out.put("sixty_rate", exposure.sixtyRate());
+            out.put("short_rate", exposure.shortRate());
+            out.put("expected_minutes", exposure.expectedMinutes());
+            out.put("points_per_fixture", exposure.pointsPerFixture());
+            out.put("exposure_fixtures", exposure.fixtures());
+            out.put("exposure_appearances", exposure.appearances());
+            out.put("exposure_sixty", exposure.sixtyPlus());
+        }
         out.put("blend_weight", tableWeight);
         out.put("blend_matches", matches);
         out.put("blend_has_previous", previous != null);
-        return new Blended(out, tableWeight, matches, previous != null);
+        return new Blended(out, tableWeight, matches, previous != null, exposure,
+                previousExposure != null);
     }
 
     /**
@@ -123,6 +165,30 @@ public final class SeasonBlend {
         }
         side.put(MATCHES_THIS_SEASON, row.get(prefix + MATCHES_THIS_SEASON));
         return side;
+    }
+
+    private static Exposure blendExposure(Exposure current, Exposure previous,
+                                          double weight, boolean currentSeason) {
+        if (current == null) {
+            return currentSeason ? null : previous;
+        }
+        if (previous == null) {
+            return current;
+        }
+        return new Exposure(
+                current.fixtures() + previous.fixtures(),
+                current.appearances() + previous.appearances(),
+                current.sixtyPlus() + previous.sixtyPlus(),
+                current.totalMinutes() + previous.totalMinutes(),
+                mix(current.appearanceRate(), previous.appearanceRate(), weight),
+                mix(current.sixtyRate(), previous.sixtyRate(), weight),
+                mix(current.shortRate(), previous.shortRate(), weight),
+                mix(current.expectedMinutes(), previous.expectedMinutes(), weight),
+                mix(current.pointsPerFixture(), previous.pointsPerFixture(), weight));
+    }
+
+    private static double mix(double current, double previous, double weight) {
+        return weight * current + (1 - weight) * previous;
     }
 
     private static Object rate(Map<String, Object> current, Map<String, Object> previous,

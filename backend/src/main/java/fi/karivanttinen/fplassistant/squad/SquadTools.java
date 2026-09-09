@@ -10,10 +10,13 @@ import java.util.Map;
 import java.util.Optional;
 
 import fi.karivanttinen.fplassistant.tools.DailyPriceSource;
+import fi.karivanttinen.fplassistant.schedule.ScheduleFreshnessCheck;
 import fi.karivanttinen.fplassistant.tools.MetricSeasons;
 import fi.karivanttinen.fplassistant.tools.FplTool;
+import fi.karivanttinen.fplassistant.tools.RankingMetrics;
 import fi.karivanttinen.fplassistant.tools.SeasonContext;
 import fi.karivanttinen.fplassistant.tools.SeasonResolver;
+import fi.karivanttinen.fplassistant.tools.UkTime;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;
@@ -51,26 +54,35 @@ public class SquadTools implements FplTool {
     }
 
     @Tool(description = """
-            Build a complete 15-player FPL squad under constraints: a budget, named players who
-            must be in it, named players to avoid, and how many players to take from particular
-            clubs. Returns fifteen real players with a computed total, a starting XI and
-            formation, the bench in substitution order, and a captain and vice-captain — or a
-            refusal naming the constraint that cannot be met. Use this for wildcard, free hit,
-            pre-season and "build me a team" questions, and whenever the user states a squad
-            constraint such as "three Arsenal players". Do NOT assemble a squad yourself: this
-            tool enforces FPL's rules (15 players as 2 GK, 5 DEF, 5 MID, 3 FWD; at most 3 per
-            club; the budget) which prose cannot.
-            clubQuota is written "Arsenal:3" for exactly three, "Arsenal:>=2" for at least two,
-            "Arsenal:<=2" for at most two. mustInclude and mustExclude are comma-separated player
-            names. budget is in millions and defaults to 100.0 — for a wildcard, read the
-            manager's squad value plus bank from getMyTeam and pass that instead. nextN is how
-            many gameweeks ahead to score, default 5. formation forces one such as "3-4-3";
-            leave it empty to let the solver choose the best legal shape.
-            Players ranked on expected FPL points per fixture — expected goals and assists at
-            their position's own values, the clean-sheet chance implied by expected goals
-            conceded, scaled by the minutes they actually play — summed over the next N fixtures.
-            NOT ranked on form: a points haul is a result, not a reason. The reply states which
-            season the numbers come from and which day the prices were captured.
+            Build a complete 15-player FPL squad under a budget, mustInclude, mustExclude,
+            clubQuota and optional formation. Returns fifteen real players, a computed total,
+            legal starting XI, ordered bench, captain and vice-captain — or a factual refusal.
+            Use for wildcard, free hit, pre-season, "build me a team", and any whole-squad
+            constraint. Do NOT assemble a squad yourself: this enforces 2 GK, 5 DEF, 5 MID,
+            3 FWD, at most 3 per club, budget and legal-XI rules.
+            clubQuota accepts "Arsenal:3", "Arsenal:>=2" or "Arsenal:<=2". Player lists are
+            comma-separated. budget is millions, default 100.0; for a wildcard use squad value
+            plus bank from getMyTeam. nextN defaults to 5. formation may force "3-4-3".
+            Every XI player must pass the non-relaxable consistent observed 60+ history rule.
+            The selected daily capture must be fresh and say available ('a'), with valid
+            position/club; it, the current metric season and fresh complete schedule must be the
+            same season with coherent identity. The complete current-club window includes every
+            expected completed fixture, latest ten at most, with at least 180 current-season
+            minutes and 60+ in every fixture; known zeros count. Only a verified different-club
+            observation fences the spell; otherwise expected fixtures start at season start.
+            Doubtful, stale, missing, pending or inconsistent data causes abstention, and last-season
+            history cannot certify the role. One sub-60 fixture blocks selection
+            until ten later completed club fixtures in that spell move it out. A short complete
+            window can qualify after
+            clearing the floor, but is labelled as a small sample. An ineligible mustInclude may be
+            bought only on the bench. This history is not
+            a future-start guarantee, and a pin, budget or relaxed template/premium default cannot
+            waive it.
+            Ranking uses shared expected points per fixture: appearance and 60+ exposure, attack
+            scaled by expected minutes, 60+-conditional clean sheets and short/long DefCon, with
+            coarse captured-schedule FDR. Unknown projections have zero optimiser weight but are
+            printed n/a/unscored, never as a zero forecast. NOT ranked on form. The reply gives
+            price, metric, schedule and observed-window evidence; relay a refusal as written.
             """)
     public String buildSquad(String mustInclude, String mustExclude, String clubQuota,
                              double budget, int nextN, String formation) {
@@ -94,9 +106,18 @@ public class SquadTools implements FplTool {
                         + " Tell the user the daily price capture has not run.";
             }
             MetricSeasons metric = seasonResolver.metricSeasons(season);
-            List<SquadCandidate> candidates = pool.load(capture, metric);
+            CandidatePool.Pool loaded = pool.load(capture, metric);
+            List<SquadCandidate> candidates = loaded.candidates();
+            LocalDate snapshotDay = LocalDate.ofInstant(
+                    loaded.snapshot().asOf(), UkTime.zone());
+            String priceProvenance = DailyPriceSource.provenance(
+                    capture.season(), capture.date(), snapshotDay);
+            String metricProvenance = season.provenance();
+            String scheduleNote = scheduleEvidence(loaded.snapshot());
+            String evidenceHeader = priceProvenance + "\n" + metricProvenance
+                    + "\n" + scheduleNote;
             if (candidates.isEmpty()) {
-                return "No players are available to pick from today's capture.";
+                return evidenceHeader + "\nNo players are available to pick from today's capture.";
             }
 
             List<SquadConstraints.ClubQuota> resolvedQuotas = new ArrayList<>();
@@ -136,34 +157,34 @@ public class SquadTools implements FplTool {
             Optional<String> refusal =
                     Feasibility.check(candidates, constraints, pinned, excludedPlayers);
             if (refusal.isPresent()) {
-                return refusal.get();
+                return evidenceHeader + "\n" + refusal.get();
             }
 
-            Map<Integer, List<Integer>> fixtures =
-                    scorer.fixtureDifficulties(season.seasonId(), constraints.horizon());
+            Map<Integer, List<Integer>> fixtures = scorer.fixtureDifficulties(
+                    loaded.snapshot().schedule(), loaded.snapshot().asOf(), constraints.horizon());
             Map<Integer, Double> scores = new HashMap<>();
-            Map<Integer, Double> minutes = new HashMap<>();
-            // Whether any candidate this tool might actually rank found a fixture at all: once
-            // C1 lets the pool follow a different season from the resolved one, candidate.teamId()
-            // (the capture season's FPL ids) need not match fixture.team_h/team_a (the resolved
-            // season's) — the metrics side bridges cross-season by name, but fixtures have no such
-            // bridge. When nothing scores, the reply must say so rather than presenting an
-            // arbitrary legal fifteen as a ranked one.
+            Map<Integer, HorizonScorer.Projection> projections = new HashMap<>();
+            // Projection and role evidence share one captured FPL schedule. If the horizon has no
+            // usable fixtures, zero remains only an optimiser weight; the reply prints n/a.
             boolean anyCandidateHasFixtures = false;
             for (SquadCandidate candidate : candidates) {
                 List<Integer> teamFixtures = fixtures.getOrDefault(candidate.teamId(), List.of());
-                scores.put(candidate.elementId(), HorizonScorer.score(candidate, teamFixtures));
-                minutes.put(candidate.elementId(), HorizonScorer.expectedMinutes(candidate));
-                if (candidate.tier() == SquadCandidate.Tier.RANKABLE && !teamFixtures.isEmpty()) {
+                HorizonScorer.Projection projection =
+                        HorizonScorer.projection(candidate, teamFixtures);
+                projections.put(candidate.elementId(), projection);
+                scores.put(candidate.elementId(), projection.optimizerPoints());
+                if (projection.available()) {
                     anyCandidateHasFixtures = true;
                 }
             }
 
             Optional<SolvedSquad> solved = SquadSolver.solveWithDefaults(
-                    candidates, scores, constraints, pinned, excludedPlayers, minutes);
+                    candidates, scores, constraints, pinned, excludedPlayers);
             if (solved.isEmpty()) {
-                return "Those constraints cannot all be met at once, and I could not narrow it to"
-                        + " a single one. Try loosening the club quotas or the budget.";
+                return evidenceHeader + "\nThose constraints cannot all be met while every starter"
+                        + " also satisfies the consistent observed 60+ history restriction. Pins"
+                        + " can occupy the bench but cannot waive that XI rule; review the"
+                        + " formation, exclusions, club quotas and budget together.";
             }
 
             int excludedForNoRecord = (int) candidates.stream()
@@ -173,27 +194,40 @@ public class SquadTools implements FplTool {
             // contributes, and how much, is the sentence under it. A second "COMPLETED PREVIOUS"
             // banner would claim every number below it is last season's, and under blending none
             // purely is.
-            String metricProvenance = season.provenance();
             String blendNote = metric.blending()
-                    ? "Underlying numbers blend " + metric.played().code() + " with "
-                            + metric.previousCode() + " per player: the weight on "
-                            + metric.played().code() + " rises with his own matches of an hour or"
-                            + " more this season — 1: 10%, 2: 30%, 3: 60%, 4: 80%, 5-7: 90%,"
-                            + " 8+: 100% — and each player below shows his where it is under"
-                            + " 100%. \"no " + metric.previousCode() + " record\" means he is"
-                            + " judged on " + metric.played().code() + " alone."
-                    : null;
+                    ? "Underlying ability and usable exposure rates blend "
+                            + metric.played().code() + " with " + metric.previousCode()
+                            + " per player on the shared 1:10%, 2:30%, 3:60%, 4:80%,"
+                            + " 5-7:90%, 8+:100% ramp. Raw current-club 60+ evidence remains"
+                            + " separate and is the non-relaxable XI rule."
+                    : "Raw current-club 60+ evidence is separate from ability and is the"
+                            + " non-relaxable XI rule.";
+            blendNote += " " + scheduleNote;
 
             return SquadFormatter.format(solved.get(), constraints,
-                    DailyPriceSource.provenance(capture.season(), capture.date(), LocalDate.now()),
-                    metricProvenance,
-                    excludedForNoRecord, pinned, excludedPlayers, scores, minutes,
+                    priceProvenance, metricProvenance,
+                    excludedForNoRecord, pinned, excludedPlayers, projections,
                     !anyCandidateHasFixtures, blendNote);
         } catch (DataAccessException e) {
             log.error("buildSquad failed", e);
             return "Squad data is temporarily unavailable (database error)."
                     + " Tell the user and suggest asking again shortly.";
         }
+    }
+
+    private static String scheduleEvidence(RankingMetrics.Snapshot snapshot) {
+        if (snapshot.schedule().snapshot().isEmpty()) {
+            return "Schedule evidence: no FPL schedule capture is available.";
+        }
+        var selected = snapshot.schedule().snapshot().orElseThrow();
+        LocalDate capturedDay = LocalDate.ofInstant(selected.capturedAt(), UkTime.zone());
+        boolean fresh = ScheduleFreshnessCheck.isFresh(capturedDay, snapshot.asOf());
+        if (snapshot.schedule().completeness().complete() && fresh) {
+            return "Schedule evidence: complete FPL capture at " + selected.capturedAt() + ".";
+        }
+        return "Schedule evidence: FPL capture at " + selected.capturedAt()
+                + "; structure " + snapshot.schedule().completeness().reason()
+                + (fresh ? ", fresh for this snapshot." : ", not fresh for this snapshot.");
     }
 
     private record Resolution(SquadCandidate player, String refusal) {
