@@ -527,10 +527,7 @@ class HorizonFixturesTest {
     }
 
     private static int fixtureFor(List<ScheduleSource.FixtureRow> rows, int club, int gameweek) {
-        return rows.stream()
-                .filter(row -> row.gameweek() != null && row.gameweek() == gameweek)
-                .filter(row -> row.homeTeamId() == club || row.awayTeamId() == club)
-                .mapToInt(ScheduleSource.FixtureRow::id).findFirst().orElseThrow();
+        return RankingSeed.fixtureFor(rows, club, gameweek);
     }
 
     private static int opponentOf(List<ScheduleSource.FixtureRow> rows, int fixtureId, int club) {

@@ -61,6 +61,9 @@ class PickToolsIntegrationTest {
     /** A midweek second leg, after every gameweek-6 kickoff the seeded schedule lays down. */
     private static final Instant SECOND_LEG_KICKOFF = Instant.parse("2026-09-29T18:00:00Z");
 
+    /** Where a blanked fixture is replayed: gameweek 9, after that round's deadline. */
+    private static final Instant BLANK_REPLAY_KICKOFF = Instant.parse("2026-10-20T18:00:00Z");
+
     @TestConfiguration
     static class FixedClock {
         @Bean
@@ -264,6 +267,8 @@ class PickToolsIntegrationTest {
 
         String line = lineFor(tools.getDifferentialPicks("any", 10, 5), " Reliable (");
 
+        // 2,2,2,2,2 over GW4-7 plus the second leg, and 5 in GW8: six fixtures, not the five a
+        // next-N-fixtures window would have averaged.
         assertThat(line).contains("Avg FDR 2.5");
     }
 
@@ -291,6 +296,54 @@ class PickToolsIntegrationTest {
                 .isLessThan(reply.indexOf(" Nearly ("));
     }
 
+    /**
+     * Two different reasons a club cannot contribute a fixture, counted apart from the minutes
+     * rule and from each other: one club is blanked out of a one-gameweek window, the other has
+     * an outstanding fixture FPL has not assigned to a gameweek at all. Neither is a forecast of
+     * zero points, so neither name may appear in the list.
+     */
+    @Test
+    void horizonExclusionsSeparateAKnownBlankFromAnUnresolvedSchedule() {
+        moveToGameweek(fixtureFor(RankingSeed.team(2), 4), 9, BLANK_REPLAY_KICKOFF);
+        unassignGameweek(fixtureFor(RankingSeed.team(1), 4));
+
+        String result = tools.getDifferentialPicks("any", 100, 1);
+
+        assertThat(result).contains(" Defender (", " Keeper (")
+                .doesNotContain(" Striker (").doesNotContain(" Reliable (")
+                .contains("no fixtures in the horizon 1")
+                .contains("unknown horizon 1");
+    }
+
+    /**
+     * The clock is fixed for the whole class, so the schedule moves instead: pushing every
+     * deadline up to gameweek 36 into the past leaves GW37 as the first editable round, which is
+     * two gameweeks short of the five asked for.
+     */
+    @Test
+    void theFooterNamesTheEditableRangeAndDisclosesTruncation() {
+        passDeadlinesUpTo(36);
+
+        String result = tools.getDifferentialPicks("any", 100, 5);
+
+        assertThat(result).contains(" Reliable (")
+                .contains("fixtures 2 in GW37–38")
+                .contains("next 5 calendar gameweeks, GW37–38")
+                .contains("truncated to 2");
+    }
+
+    @Test
+    void afterTheFinalDeadlineThereIsNoHorizonRatherThanAForecastOfZero() {
+        passDeadlinesUpTo(38);
+
+        String result = tools.getDifferentialPicks("any", 100, 5);
+
+        assertThat(result).contains("No differentials qualify")
+                .contains("No editable gameweek remains")
+                .contains("unknown horizon 4")
+                .doesNotContain(" Reliable (").doesNotContain("horizon Score");
+    }
+
     /** A later fixture of this club against a club none of the seeded players belongs to. */
     private static ScheduleSource.FixtureRow laterFixtureAgainstAnUnusedClub(int club) {
         return RankingSeed.fixtures(CAPTURED_AT, FIRST_DEADLINE).stream()
@@ -302,16 +355,27 @@ class PickToolsIntegrationTest {
     }
 
     private static int fixtureFor(int club, int gameweek) {
-        return RankingSeed.fixtures(CAPTURED_AT, FIRST_DEADLINE).stream()
-                .filter(row -> row.gameweek() == gameweek)
-                .filter(row -> row.homeTeamId() == club || row.awayTeamId() == club)
-                .mapToInt(ScheduleSource.FixtureRow::id).findFirst().orElseThrow();
+        return RankingSeed.fixtureFor(RankingSeed.fixtures(CAPTURED_AT, FIRST_DEADLINE),
+                club, gameweek);
     }
 
     private void moveToGameweek(int fixtureId, int gameweek, Instant kickoff) {
         jdbc.update("UPDATE " + scheduleSource.fixtureTable()
                         + " SET gameweek = ?, kickoff_time = ? WHERE season = ? AND id = ?",
                 gameweek, Timestamp.from(kickoff), SEASON, fixtureId);
+    }
+
+    /** As FPL leaves a postponement it has not rescheduled: outstanding, with no gameweek. */
+    private void unassignGameweek(int fixtureId) {
+        jdbc.update("UPDATE " + scheduleSource.fixtureTable()
+                + " SET gameweek = NULL WHERE season = ? AND id = ?", SEASON, fixtureId);
+    }
+
+    /** Moves the deadlines of gameweeks 1..{@code gameweek} behind the fixed clock. */
+    private void passDeadlinesUpTo(int gameweek) {
+        jdbc.update("UPDATE " + scheduleSource.gameweekTable()
+                + " SET deadline_time = deadline_time - INTERVAL '252 days'"
+                + " WHERE season = ? AND id <= ?", SEASON, gameweek);
     }
 
     /** Sets this club's own side of the fixture's difficulty, leaving the opponent's alone. */
