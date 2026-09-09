@@ -9,7 +9,9 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalDouble;
 
+import dev.quantti.fplassistant.schedule.HorizonFixtures;
 import dev.quantti.fplassistant.schedule.ScheduleFreshnessCheck;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -19,9 +21,18 @@ import org.springframework.stereotype.Component;
 
 /**
  * Pick-advice tools. {@link #getDifferentialPicks} and {@link #getCaptainCandidates} rank
- * eligible players on expected FPL points per fixture, blended with realised points per fixture,
- * then on average fixture difficulty from the same captured schedule, then ownership or observed
- * minutes. Role eligibility is a separate hard current-season evidence rule, not a score.
+ * eligible players on a horizon Score — expected FPL points per fixture, blended with realised
+ * points per fixture, totalled over every fixture the club plays in the next N calendar
+ * gameweeks — then on the average fixture difficulty of that same window, then ownership or
+ * observed minutes. Role eligibility is a separate hard current-season evidence rule, not a score.
+ *
+ * <p><b>The window is calendar gameweeks, not a club's next N fixtures.</b> Taking the next N
+ * fixtures silently drops the last gameweek the caller asked about whenever a club doubles inside
+ * the window, and averaging the difficulty of the extra match gives it no advantage at all: a
+ * second fixture is a second chance to score, so it belongs in the total. {@link HorizonFixtures}
+ * derives that window once per call from the snapshot's own schedule, and a club with no known
+ * window — or a known window with nothing in it — is excluded and counted rather than ranked on
+ * an invented zero.
  *
  * <p><b>Two sources, two provenance lines</b> — the shape {@code SquadTools} and the my-team
  * tools already use. The candidate pool (identity, club, price, ownership, availability, news)
@@ -81,14 +92,16 @@ public class PickTools implements FplTool {
 
     private static final Logger log = LoggerFactory.getLogger(PickTools.class);
     private static final int MAX_PICKS = 10;
-    private static final int MAX_FIXTURES = 5;
+
+    /** The longest horizon a caller can ask for, in calendar gameweeks. */
+    private static final int MAX_GAMEWEEKS = 5;
 
     // Window constants (WINDOW_MATCHES, WHOLE_SEASON, MIN_WINDOW_MINUTES) live on
     // ExpectedPoints, and the cross-season ramp on SeasonBlend — both shared with CandidatePool
     // so the two tools cannot rank the same player two different ways in one conversation by
     // drifting apart on what "recent form" means.
 
-    /** Sinks players whose fixtures are unknown below any player with a real FDR. */
+    /** Sinks players whose window has no usable average difficulty below any player with one. */
     private static final double UNKNOWN_FDR = Double.MAX_VALUE;
 
     /** The most weight a player's realised points are ever given against the expected model. */
@@ -126,13 +139,19 @@ public class PickTools implements FplTool {
             blocks until ten later completed club fixtures in that spell move it out. A short
             complete window can qualify after clearing the floor, but is labelled as a small
             sample. This history does not guarantee the next start.
-            Ranking uses expected FPL points per fixture — appearance and 60+ chances, attack
-            scaled by expected minutes, 60+-conditional clean sheets and short/long DefCon —
-            blended with realised points per fixture, then FDR from that same schedule, then
-            ownership. Ability and usable exposure rates can blend seasons on the shared ramp;
-            raw current-role eligibility never does. NOT ranked by form. The reply shows source
-            dates, window evidence, exclusions and partial components. Use for pick/differential
-            questions with strategy guidance; do not fill an empty list with ineligible names.
+            Ranking uses a horizon Score: expected FPL points per fixture — appearance and 60+
+            chances, attack scaled by expected minutes, 60+-conditional clean sheets and
+            short/long DefCon — blended with realised points per fixture, then totalled over every
+            fixture the club plays in the next nextN calendar gameweeks (clamped to 1-5, counted
+            from the next editable deadline in that same schedule). A double gameweek adds a
+            fixture, a blank removes one. A pick also needs a known horizon holding at least one
+            fixture; clubs blanked across the window or with an unresolved schedule are excluded
+            and counted, never ranked at zero. Ties break on the average FDR of those same
+            fixtures, then ownership. Ability and usable exposure rates can blend seasons on the
+            shared ramp; raw current-role eligibility never does. NOT ranked by form. The reply
+            shows source dates, the editable gameweek range, window evidence, exclusions and
+            partial components. Use for pick/differential questions with strategy guidance; do not
+            fill an empty list with ineligible names.
             """)
     public String getDifferentialPicks(String position, double maxOwnership, int nextN) {
         try {
@@ -148,21 +167,21 @@ public class PickTools implements FplTool {
                         + "\nUnrecognised position \"" + position
                         + "\". Use 1/GK, 2/DEF, 3/MID, 4/FWD, or \"any\".";
             }
-            int fixtureLimit = Math.max(1, Math.min(nextN, MAX_FIXTURES));
+            int gameweekLimit = Math.max(1, Math.min(nextN, MAX_GAMEWEEKS));
             MetricSeasons metric = seasonResolver.metricSeasons(season);
 
             RankingMetrics.Snapshot snapshot = rankingMetrics.load(capture, metric);
+            HorizonFixtures.Result horizon = horizon(snapshot, capture, gameweekLimit);
             String provenance = provenanceFor(capture, season,
                     LocalDate.ofInstant(snapshot.asOf(), UkTime.zone()));
-            Selection selection = candidates(snapshot, elementType, maxOwnership);
+            Selection selection = candidates(snapshot, horizon, elementType, maxOwnership);
             if (selection.rows().isEmpty()) {
                 return provenance + "\n" + scheduleEvidence(snapshot) + "\n"
-                        + noQualifyingPlayers("differentials", capture.season(), selection);
+                        + noQualifyingPlayers("differentials", capture.season(), selection, horizon);
             }
 
             return provenance + "\n\n"
-                    + formatPicks("Differential picks", selection, snapshot, metric,
-                            fixtureLimit, true);
+                    + formatPicks("Differential picks", selection, snapshot, horizon, metric, true);
         } catch (DataAccessException e) {
             log.error("getDifferentialPicks(\"{}\", {}, {}) failed", position, maxOwnership, nextN, e);
             return "Pick data is temporarily unavailable (database error)."
@@ -183,13 +202,19 @@ public class PickTools implements FplTool {
             One sub-60 fixture blocks until ten later completed club fixtures in that spell move it
             out. A short complete window can qualify after clearing the floor, but is labelled as
             a small sample. This history does not guarantee the next lineup.
-            Ranking uses expected FPL points per fixture — appearance and 60+ chances, attack
-            scaled by expected minutes, 60+-conditional clean sheets and short/long DefCon —
-            blended with realised points per fixture, then FDR from the same schedule, then
-            observed minutes. Ability and usable exposure rates may blend seasons; raw current
-            eligibility never does. NOT ranked by form. The reply shows ownership, source dates,
-            window evidence, exclusions and partial components. Use with captaincy strategy;
-            never add an ineligible fallback when the qualifying list is empty.
+            Ranking uses a horizon Score: expected FPL points per fixture — appearance and 60+
+            chances, attack scaled by expected minutes, 60+-conditional clean sheets and
+            short/long DefCon — blended with realised points per fixture, then totalled over every
+            fixture the club plays in the next nextN calendar gameweeks (clamped to 1-5, counted
+            from the next editable deadline in that same schedule). A double gameweek adds a
+            fixture, a blank removes one. A candidate also needs a known horizon holding at least
+            one fixture; clubs blanked across the window or with an unresolved schedule are
+            excluded and counted, never ranked at zero. Ties break on the average FDR of those
+            same fixtures, then observed minutes. Ability and usable exposure rates may blend
+            seasons; raw current eligibility never does. NOT ranked by form. The reply shows
+            ownership, source dates, the editable gameweek range, window evidence, exclusions and
+            partial components. Use with captaincy strategy; never add an ineligible fallback when
+            the qualifying list is empty.
             """)
     public String getCaptainCandidates(int nextN) {
         try {
@@ -199,21 +224,22 @@ public class PickTools implements FplTool {
                 return NO_CAPTURE;
             }
             DailyPriceSource.Capture capture = captured.get();
-            int fixtureLimit = Math.max(1, Math.min(nextN, MAX_FIXTURES));
+            int gameweekLimit = Math.max(1, Math.min(nextN, MAX_GAMEWEEKS));
             MetricSeasons metric = seasonResolver.metricSeasons(season);
 
             RankingMetrics.Snapshot snapshot = rankingMetrics.load(capture, metric);
+            HorizonFixtures.Result horizon = horizon(snapshot, capture, gameweekLimit);
             String provenance = provenanceFor(capture, season,
                     LocalDate.ofInstant(snapshot.asOf(), UkTime.zone()));
-            Selection selection = candidates(snapshot, ATTACKERS, 100.0);
+            Selection selection = candidates(snapshot, horizon, ATTACKERS, 100.0);
             if (selection.rows().isEmpty()) {
                 return provenance + "\n" + scheduleEvidence(snapshot) + "\n"
-                        + noQualifyingPlayers("captain candidates", capture.season(), selection);
+                        + noQualifyingPlayers("captain candidates", capture.season(), selection,
+                                horizon);
             }
 
             return provenance + "\n\n"
-                    + formatPicks("Captain candidates", selection, snapshot, metric,
-                            fixtureLimit, false);
+                    + formatPicks("Captain candidates", selection, snapshot, horizon, metric, false);
         } catch (DataAccessException e) {
             log.error("getCaptainCandidates({}) failed", nextN, e);
             return "Pick data is temporarily unavailable (database error)."
@@ -224,9 +250,29 @@ public class PickTools implements FplTool {
     /** Position filter meaning "midfielders and forwards" — the only positions worth captaining. */
     private static final int ATTACKERS = -1;
 
+    /**
+     * @param knownZeroHorizon players whose club is known to play nothing in the window — a real
+     *                         blank, counted apart from the minutes rule because the evidence is
+     *                         the schedule's, not the player's
+     * @param unknownHorizon   players whose club window could not be established at all
+     */
     private record Selection(List<Map<String, Object>> rows,
                              Map<MinutesModel.Eligibility, Integer> exclusions,
+                             int knownZeroHorizon, int unknownHorizon,
                              int matchingCapturePlayers) {
+    }
+
+    /**
+     * The one horizon derivation per tool call, over the snapshot's own schedule and instant.
+     * The capture's season governs, not the resolved metric season: across the changeover the
+     * schedule and the candidate pool are the season being played while the metrics are still
+     * last season's, and a horizon read against the wrong season names other clubs entirely.
+     */
+    private static HorizonFixtures.Result horizon(RankingMetrics.Snapshot snapshot,
+                                                  DailyPriceSource.Capture capture,
+                                                  int gameweekLimit) {
+        return HorizonFixtures.derive(snapshot.schedule(), snapshot.asOf(), capture.season(),
+                gameweekLimit);
     }
 
     /**
@@ -267,11 +313,14 @@ public class PickTools implements FplTool {
 
     /** Consumer filters are applied only after RankingMetrics has seen the whole capture. */
     private static Selection candidates(RankingMetrics.Snapshot snapshot,
+                                        HorizonFixtures.Result horizon,
                                         int elementType, double maxOwnership) {
         List<Map<String, Object>> rows = new ArrayList<>();
         Map<MinutesModel.Eligibility, Integer> exclusions =
                 new EnumMap<>(MinutesModel.Eligibility.class);
         int matching = 0;
+        int knownZeroHorizon = 0;
+        int unknownHorizon = 0;
         for (RankingMetrics.Candidate candidate : snapshot.candidates()) {
             RankingMetrics.CapturePlayer player = candidate.capture();
             if (!matchesFilter(player, elementType, maxOwnership)) {
@@ -285,6 +334,16 @@ public class PickTools implements FplTool {
                                 ? MinutesModel.Eligibility.UNKNOWN_CURRENT_EVIDENCE
                                 : candidate.eligibility();
                 exclusions.merge(reason, 1, Integer::sum);
+                continue;
+            }
+            // Eligibility already guarantees a valid captured club id.
+            HorizonFixtures.ClubWindow club = horizon.club(player.teamId());
+            if (!club.known()) {
+                unknownHorizon++;
+                continue;
+            }
+            if (club.count() == 0) {
+                knownZeroHorizon++;
                 continue;
             }
             Map<String, Object> row = new HashMap<>();
@@ -307,7 +366,8 @@ public class PickTools implements FplTool {
             row.put("ranking_candidate", candidate);
             rows.add(row);
         }
-        return new Selection(List.copyOf(rows), Map.copyOf(exclusions), matching);
+        return new Selection(List.copyOf(rows), Map.copyOf(exclusions),
+                knownZeroHorizon, unknownHorizon, matching);
     }
 
     private static boolean matchesFilter(RankingMetrics.CapturePlayer player,
@@ -321,16 +381,32 @@ public class PickTools implements FplTool {
                 : player.position() == elementType);
     }
 
-    private static String noQualifyingPlayers(String kind, String season, Selection selection) {
-        return "No " + kind + " qualify in " + season
-                + " under the consistent observed 60+ history rule. Checked "
-                + selection.matchingCapturePlayers() + " matching capture players. Exclusions: "
-                + exclusionCounts(selection.exclusions()) + ". Missing or stale evidence is"
-                + " unjudged, not evidence of poor football ability; use the player stats and"
-                + " availability tools to discuss a named risky player.";
+    private static String noQualifyingPlayers(String kind, String season, Selection selection,
+                                              HorizonFixtures.Result horizon) {
+        String reply = "No " + kind + " qualify in " + season
+                + " under the consistent observed 60+ history rule and the editable gameweek"
+                + " horizon. Checked " + selection.matchingCapturePlayers()
+                + " matching capture players. Exclusions: " + exclusionCounts(selection) + ".";
+        if (horizon.status() != HorizonFixtures.Status.KNOWN) {
+            reply += " " + horizonProblem(horizon);
+        }
+        return reply + " Missing or stale evidence is unjudged, not evidence of poor football"
+                + " ability; use the player stats and availability tools to discuss a named"
+                + " risky player.";
     }
 
-    private static String exclusionCounts(Map<MinutesModel.Eligibility, Integer> counts) {
+    /** Why no player has a horizon, said plainly — never as a forecast of zero points. */
+    private static String horizonProblem(HorizonFixtures.Result horizon) {
+        String reason = horizon.status() == HorizonFixtures.Status.NO_EDITABLE_GAMEWEEK
+                ? "No editable gameweek remains in the captured schedule"
+                : "The captured schedule cannot supply a gameweek horizon ("
+                        + horizon.reason().name().toLowerCase(Locale.ROOT).replace('_', ' ') + ")";
+        return reason + ", so every candidate's fixture count is unknown rather than zero."
+                + " Say so instead of ranking anyone; no older schedule is substituted.";
+    }
+
+    private static String exclusionCounts(Selection selection) {
+        Map<MinutesModel.Eligibility, Integer> counts = selection.exclusions();
         return "availability risk " + counts.getOrDefault(
                 MinutesModel.Eligibility.AVAILABILITY_RISK, 0)
                 + ", observed minutes risk " + counts.getOrDefault(
@@ -338,7 +414,9 @@ public class PickTools implements FplTool {
                 + ", insufficient current evidence " + counts.getOrDefault(
                         MinutesModel.Eligibility.INSUFFICIENT_CURRENT_EVIDENCE, 0)
                 + ", unknown current evidence " + counts.getOrDefault(
-                        MinutesModel.Eligibility.UNKNOWN_CURRENT_EVIDENCE, 0);
+                        MinutesModel.Eligibility.UNKNOWN_CURRENT_EVIDENCE, 0)
+                + ", no fixtures in the horizon " + selection.knownZeroHorizon()
+                + ", unknown horizon " + selection.unknownHorizon();
     }
 
     /**
@@ -355,46 +433,45 @@ public class PickTools implements FplTool {
     }
 
     private String formatPicks(String heading, Selection selection,
-                               RankingMetrics.Snapshot snapshot, MetricSeasons metric,
-                               int fixtureLimit, boolean ownershipTieBreak) {
+                               RankingMetrics.Snapshot snapshot, HorizonFixtures.Result horizon,
+                               MetricSeasons metric, boolean ownershipTieBreak) {
         List<Map<String, Object>> rows = selection.rows();
-        Map<Integer, Double> fdrByTeam = avgFdrByTeam(snapshot, fixtureLimit);
+        Map<Integer, HorizonFixtures.ClubWindow> windows = horizon.clubs();
         double realisedWeight = realisedWeight(metric.playedGameweeks());
-        List<Map<String, Object>> ranked = rank(rows, fdrByTeam, ownershipTieBreak, realisedWeight);
+        List<Map<String, Object>> ranked = rank(rows, windows, ownershipTieBreak, realisedWeight);
+        String range = gameweekRange(horizon);
 
         StringBuilder out = new StringBuilder();
         out.append(heading).append(" (").append(metric.played().code()).append("):\n")
                 .append(scheduleEvidence(snapshot)).append('\n');
         for (Map<String, Object> row : ranked.subList(0, Math.min(MAX_PICKS, ranked.size()))) {
-            int teamId = ((Number) row.get("team_id")).intValue();
             int position = ((Number) row.get("element_type")).intValue();
-            Double avgFdr = fdrByTeam.get(teamId);
+            OptionalDouble avgFdr = averageDifficulty(row, windows);
             RankingMetrics.Candidate candidate =
                     (RankingMetrics.Candidate) row.get("ranking_candidate");
             RankingMetrics.MinutesWindow window = candidate.current().window();
             out.append(String.format(Locale.ROOT,
-                    "  %s %s (%s) £%sm | Own %s%% | Score/fixture %s | expected/fixture %s"
-                            + " (%s) | realised points/fixture %s | observed current-club 60+ %d/%d,"
+                    "  %s %s (%s) £%sm | Own %s%% | Score/fixture %s | fixtures %d in %s"
+                            + " | horizon Score %s | expected/fixture %s (%s)"
+                            + " | realised points/fixture %s | observed current-club 60+ %d/%d,"
                             + " %d mins, %s%s%s | Avg FDR %s\n",
                     positionLabel(position), row.get("web_name"), row.get("team_short"),
                     fixed(((Number) row.get("now_cost")).intValue() / 10.0, 1),
                     row.get("selected_by_percent"), fixed(score(row, realisedWeight), 2),
+                    fixtureCount(row, windows), range,
+                    fixed(horizonScore(row, windows, realisedWeight), 2),
                     fixed(numeric(row.get("expected_per_fixture")), 2), components(row),
                     fixed(numeric(row.get("points_per_fixture")), 2),
                     window.sixtyPlus(), window.expected(), window.totalMinutes(), dateRange(window),
                     window.expected() < ExpectedPoints.WINDOW_MATCHES
                             ? " (short window: " + window.expected() + " fixtures)" : "",
                     blendSegment(row, metric) + exposureSegment(candidate, metric),
-                    avgFdr == null ? "n/a" : fixed(avgFdr, 1)));
+                    avgFdr.isPresent() ? fixed(avgFdr.getAsDouble(), 1) : "n/a"));
         }
-        if (fdrByTeam.isEmpty()) {
-            out.append("\n(No unfinished fixtures with FDR were found in the verified schedule;"
-                    + " FDR is n/a and the ranking falls back to the per-fixture score.)\n");
-        }
-        out.append(footer(metric, fixtureLimit, ownershipTieBreak, realisedWeight));
+        out.append(footer(metric, horizon, ownershipTieBreak, realisedWeight));
         out.append("Eligible after filters: ").append(rows.size()).append(" of ")
                 .append(selection.matchingCapturePlayers()).append(". Exclusions: ")
-                .append(exclusionCounts(selection.exclusions())).append(".\n");
+                .append(exclusionCounts(selection)).append(".\n");
         if (noUnderlyingSignal(ranked)) {
             out.append("WARNING: every player here has xG/90 and xA/90 of 0.00. Treat the")
                     .append(" underlying attacking columns as unavailable rather than as form.\n");
@@ -462,19 +539,31 @@ public class PickTools implements FplTool {
         return first.equals(last) ? first.toString() : first + " to " + last;
     }
 
-    private String footer(MetricSeasons metric, int fixtureLimit, boolean ownershipTieBreak,
-                          double realisedWeight) {
-        StringBuilder out = new StringBuilder("\nRanked by a per-fixture Score: expected components"
-                + " carry " + Math.round((1 - realisedWeight) * 100)
+    private String footer(MetricSeasons metric, HorizonFixtures.Result horizon,
+                          boolean ownershipTieBreak, double realisedWeight) {
+        String range = gameweekRange(horizon);
+        StringBuilder out = new StringBuilder("\nRanked by a horizon Score: each pick's"
+                + " per-fixture Score totalled over every fixture its club plays in the next "
+                + horizon.requestedGameweeks() + " calendar gameweeks, " + range + ".");
+        if (horizon.truncated()) {
+            out.append(" Only ").append(range).append(" remain before the season ends, so the ")
+                    .append(horizon.requestedGameweeks())
+                    .append(" gameweeks requested are truncated to ")
+                    .append(horizon.actualGameweeks()).append('.');
+        }
+        out.append(" A double gameweek adds a fixture rather than displacing a later one, and a"
+                + " blank removes one. Ties break on the average FDR of those same fixtures"
+                + " (unknown last), then "
+                + (ownershipTieBreak ? "ownership" : "current-window minutes")
+                + ", then element id; FDR is a tie-break, never a multiplier.\n");
+        out.append("The per-fixture Score: expected components carry "
+                + Math.round((1 - realisedWeight) * 100)
                 + "% and observed points per comparable club fixture carry "
                 + Math.round(realisedWeight * 100) + "%. The realised weight keeps its existing"
                 + " gameweek ramp and reaches at most " + Math.round(MAX_REALISED_WEIGHT * 100)
                 + "%. Appearance uses P(play)+P(60+); attack scales by observed expected minutes;"
                 + " clean sheets use P(60+) and a season-average conditional exp(-xGC)"
-                + " approximation. Then average FDR of the next " + fixtureLimit
-                + " unfinished fixtures, then "
-                + (ownershipTieBreak ? "ownership" : "current-window minutes") + ". This score"
-                + " is per fixture and does not by itself reward a double gameweek.\n");
+                + " approximation.\n");
         if (metric.blending()) {
             out.append("Ability and usable exposure rates follow the one player-specific ramp:"
                     + " 1 qualifying current-season match 10%, 2: 30%, 3: 60%, 4: 80%,"
@@ -486,7 +575,10 @@ public class PickTools implements FplTool {
                 .append(" current-season minutes and 60+ in every fixture qualify. A short")
                 .append(" complete window is labelled; this consistent observed 60+ history is")
                 .append(" not a guarantee of the next start. Missing/stale rows abstain rather")
-                .append(" than borrowing last season as current-role proof.\n")
+                .append(" than borrowing last season as current-role proof. A pick also needs a")
+                .append(" known horizon holding at least one fixture: a club blanked across the")
+                .append(" whole window, or one whose schedule is unresolved, is counted in the")
+                .append(" exclusions below rather than ranked at zero.\n")
                 .append("DefCon has no 60-minute eligibility rule: short and long appearance")
                 .append(" action means contribute separately when each has at least ")
                 .append(ExpectedPoints.MIN_DEFCON_MATCHES)
@@ -540,64 +632,68 @@ public class PickTools implements FplTool {
     }
 
     /**
+     * What the whole horizon is worth: the per-fixture composite times the number of fixtures the
+     * club actually plays in the window. A double gameweek is an extra opportunity, so it lifts a
+     * lesser player past a close single — 3 twice beats 5 once — without promoting him over a far
+     * better one, since 3 twice still loses to 8 once.
+     */
+    static double horizonScore(Map<String, Object> row,
+                               Map<Integer, HorizonFixtures.ClubWindow> windows,
+                               double realisedWeight) {
+        return score(row, realisedWeight) * fixtureCount(row, windows);
+    }
+
+    /**
      * Orders the candidate pool on the composite the tool descriptions promise.
      *
-     * <p>Done in Java because FDR is an aggregate over the shared captured schedule rather than
-     * a player column.
+     * <p>Done in Java because the horizon is an aggregate over the shared captured schedule
+     * rather than a player column. Every comparison is on unrounded doubles; the element id
+     * closes the order so two otherwise identical picks always come back the same way round.
      */
     static List<Map<String, Object>> rank(List<Map<String, Object>> rows,
-                                          Map<Integer, Double> fdrByTeam,
+                                          Map<Integer, HorizonFixtures.ClubWindow> windows,
                                           boolean ownershipTieBreak,
                                           double realisedWeight) {
-        Comparator<Map<String, Object>> byScore = Comparator
-                .comparingDouble((Map<String, Object> r) -> score(r, realisedWeight)).reversed();
-        Comparator<Map<String, Object>> byFdr = Comparator.comparingDouble(r -> {
-            Double fdr = fdrByTeam.get(((Number) r.get("team_id")).intValue());
-            return fdr == null ? UNKNOWN_FDR : fdr;
-        });
+        Comparator<Map<String, Object>> byHorizon = Comparator.comparingDouble(
+                (Map<String, Object> r) -> horizonScore(r, windows, realisedWeight)).reversed();
+        Comparator<Map<String, Object>> byFdr = Comparator.comparingDouble(
+                r -> averageDifficulty(r, windows).orElse(UNKNOWN_FDR));
         Comparator<Map<String, Object>> tieBreak = ownershipTieBreak
                 ? Comparator.comparingDouble(r -> numeric(r.get("selected_by_percent")))
                 : Comparator.comparingDouble((Map<String, Object> r) -> numeric(
                         r.containsKey("current_window_minutes")
                                 ? r.get("current_window_minutes") : r.get("mins"))).reversed();
+        Comparator<Map<String, Object>> byElementId =
+                Comparator.comparingDouble(r -> numeric(r.get("id")));
 
         List<Map<String, Object>> sorted = new ArrayList<>(rows);
-        sorted.sort(byScore.thenComparing(byFdr).thenComparing(tieBreak));
+        sorted.sort(byHorizon.thenComparing(byFdr).thenComparing(tieBreak)
+                .thenComparing(byElementId));
         return sorted;
     }
 
-    private record TeamFdr(Integer gameweek, java.time.Instant kickoff, int fixtureId,
-                           Integer difficulty) {
+    /** Zero for a club the window cannot count, so a stray row can never outrank a real one. */
+    private static int fixtureCount(Map<String, Object> row,
+                                    Map<Integer, HorizonFixtures.ClubWindow> windows) {
+        HorizonFixtures.ClubWindow club = clubWindow(row, windows);
+        return club != null && club.known() ? club.count() : 0;
     }
 
-    /** The existing next-N FDR tie-break, now read from the same coherent schedule snapshot. */
-    private static Map<Integer, Double> avgFdrByTeam(RankingMetrics.Snapshot snapshot,
-                                                     int fixtureLimit) {
-        Map<Integer, List<TeamFdr>> fixtures = new HashMap<>();
-        for (var fixture : snapshot.schedule().fixtures()) {
-            if (fixture.finished()) {
-                continue;
-            }
-            fixtures.computeIfAbsent(fixture.homeTeamId(), ignored -> new ArrayList<>())
-                    .add(new TeamFdr(fixture.gameweek(), fixture.kickoff(), fixture.id(),
-                            fixture.homeDifficulty()));
-            fixtures.computeIfAbsent(fixture.awayTeamId(), ignored -> new ArrayList<>())
-                    .add(new TeamFdr(fixture.gameweek(), fixture.kickoff(), fixture.id(),
-                            fixture.awayDifficulty()));
-        }
-        Comparator<TeamFdr> order = Comparator
-                .comparing(TeamFdr::gameweek, Comparator.nullsLast(Comparator.naturalOrder()))
-                .thenComparing(TeamFdr::kickoff, Comparator.nullsLast(Comparator.naturalOrder()))
-                .thenComparingInt(TeamFdr::fixtureId);
-        Map<Integer, Double> averages = new HashMap<>();
-        fixtures.forEach((team, rows) -> {
-            List<Integer> selected = rows.stream().sorted(order).limit(fixtureLimit)
-                    .map(TeamFdr::difficulty).filter(java.util.Objects::nonNull).toList();
-            if (!selected.isEmpty()) {
-                averages.put(team, selected.stream().mapToInt(Integer::intValue).average().orElseThrow());
-            }
-        });
-        return averages;
+    /** Empty unless every counted fixture of the window carries a valid FDR. */
+    private static OptionalDouble averageDifficulty(
+            Map<String, Object> row, Map<Integer, HorizonFixtures.ClubWindow> windows) {
+        HorizonFixtures.ClubWindow club = clubWindow(row, windows);
+        return club == null ? OptionalDouble.empty() : club.averageDifficulty();
+    }
+
+    private static HorizonFixtures.ClubWindow clubWindow(
+            Map<String, Object> row, Map<Integer, HorizonFixtures.ClubWindow> windows) {
+        return windows.get(((Number) row.get("team_id")).intValue());
+    }
+
+    /** The editable window as the reply names it, for example {@code GW4–8}. */
+    private static String gameweekRange(HorizonFixtures.Result horizon) {
+        return "GW" + horizon.startGameweek() + "–" + horizon.endGameweek();
     }
 
     /** Delegates to {@link ExpectedPoints#numeric}, which this and the squad builder now share. */
