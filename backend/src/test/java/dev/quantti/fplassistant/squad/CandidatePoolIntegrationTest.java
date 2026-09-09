@@ -205,7 +205,7 @@ class CandidatePoolIntegrationTest {
             assertThat(capture.date()).isEqualTo(tomorrow);
 
             List<SquadCandidate> candidates =
-                    pool.load(capture, seasonResolver.metricSeasons(seasonResolver.resolve()));
+                    pool.load(capture, seasonResolver.metricSeasons(seasonResolver.resolve())).candidates();
 
             assertThat(candidates).isNotEmpty();
             assertThat(candidates).extracting(SquadCandidate::elementId).contains(changeoverId);
@@ -224,7 +224,7 @@ class CandidatePoolIntegrationTest {
         SquadCandidate okafor = candidate(OKAFOR);
 
         assertThat(okafor.tier()).isEqualTo(SquadCandidate.Tier.RANKABLE);
-        assertThat(okafor.minutesInWindow()).isEqualTo(270.0);
+        assertThat(okafor.minutesWindow().totalMinutes()).isEqualTo(270);
         assertThat(((Number) okafor.metrics().get("xg90")).doubleValue()).isGreaterThan(0);
     }
 
@@ -237,8 +237,8 @@ class CandidatePoolIntegrationTest {
         SquadCandidate kaminski = candidate(KAMINSKI);
 
         assertThat(kaminski.tier()).isEqualTo(SquadCandidate.Tier.RANKABLE);
-        assertThat(kaminski.minutesInWindow()).isEqualTo(180.0);
-        assertThat(kaminski.teamFixturesInWindow()).isEqualTo(3);
+        assertThat(kaminski.minutesWindow().totalMinutes()).isEqualTo(180);
+        assertThat(kaminski.minutesWindow().expected()).isEqualTo(3);
     }
 
     private SquadCandidate candidate(int elementId) {
@@ -271,7 +271,7 @@ class CandidatePoolIntegrationTest {
         var resolved = seasonResolver.resolve();
         CandidatePool.Capture capture = pool.latestCapture().orElseThrow();
         return pool.load(capture, seasonResolver.metricSeasons(resolved))
-                .stream()
+                .candidates().stream()
                 .filter(c -> TEST_ELEMENT_IDS.contains(c.elementId()))
                 .toList();
     }

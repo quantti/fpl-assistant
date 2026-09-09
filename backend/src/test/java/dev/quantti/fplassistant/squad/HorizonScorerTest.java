@@ -1,62 +1,68 @@
 package dev.quantti.fplassistant.squad;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import dev.quantti.fplassistant.tools.ExpectedPoints;
+import dev.quantti.fplassistant.tools.MinutesModel;
+import dev.quantti.fplassistant.tools.RankingMetrics;
+import dev.quantti.fplassistant.tools.SeasonBlend;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
 
-/**
- * Scoring over a horizon rather than per 90.
- *
- * <p>The minutes ratio is the guard the whole feature depends on: without it the optimiser buys
- * the cheapest players whose per-90 numbers look adequate, which is the placeholder bug wearing
- * a real name.
- */
 class HorizonScorerTest {
 
-    private static SquadCandidate candidate(double minutes, int teamFixtures, double xg90) {
+    private static SquadCandidate candidate(double expectedMinutes, int sixty, double xg90) {
         Map<String, Object> metrics = new HashMap<>();
         metrics.put("element_type", 3);
         metrics.put("xg90", BigDecimal.valueOf(xg90));
         metrics.put("xa90", BigDecimal.ZERO);
         metrics.put("pts90", BigDecimal.ZERO);
         metrics.put("xgc_per_match", null);
+        int fixtures = 10;
+        int totalMinutes = (int) Math.round(expectedMinutes * fixtures);
+        SeasonBlend.Exposure exposure = new SeasonBlend.Exposure(fixtures, fixtures, sixty,
+                totalMinutes, 1, sixty / (double) fixtures, 1 - sixty / (double) fixtures,
+                expectedMinutes, 3);
+        RankingMetrics.MinutesWindow window = new RankingMetrics.MinutesWindow(
+                true, RankingMetrics.WindowReason.COMPLETE, 9001,
+                Instant.parse("2026-08-01T12:00:00Z"),
+                Instant.parse("2026-09-01T12:00:00Z"), fixtures, fixtures, totalMinutes,
+                fixtures, sixty, List.of());
+        MinutesModel.Eligibility eligibility = sixty == fixtures && totalMinutes >= 180
+                ? MinutesModel.Eligibility.ELIGIBLE : MinutesModel.Eligibility.MINUTES_RISK;
         return new SquadCandidate(1, "Test", "Test Player", "Ashfield Rovers", "ASH", 3, 60,
-                10.0, "a", null, 9001, minutes, teamFixtures, metrics,
-                SquadCandidate.Tier.RANKABLE);
+                10.0, "a", null, 9001, expectedMinutes, metrics,
+                SquadCandidate.Tier.RANKABLE, window, exposure, eligibility);
     }
 
     @Test
-    void aNailedStarterKeepsNearlyHisWholePerNinetyValue() {
-        double minutes = HorizonScorer.expectedMinutes(candidate(855, 10, 0.5));
-
-        assertThat(minutes).isCloseTo(85.5, within(1e-9));
+    void displayedMinutesComeFromTheBlendedExposureRate() {
+        assertThat(HorizonScorer.expectedMinutes(candidate(85.5, 10, 0.5)))
+                .isCloseTo(85.5, within(1e-9));
+        assertThat(HorizonScorer.expectedMinutes(candidate(45, 0, 0.5)))
+                .isCloseTo(45, within(1e-9));
     }
 
     @Test
-    void aRotatedPlayerKeepsAboutHalf() {
-        double minutes = HorizonScorer.expectedMinutes(candidate(450, 10, 0.5));
-
-        assertThat(minutes).isCloseTo(45.0, within(1e-9));
-    }
-
-    @Test
-    void aBodyIsWorthNothingHoweverGoodHisRecordLooks() {
+    void aBodyAndAnUnknownHorizonAreUnscoredRatherThanZeroForecasts() {
         SquadCandidate body = new SquadCandidate(2, "Body", "Body Player", "Ashfield Rovers",
-                "ASH", 2, 40, 0.1, "a", null, 9001, 0, 0, Map.of(),
-                SquadCandidate.Tier.BODY);
+                "ASH", 2, 40, 0.1, "a", null, 9001, 0, Map.of(),
+                SquadCandidate.Tier.BODY, null, null,
+                MinutesModel.Eligibility.UNKNOWN_CURRENT_EVIDENCE);
 
-        assertThat(HorizonScorer.score(body, List.of(2, 2, 2))).isZero();
+        assertThat(HorizonScorer.projection(body, List.of(2, 2, 2)).available()).isFalse();
+        assertThat(HorizonScorer.projection(candidate(90, 10, 0.5), List.of()).available()).isFalse();
     }
 
     @Test
     void anEasyFixtureIsWorthMoreThanAHardOne() {
-        SquadCandidate player = candidate(900, 10, 0.5);
+        SquadCandidate player = candidate(90, 10, 0.5);
 
         double easy = HorizonScorer.score(player, List.of(1));
         double hard = HorizonScorer.score(player, List.of(5));
@@ -68,29 +74,20 @@ class HorizonScorerTest {
     }
 
     @Test
-    void aDoubleGameweekCountsTwiceBecauseItIsTwoFixtures() {
-        SquadCandidate player = candidate(900, 10, 0.5);
+    void sharedPerFixtureComponentsAreNotScaledByMinutesTwice() {
+        SquadCandidate player = candidate(60, 10, 0.5);
+        double shared = ExpectedPoints.perFixture(player.metrics(), player.exposure())
+                .orElseThrow().points();
 
+        assertThat(HorizonScorer.score(player, List.of(3))).isCloseTo(shared, within(1e-9));
+    }
+
+    @Test
+    void eachFixtureContributesOnceToTheExistingCoarseHorizon() {
+        SquadCandidate player = candidate(90, 10, 0.5);
         double single = HorizonScorer.score(player, List.of(3));
         double doubled = HorizonScorer.score(player, List.of(3, 3));
 
         assertThat(doubled).isCloseTo(single * 2, within(1e-9));
-    }
-
-    @Test
-    void aBlankGameweekIsSimplyNoFixtureAndScoresNothing() {
-        assertThat(HorizonScorer.score(candidate(900, 10, 0.5), List.of())).isZero();
-    }
-
-    @Test
-    void aPlayerWhoseTeamPlayedNoFixturesScoresNothingRatherThanDividingByZero() {
-        assertThat(HorizonScorer.expectedMinutes(candidate(300, 0, 0.5))).isZero();
-    }
-
-    @Test
-    void minutesAreCappedAtNinetySoAnExtraTimeArtefactCannotInflateAScore() {
-        // Team fixture counts come from the player's own rows; a mismatch must not produce a
-        // player worth more than a full match.
-        assertThat(HorizonScorer.expectedMinutes(candidate(1000, 10, 0.5))).isEqualTo(90.0);
     }
 }

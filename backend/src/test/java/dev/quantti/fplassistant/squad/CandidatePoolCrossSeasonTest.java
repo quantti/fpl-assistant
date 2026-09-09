@@ -5,6 +5,8 @@ import java.util.List;
 
 import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
 import dev.quantti.fplassistant.tools.ExpectedPoints;
+import dev.quantti.fplassistant.tools.MinutesModel;
+import dev.quantti.fplassistant.tools.RankingMetrics;
 import dev.quantti.fplassistant.tools.SeasonResolver;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -149,7 +151,9 @@ class CandidatePoolCrossSeasonTest {
         SquadCandidate okafor = candidate(BRIDGED);
 
         assertThat(okafor.tier()).isEqualTo(SquadCandidate.Tier.RANKABLE);
-        assertThat(okafor.minutesInWindow()).isEqualTo(270.0);
+        assertThat(okafor.minutesWindow().reason())
+                .isEqualTo(RankingMetrics.WindowReason.PRICE_CAPTURE_STALE);
+        assertThat(okafor.exposure()).isNull();
         assertThat(((Number) okafor.metrics().get("xg90")).doubleValue()).isGreaterThan(0);
     }
 
@@ -193,7 +197,7 @@ class CandidatePoolCrossSeasonTest {
         var resolved = seasonResolver.resolve();
         CandidatePool.Capture capture = pool.latestCapture().orElseThrow();
         return pool.load(capture, seasonResolver.metricSeasons(resolved))
-                .stream()
+                .candidates().stream()
                 .filter(c -> c.elementId() == BRIDGED || c.elementId() == AMBIGUOUS)
                 .toList();
     }
@@ -204,7 +208,7 @@ class CandidatePoolCrossSeasonTest {
      * here, so the blend is 0.3 x 0.25 + 0.7 x 0.4167.
      */
     @Test
-    void twoMatchesThisSeasonBlendAtThirtyPercentInTheMetricsMap() {
+    void aMissingCurrentScheduleCannotTurnCurrentRowsIntoExposureEvidence() {
         jdbc.execute("""
                 INSERT INTO player_fixture_stats (fixture_id, player_id, season_id, gameweek,
                         player_team_id, opponent_team_id, was_home, kickoff_time, minutes,
@@ -220,10 +224,11 @@ class CandidatePoolCrossSeasonTest {
                 .filter(c -> c.elementId() == BRIDGED).findFirst().orElseThrow();
 
         assertThat(okafor.tier()).isEqualTo(SquadCandidate.Tier.RANKABLE);
-        assertThat(okafor.metrics().get("blend_weight")).isEqualTo(0.30);
+        assertThat(okafor.metrics().get("blend_weight")).isEqualTo(0.0);
         assertThat(ExpectedPoints.numeric(okafor.metrics().get("xg90")))
-                .isCloseTo(0.3 * 0.25 + 0.7 * (1.25 * 90 / 270), within(1e-9));
-        // Both seasons' minutes feed expected minutes per fixture: 180 now, 270 last season.
-        assertThat(okafor.minutesInWindow()).isEqualTo(450.0);
+                .isCloseTo(1.25 * 90 / 270, within(1e-9));
+        assertThat(okafor.exposure()).isNull();
+        assertThat(okafor.eligibility())
+                .isEqualTo(MinutesModel.Eligibility.UNKNOWN_CURRENT_EVIDENCE);
     }
 }
