@@ -5,6 +5,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
+import dev.quantti.fplassistant.schedule.HorizonFixtures;
 import dev.quantti.fplassistant.tools.ExpectedPoints;
 import dev.quantti.fplassistant.tools.UkTime;
 
@@ -35,21 +36,25 @@ public final class SquadFormatter {
      * @param projections expected points over the horizon plus whether the projection is known;
      *        the solver receives zero weight for an unavailable projection, but the reply does
      *        not mislabel that absence as a numeric forecast
-     * @param noCandidateWasScoreable true when not one rankable candidate in the whole pool found
-     *        a fixture to score against, so every score is zero and this squad is an arbitrary
-     *        legal fifteen rather than a ranked one
+     * @param noCandidateWasScoreable true when not one rankable candidate in the whole pool had a
+     *        usable projection at all, so every score is zero and this squad is an arbitrary legal
+     *        fifteen rather than a ranked one
+     * @param horizon the editable gameweek window every projection was summed over — named in the
+     *        reply so a blank ("0.00 over GW4–8") cannot be read as an unknown, or the reverse
      */
     public static String format(SolvedSquad solved, SquadConstraints constraints,
                                 String priceProvenance, String metricProvenance,
                                 int excludedForNoRecord, List<SquadCandidate> resolvedIncludes,
                                 List<SquadCandidate> resolvedExcludes,
                                 Map<Integer, HorizonScorer.Projection> projections,
-                                boolean noCandidateWasScoreable, String blendNote) {
+                                boolean noCandidateWasScoreable, String blendNote,
+                                HorizonFixtures.Result horizon) {
         StringBuilder out = new StringBuilder();
         out.append(priceProvenance).append('\n').append(metricProvenance).append('\n');
         if (blendNote != null) {
             out.append(blendNote).append('\n');
         }
+        out.append(horizonLine(horizon)).append('\n');
         out.append('\n');
 
         if (noCandidateWasScoreable) {
@@ -100,14 +105,14 @@ public final class SquadFormatter {
 
         out.append("Starting XI (").append(solved.formation()).append(")\n");
         for (SquadCandidate player : solved.startingXi()) {
-            out.append("  ").append(line(player, projections)).append('\n');
+            out.append("  ").append(line(player, projections, horizon)).append('\n');
         }
 
         out.append("\nBench, in substitution order\n");
         int order = 1;
         for (SquadCandidate player : solved.bench()) {
             String prefix = player.elementType() == 1 ? "  " : "  " + order++ + ". ";
-            out.append(prefix).append(line(player, projections))
+            out.append(prefix).append(line(player, projections, horizon))
                     .append(benchMinutesNote(player)).append('\n');
         }
 
@@ -150,8 +155,33 @@ public final class SquadFormatter {
         };
     }
 
+    /** The editable window as the reply names it, for example {@code GW4–8}. */
+    static String gameweekRange(HorizonFixtures.Result horizon) {
+        return "GW" + horizon.startGameweek() + "–" + horizon.endGameweek();
+    }
+
+    /** An {@code UnknownReason} as prose, the same shape the pick tools print it in. */
+    static String horizonReason(HorizonFixtures.UnknownReason reason) {
+        return reason.name().toLowerCase(Locale.ROOT).replace('_', ' ');
+    }
+
+    private static String horizonLine(HorizonFixtures.Result horizon) {
+        if (horizon.status() != HorizonFixtures.Status.KNOWN) {
+            return "Horizon: unknown (" + horizonReason(horizon.reason())
+                    + "), so no fixture count below is a zero.";
+        }
+        String line = "Horizon: " + gameweekRange(horizon) + " (" + horizon.actualGameweeks()
+                + " calendar gameweek" + (horizon.actualGameweeks() == 1 ? "" : "s") + ")";
+        if (horizon.truncated()) {
+            line += "; " + horizon.requestedGameweeks() + " requested, truncated to "
+                    + horizon.actualGameweeks() + " by the end of the season";
+        }
+        return line + ".";
+    }
+
     private static String line(SquadCandidate player,
-                               Map<Integer, HorizonScorer.Projection> projections) {
+                               Map<Integer, HorizonScorer.Projection> projections,
+                               HorizonFixtures.Result horizon) {
         StringBuilder line = new StringBuilder();
         line.append(POSITION_ABBR[player.elementType()])
                 .append("  ").append(player.webName())
@@ -161,15 +191,7 @@ public final class SquadFormatter {
         if (player.tier() == SquadCandidate.Tier.BODY) {
             line.append(" — bench body, no rankable ability record; unscored");
         } else {
-            if (projection == null || !projection.available()) {
-                line.append(" — xPts n/a (projection unavailable)");
-            } else {
-                line.append(String.format(Locale.ROOT, " — %.2f xPts",
-                        projection.optimizerPoints()));
-                if (projection.partial()) {
-                    line.append(" (partial: one or more expected components unavailable)");
-                }
-            }
+            line.append(" — ").append(expectedPoints(projection, horizon));
             Object hasPrevious = player.metrics().get("blend_has_previous");
             if (hasPrevious != null) {
                 int pct = (int) Math.round(
@@ -211,6 +233,40 @@ public final class SquadFormatter {
             line.append(" — DOUBTFUL: ").append(player.news());
         }
         return line.toString();
+    }
+
+    /**
+     * The one place a projection becomes words, used by XI and bench rows alike. A club that
+     * plays nothing in the window reads as a zero over a named range; a club whose window could
+     * not be established reads as n/a with the schedule's own reason. Collapsing the two into a
+     * single "n/a" — or into a single "0.00" — is exactly the claim this reply must not make.
+     */
+    private static String expectedPoints(HorizonScorer.Projection projection,
+                                         HorizonFixtures.Result horizon) {
+        if (projection == null || (!projection.available() && projection.horizonReason() == null)) {
+            return "xPts n/a (projection unavailable)";
+        }
+        if (!projection.available()) {
+            return "xPts n/a (horizon unknown: "
+                    + horizonReason(projection.horizonReason()) + ")";
+        }
+        if (projection.fixtures() == 0) {
+            // An available projection over no fixtures can only come from a known window, so the
+            // range is always there to name.
+            return "0.00 xPts (no fixtures in " + gameweekRange(horizon) + ")";
+        }
+        StringBuilder points = new StringBuilder(String.format(Locale.ROOT,
+                "%.2f xPts over %d fixture%s", projection.optimizerPoints(),
+                projection.fixtures(), projection.fixtures() == 1 ? "" : "s"));
+        if (projection.neutralFdrLegs() > 0) {
+            points.append(" (FDR n/a for ").append(projection.neutralFdrLegs())
+                    .append(" fixture").append(projection.neutralFdrLegs() == 1 ? "" : "s")
+                    .append(", neutral ").append(HorizonScorer.NEUTRAL_FDR).append(" assumed)");
+        }
+        if (projection.partial()) {
+            points.append(" (partial: one or more expected components unavailable)");
+        }
+        return points.toString();
     }
 
     /**
