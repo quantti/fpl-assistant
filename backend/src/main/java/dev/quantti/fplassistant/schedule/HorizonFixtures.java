@@ -1,11 +1,20 @@
 package dev.quantti.fplassistant.schedule;
 
 import java.time.Instant;
+import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalDouble;
+import java.util.OptionalInt;
+import java.util.Set;
+
+import dev.quantti.fplassistant.tools.UkTime;
 
 /**
  * Pure derivation: each club's countable fixtures in the next editable calendar-gameweek window.
@@ -105,9 +114,12 @@ public final class HorizonFixtures {
             if (known == (reason != null)) {
                 throw new IllegalArgumentException("result status and reason disagree");
             }
-            if (known != (startGameweek != null && endGameweek != null)) {
+            if (known != (startGameweek != null) || known != (endGameweek != null)) {
                 throw new IllegalArgumentException(
                         "a gameweek range exists exactly when the horizon is known");
+            }
+            if (!known && !clubs.isEmpty()) {
+                throw new IllegalArgumentException("an unknown horizon carries no club windows");
             }
         }
 
@@ -130,6 +142,12 @@ public final class HorizonFixtures {
         }
     }
 
+    /** Playing order within a club's window; a counted fixture always has a kickoff. */
+    private static final Comparator<Fixture> IN_PLAYING_ORDER =
+            Comparator.comparingInt(Fixture::gameweek)
+                    .thenComparing(Fixture::kickoff)
+                    .thenComparingInt(Fixture::id);
+
     private HorizonFixtures() {
     }
 
@@ -138,6 +156,136 @@ public final class HorizonFixtures {
      */
     public static Result derive(ScheduleSource.View view, Instant asOf, String captureSeason,
                                 int requestedGameweeks) {
-        throw new UnsupportedOperationException("KAR-35 Task 2");
+        Objects.requireNonNull(view);
+        Objects.requireNonNull(asOf);
+        if (requestedGameweeks < 1) {
+            throw new IllegalArgumentException(
+                    "requestedGameweeks must be at least 1, was " + requestedGameweeks);
+        }
+
+        UnknownReason blocked = viewProblem(view, asOf, captureSeason);
+        if (blocked == null) {
+            OptionalInt editable = firstEditableGameweek(view.events(), asOf);
+            if (editable.isPresent()) {
+                int start = editable.getAsInt();
+                // Long arithmetic: a caller may legitimately ask for more gameweeks than remain,
+                // and Integer.MAX_VALUE must land on gameweek 38 rather than wrap.
+                int end = (int) Math.min((long) start + requestedGameweeks, 39L) - 1;
+                return new Result(asOf, view.snapshot(), requestedGameweeks, Status.KNOWN, null,
+                        start, end, windows(view, asOf, start, end));
+            }
+            blocked = UnknownReason.NO_EDITABLE_GAMEWEEK;
+        }
+        Status status = blocked == UnknownReason.NO_EDITABLE_GAMEWEEK
+                ? Status.NO_EDITABLE_GAMEWEEK : Status.UNKNOWN;
+        return new Result(asOf, view.snapshot(), requestedGameweeks, status, blocked,
+                null, null, Map.of());
+    }
+
+    /** The first thing wrong with the view as a whole, or null when it can carry a horizon. */
+    private static UnknownReason viewProblem(ScheduleSource.View view, Instant asOf,
+                                             String captureSeason) {
+        Optional<ScheduleSource.Snapshot> snapshot = view.snapshot();
+        if (snapshot.isEmpty()) {
+            return UnknownReason.NO_CAPTURE;
+        }
+        LocalDate capturedDay = LocalDate.ofInstant(snapshot.get().capturedAt(), UkTime.zone());
+        if (!ScheduleFreshnessCheck.isFresh(capturedDay, asOf)) {
+            return UnknownReason.CAPTURE_STALE;
+        }
+        if (!view.completeness().complete()) {
+            return UnknownReason.SCHEDULE_INCOMPLETE;
+        }
+        if (!snapshot.get().season().equals(captureSeason)) {
+            return UnknownReason.SEASON_MISMATCH;
+        }
+        return null;
+    }
+
+    /**
+     * The round the window opens at: the lowest event whose captured deadline is strictly after
+     * {@code asOf}. At the deadline itself the round is locked, so it cannot be selected into.
+     */
+    private static OptionalInt firstEditableGameweek(List<ScheduleSource.EventRow> events,
+                                                     Instant asOf) {
+        return events.stream()
+                .filter(event -> event.deadline().isAfter(asOf))
+                .mapToInt(ScheduleSource.EventRow::id)
+                .min();
+    }
+
+    private static Map<Integer, ClubWindow> windows(ScheduleSource.View view, Instant asOf,
+                                                    int start, int end) {
+        // A complete view holds all 38 events, and every assigned gameweek is one of them.
+        Map<Integer, Instant> deadlines = new HashMap<>();
+        for (ScheduleSource.EventRow event : view.events()) {
+            deadlines.put(event.id(), event.deadline());
+        }
+
+        Set<Integer> clubs = new LinkedHashSet<>();
+        Map<Integer, UnknownReason> unknown = new HashMap<>();
+        Map<Integer, List<Fixture>> counted = new HashMap<>();
+        for (ScheduleSource.FixtureRow row : view.fixtures()) {
+            clubs.add(row.homeTeamId());
+            clubs.add(row.awayTeamId());
+            if (row.started() || row.finished()) {
+                continue;                                   // played, whatever its timestamps say
+            }
+            if (row.gameweek() == null) {
+                markUnknown(unknown, row, UnknownReason.UNASSIGNED_FIXTURE);
+                continue;                                   // placement not established anywhere
+            }
+            int gameweek = row.gameweek();
+            if (gameweek < start || gameweek > end) {
+                continue;                                   // outside the window, so irrelevant
+            }
+            UnknownReason unresolved = schedulingProblem(row, asOf, deadlines.get(gameweek));
+            if (unresolved != null) {
+                markUnknown(unknown, row, unresolved);
+                continue;
+            }
+            counted.computeIfAbsent(row.homeTeamId(), id -> new ArrayList<>())
+                    .add(new Fixture(row.id(), gameweek, true, row.awayTeamId(), row.kickoff(),
+                            row.homeDifficulty()));
+            counted.computeIfAbsent(row.awayTeamId(), id -> new ArrayList<>())
+                    .add(new Fixture(row.id(), gameweek, false, row.homeTeamId(), row.kickoff(),
+                            row.awayDifficulty()));
+        }
+
+        Map<Integer, ClubWindow> windows = new HashMap<>();
+        for (int club : clubs) {
+            UnknownReason reason = unknown.get(club);
+            List<Fixture> fixtures = reason != null ? List.of()
+                    : counted.getOrDefault(club, List.of()).stream()
+                            .sorted(IN_PLAYING_ORDER).toList();
+            windows.put(club, new ClubWindow(club, fixtures, reason));
+        }
+        return windows;
+    }
+
+    /**
+     * Why an in-range, outstanding fixture cannot be counted, or null when it can. An unresolved
+     * or already-elapsed kickoff with both flags still false is unknown scheduling, not a future
+     * fixture; a kickoff at or before its own round's deadline contradicts the assignment.
+     */
+    private static UnknownReason schedulingProblem(ScheduleSource.FixtureRow row, Instant asOf,
+                                                   Instant deadline) {
+        if (row.kickoff() == null) {
+            return UnknownReason.UNRESOLVED_KICKOFF;
+        }
+        if (!row.kickoff().isAfter(asOf)) {
+            return UnknownReason.ELAPSED_KICKOFF;
+        }
+        if (!row.kickoff().isAfter(deadline)) {
+            return UnknownReason.KICKOFF_BEFORE_DEADLINE;
+        }
+        return null;
+    }
+
+    /** The first reason a club met wins; it keeps no fixtures either way. */
+    private static void markUnknown(Map<Integer, UnknownReason> unknown,
+                                    ScheduleSource.FixtureRow row, UnknownReason reason) {
+        unknown.putIfAbsent(row.homeTeamId(), reason);
+        unknown.putIfAbsent(row.awayTeamId(), reason);
     }
 }
