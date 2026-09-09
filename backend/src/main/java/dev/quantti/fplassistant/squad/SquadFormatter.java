@@ -33,6 +33,9 @@ public final class SquadFormatter {
      *        before this method ever runs, so the two lists are always the same length
      * @param resolvedExcludes {@code mustExclude} resolved the same way, index-parallel with
      *        {@code constraints.mustExclude()}
+     * @param scheduleProvenance the schedule capture's own source line — the third of the three,
+     *        printed under the price and metric lines and carrying the changeover clarification
+     *        when the capture and the metric season are not the same season
      * @param projections expected points over the horizon plus whether the projection is known;
      *        the solver receives zero weight for an unavailable projection, but the reply does
      *        not mislabel that absence as a numeric forecast
@@ -44,6 +47,7 @@ public final class SquadFormatter {
      */
     public static String format(SolvedSquad solved, SquadConstraints constraints,
                                 String priceProvenance, String metricProvenance,
+                                String scheduleProvenance,
                                 int excludedForNoRecord, List<SquadCandidate> resolvedIncludes,
                                 List<SquadCandidate> resolvedExcludes,
                                 Map<Integer, HorizonScorer.Projection> projections,
@@ -51,6 +55,9 @@ public final class SquadFormatter {
                                 HorizonFixtures.Result horizon) {
         StringBuilder out = new StringBuilder();
         out.append(priceProvenance).append('\n').append(metricProvenance).append('\n');
+        if (scheduleProvenance != null) {
+            out.append(scheduleProvenance).append('\n');
+        }
         if (blendNote != null) {
             out.append(blendNote).append('\n');
         }

@@ -68,8 +68,8 @@ class SquadFormatterTest {
                                  List<SquadCandidate> resolvedIncludes,
                                  List<SquadCandidate> resolvedExcludes) {
         return SquadFormatter.format(solved, constraints, "PRICE PROVENANCE",
-                "METRIC PROVENANCE", 12, resolvedIncludes, resolvedExcludes, Map.of(),
-                false, null, horizon());
+                "METRIC PROVENANCE", "SCHEDULE PROVENANCE", 12, resolvedIncludes,
+                resolvedExcludes, Map.of(), false, null, horizon());
     }
 
     /** The window every projection below was summed over: GW4-8, all five gameweeks asked for. */
@@ -77,11 +77,16 @@ class SquadFormatterTest {
         return SquadCandidateTestData.horizonForEveryClubIn(solved().squad());
     }
 
+    /** Three sources now: the daily price capture, the metric season and the schedule capture. */
     @Test
-    void carriesBothProvenanceLines() {
+    void carriesAllThreeProvenanceLinesInSourceOrder() {
         String output = format(solved(), constraints());
 
-        assertThat(output).contains("PRICE PROVENANCE").contains("METRIC PROVENANCE");
+        assertThat(output).contains("PRICE PROVENANCE").contains("METRIC PROVENANCE")
+                .contains("SCHEDULE PROVENANCE");
+        assertThat(output.indexOf("PRICE PROVENANCE")).isLessThan(output.indexOf("METRIC PROVENANCE"));
+        assertThat(output.indexOf("METRIC PROVENANCE"))
+                .isLessThan(output.indexOf("SCHEDULE PROVENANCE"));
     }
 
     @Test
@@ -293,8 +298,8 @@ class SquadFormatterTest {
                 2, new HorizonScorer.Projection(1.2, true, false, 1, 0, null));
 
         String output = SquadFormatter.format(solved(), constraints(), "PRICE PROVENANCE",
-                "METRIC PROVENANCE", 12, resolvedMustInclude(), List.of(), projections,
-                false, null, horizon());
+                "METRIC PROVENANCE", "SCHEDULE PROVENANCE", 12, resolvedMustInclude(),
+                List.of(), projections, false, null, horizon());
 
         // Name1 (element id 1) is in the starting XI.
         assertThat(output).contains("4.50 xPts over 2 fixtures");
@@ -309,8 +314,8 @@ class SquadFormatterTest {
                 1, new HorizonScorer.Projection(4.5, true, true, 2, 0, null));
 
         String output = SquadFormatter.format(solved(), constraints(), "PRICE PROVENANCE",
-                "METRIC PROVENANCE", 12, resolvedMustInclude(), List.of(), projections,
-                false, null, horizon());
+                "METRIC PROVENANCE", "SCHEDULE PROVENANCE", 12, resolvedMustInclude(),
+                List.of(), projections, false, null, horizon());
 
         assertThat(output).contains("4.50 xPts")
                 .contains("partial: one or more expected components unavailable");
@@ -320,8 +325,8 @@ class SquadFormatterTest {
     void warnsWhenNoCandidateCouldBeScored() {
         // M4: an unscoreable horizon must be disclosed, not silently presented as a ranked squad.
         String output = SquadFormatter.format(solved(), constraints(), "PRICE PROVENANCE",
-                "METRIC PROVENANCE", 12, resolvedMustInclude(), List.of(), Map.of(),
-                true, null, horizon());
+                "METRIC PROVENANCE", "SCHEDULE PROVENANCE", 12, resolvedMustInclude(),
+                List.of(), Map.of(), true, null, horizon());
 
         assertThat(output).contains("n/a").containsIgnoringCase("unranked");
     }
@@ -336,8 +341,8 @@ class SquadFormatterTest {
     private static String withProjections(Map<Integer, HorizonScorer.Projection> projections,
                                           HorizonFixtures.Result horizon) {
         return SquadFormatter.format(solved(), constraints(), "PRICE PROVENANCE",
-                "METRIC PROVENANCE", 12, resolvedMustInclude(), List.of(), projections,
-                false, null, horizon);
+                "METRIC PROVENANCE", "SCHEDULE PROVENANCE", 12, resolvedMustInclude(),
+                List.of(), projections, false, null, horizon);
     }
 
     @Test

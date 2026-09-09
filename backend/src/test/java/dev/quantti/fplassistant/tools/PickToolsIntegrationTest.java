@@ -205,6 +205,43 @@ class PickToolsIntegrationTest {
                 .doesNotContain(" Injured (").doesNotContain("Pts/90");
     }
 
+    /**
+     * Three sources, in source order, and the schedule's evidence sentence carrying the exact
+     * capture instant, the instant it was judged at and the window it produced. Both tools: a
+     * captain list rests on the same schedule a differential list does.
+     */
+    @Test
+    void bothRepliesAttributeThePriceMetricAndScheduleSources() {
+        for (String result : List.of(tools.getDifferentialPicks("any", 10, 5),
+                tools.getCaptainCandidates(5))) {
+            assertThat(result)
+                    .contains("Data source: FPL live prices for season " + SEASON)
+                    .contains("Data source: season " + SEASON)
+                    .contains("Data source: FPL's own gameweek and fixture list for season "
+                            + SEASON + ", captured today")
+                    .contains("complete FPL schedule capture at " + CAPTURED_AT
+                            + ", judged as of " + AS_OF)
+                    .contains("Editable window GW4–8 (5 of the 5 calendar gameweeks asked for)")
+                    .contains("Removed by the schedule alone: 0 with no fixture in the window,"
+                            + " 0 whose club window could not be read");
+            assertThat(result.indexOf("Data source: season " + SEASON))
+                    .isLessThan(result.indexOf("Data source: FPL's own gameweek"));
+        }
+    }
+
+    /** The one reply with no ranked player still names all three sources it consulted. */
+    @Test
+    void aRefusalWithNoQualifyingPlayerStillNamesAllThreeSources() {
+        String result = tools.getDifferentialPicks("any", 0, 5);
+
+        assertThat(result).contains("No differentials qualify")
+                .contains("Data source: FPL live prices for season " + SEASON)
+                .contains("Data source: season " + SEASON)
+                .contains("Data source: FPL's own gameweek and fixture list for season " + SEASON)
+                .contains("complete FPL schedule capture at " + CAPTURED_AT
+                        + ", judged as of " + AS_OF);
+    }
+
     @Test
     void captainListContainsAttackersOnlyAndExcludesDoubtfulStar() {
         String result = tools.getCaptainCandidates(5);
@@ -341,6 +378,8 @@ class PickToolsIntegrationTest {
         assertThat(result).contains("No differentials qualify")
                 .contains("No editable gameweek remains")
                 .contains("unknown horizon 4")
+                .contains("Data source: FPL's own gameweek and fixture list for season " + SEASON)
+                .contains("No editable window (no editable gameweek)")
                 .doesNotContain(" Reliable (").doesNotContain("horizon Score");
     }
 
