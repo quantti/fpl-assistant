@@ -1,5 +1,6 @@
 package dev.quantti.fplassistant.price;
 
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
@@ -89,6 +90,14 @@ public class DailyPriceFreshnessCheck {
      */
     static boolean isStale(LocalDate latest, LocalDateTime nowUk) {
         return latest.isBefore(expectedDate(nowUk));
+    }
+
+    /**
+     * Strict predicate for selection evidence. Unlike the alert's lower-bound check, this
+     * rejects both future captures and a row dated today before today's capture is due.
+     */
+    public static boolean isFresh(LocalDate captured, Instant asOf) {
+        return captured != null && captured.equals(expectedDate(LocalDateTime.ofInstant(asOf, UK)));
     }
 
     static LocalDate expectedDate(LocalDateTime nowUk) {

@@ -23,9 +23,8 @@ class SquadSolverRulesTest {
     private static final int[] QUOTAS = Feasibility.POSITION_QUOTAS;
 
     private static SquadCandidate player(int id, String club, int type, int cost) {
-        return new SquadCandidate(id, "P" + id, "Player " + id, club, club.substring(0, 3),
-                type, cost, 5.0, "a", null, club.hashCode(), 900, 10,
-                Map.of("element_type", type), SquadCandidate.Tier.RANKABLE);
+        return SquadCandidateTestData.eligible(id, "P" + id, club, type, cost, 5.0,
+                Map.of("element_type", type));
     }
 
     /** Twelve clubs, four positions, four price points — always solvable inside £100.0m. */
@@ -142,9 +141,7 @@ class SquadSolverRulesTest {
         // came loose, which is what lets this test actually fail on that regression.
         int id = 9000;
         for (int type = 1; type <= 4; type++) {
-            pool.add(new SquadCandidate(id++, "Body" + type, "Body " + type, "Bodytown", "BOD",
-                    type, 1, 0.1, "a", null, 999, 0, 0, Map.of(),
-                    SquadCandidate.Tier.BODY));
+            pool.add(SquadCandidateTestData.body(id++, "Body" + type, "Bodytown", type, 1));
         }
         Map<Integer, Double> scores = scores(pool, random);
         pool.stream().filter(c -> c.tier() == SquadCandidate.Tier.BODY)
@@ -158,6 +155,22 @@ class SquadSolverRulesTest {
         assertThat(solved.startingXi()).as("but never started")
                 .noneMatch(c -> c.tier() == SquadCandidate.Tier.BODY);
         assertEveryRule(solved, constraints.budget());
+    }
+
+    @Test
+    void directSolverEntryCannotStartAnIneligibleRankablePlayer() {
+        Random random = new Random(17);
+        List<SquadCandidate> pool = pool(random);
+        SquadCandidate risky = SquadCandidateTestData.ineligible(pool.get(5),
+                dev.quantti.fplassistant.tools.MinutesModel.Eligibility.MINUTES_RISK);
+        pool.set(5, risky);
+        Map<Integer, Double> scores = scores(pool, random);
+        scores.put(risky.elementId(), 10_000.0);
+
+        SolvedSquad solved = SquadSolver.solve(pool, scores, plain(), List.of()).orElseThrow();
+
+        assertThat(solved.startingXi()).doesNotContain(risky);
+        assertEveryRule(solved, 1000);
     }
 
     @Test
