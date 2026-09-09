@@ -31,6 +31,14 @@ public final class RankingSeed {
         return FIXTURE_BASE + (homeTeam - team(1)) * 20 + (awayTeam - team(1));
     }
 
+    /** The id of the fixture club {@code club} plays in gameweek {@code gameweek} of these rows. */
+    public static int fixtureFor(List<ScheduleSource.FixtureRow> rows, int club, int gameweek) {
+        return rows.stream()
+                .filter(row -> row.gameweek() != null && row.gameweek() == gameweek)
+                .filter(row -> row.homeTeamId() == club || row.awayTeamId() == club)
+                .mapToInt(ScheduleSource.FixtureRow::id).findFirst().orElseThrow();
+    }
+
     public static List<ScheduleSource.EventRow> events(Instant capturedAt, Instant firstDeadline) {
         return IntStream.rangeClosed(1, 38)
                 .mapToObj(id -> new ScheduleSource.EventRow(id,
