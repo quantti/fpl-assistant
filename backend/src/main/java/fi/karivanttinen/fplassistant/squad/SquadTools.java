@@ -8,8 +8,11 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import fi.karivanttinen.fplassistant.tools.DailyPriceSource;
+import fi.karivanttinen.fplassistant.schedule.HorizonFixtures;
 import fi.karivanttinen.fplassistant.schedule.ScheduleFreshnessCheck;
 import fi.karivanttinen.fplassistant.tools.MetricSeasons;
 import fi.karivanttinen.fplassistant.tools.FplTool;
@@ -44,12 +47,10 @@ public class SquadTools implements FplTool {
     private static final Logger log = LoggerFactory.getLogger(SquadTools.class);
 
     private final CandidatePool pool;
-    private final HorizonScorer scorer;
     private final SeasonResolver seasonResolver;
 
-    public SquadTools(CandidatePool pool, HorizonScorer scorer, SeasonResolver seasonResolver) {
+    public SquadTools(CandidatePool pool, SeasonResolver seasonResolver) {
         this.pool = pool;
-        this.scorer = scorer;
         this.seasonResolver = seasonResolver;
     }
 
@@ -63,7 +64,11 @@ public class SquadTools implements FplTool {
             clubQuota accepts "Arsenal:3", "Arsenal:>=2" or "Arsenal:<=2". Player lists are
             comma-separated. budget is millions, default 100.0; for a wildcard use squad value
             plus bank from getMyTeam. nextN defaults to 5. formation may force "3-4-3".
-            Every XI player must pass the non-relaxable consistent observed 60+ history rule.
+            Every XI player must pass the non-relaxable consistent observed 60+ history rule and
+            play for a club with at least one fixture in the editable window of the next nextN
+            calendar gameweeks, counted from the next deadline in the captured schedule. A club
+            blanked across that window, or one whose schedule is unresolved, can be bought for
+            the bench only; its rows print a real zero and an n/a respectively, never each other.
             The selected daily capture must be fresh and say available ('a'), with valid
             position/club; it, the current metric season and fresh complete schedule must be the
             same season with coherent identity. The complete current-club window includes every
@@ -80,8 +85,10 @@ public class SquadTools implements FplTool {
             waive it.
             Ranking uses shared expected points per fixture: appearance and 60+ exposure, attack
             scaled by expected minutes, 60+-conditional clean sheets and short/long DefCon, with
-            coarse captured-schedule FDR. Unknown projections have zero optimiser weight but are
-            printed n/a/unscored, never as a zero forecast. NOT ranked on form. The reply gives
+            coarse captured-schedule FDR, summed over the club's fixtures in that same window —
+            a double gameweek adds one, a blank removes one. A fixture with no published FDR is
+            scored at a neutral 3 and labelled. Unknown projections have zero optimiser weight but
+            are printed n/a/unscored, never as a zero forecast. NOT ranked on form. The reply gives
             price, metric, schedule and observed-window evidence; relay a refusal as written.
             """)
     public String buildSquad(String mustInclude, String mustExclude, String clubQuota,
@@ -154,36 +161,42 @@ public class SquadTools implements FplTool {
                 excludedPlayers.add(resolved.player());
             }
 
-            Optional<String> refusal =
-                    Feasibility.check(candidates, constraints, pinned, excludedPlayers);
+            // One derivation for the whole call, shared by scoring, the XI gate and the reply —
+            // the same call PickTools makes, so the two tools cannot disagree about which
+            // fixtures a club plays. The capture's own season governs, not the resolver's.
+            HorizonFixtures.Result horizon = HorizonFixtures.derive(loaded.snapshot().schedule(),
+                    loaded.snapshot().asOf(), capture.season(), constraints.horizon());
+            Set<Integer> playableClubs = playableClubs(horizon);
+
+            Optional<String> refusal = Feasibility.check(candidates, constraints, pinned,
+                    excludedPlayers, playableClubs, horizon);
             if (refusal.isPresent()) {
                 return evidenceHeader + "\n" + refusal.get();
             }
 
-            Map<Integer, List<Integer>> fixtures = scorer.fixtureDifficulties(
-                    loaded.snapshot().schedule(), loaded.snapshot().asOf(), constraints.horizon());
             Map<Integer, Double> scores = new HashMap<>();
             Map<Integer, HorizonScorer.Projection> projections = new HashMap<>();
-            // Projection and role evidence share one captured FPL schedule. If the horizon has no
-            // usable fixtures, zero remains only an optimiser weight; the reply prints n/a.
-            boolean anyCandidateHasFixtures = false;
+            // Projection and role evidence share one captured FPL schedule. An unavailable
+            // projection weighs zero in the optimiser; the reply prints n/a, and a club that is
+            // known to play nothing prints a real zero over the named range instead.
+            boolean anyCandidateWasScoreable = false;
             for (SquadCandidate candidate : candidates) {
-                List<Integer> teamFixtures = fixtures.getOrDefault(candidate.teamId(), List.of());
                 HorizonScorer.Projection projection =
-                        HorizonScorer.projection(candidate, teamFixtures);
+                        HorizonScorer.projection(candidate, horizon.club(candidate.teamId()));
                 projections.put(candidate.elementId(), projection);
                 scores.put(candidate.elementId(), projection.optimizerPoints());
                 if (projection.available()) {
-                    anyCandidateHasFixtures = true;
+                    anyCandidateWasScoreable = true;
                 }
             }
 
             Optional<SolvedSquad> solved = SquadSolver.solveWithDefaults(
-                    candidates, scores, constraints, pinned, excludedPlayers);
+                    candidates, scores, constraints, pinned, excludedPlayers, playableClubs);
             if (solved.isEmpty()) {
                 return evidenceHeader + "\nThose constraints cannot all be met while every starter"
-                        + " also satisfies the consistent observed 60+ history restriction. Pins"
-                        + " can occupy the bench but cannot waive that XI rule; review the"
+                        + " also satisfies the consistent observed 60+ history restriction and"
+                        + " plays for a club with at least one fixture in the horizon. Pins can"
+                        + " occupy the bench but cannot waive either XI rule; review the"
                         + " formation, exclusions, club quotas and budget together.";
             }
 
@@ -207,12 +220,24 @@ public class SquadTools implements FplTool {
             return SquadFormatter.format(solved.get(), constraints,
                     priceProvenance, metricProvenance,
                     excludedForNoRecord, pinned, excludedPlayers, projections,
-                    !anyCandidateHasFixtures, blendNote);
+                    !anyCandidateWasScoreable, blendNote, horizon);
         } catch (DataAccessException e) {
             log.error("buildSquad failed", e);
             return "Squad data is temporarily unavailable (database error)."
                     + " Tell the user and suggest asking again shortly.";
         }
+    }
+
+    /**
+     * The clubs a starter can be picked from: a known window holding at least one countable
+     * fixture. Empty whenever the horizon itself is not known, which is why no entry path is
+     * allowed to default it — "all clubs" would assert a schedule nobody could read.
+     */
+    private static Set<Integer> playableClubs(HorizonFixtures.Result horizon) {
+        return horizon.clubs().values().stream()
+                .filter(window -> window.known() && window.count() >= 1)
+                .map(HorizonFixtures.ClubWindow::teamId)
+                .collect(Collectors.toUnmodifiableSet());
     }
 
     private static String scheduleEvidence(RankingMetrics.Snapshot snapshot) {
