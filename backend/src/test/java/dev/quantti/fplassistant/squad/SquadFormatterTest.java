@@ -4,6 +4,7 @@ import java.util.List;
 import java.util.Map;
 
 import dev.quantti.fplassistant.schedule.HorizonFixtures;
+import dev.quantti.fplassistant.tools.DataAge;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -87,6 +88,21 @@ class SquadFormatterTest {
         assertThat(output.indexOf("PRICE PROVENANCE")).isLessThan(output.indexOf("METRIC PROVENANCE"));
         assertThat(output.indexOf("METRIC PROVENANCE"))
                 .isLessThan(output.indexOf("SCHEDULE PROVENANCE"));
+    }
+
+    /** The PFS core-sync time is unknowable, so every solved squad says so before its evidence. */
+    @Test
+    void theMetricRefreshNoticeFollowsTheSourceLinesBeforeAnyEvidence() {
+        String output = SquadFormatter.format(solved(), constraints(), "PRICE PROVENANCE",
+                "METRIC PROVENANCE", "SCHEDULE PROVENANCE", 12, resolvedMustInclude(),
+                List.of(), Map.of(), false, "BLEND NOTE", horizon());
+
+        assertThat(output.lines().limit(5).toList()).containsExactly(
+                "PRICE PROVENANCE", "METRIC PROVENANCE", "SCHEDULE PROVENANCE",
+                DataAge.METRIC_REFRESH, "BLEND NOTE");
+        assertThat(output.indexOf(DataAge.METRIC_REFRESH))
+                .isLessThan(output.indexOf("Horizon:"))
+                .isLessThan(output.indexOf("Starting XI"));
     }
 
     @Test
