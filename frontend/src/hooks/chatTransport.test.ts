@@ -264,7 +264,9 @@ describe('the SSE reader loop', () => {
   it('normalises a CRLF split across chunks so a trailing done still completes', async () => {
     const frameText = 'event: done\r\ndata: \r\n\r\n'
     const bytes = encode(frameText)
-    const splitAt = frameText.indexOf('\r\n') + 1 // split between the \r and \n of the first pair
+    // Split inside the closing \r\n\r\n, leaving "...\n\r" in one chunk and "\n" in the next —
+    // per-chunk normalisation would leave a stray \r\n\n that never forms a \n\n separator.
+    const splitAt = frameText.length - 1
     apiFetchMock.mockResolvedValue(chunks(bytes.slice(0, splitAt), bytes.slice(splitAt)))
 
     const outcome = await sendChatTurn(request(), new AbortController().signal, events())
@@ -372,7 +374,7 @@ describe('abort handling', () => {
     await expect(outcomePromise).resolves.toEqual({ kind: 'aborted' })
   })
 
-  it('returns aborted when the signal fires during the read, leaking no partial content', async () => {
+  it('returns aborted when the signal fires during the read', async () => {
     const controller = new AbortController()
     let delivered = false
     let rejectRead: ((err: unknown) => void) | undefined
