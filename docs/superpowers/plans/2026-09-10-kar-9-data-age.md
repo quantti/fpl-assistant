@@ -1,6 +1,6 @@
 # KAR-9 — show the age and limits of stored statistics
 
-**PROGRESS:** Implementation Task 2/7 done.
+**PROGRESS:** Implementation Task 3/7 done.
 
 Issue: [KAR-9](https://linear.app/quantti/issue/KAR-9/surface-data-age-in-tool-output-tapas-tables-go-stale-silently).
 Checked in Linear on 2026-09-10: Todo, High (2), no blockers. There are no Urgent Todo tickets;
