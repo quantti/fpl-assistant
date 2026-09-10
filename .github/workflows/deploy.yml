@@ -101,6 +101,21 @@ jobs:
         working-directory: backend
         run: ./gradlew test
 
+      # KAR-42: CI has shown an intermittent ConcurrentModificationException with no retained
+      # evidence to diagnose it from. Upload on failure too (always(), not just success), without
+      # touching the job's pass/fail status: a missing-report warning must never be mistaken for
+      # the original test failure.
+      - name: Upload backend test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: backend-test-results
+          path: |
+            backend/build/test-results/test/**
+            backend/build/reports/tests/test/**
+            backend/build/diagnostics/kar-42/**
+          if-no-files-found: warn
+
   deploy:
     needs: test
     if: github.event_name != 'pull_request'
