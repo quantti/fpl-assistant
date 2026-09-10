@@ -7,6 +7,9 @@ interface Props {
   disabled: boolean
 }
 
+// Must match MAX_CONTENT_CHARS in ChatController.java (backend/.../chat/ChatController.java).
+const MAX_MESSAGE_CHARS = 4000
+
 export default function MessageInput({ onSubmit, disabled }: Props) {
   const [value, setValue] = useState('')
 
@@ -38,6 +41,7 @@ export default function MessageInput({ onSubmit, disabled }: Props) {
         autosize
         minRows={1}
         maxRows={5}
+        maxLength={MAX_MESSAGE_CHARS}
       />
       <ActionIcon
         size="lg"
