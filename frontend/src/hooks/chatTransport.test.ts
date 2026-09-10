@@ -265,7 +265,7 @@ describe('the SSE reader loop', () => {
     const frameText = 'event: done\r\ndata: \r\n\r\n'
     const bytes = encode(frameText)
     // Split inside the closing \r\n\r\n, leaving "...\n\r" in one chunk and "\n" in the next —
-    // per-chunk normalisation would leave a stray \r\n\n that never forms a \n\n separator.
+    // per-chunk normalisation would leave a stray \n\r\n that never forms a \n\n separator.
     const splitAt = frameText.length - 1
     apiFetchMock.mockResolvedValue(chunks(bytes.slice(0, splitAt), bytes.slice(splitAt)))
 

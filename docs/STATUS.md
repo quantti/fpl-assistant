@@ -3872,3 +3872,19 @@ probe updates.
 
 **Follow-up.** [KAR-51](https://linear.app/quantti/issue/KAR-51): a small test-profile Hikari pool,
 because the full suite runs close to the test database's `max_connections = 100`.
+
+## Chat errors name their cause (KAR-8, 2026-09-10)
+
+Plan: `docs/superpowers/plans/2026-09-09-kar-8-chat-errors.md`. A chat failure now shows one of
+five messages naming its cause instead of one generic sentence: `UNREACHABLE` (fetch rejects,
+not aborted), `UNAVAILABLE(status)` (HTTP 5xx), `REJECTED(status)` (other non-2xx besides
+401/404/429), `GENERATION_FAILED` (a complete backend `event: error`, whatever its data — the
+backend text is now `ChatController.GENERATION_FAILED`), and `INTERRUPTED` (EOF, a rejected
+read, or `done` arriving only as an undelimited trailing fragment before a complete `done`
+frame). 401/404/429 keep their existing behaviour. The HTTP/SSE reader moved out of `useChat`
+into `frontend/src/hooks/chatTransport.ts` (`sendChatTurn`, 26 vitest cases); the hook's public
+API is unchanged. Browser-checked: the dev proxy against a dead backend answers 502, which maps
+to `UNAVAILABLE(502)`. Left to the owner, no headless equivalent exists: dev server stopped
+mid-page (`UNREACHABLE`) and backend killed mid-answer (`INTERRUPTED`). Out of scope: a fetch
+with no timeout, a stale turn's `finally` clearing a newer turn's `isStreaming`, malformed token
+frames, and a split CRLF across chunks.
