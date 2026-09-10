@@ -39,7 +39,7 @@ export const GONE =
   + 'longer part of it — your next message starts a new conversation, without them.'
 
 /** Retry-After in human terms. Empty when the header is missing — a suspended account has no when. */
-export function waitFor(seconds: number): string {
+function waitFor(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds <= 0) return ''
   const hours = seconds / 3600
   if (seconds < 90) return `Try again in ${plural(Math.ceil(seconds), 'second')}.`
