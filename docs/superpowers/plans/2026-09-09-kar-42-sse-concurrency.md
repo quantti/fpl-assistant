@@ -1,6 +1,6 @@
 # KAR-42 — diagnose and fix the intermittent chat SSE concurrency failure
 
-**PROGRESS:** Planning complete; implementation Task 0/4 done. Repair is gated on Task 2's root-cause evidence.
+**PROGRESS:** Task 2/4 done; root cause: `HeaderWriterFilter` writes security headers from the request thread's `finally` while the MVC executor's first SSE commit writes them too.
 
 Existing issue: [KAR-42](https://linear.app/quantti/issue/KAR-42/chatcontrollertest-hit-a-concurrentmodificationexception-inside-the).
 Checked 2026-09-09: Backlog, Low (4). No duplicate was created and no priority/status was changed.
@@ -128,6 +128,52 @@ Record in a short outcome block:
 Inspect downstream converter/response/header state as well as emitter buffers. If the bounded
 investigation cannot establish the cause, stop and return the findings and next precise evidence
 needed. Leave KAR-42 open; do not select a scheduler fix merely because ordinary reruns are green.
+
+### Task 2 outcome
+
+Root-cause gate passed. Versions: JDK 25.0.4 (same patch as CI), Spring Framework 7.0.8, Spring
+Security 7.1.0. Line mappings were checked against those exact sources.
+
+- **Cause.** Spring Security's `HeaderWriterFilter` defers header writing by default, so it writes
+  the security headers twice on the same response. Nothing orders the two writes. (1) On the MVC
+  executor thread, the first SSE flush commits the response, and `HeaderWriterResponse.onResponseCommitted`
+  writes them (`DefaultSseEmitterHandler.send` → `ServletServerHttpResponse.flush` →
+  `OnCommittedResponseWrapper.flushBuffer`). (2) On the request thread, `doHeadersAfter`'s `finally`
+  (`HeaderWriterFilter.java:93`) writes them while the thread unwinds after `startAsync`. Its
+  `disableOnCommitted` guard is a plain field. The window opens only when `ResponseBodyEmitter.initialize`
+  finds no queued events, so the executor thread does the first commit instead of the request thread.
+- **Collection and failing operation.** The collection is `MockHttpServletResponse.headers`
+  (`LinkedCaseInsensitiveMap` over a `LinkedHashMap`). The call chain is
+  `doAddHeaderValue:788` → `LinkedCaseInsensitiveMap.computeIfAbsent:235` →
+  `HashMap.computeIfAbsent:1230`, and the exception is that method's `mc != modCount` check.
+  Emitter buffers are ruled out: `earlySendAttempts` is only touched under `writeLock`, and the
+  converters write to a per-emitter header copy (`StreamingServletServerHttpResponse`).
+- **Stacks and threads.** Both CI signatures were reproduced with complete chains. The threads are
+  the executor `task-N` (Boot `ThreadPoolTaskExecutor`, core 8, recorded in
+  `build/diagnostics/kar-42/mvc-async-executor.txt`) and the request thread.
+  - On `task-N`, CME → `IllegalStateException` at `ResponseBodyEmitter:259` → `ServletException`
+    on the async dispatch. This is CI case 1.
+  - On the request thread, the CME comes from `doHeadersAfter:93` → `XXssProtectionHeaderWriter`
+    and leaves `perform` directly under `WebClientRequestException`. This is CI case 2.
+  - Evidence: a temporary barrier-released run hit the genuine CME in 5 of 40 attempts. That run
+    was not deterministic, so it is not committed. Its logs are kept under
+    `build/diagnostics/kar-42/race-run-1/`.
+- **Ordering comparison.** `ChatSseLifecycleTest` runs 12 cases: 2 scenarios × 3 orderings × 2
+  transports (MockMvc, Tomcat).
+  - `EARLY_QUEUED` and `TERMINAL_DURING_DISPATCH` pass on both transports. In these orderings
+    `initialize` commits on the request thread, so the `finally` write is skipped. The terminal
+    flush comes before `postProcess`, and the async dispatch runs under the `WebAsyncManager`
+    monitor after it.
+  - `FIRST_FLUSH_DURING_UNWIND` records the overlap on both transports: the request thread writes
+    the same six headers while the emitter thread is inside its first commit.
+  - The race is therefore not MockMvc-only. Tomcat's `MimeHeaders` has no fail-fast check, so there
+    the same interleaving goes silent instead of throwing.
+- **Regression.** The four `FIRST_FLUSH_DURING_UNWIND` cases are committed enabled and red (reports
+  in `build/diagnostics/kar-42/red-run-2/`). The probe pauses the emitter before it delegates, so
+  those cases fail on the recorded overlap, never on a manufactured CME. The other eight are green.
+- **For Task 3.** This is the framework row, reached through this app's `SecurityConfig` defaults.
+  First look for an upstream Spring Security issue or fix. Then compare that with a change at the
+  `SecurityConfig` boundary, and verify whichever is chosen with these cases.
 
 ## Task 3 — repair only the demonstrated boundary
 
