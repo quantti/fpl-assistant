@@ -72,6 +72,8 @@ class PickToolsCrossSeasonTest {
         String result = tools.getCaptainCandidates(5);
 
         assertThat(result).contains("Schedule evidence: no FPL schedule capture")
+                .containsSubsequence("Data source: no FPL gameweek and fixture capture",
+                        DataAge.METRIC_REFRESH, "Schedule evidence:")
                 .contains("No captain candidates qualify")
                 .contains("unknown current evidence 1")
                 .doesNotContain(" OldRegular (")
@@ -137,6 +139,10 @@ class PickToolsCrossSeasonTest {
                 .contains("The schedule line, like the price line, describes the season being"
                         + " played: the fixtures every Score is totalled over come from that"
                         + " capture, never from the metric season.");
+        assertThat(result)
+                .as("the notice follows the clarification and precedes the evidence")
+                .containsSubsequence("never from the metric season.", DataAge.METRIC_REFRESH,
+                        "Schedule evidence:");
         assertThat(result)
                 .contains("No differentials qualify in " + CURRENT)
                 .doesNotContain(" OldRegular (");

@@ -121,6 +121,8 @@ class PickToolsIntegrationTest {
                 + " AND element_id BETWEEN ? AND ?", SEASON, FIRST_ID, LAST_ID);
         RankingSeed.cleanSchedule(jdbc, scheduleSource.gameweekTable(),
                 scheduleSource.fixtureTable(), SEASON);
+        jdbc.update("DELETE FROM fixture WHERE season_id = ? AND id BETWEEN ? AND ?",
+                SEASON_ID, RankingSeed.FIXTURE_BASE, RankingSeed.FIXTURE_BASE + 999);
         jdbc.update("DELETE FROM gameweek WHERE season_id = ? AND id = ?",
                 SEASON_ID, PRESENCE_GAMEWEEK);
         jdbc.update("DELETE FROM team WHERE season_id = ? AND id BETWEEN ? AND ?",
@@ -226,6 +228,17 @@ class PickToolsIntegrationTest {
                             + " 0 whose club window could not be read");
             assertThat(result.indexOf("Data source: season " + SEASON))
                     .isLessThan(result.indexOf("Data source: FPL's own gameweek"));
+            assertThat(result.lines().limit(4).toList())
+                    .as("three contiguous source lines, then the unknown-refresh notice")
+                    .satisfiesExactly(
+                            line -> assertThat(line).startsWith("Data source: FPL live prices"),
+                            line -> assertThat(line).startsWith("Data source: season " + SEASON),
+                            line -> assertThat(line).startsWith("Data source: FPL's own gameweek"),
+                            line -> assertThat(line).isEqualTo(DataAge.METRIC_REFRESH));
+            assertThat(result.indexOf(DataAge.METRIC_REFRESH))
+                    .as("before the schedule evidence and every numeric row")
+                    .isLessThan(result.indexOf("Schedule evidence:"))
+                    .isLessThan(result.indexOf("horizon Score"));
         }
     }
 
@@ -239,7 +252,40 @@ class PickToolsIntegrationTest {
                 .contains("Data source: season " + SEASON)
                 .contains("Data source: FPL's own gameweek and fixture list for season " + SEASON)
                 .contains("complete FPL schedule capture at " + CAPTURED_AT
-                        + ", judged as of " + AS_OF);
+                        + ", judged as of " + AS_OF)
+                .containsSubsequence("Data source: FPL's own gameweek", DataAge.METRIC_REFRESH,
+                        "Schedule evidence:", "No differentials qualify");
+    }
+
+    /**
+     * Row-write timestamps are not evidence about football: a fresh {@code player} or shared
+     * {@code fixture} write, and a DefCon-only UPDATE that fires {@code trg_pfs_updated_at}
+     * without changing a value, must leave both replies byte-for-byte the same — order, Scores,
+     * eligibility and every printed date.
+     */
+    @Test
+    void rowWriteTimestampsAloneChangeNeitherTheRankingNorItsText() {
+        seedSharedStatsFixtureMirrors(Timestamp.from(Instant.parse("2025-01-01T00:00:00Z")));
+        String differentials = tools.getDifferentialPicks("any", 100, 5);
+        String captains = tools.getCaptainCandidates(5);
+        Instant pfsWrittenBefore = pfsWrite(RELIABLE_MID);
+
+        Timestamp fresh = Timestamp.from(AS_OF);
+        assertThat(jdbc.update("UPDATE player SET updated_at = ? WHERE season_id = ?"
+                + " AND id BETWEEN ? AND ?", fresh, SEASON_ID, FIRST_ID, LAST_ID)).isPositive();
+        assertThat(jdbc.update("UPDATE fixture SET updated_at = ? WHERE season_id = ?"
+                + " AND id BETWEEN ? AND ?", fresh, SEASON_ID, RankingSeed.FIXTURE_BASE,
+                RankingSeed.FIXTURE_BASE + 999)).isPositive();
+        assertThat(jdbc.update("UPDATE player_fixture_stats"
+                + " SET defensive_contribution = defensive_contribution WHERE season_id = ?"
+                + " AND player_id BETWEEN ? AND ?", SEASON_ID, FIRST_ID, LAST_ID)).isPositive();
+        assertThat(pfsWrite(RELIABLE_MID)).as("the trigger restamps the row")
+                .isAfter(pfsWrittenBefore);
+
+        assertThat(tools.getDifferentialPicks("any", 100, 5)).isEqualTo(differentials);
+        assertThat(tools.getCaptainCandidates(5)).isEqualTo(captains);
+        assertThat(differentials).contains(" Reliable (", "horizon Score", DataAge.METRIC_REFRESH);
+        assertThat(captains).contains(" Striker (", "horizon Score", DataAge.METRIC_REFRESH);
     }
 
     @Test
@@ -275,7 +321,9 @@ class PickToolsIntegrationTest {
         assertThat(tools.getDifferentialPicks("any", 0, 5))
                 .contains("No differentials qualify").contains("Checked 0 matching capture players");
         assertThat(tools.getDifferentialPicks("sweeper", 10, 5))
-                .contains("Unrecognised position").contains("sweeper");
+                .contains("Unrecognised position").contains("sweeper")
+                .as("a malformed request reads no metrics, so it carries no refresh notice")
+                .doesNotContain(DataAge.METRIC_REFRESH);
     }
 
     @Test
@@ -380,7 +428,28 @@ class PickToolsIntegrationTest {
                 .contains("unknown horizon 4")
                 .contains("Data source: FPL's own gameweek and fixture list for season " + SEASON)
                 .contains("No editable window (no editable gameweek)")
+                .contains(DataAge.METRIC_REFRESH)
                 .doesNotContain(" Reliable (").doesNotContain("horizon Score");
+    }
+
+    /** SharedStats {@code fixture} rows for the seeded schedule's finished fixtures, written at a known time. */
+    private void seedSharedStatsFixtureMirrors(Timestamp writtenAt) {
+        for (ScheduleSource.FixtureRow row : RankingSeed.fixtures(CAPTURED_AT, FIRST_DEADLINE)) {
+            if (row.gameweek() <= 3) {
+                jdbc.update("""
+                        INSERT INTO fixture (id, season_id, gameweek, code, team_h, team_a,
+                                             kickoff_time, started, finished, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, true, true, ?)
+                        """, row.id(), SEASON_ID, row.gameweek(), row.id(), row.homeTeamId(),
+                        row.awayTeamId(), Timestamp.from(row.kickoff()), writtenAt);
+            }
+        }
+    }
+
+    private Instant pfsWrite(int playerId) {
+        return jdbc.queryForObject("SELECT MAX(updated_at) FROM player_fixture_stats"
+                + " WHERE season_id = ? AND player_id = ?", Timestamp.class, SEASON_ID, playerId)
+                .toInstant();
     }
 
     /** A later fixture of this club against a club none of the seeded players belongs to. */
