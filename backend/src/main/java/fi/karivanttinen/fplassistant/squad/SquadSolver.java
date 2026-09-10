@@ -24,6 +24,11 @@ import org.ojalgo.optimisation.Variable;
  * <p>The bench carries weight {@link #BENCH_WEIGHT} rather than zero. At zero the solver would
  * fill it with arbitrary cheap names, since they are all equally worthless to it; at a small
  * weight it prefers the ones who actually play, which is what auto-substitution needs.
+ *
+ * <p><b>Every entry path takes the playable-club set.</b> A starter must clear two gates — the
+ * observed-history rule and a club with at least one countable fixture in the horizon — and there
+ * is deliberately no overload that leaves the second one out. A default of "all clubs are
+ * playable" would be a silent claim about a schedule nobody read.
  */
 public final class SquadSolver {
 
@@ -46,11 +51,17 @@ public final class SquadSolver {
     private SquadSolver() {
     }
 
+    /**
+     * @param playableClubs club ids whose horizon window is known and holds at least one fixture,
+     *        derived once by the caller from the same {@code HorizonFixtures} result the scores
+     *        came from
+     */
     public static Optional<SolvedSquad> solve(List<SquadCandidate> pool,
                                               Map<Integer, Double> scores,
                                               SquadConstraints constraints,
-                                              List<SquadCandidate> pinned) {
-        return solve(pool, scores, constraints, pinned, List.of());
+                                              List<SquadCandidate> pinned,
+                                              Set<Integer> playableClubs) {
+        return solve(pool, scores, constraints, pinned, playableClubs, List.of());
     }
 
     /**
@@ -59,7 +70,7 @@ public final class SquadSolver {
      */
     static Optional<SolvedSquad> solve(List<SquadCandidate> pool, Map<Integer, Double> scores,
                                        SquadConstraints constraints, List<SquadCandidate> pinned,
-                                       List<String> relaxed) {
+                                       Set<Integer> playableClubs, List<String> relaxed) {
         if (pool.isEmpty()) {
             return Optional.empty();
         }
@@ -76,7 +87,7 @@ public final class SquadSolver {
                     .weight(score * (1 - BENCH_WEIGHT)));
         }
 
-        rulesOfTheGame(model, pool, inSquad, inXi, constraints);
+        rulesOfTheGame(model, pool, inSquad, inXi, constraints, playableClubs);
 
         Optimisation.Result result = model.maximise();
         if (!result.getState().isFeasible()) {
@@ -87,13 +98,14 @@ public final class SquadSolver {
 
     /**
      * Solves with template and premium defaults, dropping them in that order when necessary.
-     * User constraints and the observed-history XI rule never give way.
+     * User constraints and the two XI gates never give way.
      */
     public static Optional<SolvedSquad> solveWithDefaults(List<SquadCandidate> pool,
                                                           Map<Integer, Double> scores,
                                                           SquadConstraints constraints,
-                                                          List<SquadCandidate> pinned) {
-        return solveWithDefaults(pool, scores, constraints, pinned, List.of());
+                                                          List<SquadCandidate> pinned,
+                                                          Set<Integer> playableClubs) {
+        return solveWithDefaults(pool, scores, constraints, pinned, List.of(), playableClubs);
     }
 
     /**
@@ -101,18 +113,20 @@ public final class SquadSolver {
      *        by element id — never by comparing {@code webName} to the raw string the user wrote,
      *        which misses a full name or FPL's abbreviated form and leaves the exclusion a silent
      *        no-op.
+     * @param playableClubs club ids with a known, non-empty horizon window
      */
     public static Optional<SolvedSquad> solveWithDefaults(List<SquadCandidate> pool,
                                                           Map<Integer, Double> scores,
                                                           SquadConstraints constraints,
                                                           List<SquadCandidate> pinned,
-                                                          List<SquadCandidate> excluded) {
+                                                          List<SquadCandidate> excluded,
+                                                          Set<Integer> playableClubs) {
         List<String> ladder = List.of(RELAXED_TEMPLATE, RELAXED_PREMIUM);
         List<String> given = new ArrayList<>();
 
         for (int step = 0; step <= ladder.size(); step++) {
             Optional<SolvedSquad> solved = attempt(pool, scores, constraints, pinned, excluded,
-                    List.copyOf(given));
+                    playableClubs, List.copyOf(given));
             if (solved.isPresent()) {
                 return solved;
             }
@@ -128,6 +142,7 @@ public final class SquadSolver {
                                                  SquadConstraints constraints,
                                                  List<SquadCandidate> pinned,
                                                  List<SquadCandidate> excluded,
+                                                 Set<Integer> playableClubs,
                                                  List<String> relaxed) {
         if (pool.isEmpty()) {
             return Optional.empty();
@@ -143,7 +158,7 @@ public final class SquadSolver {
                     .weight(score * (1 - BENCH_WEIGHT)));
         }
 
-        rulesOfTheGame(model, pool, inSquad, inXi, constraints);
+        rulesOfTheGame(model, pool, inSquad, inXi, constraints, playableClubs);
         userConstraints(model, pool, inSquad, constraints, pinned, excluded);
         structuralDefaults(model, pool, inSquad, relaxed);
 
@@ -229,10 +244,15 @@ public final class SquadSolver {
      * <p>A forced formation lives here too, alongside the DEF/FWD floors it replaces: once
      * {@code Feasibility} has confirmed it is a legal starting XI, it is exactly as absolute as
      * the floors are, never given up by the relaxation ladder.
+     *
+     * <p>The XI gate is one row and this is its only home: a starter needs the observed-history
+     * rule <em>and</em> a club with a countable fixture in the horizon. Both are here so no pin,
+     * user constraint or relaxation path can reach around either of them.
      */
     private static void rulesOfTheGame(ExpressionsBasedModel model, List<SquadCandidate> pool,
                                        List<Variable> inSquad, List<Variable> inXi,
-                                       SquadConstraints constraints) {
+                                       SquadConstraints constraints,
+                                       Set<Integer> playableClubs) {
         var squadSize = model.newExpression("squad-size").level(Feasibility.SQUAD_SIZE);
         var xiSize = model.newExpression("xi-size").level(XI_SIZE);
         var budget = model.newExpression("budget").upper(constraints.budget());
@@ -296,7 +316,9 @@ public final class SquadSolver {
 
             // Ability and XI permission are deliberately separate. This row is part of the
             // rules of the game so no pin, user constraint or relaxation path can bypass it.
-            if (!candidate.mayStart()) {
+            // A club with no countable fixture in the horizon cannot field a starter either:
+            // there is nothing for him to start in, blanked or merely unresolved.
+            if (!candidate.mayStart() || !playableClubs.contains(candidate.teamId())) {
                 x.level(0);
             }
         }

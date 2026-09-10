@@ -2,9 +2,11 @@ package fi.karivanttinen.fplassistant.squad;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.Set;
 
 import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.Test;
@@ -54,6 +56,17 @@ class SquadSolverRulesTest {
         return new SquadConstraints(List.of(), List.of(), List.of(), 1000, 5, null);
     }
 
+    /** Every club of the pool has a fixture in the horizon, so only the minutes gate binds. */
+    private static Set<Integer> allPlayable(List<SquadCandidate> pool) {
+        return SquadCandidateTestData.clubsOf(pool);
+    }
+
+    private static Set<Integer> allPlayableExcept(List<SquadCandidate> pool, String club) {
+        Set<Integer> playable = new LinkedHashSet<>(allPlayable(pool));
+        playable.remove(club.hashCode());
+        return playable;
+    }
+
     @RepeatedTest(20)
     void everyResultObeysEveryRuleOfTheGame() {
         // Seeded, not fixed: each repetition must still see a different pool, but a failure has
@@ -65,7 +78,7 @@ class SquadSolverRulesTest {
 
         try {
             SolvedSquad solved = SquadSolver
-                    .solve(pool, scores(pool, random), constraints, List.of())
+                    .solve(pool, scores(pool, random), constraints, List.of(), allPlayable(pool))
                     .orElseThrow(() -> new AssertionError("a full pool inside budget must solve"));
 
             assertEveryRule(solved, constraints.budget());
@@ -148,7 +161,8 @@ class SquadSolverRulesTest {
                 .forEach(c -> scores.put(c.elementId(), 1000.0));
 
         SquadConstraints constraints = plain();
-        SolvedSquad solved = SquadSolver.solve(pool, scores, constraints, List.of()).orElseThrow();
+        SolvedSquad solved = SquadSolver.solve(pool, scores, constraints, List.of(),
+                allPlayable(pool)).orElseThrow();
 
         assertThat(solved.squad()).as("cheap and top-scoring: he should be bought")
                 .anyMatch(c -> c.tier() == SquadCandidate.Tier.BODY);
@@ -167,7 +181,54 @@ class SquadSolverRulesTest {
         Map<Integer, Double> scores = scores(pool, random);
         scores.put(risky.elementId(), 10_000.0);
 
-        SolvedSquad solved = SquadSolver.solve(pool, scores, plain(), List.of()).orElseThrow();
+        SolvedSquad solved = SquadSolver.solve(pool, scores, plain(), List.of(),
+                allPlayable(pool)).orElseThrow();
+
+        assertThat(solved.startingXi()).doesNotContain(risky);
+        assertEveryRule(solved, 1000);
+    }
+
+    /**
+     * A club with nothing to play in the window cannot field a starter, however the objective
+     * feels about him. Scored far above every real candidate so only the rules-of-the-game row
+     * can explain his absence from the XI — the same shape as the BODY test above.
+     */
+    @Test
+    void theDirectSolverWillNotStartAPlayerWhoseClubHasNoFixture() {
+        Random random = new Random(23);
+        List<SquadCandidate> pool = pool(random);
+        Map<Integer, Double> scores = scores(pool, random);
+        pool.stream().filter(c -> c.club().equals("Club03"))
+                .forEach(c -> scores.put(c.elementId(), 10_000.0));
+
+        SolvedSquad solved = SquadSolver.solve(pool, scores, plain(), List.of(),
+                allPlayableExcept(pool, "Club03")).orElseThrow();
+
+        assertThat(solved.squad()).as("still purchasable for the bench")
+                .anyMatch(c -> c.club().equals("Club03"));
+        assertThat(solved.startingXi()).noneMatch(c -> c.club().equals("Club03"));
+        assertThat(solved.captain().club()).isNotEqualTo("Club03");
+        assertThat(solved.viceCaptain().club()).isNotEqualTo("Club03");
+        assertEveryRule(solved, 1000);
+    }
+
+    /**
+     * Two fixtures are twice the opportunity, and the score says so — but the observed-history
+     * rule is not a score. A doubled projection must not buy an ineligible player a start.
+     */
+    @Test
+    void aDoubleGameweekNeverRescuesAMinutesIneligiblePlayerIntoTheXi() {
+        Random random = new Random(29);
+        List<SquadCandidate> pool = new ArrayList<>(pool(random));
+        SquadCandidate risky = SquadCandidateTestData.ineligible(pool.get(9),
+                fi.karivanttinen.fplassistant.tools.MinutesModel.Eligibility.MINUTES_RISK);
+        pool.set(9, risky);
+        Map<Integer, Double> scores = scores(pool, random);
+        double best = scores.values().stream().mapToDouble(Double::doubleValue).max().orElseThrow();
+        scores.put(risky.elementId(), best * 2);
+
+        SolvedSquad solved = SquadSolver.solve(pool, scores, plain(), List.of(),
+                allPlayable(pool)).orElseThrow();
 
         assertThat(solved.startingXi()).doesNotContain(risky);
         assertEveryRule(solved, 1000);
@@ -187,7 +248,8 @@ class SquadSolverRulesTest {
             });
         }
 
-        SolvedSquad solved = SquadSolver.solve(pool, scores, plain(), List.of()).orElseThrow();
+        SolvedSquad solved = SquadSolver.solve(pool, scores, plain(), List.of(),
+                allPlayable(pool)).orElseThrow();
 
         assertThat(count(solved.startingXi(), 2)).isEqualTo(5);
         assertThat(count(solved.startingXi(), 3)).isEqualTo(2);
@@ -201,6 +263,7 @@ class SquadSolverRulesTest {
         List<SquadCandidate> pool = pool(random);
         SquadConstraints broke = new SquadConstraints(List.of(), List.of(), List.of(), 100, 5, null);
 
-        assertThat(SquadSolver.solve(pool, scores(pool, random), broke, List.of())).isEmpty();
+        assertThat(SquadSolver.solve(pool, scores(pool, random), broke, List.of(),
+                allPlayable(pool))).isEmpty();
     }
 }

@@ -2,9 +2,11 @@ package fi.karivanttinen.fplassistant.squad;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 import org.junit.jupiter.api.Test;
 
@@ -80,13 +82,24 @@ class SquadSolverConstraintsTest {
         return new SquadConstraints(List.of(), List.of(), List.of(), 1000, 5, formation);
     }
 
+    /** Every club of the pool plays in the horizon, so only the minutes gate binds. */
+    private static Set<Integer> allPlayable(List<SquadCandidate> pool) {
+        return SquadCandidateTestData.clubsOf(pool);
+    }
+
+    private static Set<Integer> allPlayableExcept(List<SquadCandidate> pool, String club) {
+        Set<Integer> playable = new LinkedHashSet<>(allPlayable(pool));
+        playable.remove(club.hashCode());
+        return playable;
+    }
+
     @Test
     void exactlyThreeMeansExactlyThree() {
         List<SquadCandidate> pool = pool();
 
         SolvedSquad solved = SquadSolver.solveWithDefaults(pool, flatScores(pool), with(List.of(
                         quota("Club00", SquadConstraints.Comparator.EXACTLY, 3))),
-                List.of()).orElseThrow();
+                List.of(), allPlayable(pool)).orElseThrow();
 
         assertThat(solved.squad()).filteredOn(c -> c.club().equals("Club00")).hasSize(3);
         SquadSolverRulesTest.assertEveryRule(solved, 1000);
@@ -98,7 +111,7 @@ class SquadSolverConstraintsTest {
 
         SolvedSquad solved = SquadSolver.solveWithDefaults(pool, flatScores(pool), with(List.of(
                         quota("Club01", SquadConstraints.Comparator.AT_LEAST, 2))),
-                List.of()).orElseThrow();
+                List.of(), allPlayable(pool)).orElseThrow();
 
         assertThat(solved.squad()).filteredOn(c -> c.club().equals("Club01"))
                 .hasSizeGreaterThanOrEqualTo(2);
@@ -110,7 +123,7 @@ class SquadSolverConstraintsTest {
 
         SolvedSquad solved = SquadSolver.solveWithDefaults(pool, flatScores(pool), with(List.of(
                         quota("Club02", SquadConstraints.Comparator.AT_MOST, 1))),
-                List.of()).orElseThrow();
+                List.of(), allPlayable(pool)).orElseThrow();
 
         assertThat(solved.squad()).filteredOn(c -> c.club().equals("Club02"))
                 .hasSizeLessThanOrEqualTo(1);
@@ -123,7 +136,7 @@ class SquadSolverConstraintsTest {
                 .orElseThrow();
 
         SolvedSquad solved = SquadSolver.solveWithDefaults(pool, flatScores(pool), with(List.of()),
-                List.of(pin)).orElseThrow();
+                List.of(pin), allPlayable(pool)).orElseThrow();
 
         assertThat(solved.squad()).contains(pin);
         SquadSolverRulesTest.assertEveryRule(solved, 1000);
@@ -142,7 +155,7 @@ class SquadSolverConstraintsTest {
         scores.put(unwanted.elementId(), 1000.0);
 
         SolvedSquad solved = SquadSolver.solveWithDefaults(pool, scores, constraints,
-                List.of(), List.of(unwanted)).orElseThrow();
+                List.of(), List.of(unwanted), allPlayable(pool)).orElseThrow();
 
         assertThat(solved.squad()).doesNotContain(unwanted);
     }
@@ -152,7 +165,7 @@ class SquadSolverConstraintsTest {
         List<SquadCandidate> pool = pool();
 
         SolvedSquad solved = SquadSolver.solveWithDefaults(pool, scoresThatShunPremiums(pool),
-                with(List.of()), List.of()).orElseThrow();
+                with(List.of()), List.of(), allPlayable(pool)).orElseThrow();
 
         assertThat(solved.squad())
                 .filteredOn(c -> c.nowCost() >= SquadSolver.PREMIUM_THRESHOLD)
@@ -164,7 +177,7 @@ class SquadSolverConstraintsTest {
         List<SquadCandidate> pool = pool();
 
         SolvedSquad solved = SquadSolver.solveWithDefaults(pool, flatScores(pool), with(List.of()),
-                List.of()).orElseThrow();
+                List.of(), allPlayable(pool)).orElseThrow();
 
         assertThat(solved.squad())
                 .filteredOn(c -> c.ownership() >= SquadSolver.TEMPLATE_OWNERSHIP)
@@ -181,7 +194,7 @@ class SquadSolverConstraintsTest {
         scores.put(benchwarmer.elementId(), 1000.0);
 
         SolvedSquad solved = SquadSolver.solveWithDefaults(pool, scores, with(List.of()),
-                List.of()).orElseThrow();
+                List.of(), allPlayable(pool)).orElseThrow();
 
         assertThat(solved.startingXi()).doesNotContain(benchwarmer);
     }
@@ -198,10 +211,76 @@ class SquadSolverConstraintsTest {
                 .orElseThrow()), pin);
 
         SolvedSquad solved = SquadSolver.solveWithDefaults(pool, flatScores(pool), with(List.of()),
-                List.of(pin)).orElseThrow();
+                List.of(pin), allPlayable(pool)).orElseThrow();
 
         assertThat(solved.squad()).contains(pin);
         assertThat(solved.startingXi()).doesNotContain(pin);
+    }
+
+    /**
+     * The defaulted entry path enforces the same second XI gate as the direct one. Scored far
+     * above everyone so only the rules-of-the-game row can explain the absence.
+     */
+    @Test
+    void theDefaultedSolverWillNotStartAPlayerWhoseClubHasNoFixture() {
+        List<SquadCandidate> pool = pool();
+        Map<Integer, Double> scores = flatScores(pool);
+        pool.stream().filter(c -> c.club().equals("Club05"))
+                .forEach(c -> scores.put(c.elementId(), 1000.0));
+
+        SolvedSquad solved = SquadSolver.solveWithDefaults(pool, scores, with(List.of()),
+                List.of(), allPlayableExcept(pool, "Club05")).orElseThrow();
+
+        assertThat(solved.squad()).anyMatch(c -> c.club().equals("Club05"));
+        assertThat(solved.startingXi()).noneMatch(c -> c.club().equals("Club05"));
+        assertThat(solved.captain().club()).isNotEqualTo("Club05");
+        SquadSolverRulesTest.assertEveryRule(solved, 1000);
+    }
+
+    /** A pin is membership of the fifteen, never permission to start. */
+    @Test
+    void aPinnedPlayerAtAClubWithNoFixtureLandsOnTheBench() {
+        List<SquadCandidate> pool = pool();
+        SquadCandidate pin = pool.stream()
+                .filter(c -> c.club().equals("Club06") && c.elementType() == 4)
+                .findFirst().orElseThrow();
+        Map<Integer, Double> scores = flatScores(pool);
+        scores.put(pin.elementId(), 1000.0);
+
+        SolvedSquad solved = SquadSolver.solveWithDefaults(pool, scores, with(List.of()),
+                List.of(pin), allPlayableExcept(pool, "Club06")).orElseThrow();
+
+        assertThat(solved.squad()).contains(pin);
+        assertThat(solved.startingXi()).doesNotContain(pin);
+    }
+
+    /** An exact club quota fills squad places, not XI places. */
+    @Test
+    void aClubQuotaCannotForceAnUnplayableClubsPlayersIntoTheXi() {
+        List<SquadCandidate> pool = pool();
+
+        SolvedSquad solved = SquadSolver.solveWithDefaults(pool, flatScores(pool), with(List.of(
+                        quota("Club07", SquadConstraints.Comparator.EXACTLY, 3))),
+                List.of(), allPlayableExcept(pool, "Club07")).orElseThrow();
+
+        assertThat(solved.squad()).filteredOn(c -> c.club().equals("Club07")).hasSize(3);
+        assertThat(solved.startingXi()).noneMatch(c -> c.club().equals("Club07"));
+        SquadSolverRulesTest.assertEveryRule(solved, 1000);
+    }
+
+    /** Both structural defaults give way and the XI gate still does not. */
+    @Test
+    void noRelaxationStepEverAdmitsAnUnplayableClubsPlayerToTheXi() {
+        List<SquadCandidate> pool = pool();
+        var minimumBudget = new SquadConstraints(List.of(), List.of(), List.of(), 750, 5, null);
+
+        SolvedSquad solved = SquadSolver.solveWithDefaults(pool, scoresThatShunPremiums(pool),
+                minimumBudget, List.of(), allPlayableExcept(pool, "Club08")).orElseThrow();
+
+        assertThat(solved.relaxed()).containsExactly(
+                SquadSolver.RELAXED_TEMPLATE, SquadSolver.RELAXED_PREMIUM);
+        assertThat(solved.startingXi()).noneMatch(c -> c.club().equals("Club08"));
+        SquadSolverRulesTest.assertEveryRule(solved, 750);
     }
 
     @Test
@@ -222,7 +301,7 @@ class SquadSolverConstraintsTest {
         // solver never has to reach for the body, and this test would prove nothing. 745 sits
         // clear of both edges.
         var tight = new SquadConstraints(List.of(), List.of(), List.of(), 745, 5, null);
-        SolvedSquad solved = SquadSolver.solveWithDefaults(pool, scores, tight, List.of())
+        SolvedSquad solved = SquadSolver.solveWithDefaults(pool, scores, tight, List.of(), allPlayable(pool))
                 .orElseThrow();
 
         SquadSolverRulesTest.assertEveryRule(solved, 745);
@@ -235,8 +314,8 @@ class SquadSolverConstraintsTest {
         List<SquadCandidate> pool = pool();
         var minimumBudget = new SquadConstraints(List.of(), List.of(), List.of(), 750, 5, null);
 
-        SolvedSquad solved = SquadSolver.solveWithDefaults(
-                pool, scoresThatShunPremiums(pool), minimumBudget, List.of()).orElseThrow();
+        SolvedSquad solved = SquadSolver.solveWithDefaults(pool, scoresThatShunPremiums(pool), minimumBudget,
+                List.of(), allPlayable(pool)).orElseThrow();
 
         assertThat(solved.relaxed()).containsExactly(
                 SquadSolver.RELAXED_TEMPLATE, SquadSolver.RELAXED_PREMIUM);
@@ -265,7 +344,7 @@ class SquadSolverConstraintsTest {
                 quota("Club02", SquadConstraints.Comparator.EXACTLY, 3));
 
         SolvedSquad solved = SquadSolver.solveWithDefaults(pool, flatScores(pool), with(quotas),
-                List.of()).orElseThrow();
+                List.of(), allPlayable(pool)).orElseThrow();
 
         for (String club : List.of("Club00", "Club01", "Club02")) {
             assertThat(solved.squad()).filteredOn(c -> c.club().equals(club)).hasSize(3);
@@ -294,7 +373,7 @@ class SquadSolverConstraintsTest {
 
         SolvedSquad solved = SquadSolver.solveWithDefaults(pool, scores,
                 withFormation(new SquadConstraints.Formation(4, 4, 2)),
-                List.of()).orElseThrow();
+                List.of(), allPlayable(pool)).orElseThrow();
 
         assertThat(solved.formation()).isEqualTo("4-4-2");
         SquadSolverRulesTest.assertEveryRule(solved, 1000);
@@ -313,8 +392,8 @@ class SquadSolverConstraintsTest {
                 quota(club, SquadConstraints.Comparator.EXACTLY, 3)), 1000, 5,
                 new SquadConstraints.Formation(3, 4, 3));
 
-        assertThat(SquadSolver.solveWithDefaults(pool, flatScores(pool), constraints, List.of()))
-                .isEmpty();
+        assertThat(SquadSolver.solveWithDefaults(pool, flatScores(pool), constraints, List.of(),
+                allPlayable(pool))).isEmpty();
     }
 
     @Test
@@ -325,7 +404,8 @@ class SquadSolverConstraintsTest {
         List<SquadCandidate> pool = pool();
 
         Optional<SolvedSquad> solved = SquadSolver.solveWithDefaults(pool, flatScores(pool),
-                withFormation(new SquadConstraints.Formation(1, 1, 1)), List.of());
+                withFormation(new SquadConstraints.Formation(1, 1, 1)), List.of(),
+                allPlayable(pool));
 
         assertThat(solved).isEmpty();
     }

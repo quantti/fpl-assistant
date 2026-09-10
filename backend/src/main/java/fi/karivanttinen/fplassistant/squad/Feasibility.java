@@ -10,6 +10,8 @@ import java.util.Set;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
+import fi.karivanttinen.fplassistant.schedule.HorizonFixtures;
+
 /**
  * Everything checked before the integer program runs.
  *
@@ -30,8 +32,9 @@ public final class Feasibility {
     }
 
     public static Optional<String> check(List<SquadCandidate> pool, SquadConstraints constraints,
-                                         List<SquadCandidate> pinned) {
-        return check(pool, constraints, pinned, List.of());
+                                         List<SquadCandidate> pinned, Set<Integer> playableClubs,
+                                         HorizonFixtures.Result horizon) {
+        return check(pool, constraints, pinned, List.of(), playableClubs, horizon);
     }
 
     /**
@@ -40,9 +43,16 @@ public final class Feasibility {
      *        element id rather than by a display string that may not match the candidate's own
      *        {@code webName} (a full name, or FPL's abbreviated form, resolves to the same player
      *        without matching it textually).
+     * @param playableClubs club ids whose window in {@code horizon} is known and holds at least
+     *        one fixture. Derived once by the caller and handed to the solver unchanged, so the
+     *        capacity counted here is exactly the capacity the integer program will see.
+     * @param horizon the same derivation those ids came from, carried so a refusal can say
+     *        <em>why</em> nothing is playable rather than reporting a count of zero
      */
     public static Optional<String> check(List<SquadCandidate> pool, SquadConstraints constraints,
-                                         List<SquadCandidate> pinned, List<SquadCandidate> excluded) {
+                                         List<SquadCandidate> pinned, List<SquadCandidate> excluded,
+                                         Set<Integer> playableClubs,
+                                         HorizonFixtures.Result horizon) {
         return firstOf(
                 () -> quotasWithinTheGamesLimit(constraints),
                 () -> quotasAgreeWithEachOther(constraints),
@@ -54,7 +64,8 @@ public final class Feasibility {
                 () -> clubsHaveEnoughPlayers(pool, constraints),
                 () -> poolCanFillEveryPosition(pool),
                 () -> pinsNeverExcluded(pinned, excluded),
-                () -> eligiblePlayersCanFillTheXi(pool, constraints, excluded),
+                () -> eligiblePlayersCanFillTheXi(pool, constraints, excluded, playableClubs,
+                        horizon),
                 () -> budgetCoversThePinsAndTheCheapestCompletion(pool, constraints, pinned));
     }
 
@@ -259,13 +270,20 @@ public final class Feasibility {
         return Optional.empty();
     }
 
+    /**
+     * How many players could actually start, counted through both XI gates at once: the observed
+     * 60+ history rule and a club with a countable fixture in the horizon. Counting one without
+     * the other would certify a formation the solver then refuses to fill.
+     */
     private static Optional<String> eligiblePlayersCanFillTheXi(
             List<SquadCandidate> pool, SquadConstraints constraints,
-            List<SquadCandidate> excluded) {
+            List<SquadCandidate> excluded, Set<Integer> playableClubs,
+            HorizonFixtures.Result horizon) {
         Set<Integer> excludedIds = excluded.stream().map(SquadCandidate::elementId)
                 .collect(Collectors.toSet());
         int[] eligible = new int[POSITION_QUOTAS.length];
         pool.stream().filter(SquadCandidate::mayStart)
+                .filter(player -> playableClubs.contains(player.teamId()))
                 .filter(player -> !excludedIds.contains(player.elementId()))
                 .forEach(player -> {
                     if (player.elementType() >= 1 && player.elementType() < eligible.length) {
@@ -275,14 +293,16 @@ public final class Feasibility {
 
         SquadConstraints.Formation formation = constraints.formation();
         if (eligible[1] < SquadSolver.GK_IN_XI) {
-            return minutesCapacity("goalkeeper", SquadSolver.GK_IN_XI, eligible[1], formation);
+            return startingCapacity("goalkeeper", SquadSolver.GK_IN_XI, eligible[1], formation,
+                    horizon);
         }
         if (formation != null) {
             int[] required = {0, SquadSolver.GK_IN_XI,
                     formation.def(), formation.mid(), formation.fwd()};
             for (int type = 2; type <= 4; type++) {
                 if (eligible[type] < required[type]) {
-                    return minutesCapacity(POSITION_NAMES[type], required[type], eligible[type], formation);
+                    return startingCapacity(POSITION_NAMES[type], required[type], eligible[type],
+                            formation, horizon);
                 }
             }
             return Optional.empty();
@@ -301,19 +321,45 @@ public final class Feasibility {
                 }
             }
         }
-        return Optional.of("The available pool cannot form a legal starting XI under the"
-                + " consistent observed 60+ history restriction after the stated exclusions."
-                + " This is a minutes-evidence and formation constraint; changing the budget"
-                + " alone does not make an ineligible starter eligible.");
+        if (horizon.status() != HorizonFixtures.Status.KNOWN) {
+            return noHorizonAtAll(horizon);
+        }
+        return Optional.of("The available pool cannot form a legal starting XI: after the stated"
+                + " exclusions too few players have both consistent observed 60+ history and a"
+                + " club playing at least once in " + SquadFormatter.gameweekRange(horizon)
+                + ". This is a minutes-evidence, fixture-schedule and formation constraint;"
+                + " changing the budget alone does not make an ineligible starter eligible.");
     }
 
-    private static Optional<String> minutesCapacity(String position, int required, int available,
-                                                     SquadConstraints.Formation formation) {
+    private static Optional<String> startingCapacity(String position, int required, int available,
+                                                     SquadConstraints.Formation formation,
+                                                     HorizonFixtures.Result horizon) {
+        if (horizon.status() != HorizonFixtures.Status.KNOWN) {
+            return noHorizonAtAll(horizon);
+        }
         return Optional.of("The " + (formation == null ? "starting XI" : formation.label())
                 + " needs " + required + " " + position + (required == 1 ? "" : "s")
-                + " with consistent observed 60+ history, but only " + available
-                + " qualify after the stated exclusions. Pins may still sit on the bench;"
-                + " neither a pin nor a higher budget can waive the XI restriction.");
+                + " with consistent observed 60+ history at a club playing at least once in "
+                + SquadFormatter.gameweekRange(horizon) + ", but only " + available
+                + " qualify after the stated exclusions. Pins may still sit on the bench; this is"
+                + " a minutes-evidence and fixture-schedule restriction, and neither a pin nor a"
+                + " higher budget can waive it.");
+    }
+
+    /**
+     * The schedule itself could not supply a window, so nobody's fixture count is zero — it is
+     * unknown. Saying "0 qualify" here would read as a finding about the players.
+     */
+    private static Optional<String> noHorizonAtAll(HorizonFixtures.Result horizon) {
+        String named = horizon.status() == HorizonFixtures.Status.NO_EDITABLE_GAMEWEEK
+                ? "No editable gameweek remains in the captured schedule"
+                : "The captured schedule cannot supply a gameweek horizon ("
+                        + SquadFormatter.horizonReason(horizon.reason()) + ")";
+        return Optional.of(named + ", so how many players could start is unknown rather than zero."
+                + " A starter needs a club with at least one fixture in that window as well as"
+                + " consistent observed 60+ history, and neither can be established from this"
+                + " schedule. This is a schedule-evidence and minutes-evidence restriction; a"
+                + " higher budget supplies neither, and no older schedule is substituted.");
     }
 
     /**
