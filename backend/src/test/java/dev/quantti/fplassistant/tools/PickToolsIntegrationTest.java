@@ -54,6 +54,15 @@ class PickToolsIntegrationTest {
     private static final int ZERO = 13_007;
     private static final int NO_RECORD = 13_008;
     private static final int UNAVAILABLE = 13_009;
+    private static final int DOUBLE_MID = 13_010;
+    private static final int NEAR_MID = 13_011;
+    private static final int FAR_MID = 13_012;
+
+    /** A midweek second leg, after every gameweek-6 kickoff the seeded schedule lays down. */
+    private static final Instant SECOND_LEG_KICKOFF = Instant.parse("2026-09-29T18:00:00Z");
+
+    /** Where a blanked fixture is replayed: gameweek 9, after that round's deadline. */
+    private static final Instant BLANK_REPLAY_KICKOFF = Instant.parse("2026-10-20T18:00:00Z");
 
     @TestConfiguration
     static class FixedClock {
@@ -196,6 +205,43 @@ class PickToolsIntegrationTest {
                 .doesNotContain(" Injured (").doesNotContain("Pts/90");
     }
 
+    /**
+     * Three sources, in source order, and the schedule's evidence sentence carrying the exact
+     * capture instant, the instant it was judged at and the window it produced. Both tools: a
+     * captain list rests on the same schedule a differential list does.
+     */
+    @Test
+    void bothRepliesAttributeThePriceMetricAndScheduleSources() {
+        for (String result : List.of(tools.getDifferentialPicks("any", 10, 5),
+                tools.getCaptainCandidates(5))) {
+            assertThat(result)
+                    .contains("Data source: FPL live prices for season " + SEASON)
+                    .contains("Data source: season " + SEASON)
+                    .contains("Data source: FPL's own gameweek and fixture list for season "
+                            + SEASON + ", captured today")
+                    .contains("complete FPL schedule capture at " + CAPTURED_AT
+                            + ", judged as of " + AS_OF)
+                    .contains("Editable window GW4–8 (5 of the 5 calendar gameweeks asked for)")
+                    .contains("Removed by the schedule alone: 0 with no fixture in the window,"
+                            + " 0 whose club window could not be read");
+            assertThat(result.indexOf("Data source: season " + SEASON))
+                    .isLessThan(result.indexOf("Data source: FPL's own gameweek"));
+        }
+    }
+
+    /** The one reply with no ranked player still names all three sources it consulted. */
+    @Test
+    void aRefusalWithNoQualifyingPlayerStillNamesAllThreeSources() {
+        String result = tools.getDifferentialPicks("any", 0, 5);
+
+        assertThat(result).contains("No differentials qualify")
+                .contains("Data source: FPL live prices for season " + SEASON)
+                .contains("Data source: season " + SEASON)
+                .contains("Data source: FPL's own gameweek and fixture list for season " + SEASON)
+                .contains("complete FPL schedule capture at " + CAPTURED_AT
+                        + ", judged as of " + AS_OF);
+    }
+
     @Test
     void captainListContainsAttackersOnlyAndExcludesDoubtfulStar() {
         String result = tools.getCaptainCandidates(5);
@@ -239,5 +285,152 @@ class PickToolsIntegrationTest {
         assertThat(result).contains("availability risk 2")
                 .contains("observed minutes risk 2")
                 .contains("unknown current evidence 1");
+    }
+
+    /**
+     * A club that plays twice inside the five editable gameweeks has six fixtures in the window,
+     * not five. Taking the next five fixtures instead drops the last gameweek it was asked about.
+     */
+    @Test
+    void theAverageFdrCoversEveryFixtureOfADoubleGameweekWindow() {
+        int club = RankingSeed.team(1);
+        ScheduleSource.FixtureRow secondLeg = laterFixtureAgainstAnUnusedClub(club);
+        moveToGameweek(secondLeg.id(), 6, SECOND_LEG_KICKOFF);
+        for (int gameweek = 4; gameweek <= 7; gameweek++) {
+            setClubDifficulty(club, fixtureFor(club, gameweek), 2);
+        }
+        setClubDifficulty(club, secondLeg.id(), 2);
+        setClubDifficulty(club, fixtureFor(club, 8), 5);
+
+        String line = lineFor(tools.getDifferentialPicks("any", 10, 5), " Reliable (");
+
+        // 2,2,2,2,2 over GW4-7 plus the second leg, and 5 in GW8: six fixtures, not the five a
+        // next-N-fixtures window would have averaged.
+        assertThat(line).contains("Avg FDR 2.5");
+    }
+
+    /**
+     * Three midfielders identical but for their expected goals, so the per-fixture order is
+     * Faraway, Nearly, Doubler by construction. Over the window Doubler plays six times and the
+     * other two five, which must lift him past Nearly without letting him overtake Faraway.
+     */
+    @Test
+    void aDoubleGameweekOutranksACloseSingleButNotAFarBetterOne() {
+        seedPlayer(DOUBLE_MID, "Doubler", 10, 3, 50, 5.0, "a", 90, 0.52, 0, 1.0, null);
+        seedPlayer(NEAR_MID, "Nearly", 11, 3, 50, 5.0, "a", 90, 0.62, 0, 1.0, null);
+        seedPlayer(FAR_MID, "Faraway", 12, 3, 50, 5.0, "a", 90, 1.00, 0, 1.0, null);
+        moveToGameweek(laterFixtureAgainstAnUnusedClub(RankingSeed.team(10)).id(), 6,
+                SECOND_LEG_KICKOFF);
+
+        String reply = tools.getDifferentialPicks("MID", 100, 5);
+
+        assertThat(reply).contains(" Doubler (", " Nearly (", " Faraway (");
+        assertThat(reply.indexOf(" Faraway ("))
+                .as("one far better fixture still beats two lesser ones")
+                .isLessThan(reply.indexOf(" Doubler ("));
+        assertThat(reply.indexOf(" Doubler ("))
+                .as("two fixtures beat one slightly better fixture")
+                .isLessThan(reply.indexOf(" Nearly ("));
+    }
+
+    /**
+     * Two different reasons a club cannot contribute a fixture, counted apart from the minutes
+     * rule and from each other: one club is blanked out of a one-gameweek window, the other has
+     * an outstanding fixture FPL has not assigned to a gameweek at all. Neither is a forecast of
+     * zero points, so neither name may appear in the list.
+     */
+    @Test
+    void horizonExclusionsSeparateAKnownBlankFromAnUnresolvedSchedule() {
+        moveToGameweek(fixtureFor(RankingSeed.team(2), 4), 9, BLANK_REPLAY_KICKOFF);
+        unassignGameweek(fixtureFor(RankingSeed.team(1), 4));
+
+        String result = tools.getDifferentialPicks("any", 100, 1);
+
+        assertThat(result).contains(" Defender (", " Keeper (")
+                .doesNotContain(" Striker (").doesNotContain(" Reliable (")
+                .contains("no fixtures in the horizon 1")
+                .contains("unknown horizon 1");
+    }
+
+    /**
+     * The clock is fixed for the whole class, so the schedule moves instead: pushing every
+     * deadline up to gameweek 36 into the past leaves GW37 as the first editable round, which is
+     * two gameweeks short of the five asked for.
+     */
+    @Test
+    void theFooterNamesTheEditableRangeAndDisclosesTruncation() {
+        passDeadlinesUpTo(36);
+
+        String result = tools.getDifferentialPicks("any", 100, 5);
+
+        assertThat(result).contains(" Reliable (")
+                .contains("fixtures 2 in GW37–38")
+                .contains("next 5 calendar gameweeks, GW37–38")
+                .contains("truncated to 2");
+    }
+
+    @Test
+    void afterTheFinalDeadlineThereIsNoHorizonRatherThanAForecastOfZero() {
+        passDeadlinesUpTo(38);
+
+        String result = tools.getDifferentialPicks("any", 100, 5);
+
+        assertThat(result).contains("No differentials qualify")
+                .contains("No editable gameweek remains")
+                .contains("unknown horizon 4")
+                .contains("Data source: FPL's own gameweek and fixture list for season " + SEASON)
+                .contains("No editable window (no editable gameweek)")
+                .doesNotContain(" Reliable (").doesNotContain("horizon Score");
+    }
+
+    /** A later fixture of this club against a club none of the seeded players belongs to. */
+    private static ScheduleSource.FixtureRow laterFixtureAgainstAnUnusedClub(int club) {
+        return RankingSeed.fixtures(CAPTURED_AT, FIRST_DEADLINE).stream()
+                .filter(row -> row.gameweek() > 8)
+                .filter(row -> row.homeTeamId() == club || row.awayTeamId() == club)
+                .filter(row -> (row.homeTeamId() == club ? row.awayTeamId() : row.homeTeamId())
+                        >= RankingSeed.team(13))
+                .findFirst().orElseThrow();
+    }
+
+    private static int fixtureFor(int club, int gameweek) {
+        return RankingSeed.fixtureFor(RankingSeed.fixtures(CAPTURED_AT, FIRST_DEADLINE),
+                club, gameweek);
+    }
+
+    private void moveToGameweek(int fixtureId, int gameweek, Instant kickoff) {
+        jdbc.update("UPDATE " + scheduleSource.fixtureTable()
+                        + " SET gameweek = ?, kickoff_time = ? WHERE season = ? AND id = ?",
+                gameweek, Timestamp.from(kickoff), SEASON, fixtureId);
+    }
+
+    /** As FPL leaves a postponement it has not rescheduled: outstanding, with no gameweek. */
+    private void unassignGameweek(int fixtureId) {
+        jdbc.update("UPDATE " + scheduleSource.fixtureTable()
+                + " SET gameweek = NULL WHERE season = ? AND id = ?", SEASON, fixtureId);
+    }
+
+    /** Moves the deadlines of gameweeks 1..{@code gameweek} behind the fixed clock. */
+    private void passDeadlinesUpTo(int gameweek) {
+        jdbc.update("UPDATE " + scheduleSource.gameweekTable()
+                + " SET deadline_time = deadline_time - INTERVAL '252 days'"
+                + " WHERE season = ? AND id <= ?", SEASON, gameweek);
+    }
+
+    /** Sets this club's own side of the fixture's difficulty, leaving the opponent's alone. */
+    private void setClubDifficulty(int club, int fixtureId, int difficulty) {
+        jdbc.update("UPDATE " + scheduleSource.fixtureTable()
+                        + " SET team_h_difficulty ="
+                        + " CASE WHEN team_h = ? THEN ? ELSE team_h_difficulty END,"
+                        + " team_a_difficulty ="
+                        + " CASE WHEN team_a = ? THEN ? ELSE team_a_difficulty END"
+                        + " WHERE season = ? AND id = ?",
+                club, difficulty, club, difficulty, SEASON, fixtureId);
+    }
+
+    private static String lineFor(String reply, String marker) {
+        return reply.lines().filter(line -> line.contains(marker)).findFirst()
+                .orElseThrow(() -> new AssertionError(
+                        "no pick line matching '" + marker + "' in:\n" + reply));
     }
 }
