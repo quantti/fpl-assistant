@@ -151,7 +151,9 @@ export async function sendChatTurn(
       return
     }
     if (eventName !== 'token') {
-      // Comment-only block or an unknown named event (e.g. a heartbeat) — not text.
+      // An unknown named event (e.g. a heartbeat) — not text. A comment-only block such as
+      // `: ping` has no event: line, so it defaults to 'token' and falls through below, where
+      // JSON.parse('') on its empty data throws and is caught, so it is skipped there instead.
       return
     }
     try {
