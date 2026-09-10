@@ -64,4 +64,41 @@ tasks.named('test') {
             excludeTags 'realdata'
         }
     }
+
+    // KAR-42: a CI-only ConcurrentModificationException surfaced through nested causes, and the
+    // default test logging drops everything but the top exception line. Print the full chain,
+    // including suppressed exceptions, so a failing CI run's console/XML carries the same
+    // evidence a local repro would.
+    testLogging {
+        events 'failed'
+        exceptionFormat = 'full'
+        showExceptions = true
+        showCauses = true
+        showStackTraces = true
+    }
+
+    // KAR-42 diagnostics: record the exact test JVM patch and the resolved Spring
+    // Framework/Security versions alongside the failed-test evidence, so a CI failure can be
+    // checked against the versions this was investigated against without re-resolving anything.
+    // Runs in doFirst so it is captured even when the tests themselves fail.
+    doFirst {
+        def diagnosticsDir = layout.buildDirectory.dir('diagnostics/kar-42').get().asFile
+        diagnosticsDir.mkdirs()
+        def jvm = javaLauncher.get().metadata
+        def springVersions = configurations.testRuntimeClasspath.resolvedConfiguration.resolvedArtifacts
+            .collect { it.moduleVersion.id }
+            .findAll { it.group == 'org.springframework' || it.group == 'org.springframework.security' }
+            .collect { "${it.group}:${it.name}:${it.version}" }
+            .toSet()
+            .sort()
+            .join('\n')
+        new File(diagnosticsDir, 'environment.txt').text = """\
+Test JVM (toolchain launcher): ${jvm.languageVersion} ${jvm.vendor}
+Test JVM runtime version: ${jvm.javaRuntimeVersion}
+Test JVM installation: ${jvm.installationPath}
+
+Resolved Spring Framework/Security versions (testRuntimeClasspath):
+${springVersions}
+"""
+    }
 }
