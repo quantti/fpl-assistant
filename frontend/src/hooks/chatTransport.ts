@@ -82,7 +82,14 @@ export async function sendChatTurn(
   // Two different 429s: the per-IP rate limit and the weekly quota. The backend says which in
   // the body, and Retry-After says when it frees.
   if (response.status === 429) {
-    const reason = (await response.text()).trim()
+    let reason = ''
+    try {
+      reason = (await response.text()).trim()
+    } catch {
+      if (signal.aborted) return { kind: 'aborted' }
+      // Body unreadable — the status already told us which 429 this is broadly, fall back to
+      // the generic reason.
+    }
     const retryAfter = Number(response.headers.get('Retry-After'))
     return {
       kind: 'failed',
@@ -166,8 +173,9 @@ export async function sendChatTurn(
         return { kind: 'failed', message: INTERRUPTED }
       }
       if (step.done) break
-      // Normalize CRLF so a proxy that rewrites line endings cannot break event framing.
-      buffer += decoder.decode(step.value, { stream: true }).replace(/\r\n/g, '\n')
+      // Normalize CRLF on the whole buffer, not the chunk — a \r\n split across chunks would
+      // otherwise leave \n\r\n behind and break event framing.
+      buffer = (buffer + decoder.decode(step.value, { stream: true })).replace(/\r\n/g, '\n')
       let sep: number
       while ((sep = buffer.indexOf('\n\n')) !== -1) {
         flushEvent(buffer.slice(0, sep))
