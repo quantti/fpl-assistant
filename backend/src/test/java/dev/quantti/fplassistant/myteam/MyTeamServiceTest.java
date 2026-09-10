@@ -20,6 +20,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.web.client.RestClient;
 
+import dev.quantti.fplassistant.testsupport.TapasSeed;
+import dev.quantti.fplassistant.tools.DataAge;
 import dev.quantti.fplassistant.user.UserProfileService;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -61,6 +63,12 @@ class MyTeamServiceTest {
     private String activeChip = null;
     /** Body for the previous gameweek's picks; null makes the stub answer 404. */
     private String previousPicks = null;
+    /** Appended to this gameweek's picks array; empty by default. */
+    private String extraPick = "";
+
+    /** Tapas club ids for the stub's LIV and NFO, which Tapas numbers independently of FPL. */
+    private static final int CLUB_LIV = 9111;
+    private static final int CLUB_NFO = 9112;
 
     @BeforeEach
     void startStub() throws IOException {
@@ -95,6 +103,13 @@ class MyTeamServiceTest {
     void stopStubAndClearProfile() {
         server.stop(0);
         jdbc.update("DELETE FROM " + profileTable + " WHERE user_id = ?", USER);
+        int season = TapasSeed.CURRENT_SEASON_ID;
+        jdbc.update("DELETE FROM fixture WHERE season_id = ?", season);
+        jdbc.update("DELETE FROM player WHERE season_id = ?", season);
+        jdbc.update("DELETE FROM gameweek WHERE season_id = ?", season);
+        jdbc.update("DELETE FROM team WHERE season_id = ?", season);
+        jdbc.update("DELETE FROM player WHERE season_id = ? AND id = 302",
+                TapasSeed.POPULATED_SEASON_ID);
     }
 
     @Test
@@ -284,15 +299,127 @@ class MyTeamServiceTest {
                 .contains("Opening in GW20: wildcard");
     }
 
-    /** The changeover case: the database is a season behind, so only FPL's own numbers are used. */
+    /**
+     * The changeover case: the database is a season behind, so only FPL's own numbers are used.
+     * Last season's row that happens to carry the same element id must lend neither its
+     * numbers nor its write time to this season's pick.
+     */
     @Test
     void aSeasonTheDatabaseHasNotLoadedYetLeavesOutTheDeeperNumbers() {
+        TapasSeed.ensure(jdbc);
+        jdbc.update("""
+                INSERT INTO player (id, season_id, team_id, first_name, second_name, web_name,
+                                    element_type, now_cost, status, total_points,
+                                    expected_goals, expected_assists, updated_at)
+                VALUES (302, ?, ?, 'Old', 'Namesake', 'Namesake', 3, 80, 'a', 90, 9.99, 8.88,
+                        now() - interval '400 days')
+                """, TapasSeed.POPULATED_SEASON_ID, TapasSeed.TEAM_ASHFIELD);
         storeTeamId(ENTRY);
         MyTeamService service = service();
 
         assertThat(service.render(service.myTeam(USER, budget())))
                 .contains("Fixture difficulty and expected goals are not available yet")
-                .doesNotContain("next 5 FDR");
+                .doesNotContain("next 5 FDR")
+                .doesNotContain("9.99", "8.88", "written", "Stored-data age");
+    }
+
+    /**
+     * KAR-9: the squad is fetched from FPL just now, but its xG/xA and FDR are stored rows with
+     * their own ages. Each displayed value is tagged with the rows behind it — per player, per
+     * club — and the gameweek row that chose the FDR run is dated once with the provenance.
+     */
+    @Test
+    void aFreshFplFetchDoesNotMakeStoredExpectedGoalsOrFdrLookFresh() {
+        fillCurrentSeason();
+        extraPick = MISSING_FROM_BOOTSTRAP_PICK;
+        storeTeamId(ENTRY);
+        MyTeamService service = service();
+
+        String card = service.render(service.myTeam(USER, budget()));
+
+        assertThat(card)
+                .contains("Salah (LIV, MID) GBP 12.6m - CAPTAIN - form 8.5, 12 pts, 12.0/game,"
+                        + " 42.1% owned, next 5 FDR 3.0 (fixture records written 12 days ago),"
+                        + " xG 3.40, xA 1.20 (player record written 9 days ago) - doubtful")
+                .as("another club's run, and a null player write that keeps its xG/xA")
+                .contains("Sels (NFO, GK) GBP 5.0m - vice - form 2.0, 2 pts, 2.0/game,"
+                        + " 18.3% owned, next 5 FDR 2.0 (fixture records written 20 days ago to"
+                        + " 12 days ago), xG 0.00, xA 0.10 (player record: write time unavailable)")
+                .as("a pick FPL's player list lacks shows no stored values, so no age either")
+                .contains("element 999 (DEF) - not in the current player list")
+                .doesNotContain("7.77")
+                .contains("xG/xA and next-5 FDR are stored database values")
+                .contains("Stored-data age: starting-gameweek selection for the FDR run"
+                        + " (gameweek row id=1), season " + TapasSeed.CURRENT_SEASON_CODE
+                        + ", last recorded write ")
+                .contains("(30 days ago). This is a database record time")
+                .contains(DataAge.GAMEWEEK_CAVEAT)
+                .containsOnlyOnce("Stored-data age:");
+        assertThat(card).containsSubsequence("fetched ", "Stored-data age:", "Starting XI", "Salah");
+    }
+
+    /** Both Free Hit squads map each element to its own stored row; the selection is dated once. */
+    @Test
+    void aFreeHitsTwoSquadsEachCarryTheirOwnPlayersAges() {
+        fillCurrentSeason();
+        currentEvent = 4;
+        activeChip = "freehit";
+        previousPicks = PREVIOUS_PICKS;
+        storeTeamId(ENTRY);
+        MyTeamService service = service();
+
+        String card = service.render(service.myTeam(USER, budget()));
+
+        assertThat(card)
+                .contains("Wood (NFO, FWD) GBP 7.1m - CAPTAIN - form 5.0, 18 pts, 6.0/game,"
+                        + " 25.0% owned, next 5 FDR 2.0 (fixture records written 20 days ago to"
+                        + " 12 days ago), xG 2.10, xA 0.40 (player record written 3 days ago)")
+                .contains("Prices, form, points and ownership on the lines below are today's FPL"
+                        + " player data")
+                .contains("any xG/xA and FDR are stored database values")
+                .doesNotContain("statistics on the lines below are today's")
+                .containsOnlyOnce("Stored-data age:");
+        assertThat(card).containsSubsequence("FREE HIT squad", "Salah",
+                "(player record written 9 days ago)", "Continuing squad", "Wood (NFO, FWD)",
+                "(player record written 3 days ago)", "Sels", "write time unavailable");
+    }
+
+    /** The current season, loaded, with element ids matching the stub's picks. */
+    private void fillCurrentSeason() {
+        TapasSeed.ensure(jdbc);
+        int season = TapasSeed.CURRENT_SEASON_ID;
+        jdbc.update("""
+                INSERT INTO team (id, season_id, code, name, short_name, strength) VALUES
+                    (?, ?, 9111, 'Liverpool', 'LIV', 5),
+                    (?, ?, 9112, 'Nottingham Forest', 'NFO', 3)
+                """, CLUB_LIV, season, CLUB_NFO, season);
+        jdbc.update("""
+                INSERT INTO gameweek (id, season_id, name, deadline_time, finished, data_checked,
+                                      is_current, is_next, updated_at)
+                VALUES (1, ?, 'Gameweek 1', TIMESTAMPTZ '2026-08-21 17:30:00+00', true, true,
+                        true, false, now() - interval '30 days 1 hour')
+                """, season);
+        jdbc.update("""
+                INSERT INTO player (id, season_id, team_id, first_name, second_name, web_name,
+                                    element_type, now_cost, status, total_points,
+                                    expected_goals, expected_assists, updated_at) VALUES
+                    (302, ?, ?, 'M', 'Salah', 'Salah', 3, 126, 'a', 12, 3.40, 1.20,
+                        now() - interval '9 days 1 hour'),
+                    (17,  ?, ?, 'M', 'Sels',  'Sels',  1, 50,  'a', 2,  0.00, 0.10, NULL),
+                    (44,  ?, ?, 'C', 'Wood',  'Wood',  4, 71,  'a', 18, 2.10, 0.40,
+                        now() - interval '3 days 1 hour'),
+                    (999, ?, ?, 'N', 'Ew',    'Ew',    2, 45,  'a', 0,  7.77, 0.00, now())
+                """, season, CLUB_LIV, season, CLUB_NFO, season, CLUB_NFO, season, CLUB_NFO);
+        // LIV rated 3 in three fixtures; the fourth is unrated for LIV, so only NFO admits it.
+        jdbc.update("""
+                INSERT INTO fixture (id, season_id, code, gameweek, team_h, team_a,
+                                     team_h_difficulty, team_a_difficulty, updated_at) VALUES
+                    (9911, ?, 9911, 1, ?, ?, 3, 2, now() - interval '12 days 1 hour'),
+                    (9912, ?, 9912, 2, ?, ?, 3, 2, now() - interval '12 days 1 hour'),
+                    (9913, ?, 9913, 3, ?, ?, 3, 2, now() - interval '12 days 1 hour'),
+                    (9914, ?, 9914, 4, ?, ?, NULL, 2, now() - interval '20 days 1 hour')
+                """, season, CLUB_LIV, CLUB_NFO, season, CLUB_LIV, CLUB_NFO,
+                season, CLUB_LIV, CLUB_NFO, season, CLUB_LIV, CLUB_NFO);
     }
 
     @Test
@@ -366,7 +493,7 @@ class MyTeamServiceTest {
     }
 
     private String picks() {
-        return PICKS.formatted(activeChip == null ? "null" : "\"" + activeChip + "\"");
+        return PICKS.formatted(activeChip == null ? "null" : "\"" + activeChip + "\"", extraPick);
     }
 
     private static final String PICKS = """
@@ -376,8 +503,13 @@ class MyTeamServiceTest {
                {"element": 302, "position": 1, "multiplier": 2, "is_captain": true,
                 "is_vice_captain": false, "element_type": 3},
                {"element": 17, "position": 12, "multiplier": 0, "is_captain": false,
-                "is_vice_captain": true, "element_type": 1}]}
+                "is_vice_captain": true, "element_type": 1}%s]}
             """;
+
+    /** A pick the bootstrap's player list does not know, though the database does. */
+    private static final String MISSING_FROM_BOOTSTRAP_PICK = """
+            , {"element": 999, "position": 13, "multiplier": 0, "is_captain": false,
+               "is_vice_captain": false, "element_type": 2}""";
 
     private static final String PREVIOUS_PICKS = """
             {"active_chip": null,
