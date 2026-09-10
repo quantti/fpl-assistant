@@ -53,6 +53,11 @@ import org.springframework.stereotype.Component;
  * fall back to the weekly table — a pool built from stale prices is the bug, not a degraded
  * answer.
  *
+ * <p>Under the three source lines every reply that read the metrics carries
+ * {@link DataAge#METRIC_REFRESH} (KAR-9): the core-stat sync time of {@code player_fixture_stats}
+ * is unknowable, and the window dates on each pick describe the sample, not its refresh. It is
+ * fixed text — no query, no clock read and no row-write timestamp stands in for that time.
+ *
  * <p><b>They used to rank on {@code form}, and that was the defect.</b> FPL's {@code form} is
  * average points per match over the last 30 days, so in GW2 it is GW1's scoreline and nothing
  * else: a defender who scored once led the list ahead of every defender at a side that concedes
@@ -184,7 +189,8 @@ public class PickTools implements FplTool {
             RankingMetrics.Snapshot snapshot = rankingMetrics.load(capture, metric);
             HorizonFixtures.Result horizon = horizon(snapshot, capture, gameweekLimit);
             String provenance = provenanceFor(capture, season,
-                    LocalDate.ofInstant(snapshot.asOf(), UkTime.zone()), scheduleSource(snapshot));
+                    LocalDate.ofInstant(snapshot.asOf(), UkTime.zone()), scheduleSource(snapshot))
+                    + "\n" + DataAge.METRIC_REFRESH;
             Selection selection = candidates(snapshot, horizon, elementType, maxOwnership);
             if (selection.rows().isEmpty()) {
                 return provenance + "\n" + scheduleEvidence(snapshot, horizon, selection) + "\n"
@@ -243,7 +249,8 @@ public class PickTools implements FplTool {
             RankingMetrics.Snapshot snapshot = rankingMetrics.load(capture, metric);
             HorizonFixtures.Result horizon = horizon(snapshot, capture, gameweekLimit);
             String provenance = provenanceFor(capture, season,
-                    LocalDate.ofInstant(snapshot.asOf(), UkTime.zone()), scheduleSource(snapshot));
+                    LocalDate.ofInstant(snapshot.asOf(), UkTime.zone()), scheduleSource(snapshot))
+                    + "\n" + DataAge.METRIC_REFRESH;
             Selection selection = candidates(snapshot, horizon, ATTACKERS, 100.0);
             if (selection.rows().isEmpty()) {
                 return provenance + "\n" + scheduleEvidence(snapshot, horizon, selection) + "\n"
