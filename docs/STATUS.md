@@ -3872,3 +3872,21 @@ probe updates.
 
 **Follow-up.** [KAR-51](https://linear.app/quantti/issue/KAR-51): a small test-profile Hikari pool,
 because the full suite runs close to the test database's `max_connections = 100`.
+
+## Stored-data age: implementation plan ready (KAR-9, 2026-09-10)
+
+Plan: `docs/superpowers/plans/2026-09-10-kar-9-data-age.md`, seven bounded tasks, implementation
+not started. Linear's highest Todo priority is High; KAR-8 already has a local plan draft, so
+KAR-9 was selected for planning. The baseline is `origin/master` at `7721754`; the plan lives in
+its own worktree and the original worktree's pending documents were left unchanged.
+
+The source audit rules out a blanket `MAX(updated_at)` freshness banner. PFS's update trigger
+also fires on DefCon-only writes, so it cannot date core-stat refreshes; team timestamps are not
+maintained by every writer and gameweek rows can be local placeholders. The plan labels actual
+player/fixture/gameweek record-write ages, describes PFS match coverage separately from its
+unknown refresh time, and preserves all season/capture provenance. Ranking and My Team must not
+attribute old statistics to today's price capture or squad fetch. No schema, scoring, eligibility,
+source-selection or REST contract change is planned.
+
+Independent read-only plan review found no actionable issues. No tests, production/database
+queries, implementation, commits, pushes or deployment were performed; KAR-9 remains Todo.
