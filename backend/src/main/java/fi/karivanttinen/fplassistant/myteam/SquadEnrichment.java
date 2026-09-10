@@ -46,16 +46,17 @@ public class SquadEnrichment {
 
     /**
      * The gameweek row that chose where every club's FDR run starts, with its own write time
-     * (KAR-9). {@code id} is null and {@code write} empty when the season has no gameweek row.
+     * (KAR-9).
      */
-    public record StartingGameweek(Integer id, DataAge.Span write) {
+    public record StartingGameweek(int id, DataAge.Span write) {
     }
 
     /**
      * @param available whether the database could be used at all — false across the season
      *        changeover, when its ids belong to another season
-     * @param startingGameweek null when no FDR run was looked up: the gate refused, or no squad
-     *        player had a club
+     * @param startingGameweek null when no club has an FDR run: the gate refused, the season has
+     *        no gameweek row, or no squad club has a rated fixture from it — no displayed FDR
+     *        depends on its age then
      */
     public record Enrichment(boolean available, SeasonContext season, Map<Integer, Depth> byElement,
                              StartingGameweek startingGameweek) {
@@ -114,8 +115,7 @@ public class SquadEnrichment {
 
         Set<Integer> clubs = Set.copyOf(teamByElement.values());
         StartingGameweek start = clubs.isEmpty() ? null : startingGameweek(season);
-        Map<Integer, Run> runs = start == null || start.id() == null
-                ? Map.of() : fixtureRuns(season, start.id(), clubs);
+        Map<Integer, Run> runs = start == null ? Map.of() : fixtureRuns(season, start.id(), clubs);
         for (Map.Entry<Integer, Integer> entry : teamByElement.entrySet()) {
             Depth current = depth.get(entry.getKey());
             Run run = runs.get(entry.getValue());
@@ -124,10 +124,13 @@ public class SquadEnrichment {
                         current.expectedAssists(), current.playerWrite(), run.writes()));
             }
         }
-        return new Enrichment(true, season, Map.copyOf(depth), start);
+        return new Enrichment(true, season, Map.copyOf(depth), runs.isEmpty() ? null : start);
     }
 
-    /** The current gameweek row, else the next, else the season's first — with its write time. */
+    /**
+     * The current gameweek row, else the next, else the season's first — with its write time.
+     * Null when the season has no gameweek row.
+     */
     private StartingGameweek startingGameweek(SeasonContext season) {
         List<Map<String, Object>> start = jdbc.queryForList("""
                 SELECT id, updated_at FROM gameweek
@@ -137,7 +140,7 @@ public class SquadEnrichment {
                     (SELECT MIN(id) FROM gameweek WHERE season_id = ?))
                 """, season.seasonId(), season.seasonId(), season.seasonId(), season.seasonId());
         if (start.isEmpty()) {
-            return new StartingGameweek(null, DataAge.Span.of(List.of()));
+            return null;
         }
         Map<String, Object> row = start.getFirst();
         return new StartingGameweek(((Number) row.get("id")).intValue(),

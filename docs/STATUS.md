@@ -3890,5 +3890,6 @@ now build their tool with `DataAgeClock.provider()` and the pool count matches m
 
 Limits: this surfaces recorded ages and the unknown core-sync time. A trustworthy PFS
 source-refresh timestamp needs an upstream writer/coverage contract outside this ticket.
-Untested: the solver-infeasible squad refusal and My Team's no-gameweek enrichment branch. No
+Untested: the solver-infeasible squad refusal. PR review: My Team now dates the starting
+gameweek only when some club has an FDR run, so a card without FDR carries no gameweek age. No
 live LLM chat was run.

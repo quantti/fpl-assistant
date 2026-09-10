@@ -164,6 +164,19 @@ class SquadEnrichmentTest {
                 .isEqualTo(new SquadEnrichment.StartingGameweek(2, new DataAge.Span(SEP_05, SEP_05, 1, 0)));
     }
 
+    /** KAR-9: with no FDR on the card, the row that would have started a run is not dated. */
+    @Test
+    void noFdrRunMeansNoStartingGameweekAge() {
+        fillCurrentSeason();
+        jdbc.update("DELETE FROM fixture WHERE season_id = ?", TapasSeed.CURRENT_SEASON_ID);
+
+        SquadEnrichment.Enrichment result = enrichment.forElements(Set.of(STRIKER));
+
+        assertThat(result.available()).isTrue();
+        assertThat(result.of(STRIKER).nextFiveFdr()).isNull();
+        assertThat(result.startingGameweek()).isNull();
+    }
+
     private void setFixtureWrite(int id, Instant writtenAt) {
         jdbc.update("UPDATE fixture SET updated_at = ? WHERE season_id = ? AND id = ?",
                 writtenAt == null ? null : java.sql.Timestamp.from(writtenAt),
