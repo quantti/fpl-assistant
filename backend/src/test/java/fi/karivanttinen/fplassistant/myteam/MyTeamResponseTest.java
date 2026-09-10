@@ -1,5 +1,6 @@
 package fi.karivanttinen.fplassistant.myteam;
 
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
@@ -13,6 +14,7 @@ import fi.karivanttinen.fplassistant.myteam.FplEntryClient.ClassicLeague;
 import fi.karivanttinen.fplassistant.myteam.FplEntryClient.EntrySummary;
 import fi.karivanttinen.fplassistant.myteam.FplEntryClient.LockedSquad;
 import fi.karivanttinen.fplassistant.myteam.FplEntryClient.Pick;
+import fi.karivanttinen.fplassistant.tools.DataAge;
 import fi.karivanttinen.fplassistant.tools.SeasonContext;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -56,7 +58,8 @@ class MyTeamResponseTest {
         String json = new ObjectMapper().findAndRegisterModules().writeValueAsString(response);
         assertThat(json)
                 .doesNotContain("Private Manager", "leagues", "enrichment", "form",
-                        "selectedByPercent", "expectedGoals");
+                        "selectedByPercent", "expectedGoals", "nextFiveFdr", "playerWrite",
+                        "fdrWrites", "startingGameweek", "depth");
     }
 
     @Test
@@ -164,11 +167,17 @@ class MyTeamResponseTest {
                 List.of(new ClassicLeague(9, "Office", "x", 1, 2, 10)));
     }
 
+    /** Available and fully dated, so the page mapping is proven to drop all of it. */
     private static SquadEnrichment.Enrichment enrichment() {
-        return new SquadEnrichment.Enrichment(false,
+        return new SquadEnrichment.Enrichment(true,
                 new SeasonContext(1, "2026-27", true, "2026-27",
-                        LocalDate.of(2026, 8, 1)), Map.of());
+                        LocalDate.of(2026, 8, 1)), Map.of(302, DEPTH),
+                new SquadEnrichment.StartingGameweek(5, new DataAge.Span(DEADLINE, DEADLINE, 1, 0)));
     }
+
+    private static final SquadEnrichment.Depth DEPTH = new SquadEnrichment.Depth(3.0,
+            new BigDecimal("3.40"), new BigDecimal("1.20"),
+            new DataAge.Span(DEADLINE, DEADLINE, 1, 0), new DataAge.Span(DEADLINE, LOADED, 5, 1));
 
     private static LockedSquad locked(String chip, int bank, int value, Pick... picks) {
         return new LockedSquad(chip, bank, value, 50, List.of(picks));
@@ -181,7 +190,7 @@ class MyTeamResponseTest {
     }
 
     private static MyTeamService.SquadPlayer player(Pick pick, FplBootstrap.Element element) {
-        return new MyTeamService.SquadPlayer(pick, element, null);
+        return new MyTeamService.SquadPlayer(pick, element, DEPTH);
     }
 
     private static Pick salahPick() {

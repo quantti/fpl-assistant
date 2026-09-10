@@ -3872,3 +3872,24 @@ probe updates.
 
 **Follow-up.** [KAR-51](https://linear.app/quantti/issue/KAR-51): a small test-profile Hikari pool,
 because the full suite runs close to the test database's `max_connections = 100`.
+
+## Stored-data age disclosed per reader (KAR-9, 2026-09-10)
+
+Plan: `docs/superpowers/plans/2026-09-10-kar-9-data-age.md`, 7/7 tasks, from `7721754`. `DataAge`
+owns the wording. Player cards and fallback gameweek rows print each displayed row's recorded
+write (`Stored-data age:`); fixture lists and FDR outlooks date their rows apart from the
+gameweek row that picked the start. Expected stats add per-season `Stored match coverage:` and
+the fixed `Metric refresh:` notice, which ranking and squad replies also carry beneath their three
+source lines. My Team tags stored xG/xA and FDR with their own ages, separate from the FPL fetch.
+The prompt and `AGENTS.md` keep season, record write, match date and capture distinct. There is
+no freshness gate, and selection, scoring and schemas are unchanged.
+
+Verified: disposable DB 841 tests, 0 failures/skips; frontend 33 tests and build green. Six
+nested clock contexts had pushed the suite past `max_connections` (75 failures), so the tests
+now build their tool with `DataAgeClock.provider()` and the pool count matches master (15).
+
+Limits: this surfaces recorded ages and the unknown core-sync time. A trustworthy PFS
+source-refresh timestamp needs an upstream writer/coverage contract outside this ticket.
+Untested: the solver-infeasible squad refusal. PR review: My Team now dates the starting
+gameweek only when some club has an FDR run, so a card without FDR carries no gameweek age. No
+live LLM chat was run.

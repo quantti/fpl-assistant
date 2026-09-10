@@ -58,6 +58,8 @@ class GameweekToolsCaptureTest {
         assertThat(result).contains("Gameweek 3 (id=3)").contains("Status: NEXT");
         assertThat(result).doesNotContain("Gameweek 1 (id=1)");
         assertThat(result).doesNotContain("Data source: season");
+        // FPL's own capture, not a Tapas row: no stored-row age is added here.
+        assertThat(result).doesNotContain("Stored-data age").doesNotContain(DataAge.GAMEWEEK_CAVEAT);
     }
 
     @Test

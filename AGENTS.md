@@ -63,6 +63,17 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
     banner therefore describes a labelled block rather than the whole reply.
   - **RAG strategy tool** (`StrategyTools.searchStrategyDocs`): does NOT prefix with `SeasonContext.provenance()` — the corpus is not resolved through `SeasonResolver`, and a single banner line cannot describe a mix of season-long reference and dated timely documents. Instead every retrieved chunk carries its own attribution: document `title`, `section`, `kind` (`reference`/`timely`) and the `valid_from`/`valid_until` window, and the system prompt instructs the model to weigh `timely` content by age. This is the RAG-side counterpart of the provenance discipline, for the same reason. Do not "fix" this tool back into the banner convention.
   - **Historical tools** (`HistoricalTools.getTeamForm`, `getHeadToHead`): every match names its own season and the reply states the range covered; `getTeamForm` also reports the date of its most recent known match so a stalled sync shows up as visibly old data. Old results are evidence about tendencies, not statements about current form — a 2019/20 result must not read as recent, and the system prompt instructs the model to attribute by season and never call historical results current form.
+  - **Stored-data age (KAR-9) sits beside those schemes and replaces none of them.** Season,
+    stored-row write time, match date and source capture are four different facts. A reply built
+    on Tapas rows adds, next to the data it describes, a `Stored-data age:` line (the `updated_at`
+    of the player/fixture/gameweek rows actually shown — a record write, not a completed sync), a
+    `Stored match coverage:` line (PFS kickoff range per season, stored rows only) or the fixed
+    `Metric refresh:` notice. `DataAge` is the one place for that wording. **Never show
+    `player_fixture_stats.updated_at` as metric freshness** — `trg_pfs_updated_at` fires on the
+    DefCon-only writes described below, so the core-stat refresh time is unknown and is said to be.
+    No staleness threshold: an unknown refresh is a disclosure, not an eligibility rule, and an old
+    completed-season archive is not a stalled sync. `team.updated_at` dates nothing. No age line on
+    daily-capture, schedule-capture, RAG or historical replies — their own schemes above stand.
 - Do NOT alter existing tapas tables. Only add new tables. **One deliberate exception, granted by
   the owner on 2026-08-26: `player_fixture_stats` carries four columns this project adds and
   fills — `defensive_contribution`, `clearances_blocks_interceptions`, `recoveries`, `tackles`.**

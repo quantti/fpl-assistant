@@ -5,6 +5,7 @@ import java.time.OffsetDateTime;
 
 import fi.karivanttinen.fplassistant.testsupport.FictitiousTestData;
 import fi.karivanttinen.fplassistant.testsupport.TapasSeed;
+import fi.karivanttinen.fplassistant.tools.DataAge;
 import fi.karivanttinen.fplassistant.tools.SeasonResolver;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -236,7 +237,9 @@ class SquadToolsCrossSeasonTest {
         String output = tools.buildSquad("", "", "", 100.0, 5, "");
 
         assertThat(output).doesNotContain("Starting XI");
-        assertThat(output).contains("60+").containsIgnoringCase("budget");
+        assertThat(output).contains("60+").containsIgnoringCase("budget")
+                .as("an infeasible-XI refusal still rests on PFS metrics")
+                .contains(DataAge.METRIC_REFRESH);
         assertThat(output).doesNotContain("Data source: season " + TapasSeed.CURRENT_SEASON_CODE
                 + " — a COMPLETED PREVIOUS season");
     }
