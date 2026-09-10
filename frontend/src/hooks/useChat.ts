@@ -62,6 +62,10 @@ export function useChat({ conversationId, onConversation, onTurnFinished }: UseC
         onToken: setStreamingContent,
       })
 
+      // replaceMessages may have aborted while sendChatTurn's cancel() was still settling; an
+      // intentional abort must never land a message in whatever transcript is now showing.
+      if (controller.signal.aborted) return
+
       switch (outcome.kind) {
         case 'completed':
           setMessages(prev => [...prev, { role: 'assistant', content: outcome.content }])
