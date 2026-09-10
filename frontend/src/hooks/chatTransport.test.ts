@@ -136,22 +136,26 @@ it('rejects with UNREACHABLE when the fetch itself fails', async () => {
 })
 
 describe('status classification', () => {
-  it.each([500, 502, 503])('maps %d to UNAVAILABLE with the status', async status => {
-    apiFetchMock.mockResolvedValue(new Response(null, { status }))
+  describe('maps 500, 502 and 503 to UNAVAILABLE with the status', () => {
+    it.each([500, 502, 503])('%d', async status => {
+      apiFetchMock.mockResolvedValue(new Response(null, { status }))
 
-    const outcome = await sendChatTurn(request(), new AbortController().signal, events())
+      const outcome = await sendChatTurn(request(), new AbortController().signal, events())
 
-    expect(outcome).toEqual({ kind: 'failed', message: UNAVAILABLE(status) })
-    expect((outcome as { message: string }).message).toContain(`HTTP ${status}`)
+      expect(outcome).toEqual({ kind: 'failed', message: UNAVAILABLE(status) })
+      expect((outcome as { message: string }).message).toContain(`HTTP ${status}`)
+    })
   })
 
-  it.each([400, 418])('maps %d to REJECTED with the status', async status => {
-    apiFetchMock.mockResolvedValue(new Response(null, { status }))
+  describe('maps 400 and 418 to REJECTED with the status', () => {
+    it.each([400, 418])('%d', async status => {
+      apiFetchMock.mockResolvedValue(new Response(null, { status }))
 
-    const outcome = await sendChatTurn(request(), new AbortController().signal, events())
+      const outcome = await sendChatTurn(request(), new AbortController().signal, events())
 
-    expect(outcome).toEqual({ kind: 'failed', message: REJECTED(status) })
-    expect((outcome as { message: string }).message).toContain(`HTTP ${status}`)
+      expect(outcome).toEqual({ kind: 'failed', message: REJECTED(status) })
+      expect((outcome as { message: string }).message).toContain(`HTTP ${status}`)
+    })
   })
 
   it('returns unauthorized on 401 without reading a body', async () => {
@@ -184,6 +188,33 @@ describe('status classification', () => {
     apiFetchMock.mockResolvedValueOnce(new Response('', { status: 429 }))
     await expect(sendChatTurn(request(), new AbortController().signal, events()))
       .resolves.toEqual({ kind: 'failed', message: 'Too many messages for now.' })
+  })
+
+  it('falls back to the generic 429 reason when the body read fails', async () => {
+    const response = new Response('irrelevant', { status: 429, headers: { 'Retry-After': '90' } })
+    vi.spyOn(response, 'text').mockRejectedValue(new Error('body read failed'))
+    apiFetchMock.mockResolvedValue(response)
+
+    const outcome = await sendChatTurn(request(), new AbortController().signal, events())
+
+    expect(outcome).toEqual({
+      kind: 'failed',
+      message: 'Too many messages for now. Try again in 2 minutes.',
+    })
+  })
+
+  it('returns aborted when the 429 body read fails after an abort', async () => {
+    const controller = new AbortController()
+    const response = new Response('irrelevant', { status: 429 })
+    vi.spyOn(response, 'text').mockImplementation(async () => {
+      controller.abort()
+      throw new Error('body read failed')
+    })
+    apiFetchMock.mockResolvedValue(response)
+
+    const outcome = await sendChatTurn(request(), controller.signal, events())
+
+    expect(outcome).toEqual({ kind: 'aborted' })
   })
 
   it('treats a 2xx without a body as INTERRUPTED', async () => {
@@ -227,6 +258,17 @@ describe('the SSE reader loop', () => {
     const outcome = await sendChatTurn(request(), new AbortController().signal, ev)
 
     expect(ev.truncated).toEqual([3])
+    expect(outcome).toEqual({ kind: 'completed', content: '' })
+  })
+
+  it('normalises a CRLF split across chunks so a trailing done still completes', async () => {
+    const frameText = 'event: done\r\ndata: \r\n\r\n'
+    const bytes = encode(frameText)
+    const splitAt = frameText.indexOf('\r\n') + 1 // split between the \r and \n of the first pair
+    apiFetchMock.mockResolvedValue(chunks(bytes.slice(0, splitAt), bytes.slice(splitAt)))
+
+    const outcome = await sendChatTurn(request(), new AbortController().signal, events())
+
     expect(outcome).toEqual({ kind: 'completed', content: '' })
   })
 
@@ -330,11 +372,17 @@ describe('abort handling', () => {
     await expect(outcomePromise).resolves.toEqual({ kind: 'aborted' })
   })
 
-  it('returns aborted when the signal fires during the read', async () => {
+  it('returns aborted when the signal fires during the read, leaking no partial content', async () => {
     const controller = new AbortController()
+    let delivered = false
     let rejectRead: ((err: unknown) => void) | undefined
     const stream = new ReadableStream<Uint8Array>({
-      pull() {
+      pull(streamController) {
+        if (!delivered) {
+          delivered = true
+          streamController.enqueue(encode(tokenFrame('partial')))
+          return
+        }
         return new Promise((_, reject) => { rejectRead = reject })
       },
     })
@@ -347,6 +395,8 @@ describe('abort handling', () => {
     rejectRead(new DOMException('Aborted', 'AbortError'))
 
     await expect(outcomePromise).resolves.toEqual({ kind: 'aborted' })
-    expect(ev.tokens).toEqual([])
+    // The first read delivered a token, proving the abort outcome discards accumulated text
+    // rather than there being nothing to discard.
+    expect(ev.tokens).toEqual(['partial'])
   })
 })
