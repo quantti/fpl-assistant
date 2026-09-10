@@ -1,5 +1,9 @@
 package dev.quantti.fplassistant.tools;
 
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
+
 import dev.quantti.fplassistant.testsupport.NewSeasonSeed;
 import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
 import org.junit.jupiter.api.AfterEach;
@@ -7,6 +11,10 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
+import org.springframework.context.annotation.Primary;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 
@@ -22,7 +30,20 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 @SpringBootTest
 @ActiveProfiles("test")
+@Import(ExpectedStatsToolsCrossSeasonTest.FixedClock.class)
 class ExpectedStatsToolsCrossSeasonTest {
+
+    /** The one {@code asOf} the coverage ages are measured against; BST, so UK time is UTC+1. */
+    static final Instant AS_OF = Instant.parse("2026-09-10T12:00:00Z");
+
+    @TestConfiguration
+    static class FixedClock {
+        @Bean
+        @Primary
+        Clock dataAgeClock() {
+            return Clock.fixed(AS_OF, ZoneOffset.UTC);
+        }
+    }
 
     @Autowired
     ExpectedStatsTools tools;
@@ -58,6 +79,21 @@ class ExpectedStatsToolsCrossSeasonTest {
                 + ", 2 from " + SharedStatsSeed.POPULATED_SEASON_CODE);
         assertThat(result).contains("  " + SharedStatsSeed.CURRENT_SEASON_CODE + " GW101");
         assertThat(result).contains("  " + SharedStatsSeed.POPULATED_SEASON_CODE + " GW");
+
+        // KAR-9: each season carries its own coverage range; the two never share one.
+        String current = "Stored match coverage: Ferreira, season " + SharedStatsSeed.CURRENT_SEASON_CODE
+                + " (2 returned fixture rows), known match dates from 2026-08-15 15:00 UK (25 days ago)"
+                + " to 2026-08-16 15:00 UK (24 days ago).";
+        String previous = "Stored match coverage: Ferreira, season " + SharedStatsSeed.POPULATED_SEASON_CODE
+                + " (2 returned fixture rows), known match dates from 2025-08-16 17:30 UK (389 days ago)"
+                + " to 2025-08-23 17:30 UK (382 days ago).";
+        assertThat(result).containsOnlyOnce(DataAge.METRIC_REFRESH)
+                .containsOnlyOnce(current).containsOnlyOnce(previous);
+        int previousBanner = result.indexOf("a COMPLETED PREVIOUS season");
+        assertThat(result.indexOf(DataAge.METRIC_REFRESH)).isGreaterThan(previousBanner);
+        assertThat(result.indexOf(current)).isGreaterThan(previousBanner)
+                .isLessThan(result.indexOf("Expected stats for"));
+        assertThat(result.indexOf(previous)).isLessThan(result.indexOf("Expected stats for"));
     }
 
     @Test
@@ -67,6 +103,9 @@ class ExpectedStatsToolsCrossSeasonTest {
         assertThat(result).doesNotContain("COMPLETED PREVIOUS");
         assertThat(result).contains("(last 2 fixtures):");
         assertThat(result).doesNotContain("from " + SharedStatsSeed.POPULATED_SEASON_CODE);
+        assertThat(result).containsOnlyOnce("Stored match coverage:")
+                .contains("Stored match coverage: Ferreira, season " + SharedStatsSeed.CURRENT_SEASON_CODE + " (")
+                .doesNotContain("2025-");
     }
 
     /**
@@ -82,6 +121,15 @@ class ExpectedStatsToolsCrossSeasonTest {
         assertThat(result).contains("from " + SharedStatsSeed.CURRENT_SEASON_CODE);
         assertThat(result).contains("from " + SharedStatsSeed.POPULATED_SEASON_CODE);
         assertThat(result).contains("  " + SharedStatsSeed.CURRENT_SEASON_CODE + " GW101");
+
+        // KAR-9: fixtures and their stored player rows are counted separately, per season.
+        assertThat(result).containsOnlyOnce(DataAge.METRIC_REFRESH)
+                .contains("Stored match coverage: " + SharedStatsSeed.ASHFIELD + ", season " + SharedStatsSeed.CURRENT_SEASON_CODE
+                        + " (2 returned fixtures from 2 stored player rows), known match dates from"
+                        + " 2026-08-15 15:00 UK (25 days ago) to 2026-08-16 15:00 UK (24 days ago).")
+                .contains("Stored match coverage: " + SharedStatsSeed.ASHFIELD + ", season " + SharedStatsSeed.POPULATED_SEASON_CODE
+                        + " (2 returned fixtures from 5 stored player rows), known match dates from"
+                        + " 2025-08-23 15:00 UK (382 days ago) to 2025-08-24 15:00 UK (381 days ago).");
     }
 
     /**
