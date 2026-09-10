@@ -1,19 +1,15 @@
 package dev.quantti.fplassistant.tools;
 
-import java.time.Clock;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 
+import dev.quantti.fplassistant.testsupport.DataAgeClock;
 import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.context.TestConfiguration;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Import;
-import org.springframework.context.annotation.Primary;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.annotation.Transactional;
@@ -29,11 +25,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 @SpringBootTest
 @ActiveProfiles("test")
-@Import(FixtureDifficultyToolsIntegrationTest.FixedClock.class)
 class FixtureDifficultyToolsIntegrationTest {
 
-    /** The one {@code asOf} the age lines are measured against; BST, so UK time is UTC+1. */
-    static final Instant AS_OF = Instant.parse("2026-09-10T12:00:00Z");
+    static final Instant AS_OF = DataAgeClock.AS_OF;
     /** An hour before {@link #AS_OF}: every row nobody should be reading is written this recently. */
     static final Instant FRESH = Instant.parse("2026-09-10T11:00:00Z");
 
@@ -43,16 +37,7 @@ class FixtureDifficultyToolsIntegrationTest {
             + ", last recorded write 2026-07-12 13:00 UK (60 days ago)."
             + " This is a database record time, not a live FPL check.";
 
-    @TestConfiguration
-    static class FixedClock {
-        @Bean
-        @Primary
-        Clock dataAgeClock() {
-            return Clock.fixed(AS_OF, ZoneOffset.UTC);
-        }
-    }
-
-    @Autowired
+    /** Built with the fixed clock rather than autowired; see {@link DataAgeClock}. */
     FixtureDifficultyTools tools;
 
     @Autowired
@@ -60,6 +45,11 @@ class FixtureDifficultyToolsIntegrationTest {
 
     @Autowired
     SeasonResolver seasonResolver;
+
+    @BeforeEach
+    void buildTools() {
+        tools = new FixtureDifficultyTools(jdbc, seasonResolver, DataAgeClock.provider());
+    }
 
     @BeforeEach
     void seed() {
