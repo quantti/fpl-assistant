@@ -406,6 +406,7 @@ class ChatSseLifecycleTest {
             assertThat(events).extracting(Event::name)
                     .containsExactly("conversation", "message", "error", "done");
             assertThat(events.get(1).data()).isEqualTo("\"partial\"");
+            assertThat(result.body().split("\n")).contains("data:" + ChatController.GENERATION_FAILED);
             assertThat(conversations.messages(conversation))
                     .extracting(ConversationStore.StoredMessage::role)
                     .containsExactly("user");
