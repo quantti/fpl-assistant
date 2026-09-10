@@ -2,12 +2,14 @@ package dev.quantti.fplassistant.myteam;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import dev.quantti.fplassistant.tools.DataAge;
 import dev.quantti.fplassistant.tools.SeasonContext;
 import dev.quantti.fplassistant.tools.SeasonResolver;
 
@@ -33,17 +35,40 @@ public class SquadEnrichment {
     /** How many upcoming fixtures the difficulty average covers. */
     static final int FIXTURE_RUN = 5;
 
-    public record Depth(Double nextFiveFdr, BigDecimal expectedGoals, BigDecimal expectedAssists) {
+    /**
+     * @param playerWrite the recorded write time of the one player row behind xG/xA (KAR-9)
+     * @param fdrWrites the write times of exactly the fixtures admitted to {@code nextFiveFdr};
+     *        null when there is no FDR
+     */
+    public record Depth(Double nextFiveFdr, BigDecimal expectedGoals, BigDecimal expectedAssists,
+                        DataAge.Span playerWrite, DataAge.Span fdrWrites) {
+    }
+
+    /**
+     * The gameweek row that chose where every club's FDR run starts, with its own write time
+     * (KAR-9). {@code id} is null and {@code write} empty when the season has no gameweek row.
+     */
+    public record StartingGameweek(Integer id, DataAge.Span write) {
     }
 
     /**
      * @param available whether the database could be used at all — false across the season
      *        changeover, when its ids belong to another season
+     * @param startingGameweek null when no FDR run was looked up: the gate refused, or no squad
+     *        player had a club
      */
-    public record Enrichment(boolean available, SeasonContext season, Map<Integer, Depth> byElement) {
+    public record Enrichment(boolean available, SeasonContext season, Map<Integer, Depth> byElement,
+                             StartingGameweek startingGameweek) {
         public Depth of(int elementId) {
             return byElement.get(elementId);
         }
+    }
+
+    /** A club's FDR average and the write times of exactly the fixtures that went into it. */
+    private record Run(double average, DataAge.Span writes) {
+    }
+
+    private record Admitted(int difficulty, Object writtenAt) {
     }
 
     private final JdbcTemplate jdbc;
@@ -57,7 +82,7 @@ public class SquadEnrichment {
     public Enrichment forElements(Set<Integer> elementIds) {
         SeasonContext season = seasonResolver.resolve();
         if (!season.currentSeason() || elementIds.isEmpty()) {
-            return new Enrichment(false, season, Map.of());
+            return new Enrichment(false, season, Map.of(), null);
         }
 
         Map<Integer, Integer> teamByElement = new LinkedHashMap<>();
@@ -68,12 +93,12 @@ public class SquadEnrichment {
         args.addAll(elementIds);
 
         List<Map<String, Object>> players = jdbc.queryForList(
-                "SELECT id, team_id, expected_goals, expected_assists FROM player"
+                "SELECT id, team_id, expected_goals, expected_assists, updated_at FROM player"
                         + " WHERE season_id = ? AND id IN (" + placeholders + ")", args.toArray());
         if (players.isEmpty()) {
             // The season is flagged current but its players have not landed yet: the same empty
             // window SeasonResolver exists for, seen from the other side.
-            return new Enrichment(false, season, Map.of());
+            return new Enrichment(false, season, Map.of(), null);
         }
         for (Map<String, Object> player : players) {
             int id = ((Number) player.get("id")).intValue();
@@ -83,33 +108,44 @@ public class SquadEnrichment {
                 teamByElement.put(id, teamId);
             }
             depth.put(id, new Depth(null, (BigDecimal) player.get("expected_goals"),
-                    (BigDecimal) player.get("expected_assists")));
+                    (BigDecimal) player.get("expected_assists"),
+                    DataAge.Span.of(Collections.singletonList(player.get("updated_at"))), null));
         }
 
-        Map<Integer, Double> fdr = fixtureDifficulty(season, Set.copyOf(teamByElement.values()));
+        Set<Integer> clubs = Set.copyOf(teamByElement.values());
+        StartingGameweek start = clubs.isEmpty() ? null : startingGameweek(season);
+        Map<Integer, Run> runs = start == null || start.id() == null
+                ? Map.of() : fixtureRuns(season, start.id(), clubs);
         for (Map.Entry<Integer, Integer> entry : teamByElement.entrySet()) {
             Depth current = depth.get(entry.getKey());
-            depth.put(entry.getKey(), new Depth(fdr.get(entry.getValue()),
-                    current.expectedGoals(), current.expectedAssists()));
+            Run run = runs.get(entry.getValue());
+            if (run != null) {
+                depth.put(entry.getKey(), new Depth(run.average(), current.expectedGoals(),
+                        current.expectedAssists(), current.playerWrite(), run.writes()));
+            }
         }
-        return new Enrichment(true, season, Map.copyOf(depth));
+        return new Enrichment(true, season, Map.copyOf(depth), start);
     }
 
-    /** Average difficulty over each team's next {@value #FIXTURE_RUN} scheduled fixtures. */
-    private Map<Integer, Double> fixtureDifficulty(SeasonContext season, Set<Integer> teamIds) {
-        if (teamIds.isEmpty()) {
-            return Map.of();
-        }
-        Integer startGw = jdbc.queryForObject("""
-                SELECT COALESCE(
+    /** The current gameweek row, else the next, else the season's first — with its write time. */
+    private StartingGameweek startingGameweek(SeasonContext season) {
+        List<Map<String, Object>> start = jdbc.queryForList("""
+                SELECT id, updated_at FROM gameweek
+                WHERE season_id = ? AND id = COALESCE(
                     (SELECT id FROM gameweek WHERE season_id = ? AND is_current = true ORDER BY id LIMIT 1),
                     (SELECT id FROM gameweek WHERE season_id = ? AND is_next = true ORDER BY id LIMIT 1),
                     (SELECT MIN(id) FROM gameweek WHERE season_id = ?))
-                """, Integer.class, season.seasonId(), season.seasonId(), season.seasonId());
-        if (startGw == null) {
-            return Map.of();
+                """, season.seasonId(), season.seasonId(), season.seasonId(), season.seasonId());
+        if (start.isEmpty()) {
+            return new StartingGameweek(null, DataAge.Span.of(List.of()));
         }
+        Map<String, Object> row = start.getFirst();
+        return new StartingGameweek(((Number) row.get("id")).intValue(),
+                DataAge.Span.of(Collections.singletonList(row.get("updated_at"))));
+    }
 
+    /** Average difficulty over each team's next {@value #FIXTURE_RUN} rated fixtures. */
+    private Map<Integer, Run> fixtureRuns(SeasonContext season, int startGw, Set<Integer> teamIds) {
         String placeholders = String.join(",", java.util.Collections.nCopies(teamIds.size(), "?"));
         List<Object> args = new ArrayList<>();
         args.add(season.seasonId());
@@ -117,23 +153,26 @@ public class SquadEnrichment {
         args.addAll(teamIds);
         args.addAll(teamIds);
         List<Map<String, Object>> fixtures = jdbc.queryForList(
-                "SELECT gameweek, team_h, team_a, team_h_difficulty, team_a_difficulty FROM fixture"
+                "SELECT gameweek, team_h, team_a, team_h_difficulty, team_a_difficulty, updated_at"
+                        + " FROM fixture"
                         + " WHERE season_id = ? AND gameweek IS NOT NULL AND gameweek >= ?"
                         + " AND (team_h IN (" + placeholders + ") OR team_a IN (" + placeholders + "))"
                         + " ORDER BY gameweek", args.toArray());
 
-        Map<Integer, List<Integer>> runs = new HashMap<>();
+        Map<Integer, List<Admitted>> admitted = new HashMap<>();
         for (Map<String, Object> fixture : fixtures) {
-            addDifficulty(runs, teamIds, fixture, "team_h", "team_h_difficulty");
-            addDifficulty(runs, teamIds, fixture, "team_a", "team_a_difficulty");
+            addDifficulty(admitted, teamIds, fixture, "team_h", "team_h_difficulty");
+            addDifficulty(admitted, teamIds, fixture, "team_a", "team_a_difficulty");
         }
-        Map<Integer, Double> averages = new HashMap<>();
-        runs.forEach((teamId, difficulties) -> averages.put(teamId,
-                difficulties.stream().mapToInt(Integer::intValue).average().orElse(0)));
-        return averages;
+        // The age covers the same admitted fixtures as the average, never every row fetched.
+        Map<Integer, Run> runs = new HashMap<>();
+        admitted.forEach((teamId, run) -> runs.put(teamId, new Run(
+                run.stream().mapToInt(Admitted::difficulty).average().orElse(0),
+                DataAge.Span.of(run.stream().map(Admitted::writtenAt).toList()))));
+        return runs;
     }
 
-    private static void addDifficulty(Map<Integer, List<Integer>> runs, Set<Integer> teamIds,
+    private static void addDifficulty(Map<Integer, List<Admitted>> runs, Set<Integer> teamIds,
                                       Map<String, Object> fixture, String teamColumn,
                                       String difficultyColumn) {
         Object team = fixture.get(teamColumn);
@@ -145,9 +184,9 @@ public class SquadEnrichment {
         if (!teamIds.contains(teamId)) {
             return;
         }
-        List<Integer> run = runs.computeIfAbsent(teamId, ignored -> new ArrayList<>());
+        List<Admitted> run = runs.computeIfAbsent(teamId, ignored -> new ArrayList<>());
         if (run.size() < FIXTURE_RUN) {
-            run.add(((Number) difficulty).intValue());
+            run.add(new Admitted(((Number) difficulty).intValue(), fixture.get("updated_at")));
         }
     }
 }
