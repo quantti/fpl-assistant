@@ -3708,3 +3708,69 @@ regressions only; it did not reload production embeddings or measure a live sele
 An independent reviewer compared the whole diff with `origin/master` and reported
 `No actionable findings.` The review was read-only and the reviewer ran no tests. No production
 ingestion or deployment was performed.
+
+## Chat SSE header race: security headers written eagerly (KAR-42, 2026-09-10)
+
+Plan and full evidence: `docs/superpowers/plans/2026-09-09-kar-42-sse-concurrency.md`.
+
+**Cause.** Spring Security's `HeaderWriterFilter` wrote the security headers lazily, and on
+`POST /api/chat` it wrote them twice with nothing ordering the two writes: once from the MVC
+executor thread when the first SSE flush committed the response, and once from the request
+thread's `finally` while it unwound after `startAsync`. On MockMvc the two writes collide in
+`MockHttpServletResponse`'s header `HashMap`, which is the CI `ConcurrentModificationException`.
+On Tomcat the same overlap happens with no error. **Repair:** `SecurityConfig` sets
+`HeaderWriterFilter.setShouldWriteHeadersEagerly(true)`, so the headers are written before the
+chain runs and the on-commit path is gone.
+
+**Upstream.** [spring-security gh-9175](https://github.com/spring-projects/spring-security/issues/9175)
+is fixed by [PR #19103](https://github.com/spring-projects/spring-security/pull/19103). The 7.1.x
+forward port, [#19647](https://github.com/spring-projects/spring-security/issues/19647), ships in
+7.1.2, which is not yet released; 7.1.1 is the latest. That fix is a compare-and-set: it stops the
+second write but still lets the async commit overlap the request thread's write. **Upgrade rule:**
+after moving to 7.1.2 or later, keep eager writing unless the four `FIRST_FLUSH_DURING_UNWIND`
+cases in `ChatSseLifecycleTest` pass without it.
+
+**Header deltas (Ruling G).** `/api/my-team` keeps its single `Cache-Control: no-store` and now also
+carries `Pragma: no-cache` and `Expires: 0`. Static-resource 304s now carry the security cache
+headers, which lazy mode skipped. Everything else `SecurityHeadersTest` reads is unchanged.
+
+**Contract coverage.** These already existed and needed no new code:
+- Refund vs retained usage, including a failure after only the model name is known:
+  `ChatControllerTest` `aFailureThatOnlyLearnedTheModelNameIsStillRefunded` (:209),
+  `aFailureAfterTokensWereReportedKeepsTheCharge` (:291) and
+  `aMidStreamFailureEmitsAnErrorEventAndStoresNothing` (:489), plus the lifecycle
+  `MID_STREAM_FAILURE` cases over both transports.
+- No partial persistence: `ChatControllerTest` :489 and the lifecycle `MID_STREAM_FAILURE` cases.
+- Ownership 404 (:452), validation 400 (:472), and quota 429 with `Retry-After` (:129).
+- Truncation: `turnsLostToTheReadCeilingAreAnnouncedToo` (:189), `aTrimmedHistoryIsAnnouncedToTheClient`
+  (:251) and the lifecycle `READ_CEILING_TRUNCATED` cases.
+- Event order: the lifecycle `containsExactly(...)` over both transports (`ChatSseLifecycleTest`
+  :395, :407), which also guarantees exactly one `done`.
+- Bounded cleanup: the lifecycle teardown, and the `@AfterEach` in `ChatControllerTest` (:114).
+
+New in this change:
+- `ChatSseLifecycleTest.anAnswerOutlivesABrowserThatClosedTheResponse` (:218) closes a real Tomcat
+  response mid-answer, then completes the model. The answer is stored exactly once and the
+  measured usage is recorded.
+- `ChatControllerTest.persistenceAndAccountingRunOffTheProviderThread` (:316) emits from a
+  `provider-loop` thread and asserts `append` and `recordTokens` run on `boundedElastic`. Without
+  `publishOn` it fails.
+- The `READ_CEILING_TRUNCATED` token is `" an\nswer"`, asserted as the raw wire line
+  `data:" an\nswer"` and as the stored content.
+- `SecurityHeadersTest.anUnhandledFailureKeepsTheSecurityHeadersOnTomcat` (:199): an uncaught
+  exception gives a 500 that still carries `nosniff` and `DENY`.
+
+The lifecycle teardown's wait for recorded tokens had keyed on `total_tokens IS NOT NULL`. That
+column is a generated sum of COALESCEd columns, so it is never NULL and the wait passed at once.
+It now keys on `input_tokens`.
+
+**Limitations.** On MockMvc, `TERMINAL_DURING_DISPATCH` is observed rather than forced. On Tomcat
+the overlap is silent, so only the probe sees it. The probe reads private Spring Framework 7.0.8
+fields (`taskExecutor`, `reactiveHandler`, `asyncRequestTimeout`), so a Framework upgrade may need
+probe updates.
+
+**CI evidence.** Artifact upload was verified on the PR: run 34486382124 uploaded
+`backend-test-results` (504040 bytes). The artifact is now kept 14 days.
+
+**Follow-up.** [KAR-51](https://linear.app/quantti/issue/KAR-51): a small test-profile Hikari pool,
+because the full suite runs close to the test database's `max_connections = 100`.

@@ -1,6 +1,6 @@
 # KAR-42 — diagnose and fix the intermittent chat SSE concurrency failure
 
-**PROGRESS:** Task 3/4 done; repair: `SecurityConfig` makes `HeaderWriterFilter` write security headers eagerly, since the upstream gh-9175 fix is unreleased.
+**PROGRESS:** Task 4/4 done
 
 Existing issue: [KAR-42](https://linear.app/quantti/issue/KAR-42/chatcontrollertest-hit-a-concurrentmodificationexception-inside-the).
 Checked 2026-09-09: Backlog, Low (4). No duplicate was created and no priority/status was changed.
@@ -266,7 +266,7 @@ Several consecutive green runs are supplementary evidence, not the red/green pro
     the app had already set `Cache-Control`.
   - A static-resource 304 now carries the trio, which lazy mode skipped for 304 responses.
 
-  CORS, the SSE `Content-Type`, 401, 403, 404, the quota 429 with `Retry-After` and the
+  CORS, the SSE `Content-Type`, 401, 404, the quota 429 with `Retry-After` and the
   rate-limit 429 are unchanged.
 - **Red/green.** With the repair absent, the four `FIRST_FLUSH_DURING_UNWIND` cases fail on the
   overlap assertion on both transports (`build/diagnostics/kar-42/task3-red/`). With it present,
