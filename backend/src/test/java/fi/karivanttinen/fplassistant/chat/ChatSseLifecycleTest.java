@@ -1,5 +1,7 @@
 package fi.karivanttinen.fplassistant.chat;
 
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -250,8 +252,10 @@ class ChatSseLifecycleTest {
                 assertThat(run.seq("send-task-1.released"))
                         .as("the first send task started only after initialize returned")
                         .isGreaterThan(run.seq("emitter.initialized"));
-                assertThat(run.seq("emitter.mutation-during-dispatch"))
-                        .as("the emitter thread's first commit began before the request thread unwound")
+                // A header write or a flush: a repair that stops the on-commit header writes must
+                // still satisfy this precondition and be judged by the overlap assertion alone.
+                assertThat(run.seq("emitter.reached-response"))
+                        .as("the emitter thread reached the response before the request thread unwound")
                         .isPositive()
                         .isLessThan(run.seq("request.exit"));
                 assertThat(run.thread("commit"))
@@ -405,8 +409,8 @@ class ChatSseLifecycleTest {
         out.append("timeouts: ").append(run.timeouts).append('\n');
         out.append("teardown problems: ").append(problems).append('\n');
         if (failure != null) {
-            java.io.StringWriter stack = new java.io.StringWriter();
-            failure.printStackTrace(new java.io.PrintWriter(stack));
+            StringWriter stack = new StringWriter();
+            failure.printStackTrace(new PrintWriter(stack));
             out.append("failure:\n").append(stack);
         }
         SseLifecycleProbe.writeDiagnostic("lifecycle/" + caseId + ".log", out.toString());

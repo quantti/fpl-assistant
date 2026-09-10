@@ -132,7 +132,9 @@ needed. Leave KAR-42 open; do not select a scheduler fix merely because ordinary
 ### Task 2 outcome
 
 Root-cause gate passed. Versions: JDK 25.0.4 (same patch as CI), Spring Framework 7.0.8, Spring
-Security 7.1.0. Line mappings were checked against those exact sources.
+Security 7.1.0. The Gradle cache holds no sources jars, so line mappings were checked against the
+7.0.8/7.1.0 sources jars fetched from Maven Central. The runtime stacks below come from the
+bytecode line-number tables, and they agree with those sources.
 
 - **Cause.** Spring Security's `HeaderWriterFilter` defers header writing by default, so it writes
   the security headers twice on the same response. Nothing orders the two writes. (1) On the MVC
@@ -155,15 +157,51 @@ Security 7.1.0. Line mappings were checked against those exact sources.
     on the async dispatch. This is CI case 1.
   - On the request thread, the CME comes from `doHeadersAfter:93` → `XXssProtectionHeaderWriter`
     and leaves `perform` directly under `WebClientRequestException`. This is CI case 2.
-  - Evidence: a temporary barrier-released run hit the genuine CME in 5 of 40 attempts. That run
-    was not deterministic, so it is not committed. Its logs are kept under
-    `build/diagnostics/kar-42/race-run-1/`.
+  - Evidence: a temporary race mode hit the genuine CME in 5 of 40 attempts. It held both threads
+    before they delegated their first header write, then released them together through a
+    barrier. No lock was bypassed. The mode was not deterministic, so it is not committed.
+
+  Emitter thread (attempt 6, CI case 1):
+
+  ```
+  IllegalStateException: Failed to send [...]  at ResponseBodyEmitter.sendInternal(ResponseBodyEmitter.java:259)
+    at ResponseBodyEmitter.send(ResponseBodyEmitter.java:240) ← SseEmitter.send(SseEmitter.java:131)
+    at ReactiveTypeHandler$SseEmitterSubscriber.send(:435) ← $AbstractEmitterSubscriber.run(:357)
+  Caused by: ConcurrentModificationException  at HashMap.computeIfAbsent(HashMap.java:1230)
+    at LinkedCaseInsensitiveMap.computeIfAbsent(LinkedCaseInsensitiveMap.java:235)
+    at MockHttpServletResponse.doAddHeaderValue(MockHttpServletResponse.java:788) ← addHeader(:699)
+    at StaticHeadersWriter.writeHeaders(:64) ← CacheControlHeadersWriter.writeHeaders(:64)
+    at HeaderWriterFilter.writeHeaders(HeaderWriterFilter.java:99)
+    at HeaderWriterFilter$HeaderWriterResponse.onResponseCommitted(HeaderWriterFilter.java:124)
+    at OnCommittedResponseWrapper.flushBuffer(OnCommittedResponseWrapper.java:194)
+    at ServletServerHttpResponse.flush(ServletServerHttpResponse.java:126)
+    at ResponseBodyEmitterReturnValueHandler$DefaultSseEmitterHandler.send(:299)
+    at ResponseBodyEmitter.sendInternal(ResponseBodyEmitter.java:253)
+  ```
+
+  Request thread (attempt 16, CI case 2, thrown out of `perform`):
+
+  ```
+  ConcurrentModificationException  at HashMap.computeIfAbsent(HashMap.java:1230)
+    at LinkedCaseInsensitiveMap.computeIfAbsent(LinkedCaseInsensitiveMap.java:235)
+    at MockHttpServletResponse.doAddHeaderValue(MockHttpServletResponse.java:788)
+    at MockHttpServletResponse.setHeader(MockHttpServletResponse.java:694)
+    at FirewalledResponse.setHeader(FirewalledResponse.java:54)
+    at XXssProtectionHeaderWriter.writeHeaders(XXssProtectionHeaderWriter.java:52)
+    at HeaderWriterFilter.writeHeaders(HeaderWriterFilter.java:99)
+    at HeaderWriterFilter$HeaderWriterResponse.writeHeaders(HeaderWriterFilter.java:132)
+    at HeaderWriterFilter.doHeadersAfter(HeaderWriterFilter.java:93)
+    at HeaderWriterFilter.doFilterInternal(HeaderWriterFilter.java:75)
+    at … SecurityContextHolderFilter / FilterChainProxy / MockFilterChain (client thread)
+  ```
 - **Ordering comparison.** `ChatSseLifecycleTest` runs 12 cases: 2 scenarios × 3 orderings × 2
   transports (MockMvc, Tomcat).
   - `EARLY_QUEUED` and `TERMINAL_DURING_DISPATCH` pass on both transports. In these orderings
     `initialize` commits on the request thread, so the `finally` write is skipped. The terminal
     flush comes before `postProcess`, and the async dispatch runs under the `WebAsyncManager`
-    monitor after it.
+    monitor after it. On MockMvc, `TERMINAL_DURING_DISPATCH` is observed, not forced:
+    `MockMvcHttpConnector` cannot dispatch or adapt the response before the result is set. Only on
+    Tomcat is completion held until the client has read `event:done`.
   - `FIRST_FLUSH_DURING_UNWIND` records the overlap on both transports: the request thread writes
     the same six headers while the emitter thread is inside its first commit.
   - The race is therefore not MockMvc-only. Tomcat's `MimeHeaders` has no fail-fast check, so there
@@ -171,6 +209,10 @@ Security 7.1.0. Line mappings were checked against those exact sources.
 - **Regression.** The four `FIRST_FLUSH_DURING_UNWIND` cases are committed enabled and red (reports
   in `build/diagnostics/kar-42/red-run-2/`). The probe pauses the emitter before it delegates, so
   those cases fail on the recorded overlap, never on a manufactured CME. The other eight are green.
+  Their precondition only requires that the emitter reach the response before the request thread
+  unwinds, by either a header write or a flush. The overlap assertion is therefore the only check
+  specific to the cause. A temporary, reverted eager-header change in `SecurityConfig` (through
+  `HeaderWriterFilter.setShouldWriteHeadersEagerly`) turned all 12 green.
 - **For Task 3.** This is the framework row, reached through this app's `SecurityConfig` defaults.
   First look for an upstream Spring Security issue or fix. Then compare that with a change at the
   `SecurityConfig` boundary, and verify whichever is chosen with these cases.
