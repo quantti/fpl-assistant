@@ -1,21 +1,27 @@
 package fi.karivanttinen.fplassistant.chat;
 
+import java.io.BufferedReader;
+import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.stream.Stream;
@@ -24,6 +30,7 @@ import fi.karivanttinen.fplassistant.chat.SseLifecycleProbe.Ordering;
 import fi.karivanttinen.fplassistant.chat.SseLifecycleProbe.Run;
 import fi.karivanttinen.fplassistant.testsupport.LocalSigningKey;
 import fi.karivanttinen.fplassistant.testsupport.TestJwks;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
@@ -36,6 +43,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.reactive.server.EntityExchangeResult;
@@ -58,17 +66,26 @@ import static org.mockito.Mockito.when;
  * the security headers ({@code HeaderWriterFilter}'s on-commit hook) and the request thread
  * writes them again from {@code HeaderWriterFilter}'s {@code finally} — two threads mutating
  * one response's headers with nothing ordering them.
+ *
+ * <p>The full 12-case matrix stays in the normal suite: it is deterministic, takes about 3 s with
+ * no loops or retries, and its non-regression cases carry the wire-contract assertions over both
+ * transports.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 @Import({LocalSigningKey.class, SseLifecycleProbe.Config.class})
+// A context no other class shares: close it, or its connection pool stays cached and the suite
+// exhausts the test database's max_connections.
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 class ChatSseLifecycleTest {
 
     private static final String USER = "6b7c8d9e-4242-4242-8242-424242424242";
     private static final Duration CASE_TIMEOUT = Duration.ofSeconds(20);
     /** TEST-NET-2 addresses: each case its own bucket of the shared 20/minute limit. */
     private static final AtomicInteger IP = new AtomicInteger(10);
+    /** A leading space and an embedded newline: both must survive SSE framing. */
+    private static final String AWKWARD_TOKEN = " an\nswer";
 
     enum Transport { MOCK_MVC, SERVLET }
 
@@ -165,7 +182,7 @@ class ChatSseLifecycleTest {
             assertThat(run.requestExited.await(CASE_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS))
                     .as("the request thread left the filter chain").isTrue();
             if (scenario == Scenario.READ_CEILING_TRUNCATED) {
-                assertThat(model.tryEmitNext("answer").isSuccess()).isTrue();
+                assertThat(model.tryEmitNext(AWKWARD_TOKEN).isSuccess()).isTrue();
                 assertThat(model.tryEmitComplete().isSuccess()).isTrue();
             }
             else {
@@ -187,7 +204,90 @@ class ChatSseLifecycleTest {
             throw t;
         }
         finally {
-            teardown(run, model, scenario, streamed.get(), clientThread, http, caseId, failure);
+            teardown(run, model, scenario == Scenario.READ_CEILING_TRUNCATED, streamed.get(),
+                    clientThread, http, caseId, failure);
+        }
+    }
+
+    /**
+     * A browser that closes a real HTTP response mid-answer: the model finishes afterwards, and
+     * the answer is still stored exactly once and its measured usage recorded. No probe ordering
+     * is armed; this is the plain servlet path.
+     */
+    @Test
+    void anAnswerOutlivesABrowserThatClosedTheResponse() throws Exception {
+        String caseId = "SERVLET-BROWSER-DISCONNECT";
+        Sinks.Many<String> model = Sinks.many().unicast().onBackpressureBuffer();
+        AtomicReference<Consumer<TokenUsage>> usage = new AtomicReference<>();
+        AtomicBoolean streamed = new AtomicBoolean();
+        when(chatService.stream(any(), any(), any())).thenAnswer(invocation -> {
+            usage.set(invocation.getArgument(2));
+            streamed.set(true);
+            return model.asFlux();
+        });
+
+        ExecutorService clientThread = Executors.newSingleThreadExecutor(r -> new Thread(r, "kar42-client"));
+        HttpClient http = HttpClient.newBuilder().connectTimeout(SseLifecycleProbe.PHASE_TIMEOUT).build();
+        CountDownLatch sawConversation = new CountDownLatch(1);
+        Throwable failure = null;
+        try {
+            HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/chat"))
+                    .timeout(CASE_TIMEOUT)
+                    .header("Authorization", "Bearer " + TestJwks.validTokenFor(USER))
+                    .header("Fly-Client-IP", "198.51.100." + IP.getAndIncrement())
+                    .header("Content-Type", MediaType.APPLICATION_JSON_VALUE)
+                    .header("Accept", MediaType.TEXT_EVENT_STREAM_VALUE)
+                    .POST(HttpRequest.BodyPublishers.ofString("{\"message\":\"question\"}"))
+                    .build();
+            // Reads the conversation event and the first token, then closes the body.
+            Future<List<String>> read = clientThread.submit(() -> {
+                HttpResponse<InputStream> response = http.send(request, HttpResponse.BodyHandlers.ofInputStream());
+                assertThat(response.statusCode()).isEqualTo(200);
+                List<String> lines = new ArrayList<>();
+                try (BufferedReader body = new BufferedReader(
+                        new InputStreamReader(response.body(), StandardCharsets.UTF_8))) {
+                    int data = 0;
+                    for (String line; data < 2 && (line = body.readLine()) != null; ) {
+                        lines.add(line);
+                        if (line.equals("event:conversation")) {
+                            sawConversation.countDown();
+                        }
+                        if (line.startsWith("data:")) {
+                            data++;
+                        }
+                    }
+                }
+                return lines;
+            });
+
+            assertThat(sawConversation.await(CASE_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS))
+                    .as("the client read the conversation event").isTrue();
+            assertThat(model.tryEmitNext("half an ").isSuccess()).isTrue();
+            List<String> lines = read.get(CASE_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
+            assertThat(lines).first().isEqualTo("event:conversation");
+            assertThat(lines).last().isEqualTo("data:\"half an \"");
+            UUID conversation = UUID.fromString(lines.get(1).substring("data:".length()).replace("\"", ""));
+
+            // The browser is gone; the model finishes and reports what it measured.
+            usage.get().accept(new TokenUsage("fake-model", 10, 0, 0, 5));
+            assertThat(model.tryEmitNext("answer").isSuccess()).isTrue();
+            assertThat(model.tryEmitComplete().isSuccess()).isTrue();
+
+            assertThat(await(() -> detachedWorkDone(true)))
+                    .as("the single usage row carries the measured tokens").isTrue();
+            assertThat(jdbc.queryForList("SELECT content FROM " + messageTable
+                    + " WHERE conversation_id = ? AND role = 'assistant'", String.class, conversation))
+                    .as("the whole answer, stored exactly once")
+                    .containsExactly("half an answer");
+            assertThat(jdbc.queryForObject("SELECT total_tokens FROM " + usageTable + " WHERE user_id = ?",
+                    Integer.class, UUID.fromString(USER))).isEqualTo(15);
+        }
+        catch (Throwable t) {
+            failure = t;
+            throw t;
+        }
+        finally {
+            teardown(null, model, true, streamed.get(), clientThread, http, caseId, failure);
         }
     }
 
@@ -293,11 +393,14 @@ class ChatSseLifecycleTest {
         if (scenario == Scenario.READ_CEILING_TRUNCATED) {
             assertThat(events).extracting(Event::name)
                     .containsExactly("conversation", "truncated", "message", "done");
-            assertThat(events.get(2).data()).isEqualTo("\"answer\"");
+            // On the wire the token is one JSON-string line: the leading space survives the
+            // decoder, and the newline cannot split the event.
+            assertThat(result.body().split("\n")).contains("data:\" an\\nswer\"");
+            assertThat(events.get(2).data()).isEqualTo("\" an\\nswer\"");
             assertThat(conversation).isEqualTo(existing);
             assertThat(jdbc.queryForObject("SELECT count(*) FROM " + messageTable
-                    + " WHERE conversation_id = ? AND role = 'assistant' AND content = 'answer'",
-                    Integer.class, conversation)).isEqualTo(1);
+                    + " WHERE conversation_id = ? AND role = 'assistant' AND content = ?",
+                    Integer.class, conversation, AWKWARD_TOKEN)).isEqualTo(1);
         }
         else {
             assertThat(events).extracting(Event::name)
@@ -337,11 +440,13 @@ class ChatSseLifecycleTest {
      * subscription's last write, closes the client and only then deletes the seeded rows — on
      * the failure path as much as the passing one.
      */
-    private void teardown(Run run, Sinks.Many<String> model, Scenario scenario, boolean streamed,
+    private void teardown(Run run, Sinks.Many<String> model, boolean measured, boolean streamed,
                           ExecutorService clientThread, HttpClient http, String caseId, Throwable failure) {
         List<String> problems = new ArrayList<>();
-        run.releaseAll();
-        if (scenario == Scenario.READ_CEILING_TRUNCATED) {
+        if (run != null) {
+            run.releaseAll();
+        }
+        if (measured) {
             model.tryEmitComplete();
         }
         else {
@@ -355,7 +460,7 @@ class ChatSseLifecycleTest {
                     problems.add("client thread did not stop");
                 }
             }
-            if (streamed && !await(() -> detachedWorkDone(scenario))) {
+            if (streamed && !await(() -> detachedWorkDone(measured))) {
                 problems.add("the detached persistence/accounting did not finish");
             }
             http.shutdownNow();
@@ -369,7 +474,9 @@ class ChatSseLifecycleTest {
         }
         finally {
             probe.disarm();
-            writeLog(run, caseId, failure, problems);
+            if (run != null) {
+                writeLog(run, caseId, failure, problems);
+            }
             UUID id = UUID.fromString(USER);
             jdbc.update("DELETE FROM " + conversationTable + " WHERE user_id = ?", id);
             jdbc.update("DELETE FROM " + usageTable + " WHERE user_id = ?", id);
@@ -380,12 +487,17 @@ class ChatSseLifecycleTest {
         }
     }
 
-    /** The last write either terminal path makes: tokens recorded, or the charge discarded. */
-    private boolean detachedWorkDone(Scenario scenario) {
+    /**
+     * The last write either terminal path makes: the single usage row's tokens recorded, or the
+     * charge discarded. Keyed on a stored column: {@code total_tokens} is a generated sum of
+     * COALESCEd columns, so it is 0, never NULL, from the moment the turn is claimed.
+     */
+    private boolean detachedWorkDone(boolean measured) {
         UUID id = UUID.fromString(USER);
-        if (scenario == Scenario.READ_CEILING_TRUNCATED) {
-            return Boolean.TRUE.equals(jdbc.queryForObject("SELECT count(*) = 1 FROM " + usageTable
-                    + " WHERE user_id = ? AND total_tokens IS NOT NULL", Boolean.class, id));
+        if (measured) {
+            return Boolean.TRUE.equals(jdbc.queryForObject("SELECT count(*) = 1"
+                    + " AND bool_and(input_tokens IS NOT NULL) FROM " + usageTable
+                    + " WHERE user_id = ?", Boolean.class, id));
         }
         return jdbc.queryForObject("SELECT count(*) FROM " + usageTable + " WHERE user_id = ?",
                 Integer.class, id) == 0;

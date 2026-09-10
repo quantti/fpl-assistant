@@ -1,10 +1,17 @@
 package fi.karivanttinen.fplassistant.chat;
 
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 import fi.karivanttinen.fplassistant.testsupport.LocalSigningKey;
 import fi.karivanttinen.fplassistant.testsupport.TestJwks;
+import fi.karivanttinen.fplassistant.user.UsageService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -30,6 +37,8 @@ import reactor.test.StepVerifier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.when;
 
 /**
@@ -73,6 +82,9 @@ class ChatControllerTest {
     // to fail.
     @org.springframework.test.context.bean.override.mockito.MockitoSpyBean
     ConversationStore conversationsSpy;
+
+    @org.springframework.test.context.bean.override.mockito.MockitoSpyBean
+    UsageService usageSpy;
 
     @Value("${fpl.user.conversation-table-name}")
     String conversationTable;
@@ -294,6 +306,65 @@ class ChatControllerTest {
                 + " WHERE user_id = ?", UUID.fromString(USER_A)))
                 .singleElement()
                 .satisfies(row -> assertThat(row).containsEntry("total_tokens", 30900));
+    }
+
+    /**
+     * The provider delivers its signals on its own event loop. Persistence and accounting are
+     * blocking JDBC and must hop to a boundedElastic worker, not stall that loop.
+     */
+    @Test
+    void persistenceAndAccountingRunOffTheProviderThread() throws Exception {
+        Sinks.Many<String> model = Sinks.many().unicast().onBackpressureBuffer();
+        when(chatService.stream(any(), any(), any())).thenAnswer(invocation -> {
+            java.util.function.Consumer<TokenUsage> onUsage = invocation.getArgument(2);
+            onUsage.accept(new TokenUsage("claude-sonnet-5", 10, 0, 0, 5));
+            return model.asFlux();
+        });
+        Map<String, Thread> threads = new ConcurrentHashMap<>();
+        CountDownLatch written = new CountDownLatch(2);
+        doAnswer(invocation -> {
+            if (!ChatTurn.ASSISTANT.equals(invocation.getArgument(1))) {
+                return invocation.callRealMethod();
+            }
+            threads.put("append", Thread.currentThread());
+            try {
+                return invocation.callRealMethod();
+            }
+            finally {
+                written.countDown();
+            }
+        }).when(conversationsSpy).append(any(), any(), any());
+        doAnswer(invocation -> {
+            threads.put("recordTokens", Thread.currentThread());
+            try {
+                return invocation.callRealMethod();
+            }
+            finally {
+                written.countDown();
+            }
+        }).when(usageSpy).recordTokens(anyLong(), any(), any(), any(), any(), any());
+
+        ExecutorService providerLoop = Executors.newSingleThreadExecutor(r -> new Thread(r, "provider-loop"));
+        try {
+            Jwt token = Jwt.withTokenValue("test").header("alg", "none").subject(USER_A).build();
+            controller.chat(new ChatRequest(null, "question"), token);
+            providerLoop.submit(() -> {
+                assertThat(model.tryEmitNext("answer").isSuccess()).isTrue();
+                assertThat(model.tryEmitComplete().isSuccess()).isTrue();
+            }).get(5, TimeUnit.SECONDS);
+
+            assertThat(written.await(5, TimeUnit.SECONDS))
+                    .as("the answer was persisted and its tokens recorded").isTrue();
+        }
+        finally {
+            providerLoop.shutdownNow();
+            assertThat(providerLoop.awaitTermination(5, TimeUnit.SECONDS)).isTrue();
+        }
+        assertThat(threads).containsOnlyKeys("append", "recordTokens");
+        threads.forEach((call, thread) -> assertThat(thread.getName())
+                .as("%s ran off the provider's thread", call)
+                .isNotEqualTo("provider-loop")
+                .startsWith("boundedElastic"));
     }
 
     /** Bounded wait for an asynchronous write. Fails the test rather than hanging the suite. */
