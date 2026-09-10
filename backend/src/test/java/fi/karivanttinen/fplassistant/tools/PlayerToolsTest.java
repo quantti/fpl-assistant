@@ -1,6 +1,5 @@
 package fi.karivanttinen.fplassistant.tools;
 
-import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -8,6 +7,7 @@ import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
 
+import fi.karivanttinen.fplassistant.testsupport.DataAgeClock;
 import fi.karivanttinen.fplassistant.testsupport.TapasSeed;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -15,32 +15,17 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.context.TestConfiguration;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Import;
-import org.springframework.context.annotation.Primary;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Transactional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 @SpringBootTest
-@Import(PlayerToolsTest.FixedClock.class)
 class PlayerToolsTest {
 
-    /** The one {@code asOf} the age lines are measured against; BST, so UK time is UTC+1. */
-    static final Instant AS_OF = Instant.parse("2026-09-10T12:00:00Z");
+    static final Instant AS_OF = DataAgeClock.AS_OF;
 
-    @TestConfiguration
-    static class FixedClock {
-        @Bean
-        @Primary
-        Clock dataAgeClock() {
-            return Clock.fixed(AS_OF, ZoneOffset.UTC);
-        }
-    }
-
-    @Autowired
+    /** Built with the fixed clock rather than autowired; see {@link DataAgeClock}. */
     PlayerTools playerTools;
 
     @Autowired
@@ -48,6 +33,14 @@ class PlayerToolsTest {
 
     @Autowired
     JdbcTemplate jdbc;
+
+    @Autowired
+    DailyPriceSource daily;
+
+    @BeforeEach
+    void buildTools() {
+        playerTools = new PlayerTools(jdbc, seasonResolver, daily, DataAgeClock.provider());
+    }
 
     @Value("${fpl.daily-price.table-name}")
     String dailyTable;

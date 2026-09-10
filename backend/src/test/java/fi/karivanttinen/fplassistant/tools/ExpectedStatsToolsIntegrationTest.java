@@ -1,21 +1,16 @@
 package fi.karivanttinen.fplassistant.tools;
 
-import java.time.Clock;
 import java.time.Instant;
 import java.time.OffsetDateTime;
-import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
 
+import fi.karivanttinen.fplassistant.testsupport.DataAgeClock;
 import fi.karivanttinen.fplassistant.testsupport.TapasSeed;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.context.TestConfiguration;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Import;
-import org.springframework.context.annotation.Primary;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.annotation.Transactional;
@@ -30,29 +25,23 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 @SpringBootTest
 @ActiveProfiles("test")
-@Import(ExpectedStatsToolsIntegrationTest.FixedClock.class)
 class ExpectedStatsToolsIntegrationTest {
 
-    /** The one {@code asOf} the coverage ages are measured against; BST, so UK time is UTC+1. */
-    static final Instant AS_OF = Instant.parse("2026-09-10T12:00:00Z");
-
-    @TestConfiguration
-    static class FixedClock {
-        @Bean
-        @Primary
-        Clock dataAgeClock() {
-            return Clock.fixed(AS_OF, ZoneOffset.UTC);
-        }
-    }
+    static final Instant AS_OF = DataAgeClock.AS_OF;
 
     @Autowired
     JdbcTemplate jdbc;
 
-    @Autowired
+    /** Built with the fixed clock rather than autowired; see {@link DataAgeClock}. */
     ExpectedStatsTools tools;
 
     @Autowired
     SeasonResolver seasonResolver;
+
+    @BeforeEach
+    void buildTools() {
+        tools = new ExpectedStatsTools(jdbc, seasonResolver, DataAgeClock.provider());
+    }
 
     @BeforeEach
     void seed() {

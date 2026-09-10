@@ -1,6 +1,6 @@
 # KAR-9 — show the age and limits of stored statistics
 
-**PROGRESS:** Implementation Task 6/7 done.
+**PROGRESS:** Implementation Task 7/7 done.
 
 Issue: [KAR-9](https://linear.app/quantti/issue/KAR-9/surface-data-age-in-tool-output-tapas-tables-go-stale-silently).
 Checked in Linear on 2026-09-10: Todo, High (2), no blockers. There are no Urgent Todo tickets;
@@ -292,6 +292,13 @@ tasks sharing the worktree.
 Once implementation is authorized and verified: commit on its dedicated feature branch, push,
 open a PR to `master` with `Closes KAR-9`, then review the PR. Apply review fixes as new commits,
 push and re-review. Only the owner merges. No direct master push or manual deployment.
+
+**Outcome (2026-09-10).** Tasks 1–7 committed on `plan/kar-9-data-age`. The prompt and
+`AGENTS.md` now separate season, record write, match date and capture, and name `DataAge` as the
+one place for the wording. Every acceptance case above is pinned by an existing seeded test from
+Tasks 2–6; no new test was needed. The six nested `@Primary` clock configs from Tasks 2–4
+became `testsupport/DataAgeClock.provider()`: each extra cached context held its own pool and
+pushed the full suite past the test DB's connection limit. Results and limits: `docs/STATUS.md`.
 
 ## Planning review
 

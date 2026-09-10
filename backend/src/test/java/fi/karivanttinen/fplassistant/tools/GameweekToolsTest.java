@@ -1,42 +1,28 @@
 package fi.karivanttinen.fplassistant.tools;
 
-import java.time.Clock;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 
+import fi.karivanttinen.fplassistant.schedule.ScheduleSource;
+import fi.karivanttinen.fplassistant.testsupport.DataAgeClock;
 import fi.karivanttinen.fplassistant.testsupport.TapasSeed;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.context.TestConfiguration;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Import;
-import org.springframework.context.annotation.Primary;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Transactional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 @SpringBootTest
-@Import(GameweekToolsTest.FixedClock.class)
 class GameweekToolsTest {
 
-    /** The one {@code asOf} the age lines are measured against; BST, so UK time is UTC+1. */
-    static final Instant AS_OF = Instant.parse("2026-09-10T12:00:00Z");
+    static final Instant AS_OF = DataAgeClock.AS_OF;
 
-    @TestConfiguration
-    static class FixedClock {
-        @Bean
-        @Primary
-        Clock dataAgeClock() {
-            return Clock.fixed(AS_OF, ZoneOffset.UTC);
-        }
-    }
-
-    @Autowired
+    /** Built with the fixed clock rather than autowired; see {@link DataAgeClock}. */
     GameweekTools gameweekTools;
 
     @Autowired
@@ -44,6 +30,14 @@ class GameweekToolsTest {
 
     @Autowired
     JdbcTemplate jdbc;
+
+    @Autowired
+    ScheduleSource schedule;
+
+    @BeforeEach
+    void buildTools() {
+        gameweekTools = new GameweekTools(jdbc, seasonResolver, schedule, DataAgeClock.provider());
+    }
 
     @Value("${fpl.schedule.gameweek-table-name}")
     String scheduleTable;
