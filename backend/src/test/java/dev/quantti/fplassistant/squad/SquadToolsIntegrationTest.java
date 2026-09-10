@@ -14,6 +14,7 @@ import dev.quantti.fplassistant.schedule.ScheduleSource;
 import dev.quantti.fplassistant.testsupport.FictitiousTestData;
 import dev.quantti.fplassistant.testsupport.RankingSeed;
 import dev.quantti.fplassistant.testsupport.TapasSeed;
+import dev.quantti.fplassistant.tools.DataAge;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -126,6 +127,8 @@ class SquadToolsIntegrationTest {
                 + " AND element_id BETWEEN ? AND ?", SEASON, FIRST_ID, LAST_ID);
         RankingSeed.cleanSchedule(jdbc, scheduleSource.gameweekTable(),
                 scheduleSource.fixtureTable(), SEASON);
+        jdbc.update("DELETE FROM fixture WHERE season_id = ? AND id BETWEEN ? AND ?",
+                SEASON_ID, RankingSeed.FIXTURE_BASE, RankingSeed.FIXTURE_BASE + 999);
         jdbc.update("DELETE FROM gameweek WHERE season_id = ? AND id = ?",
                 SEASON_ID, PRESENCE_GAMEWEEK);
         jdbc.update("DELETE FROM team WHERE season_id = ? AND id BETWEEN ? AND ?",
@@ -227,6 +230,15 @@ class SquadToolsIntegrationTest {
                 .contains("20 of 20 captured clubs play at least once in GW4–8");
         assertThat(output.indexOf("Data source: season " + SEASON))
                 .isLessThan(output.indexOf("Data source: FPL's own gameweek"));
+        assertThat(output.lines().limit(4).toList())
+                .as("three contiguous source lines, then the unknown-refresh notice")
+                .satisfiesExactly(
+                        line -> assertThat(line).startsWith("Data source: FPL live prices"),
+                        line -> assertThat(line).startsWith("Data source: season " + SEASON),
+                        line -> assertThat(line).startsWith("Data source: FPL's own gameweek"),
+                        line -> assertThat(line).isEqualTo(DataAge.METRIC_REFRESH));
+        assertThat(output).containsSubsequence(DataAge.METRIC_REFRESH, "Schedule evidence:",
+                "Horizon:", "Starting XI");
     }
 
     /** A refusal reaches the same evidence header, so it names all three sources too. */
@@ -237,7 +249,47 @@ class SquadToolsIntegrationTest {
         assertThat(output).doesNotContain("Starting XI")
                 .contains("Data source: FPL live prices for season " + SEASON)
                 .contains("Data source: season " + SEASON)
-                .contains("Data source: FPL's own gameweek and fixture list for season " + SEASON);
+                .contains("Data source: FPL's own gameweek and fixture list for season " + SEASON)
+                .containsSubsequence("Data source: FPL's own gameweek", DataAge.METRIC_REFRESH,
+                        "Schedule evidence:");
+    }
+
+    /** An empty pool still consulted all three sources, so its refusal carries the notice. */
+    @Test
+    void anEmptyPoolRefusalCarriesTheRefreshNotice() {
+        jdbc.update("UPDATE " + dailyTable + " SET status = 'i' WHERE season = ?"
+                + " AND element_id BETWEEN ? AND ?", SEASON, FIRST_ID, LAST_ID);
+
+        assertThat(tools.buildSquad("", "", "", 100.0, 5, ""))
+                .contains("No players are available to pick from today's capture.")
+                .containsSubsequence("Data source: FPL's own gameweek", DataAge.METRIC_REFRESH,
+                        "Schedule evidence:", "No players are available");
+    }
+
+    /**
+     * Row-write timestamps are not evidence about football: a fresh {@code player} or tapas
+     * {@code fixture} write, and a DefCon-only UPDATE that fires {@code trg_pfs_updated_at}
+     * without changing a value, must leave the squad, its XI and every projection unchanged.
+     */
+    @Test
+    void rowWriteTimestampsAloneChangeNeitherTheSquadNorItsText() {
+        seedTapasFixtureMirrors(Timestamp.from(Instant.parse("2025-01-01T00:00:00Z")));
+        String before = tools.buildSquad("", "", "", 100.0, 5, "");
+        Instant pfsWrittenBefore = pfsWrite(STAR_ID);
+
+        Timestamp fresh = Timestamp.from(AS_OF);
+        assertThat(jdbc.update("UPDATE player SET updated_at = ? WHERE season_id = ?"
+                + " AND id BETWEEN ? AND ?", fresh, SEASON_ID, FIRST_ID, LAST_ID)).isPositive();
+        assertThat(jdbc.update("UPDATE fixture SET updated_at = ? WHERE season_id = ?"
+                + " AND id BETWEEN ? AND ?", fresh, SEASON_ID, RankingSeed.FIXTURE_BASE,
+                RankingSeed.FIXTURE_BASE + 999)).isPositive();
+        assertThat(jdbc.update("UPDATE player_fixture_stats"
+                + " SET defensive_contribution = defensive_contribution WHERE season_id = ?"
+                + " AND player_id BETWEEN ? AND ?", SEASON_ID, FIRST_ID, LAST_ID)).isPositive();
+        assertThat(pfsWrite(STAR_ID)).as("the trigger restamps the row").isAfter(pfsWrittenBefore);
+
+        assertThat(tools.buildSquad("", "", "", 100.0, 5, "")).isEqualTo(before);
+        assertThat(before).contains("Captain: " + STAR_NAME, "xPts over", DataAge.METRIC_REFRESH);
     }
 
     /**
@@ -290,12 +342,15 @@ class SquadToolsIntegrationTest {
         assertThat(output).contains("C00: 3/3").doesNotContain("could not find a club");
     }
 
+    /** Name-resolution refusals carry no data block, so they carry no refresh notice either. */
     @Test
     void unknownNamesAndClubsAreRefused() {
         assertThat(tools.buildSquad("Nobodyatall", "", "", 100.0, 5, ""))
-                .containsIgnoringCase("Nobodyatall").doesNotContain("Starting XI");
+                .containsIgnoringCase("Nobodyatall").doesNotContain("Starting XI")
+                .doesNotContain(DataAge.METRIC_REFRESH);
         assertThat(tools.buildSquad("", "", "Nonexistent FC:>=1", 100.0, 5, ""))
-                .contains("Nonexistent FC").doesNotContain("Starting XI");
+                .contains("Nonexistent FC").doesNotContain("Starting XI")
+                .doesNotContain(DataAge.METRIC_REFRESH);
     }
 
     @Test
@@ -304,7 +359,8 @@ class SquadToolsIntegrationTest {
         insert(12_411, "Ambiguoustest", "Second Ambiguous", 1, 3, 65, 2.0, 0.2);
 
         assertThat(tools.buildSquad("Ambiguoustest", "", "", 100.0, 5, ""))
-                .containsIgnoringCase("Ambiguoustest").doesNotContain("Starting XI");
+                .containsIgnoringCase("Ambiguoustest").doesNotContain("Starting XI")
+                .doesNotContain(DataAge.METRIC_REFRESH);
     }
 
     @Test
@@ -386,13 +442,35 @@ class SquadToolsIntegrationTest {
 
         assertThat(output).doesNotContain("Starting XI")
                 .contains("No editable gameweek remains in the captured schedule")
-                .contains("unknown rather than zero").contains("60+");
+                .contains("unknown rather than zero").contains("60+")
+                .containsSubsequence(DataAge.METRIC_REFRESH, "No editable gameweek remains");
     }
 
     @Test
     void aMalformedQuotaIsExplainedRatherThanIgnored() {
         assertThat(tools.buildSquad("", "", "Ashfield Rovers:three", 100.0, 5, ""))
-                .contains("Ashfield Rovers:three").doesNotContain("Starting XI");
+                .contains("Ashfield Rovers:three").doesNotContain("Starting XI")
+                .doesNotContain(DataAge.METRIC_REFRESH);
+    }
+
+    /** Tapas {@code fixture} rows for the seeded schedule's finished fixtures, written at a known time. */
+    private void seedTapasFixtureMirrors(Timestamp writtenAt) {
+        for (ScheduleSource.FixtureRow row : RankingSeed.fixtures(CAPTURED_AT, FIRST_DEADLINE)) {
+            if (row.gameweek() <= 3) {
+                jdbc.update("""
+                        INSERT INTO fixture (id, season_id, gameweek, code, team_h, team_a,
+                                             kickoff_time, started, finished, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, true, true, ?)
+                        """, row.id(), SEASON_ID, row.gameweek(), row.id(), row.homeTeamId(),
+                        row.awayTeamId(), Timestamp.from(row.kickoff()), writtenAt);
+            }
+        }
+    }
+
+    private Instant pfsWrite(int playerId) {
+        return jdbc.queryForObject("SELECT MAX(updated_at) FROM player_fixture_stats"
+                + " WHERE season_id = ? AND player_id = ?", Timestamp.class, SEASON_ID, playerId)
+                .toInstant();
     }
 
     private static String startingXi(String output) {
