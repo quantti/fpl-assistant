@@ -4,10 +4,12 @@ import dev.quantti.fplassistant.schedule.ScheduleSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
+import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -22,11 +24,14 @@ public class GameweekTools implements FplTool {
     private final JdbcTemplate jdbc;
     private final SeasonResolver seasonResolver;
     private final ScheduleSource schedule;
+    private final Clock clock;
 
-    public GameweekTools(JdbcTemplate jdbc, SeasonResolver seasonResolver, ScheduleSource schedule) {
+    public GameweekTools(JdbcTemplate jdbc, SeasonResolver seasonResolver, ScheduleSource schedule,
+                         ObjectProvider<Clock> clock) {
         this.jdbc = jdbc;
         this.seasonResolver = seasonResolver;
         this.schedule = schedule;
+        this.clock = clock.getIfAvailable(Clock::systemUTC);
     }
 
     @Tool(description = """
@@ -44,12 +49,14 @@ public class GameweekTools implements FplTool {
             if (captured.isPresent()) {
                 return fromCapture(captured.get());
             }
+            // The SharedStats fallback: one instant for every stored-row age in this reply (KAR-9).
+            Instant asOf = clock.instant();
             SeasonContext season = seasonResolver.resolve();
 
             List<Map<String, Object>> rows = jdbc.queryForList("""
                     SELECT id, name, deadline_time, finished, is_current, is_next,
                            average_entry_score, highest_score,
-                           most_captained, most_transferred_in
+                           most_captained, most_transferred_in, updated_at
                     FROM gameweek
                     WHERE season_id = ?
                       AND (is_current = true OR is_next = true)
@@ -61,8 +68,9 @@ public class GameweekTools implements FplTool {
             }
 
             return season.provenance() + "\n\n" + rows.stream()
-                    .map(this::formatGameweek)
-                    .collect(Collectors.joining("\n---\n"));
+                    .map(r -> formatGameweek(r, season, asOf))
+                    .collect(Collectors.joining("\n---\n"))
+                    + DataAge.GAMEWEEK_CAVEAT;
         } catch (DataAccessException e) {
             log.error("getGameweekInfo() failed", e);
             return "Gameweek data is temporarily unavailable (database error)."
@@ -122,8 +130,12 @@ public class GameweekTools implements FplTool {
                 r.get("most_captained"), r.get("most_transferred_in"));
     }
 
-    private String formatGameweek(Map<String, Object> r) {
-        return formatCaptured(r, status(r));
+    /** A SharedStats row, dated by its own {@code updated_at}; the capture path adds no such line. */
+    private String formatGameweek(Map<String, Object> r, SeasonContext season, Instant asOf) {
+        return formatCaptured(r, status(r))
+                + DataAge.storedDataAge("gameweek row " + r.get("name") + " (id=" + r.get("id")
+                        + "), season " + season.code(), r.get("updated_at"), asOf)
+                + "\n";
     }
 
     /**

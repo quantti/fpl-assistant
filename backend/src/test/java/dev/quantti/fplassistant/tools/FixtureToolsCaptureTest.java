@@ -67,6 +67,8 @@ class FixtureToolsCaptureTest {
         assertThat(result).contains("GW3: vs SEL (H) | FDR: 2").contains("GW3: vs SEL (A) | FDR: 4");
         assertThat(result).doesNotContain("GW1:");
         assertThat(result).contains("Postponed, no rescheduled gameweek yet:");
+        // FPL's own capture, not SharedStats rows: no stored-row age is added here.
+        assertThat(result).doesNotContain("Stored-data age").doesNotContain(DataAge.GAMEWEEK_CAVEAT);
     }
 
     @Test

@@ -3,10 +3,13 @@ package dev.quantti.fplassistant.tools;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
+import java.time.Clock;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -24,11 +27,14 @@ public class PlayerTools implements FplTool {
     private final JdbcTemplate jdbc;
     private final SeasonResolver seasonResolver;
     private final DailyPriceSource daily;
+    private final Clock clock;
 
-    public PlayerTools(JdbcTemplate jdbc, SeasonResolver seasonResolver, DailyPriceSource daily) {
+    public PlayerTools(JdbcTemplate jdbc, SeasonResolver seasonResolver, DailyPriceSource daily,
+                       ObjectProvider<Clock> clock) {
         this.jdbc = jdbc;
         this.seasonResolver = seasonResolver;
         this.daily = daily;
+        this.clock = clock.getIfAvailable(Clock::systemUTC);
     }
 
     @Tool(description = """
@@ -50,6 +56,8 @@ public class PlayerTools implements FplTool {
             about them.
             """)
     public String getPlayerStats(String playerName) {
+        // One instant for every stored-row age on this card (KAR-9).
+        Instant asOf = clock.instant();
         try {
             // This season's squad first, from the daily capture taken out of FPL's own API. The
             // shared player table held zero rows for 2026-27 with the season already under way,
@@ -85,7 +93,7 @@ public class PlayerTools implements FplTool {
                         + " run), so whether this player is in the game cannot be confirmed. Do"
                         + " not say they are missing from it. The statistics below name the season"
                         + " each figure is from.\n\n"
-                        + formatBlocks(stats, null);
+                        + formatBlocks(stats, null, asOf);
             }
 
             if (current.isEmpty()) {
@@ -99,7 +107,7 @@ public class PlayerTools implements FplTool {
                             + " sources disagree — say that the player could not be confirmed in"
                             + " FPL's current list rather than that they cannot be picked, and"
                             + " suggest checking the club or a fuller spelling.\n\n"
-                            + formatBlocks(stats, null);
+                            + formatBlocks(stats, null, asOf);
                 }
                 // In last season's data but not in this season's game — sold abroad, retired,
                 // relegated, or never in FPL. Saying it outright is the whole point: this is
@@ -108,7 +116,7 @@ public class PlayerTools implements FplTool {
                         + "\" appears in FPL's current player list. Tell the user that before"
                         + " anything else — they cannot pick this player. The statistics below"
                         + " name the season each figure is from.\n\n"
-                        + formatBlocks(stats, null);
+                        + formatBlocks(stats, null, asOf);
             }
 
             Map<String, Object> best = current.getFirst();
@@ -120,7 +128,7 @@ public class PlayerTools implements FplTool {
             if (stats.isEmpty()) {
                 return currentBlock + "\n\nNo per-season statistics are stored for this player.";
             }
-            return currentBlock + "\n\n" + formatBlocks(stats, String.valueOf(best.get("web_name")));
+            return currentBlock + "\n\n" + formatBlocks(stats, String.valueOf(best.get("web_name")), asOf);
         } catch (DataAccessException e) {
             log.error("getPlayerStats(\"{}\") failed", playerName, e);
             return "Player data is temporarily unavailable (database error)."
@@ -170,13 +178,13 @@ public class PlayerTools implements FplTool {
      * this season's squad, same-web_name rows are preferred per season — a substring search
      * can return five namesakes, and the answer is about one player.
      */
-    private String formatBlocks(List<SeasonStats> blocks, String matchedWebName) {
+    private String formatBlocks(List<SeasonStats> blocks, String matchedWebName, Instant asOf) {
         // Whether the season being played contributed a block of its own decides how the
         // completed season is introduced: "the current season is under way" alongside numbers
         // from it, but not when it is the only block on the card.
         boolean currentShown = blocks.stream().anyMatch(b -> !b.previous());
         return blocks.stream()
-                .map(b -> provenanceOf(b, currentShown) + "\n\n" + formatRows(b, matchedWebName))
+                .map(b -> provenanceOf(b, currentShown) + "\n\n" + formatRows(b, matchedWebName, asOf))
                 .collect(Collectors.joining("\n\n"));
     }
 
@@ -186,7 +194,11 @@ public class PlayerTools implements FplTool {
                 : block.context().provenance();
     }
 
-    private String formatRows(SeasonStats block, String matchedWebName) {
+    /**
+     * Each displayed row is dated by its own {@code updated_at}, after name preference: a
+     * namesake filtered out here, or the other season's row, cannot lend this row its write time.
+     */
+    private String formatRows(SeasonStats block, String matchedWebName, Instant asOf) {
         List<Map<String, Object>> rows = block.rows();
         if (matchedWebName != null) {
             List<Map<String, Object>> sameName = rows.stream()
@@ -197,7 +209,9 @@ public class PlayerTools implements FplTool {
                 rows = sameName;
             }
         }
-        return rows.stream().map(r -> formatPlayer(r, block.context()))
+        return rows.stream().map(r -> formatPlayer(r, block.context())
+                        + DataAge.storedDataAge("player record for " + r.get("web_name")
+                                + ", season " + block.context().code(), r.get("updated_at"), asOf))
                 .collect(Collectors.joining("\n---\n"));
     }
 
@@ -219,7 +233,7 @@ public class PlayerTools implements FplTool {
                            p.element_type, p.now_cost, p.total_points, p.form,
                            p.goals_scored, p.assists, p.clean_sheets,
                            p.minutes, p.expected_goals, p.expected_assists,
-                           p.selected_by_percent, p.status, p.news,
+                           p.selected_by_percent, p.status, p.news, p.updated_at,
                            ROW_NUMBER() OVER (PARTITION BY p.season_id
                                               ORDER BY p.total_points DESC) AS rn
                     FROM player p

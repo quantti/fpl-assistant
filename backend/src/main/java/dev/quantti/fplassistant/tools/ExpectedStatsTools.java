@@ -1,14 +1,18 @@
 package dev.quantti.fplassistant.tools;
 
+import java.time.Clock;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.BiFunction;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
@@ -26,6 +30,11 @@ import org.springframework.stereotype.Component;
  * which is the value carried by anyone who played the full match. Verified against the
  * {@code fixture} scoreline: {@code MAX(goals_conceded)} matches the goals the team actually
  * conceded in every checked fixture.
+ *
+ * <p>Beneath the season banners every reply carries {@link DataAge#METRIC_REFRESH} and one
+ * {@code Stored match coverage:} line per season in the returned window (KAR-9). The dates are the
+ * returned rows' kickoffs: {@code player_fixture_stats.updated_at} is never shown, because a
+ * DefCon-only enrichment write restamps it without touching minutes, xG or xA.
  */
 @Component
 public class ExpectedStatsTools implements FplTool {
@@ -36,10 +45,13 @@ public class ExpectedStatsTools implements FplTool {
 
     private final JdbcTemplate jdbc;
     private final SeasonResolver seasonResolver;
+    private final Clock clock;
 
-    public ExpectedStatsTools(JdbcTemplate jdbc, SeasonResolver seasonResolver) {
+    public ExpectedStatsTools(JdbcTemplate jdbc, SeasonResolver seasonResolver,
+                              ObjectProvider<Clock> clock) {
         this.jdbc = jdbc;
         this.seasonResolver = seasonResolver;
+        this.clock = clock.getIfAvailable(Clock::systemUTC);
     }
 
     @Tool(description = """
@@ -54,6 +66,7 @@ public class ExpectedStatsTools implements FplTool {
             """)
     public String getPlayerExpectedStats(String playerName, int lastN) {
         try {
+            Instant asOf = clock.instant();
             SeasonContext season = seasonResolver.resolve();
             int limit = Math.max(1, Math.min(lastN, MAX_FIXTURES));
             String pattern = "%" + LikePatterns.escape(playerName.toLowerCase(Locale.ROOT)) + "%";
@@ -81,6 +94,7 @@ public class ExpectedStatsTools implements FplTool {
                     SELECT pfs.gameweek, pfs.was_home, pfs.minutes,
                            pfs.goals_scored, pfs.assists,
                            pfs.expected_goals, pfs.expected_assists, pfs.expected_goal_involvements,
+                           pfs.kickoff_time,
                            opp.short_name AS opponent
                     FROM player_fixture_stats pfs
                     LEFT JOIN team opp ON opp.id = pfs.opponent_team_id AND opp.season_id = pfs.season_id
@@ -105,15 +119,18 @@ public class ExpectedStatsTools implements FplTool {
                 }
             }
 
+            BiFunction<List<Map<String, Object>>, String, String> coverage =
+                    (window, code) -> playerCoverage(webName, window, code, asOf);
             if (shown.isEmpty()) {
-                return season.provenance() + "\nNo fixture-level expected stats yet for " + webName
+                return season.provenance() + "\n" + sampleEvidence(shown, 0, season.code(), previous, coverage)
+                        + "\nNo fixture-level expected stats yet for " + webName
                         + " in " + season.code() + "." + ambiguity;
             }
 
             String header = season.provenance() + (fromPrevious > 0
                     ? "\n" + previous.orElseThrow().previousSeasonProvenance(true) : "");
-            return header + "\n\n"
-                    + formatPlayer(webName, shown, season.code(), fromPrevious) + ambiguity;
+            return header + "\n" + sampleEvidence(shown, fromPrevious, season.code(), previous, coverage)
+                    + "\n\n" + formatPlayer(webName, shown, season.code(), fromPrevious) + ambiguity;
         } catch (DataAccessException e) {
             log.error("getPlayerExpectedStats(\"{}\", {}) failed", playerName, lastN, e);
             return "Expected-stats data is temporarily unavailable (database error)."
@@ -135,6 +152,7 @@ public class ExpectedStatsTools implements FplTool {
             """)
     public String getTeamExpectedGoals(String teamName, int lastN) {
         try {
+            Instant asOf = clock.instant();
             SeasonContext season = seasonResolver.resolve();
             int limit = Math.max(1, Math.min(lastN, MAX_FIXTURES));
             String pattern = "%" + LikePatterns.escape(teamName.toLowerCase(Locale.ROOT)) + "%";
@@ -158,6 +176,7 @@ public class ExpectedStatsTools implements FplTool {
 
             // One query for the whole window: attacking figures sum across the team's players,
             // the conceded figures are per-team values repeated on every player (see class javadoc).
+            // The kickoff span and source-row counts date the group without hiding undated rows.
             List<Map<String, Object>> fixtures = jdbc.queryForList("""
                     SELECT pfs.gameweek, pfs.was_home,
                            opp.short_name AS opponent,
@@ -166,7 +185,11 @@ public class ExpectedStatsTools implements FplTool {
                            COALESCE(SUM(pfs.expected_goal_involvements), 0) AS xgi,
                            COALESCE(SUM(pfs.goals_scored), 0) AS goals,
                            COALESCE(MAX(pfs.expected_goals_conceded), 0) AS xga,
-                           COALESCE(MAX(pfs.goals_conceded), 0) AS conceded
+                           COALESCE(MAX(pfs.goals_conceded), 0) AS conceded,
+                           MIN(pfs.kickoff_time) AS kickoff_min,
+                           MAX(pfs.kickoff_time) AS kickoff_max,
+                           COUNT(*) AS source_rows,
+                           COUNT(pfs.kickoff_time) AS dated_rows
                     FROM player_fixture_stats pfs
                     LEFT JOIN team opp ON opp.id = pfs.opponent_team_id AND opp.season_id = pfs.season_id
                     WHERE pfs.season_id = ? AND pfs.player_team_id = ?
@@ -191,15 +214,18 @@ public class ExpectedStatsTools implements FplTool {
                 }
             }
 
+            BiFunction<List<Map<String, Object>>, String, String> coverage =
+                    (window, code) -> teamCoverage(name, window, code, asOf);
             if (shown.isEmpty()) {
-                return season.provenance() + "\nNo fixture-level expected stats yet for " + name
+                return season.provenance() + "\n" + sampleEvidence(shown, 0, season.code(), previous, coverage)
+                        + "\nNo fixture-level expected stats yet for " + name
                         + " in " + season.code() + "." + ambiguity;
             }
 
             String header = season.provenance() + (fromPrevious > 0
                     ? "\n" + previous.orElseThrow().previousSeasonProvenance(true) : "");
-            return header + "\n\n"
-                    + formatTeam(name, shown, season.code(), fromPrevious) + ambiguity;
+            return header + "\n" + sampleEvidence(shown, fromPrevious, season.code(), previous, coverage)
+                    + "\n\n" + formatTeam(name, shown, season.code(), fromPrevious) + ambiguity;
         } catch (DataAccessException e) {
             log.error("getTeamExpectedGoals(\"{}\", {}) failed", teamName, lastN, e);
             return "Expected-stats data is temporarily unavailable (database error)."
@@ -233,6 +259,7 @@ public class ExpectedStatsTools implements FplTool {
                 SELECT pfs.gameweek, pfs.was_home, pfs.minutes,
                        pfs.goals_scored, pfs.assists,
                        pfs.expected_goals, pfs.expected_assists, pfs.expected_goal_involvements,
+                       pfs.kickoff_time,
                        opp.short_name AS opponent
                 FROM player_fixture_stats pfs
                 LEFT JOIN team opp ON opp.id = pfs.opponent_team_id AND opp.season_id = pfs.season_id
@@ -263,7 +290,11 @@ public class ExpectedStatsTools implements FplTool {
                        COALESCE(SUM(pfs.expected_goal_involvements), 0) AS xgi,
                        COALESCE(SUM(pfs.goals_scored), 0) AS goals,
                        COALESCE(MAX(pfs.expected_goals_conceded), 0) AS xga,
-                       COALESCE(MAX(pfs.goals_conceded), 0) AS conceded
+                       COALESCE(MAX(pfs.goals_conceded), 0) AS conceded,
+                       MIN(pfs.kickoff_time) AS kickoff_min,
+                       MAX(pfs.kickoff_time) AS kickoff_max,
+                       COUNT(*) AS source_rows,
+                       COUNT(pfs.kickoff_time) AS dated_rows
                 FROM player_fixture_stats pfs
                 LEFT JOIN team opp ON opp.id = pfs.opponent_team_id AND opp.season_id = pfs.season_id
                 WHERE pfs.season_id = ? AND pfs.player_team_id = ?
@@ -275,6 +306,49 @@ public class ExpectedStatsTools implements FplTool {
             r.put("season_code", previous.code());
         }
         return rows;
+    }
+
+    /**
+     * The unknown-refresh notice, then match coverage for the resolved season's rows and, when the
+     * window was filled, separately for the previous season's — two seasons never share a range.
+     * The fill is appended after the resolved season's rows, so the split is positional.
+     */
+    private static String sampleEvidence(List<Map<String, Object>> shown, int fromPrevious,
+                                         String currentCode, Optional<SeasonContext> previous,
+                                         BiFunction<List<Map<String, Object>>, String, String> coverage) {
+        int split = shown.size() - fromPrevious;
+        String out = DataAge.METRIC_REFRESH + "\n" + coverage.apply(shown.subList(0, split), currentCode);
+        if (fromPrevious > 0) {
+            out += "\n" + coverage.apply(shown.subList(split, shown.size()), previous.orElseThrow().code());
+        }
+        return out;
+    }
+
+    private static String playerCoverage(String webName, List<Map<String, Object>> rows, String code,
+                                         Instant asOf) {
+        DataAge.Span kickoffs = DataAge.Span.of(rows.stream().map(r -> r.get("kickoff_time")).toList());
+        return DataAge.matchCoverage(coverageScope(webName, code,
+                rows.isEmpty() ? "" : plural(rows.size(), "returned fixture row")), kickoffs, asOf);
+    }
+
+    /** Each group carries its kickoff MIN/MAX and total/dated source-row counts from the query. */
+    private static String teamCoverage(String name, List<Map<String, Object>> fixtures, String code,
+                                       Instant asOf) {
+        DataAge.Span kickoffs = fixtures.stream()
+                .map(f -> DataAge.Span.aggregate(f.get("kickoff_min"), f.get("kickoff_max"),
+                        ((Number) f.get("source_rows")).longValue(), ((Number) f.get("dated_rows")).longValue()))
+                .reduce(DataAge.Span.of(List.of()), DataAge.Span::plus);
+        return DataAge.matchCoverage(coverageScope(name, code, fixtures.isEmpty() ? ""
+                : plural(fixtures.size(), "returned fixture") + " from "
+                        + plural(kickoffs.rows(), "stored player row")), kickoffs, asOf);
+    }
+
+    private static String coverageScope(String subject, String code, String counts) {
+        return subject + ", season " + code + (counts.isEmpty() ? "" : " (" + counts + ")");
+    }
+
+    private static String plural(long count, String noun) {
+        return count + " " + noun + (count == 1 ? "" : "s");
     }
 
     /** How many fixtures came from which season, for the heading. */
