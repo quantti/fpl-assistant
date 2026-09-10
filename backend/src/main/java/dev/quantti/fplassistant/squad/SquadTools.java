@@ -12,6 +12,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 import dev.quantti.fplassistant.tools.DailyPriceSource;
+import dev.quantti.fplassistant.tools.DataAge;
 import dev.quantti.fplassistant.schedule.HorizonFixtures;
 import dev.quantti.fplassistant.schedule.ScheduleFreshnessCheck;
 import dev.quantti.fplassistant.schedule.ScheduleSource;
@@ -138,7 +139,8 @@ public class SquadTools implements FplTool {
             String scheduleProvenance = scheduleProvenance(loaded.snapshot(), capture, season);
             String scheduleNote = scheduleEvidence(loaded.snapshot(), horizon);
             String evidenceHeader = priceProvenance + "\n" + metricProvenance
-                    + "\n" + scheduleProvenance + "\n" + scheduleNote;
+                    + "\n" + scheduleProvenance + "\n" + DataAge.METRIC_REFRESH
+                    + "\n" + scheduleNote;
             if (candidates.isEmpty()) {
                 return evidenceHeader + "\nNo players are available to pick from today's capture.";
             }

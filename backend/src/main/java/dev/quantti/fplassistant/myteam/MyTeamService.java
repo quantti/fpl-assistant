@@ -17,6 +17,7 @@ import dev.quantti.fplassistant.myteam.FplEntryClient.ChipPlayed;
 import dev.quantti.fplassistant.myteam.FplEntryClient.EntrySummary;
 import dev.quantti.fplassistant.myteam.FplEntryClient.LockedSquad;
 import dev.quantti.fplassistant.myteam.FplEntryClient.Pick;
+import dev.quantti.fplassistant.tools.DataAge;
 import dev.quantti.fplassistant.tools.UkTime;
 import dev.quantti.fplassistant.user.UserProfileService;
 
@@ -404,14 +405,20 @@ public class MyTeamService {
         }
         out.append(".\n\n");
 
-        out.append(squad.enrichment().available()
-                ? squad.enrichment().season().provenance()
-                : "Season-long statistics come from FPL's own player data, captured just now."
-                        + " Fixture difficulty and expected goals are not available yet: the"
-                        + " database has not been loaded with " + squad.enrichment().season().currentSeasonCode()
-                        + " data.").append("\n");
+        if (squad.enrichment().available()) {
+            out.append(squad.enrichment().season().provenance()).append("\n")
+                    .append("xG/xA and next-5 FDR are stored database values, each tagged with the")
+                    .append(" recorded write age of the rows behind it; price, form, points and")
+                    .append(" ownership are FPL's own player data.\n")
+                    .append(startingGameweekAge(squad.enrichment(), squad.fetchedAt()));
+        } else {
+            out.append("Season-long statistics come from FPL's own player data, captured just now."
+                    + " Fixture difficulty and expected goals are not available yet: the"
+                    + " database has not been loaded with " + squad.enrichment().season().currentSeasonCode()
+                    + " data.").append("\n");
+        }
 
-        appendPicks(out, squad.players());
+        appendPicks(out, squad.players(), squad.fetchedAt());
 
         switch (squad.continuing()) {
             case null -> { }
@@ -421,12 +428,14 @@ public class MyTeamService {
                         .append(" picks). Transfers and all forward-looking advice apply to THIS")
                         .append(" squad, not the Free Hit one. Captain and bench order shown are")
                         .append(" Gameweek ").append(event)
-                        .append(" choices; only the fifteen players were restored. Prices and")
-                        .append(" statistics on the lines below are today's, from the same source")
-                        .append(" as above. Restored bank was ").append(money(previous.bank()))
+                        .append(" choices; only the fifteen players were restored. Prices, form,")
+                        .append(" points and ownership on the lines below are today's FPL player")
+                        .append(" data, from the same source as above; any xG/xA and FDR are")
+                        .append(" stored database values tagged with their own write age, as above.")
+                        .append(" Restored bank was ").append(money(previous.bank()))
                         .append(" (approximate - transfers made since the Free Hit deadline are")
                         .append(" not visible).\n");
-                appendPicks(out, players);
+                appendPicks(out, players, squad.fetchedAt());
             }
             case Continuing.Unknown(String reason) ->
                     out.append("\nA Free Hit was played for Gameweek ").append(squad.event())
@@ -439,13 +448,29 @@ public class MyTeamService {
         return out.toString();
     }
 
-    private static void appendPicks(StringBuilder out, List<SquadPlayer> players) {
+    /**
+     * KAR-9: the age of the gameweek row that chose where every club's FDR run starts, stated
+     * once. Empty when no run was looked up, since no displayed FDR depends on it then.
+     */
+    private static String startingGameweekAge(SquadEnrichment.Enrichment enrichment, Instant asOf) {
+        SquadEnrichment.StartingGameweek start = enrichment.startingGameweek();
+        if (start == null) {
+            return "";
+        }
+        String scope = "starting-gameweek selection for the FDR run (gameweek row id=" + start.id()
+                + "), season " + enrichment.season().code();
+        return DataAge.storedDataAge(scope, "gameweek record", start.write(), asOf) + "\n"
+                + DataAge.GAMEWEEK_CAVEAT + "\n";
+    }
+
+    /** {@code asOf} is the squad's fetch instant: every stored-row age on the card is measured from it. */
+    private static void appendPicks(StringBuilder out, List<SquadPlayer> players, Instant asOf) {
         out.append("Starting XI\n");
         players.stream().filter(player -> player.pick().starting())
-                .forEach(player -> out.append(line(player)));
+                .forEach(player -> out.append(line(player, asOf)));
         out.append("Bench\n");
         players.stream().filter(player -> !player.pick().starting())
-                .forEach(player -> out.append(line(player)));
+                .forEach(player -> out.append(line(player, asOf)));
         String flagged = players.stream()
                 .filter(player -> player.element() != null && player.element().availability() != null)
                 .map(player -> player.element().webName() + " (" + player.element().teamShort()
@@ -456,7 +481,7 @@ public class MyTeamService {
         }
     }
 
-    private static String line(SquadPlayer player) {
+    private static String line(SquadPlayer player, Instant asOf) {
         FplBootstrap.Element element = player.element();
         StringBuilder line = new StringBuilder(String.format(Locale.UK, "%2d ", player.pick().position()));
         if (element == null) {
@@ -480,19 +505,33 @@ public class MyTeamService {
                 .append(", ").append(element.pointsPerGame()).append("/game")
                 .append(", ").append(element.selectedByPercent()).append("% owned");
         SquadEnrichment.Depth depth = player.depth();
+        // Each stored value is tagged with the rows behind it (KAR-9); FPL's own values are not.
         if (depth != null && depth.nextFiveFdr() != null) {
-            line.append(String.format(Locale.UK, ", next 5 FDR %.1f", depth.nextFiveFdr()));
+            line.append(String.format(Locale.UK, ", next 5 FDR %.1f", depth.nextFiveFdr()))
+                    .append(written("fixture records", depth.fdrWrites(), asOf));
         }
+        boolean expected = false;
         if (depth != null && depth.expectedGoals() != null) {
             line.append(", xG ").append(depth.expectedGoals());
+            expected = true;
         }
         if (depth != null && depth.expectedAssists() != null) {
             line.append(", xA ").append(depth.expectedAssists());
+            expected = true;
+        }
+        if (expected) {
+            line.append(written("player record", depth.playerWrite(), asOf));
         }
         if (element.availability() != null) {
             line.append(" - ").append(element.availability());
         }
         return line.append("\n").toString();
+    }
+
+    /** e.g. {@code " (player record written 9 days ago)"} or {@code " (player record: write time unavailable)"}. */
+    private static String written(String rows, DataAge.Span writes, Instant asOf) {
+        String age = DataAge.annotation(writes, asOf);
+        return " (" + rows + (age.startsWith("written") ? " " : ": ") + age + ")";
     }
 
     /** FPL keeps money in tenths of a million. */

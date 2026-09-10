@@ -1,8 +1,13 @@
 package dev.quantti.fplassistant.tools;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDate;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.List;
 
+import dev.quantti.fplassistant.testsupport.DataAgeClock;
 import dev.quantti.fplassistant.testsupport.TapasSeed;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -11,13 +16,16 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.annotation.Transactional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 @SpringBootTest
 class PlayerToolsTest {
 
-    @Autowired
+    static final Instant AS_OF = DataAgeClock.AS_OF;
+
+    /** Built with the fixed clock rather than autowired; see {@link DataAgeClock}. */
     PlayerTools playerTools;
 
     @Autowired
@@ -25,6 +33,14 @@ class PlayerToolsTest {
 
     @Autowired
     JdbcTemplate jdbc;
+
+    @Autowired
+    DailyPriceSource daily;
+
+    @BeforeEach
+    void buildTools() {
+        playerTools = new PlayerTools(jdbc, seasonResolver, daily, DataAgeClock.provider());
+    }
 
     @Value("${fpl.daily-price.table-name}")
     String dailyTable;
@@ -220,6 +236,7 @@ class PlayerToolsTest {
         String result = playerTools.getPlayerStats("zzznomatch999");
 
         assertThat(result).containsIgnoringCase("not found");
+        assertThat(result).doesNotContain("Stored-data age");
     }
 
     /**
@@ -268,6 +285,98 @@ class PlayerToolsTest {
         assertThat(result).contains("squad list is unavailable");
         assertThat(result).doesNotContain("NOT IN THIS SEASON'S FPL GAME");
         assertThat(result).containsIgnoringCase(TapasSeed.PLAYER_WEB_NAME);
+    }
+
+    /** Sets one player row's write time; the player table has no update trigger, so it sticks. */
+    private void writtenAt(int playerId, int seasonId, Instant at) {
+        OffsetDateTime value = at == null ? null : OffsetDateTime.ofInstant(at, ZoneOffset.UTC);
+        int updated = jdbc.update("UPDATE player SET updated_at = ? WHERE id = ? AND season_id = ?",
+                value, playerId, seasonId);
+        assertThat(updated).isOne();
+        assertThat(jdbc.queryForObject("SELECT updated_at FROM player WHERE id = ? AND season_id = ?",
+                OffsetDateTime.class, playerId, seasonId))
+                .as("the seeded write time must stick").isEqualTo(value);
+    }
+
+    /** Each seasonal block is dated by its own row: a fresh current row does not refresh last season's. */
+    @Test
+    @Transactional
+    void eachSeasonBlockCarriesItsOwnRowWriteAge() {
+        flipToCurrentSeason(true);
+        captureToday(TapasSeed.PLAYER_WEB_NAME, TapasSeed.PLAYER_FULL_NAME);
+        writtenAt(9301, TapasSeed.CURRENT_SEASON_ID, AS_OF.minus(Duration.ofHours(2)));
+        writtenAt(9201, TapasSeed.POPULATED_SEASON_ID, Instant.parse("2026-08-01T12:00:00Z"));
+
+        String result = playerTools.getPlayerStats(TapasSeed.PLAYER_WEB_NAME);
+
+        String currentAge = "Stored-data age: player record for Okafor, season " + TapasSeed.CURRENT_SEASON_CODE
+                + ", last recorded write 2026-09-10 11:00 UK (2 hours ago)."
+                + " This is a database record time, not a live FPL check.";
+        String previousAge = "Stored-data age: player record for Okafor, season " + TapasSeed.POPULATED_SEASON_CODE
+                + ", last recorded write 2026-08-01 13:00 UK (40 days ago).";
+        assertThat(result).containsOnlyOnce(currentAge).containsOnlyOnce(previousAge);
+        int currentBanner = result.indexOf("(the season currently being played)");
+        int previousBanner = result.indexOf("a COMPLETED PREVIOUS season");
+        assertThat(result.indexOf(currentAge)).isBetween(currentBanner, previousBanner);
+        assertThat(result.indexOf(previousAge)).isGreaterThan(previousBanner);
+        // Values and banners are unchanged by the age lines.
+        assertThat(result).contains("Minutes: 180").contains("Minutes: 265")
+                .contains("Price (" + TapasSeed.POPULATED_SEASON_CODE + ", historical)");
+    }
+
+    /** Today's daily capture dates the identity block only; it does not freshen old statistics. */
+    @Test
+    @Transactional
+    void aFreshDailyCaptureDoesNotRefreshOldPlayerStatistics() {
+        captureToday(TapasSeed.PLAYER_WEB_NAME, TapasSeed.PLAYER_FULL_NAME);
+        writtenAt(9201, TapasSeed.POPULATED_SEASON_ID, Instant.parse("2026-06-17T12:00:00Z"));
+
+        String result = playerTools.getPlayerStats(TapasSeed.PLAYER_WEB_NAME);
+
+        assertThat(result).startsWith("Data source: FPL live prices for season " + CURRENT_SEASON);
+        String dailyBlock = result.substring(0, result.indexOf("Data source: season "));
+        assertThat(dailyBlock).contains("this season: £5.5m").doesNotContain("Stored-data age");
+        assertThat(result).containsOnlyOnce("Stored-data age: player record for Okafor, season "
+                + TapasSeed.POPULATED_SEASON_CODE + ", last recorded write 2026-06-17 13:00 UK (85 days ago).");
+    }
+
+    @Test
+    @Transactional
+    void nullAndFutureWriteTimesStayUnknown() {
+        writtenAt(9201, TapasSeed.POPULATED_SEASON_ID, null);
+        assertThat(playerTools.getPlayerStats(TapasSeed.PLAYER_WEB_NAME))
+                .contains("Stored-data age: player record for Okafor, season " + TapasSeed.POPULATED_SEASON_CODE
+                        + ", write time unavailable.")
+                .doesNotContain("ago");
+
+        writtenAt(9201, TapasSeed.POPULATED_SEASON_ID, Instant.parse("2026-09-15T12:00:00Z"));
+        assertThat(playerTools.getPlayerStats(TapasSeed.PLAYER_WEB_NAME))
+                .contains("last recorded write 2026-09-15 13:00 UK (future-dated anomaly; age unavailable).")
+                .doesNotContain("ago");
+    }
+
+    /**
+     * Name preference runs before the card is dated: a higher-ranked namesake the substring search
+     * also found, but which is filtered out of the display, cannot lend the card its fresh write.
+     */
+    @Test
+    @Transactional
+    void aNamesakeFilteredOutOfTheCardCannotDetermineItsAge() {
+        jdbc.execute("""
+                INSERT INTO player (id, season_id, team_id, first_name, second_name, web_name,
+                                    element_type, now_cost, status, total_points, minutes, updated_at)
+                VALUES (9391, 9026, 9002, 'Chidi', 'Okaforo', 'Okaforo', 3, 60, 'a', 99, 900,
+                        TIMESTAMPTZ '2026-09-10 11:30:00+00')
+                """);
+        writtenAt(9201, TapasSeed.POPULATED_SEASON_ID, Instant.parse("2026-08-11T12:00:00Z"));
+        captureToday(TapasSeed.PLAYER_WEB_NAME, TapasSeed.PLAYER_FULL_NAME);
+
+        String result = playerTools.getPlayerStats(TapasSeed.PLAYER_WEB_NAME);
+
+        assertThat(result).doesNotContain("Okaforo").doesNotContain("<1 hour ago");
+        assertThat(result).containsOnlyOnce("Stored-data age:")
+                .contains("player record for Okafor, season " + TapasSeed.POPULATED_SEASON_CODE
+                        + ", last recorded write 2026-08-11 13:00 UK (30 days ago).");
     }
 
     @Test

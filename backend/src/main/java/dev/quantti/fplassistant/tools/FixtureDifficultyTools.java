@@ -1,5 +1,7 @@
 package dev.quantti.fplassistant.tools;
 
+import java.time.Clock;
+import java.time.Instant;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -7,6 +9,7 @@ import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
@@ -30,10 +33,12 @@ public class FixtureDifficultyTools implements FplTool {
 
     private final JdbcTemplate jdbc;
     private final SeasonResolver seasonResolver;
+    private final Clock clock;
 
-    public FixtureDifficultyTools(JdbcTemplate jdbc, SeasonResolver seasonResolver) {
+    public FixtureDifficultyTools(JdbcTemplate jdbc, SeasonResolver seasonResolver, ObjectProvider<Clock> clock) {
         this.jdbc = jdbc;
         this.seasonResolver = seasonResolver;
+        this.clock = clock.getIfAvailable(Clock::systemUTC);
     }
 
     @Tool(description = """
@@ -47,6 +52,8 @@ public class FixtureDifficultyTools implements FplTool {
             """)
     public String getFixtureDifficulty(String teamName, int nextN) {
         try {
+            // One instant for every stored-row age in this reply (KAR-9).
+            Instant asOf = clock.instant();
             SeasonContext season = seasonResolver.resolve();
             int limit = Math.max(1, Math.min(nextN, MAX_FIXTURES));
             String pattern = "%" + LikePatterns.escape(teamName.toLowerCase(Locale.ROOT)) + "%";
@@ -69,24 +76,28 @@ public class FixtureDifficultyTools implements FplTool {
             String ambiguity = NameMatch.ambiguityNote(
                     teams.stream().map(t -> String.valueOf(t.get("name"))).toList());
 
-            Integer startGw = jdbc.queryForObject("""
-                    SELECT COALESCE(
+            // The chosen row comes back with its own write time, for its age line (KAR-9).
+            List<Map<String, Object>> start = jdbc.queryForList("""
+                    SELECT id, updated_at FROM gameweek
+                    WHERE season_id = ? AND id = COALESCE(
                         (SELECT id FROM gameweek WHERE season_id = ? AND is_current = true ORDER BY id LIMIT 1),
                         (SELECT id FROM gameweek WHERE season_id = ? AND is_next = true ORDER BY id LIMIT 1),
                         (SELECT MIN(id) FROM gameweek WHERE season_id = ?))
-                    """, Integer.class, season.seasonId(), season.seasonId(), season.seasonId());
+                    """, season.seasonId(), season.seasonId(), season.seasonId(), season.seasonId());
 
-            if (startGw == null) {
+            if (start.isEmpty()) {
                 return season.provenance() + "\nNo gameweeks are scheduled yet for " + season.code()
                         + ", so there is no fixture-difficulty outlook for " + name + " ("
                         + shortName + ") to report." + ambiguity;
             }
+            Map<String, Object> startRow = start.getFirst();
+            int startGw = ((Number) startRow.get("id")).intValue();
 
             List<Map<String, Object>> scheduled = jdbc.queryForList("""
                     SELECT f.gameweek,
                            th.short_name as home_short, ta.short_name as away_short,
                            f.team_h_difficulty, f.team_a_difficulty,
-                           f.kickoff_time, f.team_h = ? as is_home
+                           f.kickoff_time, f.team_h = ? as is_home, f.updated_at
                     FROM fixture f
                     JOIN team th ON th.id = f.team_h AND th.season_id = f.season_id
                     JOIN team ta ON ta.id = f.team_a AND ta.season_id = f.season_id
@@ -101,7 +112,7 @@ public class FixtureDifficultyTools implements FplTool {
             List<Map<String, Object>> postponed = jdbc.queryForList("""
                     SELECT th.short_name as home_short, ta.short_name as away_short,
                            f.team_h_difficulty, f.team_a_difficulty,
-                           f.team_h = ? as is_home
+                           f.team_h = ? as is_home, f.updated_at
                     FROM fixture f
                     JOIN team th ON th.id = f.team_h AND th.season_id = f.season_id
                     JOIN team ta ON ta.id = f.team_a AND ta.season_id = f.season_id
@@ -112,12 +123,16 @@ public class FixtureDifficultyTools implements FplTool {
                     ORDER BY th.short_name
                     """, teamId, season.seasonId(), teamId, teamId);
 
+            // Exactly the rows shown: the limited scheduled run plus every postponed fixture.
+            String ages = FixtureTools.storedDataAges(season.code(), startRow, name, scheduled, postponed, asOf);
+
             if (scheduled.isEmpty() && postponed.isEmpty()) {
                 return season.provenance() + "\nNo upcoming fixtures found for " + name + " ("
-                        + shortName + ") in " + season.code() + "." + ambiguity;
+                        + shortName + ") in " + season.code() + ".\n\n" + ages + ambiguity;
             }
 
-            return season.provenance() + "\n\n" + format(name, shortName, scheduled, postponed) + ambiguity;
+            return season.provenance() + "\n\n" + format(name, shortName, scheduled, postponed)
+                    + "\n" + ages + ambiguity;
         } catch (DataAccessException e) {
             log.error("getFixtureDifficulty(\"{}\", {}) failed", teamName, nextN, e);
             return "Fixture-difficulty data is temporarily unavailable (database error)."
