@@ -7,6 +7,7 @@ import java.util.Map;
 import java.util.Objects;
 
 import fi.karivanttinen.fplassistant.schedule.HorizonFixtures;
+import fi.karivanttinen.fplassistant.tools.DataAge;
 import fi.karivanttinen.fplassistant.tools.ExpectedPoints;
 import fi.karivanttinen.fplassistant.tools.UkTime;
 
@@ -63,6 +64,8 @@ public final class SquadFormatter {
                 .append(Objects.requireNonNull(metricProvenance, "metricProvenance")).append('\n')
                 .append(Objects.requireNonNull(scheduleProvenance, "scheduleProvenance"))
                 .append('\n');
+        // Every projection below rests on PFS metrics whose core-sync time is unknowable (KAR-9).
+        out.append(DataAge.METRIC_REFRESH).append('\n');
         if (blendNote != null) {
             out.append(blendNote).append('\n');
         }
