@@ -457,11 +457,10 @@ public class MyTeamService {
         if (start == null) {
             return "";
         }
-        String scope = "starting-gameweek selection for the FDR run"
-                + (start.id() == null ? "" : " (gameweek row id=" + start.id() + ")")
-                + ", season " + enrichment.season().code();
+        String scope = "starting-gameweek selection for the FDR run (gameweek row id=" + start.id()
+                + "), season " + enrichment.season().code();
         return DataAge.storedDataAge(scope, "gameweek record", start.write(), asOf) + "\n"
-                + (start.id() == null ? "" : DataAge.GAMEWEEK_CAVEAT + "\n");
+                + DataAge.GAMEWEEK_CAVEAT + "\n";
     }
 
     /** {@code asOf} is the squad's fetch instant: every stored-row age on the card is measured from it. */
