@@ -63,7 +63,7 @@ class SecurityHeadersTest {
     private static final String ORIGIN = "http://localhost:5173";
     /**
      * RFC 2544 benchmarking addresses, a block no other test uses: each request its own bucket of
-     * the shared 20/minute limit, even when another class shares this cached context.
+     * the shared 20/minute limit.
      */
     private static final AtomicInteger IP = new AtomicInteger(10);
     private static final List<String> SECURITY_CACHE_CONTROL =
@@ -189,6 +189,21 @@ class SecurityHeadersTest {
                 .header("Authorization", token));
         assertThat(rateLimited.status()).isEqualTo(429);
         assertThat(rateLimited.values("Content-Type")).containsExactly("text/plain");
+    }
+
+    /**
+     * Eagerly written headers are on the response before the handler runs, so a container that
+     * fully resets the response on the way to its error page would drop them.
+     */
+    @Test
+    void anUnhandledFailureKeepsTheSecurityHeadersOnTomcat() throws Exception {
+        when(myTeam.myTeam(any(), any())).thenThrow(new IllegalStateException("KAR-42 header probe"));
+
+        Reply failed = servlet(request("/api/my-team", USER).GET());
+
+        assertThat(failed.status()).isEqualTo(500);
+        assertThat(failed.values("X-Content-Type-Options")).containsExactly("nosniff");
+        assertThat(failed.values("X-Frame-Options")).containsExactly("DENY");
     }
 
     @Test

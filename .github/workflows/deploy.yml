@@ -115,6 +115,7 @@ jobs:
             backend/build/reports/tests/test/**
             backend/build/diagnostics/kar-42/**
           if-no-files-found: warn
+          retention-days: 14
 
   deploy:
     needs: test
