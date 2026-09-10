@@ -38,6 +38,13 @@ public class ChatController {
 
     static final int MAX_CONTENT_CHARS = 4000;
 
+    // Package-private for tests. The frontend ignores this payload and shows its own copy of
+    // the same sentence, so a curl user and a browser user read the same text; no exception
+    // message, provider detail or HTTP body ever reaches the client through this event.
+    static final String GENERATION_FAILED = "The assistant could not finish this answer — its "
+            + "AI service or a data lookup failed. The answer was not saved. Try again in a "
+            + "moment.";
+
     /**
      * How long one answer may take before the detached subscription gives up. Generous: a
      * tool-calling answer makes several model round trips. It exists to bound a provider that
@@ -132,7 +139,7 @@ public class ChatController {
                         .map(token -> ServerSentEvent.builder(json(token)).build())
                         .onErrorResume(e -> Flux.just(ServerSentEvent.<String>builder()
                                 .event("error")
-                                .data("The assistant hit a temporary problem. Please try again.")
+                                .data(GENERATION_FAILED)
                                 .build()));
 
         return Flux.concat(
