@@ -1,10 +1,13 @@
 package dev.quantti.fplassistant.squad;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
+import dev.quantti.fplassistant.schedule.HorizonFixtures;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -44,6 +47,27 @@ class FeasibilityTest {
     }
 
     /**
+     * The ordinary case: every club of the pool plays at least once in the horizon, so only the
+     * observed-history gate can shrink the starting capacity. Tests about the schedule itself
+     * call {@link Feasibility#check} directly with the window they mean.
+     */
+    private static Optional<String> check(List<SquadCandidate> pool,
+                                          SquadConstraints constraints,
+                                          List<SquadCandidate> pinned) {
+        return Feasibility.check(pool, constraints, pinned, SquadCandidateTestData.clubsOf(pool),
+                SquadCandidateTestData.horizonForEveryClubIn(pool));
+    }
+
+    private static Optional<String> check(List<SquadCandidate> pool,
+                                          SquadConstraints constraints,
+                                          List<SquadCandidate> pinned,
+                                          List<SquadCandidate> excluded) {
+        return Feasibility.check(pool, constraints, pinned, excluded,
+                SquadCandidateTestData.clubsOf(pool),
+                SquadCandidateTestData.horizonForEveryClubIn(pool));
+    }
+
+    /**
      * A resolved quota — {@code teamId} follows {@link #player} and {@link #deepPool}'s own
      * {@code club.hashCode()} convention, the way {@code SquadTools.resolveClub} would have
      * resolved it against a real pool. {@code clubsHaveEnoughPlayers} and the pins-vs-quota
@@ -57,7 +81,7 @@ class FeasibilityTest {
 
     @Test
     void passesAPlainRequest() {
-        Optional<String> refusal = Feasibility.check(deepPool(),
+        Optional<String> refusal = check(deepPool(),
                 constraints(List.of(), 1000), List.of());
 
         assertThat(refusal).isEmpty();
@@ -65,7 +89,7 @@ class FeasibilityTest {
 
     @Test
     void refusesAQuotaAboveTheGamesOwnThreePerClubLimit() {
-        Optional<String> refusal = Feasibility.check(deepPool(), constraints(List.of(
+        Optional<String> refusal = check(deepPool(), constraints(List.of(
                 quota("Ashfield", SquadConstraints.Comparator.EXACTLY, 4)),
                 1000), List.of());
 
@@ -75,7 +99,7 @@ class FeasibilityTest {
 
     @Test
     void refusesContradictoryQuotasForOneClub() {
-        Optional<String> refusal = Feasibility.check(deepPool(), constraints(List.of(
+        Optional<String> refusal = check(deepPool(), constraints(List.of(
                 quota("Ashfield", SquadConstraints.Comparator.AT_LEAST, 3),
                 quota("Ashfield", SquadConstraints.Comparator.AT_MOST, 2)),
                 1000), List.of());
@@ -92,7 +116,7 @@ class FeasibilityTest {
             quotas.add(quota(club, SquadConstraints.Comparator.EXACTLY, 3));
         }
         // Six clubs at exactly three is eighteen players.
-        Optional<String> refusal = Feasibility.check(deepPool(), constraints(quotas, 1000),
+        Optional<String> refusal = check(deepPool(), constraints(quotas, 1000),
                 List.of());
 
         assertThat(refusal).isPresent();
@@ -107,7 +131,7 @@ class FeasibilityTest {
                 player(903, "Three", "Ashfield", 3, 50),
                 player(904, "Four", "Ashfield", 4, 50));
 
-        Optional<String> refusal = Feasibility.check(deepPool(), constraints(List.of(), 1000),
+        Optional<String> refusal = check(deepPool(), constraints(List.of(), 1000),
                 pinned);
 
         assertThat(refusal).isPresent();
@@ -121,7 +145,7 @@ class FeasibilityTest {
                 player(902, "Keeper2", "Barnwell", 1, 45),
                 player(903, "Keeper3", "Coleridge", 1, 45));
 
-        Optional<String> refusal = Feasibility.check(deepPool(), constraints(List.of(), 1000),
+        Optional<String> refusal = check(deepPool(), constraints(List.of(), 1000),
                 pinned);
 
         assertThat(refusal).isPresent();
@@ -136,7 +160,7 @@ class FeasibilityTest {
                 player(903, "Rich3", "Coleridge", 4, 150));
 
         // Twelve more at £4.0m is 480; the pins are 450; 930 fits 1000 but not 800.
-        Optional<String> refusal = Feasibility.check(deepPool(), constraints(List.of(), 800),
+        Optional<String> refusal = check(deepPool(), constraints(List.of(), 800),
                 pinned);
 
         assertThat(refusal).isPresent();
@@ -149,7 +173,7 @@ class FeasibilityTest {
         thin.removeIf(c -> c.club().equals("Ashfield") && c.elementId() % 2 == 0);
         long remaining = thin.stream().filter(c -> c.club().equals("Ashfield")).count();
 
-        Optional<String> refusal = Feasibility.check(thin, constraints(List.of(
+        Optional<String> refusal = check(thin, constraints(List.of(
                 quota("Ashfield", SquadConstraints.Comparator.EXACTLY, 3)), 1000), List.of());
 
         // The thinned club still has players; this asserts the check reads the pool, not a
@@ -165,7 +189,7 @@ class FeasibilityTest {
         thin.removeIf(c -> c.club().equals("Ashfield") && c.elementId() > 1);
         long remaining = thin.stream().filter(c -> c.club().equals("Ashfield")).count();
 
-        Optional<String> refusal = Feasibility.check(thin, constraints(List.of(
+        Optional<String> refusal = check(thin, constraints(List.of(
                 quota("Ashfield", SquadConstraints.Comparator.EXACTLY, 2)), 1000), List.of());
 
         assertThat(remaining).isEqualTo(1);
@@ -179,7 +203,7 @@ class FeasibilityTest {
         // the same candidate, exactly as SquadTools.resolve would.
         SquadCandidate contradiction = player(901, "Salah", "Ashfield", 3, 130);
 
-        Optional<String> refusal = Feasibility.check(deepPool(),
+        Optional<String> refusal = check(deepPool(),
                 new SquadConstraints(List.of(), List.of("Salah"), List.of(), 1000, 5, null),
                 List.of(contradiction), List.of(contradiction));
 
@@ -194,7 +218,7 @@ class FeasibilityTest {
         // not exhaust the relaxation ladder and answer with the generic "cannot all be met".
         SquadCandidate pin = player(901, "Saka", "Ashfield", 3, 80);
 
-        Optional<String> refusal = Feasibility.check(deepPool(), constraints(List.of(
+        Optional<String> refusal = check(deepPool(), constraints(List.of(
                 quota("Ashfield", SquadConstraints.Comparator.EXACTLY, 0)), 1000),
                 List.of(pin));
 
@@ -209,7 +233,7 @@ class FeasibilityTest {
         thin.removeIf(c -> c.elementType() == 1 && c.elementId() > 1);
         long remaining = thin.stream().filter(c -> c.elementType() == 1).count();
 
-        Optional<String> refusal = Feasibility.check(thin, constraints(List.of(), 1000),
+        Optional<String> refusal = check(thin, constraints(List.of(), 1000),
                 List.of());
 
         assertThat(remaining).isEqualTo(1);
@@ -223,7 +247,7 @@ class FeasibilityTest {
 
     @Test
     void passesALegalFormation() {
-        Optional<String> refusal = Feasibility.check(deepPool(),
+        Optional<String> refusal = check(deepPool(),
                 withFormation(new SquadConstraints.Formation(3, 4, 3)), List.of());
 
         assertThat(refusal).isEmpty();
@@ -239,7 +263,7 @@ class FeasibilityTest {
             }
         }
 
-        Optional<String> refusal = Feasibility.check(pool, constraints(List.of(), 1000), List.of());
+        Optional<String> refusal = check(pool, constraints(List.of(), 1000), List.of());
 
         assertThat(refusal).hasValueSatisfying(message -> assertThat(message)
                 .contains("goalkeeper").contains("60+").contains("budget"));
@@ -256,16 +280,102 @@ class FeasibilityTest {
             }
         }
 
-        Optional<String> refusal = Feasibility.check(pool,
+        Optional<String> refusal = check(pool,
                 withFormation(new SquadConstraints.Formation(3, 4, 3)), List.of());
 
         assertThat(refusal).hasValueSatisfying(message -> assertThat(message)
                 .contains("3-4-3").contains("3 forwards").contains("only 1"));
     }
 
+    /** Club ids of the pool, minus the ones this test means to strand without a fixture. */
+    private static Set<Integer> playableExcept(List<SquadCandidate> pool, String... clubs) {
+        Set<Integer> playable =
+                new LinkedHashSet<>(SquadCandidateTestData.clubsOf(pool));
+        for (String club : clubs) {
+            playable.remove(club.hashCode());
+        }
+        return playable;
+    }
+
+    /**
+     * The starting capacity counts both gates at once. Every player here has the minutes; only
+     * one club plays, so a 3-4-3 cannot be filled and the refusal must say why in both terms.
+     */
+    @Test
+    void forcedFormationRequiresEnoughEligiblePlayersAtClubsThatActuallyPlay() {
+        List<SquadCandidate> pool = deepPool();
+        Set<Integer> onlyAshfield = Set.of("Ashfield".hashCode());
+
+        Optional<String> refusal = Feasibility.check(pool,
+                withFormation(new SquadConstraints.Formation(3, 4, 3)), List.of(),
+                onlyAshfield, SquadCandidateTestData.horizonForEveryClubIn(pool));
+
+        assertThat(refusal).hasValueSatisfying(message -> assertThat(message)
+                .contains("3-4-3").contains("4 midfielders").contains("only 3")
+                .contains("GW4–8").contains("60+")
+                .contains("neither a pin nor a higher budget can waive it"));
+    }
+
+    @Test
+    void refusesWhenEveryClubIsBlankedAcrossTheWindow() {
+        List<SquadCandidate> pool = deepPool();
+
+        Optional<String> refusal = Feasibility.check(pool, constraints(List.of(), 1000),
+                List.of(), Set.of(),
+                SquadCandidateTestData.horizonWhere(List.of(),
+                        SquadCandidateTestData.clubsOf(pool)));
+
+        assertThat(refusal).hasValueSatisfying(message -> assertThat(message)
+                .contains("goalkeeper").contains("GW4–8").contains("60+")
+                .contains("higher budget"));
+    }
+
+    /**
+     * A blanked club is a finding about the schedule, not about the player: the players it
+     * strands must not be counted towards a formation the solver will then refuse to fill.
+     */
+    @Test
+    void aBlankedClubsPlayersDoNotCountTowardsTheStartingCapacity() {
+        List<SquadCandidate> pool = deepPool();
+
+        assertThat(check(pool, withFormation(new SquadConstraints.Formation(5, 4, 1)), List.of()))
+                .as("all eight clubs playing, this formation fits").isEmpty();
+        assertThat(Feasibility.check(pool,
+                withFormation(new SquadConstraints.Formation(5, 4, 1)), List.of(),
+                playableExcept(pool, "Ashfield", "Barnwell", "Coleridge",
+                        "Dunmore", "Eastvale", "Fallowfield", "Granton"),
+                SquadCandidateTestData.horizonForEveryClubIn(pool)))
+                .as("one club left playing cannot supply five defenders")
+                .hasValueSatisfying(message -> assertThat(message).contains("5 defenders"));
+    }
+
+    @Test
+    void refusesWhenTheCapturedScheduleCannotSupplyAHorizonAtAllAndSaysTheCountIsUnknown() {
+        Optional<String> refusal = Feasibility.check(deepPool(), constraints(List.of(), 1000),
+                List.of(), Set.of(), SquadCandidateTestData.horizonThatCannotBeDerived(
+                        HorizonFixtures.UnknownReason.SCHEDULE_INCOMPLETE));
+
+        assertThat(refusal).hasValueSatisfying(message -> assertThat(message)
+                .contains("cannot supply a gameweek horizon (schedule incomplete)")
+                .contains("unknown rather than zero")
+                .contains("60+").contains("higher budget supplies neither")
+                .doesNotContain("only 0"));
+    }
+
+    @Test
+    void refusesAfterTheFinalDeadlineByNamingTheMissingGameweekRatherThanTheSquad() {
+        Optional<String> refusal = Feasibility.check(deepPool(), constraints(List.of(), 1000),
+                List.of(), Set.of(), SquadCandidateTestData.horizonThatCannotBeDerived(
+                        HorizonFixtures.UnknownReason.NO_EDITABLE_GAMEWEEK));
+
+        assertThat(refusal).hasValueSatisfying(message -> assertThat(message)
+                .contains("No editable gameweek remains in the captured schedule")
+                .contains("unknown rather than zero"));
+    }
+
     @Test
     void refusesAFormationThatDoesNotSumToTenOutfieldPlayers() {
-        Optional<String> refusal = Feasibility.check(deepPool(),
+        Optional<String> refusal = check(deepPool(),
                 withFormation(new SquadConstraints.Formation(4, 4, 4)), List.of());
 
         assertThat(refusal).isPresent();
@@ -274,7 +384,7 @@ class FeasibilityTest {
 
     @Test
     void refusesAFormationWithTooFewDefenders() {
-        Optional<String> refusal = Feasibility.check(deepPool(),
+        Optional<String> refusal = check(deepPool(),
                 withFormation(new SquadConstraints.Formation(2, 5, 3)), List.of());
 
         assertThat(refusal).isPresent();
@@ -283,7 +393,7 @@ class FeasibilityTest {
 
     @Test
     void refusesAFormationWithTooManyForwards() {
-        Optional<String> refusal = Feasibility.check(deepPool(),
+        Optional<String> refusal = check(deepPool(),
                 withFormation(new SquadConstraints.Formation(3, 2, 5)), List.of());
 
         assertThat(refusal).isPresent();
@@ -294,7 +404,7 @@ class FeasibilityTest {
     void refusesAFormationWithTooManyMidfielders() {
         // Legal on their own (def at its floor, fwd at its floor), but 10 outfield players
         // leaves 6 for midfield — one more than a squad holds in total.
-        Optional<String> refusal = Feasibility.check(deepPool(),
+        Optional<String> refusal = check(deepPool(),
                 withFormation(new SquadConstraints.Formation(3, 6, 1)), List.of());
 
         assertThat(refusal).isPresent();
