@@ -16,6 +16,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
 import org.springframework.security.config.Customizer;
+import org.springframework.security.config.ObjectPostProcessor;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
@@ -33,6 +34,7 @@ import org.springframework.security.oauth2.jwt.JwtIssuerValidator;
 import org.springframework.security.oauth2.jwt.JwtTimestampValidator;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.header.HeaderWriterFilter;
 
 /**
  * Bearer-token authentication for {@code /api/**}, verified against Supabase's published JWKS.
@@ -59,6 +61,15 @@ public class SecurityConfig {
                 // Picks up the MVC CORS mappings in WebConfig; without this the security chain
                 // would reject the preflight the browser sends from the Vite dev server.
                 .cors(Customizer.withDefaults())
+                // KAR-42: eager; an on-commit write raced the request thread's own on SSE flush.
+                .headers(headers -> headers.addObjectPostProcessor(
+                        new ObjectPostProcessor<HeaderWriterFilter>() {
+                            @Override
+                            public <O extends HeaderWriterFilter> O postProcess(O filter) {
+                                filter.setShouldWriteHeadersEagerly(true);
+                                return filter;
+                            }
+                        }))
                 .sessionManagement(session ->
                         session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(requests -> requests

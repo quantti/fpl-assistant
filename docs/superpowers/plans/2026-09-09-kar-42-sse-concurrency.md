@@ -1,6 +1,6 @@
 # KAR-42 — diagnose and fix the intermittent chat SSE concurrency failure
 
-**PROGRESS:** Task 2/4 done; root cause: `HeaderWriterFilter` writes security headers from the request thread's `finally` while the MVC executor's first SSE commit writes them too.
+**PROGRESS:** Task 3/4 done; repair: `SecurityConfig` makes `HeaderWriterFilter` write security headers eagerly, since the upstream gh-9175 fix is unreleased.
 
 Existing issue: [KAR-42](https://linear.app/quantti/issue/KAR-42/chatcontrollertest-hit-a-concurrentmodificationexception-inside-the).
 Checked 2026-09-09: Backlog, Low (4). No duplicate was created and no priority/status was changed.
@@ -234,6 +234,43 @@ single detached model subscription and its bounded lifetime.
 Verification: keep the controlled ordering and assertions identical. Repair absent → identified
 failure; repair present → correct behavior. Preserve both reports before `cleanTest` deletes them.
 Several consecutive green runs are supplementary evidence, not the red/green proof.
+
+### Task 3 outcome
+
+- **Upstream.** Spring Security fixed this race as
+  [gh-9175](https://github.com/spring-projects/spring-security/issues/9175) on 2026-09-03:
+  [PR #19103](https://github.com/spring-projects/spring-security/pull/19103) (`bdf501fe`, milestone
+  7.0.8), forward-ported to 7.1.x as [#19647](https://github.com/spring-projects/spring-security/issues/19647)
+  (`801f890e`, milestone 7.1.2). Neither is released. The newest 7.1.x on Maven Central is 7.1.1
+  (2026-08-20), which predates the fix. The fix was found with
+  `gh search issues --repo spring-projects/spring-security` for "HeaderWriterFilter
+  ConcurrentModificationException", "HeaderWriterFilter async", "HeaderWriterFilter thread" and
+  "shouldWriteHeadersEagerly". Related issues: #15510, open with the same race, and #11452, the
+  MockMvc CME, closed as a duplicate of #9175.
+- **Repair.** `SecurityConfig` calls `HeaderWriterFilter.setShouldWriteHeadersEagerly(true)` through
+  `headers.addObjectPostProcessor`, which is 7.x's replacement for `withObjectPostProcessor`. The
+  headers are written before the chain runs, so the on-commit write path is gone. The repair
+  adds no lock and no version override.
+- **Why not wait for 7.1.2.** Its fix is a compare-and-set, so only one thread writes the headers.
+  If the request thread wins, though, the emitter thread still commits while those headers are
+  being written, which is the overlap `ChatSseLifecycleTest` asserts. This comes from reading
+  the patch; the release could not be run. Re-check when 7.1.2 ships. A possible upstream note,
+  not filed: "The #19103 CAS prevents a second write, but when the unwinding thread wins, the
+  async thread commits while it is still writing."
+- **Headers.** The new `SecurityHeadersTest` runs over MockMvc and Tomcat, with every header
+  line visible. It passes with and without the repair. The full dumps of both modes
+  (`build/diagnostics/kar-42/headers-{lazy,eager}/`, `headers-lazy-vs-eager.diff`) differ in
+  two places:
+  - `/api/my-team` keeps its single `Cache-Control: no-store` but now also carries `Pragma: no-cache`
+    and `Expires: 0`. On commit, `CacheControlHeadersWriter` skipped the whole trio because
+    the app had already set `Cache-Control`.
+  - A static-resource 304 now carries the trio, which lazy mode skipped for 304 responses.
+
+  CORS, the SSE `Content-Type`, 401, 403, 404, the quota 429 with `Retry-After` and the
+  rate-limit 429 are unchanged.
+- **Red/green.** With the repair absent, the four `FIRST_FLUSH_DURING_UNWIND` cases fail on the
+  overlap assertion on both transports (`build/diagnostics/kar-42/task3-red/`). With it present,
+  all 12 pass (`task3-green/`).
 
 ## Task 4 — regression acceptance and verified handoff
 
