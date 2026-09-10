@@ -1,6 +1,5 @@
 package dev.quantti.fplassistant.tools;
 
-import java.time.Clock;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -8,42 +7,29 @@ import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import dev.quantti.fplassistant.schedule.ScheduleSource;
+import dev.quantti.fplassistant.testsupport.DataAgeClock;
 import dev.quantti.fplassistant.testsupport.TapasSeed;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.context.TestConfiguration;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Import;
-import org.springframework.context.annotation.Primary;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Transactional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 @SpringBootTest
-@Import(FixtureToolsTest.FixedClock.class)
 class FixtureToolsTest {
 
-    /** The one {@code asOf} the age lines are measured against; BST, so UK time is UTC+1. */
-    static final Instant AS_OF = Instant.parse("2026-09-10T12:00:00Z");
+    static final Instant AS_OF = DataAgeClock.AS_OF;
     /** An hour before {@link #AS_OF}: every row nobody should be reading is written this recently. */
     static final Instant FRESH = Instant.parse("2026-09-10T11:00:00Z");
 
     private static final int SEASON = TapasSeed.POPULATED_SEASON_ID;
 
-    @TestConfiguration
-    static class FixedClock {
-        @Bean
-        @Primary
-        Clock dataAgeClock() {
-            return Clock.fixed(AS_OF, ZoneOffset.UTC);
-        }
-    }
-
-    @Autowired
+    /** Built with the fixed clock rather than autowired; see {@link DataAgeClock}. */
     FixtureTools fixtureTools;
 
     @Autowired
@@ -51,6 +37,14 @@ class FixtureToolsTest {
 
     @Autowired
     JdbcTemplate jdbc;
+
+    @Autowired
+    ScheduleSource schedule;
+
+    @BeforeEach
+    void buildTools() {
+        fixtureTools = new FixtureTools(jdbc, seasonResolver, schedule, DataAgeClock.provider());
+    }
 
     @Value("${fpl.schedule.gameweek-table-name}")
     String scheduleGameweekTable;
