@@ -102,7 +102,9 @@ class MyTeamControllerTest {
                 .andExpect(jsonPath("$.continuing.value").value(995))
                 .andExpect(jsonPath("$.continuing.players[0].name").value("Wood"))
                 .andExpect(jsonPath("$.entry.managerName").doesNotExist())
-                .andExpect(jsonPath("$.enrichment").doesNotExist());
+                .andExpect(jsonPath("$.enrichment").doesNotExist())
+                .andExpect(jsonPath("$.lockedSquad.players[0].depth").doesNotExist())
+                .andExpect(jsonPath("$.continuing.players[0].depth").doesNotExist());
     }
 
     @Test
@@ -210,15 +212,22 @@ class MyTeamControllerTest {
                 List.of(freeHitPick));
         LockedSquad continuing = new LockedSquad(null, 5, 995, 48,
                 List.of(continuingPick));
+        // Available, dated enrichment on both squads: the page must still carry none of it.
+        Instant written = Instant.parse("2026-09-01T07:00:00Z");
+        dev.quantti.fplassistant.tools.DataAge.Span writes =
+                new dev.quantti.fplassistant.tools.DataAge.Span(written, written, 1, 0);
+        SquadEnrichment.Depth depth = new SquadEnrichment.Depth(3.0,
+                new java.math.BigDecimal("3.40"), new java.math.BigDecimal("1.20"), writes, writes);
         MyTeamService.SquadPlayer salah = new MyTeamService.SquadPlayer(freeHitPick,
                 new FplBootstrap.Element(302, "Salah", 14, "LIV", 3, 126, "8.5", 12,
-                        "12.0", "42.1", "a", "", null), null);
+                        "12.0", "42.1", "a", "", null), depth);
         MyTeamService.SquadPlayer wood = new MyTeamService.SquadPlayer(continuingPick,
                 new FplBootstrap.Element(44, "Wood", 4, "NFO", 4, 71, "5.0", 18,
-                        "6.0", "25.0", "a", "", null), null);
-        SquadEnrichment.Enrichment enrichment = new SquadEnrichment.Enrichment(false,
+                        "6.0", "25.0", "a", "", null), depth);
+        SquadEnrichment.Enrichment enrichment = new SquadEnrichment.Enrichment(true,
                 new SeasonContext(1, "2026-27", true, "2026-27",
-                        LocalDate.of(2026, 8, 1)), Map.of());
+                        LocalDate.of(2026, 8, 1)), Map.of(302, depth, 44, depth),
+                new SquadEnrichment.StartingGameweek(5, writes));
         return new MyTeamService.Result.Squad(
                 new EntrySummary(123, "Deadline FC", "Private Manager", 42, 100, 5,
                         List.of()), 5, Optional.of(Instant.parse("2026-09-05T10:00:00Z")),
