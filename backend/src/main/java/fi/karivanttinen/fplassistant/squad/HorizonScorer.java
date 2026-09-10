@@ -1,40 +1,57 @@
 package fi.karivanttinen.fplassistant.squad;
 
-import java.time.Instant;
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.stream.Collectors;
+import java.util.Optional;
 
-import fi.karivanttinen.fplassistant.schedule.ScheduleSource;
+import fi.karivanttinen.fplassistant.schedule.HorizonFixtures;
 import fi.karivanttinen.fplassistant.tools.ExpectedPoints;
-import org.springframework.stereotype.Component;
 
 /**
- * Turns the shared per-fixture expectation into what a player is worth over the next N fixtures.
- * Current XI admission is a separate hard observed-history rule; expected minutes shape the
- * point components but never grant permission to start.
+ * Turns the shared per-fixture expectation into what a player is worth over the fixtures his club
+ * actually plays in the editable gameweek window. Current XI admission is a separate hard
+ * observed-history rule; expected minutes shape the point components but never grant permission to
+ * start.
+ *
+ * <p>The window itself is {@link HorizonFixtures}' — the same derivation the pick tools rank on,
+ * over the same captured schedule that supplied the current-role evidence. This class used to
+ * derive its own weekly window, which is how the squad builder and the pick lists could disagree
+ * about which fixtures a club plays.
  *
  * <p>The horizon is <b>summed, not averaged</b>. A double gameweek is literally two fixtures and
- * comes out right without special handling; a blank is no fixture and comes out as nothing.
+ * comes out right without special handling; a blank is no fixture and comes out as a real zero,
+ * which is not the same statement as "unknown".
  *
  * <p>The fixture adjustment is coarse: one multiplier on the whole score, where a fixture should
  * move the clean-sheet term more than the attacking terms. Issue #47 replaces it with a team
  * xG/xGC projection.
  */
-@Component
-public class HorizonScorer {
+public final class HorizonScorer {
 
-    public record Projection(double optimizerPoints, boolean available, boolean partial) {
+    /**
+     * @param optimizerPoints the summed per-fixture expectation; zero whenever the projection is
+     *        unavailable, which is an optimiser weight and never a printed forecast
+     * @param available whether the number means anything. A known window holding no fixtures is
+     *        available with zero — a real blank — while an unknown window is not available at all
+     * @param partial whether an expected component was unavailable inside a counted fixture
+     * @param fixtures how many countable fixtures the sum ran over
+     * @param neutralFdrLegs how many of those carried no usable FDR and were scored at the
+     *        neutral 3, so the reply can say so rather than implying every leg was rated
+     * @param horizonReason why the club's window could not be established, or null when it could
+     */
+    public record Projection(double optimizerPoints, boolean available, boolean partial,
+                             int fixtures, int neutralFdrLegs,
+                             HorizonFixtures.UnknownReason horizonReason) {
     }
 
     /** Score multiplier per FDR step away from a neutral 3. */
     public static final double FDR_SWING = 0.1;
 
-    private static final int NEUTRAL_FDR = 3;
+    static final int NEUTRAL_FDR = 3;
+
+    /** No rankable ability record at all: unscored, and never a zero forecast. */
+    private static final Projection UNSCOREABLE = new Projection(0, false, false, 0, 0, null);
+
+    private HorizonScorer() {
+    }
 
     /** The blended per-season rate, never a ratio of added cross-season evidence counts. */
     public static double expectedMinutes(SquadCandidate candidate) {
@@ -46,83 +63,45 @@ public class HorizonScorer {
     }
 
     /**
-     * Expected FPL points across the given fixtures. A body scores nothing by definition — he is
-     * bought for his price, and asserting anything else about him is what the tier exists to
-     * prevent.
+     * Expected FPL points across the club's countable fixtures. A body scores nothing by
+     * definition — he is bought for his price, and asserting anything else about him is what the
+     * tier exists to prevent.
+     *
+     * <p>Three outcomes, kept apart on purpose: no rankable record (unscored), an unknown window
+     * (unscored, with the schedule's own reason), and a known window that happens to be empty
+     * (a genuine zero over zero fixtures).
      */
     public static Projection projection(SquadCandidate candidate,
-                                        List<Integer> fixtureDifficulties) {
-        if (candidate.tier() == SquadCandidate.Tier.BODY || candidate.exposure() == null
-                || fixtureDifficulties.isEmpty()) {
-            return new Projection(0, false, false);
+                                        HorizonFixtures.ClubWindow window) {
+        if (candidate.tier() == SquadCandidate.Tier.BODY || candidate.exposure() == null) {
+            return UNSCOREABLE;
         }
-        var perFixture = ExpectedPoints.perFixture(candidate.metrics(), candidate.exposure());
+        Optional<ExpectedPoints.PerFixture> perFixture =
+                ExpectedPoints.perFixture(candidate.metrics(), candidate.exposure());
         if (perFixture.isEmpty()) {
-            return new Projection(0, false, false);
+            return UNSCOREABLE;
+        }
+        if (!window.known()) {
+            return new Projection(0, false, false, 0, 0, window.unknownReason());
         }
         ExpectedPoints.PerFixture components = perFixture.orElseThrow();
         double total = 0;
-        for (int fdr : fixtureDifficulties) {
-            total += components.points() * fdrAdjust(fdr);
+        int neutralFdrLegs = 0;
+        for (HorizonFixtures.Fixture fixture : window.fixtures()) {
+            boolean rated = fixture.hasValidDifficulty();
+            if (!rated) {
+                neutralFdrLegs++;
+            }
+            total += components.points()
+                    * fdrAdjust(rated ? fixture.difficulty() : NEUTRAL_FDR);
         }
-        return new Projection(total, true,
-                components.cleanSheet() == null || components.partialDefcon());
+        // A blank window used no component at all, so there is nothing partial about its zero.
+        boolean partial = window.count() > 0
+                && (components.cleanSheet() == null || components.partialDefcon());
+        return new Projection(total, true, partial, window.count(), neutralFdrLegs, null);
     }
 
-    public static double score(SquadCandidate candidate, List<Integer> fixtureDifficulties) {
-        return projection(candidate, fixtureDifficulties).optimizerPoints();
-    }
-
-    /**
-     * Each club's difficulty across the next {@code horizon} gameweeks from the same immutable
-     * FPL schedule view that supplied the current-role evidence. Doubles contribute twice and
-     * blanks contribute nothing; an unresolved fixture is excluded until FPL assigns a round.
-     */
-    public Map<Integer, List<Integer>> fixtureDifficulties(
-            ScheduleSource.View view, Instant asOf, int horizon) {
-        if (!view.completeness().complete() || view.snapshot().isEmpty()) {
-            return Map.of();
-        }
-
-        Set<Integer> roundsWithUnstartedFixtures = view.fixtures().stream()
-                .filter(fixture -> fixture.gameweek() != null && !fixture.started()
-                        && !fixture.finished())
-                .map(ScheduleSource.FixtureRow::gameweek)
-                .collect(Collectors.toSet());
-        Integer from = view.events().stream()
-                .filter(event -> !event.deadline().isAfter(asOf)
-                        && roundsWithUnstartedFixtures.contains(event.id()))
-                .map(ScheduleSource.EventRow::id)
-                .max(Integer::compareTo)
-                .orElseGet(() -> view.events().stream()
-                        .filter(event -> event.deadline().isAfter(asOf))
-                        .map(ScheduleSource.EventRow::id)
-                        .min(Integer::compareTo)
-                        .orElse(null));
-        if (from == null) {
-            return Map.of();
-        }
-        int upTo = from + horizon;
-
-        List<ScheduleSource.FixtureRow> fixtures = view.fixtures().stream()
-                .filter(fixture -> fixture.gameweek() != null
-                        && fixture.gameweek() >= from && fixture.gameweek() < upTo
-                        && !fixture.started() && !fixture.finished())
-                .sorted(Comparator.comparing(ScheduleSource.FixtureRow::gameweek)
-                        .thenComparing(fixture -> fixture.kickoff() == null
-                                ? Instant.MAX : fixture.kickoff())
-                        .thenComparing(ScheduleSource.FixtureRow::id))
-                .toList();
-
-        Map<Integer, List<Integer>> byTeam = new HashMap<>();
-        for (ScheduleSource.FixtureRow fixture : fixtures) {
-            byTeam.computeIfAbsent(fixture.homeTeamId(), key -> new ArrayList<>())
-                    .add(fixture.homeDifficulty() == null
-                            ? NEUTRAL_FDR : fixture.homeDifficulty());
-            byTeam.computeIfAbsent(fixture.awayTeamId(), key -> new ArrayList<>())
-                    .add(fixture.awayDifficulty() == null
-                            ? NEUTRAL_FDR : fixture.awayDifficulty());
-        }
-        return byTeam;
+    public static double score(SquadCandidate candidate, HorizonFixtures.ClubWindow window) {
+        return projection(candidate, window).optimizerPoints();
     }
 }

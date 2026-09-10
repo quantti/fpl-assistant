@@ -3,6 +3,7 @@ package fi.karivanttinen.fplassistant.squad;
 import java.util.List;
 import java.util.Map;
 
+import fi.karivanttinen.fplassistant.schedule.HorizonFixtures;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -67,15 +68,25 @@ class SquadFormatterTest {
                                  List<SquadCandidate> resolvedIncludes,
                                  List<SquadCandidate> resolvedExcludes) {
         return SquadFormatter.format(solved, constraints, "PRICE PROVENANCE",
-                "METRIC PROVENANCE", 12, resolvedIncludes, resolvedExcludes, Map.of(),
-                false, null);
+                "METRIC PROVENANCE", "SCHEDULE PROVENANCE", 12, resolvedIncludes,
+                resolvedExcludes, Map.of(), false, null, horizon());
     }
 
+    /** The window every projection below was summed over: GW4-8, all five gameweeks asked for. */
+    private static HorizonFixtures.Result horizon() {
+        return SquadCandidateTestData.horizonForEveryClubIn(solved().squad());
+    }
+
+    /** Three sources now: the daily price capture, the metric season and the schedule capture. */
     @Test
-    void carriesBothProvenanceLines() {
+    void carriesAllThreeProvenanceLinesInSourceOrder() {
         String output = format(solved(), constraints());
 
-        assertThat(output).contains("PRICE PROVENANCE").contains("METRIC PROVENANCE");
+        assertThat(output).contains("PRICE PROVENANCE").contains("METRIC PROVENANCE")
+                .contains("SCHEDULE PROVENANCE");
+        assertThat(output.indexOf("PRICE PROVENANCE")).isLessThan(output.indexOf("METRIC PROVENANCE"));
+        assertThat(output.indexOf("METRIC PROVENANCE"))
+                .isLessThan(output.indexOf("SCHEDULE PROVENANCE"));
     }
 
     @Test
@@ -283,28 +294,28 @@ class SquadFormatterTest {
         // rows, so the model has something to quote when asked "why this squad?" instead of
         // reaching elsewhere or inventing a reason.
         Map<Integer, HorizonScorer.Projection> projections = Map.of(
-                1, new HorizonScorer.Projection(4.5, true, false),
-                2, new HorizonScorer.Projection(1.2, true, false));
+                1, new HorizonScorer.Projection(4.5, true, false, 2, 0, null),
+                2, new HorizonScorer.Projection(1.2, true, false, 1, 0, null));
 
         String output = SquadFormatter.format(solved(), constraints(), "PRICE PROVENANCE",
-                "METRIC PROVENANCE", 12, resolvedMustInclude(), List.of(), projections,
-                false, null);
+                "METRIC PROVENANCE", "SCHEDULE PROVENANCE", 12, resolvedMustInclude(),
+                List.of(), projections, false, null, horizon());
 
         // Name1 (element id 1) is in the starting XI.
-        assertThat(output).contains("4.50 xPts");
+        assertThat(output).contains("4.50 xPts over 2 fixtures");
         // Name2 (element id 2) is on the bench.
-        assertThat(output).contains("1.20 xPts");
+        assertThat(output).contains("1.20 xPts over 1 fixture");
         assertThat(output).contains("90 expected mins/fixture");
     }
 
     @Test
     void labelsAPartialProjectionInsteadOfPresentingItAsComplete() {
         Map<Integer, HorizonScorer.Projection> projections = Map.of(
-                1, new HorizonScorer.Projection(4.5, true, true));
+                1, new HorizonScorer.Projection(4.5, true, true, 2, 0, null));
 
         String output = SquadFormatter.format(solved(), constraints(), "PRICE PROVENANCE",
-                "METRIC PROVENANCE", 12, resolvedMustInclude(), List.of(), projections,
-                false, null);
+                "METRIC PROVENANCE", "SCHEDULE PROVENANCE", 12, resolvedMustInclude(),
+                List.of(), projections, false, null, horizon());
 
         assertThat(output).contains("4.50 xPts")
                 .contains("partial: one or more expected components unavailable");
@@ -314,8 +325,8 @@ class SquadFormatterTest {
     void warnsWhenNoCandidateCouldBeScored() {
         // M4: an unscoreable horizon must be disclosed, not silently presented as a ranked squad.
         String output = SquadFormatter.format(solved(), constraints(), "PRICE PROVENANCE",
-                "METRIC PROVENANCE", 12, resolvedMustInclude(), List.of(), Map.of(),
-                true, null);
+                "METRIC PROVENANCE", "SCHEDULE PROVENANCE", 12, resolvedMustInclude(),
+                List.of(), Map.of(), true, null, horizon());
 
         assertThat(output).contains("n/a").containsIgnoringCase("unranked");
     }
@@ -325,5 +336,81 @@ class SquadFormatterTest {
         String output = format(solved(), constraints());
 
         assertThat(output).doesNotContainIgnoringCase("unranked");
+    }
+
+    private static String withProjections(Map<Integer, HorizonScorer.Projection> projections,
+                                          HorizonFixtures.Result horizon) {
+        return SquadFormatter.format(solved(), constraints(), "PRICE PROVENANCE",
+                "METRIC PROVENANCE", "SCHEDULE PROVENANCE", 12, resolvedMustInclude(),
+                List.of(), projections, false, null, horizon);
+    }
+
+    @Test
+    void namesTheEditableRangeAndHowManyCalendarGameweeksItCovers() {
+        assertThat(format(solved(), constraints()))
+                .contains("Horizon: GW4–8 (5 calendar gameweeks).");
+    }
+
+    @Test
+    void disclosesThatTheHorizonRanOutOfSeasonBeforeTheGameweeksAsked() {
+        HorizonFixtures.Result truncated = new HorizonFixtures.Result(
+                java.time.Instant.parse("2026-09-09T12:00:00Z"), java.util.Optional.empty(), 5,
+                HorizonFixtures.Status.KNOWN, null, 37, 38, Map.of());
+
+        assertThat(withProjections(Map.of(), truncated))
+                .contains("Horizon: GW37–38 (2 calendar gameweeks); 5 requested, truncated to 2");
+    }
+
+    /**
+     * The distinction the whole task turns on, asserted on a bench row rather than a footer: a
+     * club that plays nothing has a real zero, a club whose window could not be read has none.
+     */
+    @Test
+    void tellsABlankedClubApartFromAnUnreadableOneOnEveryBenchRow() {
+        // Name2 (id 2) and Name12 (id 12) are both on the bench of solved().
+        Map<Integer, HorizonScorer.Projection> projections = Map.of(
+                2, new HorizonScorer.Projection(0, true, false, 0, 0, null),
+                12, new HorizonScorer.Projection(0, false, false, 0, 0,
+                        HorizonFixtures.UnknownReason.UNASSIGNED_FIXTURE));
+
+        String output = withProjections(projections, horizon());
+        String bench = output.substring(output.indexOf("Bench,"));
+
+        assertThat(bench).contains("0.00 xPts (no fixtures in GW4–8)")
+                .contains("xPts n/a (horizon unknown: unassigned fixture)");
+    }
+
+    @Test
+    void aRankableRowWithNoProjectionAtAllStaysTheOldUnavailableWording() {
+        assertThat(format(solved(), constraints()))
+                .contains("xPts n/a (projection unavailable)")
+                .doesNotContain("horizon unknown");
+    }
+
+    /**
+     * {@code SquadTools} refuses before it ever formats a horizon it could not derive, but the
+     * reply must still be able to say so rather than print a range that does not exist.
+     */
+    @Test
+    void saysSoWhenThereIsNoRangeToName() {
+        Map<Integer, HorizonScorer.Projection> unknown = Map.of(
+                1, new HorizonScorer.Projection(0, false, false, 0, 0,
+                        HorizonFixtures.UnknownReason.NO_EDITABLE_GAMEWEEK));
+
+        String output = withProjections(unknown, SquadCandidateTestData
+                .horizonThatCannotBeDerived(HorizonFixtures.UnknownReason.NO_EDITABLE_GAMEWEEK));
+
+        assertThat(output).contains("Horizon: unknown (no editable gameweek)")
+                .contains("xPts n/a (horizon unknown: no editable gameweek)");
+    }
+
+    @Test
+    void saysWhichLegsWereScoredAtTheNeutralFdr() {
+        Map<Integer, HorizonScorer.Projection> projections = Map.of(
+                1, new HorizonScorer.Projection(8.0, true, false, 2, 1, null));
+
+        assertThat(withProjections(projections, horizon()))
+                .contains("8.00 xPts over 2 fixtures")
+                .contains("FDR n/a for 1 fixture, neutral 3 assumed");
     }
 }

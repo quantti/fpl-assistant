@@ -44,10 +44,20 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
     **The two ranking tools (`getDifferentialPicks`, `getCaptainCandidates`) blend both seasons
     per player and carry one *season* banner only:** the previous season is named on every pick
     and in the footer, not on a second season `Data source:` line, because a second season banner
-    would claim every number below it is last season's and under blending none purely is. Above
-    that banner sits the daily capture's line, `DailyPriceSource.provenance()`: their pool —
-    identity, club, price, ownership, availability — is `fpl_daily_price` since KAR-32 and their
-    metrics are `player_fixture_stats`, so the two lines describe two sources, not two seasons. `ExpectedStatsTools` is the
+    would claim every number below it is last season's and under blending none purely is. That
+    banner sits between two other **source** lines, three in all since KAR-35: above it the daily
+    capture's `DailyPriceSource.provenance()` for the pool — identity, club, price, ownership,
+    availability, `fpl_daily_price` since KAR-32 — and below it the schedule capture's
+    `ScheduleSource.provenance()` for the fixture population every horizon Score is totalled
+    over. The metrics are `player_fixture_stats`, so the three lines describe three sources, not
+    three seasons: historical metrics stay labelled historical even when today's price and next
+    month's fixtures are the season being played. When the capture season and the metric season
+    differ, one clarification sentence says the price line *and* the schedule line describe the
+    season being played and the season banner covers the metrics alone. Beneath the sources a
+    separate `Schedule evidence:` sentence carries the exact capture instant, the `asOf` instant
+    it was judged at, the editable gameweek range with any end-of-season truncation, and the
+    players the schedule alone removed. Do not fold the schedule line into the banner, and do not
+    turn it into a second season banner. `ExpectedStatsTools` is the
     opposite case and does get a second line — it shows fixtures as rows, fills a short
     current-season window from last season, labels each row with its own season, and the second
     banner therefore describes a labelled block rather than the whole reply.
@@ -76,7 +86,26 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
   future-dated capture is unusable. The daily capture, current metric season and schedule must name
   the same season. A ranking schedule must be one timestamp-coherent full league: 38 events, 380
   directed fixtures and 20 clubs, with unique ids/pairings and valid assigned gameweeks. Nullable
-  gameweek/kickoff remains valid for genuinely unscheduled fixtures.
+  gameweek/kickoff remains valid for genuinely unscheduled fixtures. The gameweek horizon is
+  derived **once per call from that one snapshot**, on the daily capture's own season and the
+  snapshot's own `asOf`; both ranking tools call the same `HorizonFixtures.derive`, so they cannot
+  disagree about which fixtures a club plays.
+- **The horizon is calendar gameweeks from the next editable deadline, `HorizonFixtures`.** The
+  window opens at the first deadline **strictly after** `asOf` — at an exact deadline that round
+  is already locked and a transfer cannot benefit from it — and covers
+  `from <= gameweek < min(from + N, 39)`. Classify each fixture in order: started/finished is
+  ignored whatever its timestamps; an outstanding fixture with no gameweek makes both its clubs
+  unknown; an assigned fixture outside the range is ignored; in range, a missing or elapsed
+  kickoff, or a kickoff at or before its own round's deadline, makes that club unknown; anything
+  left counts once by id for both clubs. **A known window holding no fixtures is a real zero and
+  an unknown window is not a zero at all** — never collapse the two, in a count, a score or a
+  printed row. Never extend a club's window for a blank, a double, a postponement or a started
+  fixture, and never replay GW38 or invent GW39: past the last deadline the answer is
+  `NO_EDITABLE_GAMEWEEK`, not a forecast. Missing or out-of-range FDR does not remove a fixture;
+  the pick average is n/a unless every counted fixture is rated, and the squad scores that leg at
+  a labelled neutral 3. `PickTools` clamps its request to 1–5 gameweeks, `buildSquad` takes its
+  own and both truncate at the season's end and disclose it. There is no bypass, for a pin, a
+  budget or a relaxation.
 - **Primary role eligibility is one hard current-season observed-history rule, `MinutesModel`.**
   Call it **consistent observed 60+ history**. The selected daily capture must be fresh and say
   `status = 'a'`, with a valid position and club; identity/current club must be coherent across the
@@ -97,9 +126,12 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
   expected-minutes and realised-points rates. `ExpectedPoints.perFixture` uses `P(play)+P(60+)`,
   scales attack by expected minutes, makes clean sheets conditional on 60+, and gives DefCon
   separate short/long exposure. Known zero DefCon is evidence; unavailable components print
-  partial/n/a rather than zero. Pick lists blend expected and realised per fixture; their FDR is
-  only a tie-break until KAR-35. `HorizonScorer` uses the same expected components and the captured
-  schedule with its existing coarse FDR objective, never an outer minutes multiplier.
+  partial/n/a rather than zero. Pick lists blend expected and realised per fixture and then
+  **total that per-fixture composite over the club's fixtures in the horizon** — that horizon
+  Score is what they rank on, and average FDR stays a tie-break, never a multiplier.
+  `HorizonScorer` scores the squad over the same fixture population with the same expected
+  components and its existing coarse FDR objective — expected only, no realised blend and no
+  outer minutes multiplier. Shared population, distinct objectives; do not merge them.
 - Tools query Supabase via `JdbcTemplate`, annotated with Spring AI `@Tool`.
 - **No `@Tool` method takes a parameter that identifies an account.** The model fills tool
   parameters from the conversation, so a `userId` (or a team id) in a tool's schema is a working
@@ -121,19 +153,24 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
   names the season being played. The tools' provenance is two lines, not one: the squad block states
   the gameweek it was locked for and when it was fetched, and the statistics block carries
   `SeasonContext.provenance()`. Do not fold them into the single-banner convention.
-- **`SquadTools.buildSquad` is a fourth documented two-line-provenance exception**, alongside
-  the my-team tools. Its candidate pool — identity, club, price, ownership, availability —
+- **`SquadTools.buildSquad` is a fourth documented multi-line-provenance exception**, alongside
+  the my-team tools, and carries the same three source lines as the pick tools since KAR-35. Its
+  candidate pool — identity, club, price, ownership, availability —
   comes from `fpl_daily_price` and carries `DailyPriceSource.provenance()`; its metrics come
-  from `player_fixture_stats` and carry `SeasonContext.provenance()`. The two sources have
+  from `player_fixture_stats` and carry `SeasonContext.provenance()`; the fixtures every
+  projection is summed over come from the schedule capture and carry
+  `ScheduleSource.provenance()`. The three sources have
   different freshness and, during the changeover, different seasons, so a single banner would
   attribute one of them wrongly. Building the pool from the daily capture rather than the
   tapas `player` table is deliberate and is what keeps issue #50 (KAR-32) from recurring here: it also
   means the tool works while tapas has not synced the season being played. Do not fold this
-  into the single-banner convention. Its metrics line is followed by the blend sentence, which
-  names both seasons and the ramp. The pool may buy a fit role-ineligible/BODY player for the bench,
+  into the single-banner convention. Its metrics line is followed by the schedule source line,
+  then the blend sentence, which names both seasons and the ramp, and by a `Schedule evidence:`
+  sentence and a `Horizon:` line naming the editable range. The pool may buy a fit role-ineligible/BODY player for the bench,
   and a doubtful player only when an underlying record exists. A named pin requires membership of
   the fifteen, not a start: `SquadSolver.rulesOfTheGame` forces every role-ineligible or BODY
-  player's `x_i` to zero in every entry path. This XI rule is never on the relaxation ladder: only
+  player's `x_i` to zero in every entry path, and so does the playable-club set — a club with no
+  known fixture in the horizon supplies bench cover only. This XI rule is never on the relaxation ladder: only
   template and premium defaults may give way. Unknown projections have zero optimiser weight but
   must display `n/a`/unscored, and infeasibility must name the minutes rule plus the interacting
   constraints, never imply that budget alone fixes it.

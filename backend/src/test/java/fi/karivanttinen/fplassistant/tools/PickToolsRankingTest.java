@@ -1,17 +1,22 @@
 package fi.karivanttinen.fplassistant.tools;
 
 import java.math.BigDecimal;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import fi.karivanttinen.fplassistant.schedule.HorizonFixtures;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
 
 /**
- * Pure unit tests for the pick score, the ranking and position parsing.
+ * Pure unit tests for the pick score, the horizon ranking and position parsing.
  *
  * <p>These pin the property the tools exist to have: a recommendation follows what a player is
  * expected to score, never what they happened to score last Saturday. FPL's {@code form} is
@@ -19,10 +24,43 @@ import static org.assertj.core.api.Assertions.within;
  * scoreline.
  *
  * <p>They also pin the two things that make one number fair across positions — a goal is worth
- * more to a defender than to a forward, and a clean sheet is worth nothing to a forward — and the
- * blend that lets realised points count for more as a season runs.
+ * more to a defender than to a forward, and a clean sheet is worth nothing to a forward — the
+ * blend that lets realised points count for more as a season runs, and that the order is a total
+ * over the club's fixtures in the window rather than a per-fixture rate.
  */
 class PickToolsRankingTest {
+
+    private static final Instant KICKOFF = Instant.parse("2026-09-12T14:00:00Z");
+
+    /** A club playing once per listed difficulty; {@code null} stands for an unrated fixture. */
+    private static HorizonFixtures.ClubWindow window(int teamId, Integer... difficulties) {
+        List<HorizonFixtures.Fixture> fixtures = new ArrayList<>();
+        for (int index = 0; index < difficulties.length; index++) {
+            fixtures.add(new HorizonFixtures.Fixture(1_000 * teamId + index, 4 + index, true,
+                    99, KICKOFF.plus(index, ChronoUnit.DAYS), difficulties[index]));
+        }
+        return new HorizonFixtures.ClubWindow(teamId, fixtures, null);
+    }
+
+    private static Map<Integer, HorizonFixtures.ClubWindow> windows(
+            HorizonFixtures.ClubWindow... clubs) {
+        Map<Integer, HorizonFixtures.ClubWindow> byTeam = new LinkedHashMap<>();
+        for (HorizonFixtures.ClubWindow club : clubs) {
+            byTeam.put(club.teamId(), club);
+        }
+        return byTeam;
+    }
+
+    /** A candidate whose per-fixture composite is exactly {@code perFixture} at realised weight 0. */
+    private static Map<String, Object> pick(String name, int elementId, int teamId,
+                                            double perFixture) {
+        Map<String, Object> row = row(name, 3);
+        row.put("id", elementId);
+        row.put("team_id", teamId);
+        row.put("expected_per_fixture", perFixture);
+        row.put("points_per_fixture", 0.0);
+        return row;
+    }
 
     private static Map<String, Object> row(String name, int elementType) {
         Map<String, Object> row = new HashMap<>();
@@ -80,7 +118,7 @@ class PickToolsRankingTest {
         List<Map<String, Object>> ranked = PickTools.rank(
                 List.of(stopper("ScoredOnce", 1.62, 13.0),
                         stopper("SolidDefence", 0.62, 2.0)),
-                Map.of(1, 3.0), true, earlySeason);
+                windows(window(1, 3)), true, earlySeason);
 
         assertThat(ranked.getFirst().get("web_name")).isEqualTo("SolidDefence");
     }
@@ -97,7 +135,7 @@ class PickToolsRankingTest {
         List<Map<String, Object>> ranked = PickTools.rank(
                 List.of(stopper("Returns", 1.62, 6.5),
                         stopper("CleanSheetsOnly", 0.62, 3.0)),
-                Map.of(1, 3.0), true, lateSeason);
+                windows(window(1, 3)), true, lateSeason);
 
         assertThat(ranked.getFirst().get("web_name")).isEqualTo("Returns");
     }
@@ -129,7 +167,7 @@ class PickToolsRankingTest {
         List<Map<String, Object>> ranked = PickTools.rank(
                 List.of(stopper("Stopper", 1.05, 3.5),
                         attackingDefender("WingBack", 0.18, 0.22, 1.35, 3.5)),
-                Map.of(1, 3.0), true, 0.0);
+                windows(window(1, 3)), true, 0.0);
 
         assertThat(ranked.getFirst().get("web_name")).isEqualTo("WingBack");
     }
@@ -139,7 +177,7 @@ class PickToolsRankingTest {
         List<Map<String, Object>> ranked = PickTools.rank(
                 List.of(stopper("Stopper", 0.55, 3.5),
                         attackingDefender("WingBack", 0.08, 0.10, 1.60, 3.5)),
-                Map.of(1, 3.0), true, 0.0);
+                windows(window(1, 3)), true, 0.0);
 
         assertThat(ranked.getFirst().get("web_name")).isEqualTo("Stopper");
     }
@@ -179,8 +217,8 @@ class PickToolsRankingTest {
         Map<String, Object> easy = attacker("Easy", 3, 0.40, 0.20, 4.0);
         easy.put("team_id", 2);
 
-        List<Map<String, Object>> ranked =
-                PickTools.rank(List.of(hard, easy), Map.of(1, 4.5, 2, 2.0), true, 0.2);
+        List<Map<String, Object>> ranked = PickTools.rank(List.of(hard, easy),
+                windows(window(1, 4, 5), window(2, 2, 2)), true, 0.2);
 
         assertThat(ranked.getFirst().get("web_name")).isEqualTo("Easy");
     }
@@ -191,8 +229,8 @@ class PickToolsRankingTest {
         blunt.put("team_id", 2);
         Map<String, Object> sharp = attacker("SharpButHard", 3, 0.55, 0.25, 6.0);
 
-        List<Map<String, Object>> ranked =
-                PickTools.rank(List.of(blunt, sharp), Map.of(1, 5.0, 2, 1.0), true, 0.2);
+        List<Map<String, Object>> ranked = PickTools.rank(List.of(blunt, sharp),
+                windows(window(1, 5), window(2, 1)), true, 0.2);
 
         assertThat(ranked.getFirst().get("web_name")).isEqualTo("SharpButHard");
     }
@@ -205,7 +243,7 @@ class PickToolsRankingTest {
         differential.put("selected_by_percent", BigDecimal.valueOf(2.0));
 
         List<Map<String, Object>> ranked =
-                PickTools.rank(List.of(template, differential), Map.of(1, 3.0), true, 0.2);
+                PickTools.rank(List.of(template, differential), windows(window(1, 3)), true, 0.2);
 
         assertThat(ranked.getFirst().get("web_name")).isEqualTo("Differential");
     }
@@ -220,21 +258,94 @@ class PickToolsRankingTest {
         more.put("mins", 900.0);
 
         List<Map<String, Object>> ranked =
-                PickTools.rank(List.of(fewer, more), Map.of(1, 3.0), false, 0.2);
+                PickTools.rank(List.of(fewer, more), windows(window(1, 3)), false, 0.2);
 
         assertThat(ranked.getFirst().get("web_name")).isEqualTo("More");
     }
 
+    /** A double gameweek is an extra chance to score, so it beats a slightly better single. */
     @Test
-    void aTeamWithNoKnownFixturesSinksBelowOneWithFixtures() {
-        Map<String, Object> unknown = attacker("Unknown", 3, 0.40, 0.20, 4.0);
-        unknown.put("team_id", 99);
-        Map<String, Object> known = attacker("Known", 3, 0.40, 0.20, 4.0);
+    void twoFixturesBeatOneSlightlyBetterOneEvenWithHarderOpponents() {
+        Map<String, Object> doubler = pick("Doubler", 1, 1, 3.0);
+        Map<String, Object> single = pick("Single", 2, 2, 5.0);
 
-        List<Map<String, Object>> ranked =
-                PickTools.rank(List.of(unknown, known), Map.of(1, 4.9), true, 0.2);
+        List<Map<String, Object>> ranked = PickTools.rank(List.of(single, doubler),
+                windows(window(1, 5, 5), window(2, 2)), true, 0.0);
 
-        assertThat(ranked.getFirst().get("web_name")).isEqualTo("Known");
+        assertThat(ranked).extracting(row -> row.get("web_name"))
+                .as("3 twice is 6 against 5 once, whatever the fixtures look like")
+                .containsExactly("Doubler", "Single");
+    }
+
+    /** But it is an opportunity, not a promotion: two lesser fixtures lose to one far better one. */
+    @Test
+    void twoFixturesDoNotBeatOneFarBetterOne() {
+        Map<String, Object> doubler = pick("Doubler", 1, 1, 3.0);
+        Map<String, Object> single = pick("Single", 2, 2, 8.0);
+
+        List<Map<String, Object>> ranked = PickTools.rank(List.of(doubler, single),
+                windows(window(1, 2, 2), window(2, 5)), true, 0.0);
+
+        assertThat(ranked).extracting(row -> row.get("web_name"))
+                .containsExactly("Single", "Doubler");
+    }
+
+    @Test
+    void theHorizonScoreIsThePerFixtureBlendTimesTheFixtureCount() {
+        Map<String, Object> row = pick("Blend", 1, 1, 4.0);
+        row.put("points_per_fixture", 2.0);
+
+        assertThat(PickTools.horizonScore(row, windows(window(1, 2, 4)), 0.5)).isEqualTo(6.0);
+    }
+
+    /** Two picks that print the same rounded Score still have an order, and it is the raw one. */
+    @Test
+    void equalRoundedHorizonScoresAreOrderedOnTheirRawValues() {
+        Map<String, Object> higher = pick("Higher", 90, 1, 3.0002);
+        Map<String, Object> lower = pick("Lower", 10, 2, 3.0001);
+
+        List<Map<String, Object>> ranked = PickTools.rank(List.of(lower, higher),
+                windows(window(1, 3, 3), window(2, 3, 3)), true, 0.0);
+
+        assertThat(ranked).extracting(row -> row.get("web_name"))
+                .as("6.0004 beats 6.0002 even though the lower one has the smaller element id")
+                .containsExactly("Higher", "Lower");
+    }
+
+    /** Nothing left to compare: the element id makes an exact tie repeatable rather than arbitrary. */
+    @Test
+    void anExactTieIsBrokenByTheLowerElementId() {
+        Map<String, Object> later = pick("Later", 77, 1, 4.0);
+        Map<String, Object> earlier = pick("Earlier", 12, 1, 4.0);
+
+        List<Map<String, Object>> ranked = PickTools.rank(List.of(later, earlier),
+                windows(window(1, 3)), true, 0.0);
+
+        assertThat(ranked).extracting(row -> row.get("web_name"))
+                .containsExactly("Earlier", "Later");
+    }
+
+    /**
+     * An unrated leg still counts as a fixture — the club plays it — but it leaves the average
+     * difficulty unknown, and an unknown average sorts last rather than as the average of the
+     * rated legs.
+     */
+    @Test
+    void aDoubleWithOneUnratedLegKeepsItsCountAndSortsAfterAnyKnownAverage() {
+        HorizonFixtures.ClubWindow unrated = window(2, 2, null);
+        assertThat(unrated.count()).isEqualTo(2);
+        assertThat(unrated.averageDifficulty()).isEmpty();
+        // UnknownFdr holds the lower element id, so the id tie-break alone would put it first:
+        // only the FDR comparator can produce the order asserted below.
+        Map<String, Object> rated = pick("Rated", 2, 1, 3.0);
+        Map<String, Object> unknownFdr = pick("UnknownFdr", 1, 2, 3.0);
+
+        List<Map<String, Object>> ranked = PickTools.rank(List.of(unknownFdr, rated),
+                windows(window(1, 5, 5), unrated), true, 0.0);
+
+        assertThat(ranked).extracting(row -> row.get("web_name"))
+                .as("the worst known average still beats no average at all")
+                .containsExactly("Rated", "UnknownFdr");
     }
 
     @Test
