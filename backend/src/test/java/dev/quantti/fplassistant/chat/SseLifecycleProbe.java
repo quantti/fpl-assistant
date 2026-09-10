@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -193,6 +194,7 @@ final class SseLifecycleProbe {
             }
             else if (dispatching) {
                 mark("emitter.mutation-during-dispatch", op);
+                mark("emitter.reached-response", op);
                 if (this.emitterCommitting == null) {
                     this.emitterCommitting = thread;
                     this.emitterReachedResponse.countDown();
@@ -216,6 +218,7 @@ final class SseLifecycleProbe {
             boolean requestThread = thread == this.requestThread && this.requestExited.getCount() > 0;
             mark("commit", requestThread ? "flushBuffer on the request thread" : "flushBuffer");
             if (!requestThread && this.requestExited.getCount() > 0) {
+                mark("emitter.reached-response", "flushBuffer");
                 this.emitterReachedResponse.countDown();
             }
         }
@@ -530,7 +533,7 @@ final class SseLifecycleProbe {
 
     private static void appendDiagnostic(String name, String content) {
         try {
-            Files.writeString(DIAGNOSTICS.resolve(name), content, java.nio.file.StandardOpenOption.APPEND);
+            Files.writeString(DIAGNOSTICS.resolve(name), content, StandardOpenOption.APPEND);
         }
         catch (IOException e) {
             throw new UncheckedIOException(e);
