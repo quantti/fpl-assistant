@@ -6,6 +6,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Map;
 
@@ -47,6 +48,14 @@ class SquadToolsIntegrationTest {
     private static final int LAST_ID = 12_500;
     private static final int STAR_ID = 12_400;
     private static final String STAR_NAME = "Beststriker";
+
+    /**
+     * The cheap defender of {@code CLUBS[8]} and {@code CLUBS[9]} — clubs 9 and 10 of
+     * {@link RankingSeed} — following {@link #seedCompleteLeague}'s own id arithmetic:
+     * {@code FIRST_ID + club * 8 + (type - 1) * 2 + tier}.
+     */
+    private static final String BLANKED_CLUB_PLAYER = "P" + (FIRST_ID + 8 * 8 + 2 + 1);
+    private static final String UNRESOLVED_CLUB_PLAYER = "P" + (FIRST_ID + 9 * 8 + 2 + 1);
 
     private static final String[] CLUBS = {
             "Ashfield Rovers", "Barnwell Town", "Coleridge City", "Dunmore Athletic",
@@ -201,10 +210,53 @@ class SquadToolsIntegrationTest {
                 .contains("Schedule evidence: complete FPL capture");
     }
 
+    /**
+     * Three sources, in source order, with the schedule's evidence sentence carrying the exact
+     * capture instant, the instant it was judged at and what the window leaves startable.
+     */
+    @Test
+    void theReplyAttributesThePriceMetricAndScheduleSources() {
+        String output = tools.buildSquad("", "", "", 100.0, 5, "");
+
+        assertThat(output)
+                .contains("Data source: FPL live prices for season " + SEASON)
+                .contains("Data source: season " + SEASON)
+                .contains("Data source: FPL's own gameweek and fixture list for season " + SEASON
+                        + ", captured today")
+                .contains("complete FPL capture at " + CAPTURED_AT + ", judged as of " + AS_OF)
+                .contains("20 of 20 captured clubs play at least once in GW4–8");
+        assertThat(output.indexOf("Data source: season " + SEASON))
+                .isLessThan(output.indexOf("Data source: FPL's own gameweek"));
+    }
+
+    /** A refusal reaches the same evidence header, so it names all three sources too. */
+    @Test
+    void aRefusalCarriesTheSameThreeSourceHeader() {
+        String output = tools.buildSquad("", "", "Ashfield Rovers:4", 100.0, 5, "");
+
+        assertThat(output).doesNotContain("Starting XI")
+                .contains("Data source: FPL live prices for season " + SEASON)
+                .contains("Data source: season " + SEASON)
+                .contains("Data source: FPL's own gameweek and fixture list for season " + SEASON);
+    }
+
+    /**
+     * The window this fixture's schedule actually offers: the clock sits between gameweek 3's
+     * deadline and gameweek 4's, so five calendar gameweeks are GW4 to GW8.
+     */
+    @Test
+    void theReplyNamesTheEditableGameweekRangeItScoredOver() {
+        assertThat(tools.buildSquad("", "", "", 100.0, 5, ""))
+                .contains("Horizon: GW4–8 (5 calendar gameweeks).");
+    }
+
     @Test
     void theCaptainIsTheDeliberatelyBestOutfieldPlayer() {
-        assertThat(tools.buildSquad("", "", "", 100.0, 5, ""))
-                .contains("Captain: " + STAR_NAME + " (");
+        String output = tools.buildSquad("", "", "", 100.0, 5, "");
+
+        assertThat(output).contains("Captain: " + STAR_NAME + " (");
+        assertThat(startingXi(output)).as("the armband can only go to a starter")
+                .contains(STAR_NAME).contains(named(output, "Vice-captain: "));
     }
 
     @Test
@@ -286,27 +338,102 @@ class SquadToolsIntegrationTest {
 
         assertThat(output).contains("CameoPin: included ✓")
                 .contains("CameoPin").contains("bench only");
-        String xi = output.substring(output.indexOf("Starting XI"), output.indexOf("Bench,"));
-        assertThat(xi).doesNotContain("CameoPin");
+        assertThat(startingXi(output)).doesNotContain("CameoPin");
     }
 
+    /**
+     * A club that plays nothing across the window is a finding about the schedule, so its player
+     * stays purchasable for the bench and carries a real zero over the range the reply names.
+     */
     @Test
-    void anUnscoreableHorizonDisplaysNaRatherThanZeroForecasts() {
-        jdbc.update("UPDATE " + scheduleSource.fixtureTable()
-                + " SET started = true WHERE season = ? AND gameweek > 3", SEASON);
-        try {
-            String output = tools.buildSquad("", "", "", 100.0, 5, "");
-            assertThat(output).contains("Starting XI").contains("xPts n/a")
-                    .containsIgnoringCase("unranked").doesNotContain("0.00 xPts");
-        } finally {
-            jdbc.update("UPDATE " + scheduleSource.fixtureTable()
-                    + " SET started = false WHERE season = ? AND gameweek > 3", SEASON);
-        }
+    void aClubBlankedAcrossTheWindowIsBoughtForTheBenchAtARealZero() {
+        blankAcrossTheWindow(RankingSeed.team(9));
+
+        String output = tools.buildSquad(BLANKED_CLUB_PLAYER, "", "", 100.0, 5, "");
+
+        assertThat(output).contains(BLANKED_CLUB_PLAYER + ": included ✓");
+        assertThat(startingXi(output)).doesNotContain(BLANKED_CLUB_PLAYER);
+        assertThat(bench(output)).contains(BLANKED_CLUB_PLAYER)
+                .contains("0.00 xPts (no fixtures in GW4–8)");
+    }
+
+    /**
+     * A postponement FPL has not rescheduled is not a blank: nobody knows how many fixtures the
+     * club plays, so the row is n/a with the schedule's own reason rather than a zero.
+     */
+    @Test
+    void aClubWithAnUnresolvedFixtureIsBoughtForTheBenchAtNotApplicable() {
+        unassignGameweek(RankingSeed.fixtureFor(
+                RankingSeed.fixtures(CAPTURED_AT, FIRST_DEADLINE), RankingSeed.team(10), 6));
+
+        String output = tools.buildSquad(UNRESOLVED_CLUB_PLAYER, "", "", 100.0, 5, "");
+
+        assertThat(output).contains(UNRESOLVED_CLUB_PLAYER + ": included ✓");
+        assertThat(startingXi(output)).doesNotContain(UNRESOLVED_CLUB_PLAYER);
+        assertThat(bench(output)).contains(UNRESOLVED_CLUB_PLAYER)
+                .contains("xPts n/a (horizon unknown: unassigned fixture)");
+    }
+
+    /**
+     * Past the final deadline no club has a fixture population at all, so the tool refuses and
+     * names the schedule — a squad of zero-point forecasts would be the wrong answer twice over.
+     */
+    @Test
+    void afterTheFinalDeadlineTheReplyRefusesAndNamesTheMissingGameweek() {
+        passDeadlinesUpTo(38);
+
+        String output = tools.buildSquad("", "", "", 100.0, 5, "");
+
+        assertThat(output).doesNotContain("Starting XI")
+                .contains("No editable gameweek remains in the captured schedule")
+                .contains("unknown rather than zero").contains("60+");
     }
 
     @Test
     void aMalformedQuotaIsExplainedRatherThanIgnored() {
         assertThat(tools.buildSquad("", "", "Ashfield Rovers:three", 100.0, 5, ""))
                 .contains("Ashfield Rovers:three").doesNotContain("Starting XI");
+    }
+
+    private static String startingXi(String output) {
+        return output.substring(output.indexOf("Starting XI"), output.indexOf("Bench,"));
+    }
+
+    private static String bench(String output) {
+        return output.substring(output.indexOf("Bench,"), output.indexOf("Captain:"));
+    }
+
+    /** The name on a {@code Captain: }/{@code Vice-captain: } line, without its club. */
+    private static String named(String output, String label) {
+        int from = output.indexOf(label) + label.length();
+        return output.substring(from, output.indexOf(" (", from));
+    }
+
+    /** Moves every one of this club's in-window fixtures out past the horizon. */
+    private void blankAcrossTheWindow(int club) {
+        int target = 20;
+        for (ScheduleSource.FixtureRow row : RankingSeed.fixtures(CAPTURED_AT, FIRST_DEADLINE)) {
+            if (row.gameweek() >= 4 && row.gameweek() <= 8
+                    && (row.homeTeamId() == club || row.awayTeamId() == club)) {
+                jdbc.update("UPDATE " + scheduleSource.fixtureTable()
+                                + " SET gameweek = ?, kickoff_time = ? WHERE season = ? AND id = ?",
+                        target, Timestamp.from(FIRST_DEADLINE.plus(
+                                7L * (target - 1) + 1, ChronoUnit.DAYS)), SEASON, row.id());
+                target++;
+            }
+        }
+    }
+
+    /** As FPL leaves a postponement it has not rescheduled: outstanding, with no gameweek. */
+    private void unassignGameweek(int fixtureId) {
+        jdbc.update("UPDATE " + scheduleSource.fixtureTable()
+                + " SET gameweek = NULL WHERE season = ? AND id = ?", SEASON, fixtureId);
+    }
+
+    /** Moves the deadlines of gameweeks 1..{@code gameweek} behind the fixed clock. */
+    private void passDeadlinesUpTo(int gameweek) {
+        jdbc.update("UPDATE " + scheduleSource.gameweekTable()
+                + " SET deadline_time = deadline_time - INTERVAL '252 days'"
+                + " WHERE season = ? AND id <= ?", SEASON, gameweek);
     }
 }
