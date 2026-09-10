@@ -485,6 +485,28 @@ class ChatControllerTest {
                 .expectStatus().isBadRequest();
     }
 
+    /**
+     * The error event names what the user can do, never why the provider or a data lookup
+     * failed: a curl user reading raw SSE must not see a provider's message.
+     */
+    @Test
+    void aGenerationFailureTellsTheUserWhatToDoWithoutNamingTheCause() {
+        when(chatService.stream(any(), any(), any())).thenReturn(Flux.concat(Flux.just("partial"),
+                Flux.error(new IllegalStateException("sk-sentinel-provider-detail"))));
+
+        Jwt token = Jwt.withTokenValue("test").header("alg", "none").subject(USER_A).build();
+        StepVerifier.create(controller.chat(new ChatRequest(null, "question"), token))
+                .assertNext(event -> assertThat(event.event()).isEqualTo("conversation"))
+                .assertNext(event -> assertThat(event.data()).isEqualTo("\"partial\""))
+                .assertNext(event -> {
+                    assertThat(event.event()).isEqualTo("error");
+                    assertThat(event.data()).isEqualTo(ChatController.GENERATION_FAILED);
+                    assertThat(event.data()).doesNotContain("sk-sentinel");
+                })
+                .assertNext(event -> assertThat(event.event()).isEqualTo("done"))
+                .verifyComplete();
+    }
+
     @Test
     void aMidStreamFailureEmitsAnErrorEventAndStoresNothing() {
         when(chatService.stream(any(), any(), any()))
