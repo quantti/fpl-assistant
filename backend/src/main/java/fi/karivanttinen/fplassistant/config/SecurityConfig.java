@@ -61,7 +61,11 @@ public class SecurityConfig {
                 // Picks up the MVC CORS mappings in WebConfig; without this the security chain
                 // would reject the preflight the browser sends from the Vite dev server.
                 .cors(Customizer.withDefaults())
-                // KAR-42: eager; an on-commit write raced the request thread's own on SSE flush.
+                // KAR-42: write security headers before the chain. Lazily, the emitter thread's
+                // first SSE flush and the request thread's unwind both wrote them, unordered
+                // (spring-security gh-9175). Its 7.1.2 fix still lets the async commit overlap the
+                // request thread's write; keep this unless ChatSseLifecycleTest's
+                // FIRST_FLUSH_DURING_UNWIND cases pass without it.
                 .headers(headers -> headers.addObjectPostProcessor(
                         new ObjectPostProcessor<HeaderWriterFilter>() {
                             @Override
