@@ -24,9 +24,9 @@ public final class Feasibility {
 
     public static final int SQUAD_SIZE = 15;
     public static final int MAX_PER_CLUB = 3;
-    public static final int[] POSITION_QUOTAS = {0, 2, 5, 5, 3};
-    public static final String[] POSITION_NAMES =
-            {"", "goalkeeper", "defender", "midfielder", "forward"};
+    public static final List<Integer> POSITION_QUOTAS = List.of(0, 2, 5, 5, 3);
+    public static final List<String> POSITION_NAMES =
+            List.of("", "goalkeeper", "defender", "midfielder", "forward");
 
     private Feasibility() {
     }
@@ -160,22 +160,24 @@ public final class Feasibility {
                     + " needs %d (%d minus the goalkeeper). Fix the numbers and I can build the"
                     + " squad.").formatted(formation.label(), sum, outfield, SquadSolver.XI_SIZE));
         }
-        if (formation.def() < SquadSolver.MIN_DEF_IN_XI || formation.def() > POSITION_QUOTAS[2]) {
+        if (formation.def() < SquadSolver.MIN_DEF_IN_XI
+                || formation.def() > POSITION_QUOTAS.get(2)) {
             return Optional.of(("The formation %s needs between %d and %d defenders in the"
                     + " starting XI, and it has %d. Fix the numbers and I can build the squad.")
-                    .formatted(formation.label(), SquadSolver.MIN_DEF_IN_XI, POSITION_QUOTAS[2],
+                    .formatted(formation.label(), SquadSolver.MIN_DEF_IN_XI, POSITION_QUOTAS.get(2),
                             formation.def()));
         }
-        if (formation.fwd() < SquadSolver.MIN_FWD_IN_XI || formation.fwd() > POSITION_QUOTAS[4]) {
+        if (formation.fwd() < SquadSolver.MIN_FWD_IN_XI
+                || formation.fwd() > POSITION_QUOTAS.get(4)) {
             return Optional.of(("The formation %s needs between %d and %d forwards in the"
                     + " starting XI, and it has %d. Fix the numbers and I can build the squad.")
-                    .formatted(formation.label(), SquadSolver.MIN_FWD_IN_XI, POSITION_QUOTAS[4],
+                    .formatted(formation.label(), SquadSolver.MIN_FWD_IN_XI, POSITION_QUOTAS.get(4),
                             formation.fwd()));
         }
-        if (formation.mid() > POSITION_QUOTAS[3]) {
+        if (formation.mid() > POSITION_QUOTAS.get(3)) {
             return Optional.of(("The formation %s needs at most %d midfielders in the starting"
                     + " XI, and it has %d. Fix the numbers and I can build the squad.")
-                    .formatted(formation.label(), POSITION_QUOTAS[3], formation.mid()));
+                    .formatted(formation.label(), POSITION_QUOTAS.get(3), formation.mid()));
         }
         return Optional.empty();
     }
@@ -196,16 +198,17 @@ public final class Feasibility {
     }
 
     private static Optional<String> pinsWithinPositionQuotas(List<SquadCandidate> pinned) {
-        int[] counts = new int[POSITION_QUOTAS.length];
+        int[] counts = new int[POSITION_QUOTAS.size()];
         for (SquadCandidate player : pinned) {
             if (player.elementType() >= 1 && player.elementType() < counts.length) {
                 counts[player.elementType()]++;
             }
         }
         for (int type = 1; type < counts.length; type++) {
-            if (counts[type] > POSITION_QUOTAS[type]) {
+            if (counts[type] > POSITION_QUOTAS.get(type)) {
                 return Optional.of(("You named %d %ss and a squad holds %d.")
-                        .formatted(counts[type], POSITION_NAMES[type], POSITION_QUOTAS[type]));
+                        .formatted(counts[type], POSITION_NAMES.get(type),
+                                POSITION_QUOTAS.get(type)));
             }
         }
         return Optional.empty();
@@ -258,13 +261,13 @@ public final class Feasibility {
     }
 
     private static Optional<String> poolCanFillEveryPosition(List<SquadCandidate> pool) {
-        for (int type = 1; type < POSITION_QUOTAS.length; type++) {
+        for (int type = 1; type < POSITION_QUOTAS.size(); type++) {
             final int position = type;
             long available = pool.stream().filter(c -> c.elementType() == position).count();
-            if (available < POSITION_QUOTAS[type]) {
+            if (available < POSITION_QUOTAS.get(type)) {
                 return Optional.of(("There are only %d %ss available and a squad needs %d."
                         + " The player data may not have been captured yet.")
-                        .formatted(available, POSITION_NAMES[type], POSITION_QUOTAS[type]));
+                        .formatted(available, POSITION_NAMES.get(type), POSITION_QUOTAS.get(type)));
             }
         }
         return Optional.empty();
@@ -281,7 +284,7 @@ public final class Feasibility {
             HorizonFixtures.Result horizon) {
         Set<Integer> excludedIds = excluded.stream().map(SquadCandidate::elementId)
                 .collect(Collectors.toSet());
-        int[] eligible = new int[POSITION_QUOTAS.length];
+        int[] eligible = new int[POSITION_QUOTAS.size()];
         pool.stream().filter(SquadCandidate::mayStart)
                 .filter(player -> playableClubs.contains(player.teamId()))
                 .filter(player -> !excludedIds.contains(player.elementId()))
@@ -301,20 +304,20 @@ public final class Feasibility {
                     formation.def(), formation.mid(), formation.fwd()};
             for (int type = 2; type <= 4; type++) {
                 if (eligible[type] < required[type]) {
-                    return startingCapacity(POSITION_NAMES[type], required[type], eligible[type],
-                            formation, horizon);
+                    return startingCapacity(POSITION_NAMES.get(type), required[type],
+                            eligible[type], formation, horizon);
                 }
             }
             return Optional.empty();
         }
 
         for (int defenders = SquadSolver.MIN_DEF_IN_XI;
-             defenders <= POSITION_QUOTAS[2]; defenders++) {
+             defenders <= POSITION_QUOTAS.get(2); defenders++) {
             for (int forwards = SquadSolver.MIN_FWD_IN_XI;
-                 forwards <= POSITION_QUOTAS[4]; forwards++) {
+                 forwards <= POSITION_QUOTAS.get(4); forwards++) {
                 int midfielders = SquadSolver.XI_SIZE - SquadSolver.GK_IN_XI
                         - defenders - forwards;
-                if (midfielders >= 2 && midfielders <= POSITION_QUOTAS[3]
+                if (midfielders >= 2 && midfielders <= POSITION_QUOTAS.get(3)
                         && eligible[2] >= defenders && eligible[3] >= midfielders
                         && eligible[4] >= forwards) {
                     return Optional.empty();
@@ -402,7 +405,7 @@ public final class Feasibility {
             List<SquadCandidate> pool, SquadConstraints constraints, List<SquadCandidate> pinned) {
         int spent = pinned.stream().mapToInt(SquadCandidate::nowCost).sum();
 
-        int[] stillNeeded = POSITION_QUOTAS.clone();
+        int[] stillNeeded = POSITION_QUOTAS.stream().mapToInt(Integer::intValue).toArray();
         for (SquadCandidate player : pinned) {
             if (player.elementType() >= 1 && player.elementType() < stillNeeded.length) {
                 stillNeeded[player.elementType()]--;
