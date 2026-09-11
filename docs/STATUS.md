@@ -3909,3 +3909,17 @@ source-refresh timestamp needs an upstream writer/coverage contract outside this
 Untested: the solver-infeasible squad refusal. PR review: My Team now dates the starting
 gameweek only when some club has an FDR run, so a card without FDR carries no gameweek age. No
 live LLM chat was run.
+
+## Squad-builder minors triaged and closed (KAR-37, 2026-09-11)
+
+Plan: `docs/superpowers/plans/2026-09-11-kar-37-squad-minors.md`. Of the nine items the
+ticket carried from PR #54, six no longer exist: KAR-31 (`03a4ee9`) removed `metric_team_id`,
+`club_fixtures`, the duplicate `previousSeason` call and the `idx_season_current` comment, and
+KAR-35 (`b1793e1`) removed `fixtureDifficulties`. Fixed the three that remained:
+`readsAllThreeComparators` now feeds unsorted input, `Feasibility.POSITION_QUOTAS` and
+`POSITION_NAMES` are `List.of`, and the squad card pads position labels so names share a
+column. The shared element-id ranges stay as they are — `build.gradle` still runs tests
+serially, as the ticket asked.
+
+Verified: disposable DB, full `./gradlew cleanTest test` green (844 tests). No behaviour change
+to selection, scoring or provenance; no live chat run.
