@@ -28,7 +28,7 @@ class ConstraintParserTest {
 
     @Test
     void readsAllThreeComparators() {
-        var quotas = parse("Arsenal:>=2, Chelsea:<=1, Spurs:=3").clubQuotas();
+        var quotas = parse("Spurs:=3, Arsenal:>=2, Chelsea:<=1").clubQuotas();
 
         assertThat(quotas).extracting(SquadConstraints.ClubQuota::comparator)
                 .containsExactly(SquadConstraints.Comparator.AT_LEAST,
