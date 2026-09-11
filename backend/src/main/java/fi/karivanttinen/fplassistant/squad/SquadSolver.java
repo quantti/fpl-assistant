@@ -258,9 +258,9 @@ public final class SquadSolver {
         var budget = model.newExpression("budget").upper(constraints.budget());
 
         Map<Integer, org.ojalgo.optimisation.Expression> positionQuota = new HashMap<>();
-        for (int type = 1; type < Feasibility.POSITION_QUOTAS.length; type++) {
+        for (int type = 1; type < Feasibility.POSITION_QUOTAS.size(); type++) {
             positionQuota.put(type, model.newExpression("position-" + type)
-                    .level(Feasibility.POSITION_QUOTAS[type]));
+                    .level(Feasibility.POSITION_QUOTAS.get(type)));
         }
 
         var gkInXi = model.newExpression("xi-gk").level(GK_IN_XI);

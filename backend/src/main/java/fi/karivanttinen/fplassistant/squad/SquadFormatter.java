@@ -198,8 +198,8 @@ public final class SquadFormatter {
                                Map<Integer, HorizonScorer.Projection> projections,
                                HorizonFixtures.Result horizon) {
         StringBuilder line = new StringBuilder();
-        line.append(POSITION_ABBR[player.elementType()])
-                .append("  ").append(player.webName())
+        line.append(String.format(Locale.ROOT, "%-3s ", POSITION_ABBR[player.elementType()]))
+                .append(player.webName())
                 .append(" (").append(player.clubShort()).append(") £")
                 .append(Feasibility.money(player.nowCost()));
         HorizonScorer.Projection projection = projections.get(player.elementId());
