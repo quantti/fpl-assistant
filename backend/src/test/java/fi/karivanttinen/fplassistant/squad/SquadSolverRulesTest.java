@@ -22,7 +22,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class SquadSolverRulesTest {
 
-    private static final int[] QUOTAS = Feasibility.POSITION_QUOTAS;
+    private static final List<Integer> QUOTAS = Feasibility.POSITION_QUOTAS;
 
     private static SquadCandidate player(int id, String club, int type, int cost) {
         return SquadCandidateTestData.eligible(id, "P" + id, club, type, cost, 5.0,
@@ -104,8 +104,8 @@ class SquadSolverRulesTest {
         for (int type = 1; type <= 4; type++) {
             final int position = type;
             assertThat(solved.squad().stream().filter(c -> c.elementType() == position).count())
-                    .as("squad %ss", Feasibility.POSITION_NAMES[type])
-                    .isEqualTo(QUOTAS[type]);
+                    .as("squad %ss", Feasibility.POSITION_NAMES.get(type))
+                    .isEqualTo(QUOTAS.get(type).intValue());
         }
 
         Map<String, Long> byClub = new HashMap<>();
