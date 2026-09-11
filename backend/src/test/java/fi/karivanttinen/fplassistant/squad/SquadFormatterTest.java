@@ -125,6 +125,13 @@ class SquadFormatterTest {
     }
 
     @Test
+    void positionLabelsPadSoNamesStartInOneColumn() {
+        String output = format(solved(), constraints());
+
+        assertThat(output).contains("  GK  Name1 (").contains("  DEF Name3 (");
+    }
+
+    @Test
     void namesTheFormationAndTheBenchOrder() {
         String output = format(solved(), constraints());
 
