@@ -50,8 +50,9 @@ class MyTeamResponseTest {
         assertThat(response.lockedSquad().value()).isEqualTo(1001);
         assertThat(response.lockedSquad().players()).containsExactly(
                 new MyTeamResponse.Player(302, 1, true, false, "MID", "Salah", "LIV", 126,
-                        "doubtful (75% chance) - Knock"),
-                new MyTeamResponse.Player(17, 12, false, true, "GK", "Sels", "NFO", 50, null));
+                        "doubtful (75% chance) - Knock", 8, 90),
+                new MyTeamResponse.Player(17, 12, false, true, "GK", "Sels", "NFO", 50, null,
+                        null, null));
         assertThat(response.continuing())
                 .isEqualTo(new MyTeamResponse.Continuation.NotApplicable("not_applicable"));
 
@@ -68,7 +69,7 @@ class MyTeamResponseTest {
                 locked("freehit", 12, 1003, salahPick()), players(salahPick()), true,
                 new MyTeamService.Continuing.Squad(4,
                         locked(null, 5, 995, woodPick()), players(woodPick())),
-                Optional.of(DEADLINE));
+                Optional.of(DEADLINE), null, null);
 
         MyTeamResponse.Ready response = (MyTeamResponse.Ready) MyTeamResponse.from(freeHit);
         MyTeamResponse.Continuation.Available continuing =
@@ -83,6 +84,8 @@ class MyTeamResponseTest {
         assertThat(continuing.value()).isEqualTo(995);
         assertThat(continuing.players()).extracting(MyTeamResponse.Player::name)
                 .containsExactly("Wood");
+        assertThat(continuing.players().get(0).gameweekPoints())
+                .as("the continuing squad's players are mapped with no live feed").isNull();
     }
 
     @Test
@@ -90,7 +93,7 @@ class MyTeamResponseTest {
         MyTeamService.Result.Squad freeHit = baseSquad(
                 locked("freehit", 12, 1003, salahPick()), players(salahPick()), true,
                 new MyTeamService.Continuing.Unknown("FPL could not be reached"),
-                Optional.of(DEADLINE));
+                Optional.of(DEADLINE), null, null);
 
         MyTeamResponse.Ready response = (MyTeamResponse.Ready) MyTeamResponse.from(freeHit);
 
@@ -131,7 +134,7 @@ class MyTeamResponseTest {
         Pick missing = new Pick(999, 3, 1, true, false, 2);
         MyTeamService.SquadPlayer row = new MyTeamService.SquadPlayer(missing, null, null);
         MyTeamService.Result.Squad squad = baseSquad(locked(null, 0, 0, missing),
-                List.of(row), true, null, Optional.empty());
+                List.of(row), true, null, Optional.empty(), null, null);
 
         MyTeamResponse.Player player = ((MyTeamResponse.Ready) MyTeamResponse.from(squad))
                 .lockedSquad().players().getFirst();
@@ -145,21 +148,49 @@ class MyTeamResponseTest {
         assertThat(player.availability()).isNull();
     }
 
+    @Test
+    void gameweekPointsTravelWithTheirStatusAndPerPlayer() {
+        MyTeamResponse.Ready response = (MyTeamResponse.Ready) MyTeamResponse.from(ordinarySquad(true));
+
+        assertThat(response.gameweekPoints()).isEqualTo(
+                new MyTeamResponse.GameweekPoints(5, "finished_unchecked", 50, LOADED));
+        assertThat(response.lockedSquad().players().get(0).gameweekPoints()).isEqualTo(8);
+        assertThat(response.lockedSquad().players().get(0).gameweekMinutes()).isEqualTo(90);
+        assertThat(response.lockedSquad().players().get(1).gameweekPoints())
+                .as("an element the feed does not carry").isNull();
+    }
+
+    @Test
+    void anUnreadFeedAndAnUnknownStatusAreNullNotZero() {
+        MyTeamService.Result.Squad squad = baseSquad(locked(null, 75, 1001, salahPick()),
+                players(salahPick()), true, null, Optional.of(DEADLINE), null, null);
+
+        MyTeamResponse.Ready response = (MyTeamResponse.Ready) MyTeamResponse.from(squad);
+
+        assertThat(response.gameweekPoints().status()).isEqualTo("unknown");
+        assertThat(response.gameweekPoints().playersAsOf()).isNull();
+        assertThat(response.lockedSquad().players().get(0).gameweekPoints()).isNull();
+    }
+
     private static MyTeamService.Result.Squad ordinarySquad(boolean chipsKnown) {
         Pick starter = salahPick();
         Pick bench = new Pick(17, 12, 0, false, true, 1);
         return baseSquad(locked(null, 75, 1001, starter, bench),
                 List.of(player(bench, sels()), player(starter, salah())), chipsKnown, null,
-                Optional.of(DEADLINE));
+                Optional.of(DEADLINE), new FplBootstrap.EventStatus(true, false),
+                new FplLivePoints.Live(5, LOADED, Map.of(302, new FplLivePoints.ElementPoints(8, 90))));
     }
 
     private static MyTeamService.Result.Squad baseSquad(LockedSquad locked,
                                                          List<MyTeamService.SquadPlayer> players,
                                                          boolean chipsKnown,
                                                          MyTeamService.Continuing continuing,
-                                                         Optional<Instant> deadline) {
+                                                         Optional<Instant> deadline,
+                                                         FplBootstrap.EventStatus eventStatus,
+                                                         FplLivePoints.Live live) {
         return new MyTeamService.Result.Squad(entry(), 5, deadline, locked, players, 6,
-                List.of(), List.of(), null, chipsKnown, enrichment(), continuing, LOADED, null, null);
+                List.of(), List.of(), null, chipsKnown, enrichment(), continuing, LOADED,
+                eventStatus, live);
     }
 
     private static EntrySummary entry() {

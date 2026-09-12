@@ -23,7 +23,7 @@ public sealed interface MyTeamResponse {
     /** A complete page. Money remains in FPL's integer tenths until the browser displays it. */
     record Ready(String status, Entry entry, int lockedGameweek, Instant deadline,
                  Instant loadedAt, PageSquad lockedSquad, Chips chips,
-                 Continuation continuing) implements MyTeamResponse {
+                 Continuation continuing, GameweekPoints gameweekPoints) implements MyTeamResponse {
     }
 
     /** A page state with no squad payload, distinguished by {@link #status()}. */
@@ -38,7 +38,15 @@ public sealed interface MyTeamResponse {
 
     record Player(int elementId, int pickPosition, boolean captain, boolean viceCaptain,
                   String position, String name, String club, Integer marketPrice,
-                  String availability) {
+                  String availability, Integer gameweekPoints, Integer gameweekMinutes) {
+    }
+
+    /**
+     * @param status in_progress | finished_unchecked | final | unknown
+     * @param entryTotal FPL's own total for the entry; null when it published none
+     * @param playersAsOf when the per-player numbers were read; null when they were not
+     */
+    record GameweekPoints(int gameweek, String status, Integer entryTotal, Instant playersAsOf) {
     }
 
     record Chips(boolean known, int gameweek, List<String> playable,
@@ -73,10 +81,20 @@ public sealed interface MyTeamResponse {
     private static Ready ready(MyTeamService.Result.Squad squad) {
         return new Ready("ready", new Entry(squad.entry().id(), squad.entry().teamName()),
                 squad.event(), squad.deadline().orElse(null), squad.fetchedAt(),
-                pageSquad(squad.locked(), squad.players()),
+                pageSquad(squad.locked(), squad.players(), squad.live()),
                 new Chips(squad.chipsKnown(), squad.chipEvent(), squad.playableChips(),
                         squad.chipsOpeningLater(), squad.chipsOpenAt()),
-                continuation(squad.continuing()));
+                continuation(squad.continuing()), gameweekPoints(squad));
+    }
+
+    private static GameweekPoints gameweekPoints(MyTeamService.Result.Squad squad) {
+        FplBootstrap.EventStatus status = squad.eventStatus();
+        String code = status == null ? "unknown"
+                : status.dataChecked() ? "final"
+                : status.finished() ? "finished_unchecked"
+                : "in_progress";
+        return new GameweekPoints(squad.event(), code, squad.locked().eventPoints(),
+                squad.live() == null ? null : squad.live().fetchedAt());
     }
 
     private static Continuation continuation(MyTeamService.Continuing continuing) {
@@ -85,33 +103,40 @@ public sealed interface MyTeamResponse {
             case MyTeamService.Continuing.Squad restored ->
                     new Continuation.Available("available", restored.event(),
                             restored.locked().bank(), restored.locked().value(),
-                            players(restored.players()));
+                            players(restored.players(), null));
             case MyTeamService.Continuing.Unknown unknown ->
                     new Continuation.Unknown("unknown", unknown.reason());
         };
     }
 
     private static PageSquad pageSquad(FplEntryClient.LockedSquad locked,
-                                       List<MyTeamService.SquadPlayer> players) {
-        return new PageSquad(locked.bank(), locked.value(), locked.activeChip(), players(players));
+                                       List<MyTeamService.SquadPlayer> players,
+                                       FplLivePoints.Live live) {
+        return new PageSquad(locked.bank(), locked.value(), locked.activeChip(),
+                players(players, live));
     }
 
-    private static List<Player> players(List<MyTeamService.SquadPlayer> players) {
+    private static List<Player> players(List<MyTeamService.SquadPlayer> players,
+                                        FplLivePoints.Live live) {
         return players.stream()
-                .map(MyTeamResponse::player)
+                .map(player -> player(player, live))
                 .sorted(Comparator.comparingInt(Player::pickPosition))
                 .toList();
     }
 
-    private static Player player(MyTeamService.SquadPlayer player) {
+    private static Player player(MyTeamService.SquadPlayer player, FplLivePoints.Live live) {
         Pick pick = player.pick();
         FplBootstrap.Element element = player.element();
+        FplLivePoints.ElementPoints points = live == null ? null
+                : live.of(pick.element()).orElse(null);
         return new Player(pick.element(), pick.position(), pick.captain(), pick.viceCaptain(),
                 POSITIONS.getOrDefault(pick.elementType(), "Unknown"),
                 element == null || element.webName() == null || element.webName().isBlank()
                         ? "Element " + pick.element() : element.webName(),
                 element == null ? null : element.teamShort(),
                 element == null ? null : element.nowCost(),
-                element == null ? null : element.availability());
+                element == null ? null : element.availability(),
+                points == null ? null : points.points(),
+                points == null ? null : points.minutes());
     }
 }
