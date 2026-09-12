@@ -3923,3 +3923,25 @@ serially, as the ticket asked.
 
 Verified: disposable DB, full `./gradlew cleanTest test` green (844 tests). No behaviour change
 to selection, scoring or provenance; no live chat run.
+
+## Gameweek points on the squad card and the My team page (KAR-15, 2026-09-12)
+
+Plan: `docs/superpowers/plans/2026-09-12-kar-15-live-gameweek-points.md`. `FplLivePoints` reads
+FPL's `/event/{event}/live/` once per gameweek, cached app-wide for the squad TTL, and is spent
+from the turn's budget last so it can only ever lose the player lines. The card and the page show
+each pick's points and minutes in the locked gameweek, FPL's own entry total
+(`entry_history.points`, parsed since the my-team tools shipped and unrendered until now), and
+one status sentence from the bootstrap's `finished`/`data_checked` flags: provisional, finished
+but unconfirmed, final, or unknown. The continuing squad carries none. No total is recomputed.
+The `MiniLeagueServiceTest` budget arithmetic moved from 14 to 15 because `getMyTeam` now spends
+one more call.
+
+Verified: 858 tests, 0 failures/skips; 62 frontend vitest, build green; `entry_history.points`
+checked against entry 1556 GW 3: points 78 with event_transfers_cost 4, and the history total
+rose by 74, so `points` is gross, before transfer costs — the wording stands. The page was
+verified by its tests and the production build only; no signed-in browser session was available.
+
+PR review fix: bootstrap status, locked entry points and live points now retain their independent
+read times. A newly final bootstrap cannot relabel older cached scores as final: the card and page
+instead call those score snapshots provisional and name what final bonus or substitutions may be
+missing. The regression primes provisional score caches before refreshing a final bootstrap.

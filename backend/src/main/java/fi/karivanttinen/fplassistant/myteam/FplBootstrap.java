@@ -77,6 +77,14 @@ public class FplBootstrap {
     }
 
     /**
+     * FPL's own flags for a gameweek: {@code finished} once every fixture of the round has finished,
+     * {@code dataChecked} once bonus is confirmed and automatic substitutions are applied. Until the
+     * second, live points are provisional.
+     */
+    public record EventStatus(boolean finished, boolean dataChecked) {
+    }
+
+    /**
      * @param currentEvent the gameweek being played
      * @param nextEvent the gameweek the next deadline belongs to — the one a transfer or a chip
      *        activated right now would apply to, which is not the same question as which
@@ -84,7 +92,8 @@ public class FplBootstrap {
      */
     public record Snapshot(Map<Integer, Element> elements, List<ChipWindow> chips,
                            Map<Integer, Instant> deadlines, Integer currentEvent,
-                           Integer nextEvent) {
+                           Integer nextEvent, Map<Integer, EventStatus> eventStatus,
+                           Instant fetchedAt) {
 
         public Optional<Element> element(int id) {
             return Optional.ofNullable(elements.get(id));
@@ -92,6 +101,10 @@ public class FplBootstrap {
 
         public Optional<Instant> deadline(int event) {
             return Optional.ofNullable(deadlines.get(event));
+        }
+
+        public Optional<EventStatus> status(int event) {
+            return Optional.ofNullable(eventStatus.get(event));
         }
     }
 
@@ -188,6 +201,7 @@ public class FplBootstrap {
         }
 
         Map<Integer, Instant> deadlines = new HashMap<>();
+        Map<Integer, EventStatus> status = new HashMap<>();
         Integer currentEvent = null;
         Integer nextEvent = null;
         if (body.get("events") instanceof List<?> raw) {
@@ -211,11 +225,13 @@ public class FplBootstrap {
                 if (Boolean.TRUE.equals(event.get("is_next"))) {
                     nextEvent = id;
                 }
+                status.put(id, new EventStatus(Boolean.TRUE.equals(event.get("finished")),
+                        Boolean.TRUE.equals(event.get("data_checked"))));
             }
         }
 
         return new Snapshot(Map.copyOf(elements), List.copyOf(chips), Map.copyOf(deadlines),
-                currentEvent, nextEvent);
+                currentEvent, nextEvent, Map.copyOf(status), Instant.now());
     }
 
     @SuppressWarnings("unchecked")

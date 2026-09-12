@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { apiFetch } from '../../auth/apiFetch'
 import {
+  describeGameweekStatus,
   formatChipName,
   formatMoney,
   loadMyTeam,
@@ -177,6 +178,40 @@ describe('loadMyTeam', () => {
 
     await expect(loading).resolves.toBeNull()
   })
+
+  it('accepts absent gameweek points as null, never as zero', async () => {
+    const response = ready()
+    response.gameweekPoints = { gameweek: 5, status: 'unknown', entryTotal: null, playersAsOf: null }
+    response.lockedSquad.players[0].gameweekPoints = null
+    response.lockedSquad.players[0].gameweekMinutes = null
+    apiFetchMock.mockResolvedValue(new Response(JSON.stringify(response), { status: 200 }))
+
+    await expect(loadMyTeam(new AbortController().signal)).resolves.toEqual(response)
+  })
+
+  it('rejects an unknown gameweek status or non-integer points', async () => {
+    const badStatus = ready()
+    ;(badStatus.gameweekPoints as { status: string }).status = 'live'
+    apiFetchMock.mockResolvedValue(new Response(JSON.stringify(badStatus), { status: 200 }))
+    await expect(loadMyTeam(new AbortController().signal))
+      .resolves.toEqual({ status: 'invalid_response' })
+
+    const badPoints = ready()
+    ;(badPoints.lockedSquad.players[0] as { gameweekPoints: unknown }).gameweekPoints = '8'
+    apiFetchMock.mockResolvedValue(new Response(JSON.stringify(badPoints), { status: 200 }))
+    await expect(loadMyTeam(new AbortController().signal))
+      .resolves.toEqual({ status: 'invalid_response' })
+  })
+
+  it('words each gameweek status without promising a final score early', () => {
+    expect(describeGameweekStatus(5, 'in_progress')).toContain('not finished')
+    expect(describeGameweekStatus(5, 'finished_unchecked')).toContain('not confirmed')
+    expect(describeGameweekStatus(5, 'final')).toBe('GW 5 is final.')
+    expect(describeGameweekStatus(5, 'final_scores_provisional'))
+      .toContain('score snapshots were read before that confirmation')
+    expect(describeGameweekStatus(5, 'final_scores_provisional')).toContain('provisional')
+    expect(describeGameweekStatus(5, 'unknown')).toContain('could not be read')
+  })
 })
 
 describe('page display decisions', () => {
@@ -265,6 +300,8 @@ function ready(): ReadyResponse {
         club: 'LIV',
         marketPrice: 126,
         availability: null,
+        gameweekPoints: 8,
+        gameweekMinutes: 90,
       }],
     },
     chips: {
@@ -275,6 +312,7 @@ function ready(): ReadyResponse {
       openingGameweek: 20,
     },
     continuing: { status: 'not_applicable' },
+    gameweekPoints: { gameweek: 5, status: 'in_progress', entryTotal: 61, playersAsOf: '2026-09-12T15:32:00Z' },
   }
 }
 
