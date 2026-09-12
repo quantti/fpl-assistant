@@ -104,7 +104,13 @@ class MyTeamControllerTest {
                 .andExpect(jsonPath("$.entry.managerName").doesNotExist())
                 .andExpect(jsonPath("$.enrichment").doesNotExist())
                 .andExpect(jsonPath("$.lockedSquad.players[0].depth").doesNotExist())
-                .andExpect(jsonPath("$.continuing.players[0].depth").doesNotExist());
+                .andExpect(jsonPath("$.continuing.players[0].depth").doesNotExist())
+                .andExpect(jsonPath("$.gameweekPoints.gameweek").value(5))
+                .andExpect(jsonPath("$.gameweekPoints.status").value("finished_unchecked"))
+                .andExpect(jsonPath("$.gameweekPoints.entryTotal").value(55))
+                .andExpect(jsonPath("$.lockedSquad.players[0].gameweekPoints").value(8))
+                .andExpect(jsonPath("$.continuing.players[0].gameweekPoints")
+                        .value(org.hamcrest.Matchers.nullValue()));
     }
 
     @Test
@@ -136,7 +142,14 @@ class MyTeamControllerTest {
                 .andExpect(jsonPath("$.continuing.reason").value("FPL publishes no previous picks"))
                 .andExpect(jsonPath("$.continuing.bank").doesNotHaveJsonPath())
                 .andExpect(jsonPath("$.continuing.value").doesNotHaveJsonPath())
-                .andExpect(jsonPath("$.continuing.players").doesNotHaveJsonPath());
+                .andExpect(jsonPath("$.continuing.players").doesNotHaveJsonPath())
+                .andExpect(jsonPath("$.gameweekPoints.status").value("unknown"))
+                .andExpect(jsonPath("$.gameweekPoints.playersAsOf").hasJsonPath())
+                .andExpect(jsonPath("$.gameweekPoints.playersAsOf")
+                        .value(org.hamcrest.Matchers.nullValue()))
+                .andExpect(jsonPath("$.lockedSquad.players[0].gameweekPoints").hasJsonPath())
+                .andExpect(jsonPath("$.lockedSquad.players[0].gameweekPoints")
+                        .value(org.hamcrest.Matchers.nullValue()));
     }
 
     @Test
@@ -234,6 +247,8 @@ class MyTeamControllerTest {
                 freeHit, List.of(salah), 6, List.of("bench boost"), List.of("wildcard"),
                 20, true, enrichment,
                 new MyTeamService.Continuing.Squad(4, continuing, List.of(wood)),
-                Instant.parse("2026-09-08T12:34:56Z"), null, null);
+                Instant.parse("2026-09-08T12:34:56Z"), new FplBootstrap.EventStatus(true, false),
+                new FplLivePoints.Live(5, Instant.parse("2026-09-08T12:34:56Z"),
+                        Map.of(302, new FplLivePoints.ElementPoints(8, 90))));
     }
 }
