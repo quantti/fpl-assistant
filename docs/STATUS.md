@@ -3924,6 +3924,33 @@ serially, as the ticket asked.
 Verified: disposable DB, full `./gradlew cleanTest test` green (844 tests). No behaviour change
 to selection, scoring or provenance; no live chat run.
 
+## Fresh database for every content-bearing pre-push (KAR-36, 2026-09-12)
+
+Plan: `docs/superpowers/plans/2026-09-12-kar-36-fresh-pre-push-db.md`. The hook now validates the
+explicit local `.env.test` destination and local Docker context before mutation, runs its shell
+contracts, then uses verified `reset` rather than reusable `up`. Reset fails on inspection,
+removal or schema-load uncertainty instead of accepting an old container. CI runs the same 28
+stub-only regressions before the backend suite while retaining its ephemeral Postgres lifecycle
+and KAR-42 failure artifacts.
+
+Verified exclusively against the local fixture: all three scripts passed `bash -n`; the standalone
+shell suite passed 28/28; a simulated feature-ref hook invocation recreated `fpl-test-db` and ran
+`cleanTest test`, passing 844 tests with 0 failures, errors or skips. No fresh-start or connection-
+pressure failure occurred. No push, Supabase access or Nutribot container operation was made.
+
+PR #81 review fixes preserve that behavior while making Docker's effective endpoint precedence
+exact: explicit `DOCKER_CONTEXT`, then `DOCKER_HOST`, then the active context. Regressions cover
+both variables set in both directions and selected-context lookup failure. The integration runner
+now propagates reset and clean-state assertion failures explicitly despite running without `-e`;
+a safe stub proves a failed first reset exits nonzero without a success message and still runs
+owned-container cleanup. Post-review verification: all three scripts passed `bash -n`, the stub
+suite passed 32/32, and isolated real-Docker integration passed twice on port 51733 and left
+`fpl-kar36-reset-integration` absent.
+
+PR #81 re-review found that both container-ID inspections and dirty-sentinel creation could still
+false-green. Those setup failures now return explicitly without changing `RETURN` cleanup; a safe
+Docker-stub regression exercises all three paths. Syntax passed, the stub suite passed 33/33, and
+isolated integration passed on port 57527 and left its fixture absent. No backend suite or push ran.
 ## Tool-call rounds are summed into one turn charge (KAR-48, 2026-09-12)
 
 Plan: `docs/superpowers/plans/2026-09-12-kar-48-round-trip-token-accounting.md`, 7/7 tasks.
