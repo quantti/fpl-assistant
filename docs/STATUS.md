@@ -4052,3 +4052,14 @@ PR review fix: bootstrap status, locked entry points and live points now retain 
 read times. A newly final bootstrap cannot relabel older cached scores as final: the card and page
 instead call those score snapshots provisional and name what final bonus or substitutions may be
 missing. The regression primes provisional score caches before refreshing a final bootstrap.
+
+## Keep production running for daily captures (2026-09-12)
+
+Owner requested always-on operation after Wildcard ranking refused a stale schedule. Production
+held 38 gameweeks and 380 fixtures, all captured on 2026-09-11 at 01:10 UTC; the September 12
+capture was missing. The September 7 idle-stop setting prevents in-process timers from running
+while the machine is stopped. Disabled autostop on the existing production machine through
+`flyctl machine update --autostop=off`, started it and verified its live configuration and external
+health (`UP`). No image deployment or extra machine. `fly.toml` now preserves always-on operation
+with autostop off and one minimum running machine; configuration validation passed. This restores
+future scheduled captures, not missed runs: existing stale data is not repaired by starting the VM.
