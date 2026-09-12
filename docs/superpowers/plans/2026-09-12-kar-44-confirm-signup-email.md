@@ -1,6 +1,6 @@
 # KAR-44 — A real welcome/confirmation email
 
-**PROGRESS:** Task 0/3 — plan written, nothing implemented.
+**PROGRESS:** Task 3/3 done — awaiting the owner's paste and Gmail check.
 
 Issue: [KAR-44](https://linear.app/quantti/issue/KAR-44/write-a-real-welcomeconfirmation-email-instead-of-supabases-default).
 Checked in Linear on 2026-09-12: Todo, High (2), related to KAR-33 (the runbook) and KAR-43
