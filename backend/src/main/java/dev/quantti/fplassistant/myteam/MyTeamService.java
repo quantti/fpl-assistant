@@ -61,11 +61,19 @@ public class MyTeamService {
          * @param continuing the squad restored at a Free Hit gameweek's deadline; null when no
          *        Free Hit was played
          */
+        /**
+         * @param eventStatus FPL's finished/checked flags for {@code event}; null when the
+         *        bootstrap has no row for it
+         * @param live points so far in {@code event} per element; null when the feed was not
+         *        read (budget spent or a failed call)
+         */
         record Squad(EntrySummary entry, int event, Optional<Instant> deadline, LockedSquad locked,
                      List<SquadPlayer> players, int chipEvent, List<String> playableChips,
                      List<String> chipsOpeningLater, Integer chipsOpenAt, boolean chipsKnown,
                      SquadEnrichment.Enrichment enrichment, Continuing continuing,
-                     Instant fetchedAt) implements Result {
+                     Instant fetchedAt, FplBootstrap.EventStatus eventStatus,
+                     Instant eventStatusAsOf, Instant entryPointsAsOf,
+                     FplLivePoints.Live live) implements Result {
         }
 
         record NoTeamId() implements Result { }
@@ -104,17 +112,22 @@ public class MyTeamService {
     private final FplEntryClient fpl;
     private final FplBootstrap bootstrap;
     private final SquadEnrichment enrichment;
+    private final FplLivePoints live;
     private final TtlCache<Integer, EntrySummary> entryCache;
-    private final TtlCache<String, LockedSquad> squadCache;
+    private record CachedSquad(LockedSquad squad, Instant fetchedAt) {
+    }
+
+    private final TtlCache<String, CachedSquad> squadCache;
 
     public MyTeamService(UserProfileService profiles, FplEntryClient fpl, FplBootstrap bootstrap,
-                         SquadEnrichment enrichment,
+                         SquadEnrichment enrichment, FplLivePoints live,
                          @Value("${fpl.myteam.cache-ttl-minutes}") long ttlMinutes,
                          @Value("${fpl.myteam.cache-max-entries}") int maxEntries) {
         this.profiles = profiles;
         this.fpl = fpl;
         this.bootstrap = bootstrap;
         this.enrichment = enrichment;
+        this.live = live;
         this.entryCache = new TtlCache<>(Duration.ofMinutes(ttlMinutes), maxEntries);
         this.squadCache = new TtlCache<>(Duration.ofMinutes(ttlMinutes), maxEntries);
     }
@@ -141,20 +154,38 @@ public class MyTeamService {
     /** One manager's locked squad for a gameweek — the user's own, or an opponent's. */
     public FplEntryClient.Result<Optional<LockedSquad>> lockedSquad(int entryId, int event,
                                                                    FplBudget budget) {
+        return switch (lockedSquadRead(entryId, event, budget)) {
+            case FplEntryClient.Result.Ok<Optional<CachedSquad>>(Optional<CachedSquad> read) ->
+                    new FplEntryClient.Result.Ok<>(read.map(CachedSquad::squad));
+            case FplEntryClient.Result.NotFound<Optional<CachedSquad>> ignored ->
+                    new FplEntryClient.Result.NotFound<>();
+            case FplEntryClient.Result.Unavailable<Optional<CachedSquad>> ignored ->
+                    new FplEntryClient.Result.Unavailable<>();
+        };
+    }
+
+    private FplEntryClient.Result<Optional<CachedSquad>> lockedSquadRead(int entryId, int event,
+                                                                         FplBudget budget) {
         String key = entryId + "@" + event;
-        Optional<LockedSquad> cached = squadCache.get(key);
+        Optional<CachedSquad> cached = squadCache.get(key);
         if (cached.isPresent()) {
             return new FplEntryClient.Result.Ok<>(cached);
         }
         if (!budget.take()) {
             return new FplEntryClient.Result.Unavailable<>();
         }
-        FplEntryClient.Result<Optional<LockedSquad>> result = fpl.picks(entryId, event);
-        if (result instanceof FplEntryClient.Result.Ok<Optional<LockedSquad>>(Optional<LockedSquad> squad)
-                && squad.isPresent()) {
-            squadCache.put(key, squad.get());
-        }
-        return result;
+        return switch (fpl.picks(entryId, event)) {
+            case FplEntryClient.Result.Ok<Optional<LockedSquad>>(Optional<LockedSquad> squad) -> {
+                Optional<CachedSquad> read = squad.map(value ->
+                        new CachedSquad(value, Instant.now()));
+                read.ifPresent(value -> squadCache.put(key, value));
+                yield new FplEntryClient.Result.Ok<>(read);
+            }
+            case FplEntryClient.Result.NotFound<Optional<LockedSquad>> ignored ->
+                    new FplEntryClient.Result.NotFound<>();
+            case FplEntryClient.Result.Unavailable<Optional<LockedSquad>> ignored ->
+                    new FplEntryClient.Result.Unavailable<>();
+        };
     }
 
     public Optional<FplBootstrap.Snapshot> bootstrap(FplBudget budget) {
@@ -183,28 +214,29 @@ public class MyTeamService {
         }
         int event = summary.currentEvent();
 
-        LockedSquad locked;
-        switch (lockedSquad(entryId, event, budget)) {
-            // Empty rather than absent: FPL serves picks only once a deadline has passed, so an
-            // entry with nothing to show has not played yet — not a failure.
-            case FplEntryClient.Result.Ok<Optional<LockedSquad>>(Optional<LockedSquad> squad) -> {
-                if (squad.isEmpty()) {
-                    return new Result.NoSquadYet(entryId);
-                }
-                locked = squad.get();
-            }
-            case FplEntryClient.Result.NotFound<Optional<LockedSquad>> ignored -> {
-                return new Result.NoSquadYet(entryId);
-            }
-            case FplEntryClient.Result.Unavailable<Optional<LockedSquad>> ignored -> {
-                return new Result.Unavailable();
-            }
-        }
-
         Optional<FplBootstrap.Snapshot> snapshot = bootstrap.snapshot(budget);
         if (snapshot.isEmpty()) {
             return new Result.Unavailable();
         }
+
+        CachedSquad lockedRead;
+        switch (lockedSquadRead(entryId, event, budget)) {
+            // Empty rather than absent: FPL serves picks only once a deadline has passed, so an
+            // entry with nothing to show has not played yet — not a failure.
+            case FplEntryClient.Result.Ok<Optional<CachedSquad>>(Optional<CachedSquad> read) -> {
+                if (read.isEmpty()) {
+                    return new Result.NoSquadYet(entryId);
+                }
+                lockedRead = read.get();
+            }
+            case FplEntryClient.Result.NotFound<Optional<CachedSquad>> ignored -> {
+                return new Result.NoSquadYet(entryId);
+            }
+            case FplEntryClient.Result.Unavailable<Optional<CachedSquad>> ignored -> {
+                return new Result.Unavailable();
+            }
+        }
+        LockedSquad locked = lockedRead.squad();
 
         // At a Free Hit gameweek's deadline, FPL locks the temporary picks for scoring and
         // restores the previous squad for transfers. Fetch those previous-gameweek picks and
@@ -258,13 +290,60 @@ public class MyTeamService {
         int chipEvent = chipTargetEvent(snapshot.get(), event);
         Chips chips = chipsFor(snapshot.get(), played, chipEvent);
 
+        // Last, because it is the most dispensable: a refused budget or a failed call loses the
+        // per-player points, never the squad. KAR-15.
+        FplLivePoints.Live livePoints = this.live.forEvent(event, budget).orElse(null);
+        FplBootstrap.EventStatus eventStatus = snapshot.get().status(event).orElse(null);
+
         return new Result.Squad(summary, event, snapshot.get().deadline(event), locked, players,
                 chipEvent, chips.playable(), chips.openingLater(), chips.opensAt(), chips.known(),
-                depth, continuing, Instant.now());
+                depth, continuing, Instant.now(), eventStatus, snapshot.get().fetchedAt(),
+                lockedRead.fetchedAt(), livePoints);
     }
 
     private record Chips(List<String> playable, List<String> openingLater, Integer opensAt,
                          boolean known) {
+    }
+
+    /** How far FPL has got with the gameweek — the qualifier on every points figure on the card. */
+    static String gameweekStatus(int event, FplBootstrap.EventStatus status,
+                                 Instant statusAsOf, Instant entryAsOf,
+                                 FplLivePoints.Live live) {
+        if (status == null) {
+            return "Whether Gameweek " + event + " is finished could not be read from FPL.";
+        }
+        if (!status.finished()) {
+            return "Gameweek " + event + " is not finished: points are provisional, bonus is added"
+                    + " after each match, and automatic substitutions apply only once FPL marks"
+                    + " the gameweek final.";
+        }
+        if (!status.dataChecked()) {
+            return "Gameweek " + event + " has finished but FPL has not confirmed it: bonus and"
+                    + " automatic substitutions may still change.";
+        }
+        List<String> older = new ArrayList<>();
+        if (entryAsOf != null && entryAsOf.isBefore(statusAsOf)) {
+            older.add("the entry total");
+        }
+        if (live != null && live.fetchedAt().isBefore(statusAsOf)) {
+            older.add("the per-player points");
+        }
+        if (!older.isEmpty()) {
+            return "FPL's status snapshot marks Gameweek " + event + " final, but "
+                    + String.join(" and ", older) + " were read before that confirmation. Treat"
+                    + " those displayed scores as provisional snapshots; final bonus or automatic"
+                    + " substitutions may be absent.";
+        }
+        return "Gameweek " + event + " is final; the displayed scores were read after FPL's"
+                + " confirmation.";
+    }
+
+    static boolean hasProvisionalFinalScores(Result.Squad squad) {
+        return squad.eventStatus() != null && squad.eventStatus().dataChecked()
+                && (squad.locked().eventPoints() != null
+                        && squad.entryPointsAsOf().isBefore(squad.eventStatusAsOf())
+                    || squad.live() != null
+                        && squad.live().fetchedAt().isBefore(squad.eventStatusAsOf()));
     }
 
     /**
@@ -405,6 +484,25 @@ public class MyTeamService {
         }
         out.append(".\n\n");
 
+        out.append("Gameweek ").append(squad.event()).append(" points: ");
+        if (squad.locked().eventPoints() == null) {
+            out.append("not published by FPL");
+        } else {
+            out.append(squad.locked().eventPoints())
+                    .append(" (FPL's own total for this entry, before transfer costs)");
+        }
+        out.append(". ").append(gameweekStatus(squad.event(), squad.eventStatus(),
+                squad.eventStatusAsOf(), squad.locked().eventPoints() == null
+                        ? null : squad.entryPointsAsOf(), squad.live())).append(" ");
+        if (squad.live() == null) {
+            out.append("Per-player gameweek points could not be read from FPL just now.\n\n");
+        } else {
+            out.append("Player gameweek points read ")
+                    .append(UkTime.format(squad.live().fetchedAt(), "just now"))
+                    .append(" from FPL's live feed; the player lines need not sum to the entry total")
+                    .append(" (captain multiplier, bench, automatic substitutions).\n\n");
+        }
+
         if (squad.enrichment().available()) {
             out.append(squad.enrichment().season().provenance()).append("\n")
                     .append("xG/xA and next-5 FDR are stored database values, each tagged with the")
@@ -418,7 +516,7 @@ public class MyTeamService {
                     + " data.").append("\n");
         }
 
-        appendPicks(out, squad.players(), squad.fetchedAt());
+        appendPicks(out, squad.players(), squad.fetchedAt(), squad.live());
 
         switch (squad.continuing()) {
             case null -> { }
@@ -435,7 +533,7 @@ public class MyTeamService {
                         .append(" Restored bank was ").append(money(previous.bank()))
                         .append(" (approximate - transfers made since the Free Hit deadline are")
                         .append(" not visible).\n");
-                appendPicks(out, players, squad.fetchedAt());
+                appendPicks(out, players, squad.fetchedAt(), null);
             }
             case Continuing.Unknown(String reason) ->
                     out.append("\nA Free Hit was played for Gameweek ").append(squad.event())
@@ -464,13 +562,14 @@ public class MyTeamService {
     }
 
     /** {@code asOf} is the squad's fetch instant: every stored-row age on the card is measured from it. */
-    private static void appendPicks(StringBuilder out, List<SquadPlayer> players, Instant asOf) {
+    private static void appendPicks(StringBuilder out, List<SquadPlayer> players, Instant asOf,
+                                     FplLivePoints.Live live) {
         out.append("Starting XI\n");
         players.stream().filter(player -> player.pick().starting())
-                .forEach(player -> out.append(line(player, asOf)));
+                .forEach(player -> out.append(line(player, asOf, live)));
         out.append("Bench\n");
         players.stream().filter(player -> !player.pick().starting())
-                .forEach(player -> out.append(line(player, asOf)));
+                .forEach(player -> out.append(line(player, asOf, live)));
         String flagged = players.stream()
                 .filter(player -> player.element() != null && player.element().availability() != null)
                 .map(player -> player.element().webName() + " (" + player.element().teamShort()
@@ -481,7 +580,7 @@ public class MyTeamService {
         }
     }
 
-    private static String line(SquadPlayer player, Instant asOf) {
+    private static String line(SquadPlayer player, Instant asOf, FplLivePoints.Live live) {
         FplBootstrap.Element element = player.element();
         StringBuilder line = new StringBuilder(String.format(Locale.UK, "%2d ", player.pick().position()));
         if (element == null) {
@@ -499,6 +598,18 @@ public class MyTeamService {
             line.append(" - CAPTAIN");
         } else if (player.pick().viceCaptain()) {
             line.append(" - vice");
+        }
+        if (live != null) {
+            line.append(" - GW").append(live.event()).append(": ");
+            live.of(player.pick().element()).ifPresentOrElse(
+                    points -> {
+                        line.append(points.points()).append(" pts, ").append(points.minutes())
+                                .append(" min");
+                        if (player.pick().multiplier() > 1) {
+                            line.append(", counts x").append(player.pick().multiplier());
+                        }
+                    },
+                    () -> line.append("n/a"));
         }
         line.append(" - form ").append(element.form())
                 .append(", ").append(element.totalPoints()).append(" pts")
