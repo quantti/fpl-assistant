@@ -34,7 +34,7 @@ export interface ChipAvailability {
   openingGameweek: number | null
 }
 
-export type GameweekStatus = 'in_progress' | 'finished_unchecked' | 'final' | 'unknown'
+export type GameweekStatus = 'in_progress' | 'finished_unchecked' | 'final' | 'final_scores_provisional' | 'unknown'
 
 export interface GameweekPoints {
   gameweek: number
@@ -165,6 +165,8 @@ export function describeGameweekStatus(gameweek: number, status: GameweekStatus)
       return `GW ${gameweek} has finished but FPL has not confirmed it: bonus and automatic substitutions may still change.`
     case 'final':
       return `GW ${gameweek} is final.`
+    case 'final_scores_provisional':
+      return `FPL marks GW ${gameweek} final, but one or more displayed score snapshots were read before that confirmation. Treat those scores as provisional; final bonus or automatic substitutions may be absent.`
     case 'unknown':
       return `Whether GW ${gameweek} is finished could not be read from FPL.`
   }
@@ -245,7 +247,8 @@ function isGameweekPoints(value: unknown): value is GameweekPoints {
   return isRecord(value)
     && isInteger(value.gameweek)
     && (value.status === 'in_progress' || value.status === 'finished_unchecked'
-      || value.status === 'final' || value.status === 'unknown')
+      || value.status === 'final' || value.status === 'final_scores_provisional'
+      || value.status === 'unknown')
     && (value.entryTotal === null || isInteger(value.entryTotal))
     && (value.playersAsOf === null || typeof value.playersAsOf === 'string')
 }
