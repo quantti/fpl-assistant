@@ -3923,3 +3923,25 @@ serially, as the ticket asked.
 
 Verified: disposable DB, full `./gradlew cleanTest test` green (844 tests). No behaviour change
 to selection, scoring or provenance; no live chat run.
+
+## Aborted chat turns cannot clear their replacement (KAR-52, 2026-09-12)
+
+Plan: `docs/superpowers/plans/2026-09-12-kar-52-chat-turn-ownership.md`. `useChat` now gives each
+send exclusive ownership through its `AbortController`. Conversation replacement detaches A before
+aborting its browser read; if B starts and A settles later, A's tokens, conversation id,
+truncation notice, outcome and `finally` cannot alter B's transcript, streaming text or busy state,
+and cannot fire B's list-refresh callback. Replacement remains authoritative when replacement and
+send share a React batch.
+
+The occupied controller is also the synchronous single-flight gate: two calls through the same
+captured `sendMessage` before React rerenders produce one request and one optimistic message. The
+still-owning turn alone releases the gate and calls `onTurnFinished` once when it settles,
+including completed, failed, gone, unauthorized and aborted outcomes. A turn detached by
+replacement or unmount never calls it. Server-side generation may continue after the browser read
+is aborted; the hook makes no cancellation claim.
+
+Verification on Node 24.19.0: `npm ci` installed 223 packages with 0 vulnerabilities; the complete
+frontend suite passed (6 files, 73 tests) with no React act warnings. `npm run build` passed the
+contrast checks, TypeScript project build and Vite production build using the existing local
+publishable key. Vite retained its advisory that the main minified chunk exceeds 500 kB. No manual
+browser check, backend suite, live chat or paid model call was run for this task.
