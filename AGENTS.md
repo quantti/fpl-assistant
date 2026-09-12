@@ -160,8 +160,12 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
   These reads also fetch `bootstrap-static` (cached app-wide for six hours) because it is the
   only source certain to be on the same season as the `element` ids in a manager's picks — FPL
   renumbers every player every season, so filling a squad from an unsynced database names
-  *different players*. Supabase adds fixture difficulty and xG/xA only while `SeasonResolver`
-  names the season being played. The tools' provenance is two lines, not one: the squad block states
+  *different players*. `getMyTeam` also reads FPL's `/event/{event}/live/` for the locked
+  gameweek (`FplLivePoints`, cached app-wide per gameweek for the squad TTL, spent from the
+  budget last so a refusal loses the player points and never the squad); the card dates those
+  numbers by the feed's own read time, never by the squad's assembly time. Supabase adds fixture
+  difficulty and xG/xA only while `SeasonResolver` names the season being played. The tools'
+  provenance is two lines, not one: the squad block states
   the gameweek it was locked for and when it was fetched, and the statistics block carries
   `SeasonContext.provenance()`. Do not fold them into the single-banner convention.
 - **`SquadTools.buildSquad` is a fourth documented multi-line-provenance exception**, alongside

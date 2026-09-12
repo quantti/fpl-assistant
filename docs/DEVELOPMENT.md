@@ -186,14 +186,20 @@ ORDER BY u.created_at;
 
 What the numbers mean:
 
-- **One row per user turn, not per model call.** Spring AI reports usage cumulatively across a
-  turn's tool-call round trips, so the row is the whole turn.
-- **`input_tokens` is the uncached remainder** on Anthropic: cache reads and cache writes are
-  counted separately, which is why the total adds all four columns. **If the provider is ever
-  switched to OpenAI, check this first** — a provider that counts cached tokens inside its prompt
-  total would be double-counted by `total_tokens`.
+- **One row per user turn, not per model call.** On Spring AI 2.0.0, each model invocation/tool
+  round selects its richest coherent cumulative snapshot, and those request snapshots are summed
+  for the turn. Running sums are retained if a later round fails after reporting usage. Historical
+  rows are not repaired: the rounds lost by the old maximum-across-turn logic cannot be recovered.
+- **`input_tokens` is always the uncached remainder.** Anthropic already reports it that way;
+  OpenAI and Gemini report cache reads inside the prompt count, so the application subtracts them
+  before storing the prompt alongside the separate cache columns.
 - **`NULL` means the provider reported nothing**, never zero. A cache miss really does report zero
-  reads, and that is the measurement Task 8 checks. A NULL column contributes nothing to the total.
+  reads. Anthropic cache figures present only in `message_start` are dropped by the Spring AI 2.0.0
+  adapter, so those columns remain NULL; the deterministic provider fixture does not establish
+  where live Anthropic streams place them.
+- **These are Spring AI-reported invocation totals, not guaranteed HTTP-attempt billing totals.**
+  Provider SDK retries happen below the accounting advisor, and a failed attempt that emits no
+  mapped usage — including an Anthropic failure before its usage-bearing delta — remains unknown.
 - **`conversation_id` carries no foreign key and no cascade.** Usage counted from something the
   user can delete is a quota the user can refill by deleting a conversation, so the reference is
   allowed to dangle.
