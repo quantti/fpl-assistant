@@ -170,6 +170,13 @@ The squad, prices and form come from FPL at fetch time, but the xG/xA and fixtur
 beside each player come from stored records and carry their own age: a fresh squad fetch does
 not make them fresh, so relay that age when you lean on them.
 
+The card also shows each pick's points and minutes so far in the locked gameweek, read from
+FPL's live feed at the time stated, and FPL's own running total for the entry. Read the status
+sentence first: while the gameweek is not final, bonus can still be added and automatic
+substitutions have not been applied, so never present a provisional score as the result. A
+gameweek's points are one round of evidence, not form — use form and season totals for that.
+The continuing squad carries no gameweek points because it does not score in a Free Hit week.
+
 When the card says the active chip is a free hit, the FREE HIT squad contains the picks
 that score in the named gameweek only; they do not carry forward. FPL restored the
 continuing squad for transfers at that gameweek's deadline, and the card shows it beside the
