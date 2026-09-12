@@ -59,6 +59,8 @@ class MyTeamServiceTest {
     private final Map<String, AtomicInteger> requests = new ConcurrentHashMap<>();
     /** The gameweek being played; the next deadline is always the one after it. */
     private int currentEvent = 1;
+    private boolean finished = false;
+    private boolean dataChecked = false;
     private String chipsPlayed = "[]";
     private String activeChip = null;
     /** Body for the previous gameweek's picks; null makes the stub answer 404. */
@@ -82,6 +84,8 @@ class MyTeamServiceTest {
                 respond(exchange, 200, bootstrap());
             } else if (path.endsWith("/history/")) {
                 respond(exchange, 200, "{\"chips\": " + chipsPlayed + "}");
+            } else if (path.matches("/event/\\d+/live/")) {
+                respond(exchange, 200, LIVE);
             } else if (currentEvent > 1 && path.contains("/event/" + (currentEvent - 1) + "/picks/")) {
                 if (previousPicks == null) {
                     respond(exchange, 404, "{}");
@@ -338,11 +342,13 @@ class MyTeamServiceTest {
         String card = service.render(service.myTeam(USER, budget()));
 
         assertThat(card)
-                .contains("Salah (LIV, MID) GBP 12.6m - CAPTAIN - form 8.5, 12 pts, 12.0/game,"
+                .contains("Salah (LIV, MID) GBP 12.6m - CAPTAIN - GW1: 8 pts, 90 min, counts x2 -"
+                        + " form 8.5, 12 pts, 12.0/game,"
                         + " 42.1% owned, next 5 FDR 3.0 (fixture records written 12 days ago),"
                         + " xG 3.40, xA 1.20 (player record written 9 days ago) - doubtful")
                 .as("another club's run, and a null player write that keeps its xG/xA")
-                .contains("Sels (NFO, GK) GBP 5.0m - vice - form 2.0, 2 pts, 2.0/game,"
+                .contains("Sels (NFO, GK) GBP 5.0m - vice - GW1: 0 pts, 0 min - form 2.0, 2 pts,"
+                        + " 2.0/game,"
                         + " 18.3% owned, next 5 FDR 2.0 (fixture records written 20 days ago to"
                         + " 12 days ago), xG 0.00, xA 0.10 (player record: write time unavailable)")
                 .as("a pick FPL's player list lacks shows no stored values, so no age either")
@@ -423,6 +429,102 @@ class MyTeamServiceTest {
     }
 
     @Test
+    void theCardShowsEachPicksGameweekPointsAndFplsOwnEntryTotal() {
+        storeTeamId(ENTRY);
+        MyTeamService service = service();
+
+        String card = service.render(service.myTeam(USER, budget()));
+
+        assertThat(card)
+                .contains("Gameweek 1 points: 55 (FPL's own total for this entry, before transfer costs)")
+                .contains("Gameweek 1 is not finished")
+                .contains("Player gameweek points read ")
+                .contains("Salah (LIV, MID) GBP 12.6m - CAPTAIN - GW1: 8 pts, 90 min, counts x2")
+                .contains("Sels (NFO, GK) GBP 5.0m - vice - GW1: 0 pts, 0 min");
+        assertThat(requests.get("/event/1/live/").get()).isEqualTo(1);
+    }
+
+    @Test
+    void aFinishedGameweekThatFplHasNotCheckedSaysBonusMayStillChange() {
+        finished = true;
+        storeTeamId(ENTRY);
+        MyTeamService service = service();
+
+        String card = service.render(service.myTeam(USER, budget()));
+
+        assertThat(card).contains("Gameweek 1 has finished but FPL has not confirmed it");
+    }
+
+    @Test
+    void aCheckedGameweekIsFinal() {
+        finished = true;
+        dataChecked = true;
+        storeTeamId(ENTRY);
+        MyTeamService service = service();
+
+        String card = service.render(service.myTeam(USER, budget()));
+
+        assertThat(card).contains("Gameweek 1 is final").doesNotContain("provisional");
+    }
+
+    @Test
+    void finalBootstrapDoesNotMakeOlderCachedScoresFinal() {
+        storeTeamId(ENTRY);
+        MyTeamService service = service(0);
+        service.myTeam(USER, budget());
+
+        finished = true;
+        dataChecked = true;
+        MyTeamService.Result.Squad second = (MyTeamService.Result.Squad)
+                service.myTeam(USER, budget());
+        String card = service.render(second);
+
+        assertThat(card)
+                .contains("status snapshot marks Gameweek 1 final")
+                .contains("the entry total and the per-player points were read before that"
+                        + " confirmation")
+                .contains("Treat those displayed scores as provisional snapshots")
+                .doesNotContain("Gameweek 1 is final;");
+        assertThat(MyTeamResponse.from(second))
+                .extracting(response -> ((MyTeamResponse.Ready) response).gameweekPoints().status())
+                .isEqualTo("final_scores_provisional");
+        assertThat(requests.get("/bootstrap-static/").get()).isEqualTo(2);
+        assertThat(requests.get("/entry/111/event/1/picks/").get()).isEqualTo(1);
+        assertThat(requests.get("/event/1/live/").get()).isEqualTo(1);
+    }
+
+    /** Entry, picks, bootstrap and chips spend four units; the live feed is asked last and refused. */
+    @Test
+    void aSpentBudgetDropsPlayerGameweekPointsButKeepsTheEntryTotal() {
+        storeTeamId(ENTRY);
+        MyTeamService service = service();
+
+        String card = service.render(service.myTeam(USER, new FplBudget(4)));
+
+        assertThat(card)
+                .contains("Gameweek 1 points: 55")
+                .contains("Per-player gameweek points could not be read from FPL just now")
+                .doesNotContain("GW1: 8 pts");
+        assertThat(requests).doesNotContainKey("/event/1/live/");
+    }
+
+    @Test
+    void theContinuingSquadCarriesNoGameweekPoints() {
+        currentEvent = 4;
+        activeChip = "freehit";
+        previousPicks = PREVIOUS_PICKS;
+        storeTeamId(ENTRY);
+        MyTeamService service = service();
+
+        String card = service.render(service.myTeam(USER, budget()));
+
+        String continuing = card.substring(card.indexOf("Continuing squad (restored"));
+        assertThat(card.substring(0, card.indexOf("Continuing squad (restored")))
+                .contains("Salah (LIV, MID) GBP 12.6m - CAPTAIN - GW4: 8 pts");
+        assertThat(continuing).doesNotContain("GW4:").doesNotContain("GW3:");
+    }
+
+    @Test
     void asecondQuestionInTheSameConversationRefetchesNothing() {
         storeTeamId(ENTRY);
         MyTeamService service = service();
@@ -433,6 +535,7 @@ class MyTeamServiceTest {
         service.myTeam(USER, budget);
 
         assertThat(requests.get("/entry/111/event/" + currentEvent + "/picks/").get()).isEqualTo(1);
+        assertThat(requests.get("/event/" + currentEvent + "/live/").get()).isEqualTo(1);
         assertThat(budget.spent() - afterFirst)
                 .as("only the chip history is re-read; everything else is cached")
                 .isEqualTo(1);
@@ -471,17 +574,27 @@ class MyTeamServiceTest {
     }
 
     private MyTeamService service() {
-        return service("http://127.0.0.1:" + server.getAddress().getPort());
+        return service(360);
+    }
+
+    private MyTeamService service(long bootstrapTtlMinutes) {
+        return service("http://127.0.0.1:" + server.getAddress().getPort(), bootstrapTtlMinutes);
     }
 
     private MyTeamService service(String base) {
+        return service(base, 360);
+    }
+
+    private MyTeamService service(String base, long bootstrapTtlMinutes) {
         FplEntryClient client = new FplEntryClient(RestClient.builder(),
                 base + "/entry/%d/", base + "/entry/%d/event/%d/picks/",
                 base + "/entry/%d/history/",
                 base + "/leagues-classic/%d/standings/?page_standings=%d");
         FplBootstrap bootstrap = new FplBootstrap(RestClient.builder(),
-                base + "/bootstrap-static/", 360);
-        return new MyTeamService(profiles, client, bootstrap, enrichment, 5, 100);
+                base + "/bootstrap-static/", bootstrapTtlMinutes);
+        FplLivePoints live = new FplLivePoints(RestClient.builder(),
+                base + "/event/%d/live/", 5);
+        return new MyTeamService(profiles, client, bootstrap, enrichment, live, 5, 100);
     }
 
     private String entryBody(int id, String name) {
@@ -511,6 +624,13 @@ class MyTeamServiceTest {
             , {"element": 999, "position": 13, "multiplier": 0, "is_captain": false,
                "is_vice_captain": false, "element_type": 2}""";
 
+    private static final String LIVE = """
+            {"elements": [
+              {"id": 302, "stats": {"minutes": 90, "total_points": 8}, "explain": []},
+              {"id": 17, "stats": {"minutes": 0, "total_points": 0}, "explain": []},
+              {"id": 44, "stats": {"minutes": 65, "total_points": 2}, "explain": []}]}
+            """;
+
     private static final String PREVIOUS_PICKS = """
             {"active_chip": null,
              "entry_history": {"bank": 5, "value": 995, "points": 48},
@@ -522,7 +642,7 @@ class MyTeamServiceTest {
             """;
 
     private String bootstrap() {
-        return BOOTSTRAP.formatted(currentEvent, currentEvent + 1);
+        return BOOTSTRAP.formatted(currentEvent, finished, dataChecked, currentEvent + 1);
     }
 
     private static final String BOOTSTRAP = """
@@ -544,7 +664,8 @@ class MyTeamServiceTest {
                        {"name": "wildcard", "start_event": 20, "stop_event": 38},
                        {"name": "bboost", "start_event": 20, "stop_event": 38},
                        {"name": "3xc", "start_event": 20, "stop_event": 38}],
-             "events": [{"id": %d, "deadline_time": "2026-08-21T17:30:00Z", "is_current": true},
+             "events": [{"id": %d, "deadline_time": "2026-08-21T17:30:00Z", "is_current": true,
+                         "finished": %s, "data_checked": %s},
                         {"id": %d, "deadline_time": "2026-08-28T17:30:00Z", "is_next": true}]}
             """;
 
