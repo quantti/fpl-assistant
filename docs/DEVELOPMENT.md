@@ -85,10 +85,12 @@ npm run build                                     # contrast check, tsc -b, vite
 ```
 
 `npm test` runs on `vitest.config.ts`, kept apart from `vite.config.ts` because that file
-refuses to load without `VITE_SUPABASE_ANON_KEY`; a unit test needs no key. The suite is
-Node-only — no DOM — and covers the pure functions behind the UI (`viewportHeight`,
-`MessageThread/follow`), not the components. The pre-push hook does not run it; run it
-before pushing frontend work.
+refuses to load without `VITE_SUPABASE_ANON_KEY`; a unit test needs no key. Tests use the Node
+environment by default. The isolated `useChat.test.ts` mounted-hook regression opts into jsdom
+with a file-level Vitest environment directive; it uses React's real root and does not add a
+browser harness. The remaining tests cover pure UI decisions such as `viewportHeight` and
+`MessageThread/follow`. The pre-push hook does not run the frontend suite; run it before pushing
+frontend work.
 
 ## The free tier and sign-up
 
@@ -186,14 +188,20 @@ ORDER BY u.created_at;
 
 What the numbers mean:
 
-- **One row per user turn, not per model call.** Spring AI reports usage cumulatively across a
-  turn's tool-call round trips, so the row is the whole turn.
-- **`input_tokens` is the uncached remainder** on Anthropic: cache reads and cache writes are
-  counted separately, which is why the total adds all four columns. **If the provider is ever
-  switched to OpenAI, check this first** — a provider that counts cached tokens inside its prompt
-  total would be double-counted by `total_tokens`.
+- **One row per user turn, not per model call.** On Spring AI 2.0.0, each model invocation/tool
+  round selects its richest coherent cumulative snapshot, and those request snapshots are summed
+  for the turn. Running sums are retained if a later round fails after reporting usage. Historical
+  rows are not repaired: the rounds lost by the old maximum-across-turn logic cannot be recovered.
+- **`input_tokens` is always the uncached remainder.** Anthropic already reports it that way;
+  OpenAI and Gemini report cache reads inside the prompt count, so the application subtracts them
+  before storing the prompt alongside the separate cache columns.
 - **`NULL` means the provider reported nothing**, never zero. A cache miss really does report zero
-  reads, and that is the measurement Task 8 checks. A NULL column contributes nothing to the total.
+  reads. Anthropic cache figures present only in `message_start` are dropped by the Spring AI 2.0.0
+  adapter, so those columns remain NULL; the deterministic provider fixture does not establish
+  where live Anthropic streams place them.
+- **These are Spring AI-reported invocation totals, not guaranteed HTTP-attempt billing totals.**
+  Provider SDK retries happen below the accounting advisor, and a failed attempt that emits no
+  mapped usage — including an Anthropic failure before its usage-bearing delta — remains unknown.
 - **`conversation_id` carries no foreign key and no cascade.** Usage counted from something the
   user can delete is a quota the user can refill by deleting a conversation, so the reference is
   allowed to dangle.
@@ -214,24 +222,34 @@ git config core.hooksPath scripts/hooks
 1. **A push to `master` needs typed confirmation** (`push to master`, exactly). With no terminal
    to confirm at — an agent, a script, CI — it is refused outright. master deploys, so a push
    there is a release.
-2. **The backend suite runs** against the local container, which it starts if needed
-   (`scripts/test-db.sh up`), with `cleanTest` so Gradle cannot report a green it did not earn.
-   A failure refuses the push.
+2. **The backend suite runs** after destroying and recreating the local `fpl-test-db` container
+   (`scripts/test-db.sh reset`), with `cleanTest` so Gradle cannot report a green it did not earn.
+   The reset deletes all data in that container. A reset or test failure refuses the push.
+
+Before changing Docker, the hook loads `backend/.env.test` and requires the fixed disposable
+endpoint: `localhost` (or `127.0.0.1`), `${TEST_DB_PORT:-55432}`, database `postgres`, and the
+fixture's `postgres` credentials. It refuses datasource overrides, unsupported JDBC URLs, an
+unavailable daemon, and remote Docker contexts rather than risking another database or container.
+It also runs the fast stub-only lifecycle regressions that CI runs; those tests do not use Docker.
 
 `git push --no-verify` skips the hook entirely. That is git's escape hatch for a human who knows
 what they are skipping; treat it as bypassing branch protection, because that is what it is.
 
 ## The test database
 
-Tests run against a disposable Postgres container — the same image CI uses, created empty and
-thrown away. Nothing persists between runs, so "is the database clean?" is never a question you
-have to answer.
+Tests run against a disposable Postgres container using the same image as CI. Ordinary `up` is
+for iterative development: it reuses a running container and retains its schema and data. Use
+`reset` when the starting state must be fresh; the pre-push hook always does so.
 
 ```bash
-scripts/test-db.sh up       # start it and load the tapas schema
-scripts/test-db.sh reset    # destroy and recreate — the guaranteed-clean path
+scripts/test-db.sh up       # start if needed; reuse existing schema and data
+scripts/test-db.sh reset    # destroy all local test data, then recreate and load the tapas schema
 scripts/test-db.sh down     # stop and remove
 ```
+
+`reset` and `down` affect only `${TEST_DB_CONTAINER:-fpl-test-db}`, but they are destructive. Do
+not run them while another test process or local application is using that container. The reset
+fails instead of reusing an old container if inspection or removal cannot be verified.
 
 Three layers make up a working test database, and only the first is manual:
 
