@@ -3942,3 +3942,8 @@ Not done here, by design: the dashboard paste and the Gmail inbox/SPF/DKIM/DMARC
 owner's, per runbook 3.4 and 5.2–5.3; the status table row records the date. Supabase's
 Management API could apply the template from the repository, but it needs a personal access
 token the project does not hold, so the repository stays the source and the paste stays manual.
+
+PR review: removed the welcome copy's unconditional daily-refresh/current-season promise.
+The app may fall back to historical statistics and cannot guarantee every sync succeeds;
+the mail now promises source and season attribution instead. Verified the HTML's two link
+targets, visible fallback URL, email placeholder and absence of external assets.
