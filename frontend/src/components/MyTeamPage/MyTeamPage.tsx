@@ -3,6 +3,7 @@ import { Button, Loader } from '@mantine/core'
 import { navigate } from '../../router'
 import SquadSection from './SquadSection'
 import {
+  describeGameweekStatus,
   formatChipName,
   loadMyTeam,
   MyTeamLoadResult,
@@ -134,6 +135,8 @@ function Ready({ data }: { data: ReadyResponse }) {
         <p>Loaded {formatTimestamp(data.loadedAt)}</p>
       </section>
 
+      <GameweekPointsSection data={data} />
+
       {freeHit && (
         <>
           <p className={classes.freeHitNotice}>
@@ -193,6 +196,21 @@ function Ready({ data }: { data: ReadyResponse }) {
           are unavailable, so this is not an exact transfer budget.</p>
       </section>
     </>
+  )
+}
+
+function GameweekPointsSection({ data }: { data: ReadyResponse }) {
+  return (
+    <section className={classes.chips} aria-labelledby="gameweek-points-title">
+      <h2 id="gameweek-points-title" className={classes.sectionTitle}>GW {data.gameweekPoints.gameweek} points</h2>
+      <p>{data.gameweekPoints.entryTotal === null
+        ? 'FPL has not published a total for this entry.'
+        : `${data.gameweekPoints.entryTotal} points — FPL's own total for this entry, before transfer costs.`}</p>
+      <p>{describeGameweekStatus(data.gameweekPoints.gameweek, data.gameweekPoints.status)}</p>
+      <p>{data.gameweekPoints.playersAsOf === null
+        ? 'Per-player points could not be read from FPL just now.'
+        : `Per-player points read ${formatTimestamp(data.gameweekPoints.playersAsOf)} from FPL's live feed; player lines need not sum to the total.`}</p>
+    </section>
   )
 }
 
