@@ -38,20 +38,23 @@ PY
     trap cleanup_integration RETURN
 
     owned=true
-    TEST_DB_CONTAINER="$container" TEST_DB_PORT="$port" "$SOURCE_ROOT/scripts/test-db.sh" reset >/dev/null
+    TEST_DB_CONTAINER="$container" TEST_DB_PORT="$port" "$SOURCE_ROOT/scripts/test-db.sh" reset >/dev/null \
+        || return 1
     local initial_id
     initial_id="$(docker container inspect --format '{{.Id}}' "$container")"
     docker exec "$container" psql -U postgres -d postgres -v ON_ERROR_STOP=1 -q \
         -c 'CREATE TABLE kar36_reset_sentinel (id integer)' >/dev/null
 
-    TEST_DB_CONTAINER="$container" TEST_DB_PORT="$port" "$SOURCE_ROOT/scripts/test-db.sh" reset >/dev/null
+    TEST_DB_CONTAINER="$container" TEST_DB_PORT="$port" "$SOURCE_ROOT/scripts/test-db.sh" reset >/dev/null \
+        || return 1
     local reset_id
     reset_id="$(docker container inspect --format '{{.Id}}' "$container")"
     [[ "$initial_id" != "$reset_id" ]] || { echo "integration: reset did not recreate the container" >&2; return 1; }
 
-    assert_clean_database "$container"
-    TEST_DB_CONTAINER="$container" TEST_DB_PORT="$port" "$SOURCE_ROOT/scripts/test-db.sh" reset >/dev/null
-    assert_clean_database "$container"
+    assert_clean_database "$container" || return 1
+    TEST_DB_CONTAINER="$container" TEST_DB_PORT="$port" "$SOURCE_ROOT/scripts/test-db.sh" reset >/dev/null \
+        || return 1
+    assert_clean_database "$container" || return 1
     echo "integration: fresh reset verified twice on $container port $port"
 }
 
@@ -348,11 +351,42 @@ check_schema_preflight() {
 }
 
 check_docker_preflight() {
-    local id="$1" name="$2" flag="$3"
+    local id="$1" name="$2"
+    shift 2
     new_fixture "$id"
     write_env
-    run_hook refs/heads/feature 1111111111111111111111111111111111111111 "$flag"
+    run_hook refs/heads/feature 1111111111111111111111111111111111111111 "$@"
     if [[ "$STATUS" -ne 0 ]] && no_mutation_or_gradle; then pass "$name"; else fail "$name" "unsafe Docker destination reached lifecycle work"; fi
+}
+
+check_context_overrides_host() {
+    local name="explicit remote Docker context overrides local DOCKER_HOST"
+    new_fixture context-overrides-local-host
+    write_env
+    run_hook refs/heads/feature 1111111111111111111111111111111111111111 \
+        DOCKER_CONTEXT=remote-fixture DOCKER_HOST=unix:///var/run/docker.sock \
+        DOCKER_ENDPOINT=tcp://docker.example.test:2376
+    if [[ "$STATUS" -ne 0 ]] && no_mutation_or_gradle \
+        && grep -q '^docker context inspect remote-fixture ' "$LOG"; then
+        pass "$name"
+    else
+        fail "$name" "local DOCKER_HOST hid the selected remote context"
+    fi
+}
+
+check_local_context_overrides_remote_host() {
+    local name="explicit local Docker context overrides remote DOCKER_HOST"
+    new_fixture local-context-overrides-remote-host
+    write_env
+    run_hook refs/heads/feature 1111111111111111111111111111111111111111 \
+        DOCKER_CONTEXT=local-fixture DOCKER_HOST=ssh://docker.example.test \
+        DOCKER_ENDPOINT=unix:///var/run/docker.sock
+    if [[ "$STATUS" -eq 0 ]] && grep -q '^docker context inspect local-fixture ' "$LOG" \
+        && grep -q '^gradle ' "$LOG"; then
+        pass "$name"
+    else
+        fail "$name" "remote DOCKER_HOST hid the selected local context"
+    fi
 }
 
 check_regressions_before_reset() {
@@ -466,6 +500,51 @@ check_master_gate() {
     fi
 }
 
+check_integration_reset_failure() {
+    local name="integration reset failure is returned and still cleaned up"
+    local root="$TMP_ROOT/integration-reset-failure"
+    mkdir -p "$root/scripts/tests" "$root/bin"
+    cp "$SOURCE_ROOT/scripts/tests/pre-push-test.sh" "$root/scripts/tests/pre-push-test.sh"
+    cat > "$root/scripts/test-db.sh" <<'STUB'
+#!/usr/bin/env bash
+count=0
+[[ ! -f "$RESET_COUNT" ]] || count="$(< "$RESET_COUNT")"
+printf '%d\n' "$((count + 1))" > "$RESET_COUNT"
+(( count > 0 ))
+STUB
+    local log="$root/docker.log"
+    cat > "$root/bin/docker" <<'STUB'
+#!/usr/bin/env bash
+printf 'docker %s\n' "$*" >> "$DOCKER_LOG"
+case "${1:-}" in
+    info) exit 0 ;;
+    container)
+        if [[ "${2:-}" == inspect && "$*" == *"{{.Id}}"* ]]; then
+            [[ "$(< "$RESET_COUNT")" -gt 1 ]] && printf 'new-id\n' || printf 'stale-id\n'
+            exit 0
+        fi
+        printf 'Error: No such container: fpl-kar36-reset-integration\n' >&2
+        exit 1
+        ;;
+    exec) [[ "$*" != *"kar36_reset_sentinel"* ]] || printf 't\n' ;;
+esac
+exit 0
+STUB
+    chmod +x "$root/bin/docker" "$root/scripts/test-db.sh"
+
+    local output="$root/output" status
+    env -i PATH="$root/bin:/usr/bin:/bin" DOCKER_LOG="$log" RESET_COUNT="$root/reset-count" \
+        bash "$root/scripts/tests/pre-push-test.sh" --integration >"$output" 2>&1
+    status=$?
+    if [[ "$status" -ne 0 ]] \
+        && grep -q '^docker rm -f fpl-kar36-reset-integration$' "$log" \
+        && ! grep -q '^integration: fresh reset verified twice' "$output"; then
+        pass "$name"
+    else
+        fail "$name" "failed reset was reported as successful or skipped cleanup"
+    fi
+}
+
 check_content_reset
 check_missing_config
 check_missing_variables
@@ -487,8 +566,12 @@ check_conflicting_override
 check_schema_preflight
 check_docker_preflight docker-unavailable "unavailable Docker daemon fails before mutation" DOCKER_FAIL_INFO=1
 check_docker_preflight docker-context-unreadable "uninspectable Docker context fails before mutation" DOCKER_FAIL_CONTEXT=1
+check_docker_preflight selected-context-unreadable "uninspectable selected Docker context fails before mutation" \
+    DOCKER_CONTEXT=missing-fixture DOCKER_HOST=unix:///var/run/docker.sock DOCKER_FAIL_CONTEXT=1
 check_docker_preflight remote-context "remote Docker context fails before mutation" DOCKER_ENDPOINT=tcp://docker.example.test:2376
 check_docker_preflight remote-docker-host "remote DOCKER_HOST fails before mutation" DOCKER_HOST=ssh://docker.example.test
+check_context_overrides_host
+check_local_context_overrides_remote_host
 check_regressions_before_reset
 check_port_override
 check_failure_blocks_gradle reset-run-failure "container creation failure blocks Gradle" DOCKER_FAIL_RUN
@@ -501,6 +584,7 @@ check_inspection_failure
 check_direct_schema_preflight
 check_deletion_gate
 check_master_gate
+check_integration_reset_failure
 
 printf '\n%d passed, %d failed\n' "$passes" "$failures"
 if (( failures > 0 )); then
