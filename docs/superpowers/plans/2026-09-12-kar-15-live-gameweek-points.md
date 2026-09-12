@@ -1,6 +1,6 @@
 # KAR-15 — Live gameweek points in the squad card
 
-**PROGRESS:** Task 0/5 — plan written, nothing implemented.
+**PROGRESS:** Task 5/5 done — awaiting the owner's push and PR.
 
 Issue: [KAR-15](https://linear.app/quantti/issue/KAR-15/live-gameweek-points-in-the-squad-card).
 Checked in Linear on 2026-09-12: Todo, Medium (3), labels `deferred`, `enhancement`, related to
