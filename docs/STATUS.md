@@ -3923,3 +3923,40 @@ serially, as the ticket asked.
 
 Verified: disposable DB, full `./gradlew cleanTest test` green (844 tests). No behaviour change
 to selection, scoring or provenance; no live chat run.
+
+## Tool-call rounds are summed into one turn charge (KAR-48, 2026-09-12)
+
+Plan: `docs/superpowers/plans/2026-09-12-kar-48-round-trip-token-accounting.md`, 7/7 tasks.
+Spring AI 2.0.0 starts a separate model invocation for every tool-call round; its provider models
+do not produce one cumulative usage total for the outer turn. `TurnUsageAdvisor`, registered just
+inside `ToolCallingAdvisor`, now gives each invocation subscription its own slot, keeps that slot's
+richest coherent cumulative snapshot, and publishes the sum of all slots as usage arrives. Thus a
+later failure retains earlier reported expenditure while one quota claim and one
+`fpl_usage_event` row still represent the user turn. OpenAI and Gemini prompt counts are normalized
+to uncached input before summing; Gemini thoughts enter output once. Historical rows are unchanged:
+tool rounds discarded by the former maximum-across-turn logic cannot be reconstructed.
+
+Deterministic provider-shaped fixtures use the real Spring AI model and client/tool loop with only
+the SDK stream mocked: Anthropic via anthropic-java-core 2.40.1 sums two rounds to
+`24/7/2/7` (input/cache-read/cache-write/output), OpenAI via openai-java-core 4.39.1 sums three
+to `140/70/unknown/18`, and Google GenAI 1.58.0 sums the two measured rounds of a three-request
+turn to `140/40/unknown/14`. Repeated cumulative chunks count once, request ids do not define round
+identity, explicit cache misses remain zero, absent values remain NULL, and usage reported before a
+partial-stream failure remains charged. Controller/persistence tests pin one claim/row, generated
+turn totals, refund on model-only failure, no partial answer persistence and no accounting data in
+SSE or tool schemas.
+
+Limits: these are Spring AI-reported invocation totals, not guaranteed provider billing for every
+HTTP attempt. SDK retries happen below the advisor and are unknown unless they emit mapped usage;
+an Anthropic failure before a usage-bearing `message_delta` likewise reports nothing. The Spring AI
+2.0.0 Anthropic adapter drops cache read/write values found only in `message_start`, so those fields
+remain unknown; fixtures establish adapter behavior, not where live Anthropic streams place cache
+fields. No inferred counts or fabricated zeros fill either gap.
+
+Verification used only the dedicated `fpl-kar48-test-db` at localhost:55448, loaded through the
+verified local `backend/.env.test`. The plan-focused selection, including `AiConfigTest`, passed 79
+tests with 0 failures, 0 errors and 0 skipped in 18 seconds. Full `./gradlew cleanTest test` passed
+862 tests with 0 failures, 0 errors and 0 skipped in 1 minute 18 seconds; its existing embedding
+calls ran normally. No Supabase access, live chat-model request, browser run, schema change,
+historical rewrite, provider switch or backfill was performed. The dedicated container remains
+running for subsequent push work.

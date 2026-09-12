@@ -7,6 +7,11 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.client.ChatClientRequest;
+import org.springframework.ai.chat.client.ChatClientResponse;
+import org.springframework.ai.chat.client.advisor.api.Advisor;
+import org.springframework.ai.chat.client.advisor.api.StreamAdvisor;
+import org.springframework.ai.chat.client.advisor.api.StreamAdvisorChain;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.UserMessage;
@@ -18,13 +23,16 @@ import reactor.core.publisher.Flux;
 import reactor.test.StepVerifier;
 
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -52,12 +60,24 @@ class ChatServiceTest {
     }
 
     private ChatService service(List<FplTool> tools, Flux<ChatResponse> responses) {
+        AtomicReference<StreamAdvisor> usageAdvisor = new AtomicReference<>();
         when(chatClient.prompt()).thenReturn(requestSpec);
         when(requestSpec.messages(anyList())).thenReturn(requestSpec);
         when(requestSpec.tools(any(Object[].class))).thenReturn(requestSpec);
         when(requestSpec.toolContext(anyMap())).thenReturn(requestSpec);
+        when(requestSpec.advisors(any(Advisor[].class))).thenAnswer(invocation -> {
+            usageAdvisor.set(invocation.getArgument(0));
+            return requestSpec;
+        });
         when(requestSpec.stream()).thenReturn(streamSpec);
-        when(streamSpec.chatResponse()).thenReturn(responses);
+        when(streamSpec.chatResponse()).thenAnswer(invocation -> {
+            StreamAdvisorChain chain = mock(StreamAdvisorChain.class);
+            when(chain.nextStream(any())).thenReturn(responses.map(
+                    response -> new ChatClientResponse(response, Map.of())));
+            return usageAdvisor.get()
+                    .adviseStream(mock(ChatClientRequest.class), chain)
+                    .map(ChatClientResponse::chatResponse);
+        });
         return new ChatService(chatClient, tools, provider, 15);
     }
 
@@ -110,7 +130,8 @@ class ChatServiceTest {
     void theRequestCarriesTheUserIdAndAFreshCallBudget() {
         ChatService service = serviceStreaming(List.of(), Flux.empty());
 
-        service.stream(List.of(new ChatTurn(ChatTurn.USER, "how is my team?")), USER, IGNORE_USAGE);
+        service.stream(List.of(new ChatTurn(ChatTurn.USER, "how is my team?")), USER, IGNORE_USAGE)
+                .blockLast();
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<java.util.Map<String, Object>> captor =
@@ -147,7 +168,7 @@ class ChatServiceTest {
                 .mapToObj(i -> new ChatTurn(i % 2 == 0 ? ChatTurn.ASSISTANT : ChatTurn.USER, "msg-" + i))
                 .toList();
 
-        service.stream(turns, USER, IGNORE_USAGE);
+        service.stream(turns, USER, IGNORE_USAGE).blockLast();
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<Message>> captor = ArgumentCaptor.forClass(List.class);
@@ -172,7 +193,7 @@ class ChatServiceTest {
         service.stream(List.of(
                 new ChatTurn(ChatTurn.USER, "first question"),
                 new ChatTurn(ChatTurn.USER, "second question"),
-                new ChatTurn(ChatTurn.ASSISTANT, "an answer")), USER, IGNORE_USAGE);
+                new ChatTurn(ChatTurn.ASSISTANT, "an answer")), USER, IGNORE_USAGE).blockLast();
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<Message>> captor = ArgumentCaptor.forClass(List.class);
@@ -182,13 +203,7 @@ class ChatServiceTest {
                 .isEqualTo("first question\n\nsecond question");
     }
 
-    /**
-     * Both providers report usage cumulatively — Spring AI runs every chunk through
-     * {@code UsageCalculator.getCumulativeUsage}, across tool-call round trips too — so later
-     * chunks carry the running totals and the richest one is the complete measurement. Kept
-     * whole rather than merged field by field: a row assembled from two chunks can hold numbers
-     * that never described the same moment.
-     */
+    /** Within one model invocation, the richest cumulative chunk is kept as one whole snapshot. */
     @Test
     void theRichestChunksMeasurementIsTheOneKept() {
         ChatService service = service(List.of(), Flux.just(
@@ -336,6 +351,28 @@ class ChatServiceTest {
         assertThat(reported.getLast()).isEqualTo(new TokenUsage(null, 1000, 0, null, 2200));
     }
 
+    /** Equal totals prefer the snapshot with more reported fields, without losing later metadata. */
+    @Test
+    void equalTotalLaterSnapshotWithCacheDetailReplacesTheWholeEarlierSnapshot() {
+        provider = "openai";
+        ChatResponse trailingModelOnly = new ChatResponse(List.of(), ChatResponseMetadata.builder()
+                .model("late-model")
+                .usage(new org.springframework.ai.chat.metadata.EmptyUsage())
+                .build());
+        ChatService service = service(List.of(), Flux.just(
+                usage(1000, 200, null),
+                usage(1000, 200, 400L),
+                trailingModelOnly));
+
+        List<TokenUsage> reported = new java.util.ArrayList<>();
+        StepVerifier.create(service.stream(List.of(new ChatTurn(ChatTurn.USER, "hi")), USER, reported::add))
+                .verifyComplete();
+
+        assertThat(reported.getLast())
+                .as("equal-total cache detail wins whole; trailing model metadata erases no counts")
+                .isEqualTo(new TokenUsage("late-model", 600, 400, null, 200));
+    }
+
     /**
      * Field-by-field maxima could assemble a row out of two chunks: on the OpenAI path a chunk
      * reporting the prompt without cache details normalises to the full prompt, and a later
@@ -378,7 +415,7 @@ class ChatServiceTest {
         List<FplTool> tools = List.of(new FplTool() {}, new FplTool() {}, new FplTool() {});
         ChatService service = serviceStreaming(tools, Flux.empty());
 
-        service.stream(List.of(new ChatTurn(ChatTurn.USER, "hi")), USER, IGNORE_USAGE);
+        service.stream(List.of(new ChatTurn(ChatTurn.USER, "hi")), USER, IGNORE_USAGE).blockLast();
 
         ArgumentCaptor<Object[]> captor = ArgumentCaptor.forClass(Object[].class);
         verify(requestSpec).tools(captor.capture());
