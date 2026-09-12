@@ -15,6 +15,8 @@ export interface SquadPlayer {
   club: string | null
   marketPrice: number | null
   availability: string | null
+  gameweekPoints: number | null
+  gameweekMinutes: number | null
 }
 
 export interface PageSquad {
@@ -30,6 +32,15 @@ export interface ChipAvailability {
   playable: string[]
   openingLater: string[]
   openingGameweek: number | null
+}
+
+export type GameweekStatus = 'in_progress' | 'finished_unchecked' | 'final' | 'unknown'
+
+export interface GameweekPoints {
+  gameweek: number
+  status: GameweekStatus
+  entryTotal: number | null
+  playersAsOf: string | null
 }
 
 export type Continuing =
@@ -52,6 +63,7 @@ export interface ReadyResponse {
   lockedSquad: PageSquad
   chips: ChipAvailability
   continuing: Continuing
+  gameweekPoints: GameweekPoints
 }
 
 export type ServerResponse =
@@ -145,6 +157,19 @@ export function formatMoney(tenths: number | null): string {
   return tenths === null ? 'Unavailable' : `£${(tenths / 10).toFixed(1)}m`
 }
 
+export function describeGameweekStatus(gameweek: number, status: GameweekStatus): string {
+  switch (status) {
+    case 'in_progress':
+      return `GW ${gameweek} is not finished: points are provisional, bonus is added after each match, and automatic substitutions apply only once FPL marks the gameweek final.`
+    case 'finished_unchecked':
+      return `GW ${gameweek} has finished but FPL has not confirmed it: bonus and automatic substitutions may still change.`
+    case 'final':
+      return `GW ${gameweek} is final.`
+    case 'unknown':
+      return `Whether GW ${gameweek} is finished could not be read from FPL.`
+  }
+}
+
 export function formatChipName(chip: string): string {
   const names: Record<string, string> = {
     wildcard: 'Wildcard',
@@ -180,6 +205,7 @@ function isReady(value: unknown): value is ReadyResponse {
     && isSquad(value.lockedSquad)
     && isChips(value.chips)
     && isContinuing(value.continuing)
+    && isGameweekPoints(value.gameweekPoints)
 }
 
 function isSquad(value: unknown): value is PageSquad {
@@ -202,6 +228,8 @@ function isPlayer(value: unknown): value is SquadPlayer {
     && (value.club === null || typeof value.club === 'string')
     && (value.marketPrice === null || isInteger(value.marketPrice))
     && (value.availability === null || typeof value.availability === 'string')
+    && (value.gameweekPoints === null || isInteger(value.gameweekPoints))
+    && (value.gameweekMinutes === null || isInteger(value.gameweekMinutes))
 }
 
 function isChips(value: unknown): value is ChipAvailability {
@@ -211,6 +239,15 @@ function isChips(value: unknown): value is ChipAvailability {
     && isStringArray(value.playable)
     && isStringArray(value.openingLater)
     && (value.openingGameweek === null || isInteger(value.openingGameweek))
+}
+
+function isGameweekPoints(value: unknown): value is GameweekPoints {
+  return isRecord(value)
+    && isInteger(value.gameweek)
+    && (value.status === 'in_progress' || value.status === 'finished_unchecked'
+      || value.status === 'final' || value.status === 'unknown')
+    && (value.entryTotal === null || isInteger(value.entryTotal))
+    && (value.playersAsOf === null || typeof value.playersAsOf === 'string')
 }
 
 function isContinuing(value: unknown): value is Continuing {
