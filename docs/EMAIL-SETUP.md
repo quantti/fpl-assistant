@@ -2,7 +2,8 @@
 
 The code for email verification and invite codes is finished, merged and deployed. What is left is
 configuration that does not live in this repository: DNS records, a mail provider, and Supabase
-dashboard settings. This file is the runbook for that, and it is written to be worked through in
+dashboard settings — one of which, the Confirm-signup template, now has its source in this
+repository (3.4). This file is the runbook for that, and it is written to be worked through in
 order — each task depends on the one above it.
 
 Rewritten 2026-08-28 for **Resend** on **fpl-sidekick.com**, after two earlier versions: one
@@ -26,7 +27,7 @@ is copied forward from an earlier version of this file.
 | DMARC | **live**, one record, `p=none`, no `rua` |
 | Inbound mail to the domain | **dead** — the Custom MX switch removed the apex MX *and* SPF; see 2.8 |
 | Mail provider | Resend — domain **Verified** 2026-08-29; first confirmation mail delivered to Gmail's inbox |
-| Confirm signup template | **committed, not applied** — `docs/email-templates/confirm-signup.html` (KAR-44). Supabase still sends its stock *Confirm Your Signup* until 3.4 is done; write the date here when it is |
+| Confirm signup template | **committed 2026-09-12, not applied** — `docs/email-templates/confirm-signup.html` (KAR-44). Supabase still sends its stock *Confirm Your Signup* until 3.4 is done; write the date here when it is |
 | Site URL / redirect URLs | **unverified** — the first confirmation mail was delivered 2026-08-29; following its link is the test (5.2) |
 | Email rate limit | **unknown** — a probe hit `429 over_email_send_rate_limit` on 2026-08-26, before custom SMTP; check 3.2 before a tester round |
 | Invite codes issued | `testi` — 10 places, `uses` 2 as of 2026-08-29: one account, one place burnt by the failed first attempt |
@@ -409,8 +410,8 @@ link sends a tester to a blank page, and the failure looks nothing like a mail p
 **3.4 Authentication → Email Templates → Confirm signup.** The template is in this repository,
 `docs/email-templates/confirm-signup.html`, and the dashboard is a copy of it, never the other
 way round. Paste the subject from the comment at the top of the file into *Subject heading*,
-and the file from its first `<div>` to the end into *Message body* (the comment above it need
-not go). The body must keep `{{ .ConfirmationURL }}`; the file carries it twice, as a button and
+and the file from its first `<div>` to the end into *Message body* (leave the comment above it
+out). The body must keep `{{ .ConfirmationURL }}`; the file carries it twice, as a button and
 as a visible link, because some clients strip buttons. Save, then write today's date in the
 status table above and run 5.2 and 5.3 again — a template change is a deliverability change, and
 Gmail judges the new one on its own.
@@ -501,7 +502,7 @@ code untouched rather than resetting a live ceiling, so running it twice is safe
 | Submit the form | Says **“Check your email”** — not a redirect into the app |
 | Inbox | Message from `noreply@fpl-sidekick.com` with the subject *Welcome to FPL Sidekick — confirm your email*, within a minute, in Primary — not Promotions, not spam |
 | Follow the link | Lands on `https://fpl-sidekick.com`, signed in |
-| Open the plain link under the button instead | Same result — both confirm the account |
+| Open the plain link under the button instead — on a second fresh address, because the first link is spent | Same result — both confirm the account |
 | Sign in *before* confirming | Says **“Confirm your email address first”** |
 
 **5.3 Confirm the authentication actually passed.** Deliverability is judged by the receiving
