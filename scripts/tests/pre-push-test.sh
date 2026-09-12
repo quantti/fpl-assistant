@@ -41,14 +41,14 @@ PY
     TEST_DB_CONTAINER="$container" TEST_DB_PORT="$port" "$SOURCE_ROOT/scripts/test-db.sh" reset >/dev/null \
         || return 1
     local initial_id
-    initial_id="$(docker container inspect --format '{{.Id}}' "$container")"
+    initial_id="$(docker container inspect --format '{{.Id}}' "$container")" || return 1
     docker exec "$container" psql -U postgres -d postgres -v ON_ERROR_STOP=1 -q \
-        -c 'CREATE TABLE kar36_reset_sentinel (id integer)' >/dev/null
+        -c 'CREATE TABLE kar36_reset_sentinel (id integer)' >/dev/null || return 1
 
     TEST_DB_CONTAINER="$container" TEST_DB_PORT="$port" "$SOURCE_ROOT/scripts/test-db.sh" reset >/dev/null \
         || return 1
     local reset_id
-    reset_id="$(docker container inspect --format '{{.Id}}' "$container")"
+    reset_id="$(docker container inspect --format '{{.Id}}' "$container")" || return 1
     [[ "$initial_id" != "$reset_id" ]] || { echo "integration: reset did not recreate the container" >&2; return 1; }
 
     assert_clean_database "$container" || return 1
@@ -500,6 +500,65 @@ check_master_gate() {
     fi
 }
 
+check_integration_setup_failures() {
+    local name="integration setup failures are returned and still cleaned up"
+    local mode all_failed=true
+    for mode in initial-id sentinel reset-id; do
+        local root="$TMP_ROOT/integration-setup-$mode"
+        mkdir -p "$root/scripts/tests" "$root/bin"
+        cp "$SOURCE_ROOT/scripts/tests/pre-push-test.sh" "$root/scripts/tests/pre-push-test.sh"
+        cat > "$root/scripts/test-db.sh" <<'STUB'
+#!/usr/bin/env bash
+count=0
+[[ ! -f "$RESET_COUNT" ]] || count="$(< "$RESET_COUNT")"
+printf '%d\n' "$((count + 1))" > "$RESET_COUNT"
+STUB
+        local log="$root/docker.log"
+        cat > "$root/bin/docker" <<'STUB'
+#!/usr/bin/env bash
+printf 'docker %s\n' "$*" >> "$DOCKER_LOG"
+case "${1:-}" in
+    info) exit 0 ;;
+    container)
+        if [[ "${2:-}" == inspect && "$*" == *"{{.Id}}"* ]]; then
+            count="$(< "$RESET_COUNT")"
+            [[ "$FAIL_MODE" != initial-id || "$count" -ne 1 ]] || exit 1
+            [[ "$FAIL_MODE" != reset-id || "$count" -ne 2 ]] || exit 1
+            printf 'id-%s\n' "$count"
+            exit 0
+        fi
+        printf 'Error: No such container: fpl-kar36-reset-integration\n' >&2
+        exit 1
+        ;;
+    exec)
+        if [[ "$*" == *"CREATE TABLE kar36_reset_sentinel"* ]]; then
+            [[ "$FAIL_MODE" != sentinel ]]
+            exit
+        fi
+        printf 't\n'
+        ;;
+esac
+exit 0
+STUB
+        chmod +x "$root/bin/docker" "$root/scripts/test-db.sh"
+
+        local output="$root/output" status
+        env -i PATH="$root/bin:/usr/bin:/bin" DOCKER_LOG="$log" RESET_COUNT="$root/reset-count" \
+            FAIL_MODE="$mode" bash "$root/scripts/tests/pre-push-test.sh" --integration >"$output" 2>&1
+        status=$?
+        if [[ "$status" -eq 0 ]] \
+            || ! grep -q '^docker rm -f fpl-kar36-reset-integration$' "$log" \
+            || grep -q '^integration: fresh reset verified twice' "$output"; then
+            all_failed=false
+        fi
+    done
+    if [[ "$all_failed" == true ]]; then
+        pass "$name"
+    else
+        fail "$name" "an ID inspection or sentinel failure was suppressed or skipped cleanup"
+    fi
+}
+
 check_integration_reset_failure() {
     local name="integration reset failure is returned and still cleaned up"
     local root="$TMP_ROOT/integration-reset-failure"
@@ -584,6 +643,7 @@ check_inspection_failure
 check_direct_schema_preflight
 check_deletion_gate
 check_master_gate
+check_integration_setup_failures
 check_integration_reset_failure
 
 printf '\n%d passed, %d failed\n' "$passes" "$failures"
