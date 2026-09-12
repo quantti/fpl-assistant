@@ -58,6 +58,9 @@ function PlayerGroup({ title, gameweek, players }: {
                   </span>
                 )}
                 <span className={classes.playerMeta}>
+                  {player.gameweekPoints !== null && (
+                    <>{`GW ${gameweek}: ${player.gameweekPoints} pts · ${player.gameweekMinutes ?? 0} min`}{' · '}</>
+                  )}
                   {player.marketPrice === null
                     ? 'Market price unavailable'
                     : `Market price ${formatMoney(player.marketPrice)}`}
