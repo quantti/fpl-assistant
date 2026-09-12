@@ -33,7 +33,8 @@ class FplBootstrapTest {
                            "status": "d", "news": "Knock", "chance_of_playing_next_round": 75}],
              "chips": [{"name": "wildcard", "start_event": 2, "stop_event": 19},
                        {"name": "bboost", "start_event": 1, "stop_event": 19}],
-             "events": [{"id": 1, "deadline_time": "2026-08-21T17:30:00Z", "is_current": true},
+             "events": [{"id": 1, "deadline_time": "2026-08-21T17:30:00Z", "is_current": true,
+                         "finished": true, "data_checked": false},
                         {"id": 2, "deadline_time": "2026-08-28T17:30:00Z", "is_next": true}]}
             """;
 
@@ -119,6 +120,17 @@ class FplBootstrapTest {
         assertThat(bootstrap.snapshot(new FplBudget(5)))
                 .hasValueSatisfying(snapshot -> assertThat(snapshot.element(302)).isPresent());
         assertThat(requests.get()).isEqualTo(2);
+    }
+
+    @Test
+    void eachEventCarriesFplsOwnFinishedAndCheckedFlags() {
+        FplBootstrap.Snapshot snapshot = bootstrap(360).snapshot(new FplBudget(1)).orElseThrow();
+
+        assertThat(snapshot.status(1)).contains(new FplBootstrap.EventStatus(true, false));
+        assertThat(snapshot.status(2))
+                .as("absent flags are false, not unknown - FPL omits nothing on a real event")
+                .contains(new FplBootstrap.EventStatus(false, false));
+        assertThat(snapshot.status(3)).as("an event the payload does not carry").isEmpty();
     }
 
     /** Out of allowance is not out of data: what is already cached is still served. */
