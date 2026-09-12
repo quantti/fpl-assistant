@@ -7,16 +7,16 @@ interface UseChatOptions {
   conversationId: string | null
   /** The id the server gave the turn — a new conversation's, or null when it is gone. */
   onConversation: (id: string | null) => void
-  /** A turn landed: the list's order and a new conversation's title come from the server. */
+  /** The still-owning turn settled: refresh server-owned list order and conversation titles. */
   onTurnFinished: () => void
 }
 
 interface UseChatReturn {
   messages: Message[]
   /**
-   * Shows another conversation's transcript, ending any answer still streaming into this one.
-   * The answer itself is not lost: the server finished and stored it against the conversation it
-   * belongs to. What must not happen is it landing under a different conversation's messages.
+   * Shows another conversation's transcript, ending this browser's read of any answer still
+   * streaming into the old one. The server may continue generating and storing that answer;
+   * what must not happen is it landing under a different conversation's messages.
    */
   replaceMessages: (messages: Message[]) => void
   streamingContent: string | null
@@ -30,41 +30,51 @@ export function useChat({ conversationId, onConversation, onTurnFinished }: UseC
   const [isStreaming, setIsStreaming] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
 
-  // Signing out unmounts this view, but a stream nobody aborts keeps draining: the backend goes
-  // on generating — and paying for — a completion that will never be read.
-  useEffect(() => () => abortRef.current?.abort(), [])
+  // Signing out unmounts this view. Cancelling the browser read does not promise that server-side
+  // generation stopped, but it avoids draining a response that can no longer be shown.
+  useEffect(() => () => {
+    const controller = abortRef.current
+    abortRef.current = null
+    controller?.abort()
+  }, [])
 
   const sendMessage = useCallback(async (content: string) => {
-    if (isStreaming) return // single-flight: the hook does not support overlapping sends
-    const userMessage: Message = { role: 'user', content }
-    const nextMessages = [...messages, userMessage]
-    setMessages(nextMessages)
-    setStreamingContent('')
-    setIsStreaming(true)
+    if (abortRef.current) return // single-flight: the hook does not support overlapping sends
 
     const controller = new AbortController()
     abortRef.current = controller
+    const ownsTurn = () => abortRef.current === controller && !controller.signal.aborted
+
+    const userMessage: Message = { role: 'user', content }
+    setMessages(prev => [...prev, userMessage])
+    setStreamingContent('')
+    setIsStreaming(true)
 
     try {
       const outcome = await sendChatTurn({ conversationId, message: content }, controller.signal, {
-        onConversation,
-        onTruncated: dropped => setMessages(prev => [...prev, {
-          role: 'assistant',
-          content: dropped > 0 && Number.isFinite(dropped)
-            ? `This conversation has grown too long to send in full. The ${dropped} oldest `
-              + 'messages were left out of the answer below — they are still shown above, and '
-              + 'still yours, but the assistant did not see them. Start a new conversation if '
-              + 'the beginning matters.'
-            : 'This conversation has grown too long to send in full. Its oldest messages were '
-              + 'left out of the answer below.',
-          isNotice: true,
-        }]),
-        onToken: setStreamingContent,
+        onConversation: id => {
+          if (ownsTurn()) onConversation(id)
+        },
+        onTruncated: dropped => {
+          if (!ownsTurn()) return
+          setMessages(prev => [...prev, {
+            role: 'assistant',
+            content: dropped > 0 && Number.isFinite(dropped)
+              ? `This conversation has grown too long to send in full. The ${dropped} oldest `
+                + 'messages were left out of the answer below — they are still shown above, and '
+                + 'still yours, but the assistant did not see them. Start a new conversation if '
+                + 'the beginning matters.'
+              : 'This conversation has grown too long to send in full. Its oldest messages were '
+                + 'left out of the answer below.',
+            isNotice: true,
+          }])
+        },
+        onToken: accumulated => {
+          if (ownsTurn()) setStreamingContent(accumulated)
+        },
       })
 
-      // replaceMessages may have aborted while sendChatTurn's cancel() was still settling; an
-      // intentional abort must never land a message in whatever transcript is now showing.
-      if (controller.signal.aborted) return
+      if (!ownsTurn()) return
 
       switch (outcome.kind) {
         case 'completed':
@@ -87,16 +97,21 @@ export function useChat({ conversationId, onConversation, onTurnFinished }: UseC
           break
       }
     } finally {
-      setStreamingContent(null)
-      setIsStreaming(false)
-      // The list orders by last use and titles a new conversation from its first message, so
-      // both are the server's answer to fetch rather than something to guess at here.
-      onTurnFinished()
+      if (abortRef.current === controller) {
+        abortRef.current = null
+        setStreamingContent(null)
+        setIsStreaming(false)
+        // The list orders by last use and titles a new conversation from its first message, so
+        // both are the server's answer to fetch rather than something to guess at here.
+        onTurnFinished()
+      }
     }
-  }, [messages, isStreaming, conversationId, onConversation, onTurnFinished])
+  }, [conversationId, onConversation, onTurnFinished])
 
   const replaceMessages = useCallback((next: Message[]) => {
-    abortRef.current?.abort()
+    const controller = abortRef.current
+    abortRef.current = null
+    controller?.abort()
     setStreamingContent(null)
     setIsStreaming(false)
     setMessages(next)
