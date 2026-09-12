@@ -60,6 +60,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Run pre-push shell regressions
+        run: bash scripts/tests/pre-push-test.sh
+
       - name: Create the vector extension and load the shared schema
         # Spring AI's PgVectorStore creates the extension itself at context start, so the first
         # statement is belt-and-braces. The dump is the six tables this project reads but does
