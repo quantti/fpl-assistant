@@ -3945,3 +3945,87 @@ frontend suite passed (6 files, 73 tests) with no React act warnings. `npm run b
 contrast checks, TypeScript project build and Vite production build using the existing local
 publishable key. Vite retained its advisory that the main minified chunk exceeds 500 kB. No manual
 browser check, backend suite, live chat or paid model call was run for this task.
+## Fresh database for every content-bearing pre-push (KAR-36, 2026-09-12)
+
+Plan: `docs/superpowers/plans/2026-09-12-kar-36-fresh-pre-push-db.md`. The hook now validates the
+explicit local `.env.test` destination and local Docker context before mutation, runs its shell
+contracts, then uses verified `reset` rather than reusable `up`. Reset fails on inspection,
+removal or schema-load uncertainty instead of accepting an old container. CI runs the same 28
+stub-only regressions before the backend suite while retaining its ephemeral Postgres lifecycle
+and KAR-42 failure artifacts.
+
+Verified exclusively against the local fixture: all three scripts passed `bash -n`; the standalone
+shell suite passed 28/28; a simulated feature-ref hook invocation recreated `fpl-test-db` and ran
+`cleanTest test`, passing 844 tests with 0 failures, errors or skips. No fresh-start or connection-
+pressure failure occurred. No push, Supabase access or Nutribot container operation was made.
+
+PR #81 review fixes preserve that behavior while making Docker's effective endpoint precedence
+exact: explicit `DOCKER_CONTEXT`, then `DOCKER_HOST`, then the active context. Regressions cover
+both variables set in both directions and selected-context lookup failure. The integration runner
+now propagates reset and clean-state assertion failures explicitly despite running without `-e`;
+a safe stub proves a failed first reset exits nonzero without a success message and still runs
+owned-container cleanup. Post-review verification: all three scripts passed `bash -n`, the stub
+suite passed 32/32, and isolated real-Docker integration passed twice on port 51733 and left
+`fpl-kar36-reset-integration` absent.
+
+PR #81 re-review found that both container-ID inspections and dirty-sentinel creation could still
+false-green. Those setup failures now return explicitly without changing `RETURN` cleanup; a safe
+Docker-stub regression exercises all three paths. Syntax passed, the stub suite passed 33/33, and
+isolated integration passed on port 57527 and left its fixture absent. No backend suite or push ran.
+## Tool-call rounds are summed into one turn charge (KAR-48, 2026-09-12)
+
+Plan: `docs/superpowers/plans/2026-09-12-kar-48-round-trip-token-accounting.md`, 7/7 tasks.
+Spring AI 2.0.0 starts a separate model invocation for every tool-call round; its provider models
+do not produce one cumulative usage total for the outer turn. `TurnUsageAdvisor`, registered just
+inside `ToolCallingAdvisor`, now gives each invocation subscription its own slot, keeps that slot's
+richest coherent cumulative snapshot, and publishes the sum of all slots as usage arrives. Thus a
+later failure retains earlier reported expenditure while one quota claim and one
+`fpl_usage_event` row still represent the user turn. OpenAI and Gemini prompt counts are normalized
+to uncached input before summing; Gemini thoughts enter output once. Historical rows are unchanged:
+tool rounds discarded by the former maximum-across-turn logic cannot be reconstructed.
+
+Deterministic provider-shaped fixtures use the real Spring AI model and client/tool loop with only
+the SDK stream mocked: Anthropic via anthropic-java-core 2.40.1 sums two rounds to
+`24/7/2/7` (input/cache-read/cache-write/output), OpenAI via openai-java-core 4.39.1 sums three
+to `140/70/unknown/18`, and Google GenAI 1.58.0 sums the two measured rounds of a three-request
+turn to `140/40/unknown/14`. Repeated cumulative chunks count once, request ids do not define round
+identity, explicit cache misses remain zero, absent values remain NULL, and usage reported before a
+partial-stream failure remains charged. Controller/persistence tests pin one claim/row, generated
+turn totals, refund on model-only failure, no partial answer persistence and no accounting data in
+SSE or tool schemas.
+
+Limits: these are Spring AI-reported invocation totals, not guaranteed provider billing for every
+HTTP attempt. SDK retries happen below the advisor and are unknown unless they emit mapped usage;
+an Anthropic failure before a usage-bearing `message_delta` likewise reports nothing. The Spring AI
+2.0.0 Anthropic adapter drops cache read/write values found only in `message_start`, so those fields
+remain unknown; fixtures establish adapter behavior, not where live Anthropic streams place cache
+fields. No inferred counts or fabricated zeros fill either gap.
+
+Verification used only the dedicated `fpl-kar48-test-db` at localhost:55448, loaded through the
+verified local `backend/.env.test`. The plan-focused selection, including `AiConfigTest`, passed 79
+tests with 0 failures, 0 errors and 0 skipped in 18 seconds. Full `./gradlew cleanTest test` passed
+862 tests with 0 failures, 0 errors and 0 skipped in 1 minute 18 seconds; its existing embedding
+calls ran normally. No Supabase access, live chat-model request, browser run, schema change,
+historical rewrite, provider switch or backfill was performed. The dedicated container remains
+running for subsequent push work.
+## Gameweek points on the squad card and the My team page (KAR-15, 2026-09-12)
+
+Plan: `docs/superpowers/plans/2026-09-12-kar-15-live-gameweek-points.md`. `FplLivePoints` reads
+FPL's `/event/{event}/live/` once per gameweek, cached app-wide for the squad TTL, and is spent
+from the turn's budget last so it can only ever lose the player lines. The card and the page show
+each pick's points and minutes in the locked gameweek, FPL's own entry total
+(`entry_history.points`, parsed since the my-team tools shipped and unrendered until now), and
+one status sentence from the bootstrap's `finished`/`data_checked` flags: provisional, finished
+but unconfirmed, final, or unknown. The continuing squad carries none. No total is recomputed.
+The `MiniLeagueServiceTest` budget arithmetic moved from 14 to 15 because `getMyTeam` now spends
+one more call.
+
+Verified: 858 tests, 0 failures/skips; 62 frontend vitest, build green; `entry_history.points`
+checked against entry 1556 GW 3: points 78 with event_transfers_cost 4, and the history total
+rose by 74, so `points` is gross, before transfer costs — the wording stands. The page was
+verified by its tests and the production build only; no signed-in browser session was available.
+
+PR review fix: bootstrap status, locked entry points and live points now retain their independent
+read times. A newly final bootstrap cannot relabel older cached scores as final: the card and page
+instead call those score snapshots provisional and name what final bonus or substitutions may be
+missing. The regression primes provisional score caches before refreshing a final bootstrap.

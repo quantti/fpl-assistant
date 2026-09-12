@@ -8,10 +8,7 @@ import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.UserMessage;
-import org.springframework.ai.chat.metadata.ChatResponseMetadata;
-import org.springframework.ai.chat.metadata.Usage;
 import org.springframework.ai.chat.model.ChatResponse;
-import org.springframework.ai.google.genai.metadata.GoogleGenAiUsage;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
@@ -19,7 +16,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 @Service
@@ -73,23 +69,25 @@ public class ChatService {
                 })
                 .toList();
 
-        AtomicReference<TokenUsage> reported = new AtomicReference<>();
-        return chatClient.prompt()
-                .messages(history)
-                .tools(tools.toArray())
-                // Whose account is asking, and how many calls to FPL this turn may make. Both
-                // belong here rather than in a tool parameter: the model fills parameters from
-                // the user's own text, and a user id it can write is one an attacker can ask it
-                // to write. Spring AI keeps the tool context out of the schema the model sees.
-                .toolContext(Map.of(ToolUser.KEY, userId, ToolUser.BUDGET, new FplBudget(fplAllowance)))
-                .stream()
-                // .chatResponse() rather than .content(): the token counts live in the response
-                // metadata, and .content() throws that away. The two lines below are what
-                // .content() does internally — a chunk carrying only metadata has no text.
-                .chatResponse()
-                .doOnNext(response -> capture(response, reported, onUsage))
-                .map(ChatService::textOf)
-                .filter(text -> !text.isEmpty());
+        return Flux.defer(() -> {
+            TurnUsageAdvisor usageAdvisor = new TurnUsageAdvisor(cachedCountedInsideInput, onUsage);
+            FplBudget budget = new FplBudget(fplAllowance);
+            return chatClient.prompt()
+                    .messages(history)
+                    .tools(tools.toArray())
+                    // Whose account is asking, and how many calls to FPL this turn may make. Both
+                    // belong here rather than in a tool parameter: the model fills parameters from
+                    // the user's own text, and a user id it can write is one an attacker can ask it
+                    // to write. Spring AI keeps the tool context out of the schema the model sees.
+                    .toolContext(Map.of(ToolUser.KEY, userId, ToolUser.BUDGET, budget))
+                    .advisors(usageAdvisor)
+                    .stream()
+                    // Keep response chunks for text extraction; the inner advisor accounts for
+                    // usage before ToolCallingAdvisor filters tool-call rounds from this stream.
+                    .chatResponse()
+                    .map(ChatService::textOf)
+                    .filter(text -> !text.isEmpty());
+        });
     }
 
     private static String textOf(ChatResponse response) {
@@ -98,110 +96,6 @@ public class ChatService {
         }
         String text = response.getResult().getOutput().getText();
         return text == null ? "" : text;
-    }
-
-    /**
-     * Merges field by field, keeping the largest number a provider has reported for each, and
-     * the model name from whichever chunk carried one.
-     *
-     * <p>Providers report usage cumulatively per chunk within one request, so the largest value
-     * seen is that request's total — and a trailing chunk carrying an empty measurement cannot
-     * erase it. Across tool-call round trips it is NOT cumulative since Spring AI 2.0 (the tool
-     * loop moved to the client-layer ToolCallingAdvisor, which re-invokes the model per round
-     * trip; the models call UsageCalculator.getCumulativeUsage with a null previous — a no-op),
-     * so keeping the richest chunk records the biggest round trip, not the turn's sum, and
-     * tool-using turns undercount. Tracked as KAR-48; the fix needs round-trip boundaries.
-     *
-     * <p>A reported <em>zero</em> is kept, not discarded. A cache miss reports zero cache reads,
-     * and that is a measurement — the one Task 8 exists to make. What gets skipped is a chunk
-     * carrying neither a measurement nor a model name: every text chunk has metadata, and most
-     * hold Spring AI's {@code EmptyUsage}, which is zeros with no cache figures beside them.
-     */
-    private void capture(ChatResponse response, AtomicReference<TokenUsage> reported,
-                         Consumer<TokenUsage> onUsage) {
-        ChatResponseMetadata metadata = response.getMetadata();
-        if (metadata == null) {
-            return;
-        }
-        String model = metadata.getModel() == null || metadata.getModel().isBlank()
-                ? null : metadata.getModel();
-        Usage usage = metadata.getUsage();
-        Integer prompt = usage == null ? null : usage.getPromptTokens();
-        Integer completion = usage == null ? null : usage.getCompletionTokens();
-        // Gemini reports thinking tokens beside the completion, not in it, and bills them as
-        // output. Verified against GoogleGenAiUsage in Spring AI 2.0.0: getCompletionTokens()
-        // is candidatesTokenCount alone. total_tokens is a generated sum of the four stored
-        // columns, so a thought left out here is never billed anywhere.
-        if (usage instanceof GoogleGenAiUsage gemini && gemini.getThoughtsTokenCount() != null) {
-            completion = (completion == null ? 0 : completion) + gemini.getThoughtsTokenCount();
-        }
-        Long cacheReads = usage == null ? null : usage.getCacheReadInputTokens();
-        Long cacheWrites = usage == null ? null : usage.getCacheWriteInputTokens();
-
-        boolean measured = !unreported(prompt) || !unreported(completion)
-                || cacheReads != null || cacheWrites != null;
-        if (!measured && model == null) {
-            return;
-        }
-
-        // Stored as the uncached remainder whichever provider answered — see the constructor.
-        Integer uncachedPrompt = cachedCountedInsideInput && prompt != null && cacheReads != null
-                ? Math.max(0, prompt - cacheReads.intValue())
-                : prompt;
-
-        // A prompt or completion count of zero is Spring AI's EmptyUsage, not a measurement:
-        // every chunk carries one, and on a provider that also stamps the model on every chunk
-        // that would write zeros into every row. The cache figures are different: they are null
-        // when absent, so a zero there is a genuine cache miss, which is the number worth having.
-        TokenUsage candidate = new TokenUsage(model,
-                unreported(uncachedPrompt) ? null : uncachedPrompt,
-                cacheReads == null ? null : cacheReads.intValue(),
-                cacheWrites == null ? null : cacheWrites.intValue(),
-                unreported(completion) ? null : completion);
-
-        TokenUsage merged = reported.updateAndGet(previous -> richer(previous, candidate));
-
-        // Reported as it arrives rather than on completion: a stream that fails or times out has
-        // no completion, and the tokens it burned before failing were still spent. The caller
-        // keeps the latest, so being told more than once costs nothing.
-        onUsage.accept(merged);
-    }
-
-    private static boolean unreported(Integer count) {
-        return count == null || count == 0;
-    }
-
-    /**
-     * The chunk that reported the most, kept whole.
-     *
-     * <p>Field-by-field maxima looked equivalent and were not: they can assemble a row from two
-     * different chunks, and on the OpenAI path — where the input count is the prompt minus the
-     * cached part — a chunk that reports the prompt without cache details followed by one that
-     * reports both leaves the un-normalised prompt beside a populated cache figure. The generated
-     * total then counts the cached tokens twice, which is the exact double-count the
-     * normalisation exists to prevent. Usage is cumulative per chunk within one request, so the
-     * richest chunk is that request's complete measurement — and, across tool-call round trips,
-     * the biggest request rather than the turn's sum (KAR-48).
-     *
-     * <p>The model name is carried across regardless: it arrives on chunks that measure nothing.
-     */
-    private static TokenUsage richer(TokenUsage previous, TokenUsage candidate) {
-        if (previous == null) {
-            return candidate;
-        }
-        TokenUsage winner = total(candidate) >= total(previous) ? candidate : previous;
-        String model = candidate.model() != null ? candidate.model() : previous.model();
-        return new TokenUsage(model, winner.inputTokens(), winner.cachedTokens(),
-                winner.cacheWriteTokens(), winner.outputTokens());
-    }
-
-    private static long total(TokenUsage usage) {
-        return value(usage.inputTokens()) + value(usage.cachedTokens())
-                + value(usage.cacheWriteTokens()) + value(usage.outputTokens());
-    }
-
-    private static long value(Integer count) {
-        return count == null ? 0 : count;
     }
 
     /**

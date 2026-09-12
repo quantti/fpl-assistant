@@ -361,9 +361,10 @@ class MiniLeagueServiceTest {
     }
 
     /**
-     * The whole point of the cap arithmetic: getMyTeam's three calls, then a top-ten question
-     * that re-reads the entry and the user's squad from cache and spends its allowance on
-     * opponents. Fourteen of fifteen, with the app-wide bootstrap snapshot already warm.
+     * The whole point of the cap arithmetic: getMyTeam's four calls (KAR-15's live feed is the
+     * fourth), then a top-ten question that re-reads the entry and the user's squad from cache
+     * and spends its allowance on opponents. Fifteen of fifteen, with the app-wide bootstrap
+     * snapshot already warm.
      */
     @Test
     void aSquadQuestionAndATopTenQuestionFitInsideOneTurnsBudget() {
@@ -375,7 +376,7 @@ class MiniLeagueServiceTest {
         myTeam.myTeam(USER, budget);
         String answer = miniLeagues.opponents(USER, MINI_LEAGUE, "top10", budget);
 
-        assertThat(budget.spent()).isEqualTo(14);
+        assertThat(budget.spent()).isEqualTo(15);
         assertThat(answer).doesNotContain("left out");
         assertThat(countOpponentLines(answer)).isEqualTo(10);
     }
@@ -412,7 +413,8 @@ class MiniLeagueServiceTest {
 
     private MyTeamService myTeamService(long bootstrapTtlMinutes) {
         return new MyTeamService(profiles, client(), new FplBootstrap(RestClient.builder(),
-                base() + "/bootstrap-static/", bootstrapTtlMinutes), enrichment, 5, 100);
+                base() + "/bootstrap-static/", bootstrapTtlMinutes), enrichment,
+                new FplLivePoints(RestClient.builder(), base() + "/event/%d/live/", 5), 5, 100);
     }
 
     private FplEntryClient client() {

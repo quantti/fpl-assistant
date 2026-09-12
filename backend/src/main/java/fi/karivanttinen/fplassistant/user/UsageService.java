@@ -187,8 +187,9 @@ public class UsageService {
     }
 
     /**
-     * Fills in what the provider reported. Separate from the insert because the numbers only
-     * exist once the answer is finished, and the row has to exist before it starts.
+     * Fills in the latest reported turn aggregate. Separate from the insert because the row must
+     * exist before generation starts; the controller persists the final aggregate on completion
+     * or after a failure that reported usage.
      *
      * <p>Tokens only. Money is deliberately not recorded: a price depends on the model, the date
      * and whatever promotion is running, so a stored figure is wrong as soon as any of those

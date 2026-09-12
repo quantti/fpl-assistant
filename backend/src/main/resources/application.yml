@@ -155,6 +155,9 @@ fpl:
     picks-url: https://fantasy.premierleague.com/api/entry/%d/event/%d/picks/
     # Chips already played; what is left is derived from bootstrap-static's windows.
     history-url: https://fantasy.premierleague.com/api/entry/%d/history/
+    # Points scored so far in one gameweek, for every player at once. Read when the squad card
+    # is built (KAR-15), cached per gameweek for cache-ttl-minutes, one call per turn at most.
+    live-url: https://fantasy.premierleague.com/api/event/%d/live/
     standings-url: https://fantasy.premierleague.com/api/leagues-classic/%d/standings/?page_standings=%d
     # Squads, entries and standings age out fast enough that a transfer shows up within one
     # conversation, and slowly enough that a follow-up question costs nothing.
