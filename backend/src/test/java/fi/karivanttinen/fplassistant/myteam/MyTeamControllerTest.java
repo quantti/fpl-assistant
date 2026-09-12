@@ -117,7 +117,7 @@ class MyTeamControllerTest {
                 List.of(new MyTeamService.SquadPlayer(pick, null, null)), full.chipEvent(),
                 List.of(), List.of(), null, false, full.enrichment(),
                 new MyTeamService.Continuing.Unknown("FPL publishes no previous picks"),
-                full.fetchedAt());
+                full.fetchedAt(), null, null);
         when(myTeam.myTeam(any(), any())).thenReturn(partial);
 
         mockMvc.perform(authenticated(USER_A))
@@ -234,6 +234,6 @@ class MyTeamControllerTest {
                 freeHit, List.of(salah), 6, List.of("bench boost"), List.of("wildcard"),
                 20, true, enrichment,
                 new MyTeamService.Continuing.Squad(4, continuing, List.of(wood)),
-                Instant.parse("2026-09-08T12:34:56Z"));
+                Instant.parse("2026-09-08T12:34:56Z"), null, null);
     }
 }
