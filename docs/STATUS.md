@@ -3923,3 +3923,17 @@ serially, as the ticket asked.
 
 Verified: disposable DB, full `./gradlew cleanTest test` green (844 tests). No behaviour change
 to selection, scoring or provenance; no live chat run.
+
+## Fresh database for every content-bearing pre-push (KAR-36, 2026-09-12)
+
+Plan: `docs/superpowers/plans/2026-09-12-kar-36-fresh-pre-push-db.md`. The hook now validates the
+explicit local `.env.test` destination and local Docker context before mutation, runs its shell
+contracts, then uses verified `reset` rather than reusable `up`. Reset fails on inspection,
+removal or schema-load uncertainty instead of accepting an old container. CI runs the same 28
+stub-only regressions before the backend suite while retaining its ephemeral Postgres lifecycle
+and KAR-42 failure artifacts.
+
+Verified exclusively against the local fixture: all three scripts passed `bash -n`; the standalone
+shell suite passed 28/28; a simulated feature-ref hook invocation recreated `fpl-test-db` and ran
+`cleanTest test`, passing 844 tests with 0 failures, errors or skips. No fresh-start or connection-
+pressure failure occurred. No push, Supabase access or Nutribot container operation was made.

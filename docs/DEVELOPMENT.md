@@ -214,24 +214,34 @@ git config core.hooksPath scripts/hooks
 1. **A push to `master` needs typed confirmation** (`push to master`, exactly). With no terminal
    to confirm at — an agent, a script, CI — it is refused outright. master deploys, so a push
    there is a release.
-2. **The backend suite runs** against the local container, which it starts if needed
-   (`scripts/test-db.sh up`), with `cleanTest` so Gradle cannot report a green it did not earn.
-   A failure refuses the push.
+2. **The backend suite runs** after destroying and recreating the local `fpl-test-db` container
+   (`scripts/test-db.sh reset`), with `cleanTest` so Gradle cannot report a green it did not earn.
+   The reset deletes all data in that container. A reset or test failure refuses the push.
+
+Before changing Docker, the hook loads `backend/.env.test` and requires the fixed disposable
+endpoint: `localhost` (or `127.0.0.1`), `${TEST_DB_PORT:-55432}`, database `postgres`, and the
+fixture's `postgres` credentials. It refuses datasource overrides, unsupported JDBC URLs, an
+unavailable daemon, and remote Docker contexts rather than risking another database or container.
+It also runs the fast stub-only lifecycle regressions that CI runs; those tests do not use Docker.
 
 `git push --no-verify` skips the hook entirely. That is git's escape hatch for a human who knows
 what they are skipping; treat it as bypassing branch protection, because that is what it is.
 
 ## The test database
 
-Tests run against a disposable Postgres container — the same image CI uses, created empty and
-thrown away. Nothing persists between runs, so "is the database clean?" is never a question you
-have to answer.
+Tests run against a disposable Postgres container using the same image as CI. Ordinary `up` is
+for iterative development: it reuses a running container and retains its schema and data. Use
+`reset` when the starting state must be fresh; the pre-push hook always does so.
 
 ```bash
-scripts/test-db.sh up       # start it and load the tapas schema
-scripts/test-db.sh reset    # destroy and recreate — the guaranteed-clean path
+scripts/test-db.sh up       # start if needed; reuse existing schema and data
+scripts/test-db.sh reset    # destroy all local test data, then recreate and load the tapas schema
 scripts/test-db.sh down     # stop and remove
 ```
+
+`reset` and `down` affect only `${TEST_DB_CONTAINER:-fpl-test-db}`, but they are destructive. Do
+not run them while another test process or local application is using that container. The reset
+fails instead of reusing an old container if inspection or removal cannot be verified.
 
 Three layers make up a working test database, and only the first is manual:
 

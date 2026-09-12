@@ -71,22 +71,83 @@ if [[ "$pushing_master" == true ]]; then
     echo
 fi
 
-echo "pre-push: running the backend suite against the local test database..."
+echo "pre-push: running the backend suite against a fresh local test database..."
 
-if ! command -v docker >/dev/null 2>&1; then
-    echo "pre-push: docker not found, so the test database cannot be started." >&2
-    echo "          Install docker, or push with --no-verify and know what you are skipping." >&2
-    exit 1
-fi
+ENV_FILE="$REPO_ROOT/backend/.env.test"
+SCHEMA="$REPO_ROOT/backend/src/test/resources/db/tapas-schema.sql"
 
-if [[ ! -f "$REPO_ROOT/backend/.env.test" ]]; then
+if [[ ! -f "$ENV_FILE" ]]; then
     echo "pre-push: backend/.env.test is missing." >&2
     echo "          Copy backend/.env.test.example and fill in OPENAI_API_KEY (the RAG tests" >&2
     echo "          embed for real and fail with 401 without it)." >&2
     exit 1
 fi
 
-"$REPO_ROOT/scripts/test-db.sh" up > /dev/null
+# These must come from .env.test, not from a production environment inherited by the hook.
+unset DATABASE_URL DB_USER DB_PASSWORD
+set -a
+# shellcheck disable=SC1091
+source "$ENV_FILE"
+set +a
+for variable in DATABASE_URL DB_USER DB_PASSWORD; do
+    if [[ -z "${!variable:-}" ]]; then
+        echo "pre-push: $variable must be set explicitly in backend/.env.test." >&2
+        exit 1
+    fi
+done
+
+if [[ -n "${SPRING_DATASOURCE_URL:-}" || -n "${SPRING_DATASOURCE_USERNAME:-}" \
+        || -n "${SPRING_DATASOURCE_PASSWORD:-}" ]]; then
+    echo "pre-push: refusing competing SPRING_DATASOURCE_* settings; the test destination" >&2
+    echo "          must come only from backend/.env.test." >&2
+    exit 1
+fi
+
+PORT="${TEST_DB_PORT:-55432}"
+if [[ ! "$PORT" =~ ^[0-9]+$ ]] || (( 10#$PORT < 1 || 10#$PORT > 65535 )); then
+    echo "pre-push: TEST_DB_PORT must be a valid local TCP port." >&2
+    exit 1
+fi
+if [[ "$DATABASE_URL" != "jdbc:postgresql://localhost:$PORT/postgres" \
+        && "$DATABASE_URL" != "jdbc:postgresql://127.0.0.1:$PORT/postgres" ]]; then
+    echo "pre-push: DATABASE_URL must identify the disposable local test database as" >&2
+    echo "          jdbc:postgresql://localhost:<TEST_DB_PORT>/postgres (127.0.0.1 is also allowed)." >&2
+    exit 1
+fi
+if [[ "$DB_USER" != postgres || "$DB_PASSWORD" != postgres ]]; then
+    echo "pre-push: DB_USER and DB_PASSWORD must match the local test fixture credentials." >&2
+    exit 1
+fi
+if [[ ! -r "$SCHEMA" ]]; then
+    echo "pre-push: test schema is missing or unreadable: backend/src/test/resources/db/tapas-schema.sql" >&2
+    exit 1
+fi
+
+if ! command -v docker >/dev/null 2>&1; then
+    echo "pre-push: docker not found, so the test database cannot be reset." >&2
+    exit 1
+fi
+if [[ -n "${DOCKER_HOST:-}" ]]; then
+    DOCKER_ENDPOINT="$DOCKER_HOST"
+elif ! DOCKER_ENDPOINT="$(docker context inspect --format '{{ (index .Endpoints "docker").Host }}' 2>/dev/null)"; then
+    echo "pre-push: the active Docker context could not be inspected; no test database was changed." >&2
+    exit 1
+fi
+case "$DOCKER_ENDPOINT" in
+    unix://*|npipe://*) ;;
+    *)
+        echo "pre-push: refusing a nonlocal Docker context; reset is only safe on a local daemon." >&2
+        exit 1
+        ;;
+esac
+if ! docker info >/dev/null 2>&1; then
+    echo "pre-push: the Docker daemon is unavailable; no test database was changed." >&2
+    exit 1
+fi
+
+# Catch regressions in this destructive gate before it resets the real local fixture.
+bash "$REPO_ROOT/scripts/tests/pre-push-test.sh"
+"$REPO_ROOT/scripts/test-db.sh" reset > /dev/null
 
 # SDKMAN puts java on the PATH from ~/.zshrc, which this non-interactive shell does not read.
 if [[ -f "$HOME/.sdkman/bin/sdkman-init.sh" ]]; then
@@ -99,10 +160,6 @@ if [[ -f "$HOME/.sdkman/bin/sdkman-init.sh" ]]; then
 fi
 
 cd "$REPO_ROOT/backend"
-set -a
-# shellcheck disable=SC1091
-source .env.test
-set +a
 
 # cleanTest, because Gradle reports BUILD SUCCESSFUL without running anything when the task is
 # up to date — a green that proves nothing is worse than no check at all.
