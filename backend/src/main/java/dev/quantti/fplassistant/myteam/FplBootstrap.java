@@ -92,7 +92,8 @@ public class FplBootstrap {
      */
     public record Snapshot(Map<Integer, Element> elements, List<ChipWindow> chips,
                            Map<Integer, Instant> deadlines, Integer currentEvent,
-                           Integer nextEvent, Map<Integer, EventStatus> eventStatus) {
+                           Integer nextEvent, Map<Integer, EventStatus> eventStatus,
+                           Instant fetchedAt) {
 
         public Optional<Element> element(int id) {
             return Optional.ofNullable(elements.get(id));
@@ -230,7 +231,7 @@ public class FplBootstrap {
         }
 
         return new Snapshot(Map.copyOf(elements), List.copyOf(chips), Map.copyOf(deadlines),
-                currentEvent, nextEvent, Map.copyOf(status));
+                currentEvent, nextEvent, Map.copyOf(status), Instant.now());
     }
 
     @SuppressWarnings("unchecked")

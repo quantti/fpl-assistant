@@ -120,7 +120,7 @@ class MyTeamResponseTest {
         MyTeamService.Result.Squad squad = new MyTeamService.Result.Squad(entry(), 5,
                 Optional.empty(), locked(null, 75, 1001, salahPick()), players(salahPick()),
                 6, List.of("bench boost"), List.of("wildcard", "free hit"), 20, true,
-                enrichment(), null, LOADED, null, null);
+                enrichment(), null, LOADED, null, LOADED, LOADED, null);
 
         MyTeamResponse.Ready response = (MyTeamResponse.Ready) MyTeamResponse.from(squad);
 
@@ -190,7 +190,7 @@ class MyTeamResponseTest {
                                                          FplLivePoints.Live live) {
         return new MyTeamService.Result.Squad(entry(), 5, deadline, locked, players, 6,
                 List.of(), List.of(), null, chipsKnown, enrichment(), continuing, LOADED,
-                eventStatus, live);
+                eventStatus, LOADED, LOADED, live);
     }
 
     private static EntrySummary entry() {

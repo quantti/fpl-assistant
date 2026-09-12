@@ -467,6 +467,32 @@ class MyTeamServiceTest {
         assertThat(card).contains("Gameweek 1 is final").doesNotContain("provisional");
     }
 
+    @Test
+    void finalBootstrapDoesNotMakeOlderCachedScoresFinal() {
+        storeTeamId(ENTRY);
+        MyTeamService service = service(0);
+        service.myTeam(USER, budget());
+
+        finished = true;
+        dataChecked = true;
+        MyTeamService.Result.Squad second = (MyTeamService.Result.Squad)
+                service.myTeam(USER, budget());
+        String card = service.render(second);
+
+        assertThat(card)
+                .contains("status snapshot marks Gameweek 1 final")
+                .contains("the entry total and the per-player points were read before that"
+                        + " confirmation")
+                .contains("Treat those displayed scores as provisional snapshots")
+                .doesNotContain("Gameweek 1 is final;");
+        assertThat(MyTeamResponse.from(second))
+                .extracting(response -> ((MyTeamResponse.Ready) response).gameweekPoints().status())
+                .isEqualTo("final_scores_provisional");
+        assertThat(requests.get("/bootstrap-static/").get()).isEqualTo(2);
+        assertThat(requests.get("/entry/111/event/1/picks/").get()).isEqualTo(1);
+        assertThat(requests.get("/event/1/live/").get()).isEqualTo(1);
+    }
+
     /** Entry, picks, bootstrap and chips spend four units; the live feed is asked last and refused. */
     @Test
     void aSpentBudgetDropsPlayerGameweekPointsButKeepsTheEntryTotal() {
@@ -548,16 +574,24 @@ class MyTeamServiceTest {
     }
 
     private MyTeamService service() {
-        return service("http://127.0.0.1:" + server.getAddress().getPort());
+        return service(360);
+    }
+
+    private MyTeamService service(long bootstrapTtlMinutes) {
+        return service("http://127.0.0.1:" + server.getAddress().getPort(), bootstrapTtlMinutes);
     }
 
     private MyTeamService service(String base) {
+        return service(base, 360);
+    }
+
+    private MyTeamService service(String base, long bootstrapTtlMinutes) {
         FplEntryClient client = new FplEntryClient(RestClient.builder(),
                 base + "/entry/%d/", base + "/entry/%d/event/%d/picks/",
                 base + "/entry/%d/history/",
                 base + "/leagues-classic/%d/standings/?page_standings=%d");
         FplBootstrap bootstrap = new FplBootstrap(RestClient.builder(),
-                base + "/bootstrap-static/", 360);
+                base + "/bootstrap-static/", bootstrapTtlMinutes);
         FplLivePoints live = new FplLivePoints(RestClient.builder(),
                 base + "/event/%d/live/", 5);
         return new MyTeamService(profiles, client, bootstrap, enrichment, live, 5, 100);

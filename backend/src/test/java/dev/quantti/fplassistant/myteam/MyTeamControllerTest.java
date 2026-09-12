@@ -123,7 +123,7 @@ class MyTeamControllerTest {
                 List.of(new MyTeamService.SquadPlayer(pick, null, null)), full.chipEvent(),
                 List.of(), List.of(), null, false, full.enrichment(),
                 new MyTeamService.Continuing.Unknown("FPL publishes no previous picks"),
-                full.fetchedAt(), null, null);
+                full.fetchedAt(), null, full.eventStatusAsOf(), full.entryPointsAsOf(), null);
         when(myTeam.myTeam(any(), any())).thenReturn(partial);
 
         mockMvc.perform(authenticated(USER_A))
@@ -248,6 +248,8 @@ class MyTeamControllerTest {
                 20, true, enrichment,
                 new MyTeamService.Continuing.Squad(4, continuing, List.of(wood)),
                 Instant.parse("2026-09-08T12:34:56Z"), new FplBootstrap.EventStatus(true, false),
+                Instant.parse("2026-09-08T12:34:56Z"),
+                Instant.parse("2026-09-08T12:34:56Z"),
                 new FplLivePoints.Live(5, Instant.parse("2026-09-08T12:34:56Z"),
                         Map.of(302, new FplLivePoints.ElementPoints(8, 90))));
     }
