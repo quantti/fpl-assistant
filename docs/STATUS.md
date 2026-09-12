@@ -3945,4 +3945,9 @@ now propagates reset and clean-state assertion failures explicitly despite runni
 a safe stub proves a failed first reset exits nonzero without a success message and still runs
 owned-container cleanup. Post-review verification: all three scripts passed `bash -n`, the stub
 suite passed 32/32, and isolated real-Docker integration passed twice on port 51733 and left
-`fpl-kar36-reset-integration` absent. No backend suite or push ran.
+`fpl-kar36-reset-integration` absent.
+
+PR #81 re-review found that both container-ID inspections and dirty-sentinel creation could still
+false-green. Those setup failures now return explicitly without changing `RETURN` cleanup; a safe
+Docker-stub regression exercises all three paths. Syntax passed, the stub suite passed 33/33, and
+isolated integration passed on port 57527 and left its fixture absent. No backend suite or push ran.

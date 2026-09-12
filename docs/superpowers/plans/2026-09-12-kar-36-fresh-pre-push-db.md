@@ -168,6 +168,13 @@ isolated real-Docker integration recreated its dedicated container twice on unus
 reported both clean states, and left `fpl-kar36-reset-integration` absent. No backend suite, push,
 Supabase access or unrelated container operation was performed.
 
+PR #81 re-review found three remaining unchecked setup commands in that integration mode. Both
+container-ID inspections and dirty-sentinel creation now return their failures explicitly, with the
+existing `RETURN` cleanup unchanged. A Docker-stub regression covers all three failures without
+using a real container. Re-review verification: syntax passed for all three scripts, the stub suite
+passed **33/33**, and isolated integration passed on port **57527** and left its fixture absent. No
+backend suite or push ran.
+
 ## Verification commands — proposed, not run during planning
 
 From repository root, Java 25/SDKMAN and local Docker available. `backend/.env.test` must match
