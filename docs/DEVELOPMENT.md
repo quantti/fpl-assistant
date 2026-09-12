@@ -85,10 +85,12 @@ npm run build                                     # contrast check, tsc -b, vite
 ```
 
 `npm test` runs on `vitest.config.ts`, kept apart from `vite.config.ts` because that file
-refuses to load without `VITE_SUPABASE_ANON_KEY`; a unit test needs no key. The suite is
-Node-only — no DOM — and covers the pure functions behind the UI (`viewportHeight`,
-`MessageThread/follow`), not the components. The pre-push hook does not run it; run it
-before pushing frontend work.
+refuses to load without `VITE_SUPABASE_ANON_KEY`; a unit test needs no key. Tests use the Node
+environment by default. The isolated `useChat.test.ts` mounted-hook regression opts into jsdom
+with a file-level Vitest environment directive; it uses React's real root and does not add a
+browser harness. The remaining tests cover pure UI decisions such as `viewportHeight` and
+`MessageThread/follow`. The pre-push hook does not run the frontend suite; run it before pushing
+frontend work.
 
 ## The free tier and sign-up
 
