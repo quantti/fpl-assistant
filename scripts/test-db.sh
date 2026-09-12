@@ -18,11 +18,62 @@ CONTAINER="${TEST_DB_CONTAINER:-fpl-test-db}"
 IMAGE="${TEST_DB_IMAGE:-pgvector/pgvector:pg17}"
 PORT="${TEST_DB_PORT:-55432}"
 
-start() {
-    if [[ -n "$(docker ps -q -f "name=^${CONTAINER}$")" ]]; then
-        echo "Container $CONTAINER is already running on port $PORT."
+require_schema() {
+    if [[ ! -r "$SCHEMA" ]]; then
+        echo "Test schema is missing or unreadable: $SCHEMA" >&2
+        return 1
+    fi
+}
+
+# Returns 0 when present, 1 when absent and 2 when Docker could not inspect it.
+inspect_container() {
+    local output
+    if output="$(docker container inspect --format '{{.State.Running}}' "$CONTAINER" 2>&1)"; then
+        CONTAINER_RUNNING="$output"
+        return 0
+    fi
+    if [[ "$output" == *"No such container: $CONTAINER"* ]]; then
+        CONTAINER_RUNNING=false
+        return 1
+    fi
+    echo "Could not inspect test container $CONTAINER: $output" >&2
+    return 2
+}
+
+remove_container() {
+    local status
+    if inspect_container; then
+        docker rm -f "$CONTAINER" >/dev/null
+        if inspect_container; then
+            echo "Docker reported that $CONTAINER was removed, but it still exists." >&2
+            return 1
+        else
+            status=$?
+            [[ "$status" -eq 1 ]] || return "$status"
+        fi
     else
-        docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+        status=$?
+        [[ "$status" -eq 1 ]] || return "$status"
+    fi
+}
+
+start() {
+    require_schema
+
+    local status
+    if inspect_container; then
+        if [[ "$CONTAINER_RUNNING" == true ]]; then
+            echo "Container $CONTAINER is already running on port $PORT."
+        else
+            remove_container
+            docker run -d --name "$CONTAINER" \
+                -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=postgres \
+                -p "$PORT:5432" "$IMAGE" >/dev/null
+            echo "Started $CONTAINER ($IMAGE) on port $PORT."
+        fi
+    else
+        status=$?
+        [[ "$status" -eq 1 ]] || return "$status"
         docker run -d --name "$CONTAINER" \
             -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=postgres \
             -p "$PORT:5432" "$IMAGE" >/dev/null
@@ -40,8 +91,8 @@ start() {
         -c "CREATE EXTENSION IF NOT EXISTS vector" >/dev/null
 
     # The dump is plain CREATE TABLE (pg_dump emits no IF NOT EXISTS), so re-loading it into a
-    # container that already has the schema fails. `up` is therefore safe to call repeatedly —
-    # the pre-push hook does exactly that — and `reset` is the way to reload.
+    # container that already has the schema fails. `up` is therefore safe to call repeatedly;
+    # `reset` is the way to reload from a clean container.
     if [[ -n "$(docker exec -i "$CONTAINER" psql -U postgres -d postgres -tAc \
                 "SELECT to_regclass('public.season')" | tr -d '[:space:]')" ]]; then
         echo "Schema already loaded (use 'reset' to start over)."
@@ -56,7 +107,7 @@ start() {
 
 case "${1:-up}" in
     up)    start ;;
-    reset) docker rm -f "$CONTAINER" >/dev/null 2>&1 || true; start ;;
-    down)  docker rm -f "$CONTAINER" >/dev/null 2>&1 || true; echo "Removed $CONTAINER." ;;
+    reset) require_schema; remove_container; start ;;
+    down)  remove_container; echo "Removed $CONTAINER." ;;
     *)     echo "usage: $(basename "$0") [up|reset|down]" >&2; exit 2 ;;
 esac

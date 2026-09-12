@@ -1,17 +1,14 @@
 package dev.quantti.fplassistant.chat;
 
 /**
- * What one answer cost, as the provider reported it. Any field may be null: a provider that does
- * not report a number is recorded as not having reported it, never as zero — a stored zero is
- * indistinguishable from a real measurement and would quietly poison the averages the quota is
- * meant to be tuned from.
+ * The sum of usage the provider reported for one user turn's model invocations. Any field may be
+ * null: an invocation that does not report a number contributes nothing known, never a fabricated
+ * zero. A stored zero is an explicit provider measurement.
  *
- * <p>{@code cachedTokens} is the prompt-cache read count and {@code cacheWriteTokens} what it
- * cost to put them there. Both are needed to price a turn: Anthropic reports {@code inputTokens}
- * as the uncached remainder, bills reads at about a tenth of the input rate and writes at a
- * premium, so a cost computed from input and output alone is always an underestimate. The
- * pricing in the Phase 5 spec assumes caching applies; Task 8 checks these columns to find out
- * whether it does.
+ * <p>{@code cachedTokens} is the prompt-cache read count and {@code cacheWriteTokens} the cache
+ * write count. {@code inputTokens} is normalized to the uncached remainder before invocation
+ * snapshots are summed, so cache reads remain separate on every provider. Counts cover mapped
+ * Spring AI responses only; SDK retries or failures that emit no usage remain unknown.
  */
 public record TokenUsage(String model, Integer inputTokens, Integer cachedTokens,
                         Integer cacheWriteTokens, Integer outputTokens) {
