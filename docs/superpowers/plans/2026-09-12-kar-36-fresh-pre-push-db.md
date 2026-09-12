@@ -152,6 +152,22 @@ passed **28/28**. A simulated feature-ref invocation of the real hook recreated 
 failures, 0 errors, 0 skipped**. There was no fresh-start or connection-pressure failure. No push,
 Supabase access or Nutribot container operation occurred.
 
+## PR #81 post-creation review fixes (2026-09-12)
+
+Two review findings were applied without changing the completed task outcomes above. The hook now
+follows Docker CLI precedence: an explicit `DOCKER_CONTEXT` is inspected first, `DOCKER_HOST` is
+used only when no context is selected, and the active context is inspected only when neither is
+set. Stub regressions prove both mixed-variable directions and fail closed when the selected
+context cannot be inspected. The opt-in integration runner now explicitly returns every reset and
+clean-state assertion failure while its `RETURN` cleanup remains active; a stubbed failed first
+container creation proves the mode exits nonzero, does not print success, and still removes its
+owned fixture.
+
+Post-review verification: all three scripts passed `bash -n`; the stub suite passed **32/32**; the
+isolated real-Docker integration recreated its dedicated container twice on unused port **51733**,
+reported both clean states, and left `fpl-kar36-reset-integration` absent. No backend suite, push,
+Supabase access or unrelated container operation was performed.
+
 ## Verification commands — proposed, not run during planning
 
 From repository root, Java 25/SDKMAN and local Docker available. `backend/.env.test` must match

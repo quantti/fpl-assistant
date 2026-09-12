@@ -127,7 +127,12 @@ if ! command -v docker >/dev/null 2>&1; then
     echo "pre-push: docker not found, so the test database cannot be reset." >&2
     exit 1
 fi
-if [[ -n "${DOCKER_HOST:-}" ]]; then
+if [[ -n "${DOCKER_CONTEXT:-}" ]]; then
+    if ! DOCKER_ENDPOINT="$(docker context inspect "$DOCKER_CONTEXT" --format '{{ (index .Endpoints "docker").Host }}' 2>/dev/null)"; then
+        echo "pre-push: the selected Docker context could not be inspected; no test database was changed." >&2
+        exit 1
+    fi
+elif [[ -n "${DOCKER_HOST:-}" ]]; then
     DOCKER_ENDPOINT="$DOCKER_HOST"
 elif ! DOCKER_ENDPOINT="$(docker context inspect --format '{{ (index .Endpoints "docker").Host }}' 2>/dev/null)"; then
     echo "pre-push: the active Docker context could not be inspected; no test database was changed." >&2

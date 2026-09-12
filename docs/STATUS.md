@@ -3937,3 +3937,12 @@ Verified exclusively against the local fixture: all three scripts passed `bash -
 shell suite passed 28/28; a simulated feature-ref hook invocation recreated `fpl-test-db` and ran
 `cleanTest test`, passing 844 tests with 0 failures, errors or skips. No fresh-start or connection-
 pressure failure occurred. No push, Supabase access or Nutribot container operation was made.
+
+PR #81 review fixes preserve that behavior while making Docker's effective endpoint precedence
+exact: explicit `DOCKER_CONTEXT`, then `DOCKER_HOST`, then the active context. Regressions cover
+both variables set in both directions and selected-context lookup failure. The integration runner
+now propagates reset and clean-state assertion failures explicitly despite running without `-e`;
+a safe stub proves a failed first reset exits nonzero without a success message and still runs
+owned-container cleanup. Post-review verification: all three scripts passed `bash -n`, the stub
+suite passed 32/32, and isolated real-Docker integration passed twice on port 51733 and left
+`fpl-kar36-reset-integration` absent. No backend suite or push ran.
