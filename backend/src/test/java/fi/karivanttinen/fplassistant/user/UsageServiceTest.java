@@ -270,10 +270,15 @@ class UsageServiceTest {
     }
 
     @Test
-    void tokensAreRecordedAgainstTheEventTheCallOpened() {
+    void runningAggregatesUpdateTheOneClaimToItsFinalTotal() {
         long eventId = usage.claimChatTurn(USER, "anthropic");
+        usage.recordTokens(eventId, "claude-sonnet-5", 400, 300, 100, 80);
+        usage.recordTokens(eventId, "claude-sonnet-5", 800, 600, 250, 180);
         usage.recordTokens(eventId, "claude-sonnet-5", 1200, 900, 400, 300);
 
+        assertThat(usage.quotaOf(USER).used()).isOne();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + usageTable
+                + " WHERE user_id = ?", Integer.class, USER)).isOne();
         assertThat(jdbc.queryForMap(
                 "SELECT provider, model, input_tokens, cached_tokens, cache_write_tokens,"
                         + " output_tokens, total_tokens FROM " + usageTable + " WHERE id = ?", eventId))

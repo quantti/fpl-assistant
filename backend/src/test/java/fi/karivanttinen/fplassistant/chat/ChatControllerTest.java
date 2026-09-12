@@ -151,15 +151,24 @@ class ChatControllerTest {
      * the token columns are filled from what the provider reported once it finishes.
      */
     @Test
-    void usageIsRecordedWhenTheCallStartsAndTokensWhenItEnds() {
+    void runningUsageAggregatesProduceOneChargeWithTheFinalTotal() {
         when(chatService.stream(any(), any(), any())).thenAnswer(invocation -> {
             java.util.function.Consumer<TokenUsage> onUsage = invocation.getArgument(2);
+            onUsage.accept(new TokenUsage("claude-sonnet-5", 600, 400, 200, 100));
+            onUsage.accept(new TokenUsage("claude-sonnet-5", 1100, 900, 500, 180));
             onUsage.accept(new TokenUsage("claude-sonnet-5", 1500, 1200, 800, 250));
             return Flux.just("answer");
         });
 
-        post(USER_A, "{\"message\":\"question\"}");
+        List<ServerSentEvent<String>> events = post(USER_A, "{\"message\":\"question\"}");
 
+        assertThat(events).extracting(ServerSentEvent::data)
+                .as("accounting stays server-side rather than becoming SSE payload")
+                .noneMatch(data -> data != null && (data.contains("claude-sonnet-5")
+                        || data.contains("1500") || data.contains("1200")));
+        org.mockito.Mockito.verify(usageSpy).claimChatTurn(org.mockito.ArgumentMatchers.eq(
+                UUID.fromString(USER_A)), any());
+        org.mockito.Mockito.verify(usageSpy).recordTokens(anyLong(), any(), any(), any(), any(), any());
         assertThat(jdbc.queryForList("SELECT event_type, provider, model, conversation_id,"
                 + " input_tokens, cached_tokens, cache_write_tokens, output_tokens, total_tokens"
                 + " FROM " + usageTable + " WHERE user_id = ?", UUID.fromString(USER_A)))
@@ -288,24 +297,41 @@ class ChatControllerTest {
      * be free, and free to repeat.
      */
     @Test
-    void aFailureAfterTokensWereReportedKeepsTheCharge() {
+    void aLaterRoundFailureKeepsTheFinalAggregateAndStoresNoPartialAnswer() {
         when(chatService.stream(any(), any(), any())).thenAnswer(invocation -> {
             java.util.function.Consumer<TokenUsage> onUsage = invocation.getArgument(2);
+            onUsage.accept(new TokenUsage("claude-sonnet-5", 20000, 0, 0, 500));
             onUsage.accept(new TokenUsage("claude-sonnet-5", 30000, 0, 0, 900));
-            return Flux.error(new IllegalStateException("the provider dropped the connection"));
+            return Flux.concat(Flux.just("partial"),
+                    Flux.error(new IllegalStateException("the provider dropped the connection")));
         });
 
         Jwt token = Jwt.withTokenValue("test").header("alg", "none").subject(USER_A).build();
         StepVerifier.create(controller.chat(new ChatRequest(null, "expensive question"), token))
                 .assertNext(event -> assertThat(event.event()).isEqualTo("conversation"))
-                .assertNext(event -> assertThat(event.event()).isEqualTo("error"))
+                .assertNext(event -> assertThat(event.data()).isEqualTo("\"partial\""))
+                .assertNext(event -> {
+                    assertThat(event.event()).isEqualTo("error");
+                    assertThat(event.data()).isEqualTo(ChatController.GENERATION_FAILED);
+                })
                 .assertNext(event -> assertThat(event.event()).isEqualTo("done"))
                 .verifyComplete();
 
-        assertThat(jdbc.queryForList("SELECT total_tokens FROM " + usageTable
+        assertThat(jdbc.queryForList("SELECT total_tokens, input_tokens, output_tokens FROM " + usageTable
                 + " WHERE user_id = ?", UUID.fromString(USER_A)))
                 .singleElement()
-                .satisfies(row -> assertThat(row).containsEntry("total_tokens", 30900));
+                .satisfies(row -> assertThat(row)
+                        .containsEntry("input_tokens", 30000)
+                        .containsEntry("output_tokens", 900)
+                        .containsEntry("total_tokens", 30900));
+        UUID conversationId = conversations.list(UUID.fromString(USER_A)).getFirst().id();
+        assertThat(conversations.messages(conversationId))
+                .as("a failed answer is discarded even though its measured charge remains")
+                .extracting(ConversationStore.StoredMessage::role)
+                .containsExactly(ChatTurn.USER);
+        org.mockito.Mockito.verify(usageSpy).claimChatTurn(org.mockito.ArgumentMatchers.eq(
+                UUID.fromString(USER_A)), any());
+        org.mockito.Mockito.verify(usageSpy).recordTokens(anyLong(), any(), any(), any(), any(), any());
     }
 
     /**
