@@ -2,7 +2,8 @@
 
 The code for email verification and invite codes is finished, merged and deployed. What is left is
 configuration that does not live in this repository: DNS records, a mail provider, and Supabase
-dashboard settings. This file is the runbook for that, and it is written to be worked through in
+dashboard settings — one of which, the Confirm-signup template, now has its source in this
+repository (3.4). This file is the runbook for that, and it is written to be worked through in
 order — each task depends on the one above it.
 
 Rewritten 2026-08-28 for **Resend** on **fpl-sidekick.com**, after two earlier versions: one
@@ -26,6 +27,7 @@ is copied forward from an earlier version of this file.
 | DMARC | **live**, one record, `p=none`, no `rua` |
 | Inbound mail to the domain | **dead** — the Custom MX switch removed the apex MX *and* SPF; see 2.8 |
 | Mail provider | Resend — domain **Verified** 2026-08-29; first confirmation mail delivered to Gmail's inbox |
+| Confirm signup template | **committed 2026-09-12, not applied** — `docs/email-templates/confirm-signup.html` (KAR-44). Supabase still sends its stock *Confirm Your Signup* until 3.4 is done; write the date here when it is |
 | Site URL / redirect URLs | **unverified** — the first confirmation mail was delivered 2026-08-29; following its link is the test (5.2) |
 | Email rate limit | **unknown** — a probe hit `429 over_email_send_rate_limit` on 2026-08-26, before custom SMTP; check 3.2 before a tester round |
 | Invite codes issued | `testi` — 10 places, `uses` 2 as of 2026-08-29: one account, one place burnt by the failed first attempt |
@@ -405,9 +407,14 @@ Redirect URLs     https://fpl-sidekick.com/**
 that place is Site URL. Left at Supabase's `http://localhost:3000` default, every confirmation
 link sends a tester to a blank page, and the failure looks nothing like a mail problem.
 
-**3.4 Authentication → Email Templates → Confirm signup.** The body must contain
-`{{ .ConfirmationURL }}`. Read the subject and sender name as a stranger would — this is the first
-thing anyone ever receives from you.
+**3.4 Authentication → Email Templates → Confirm signup.** The template is in this repository,
+`docs/email-templates/confirm-signup.html`, and the dashboard is a copy of it, never the other
+way round. Paste the subject from the comment at the top of the file into *Subject heading*,
+and the file from its first `<div>` to the end into *Message body* (leave the comment above it
+out). The body must keep `{{ .ConfirmationURL }}`; the file carries it twice, as a button and
+as a visible link, because some clients strip buttons. Save, then write today's date in the
+status table above and run 5.2 and 5.3 again — a template change is a deliverability change, and
+Gmail judges the new one on its own.
 
 **Done when:** all four are saved and Supabase's own **Send test email** reaches your inbox.
 
@@ -493,8 +500,9 @@ code untouched rather than resetting a live ceiling, so running it twice is safe
 | Step | What should happen |
 |---|---|
 | Submit the form | Says **“Check your email”** — not a redirect into the app |
-| Inbox | Message from `noreply@fpl-sidekick.com`, within a minute |
+| Inbox | Message from `noreply@fpl-sidekick.com` with the subject *Welcome to FPL Sidekick — confirm your email*, within a minute, in Primary — not Promotions, not spam |
 | Follow the link | Lands on `https://fpl-sidekick.com`, signed in |
+| Open the plain link under the button instead — on a second fresh address, because the first link is spent | Same result — both confirm the account |
 | Sign in *before* confirming | Says **“Confirm your email address first”** |
 
 **5.3 Confirm the authentication actually passed.** Deliverability is judged by the receiving
@@ -647,6 +655,7 @@ Each of these fails in a way that looks like a different one.
 | Mail to the domain stopped arriving | Expected after 2.3 removed the forwarding MX records; 2.8 restores them |
 | No mail at all, app log says `could not be sent (500)` | Resend shows a sending row *Pending* (2.3–2.4) — this happened 2026-08-28. Otherwise Supabase → Logs → Auth: a `429` is the rate limit (3.2); an SMTP auth error is the username or password (3.1 — the username is the literal `resend`) |
 | Mail arrives, link opens a blank page | Site URL (3.3) — almost always this |
+| Mail arrives with the subject *Confirm Your Signup* | 3.4 was never applied, or the dashboard was reset: it still holds Supabase's stock template |
 | Mail lands in spam | `dig` the SPF and DKIM records, then read `Show original` (5.3) to see which one failed |
 | DMARC reads as absent | Two `_dmarc` records, or one at the wrong Host (Traps 2 and 3) |
 | Link opens the app but not signed in | Redirect URLs (3.3) must include the exact origin |
@@ -713,3 +722,5 @@ bounds the language-model spend, which at any real scale is the cost that matter
 - **KAR-18** — burnt invite slots have no admin path;
   `DELETE FROM fpl_invite_redemption WHERE user_id IS NULL` then `--reconcile-invite-codes`.
 - **KAR-28** — Stripe, where the recorded discounts start doing something.
+- **KAR-44** — the confirmation template, committed as `docs/email-templates/confirm-signup.html`.
+- **KAR-43** — inbound mail; until it is done the template names a personal address for replies.

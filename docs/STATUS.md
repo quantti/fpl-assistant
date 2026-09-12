@@ -3924,6 +3924,29 @@ serially, as the ticket asked.
 Verified: disposable DB, full `./gradlew cleanTest test` green (844 tests). No behaviour change
 to selection, scoring or provenance; no live chat run.
 
+## The confirmation mail is the welcome mail (KAR-44, 2026-09-12)
+
+Plan: `docs/superpowers/plans/2026-09-12-kar-44-confirm-signup-email.md`. The Confirm-signup
+template is now a repository file, `docs/email-templates/confirm-signup.html`, with the subject
+in its header comment; the dashboard holds a copy. It says what FPL Sidekick is and what the free
+plan gives, shows the link as a button and as a visible URL whose text is its own target, says
+the link passes through supabase.co and lands on fpl-sidekick.com signed in, names a real
+address for problems because replies to `noreply@` go nowhere until KAR-43, and ends with why
+the mail was sent and that ignoring it does nothing. Inline CSS, one 600 px column, no images:
+Gmail's constraints, not taste. Rendered at 600 and 390 px and read tag-stripped; screenshots at
+600 and 390 px from the snap chromium-browser show one column, the button, the wrapped URL and
+the footer under a rule; the tag-stripped text reads as a letter with the URL directly under its
+lead-in sentence.
+
+Not done here, by design: the dashboard paste and the Gmail inbox/SPF/DKIM/DMARC check are the
+owner's, per runbook 3.4 and 5.2–5.3; the status table row records the date. Supabase's
+Management API could apply the template from the repository, but it needs a personal access
+token the project does not hold, so the repository stays the source and the paste stays manual.
+
+PR review: removed the welcome copy's unconditional daily-refresh/current-season promise.
+The app may fall back to historical statistics and cannot guarantee every sync succeeds;
+the mail now promises source and season attribution instead. Verified the HTML's two link
+targets, visible fallback URL, email placeholder and absence of external assets.
 ## Aborted chat turns cannot clear their replacement (KAR-52, 2026-09-12)
 
 Plan: `docs/superpowers/plans/2026-09-12-kar-52-chat-turn-ownership.md`. `useChat` now gives each
