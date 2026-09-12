@@ -3940,3 +3940,8 @@ Verified: 858 tests, 0 failures/skips; 62 frontend vitest, build green; `entry_h
 checked against entry 1556 GW 3: points 78 with event_transfers_cost 4, and the history total
 rose by 74, so `points` is gross, before transfer costs — the wording stands. The page was
 verified by its tests and the production build only; no signed-in browser session was available.
+
+PR review fix: bootstrap status, locked entry points and live points now retain their independent
+read times. A newly final bootstrap cannot relabel older cached scores as final: the card and page
+instead call those score snapshots provisional and name what final bonus or substitutions may be
+missing. The regression primes provisional score caches before refreshing a final bootstrap.

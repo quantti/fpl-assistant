@@ -42,7 +42,7 @@ public sealed interface MyTeamResponse {
     }
 
     /**
-     * @param status in_progress | finished_unchecked | final | unknown
+     * @param status in_progress | finished_unchecked | final | final_scores_provisional | unknown
      * @param entryTotal FPL's own total for the entry; null when it published none
      * @param playersAsOf when the per-player numbers were read; null when they were not
      */
@@ -90,6 +90,8 @@ public sealed interface MyTeamResponse {
     private static GameweekPoints gameweekPoints(MyTeamService.Result.Squad squad) {
         FplBootstrap.EventStatus status = squad.eventStatus();
         String code = status == null ? "unknown"
+                : status.dataChecked() && MyTeamService.hasProvisionalFinalScores(squad)
+                        ? "final_scores_provisional"
                 : status.dataChecked() ? "final"
                 : status.finished() ? "finished_unchecked"
                 : "in_progress";
