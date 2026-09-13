@@ -31,6 +31,8 @@ dependencies {
     // verifies locally and no shared secret exists anywhere.
     implementation 'org.springframework.boot:spring-boot-starter-oauth2-resource-server'
     implementation 'org.postgresql:postgresql'
+    // Owned-sync transport needs per-client retry/redirect controls; version managed by Boot.
+    implementation 'org.apache.httpcomponents.client5:httpclient5'
     implementation 'org.springframework.ai:spring-ai-starter-model-anthropic'
     implementation 'org.springframework.ai:spring-ai-starter-model-openai'
     implementation 'org.springframework.ai:spring-ai-starter-model-google-genai'

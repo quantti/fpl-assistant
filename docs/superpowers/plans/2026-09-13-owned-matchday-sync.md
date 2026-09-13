@@ -1,6 +1,6 @@
 # Assistant-owned FPL sync and post-match verification
 
-**PROGRESS:** Planning complete; implementation 0/10 tasks done.
+**PROGRESS:** Implementation 2/10 tasks done — source-contract evidence and inert queue/budget/HTTP foundation; no updater activated.
 
 Owner decision: this service, **not Tapas**, will perform the FPL data updates. This supersedes
 Task 5's ownership assumption in `2026-09-13-wildcard-data-coverage.md`. That plan's comparison
@@ -349,6 +349,44 @@ correction check and delivered recovery/alert. Do not invent an upstream-latency
 - Legitimate zero minutes, historical club spells and season-scoped IDs retain their meaning.
 - Post-match corrections are collected and attributed; missing optional metrics stay partial.
 - No new chat-time FPL reads, no Arsenal-specific selection rule, no minutes-rule bypass.
+
+## Tasks 1–2 outcome — foundation only (2026-09-13)
+
+Task 1: eight public FPL captures with source URLs/read intervals, a writer inventory and 13
+source-contract tests in `sync/source`. The deliberately partial parser is test-only. See
+`docs/superpowers/specs/2026-09-13-owned-sync-source-contracts.md`. Fixture-scoped participants
+and minutes are evidenced; raw `points_modification` arithmetic remains unresolved. Later work
+must not derive corrected totals from it without evidence. Synthetic DGW/transfer/postponement
+and correction variants are labelled, not presented as captured real cases.
+
+Task 2 was split into three sequential, independently reviewed units: fenced durable runs and
+bounded payload staging; shared persisted request admission/cooldown; and bounded HTTP transport.
+`OwnedSyncSchema.initialize` is explicit, with no Spring registration or job activation. The
+schema currently creates only run/payload/publication-receipt and request-state/attempt tables;
+fixture verification and component evidence schema is deliberately deferred to Tasks 4–5, where
+its actual publication contract is implemented rather than invented speculatively here. This is
+infrastructure, not a functioning updater: Task 3 must connect dispatch/validation/staging to it.
+
+The store coalesces compatible work, fences leases and publication by season/key, bounds bodies
+at 2 MB and cumulative retained payloads per run at 20 MB, and protects active evidence from
+retention cleanup. Exceeding a cap fails visibly; later dispatch must terminate/escalate oversized
+work, not retry it forever. Request admission persists the one-second/two-permit/rolling-24-hour
+budget and cooldown across instances. Valid Retry-After is respected without truncating long
+but representable deadlines. Unpersistable deadlines use bounded malformed-header fallback.
+
+Transport uses Boot-managed Apache HttpClient5's per-client retry/redirect controls, not cached
+JDK-global properties. Body reads and total waits are bounded; cancellation acknowledgement has
+at most one additional second. An unconfirmed exchange teardown records outcome/cooldown but
+retains its permit until expiry. That bounds local admission; it does not prove when a remote
+peer has observed socket closure. HTTP 200 remains raw, unverified evidence.
+
+There are 49 new tests (13 source, 16 store, 8 budget, 12 local-HTTP). Review fixes covered JSON
+strictness, unproven correction arithmetic, incompatible coalescing, season-scoped fences,
+aggregate staging caps, Retry-After storage range and bounded cancellation. Final independent
+foundation review found no further actionable issues. No public API is called by these tests;
+all DB integration uses the disposable container. No Tapas files or production data were changed.
+Linear access is unavailable in this harness; the required Kari link remains outstanding rather
+than a fabricated issue/closure. The implementation PR is the interim tracking reference.
 
 ## Remaining decisions before execution
 

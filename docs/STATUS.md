@@ -4221,3 +4221,29 @@ pre-cutover intraday captures require staged publication so actual source timest
 without replacing a still-usable prior-day capture too early. The companion comparison-coverage
 plan remains required and now points to this ownership plan for ingestion. No updater has yet
 been implemented or switched on.
+
+### Owned-sync implementation — Tasks 1–2 foundation (2026-09-13)
+
+Subagent implementation was split into source contracts, durable staging/leases, persisted request
+budget and HTTP transport, with orchestrator review between units and a final independent pass.
+The ownership plan is now 2/10; this is **not yet a running updater**. Task 3's dispatch/mappers,
+core publication, fixture verification, scheduling, reader evidence, alerts and cutover remain.
+No beans, scheduled jobs or startup hooks activate this infrastructure; schema initialization is
+explicit and the core shared tables are untouched. The old writers have not been disabled.
+
+`sync/OwnedSyncStore` provides season-scoped publication fences, coalescing, expiring leases,
+transactional callback publication, bounded staged bytes and retention that preserves active work.
+`OwnedSyncRequestBudget` persists one-second spacing, two permits, 5,000 rolling-day attempts
+and Retry-After/backoff. `OwnedSyncHttpClient` uses per-client Apache retry/redirect suppression,
+bounded bodies/total waits and bounded cancellation acknowledgement; uncertain cancellation holds
+its permit until expiry rather than releasing capacity early. These APIs are explicitly invoked,
+not a replacement scheduler hidden behind existing jobs.
+
+Eight public source captures and 13 test-only contract tests establish fixture-scoped participant
+and minutes evidence. The meaning of nonzero `points_modification` remains unproven; no corrected
+point total is inferred from it. Full inventory and limitations are in
+`docs/superpowers/specs/2026-09-13-owned-sync-source-contracts.md`. There are another 36
+store/budget/local-HTTP tests. Independent review fixes are recorded in the plan outcome.
+Production activation still requires source validation/publication, reader integration and an
+owner-approved single-writer handover. Linear linking remains outstanding because this harness
+has no configured Linear access.
