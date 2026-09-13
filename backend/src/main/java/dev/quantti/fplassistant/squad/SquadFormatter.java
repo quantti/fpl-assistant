@@ -276,7 +276,8 @@ public final class SquadFormatter {
         if (projection.neutralFdrLegs() > 0) {
             points.append(" (FDR n/a for ").append(projection.neutralFdrLegs())
                     .append(" fixture").append(projection.neutralFdrLegs() == 1 ? "" : "s")
-                    .append(", neutral ").append(HorizonScorer.NEUTRAL_FDR).append(" assumed)");
+                    .append(", neutral ").append(HorizonScorer.NEUTRAL_FDR)
+                    .append(" assumed on the attacking term)");
         }
         if (projection.partial()) {
             points.append(" (partial: one or more expected components unavailable)");
