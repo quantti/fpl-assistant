@@ -4221,3 +4221,23 @@ pre-cutover intraday captures require staged publication so actual source timest
 without replacing a still-usable prior-day capture too early. The companion comparison-coverage
 plan remains required and now points to this ownership plan for ingestion. No updater has yet
 been implemented or switched on.
+## Header facelift — FPL Sidekick wordmark and page links (2026-09-13)
+
+Built on the player-shortlist branch (PR #88), which introduced `HeaderNavigation`. The bar now
+spans the whole viewport above both the sidebar and the reading column instead of sitting inside
+the 660px column: the wordmark **FPL Sidekick** in small caps with the bar's one `--pitch` rule
+under it, a vertical rule, then `My team` and `Shortlist` as small-caps labels, and the overflow
+menu at the far end. The shortlist count is no longer in the link — the page shows it — so
+`HeaderNavigation` takes only the route and `ChatView` no longer reads the shortlist context.
+The sidebar carries a small-caps `Conversations` heading above the list. The product is named
+FPL Sidekick on the sign-in page and in the document title too; the ⚽ emoji is gone.
+
+Layout: `.shell` is a column (bar, then `.body` = sidebar + column). `.root` lost its explicit
+`100dvh` height; it and `.body` are stretched flex items with `min-height: 0`, which is what keeps
+the thread scrolling internally. Below 640px the page links always take a full second row of the
+bar and the divider is hidden, so the overflow menu is never orphaned on a wrap.
+
+Verified: 103 frontend tests, `npm run build` (contrast check, `tsc -b`, Vite) and headless
+Chromium screenshots at 1280px and 375px in both schemes, with the sidebar overlay open, against
+the dev server with a stubbed session and no backend. Measured `.root` height unchanged after
+inserting 3000px of content, i.e. still height-bounded. Head to Head from the mockup is not built.
