@@ -1,19 +1,23 @@
 /*
- * Shell: flex column, exactly one breakpoint (640px). Below it, full bleed —
- * .root has no width constraint, the 16px gutter comes from the fixed
- * horizontal padding already on .header, .thread (MessageThread.module.css)
- * and .wrapper (MessageInput.module.css). At and above it, .root itself
- * becomes the centred 660px column and those same paddings keep working
- * unchanged inside it.
+ * Shell: a full-width top bar, then the sidebar beside the reading column.
+ * Exactly one breakpoint (640px). Below it, the column is full bleed — .root
+ * has no width constraint, the 16px gutter comes from the fixed horizontal
+ * padding already on .thread (MessageThread.module.css) and .wrapper
+ * (MessageInput.module.css). At and above it, .root itself becomes the
+ * centred 660px column and those same paddings keep working unchanged
+ * inside it.
  *
- * `height: 100dvh` (not `min-height`) is required for `.thread`'s
- * `overflow-y: auto` (MessageThread.module.css) to actually scroll
- * internally instead of the whole page scrolling once messages overflow the
- * viewport — see task-2-report.md for the measured evidence. This is also
- * why the composer needs no bottom padding/hooks from this file: it is an
- * ordinary in-flow flex child below a height-bounded root, never overlapped
- * by `.thread`, so Task 4's `env(safe-area-inset-bottom)` on the composer's
- * own box is all that's needed — nothing here clips or duplicates it.
+ * The shell is height-bounded (`height`, not `min-height`) so that `.thread`'s
+ * `overflow-y: auto` (MessageThread.module.css) scrolls internally instead of
+ * the whole page scrolling once messages overflow the viewport — see
+ * task-2-report.md for the measured evidence. .body and .root are stretched
+ * flex items under it with `min-height: 0`, which is what lets that bound
+ * reach the thread; a stretched flex item's cross size is definite, so no
+ * explicit height is needed on them. This is also why the composer needs no
+ * bottom padding/hooks from this file: it is an ordinary in-flow flex child
+ * below a height-bounded column, never overlapped by `.thread`, so Task 4's
+ * `env(safe-area-inset-bottom)` on the composer's own box is all that's
+ * needed — nothing here clips or duplicates it.
  *
  * `--app-height` is written by useKeyboardAwareViewport only while an iOS
  * software keyboard is up — WebKit ignores interactive-widget=resizes-content
@@ -21,13 +25,19 @@
  * the composer. Elsewhere the property is absent and the fallback is exactly
  * what it was.
  */
-/* The shell is the sidebar plus the reading column. The column keeps the
-   height-bounded behaviour described above; the shell only puts the two side
-   by side. */
 .shell {
   display: flex;
+  flex-direction: column;
   height: var(--app-height, 100dvh);
   background: var(--paper);
+  color: var(--ink);
+}
+
+/* The sidebar plus the reading column, under the bar. */
+.body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
 }
 
 .root {
@@ -35,11 +45,9 @@
   /* Without this a long conversation title in the row beside it can push the
      column wider than the viewport. */
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  height: var(--app-height, 100dvh);
-  background: var(--paper);
-  color: var(--ink);
 }
 
 /* Only below the breakpoint, where the sidebar is an overlay: a tap outside it is the gesture
@@ -56,19 +64,6 @@
   .backdrop {
     display: none;
   }
-}
-
-.headerLeft {
-  display: flex;
-  align-items: center;
-  gap: var(--space-12);
-}
-
-.headerActions {
-  display: flex;
-  align-items: center;
-  gap: var(--space-8);
-  margin-left: auto;
 }
 
 /* Below the breakpoint the sidebar is an overlay opened from here — the same
@@ -91,19 +86,59 @@
   }
 }
 
+/* One bar across the whole viewport, above both the sidebar and the column:
+   the wordmark, a rule, the page links, and the overflow menu at the far end.
+   One row above the breakpoint; the phone rule further down gives the links
+   a row of their own. */
 .header {
   flex: 0 0 auto;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--space-4) var(--space-8);
+  gap: var(--space-8) var(--space-12);
   min-height: 48px;
   padding: var(--space-8) var(--space-16);
   border-bottom: 1px solid var(--rule-section);
   font-family: var(--font-ui);
-  font-weight: 600;
+}
+
+/* The product name set in the interface face, per the design system: small
+   caps like every other label in the chrome, and the one --pitch rule in the
+   bar so the name is the anchor the eye returns to. */
+.wordmark {
+  font-variant-caps: small-caps;
+  font-weight: 700;
   font-size: var(--text-base);
+  letter-spacing: 0.04em;
+  padding-bottom: 2px;
+  border-bottom: 2px solid var(--pitch);
+  white-space: nowrap;
+}
+
+.divider {
+  width: 1px;
+  height: var(--space-24);
+  background: var(--rule-section);
+}
+
+.menu {
+  margin-left: auto;
+}
+
+/* A phone cannot fit the page links beside the wordmark and the two menus,
+   and letting the row wrap where it happens to run out leaves the overflow
+   menu orphaned on a second line. Below the breakpoint the links always take
+   a full second row of their own instead, and the rule between the wordmark
+   and the links, which separated them on one line, has nothing to divide. */
+@media (max-width: 639px) {
+  .pages {
+    flex-basis: 100%;
+    order: 1;
+  }
+
+  .divider {
+    display: none;
+  }
 }
 
 .empty {

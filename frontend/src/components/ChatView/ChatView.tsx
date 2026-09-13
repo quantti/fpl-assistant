@@ -3,7 +3,6 @@ import { useComputedColorScheme } from '@mantine/core'
 import { useChat } from '../../hooks/useChat'
 import { useConversations } from '../../hooks/useConversations'
 import { navigate, Route } from '../../router'
-import { useShortlist } from '../../shortlist/ShortlistContext'
 import AppMenu from '../AppMenu/AppMenu'
 import ConversationSidebar from '../ConversationSidebar/ConversationSidebar'
 import HeaderNavigation from '../HeaderNavigation/HeaderNavigation'
@@ -23,7 +22,6 @@ export default function ChatView({ route }: Props) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const selectionRef = useRef(0)
   const conversations = useConversations()
-  const shortlist = useShortlist()
   const { messages, replaceMessages, streamingContent, isStreaming, sendMessage } = useChat({
     conversationId: conversations.currentId,
     onConversation: id => (id === null ? conversations.startNew() : conversations.adopt(id)),
@@ -89,57 +87,60 @@ export default function ChatView({ route }: Props) {
 
   return (
     <div className={classes.shell}>
-      {sidebarOpen && (
-        <div
-          className={classes.backdrop}
-          onClick={() => setSidebarOpen(false)}
-          aria-hidden="true"
-        />
-      )}
-      <ConversationSidebar
-        conversations={conversations.conversations}
-        currentId={conversations.currentId}
-        onSelect={openConversation}
-        onNew={newConversation}
-        open={sidebarOpen}
-        failed={conversations.failed}
-        onRetry={conversations.refresh}
-      />
-      <div className={classes.root}>
-        <div className={classes.header}>
-          <div className={classes.headerLeft}>
-            <button
-              type="button"
-              className={classes.sidebarToggle}
-              aria-label="Conversations"
-              aria-expanded={sidebarOpen}
-              onClick={() => setSidebarOpen(open => !open)}
-            >
-              ☰
-            </button>
-            <span>⚽ FPL Assistant</span>
-          </div>
-          <div className={classes.headerActions}>
-            <HeaderNavigation route={route} shortlistCount={shortlist.count} />
-            <AppMenu route={route} />
-          </div>
+      <header className={classes.header}>
+        <button
+          type="button"
+          className={classes.sidebarToggle}
+          aria-label="Conversations"
+          aria-expanded={sidebarOpen}
+          onClick={() => setSidebarOpen(open => !open)}
+        >
+          ☰
+        </button>
+        <span className={classes.wordmark}>FPL Sidekick</span>
+        <span className={classes.divider} aria-hidden="true" />
+        <div className={classes.pages}>
+          <HeaderNavigation route={route} />
         </div>
-        {route === '/my-team' ? (
-          <MyTeamPage />
-        ) : route === '/shortlist' ? (
-          <ShortlistPage />
-        ) : route === '/usage' ? (
-          <UsagePage />
-        ) : route === '/settings' ? (
-          <SettingsPage />
-        ) : messages.length === 0 && streamingContent === null ? (
-          <div className={classes.empty}>
-            Ask me anything about Fantasy Premier League — players, fixtures, strategy, chips, transfers.
-          </div>
-        ) : (
-          <MessageThread messages={messages} streamingContent={streamingContent} />
+        <div className={classes.menu}>
+          <AppMenu route={route} />
+        </div>
+      </header>
+      <div className={classes.body}>
+        {sidebarOpen && (
+          <div
+            className={classes.backdrop}
+            onClick={() => setSidebarOpen(false)}
+            aria-hidden="true"
+          />
         )}
-        {route === '/' && <MessageInput onSubmit={sendMessage} disabled={isStreaming} />}
+        <ConversationSidebar
+          conversations={conversations.conversations}
+          currentId={conversations.currentId}
+          onSelect={openConversation}
+          onNew={newConversation}
+          open={sidebarOpen}
+          failed={conversations.failed}
+          onRetry={conversations.refresh}
+        />
+        <div className={classes.root}>
+          {route === '/my-team' ? (
+            <MyTeamPage />
+          ) : route === '/shortlist' ? (
+            <ShortlistPage />
+          ) : route === '/usage' ? (
+            <UsagePage />
+          ) : route === '/settings' ? (
+            <SettingsPage />
+          ) : messages.length === 0 && streamingContent === null ? (
+            <div className={classes.empty}>
+              Ask me anything about Fantasy Premier League — players, fixtures, strategy, chips, transfers.
+            </div>
+          ) : (
+            <MessageThread messages={messages} streamingContent={streamingContent} />
+          )}
+          {route === '/' && <MessageInput onSubmit={sendMessage} disabled={isStreaming} />}
+        </div>
       </div>
     </div>
   )
