@@ -58,7 +58,7 @@ class PickToolsCrossSeasonTest {
                         ScheduleSource.CompletenessReason.NO_CAPTURE));
         RankingMetrics.Snapshot snapshot = new RankingMetrics.Snapshot(
                 Instant.parse("2026-09-09T12:00:00Z"), capture, seasons, noSchedule,
-                List.of(candidate));
+                List.of(candidate), ClubRates.NONE);
 
         SeasonResolver resolver = Mockito.mock(SeasonResolver.class);
         Mockito.when(resolver.resolve()).thenReturn(current);
@@ -111,7 +111,7 @@ class PickToolsCrossSeasonTest {
                 new ScheduleSource.Completeness(true,
                         ScheduleSource.CompletenessReason.COMPLETE));
         RankingMetrics.Snapshot snapshot = new RankingMetrics.Snapshot(
-                AS_OF, capture, seasons, schedule, List.of(candidate));
+                AS_OF, capture, seasons, schedule, List.of(candidate), ClubRates.NONE);
 
         SeasonResolver resolver = Mockito.mock(SeasonResolver.class);
         Mockito.when(resolver.resolve()).thenReturn(resolved);

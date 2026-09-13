@@ -89,9 +89,10 @@ public class SquadTools implements FplTool {
             a future-start guarantee, and a pin, budget or relaxed template/premium default cannot
             waive it.
             Ranking uses shared expected points per fixture: appearance and 60+ exposure, attack
-            scaled by expected minutes, 60+-conditional clean sheets and short/long DefCon, with
-            coarse captured-schedule FDR, summed over the club's fixtures in that same window —
-            a double gameweek adds one, a blank removes one. A fixture with no published FDR is
+            scaled by expected minutes, 60+-conditional clean sheets projected per fixture from
+            club xG/xGC rates and venue, short/long DefCon, and coarse captured-schedule FDR on
+            the attacking term only, summed over the club's fixtures in that same window — a
+            double gameweek adds one, a blank removes one. A fixture with no published FDR is
             scored at a neutral 3 and labelled. Unknown projections have zero optimiser weight but
             are printed n/a/unscored, never as a zero forecast. NOT ranked on form. The reply
             attributes three sources — the daily price capture, the metric season and the FPL
@@ -193,7 +194,8 @@ public class SquadTools implements FplTool {
             boolean anyCandidateWasScoreable = false;
             for (SquadCandidate candidate : candidates) {
                 HorizonScorer.Projection projection =
-                        HorizonScorer.projection(candidate, horizon.club(candidate.teamId()));
+                        HorizonScorer.projection(candidate, horizon.club(candidate.teamId()),
+                                loaded.snapshot().clubRates());
                 projections.put(candidate.elementId(), projection);
                 scores.put(candidate.elementId(), projection.optimizerPoints());
                 if (projection.available()) {
@@ -227,6 +229,16 @@ public class SquadTools implements FplTool {
                     : "Raw current-club 60+ evidence is separate from ability and is the"
                             + " non-relaxable XI rule.";
             blendNote += " " + scheduleNote;
+            blendNote += " Clean sheets are projected per fixture from club expected-goal rates:"
+                    + " the club's expected concession times the opponent's expected scoring"
+                    + " rate over the league mean, adjusted for venue, conditional on P(60+)."
+                    + (metric.blending()
+                            ? " Club rates blend " + metric.played().code() + " with "
+                                    + metric.previousCode() + " on the same ramp keyed on the"
+                                    + " club's completed fixtures."
+                            : "")
+                    + " FDR scales the attacking term only; a fixture with no club projection"
+                    + " contributes no clean sheet and its row is partial.";
 
             return SquadFormatter.format(solved.get(), constraints,
                     priceProvenance, metricProvenance, scheduleProvenance,
