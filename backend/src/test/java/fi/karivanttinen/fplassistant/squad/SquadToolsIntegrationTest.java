@@ -256,6 +256,13 @@ class SquadToolsIntegrationTest {
 
     /** An empty pool still consulted all three sources, so its refusal carries the notice. */
     @Test
+    void theReplyExplainsTheProjectedCleanSheetAndItsClubRates() {
+        assertThat(tools.buildSquad("", "", "", 100.0, 5, ""))
+                .contains("Clean sheets are projected per fixture")
+                .contains("club expected-goal rates");
+    }
+
+    @Test
     void anEmptyPoolRefusalCarriesTheRefreshNotice() {
         jdbc.update("UPDATE " + dailyTable + " SET status = 'i' WHERE season = ?"
                 + " AND element_id BETWEEN ? AND ?", SEASON, FIRST_ID, LAST_ID);
