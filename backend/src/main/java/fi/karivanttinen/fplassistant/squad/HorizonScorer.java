@@ -1,8 +1,10 @@
 package fi.karivanttinen.fplassistant.squad;
 
 import java.util.Optional;
+import java.util.OptionalDouble;
 
 import fi.karivanttinen.fplassistant.schedule.HorizonFixtures;
+import fi.karivanttinen.fplassistant.tools.ClubRates;
 import fi.karivanttinen.fplassistant.tools.ExpectedPoints;
 
 /**
@@ -20,9 +22,9 @@ import fi.karivanttinen.fplassistant.tools.ExpectedPoints;
  * comes out right without special handling; a blank is no fixture and comes out as a real zero,
  * which is not the same statement as "unknown".
  *
- * <p>The fixture adjustment is coarse: one multiplier on the whole score, where a fixture should
- * move the clean-sheet term more than the attacking terms. Issue #47 replaces it with a team
- * xG/xGC projection.
+ * <p>FDR scales the attacking term only. The clean sheet is projected per fixture from both
+ * clubs' expected-goal rates and the venue ({@link ClubRates}, KAR-30), so scaling it by FDR as
+ * well would count the opponent twice; appearance and DefCon are not fixture-scaled.
  */
 public final class HorizonScorer {
 
@@ -72,36 +74,43 @@ public final class HorizonScorer {
      * (a genuine zero over zero fixtures).
      */
     public static Projection projection(SquadCandidate candidate,
-                                        HorizonFixtures.ClubWindow window) {
+                                        HorizonFixtures.ClubWindow window,
+                                        ClubRates.Rates rates) {
         if (candidate.tier() == SquadCandidate.Tier.BODY || candidate.exposure() == null) {
             return UNSCOREABLE;
         }
-        Optional<ExpectedPoints.PerFixture> perFixture =
-                ExpectedPoints.perFixture(candidate.metrics(), candidate.exposure());
-        if (perFixture.isEmpty()) {
-            return UNSCOREABLE;
-        }
         if (!window.known()) {
-            return new Projection(0, false, false, 0, 0, window.unknownReason());
+            return ExpectedPoints.perFixture(candidate.metrics(), candidate.exposure(),
+                    OptionalDouble.empty()).isEmpty()
+                    ? UNSCOREABLE
+                    : new Projection(0, false, false, 0, 0, window.unknownReason());
         }
-        ExpectedPoints.PerFixture components = perFixture.orElseThrow();
         double total = 0;
         int neutralFdrLegs = 0;
+        boolean partial = false;
         for (HorizonFixtures.Fixture fixture : window.fixtures()) {
+            OptionalDouble goalsAgainst = ClubRates.projectedGoalsAgainst(rates,
+                    candidate.teamId(), fixture.opponentTeamId(), fixture.home());
+            Optional<ExpectedPoints.PerFixture> perFixture = ExpectedPoints.perFixture(
+                    candidate.metrics(), candidate.exposure(), goalsAgainst);
+            if (perFixture.isEmpty()) {
+                return UNSCOREABLE;
+            }
+            ExpectedPoints.PerFixture components = perFixture.orElseThrow();
             boolean rated = fixture.hasValidDifficulty();
             if (!rated) {
                 neutralFdrLegs++;
             }
-            total += components.points()
-                    * fdrAdjust(rated ? fixture.difficulty() : NEUTRAL_FDR);
+            total += components.appearance() + components.defensiveContribution()
+                    + (components.cleanSheet() == null ? 0 : components.cleanSheet())
+                    + components.attack() * fdrAdjust(rated ? fixture.difficulty() : NEUTRAL_FDR);
+            partial |= components.cleanSheet() == null || components.partialDefcon();
         }
-        // A blank window used no component at all, so there is nothing partial about its zero.
-        boolean partial = window.count() > 0
-                && (components.cleanSheet() == null || components.partialDefcon());
         return new Projection(total, true, partial, window.count(), neutralFdrLegs, null);
     }
 
-    public static double score(SquadCandidate candidate, HorizonFixtures.ClubWindow window) {
-        return projection(candidate, window).optimizerPoints();
+    public static double score(SquadCandidate candidate, HorizonFixtures.ClubWindow window,
+                               ClubRates.Rates rates) {
+        return projection(candidate, window, rates).optimizerPoints();
     }
 }
