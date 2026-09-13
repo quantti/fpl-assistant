@@ -434,7 +434,7 @@ public class PickTools implements FplTool {
             row.put("news", player.news());
             row.putAll(candidate.blended().metrics());
             ExpectedPoints.PerFixture projection = ExpectedPoints.perFixture(
-                    row, candidate.blended().exposure()).orElseThrow();
+                    row, candidate.blended().exposure(), OptionalDouble.empty()).orElseThrow();
             row.put("expected_per_fixture", projection.points());
             row.put("points_per_fixture", candidate.blended().exposure().pointsPerFixture());
             row.put("current_window_minutes", candidate.current().window().totalMinutes());
