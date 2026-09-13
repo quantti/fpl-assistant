@@ -4,6 +4,7 @@ import SignIn from './components/SignIn/SignIn'
 import { useSession } from './auth/useSession'
 import { useKeyboardAwareViewport } from './hooks/useKeyboardAwareViewport'
 import { useRoute } from './router'
+import { ShortlistProvider } from './shortlist/ShortlistContext'
 
 export default function App() {
   // Above both ChatView and SignIn: the sign-in form has the same iOS keyboard over its
@@ -33,5 +34,9 @@ export default function App() {
 
   // A different account can arrive from another tab without an intervening sign-out. Reset
   // account-owned state and abort its pending loads, but keep it on this user's token refresh.
-  return session ? <ChatView key={session.user.id} route={route} /> : <SignIn />
+  return session ? (
+    <ShortlistProvider key={session.user.id}>
+      <ChatView route={route} />
+    </ShortlistProvider>
+  ) : <SignIn />
 }

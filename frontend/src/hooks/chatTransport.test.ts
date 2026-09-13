@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { apiFetch } from '../auth/apiFetch'
-import { ChatRequest } from '../types'
+import { ChatRequest, PlayerCatalogue } from '../types'
 import {
   ChatEvents,
   GENERATION_FAILED,
@@ -23,17 +23,25 @@ function request(): ChatRequest {
   return { conversationId: null, message: 'hello' }
 }
 
-function events(): ChatEvents & { tokens: string[]; conversations: string[]; truncated: number[] } {
+function events(): ChatEvents & {
+  tokens: string[]
+  conversations: string[]
+  truncated: number[]
+  catalogues: PlayerCatalogue[]
+} {
   const tokens: string[] = []
   const conversations: string[] = []
   const truncated: number[] = []
+  const catalogues: PlayerCatalogue[] = []
   return {
     tokens,
     conversations,
     truncated,
+    catalogues,
     onToken: t => tokens.push(t),
     onConversation: id => conversations.push(id),
     onTruncated: n => truncated.push(n),
+    onCatalogue: catalogue => catalogues.push(catalogue),
   }
 }
 
@@ -57,6 +65,10 @@ function conversationFrame(id: string): string {
 
 function truncatedFrame(dropped: number): string {
   return frame('truncated', String(dropped))
+}
+
+function catalogueFrame(catalogue: PlayerCatalogue): string {
+  return frame('catalogue', JSON.stringify(catalogue))
 }
 
 function errorFrame(text: string): string {
@@ -249,6 +261,39 @@ describe('the SSE reader loop', () => {
     const outcome = await sendChatTurn(request(), new AbortController().signal, events())
 
     expect(outcome).toEqual({ kind: 'completed', content: '' })
+  })
+
+  it('delivers optional catalogue metadata before tokens without adding it to text', async () => {
+    const catalogue: PlayerCatalogue = {
+      catalogueId: 'catalogue-1',
+      season: '2026-27',
+      players: [{
+        elementId: 17,
+        webName: 'Saka',
+        fullName: 'Bukayo Saka',
+        teamShort: 'ARS',
+        teamName: 'Arsenal',
+        elementType: 3,
+        aliases: ['Bukayo Saka', 'Saka'],
+      }],
+    }
+    apiFetchMock.mockResolvedValue(sse(catalogueFrame(catalogue), tokenFrame('Saka'), doneFrame()))
+    const ev = events()
+
+    const outcome = await sendChatTurn(request(), new AbortController().signal, ev)
+
+    expect(ev.catalogues).toEqual([catalogue])
+    expect(outcome).toEqual({ kind: 'completed', content: 'Saka' })
+    expect(JSON.parse(apiFetchMock.mock.calls[0][1]!.body as string)).toEqual(request())
+  })
+
+  it('ignores malformed catalogue metadata and continues streaming', async () => {
+    apiFetchMock.mockResolvedValue(sse(frame('catalogue', '{bad'), tokenFrame('plain'), doneFrame()))
+    const ev = events()
+
+    await expect(sendChatTurn(request(), new AbortController().signal, ev))
+      .resolves.toEqual({ kind: 'completed', content: 'plain' })
+    expect(ev.catalogues).toEqual([])
   })
 
   it('reports truncated as metadata, not text', async () => {
