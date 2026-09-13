@@ -1,6 +1,24 @@
+export interface CataloguePlayer {
+  elementId: number
+  webName: string
+  fullName: string
+  teamShort: string
+  teamName: string
+  elementType: number
+  aliases: string[]
+}
+
+export interface PlayerCatalogue {
+  catalogueId: string
+  season: string
+  players: CataloguePlayer[]
+}
+
 export interface Message {
   role: 'user' | 'assistant'
   content: string
+  /** Immutable identity evidence attached only to a completed assistant answer. */
+  catalogue?: PlayerCatalogue
   /**
    * Client-side only: marks a turn the app generated to report a failure,
    * not something the model said. The spec reserves red for errors, and an
