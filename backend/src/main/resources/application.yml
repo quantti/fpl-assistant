@@ -131,6 +131,12 @@ fpl:
     # tier's cost ceiling is drawn against (30 x 20 messages a week is about EUR 38/month). A
     # property so the owner can move it without a deploy.
     max-accounts: ${INVITE_MAX_ACCOUNTS:30}
+  admin:
+    # Who may call /api/admin/** — JWT sub ids, comma-separated. Empty (the default) means
+    # nobody, which is the safe default: an unset secret closes the admin API rather than
+    # opening it. Set with `fly secrets set ADMIN_USER_IDS=<uuid>`; the owner's sub is the id
+    # column of the user in Supabase -> Authentication -> Users.
+    user-ids: ${ADMIN_USER_IDS:}
   shortlist:
     # Immutable identity catalogues are shared evidence derived from daily captures; the
     # shortlist table is account-owned desired state validated against that evidence.
