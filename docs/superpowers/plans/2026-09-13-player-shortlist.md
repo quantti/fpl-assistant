@@ -1,6 +1,18 @@
 # Personal player shortlist
 
-**PROGRESS:** Task 5/6 done — shortlist page, dedicated header navigation and deep-link routing are complete.
+**PROGRESS:** Task 6/6 done — implemented, verified, pushed and reviewed in PR #88; owner merge pending.
+
+## Delivery outcome
+
+PR: https://github.com/quantti/fpl-assistant/pull/88. Implementation commit `970c0a7`;
+master integration `62d9841` preserved both STATUS entries (the sole merge conflict).
+After integration: 916 backend tests, 103 frontend tests, production frontend build and 33 hook
+contract checks passed. Mocked Chromium checks covered 320/390px, desktop light/dark, keyboard
+and shared list state. Live auth, real-model output and cross-device persistence were not exercised.
+Independent review of the complete PR diff at `62d9841` found no actionable issues after the five
+pre-review fixes below. GitHub live head was independently confirmed to match that reviewed commit;
+PR is mergeable. CI was still running at documentation time. No deployment or master push occurred.
+Linear access was unavailable; no ticket identifier was invented.
 
 ## Approved scope
 
