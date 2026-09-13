@@ -33,6 +33,7 @@ export default function ConversationSidebar({
           <button type="button" className={classes.retry} onClick={onRetry}>Try again</button>
         </p>
       )}
+      <div className={classes.heading}>Conversations</div>
       <ul className={classes.list}>
         {conversations.map(conversation => (
           <li key={conversation.id}>
