@@ -6,6 +6,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalDouble;
 
 import fi.karivanttinen.fplassistant.schedule.HorizonFixtures;
 import fi.karivanttinen.fplassistant.tools.ExpectedPoints;
@@ -82,8 +83,8 @@ class HorizonScorerTest {
     }
 
     private static double perFixture(SquadCandidate candidate) {
-        return ExpectedPoints.perFixture(candidate.metrics(), candidate.exposure())
-                .orElseThrow().points();
+        return ExpectedPoints.perFixture(candidate.metrics(), candidate.exposure(),
+                OptionalDouble.empty()).orElseThrow().points();
     }
 
     @Test

@@ -1,6 +1,7 @@
 package fi.karivanttinen.fplassistant.squad;
 
 import java.util.Optional;
+import java.util.OptionalDouble;
 
 import fi.karivanttinen.fplassistant.schedule.HorizonFixtures;
 import fi.karivanttinen.fplassistant.tools.ExpectedPoints;
@@ -76,8 +77,8 @@ public final class HorizonScorer {
         if (candidate.tier() == SquadCandidate.Tier.BODY || candidate.exposure() == null) {
             return UNSCOREABLE;
         }
-        Optional<ExpectedPoints.PerFixture> perFixture =
-                ExpectedPoints.perFixture(candidate.metrics(), candidate.exposure());
+        Optional<ExpectedPoints.PerFixture> perFixture = ExpectedPoints.perFixture(
+                candidate.metrics(), candidate.exposure(), OptionalDouble.empty());
         if (perFixture.isEmpty()) {
             return UNSCOREABLE;
         }

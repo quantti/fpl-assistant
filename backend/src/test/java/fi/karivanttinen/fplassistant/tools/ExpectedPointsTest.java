@@ -3,6 +3,7 @@ package fi.karivanttinen.fplassistant.tools;
 import java.math.BigDecimal;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.OptionalDouble;
 
 import org.junit.jupiter.api.Test;
 
@@ -150,10 +151,10 @@ class ExpectedPointsTest {
         SeasonBlend.Exposure everySixty = exposure(2, 2, 2, 120);
         SeasonBlend.Exposure ninetyAndThirty = exposure(2, 2, 1, 120);
 
-        ExpectedPoints.PerFixture reliable = ExpectedPoints.perFixture(defender, everySixty)
-                .orElseThrow();
-        ExpectedPoints.PerFixture mixed = ExpectedPoints.perFixture(defender, ninetyAndThirty)
-                .orElseThrow();
+        ExpectedPoints.PerFixture reliable = ExpectedPoints.perFixture(defender, everySixty,
+                OptionalDouble.of(-Math.log(0.40))).orElseThrow();
+        ExpectedPoints.PerFixture mixed = ExpectedPoints.perFixture(defender, ninetyAndThirty,
+                OptionalDouble.of(-Math.log(0.40))).orElseThrow();
 
         assertThat(reliable.appearance() + reliable.cleanSheet()).isCloseTo(3.60, within(1e-9));
         assertThat(mixed.appearance() + mixed.cleanSheet()).isCloseTo(2.30, within(1e-9));
@@ -163,7 +164,7 @@ class ExpectedPointsTest {
     void attackingReturnsScaleByExpectedMinutesWithoutScalingAppearanceAgain() {
         Map<String, Object> forward = row(4, 0.5, 0.2, null);
         ExpectedPoints.PerFixture projection = ExpectedPoints.perFixture(
-                forward, exposure(2, 2, 1, 120)).orElseThrow();
+                forward, exposure(2, 2, 1, 120), OptionalDouble.empty()).orElseThrow();
 
         assertThat(projection.appearance()).isEqualTo(1.5);
         assertThat(projection.attack()).isCloseTo(
@@ -175,13 +176,13 @@ class ExpectedPointsTest {
         Map<String, Object> defender = row(2, 1, 1, null);
 
         ExpectedPoints.PerFixture zero = ExpectedPoints.perFixture(
-                defender, exposure(2, 0, 0, 0)).orElseThrow();
+                defender, exposure(2, 0, 0, 0), OptionalDouble.empty()).orElseThrow();
 
         assertThat(zero.points()).isZero();
         assertThat(zero.appearance()).isZero();
         assertThat(zero.attack()).isZero();
         assertThat(zero.cleanSheet()).isZero();
-        assertThat(ExpectedPoints.perFixture(defender, null)).isEmpty();
+        assertThat(ExpectedPoints.perFixture(defender, null, OptionalDouble.empty())).isEmpty();
     }
 
     @Test
@@ -193,7 +194,7 @@ class ExpectedPointsTest {
         defender.put("defcon_long_matches", 2);
 
         ExpectedPoints.PerFixture both = ExpectedPoints.perFixture(
-                defender, exposure(4, 4, 2, 240)).orElseThrow();
+                defender, exposure(4, 4, 2, 240), OptionalDouble.empty()).orElseThrow();
         assertThat(both.defensiveContribution()).isCloseTo(
                 2 * 0.5 * ExpectedPoints.thresholdProbability(10, 10), within(1e-9));
         assertThat(both.partialDefcon()).isFalse();
@@ -201,7 +202,7 @@ class ExpectedPointsTest {
         defender.remove("defcon_short_avg");
         defender.put("defcon_short_matches", 1);
         ExpectedPoints.PerFixture partial = ExpectedPoints.perFixture(
-                defender, exposure(4, 4, 2, 240)).orElseThrow();
+                defender, exposure(4, 4, 2, 240), OptionalDouble.empty()).orElseThrow();
         assertThat(partial.partialDefcon()).isTrue();
         assertThat(partial.defensiveContribution()).isZero();
     }
@@ -215,8 +216,8 @@ class ExpectedPointsTest {
         Map<String, Object> goalkeeper = row(1, 0, 0, 1.0);
         goalkeeper.put("defcon_short_avg", 20.0);
         goalkeeper.put("defcon_short_matches", 10);
-        assertThat(ExpectedPoints.perFixture(goalkeeper, exposure(2, 2, 0, 80))
-                .orElseThrow().defensiveContribution()).isZero();
+        assertThat(ExpectedPoints.perFixture(goalkeeper, exposure(2, 2, 0, 80),
+                OptionalDouble.empty()).orElseThrow().defensiveContribution()).isZero();
     }
 
     @Test
@@ -233,6 +234,50 @@ class ExpectedPointsTest {
                         + ExpectedPoints.cleanSheetProbability(0.9)
                                 * ExpectedPoints.cleanSheetPoints(2),
                 within(1e-9));
+    }
+
+    private static SeasonBlend.Exposure fullMinutes() {
+        return new SeasonBlend.Exposure(10, 10, 10, 900, 1, 1, 0, 90, 4);
+    }
+
+    @Test
+    void theCleanSheetTermIsPoissonOnTheProjectedGoalsAgainstNotOnTheSeasonAverage() {
+        Map<String, Object> defender = row(2, 0, 0, 0.30);   // a season average that must not matter
+
+        ExpectedPoints.PerFixture fixture = ExpectedPoints.perFixture(defender, fullMinutes(),
+                OptionalDouble.of(1.25)).orElseThrow();
+
+        assertThat(fixture.cleanSheet()).isCloseTo(4 * Math.exp(-1.25), within(1e-9));
+        assertThat(fixture.points()).isCloseTo(fixture.appearance() + fixture.cleanSheet(), within(1e-9));
+    }
+
+    @Test
+    void anUnavailableProjectionLeavesTheCleanSheetUnknownRatherThanZeroOrAverage() {
+        Map<String, Object> defender = row(2, 0, 0, 0.30);
+
+        ExpectedPoints.PerFixture fixture = ExpectedPoints.perFixture(defender, fullMinutes(),
+                OptionalDouble.empty()).orElseThrow();
+
+        assertThat(fixture.cleanSheet()).isNull();
+        assertThat(fixture.points()).isCloseTo(fixture.appearance(), within(1e-9));
+    }
+
+    @Test
+    void aForwardKeepsAZeroCleanSheetTermWhateverTheProjection() {
+        ExpectedPoints.PerFixture fixture = ExpectedPoints.perFixture(row(4, 0, 0, null),
+                fullMinutes(), OptionalDouble.of(0.10)).orElseThrow();
+
+        assertThat(fixture.cleanSheet()).isEqualTo(0.0);
+    }
+
+    @Test
+    void theCleanSheetIsConditionalOnReachingSixtyMinutes() {
+        SeasonBlend.Exposure cameo = new SeasonBlend.Exposure(10, 10, 0, 200, 1, 0, 1, 20, 1);
+
+        ExpectedPoints.PerFixture fixture = ExpectedPoints.perFixture(row(2, 0, 0, null), cameo,
+                OptionalDouble.of(0.50)).orElseThrow();
+
+        assertThat(fixture.cleanSheet()).isEqualTo(0.0);
     }
 
     private static SeasonBlend.Exposure exposure(int fixtures, int appearances,

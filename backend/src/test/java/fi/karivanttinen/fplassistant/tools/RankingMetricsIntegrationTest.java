@@ -10,6 +10,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalDouble;
 import java.util.Set;
 
 import fi.karivanttinen.fplassistant.schedule.ScheduleSource;
@@ -442,8 +443,8 @@ class RankingMetricsIntegrationTest {
                     .doesNotContainKeys("defcon_long_avg", "defcon_avg");
             Map<String, Object> row = new java.util.HashMap<>(candidate.blended().metrics());
             row.put("element_type", 2);
-            assertThat(ExpectedPoints.perFixture(row, candidate.blended().exposure())
-                    .orElseThrow().partialDefcon()).isTrue();
+            assertThat(ExpectedPoints.perFixture(row, candidate.blended().exposure(),
+                    OptionalDouble.empty()).orElseThrow().partialDefcon()).isTrue();
         }
     }
 
