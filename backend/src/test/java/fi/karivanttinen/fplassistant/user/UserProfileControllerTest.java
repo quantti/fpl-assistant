@@ -42,6 +42,7 @@ class UserProfileControllerTest {
 
     private static final String USER_A = "11111111-1111-4111-8111-111111111111";
     private static final String USER_B = "22222222-2222-4222-8222-222222222222";
+    private static final String ADMIN = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
     @Autowired
     MockMvc mockMvc;
@@ -92,6 +93,15 @@ class UserProfileControllerTest {
     void aUserWithNoTeamIdGetsNull() throws Exception {
         readProfile(USER_B).andExpect(status().isOk())
                 .andExpect(jsonPath("$.fplTeamId").doesNotExist());
+    }
+
+    /** The page shows the admin link from this flag; the API refuses a non-admin regardless. */
+    @Test
+    void theProfileSaysWhetherTheCallerIsAnAdmin() throws Exception {
+        readProfile(USER_A).andExpect(status().isOk())
+                .andExpect(jsonPath("$.admin").value(false));
+        readProfile(ADMIN).andExpect(status().isOk())
+                .andExpect(jsonPath("$.admin").value(true));
     }
 
     @Test
