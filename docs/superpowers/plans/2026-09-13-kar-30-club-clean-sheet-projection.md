@@ -1716,7 +1716,7 @@ expected.
   better as anticipated, it is uniformly worse, most likely because 10 fixtures per club is too
   thin a window for a Poisson rate estimate at this population size.
 - **Previous season's contribution:** `opponent-no-prev` (0.1823) scores *better* overall than
-  `opponent` (0.1833), and at or better than it in all three bands, not just early — the blend
+  `opponent` (0.1833), and better than it in every band, not just early — the blend
   with 2024-25 rates does not earn its keep in this measurement; dropping the previous season did
   not hurt (as expected going into GW21-38) but also did not converge from behind the way the
   brief's "worse early, converging late" expectation predicted.
@@ -1733,7 +1733,7 @@ columns).
 ## Outcome
 
 All seven tasks implemented, reviewed and committed on `kar-30-club-clean-sheet-projection`.
-Full `./gradlew cleanTest test` on the local disposable container: 899 tests, 0 failures, 0 errors,
+Full `./gradlew cleanTest test` on the local disposable container: 901 tests, 0 failures, 0 errors,
 0 skipped.
 
 Deviations from the plan as written:
