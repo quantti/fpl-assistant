@@ -27,16 +27,14 @@ afterEach(() => {
   vi.mocked(navigate).mockReset()
 })
 
-it('keeps My team and the live shortlist count in dedicated navigation', () => {
+it('keeps My team and Shortlist in dedicated navigation', () => {
   const host = document.createElement('div')
   document.body.append(host)
   root = createRoot(host)
-  act(() => root!.render(React.createElement(HeaderNavigation, {
-    route: '/shortlist', shortlistCount: 3,
-  })))
+  act(() => root!.render(React.createElement(HeaderNavigation, { route: '/shortlist' })))
 
   const buttons = Array.from(host.querySelectorAll('button'))
-  expect(buttons.map(button => button.textContent)).toEqual(['My team', 'Shortlist (3)'])
+  expect(buttons.map(button => button.textContent)).toEqual(['My team', 'Shortlist'])
   expect(buttons[1].getAttribute('aria-current')).toBe('page')
 
   act(() => buttons[0].click())
