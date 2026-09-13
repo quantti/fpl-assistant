@@ -105,6 +105,34 @@ class PickToolsIntegrationTest {
         seedPlayer(ZERO, "LostRole", 7, 3, 50, 1.0, "a", 0, 2.0, 1.0, 1.0, null);
         seedPlayer(NO_RECORD, "Newcomer", 8, 3, 50, 1.0, "a", null, 0, 0, 1.0, null);
         seedPlayer(UNAVAILABLE, "Injured", 9, 4, 70, 1.0, "i", 90, 2.0, 1.0, 1.0, 12);
+        seedAverageLeague(1.20, 1.20);
+    }
+
+    /** One ghost row per club side for gameweeks 1-3: an average league every club belongs to. */
+    private static final int GHOST_FIRST = 13_050;
+
+    private void seedAverageLeague(double xg, double xgc) {
+        for (ScheduleSource.FixtureRow row : RankingSeed.fixtures(CAPTURED_AT, FIRST_DEADLINE)) {
+            if (row.gameweek() > 3) {
+                continue;
+            }
+            seedGhostSide(row, row.homeTeamId(), xg, xgc);
+            seedGhostSide(row, row.awayTeamId(), xg, xgc);
+        }
+    }
+
+    private void seedGhostSide(ScheduleSource.FixtureRow row, int club, double xg, double xgc) {
+        int ghost = GHOST_FIRST + (club - RankingSeed.team(1));
+        boolean home = row.homeTeamId() == club;
+        jdbc.update("""
+                INSERT INTO player_fixture_stats (
+                    fixture_id, player_id, season_id, gameweek, player_team_id,
+                    opponent_team_id, was_home, kickoff_time, minutes, total_points,
+                    expected_goals, expected_assists, expected_goals_conceded, value, starts)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 90, 2, ?, 0, ?, 45, 1)
+                """, row.id(), ghost, SEASON_ID, row.gameweek(), club,
+                home ? row.awayTeamId() : row.homeTeamId(), home,
+                Timestamp.from(row.kickoff()), xg, xgc);
     }
 
     @AfterEach
@@ -202,6 +230,7 @@ class PickToolsIntegrationTest {
                 .contains("short window: 3 fixtures")
                 .contains("complete FPL schedule capture at " + CAPTURED_AT)
                 .contains("Avg FDR")
+                .contains("projected per fixture")
                 .doesNotContain(" Cameo (").doesNotContain(" Doubtful (")
                 .doesNotContain(" LostRole (").doesNotContain(" Newcomer (")
                 .doesNotContain(" Injured (").doesNotContain("Pts/90");
@@ -306,6 +335,43 @@ class PickToolsIntegrationTest {
         assertThat(result).contains("Defender").contains("£5.2m")
                 .contains("CS ").contains("DC ").containsIgnoringCase("partial")
                 .contains("captured today (2026-09-09)");
+    }
+
+    @Test
+    void eachPickListsItsCleanSheetChancePerFixtureWithOpponentAndVenue() {
+        String defender = lineFor(tools.getDifferentialPicks("DEF", 10, 2), "Defender");
+
+        // Clubs 10-20 have no captured player here, so an opponent may print as "team <id>";
+        // in production every club has one and prints its short name.
+        assertThat(defender).contains("CS ").contains(" over 2 fixtures (vs ")
+                .containsPattern("vs (K\\d\\d|team \\d+) [ha] \\d+% at xGA \\d+\\.\\d\\d")
+                .doesNotContain("season-average").doesNotContain("at xGC");
+    }
+
+    @Test
+    void aStrongerOpponentLowersTheCleanSheetTermForThatFixtureOnly() {
+        int club = RankingSeed.team(3);                                      // the Defender's club
+        int firstFixture = fixtureFor(club, 4);                   // GW4, the first editable round
+        int opponent = jdbc.queryForObject("SELECT CASE WHEN team_h = ? THEN team_a ELSE team_h END"
+                + " FROM " + scheduleSource.fixtureTable() + " WHERE season = ? AND id = ?",
+                Integer.class, club, SEASON, firstFixture);
+        String before = lineFor(tools.getDifferentialPicks("DEF", 10, 2), "Defender");
+
+        // Triple the opponent's attack in every side it has played.
+        jdbc.update("UPDATE player_fixture_stats SET expected_goals = expected_goals * 3"
+                + " WHERE season_id = ? AND player_id = ?", SEASON_ID,
+                GHOST_FIRST + (opponent - RankingSeed.team(1)));
+        String after = lineFor(tools.getDifferentialPicks("DEF", 10, 2), "Defender");
+
+        assertThat(horizonScore(after)).isLessThan(horizonScore(before));
+        assertThat(after).contains("at xGA ");
+    }
+
+    private static double horizonScore(String line) {
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("horizon Score (\\d+\\.\\d\\d)").matcher(line);
+        assertThat(m.find()).as("horizon Score in: " + line).isTrue();
+        return Double.parseDouble(m.group(1));
     }
 
     @Test
