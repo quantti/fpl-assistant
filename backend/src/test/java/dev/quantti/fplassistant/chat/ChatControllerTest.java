@@ -359,7 +359,7 @@ class ChatControllerTest {
             finally {
                 written.countDown();
             }
-        }).when(conversationsSpy).append(any(), any(), any());
+        }).when(conversationsSpy).append(any(), any(), any(), any());
         doAnswer(invocation -> {
             threads.put("recordTokens", Thread.currentThread());
             try {

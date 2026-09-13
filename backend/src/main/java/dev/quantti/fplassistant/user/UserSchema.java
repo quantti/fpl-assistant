@@ -4,6 +4,7 @@ import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.DependsOn;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
@@ -58,6 +59,7 @@ import org.springframework.stereotype.Component;
  * Phase 5a plan.
  */
 @Component
+@DependsOn("playerCatalogueSchema")
 public class UserSchema {
 
     private static final Logger log = LoggerFactory.getLogger(UserSchema.class);
@@ -68,19 +70,22 @@ public class UserSchema {
     private final String messageTable;
     private final String usageTable;
     private final String inviteTable;
+    private final String catalogueTable;
 
     public UserSchema(JdbcTemplate jdbc,
                       @Value("${fpl.user.profile-table-name}") String profileTable,
                       @Value("${fpl.user.conversation-table-name}") String conversationTable,
                       @Value("${fpl.user.message-table-name}") String messageTable,
                       @Value("${fpl.user.usage-table-name}") String usageTable,
-                      @Value("${fpl.user.invite-redemption-table-name}") String inviteTable) {
+                      @Value("${fpl.user.invite-redemption-table-name}") String inviteTable,
+                      @Value("${fpl.shortlist.catalogue-table-name}") String catalogueTable) {
         this.jdbc = jdbc;
         this.profileTable = profileTable;
         this.conversationTable = conversationTable;
         this.messageTable = messageTable;
         this.usageTable = usageTable;
         this.inviteTable = inviteTable;
+        this.catalogueTable = catalogueTable;
     }
 
     /**
@@ -131,9 +136,10 @@ public class UserSchema {
                     conversation_id UUID NOT NULL REFERENCES %s(id) ON DELETE CASCADE,
                     role VARCHAR(16) NOT NULL CHECK (role IN ('user', 'assistant')),
                     content TEXT NOT NULL,
+                    catalogue_id UUID REFERENCES %s(id),
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
-                """.formatted(messageTable, conversationTable));
+                """.formatted(messageTable, conversationTable, catalogueTable));
 
         jdbc.execute("""
                 CREATE TABLE IF NOT EXISTS %s (
@@ -190,6 +196,10 @@ public class UserSchema {
 
         // The columns above arrived after the table existed in production, and this project has
         // no migration tool. IF NOT EXISTS makes each one a no-op on a database that has it.
+        // The catalogue schema is created first so this additive reference is also safe during an
+        // upgrade from a database whose message table predates shortlist metadata.
+        jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS catalogue_id UUID REFERENCES %s(id)"
+                .formatted(messageTable, catalogueTable));
         for (String column : new String[] {
                 "conversation_id UUID", "model VARCHAR(64)", "cache_write_tokens INTEGER",
                 TOTAL_TOKENS_COLUMN}) {

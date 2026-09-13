@@ -8,6 +8,9 @@ vi.mock('./hooks/useKeyboardAwareViewport', () => ({ useKeyboardAwareViewport: v
 vi.mock('./router', () => ({ useRoute: () => '/my-team' }))
 vi.mock('./components/ChatView/ChatView', () => ({ default: () => null }))
 vi.mock('./components/SignIn/SignIn', () => ({ default: () => null }))
+vi.mock('./shortlist/ShortlistContext', () => ({
+  ShortlistProvider: ({ children }: { children: unknown }) => children,
+}))
 
 const sessionMock = vi.mocked(useSession)
 

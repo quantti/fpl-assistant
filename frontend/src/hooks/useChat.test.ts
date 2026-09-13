@@ -3,7 +3,7 @@
 import React, { act } from 'react'
 import { createRoot, Root } from 'react-dom/client'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ChatRequest, Message } from '../types'
+import type { ChatRequest, Message, PlayerCatalogue } from '../types'
 import { GONE, type ChatEvents, type ChatOutcome } from './chatTransport'
 
 vi.mock('../auth/apiFetch', () => ({ apiFetch: vi.fn() }))
@@ -30,6 +30,27 @@ type ControlledTurn = {
 
 const turns: ControlledTurn[] = []
 const mounted: Harness[] = []
+const catalogue: PlayerCatalogue = {
+  catalogueId: 'catalogue-a',
+  season: '2026-27',
+  players: [{
+    elementId: 17,
+    webName: 'Saka',
+    fullName: 'Bukayo Saka',
+    teamShort: 'ARS',
+    teamName: 'Arsenal',
+    elementType: 3,
+    aliases: ['Bukayo Saka', 'Saka'],
+  }, {
+    elementId: 20,
+    webName: 'Son',
+    fullName: 'Son Heung-min',
+    teamShort: 'TOT',
+    teamName: 'Tottenham',
+    elementType: 3,
+    aliases: ['Son'],
+  }],
+}
 
 class Harness {
   private readonly container = document.createElement('div')
@@ -241,6 +262,7 @@ describe('turn ownership', () => {
       turnA.events.onToken('late A token')
       turnA.events.onConversation('late-conversation-a')
       turnA.events.onTruncated(7)
+      turnA.events.onCatalogue(catalogue)
     })
     await settle(turnA, promiseA, outcome)
 
@@ -300,6 +322,27 @@ describe('turn ownership', () => {
 })
 
 describe('active turn outcomes', () => {
+  it('binds catalogue metadata only after provisional streaming text completes', async () => {
+    const harness = mount(options())
+    const pending = send(harness, 'question')
+    const turn = turns[0]
+
+    act(() => {
+      turn.events.onCatalogue(catalogue)
+      turn.events.onToken('Son')
+    })
+    expect(harness.current().streamingContent).toBe('Son')
+    expect(harness.current().messages).toEqual([{ role: 'user', content: 'question' }])
+
+    await settle(turn, pending, { kind: 'completed', content: 'Sonny is not Son.' })
+
+    expect(harness.current().messages[harness.current().messages.length - 1]).toEqual({
+      role: 'assistant',
+      content: 'Sonny is not Son.',
+      catalogue,
+    })
+  })
+
   it('accepts active metadata and truncation callbacks, including empty success', async () => {
     const onConversation = vi.fn()
     const onTurnFinished = vi.fn()
