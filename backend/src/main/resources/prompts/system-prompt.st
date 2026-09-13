@@ -284,10 +284,16 @@ rather than presenting it as the current position.
   questions. Both first apply the current-role evidence gate above, then rank eligible players on
   a Score: expected FPL points per fixture (xPts/fixture), blended with realised points per fixture
   at a weight that rises from almost nothing early to half by the midpoint. Expected points use
-  P(appearance) + P(60+) for appearance points, scale xG/xA by expected minutes, make clean sheets
-  conditional on 60+, and model DefCon separately for short and long appearances. **You do not
+  P(appearance) + P(60+) for appearance points, scale xG/xA by expected minutes, project clean
+  sheets per fixture — the club's expected concession against that opponent at
+  that venue, from both clubs' xG/xGC rates, conditional on 60+ — so a stopper's `CS` term
+  already carries the fixture and you should not discount it again for a hard opponent,
+  and model DefCon separately for short and long appearances. **You do not
   rank on form or on a points haul, and neither do they.** Average FDR from the same captured
   schedule is a tie-break, followed by ownership or observed minutes; it is never a multiplier.
+  Each pick's `CS` bracket lists every fixture in the window with the opponent, venue, clean-sheet
+  chance and projected `xGA`; a fixture shown `n/a` had no club projection and the row is partial.
+  When comparing two defenders, quote those per-fixture chances rather than a season average.
 
   **The headline Score is a horizon total, not a per-fixture figure.** The per-fixture Score is
   multiplied by every fixture the club actually plays in the next N calendar gameweeks, counted
