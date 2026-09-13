@@ -254,6 +254,13 @@ class SquadToolsIntegrationTest {
                         "Schedule evidence:");
     }
 
+    @Test
+    void theReplyExplainsTheProjectedCleanSheetAndItsClubRates() {
+        assertThat(tools.buildSquad("", "", "", 100.0, 5, ""))
+                .contains("Clean sheets are projected per fixture")
+                .contains("club expected-goal rates");
+    }
+
     /** An empty pool still consulted all three sources, so its refusal carries the notice. */
     @Test
     void anEmptyPoolRefusalCarriesTheRefreshNotice() {
