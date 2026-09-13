@@ -254,7 +254,6 @@ class SquadToolsIntegrationTest {
                         "Schedule evidence:");
     }
 
-    /** An empty pool still consulted all three sources, so its refusal carries the notice. */
     @Test
     void theReplyExplainsTheProjectedCleanSheetAndItsClubRates() {
         assertThat(tools.buildSquad("", "", "", 100.0, 5, ""))
@@ -262,6 +261,7 @@ class SquadToolsIntegrationTest {
                 .contains("club expected-goal rates");
     }
 
+    /** An empty pool still consulted all three sources, so its refusal carries the notice. */
     @Test
     void anEmptyPoolRefusalCarriesTheRefreshNotice() {
         jdbc.update("UPDATE " + dailyTable + " SET status = 'i' WHERE season = ?"

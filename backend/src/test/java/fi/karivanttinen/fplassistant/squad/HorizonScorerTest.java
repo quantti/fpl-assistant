@@ -250,16 +250,16 @@ class HorizonScorerTest {
     }
 
     @Test
-    void fdrScalesTheAttackingTermOnlyAndTheCleanSheetFollowsTheOpponentModel() {
+    void fdrScalesTheAttackingTermOnly() {
         SquadCandidate player = fourPointsPerFixture();          // FWD: 2 appearance + 2 attack
 
-        HorizonScorer.Projection projection = HorizonScorer.projection(player, window(2, 4),
+        HorizonScorer.Projection projection = HorizonScorer.projection(player, window(2),
                 ClubRates.NONE);
 
-        // Appearance is not fixture-scaled; only the two attacking points are.
+        // Appearance is not fixture-scaled; only the two attacking points are. Scaling the whole
+        // four points by the FDR-2 factor would come out at 4.4.
         assertThat(projection.optimizerPoints()).isCloseTo(
-                2 * 2.0 + 2.0 * (HorizonScorer.fdrAdjust(2) + HorizonScorer.fdrAdjust(4)),
-                within(1e-9));
+                2.0 + 2.0 * HorizonScorer.fdrAdjust(2), within(1e-9));
     }
 
     @Test
