@@ -135,14 +135,22 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
 - **Expected ranking points are per fixture, not a whole score multiplied by mean minutes.**
   `SeasonBlend.Exposure` is an indivisible bundle of appearance, 60+, short-appearance,
   expected-minutes and realised-points rates. `ExpectedPoints.perFixture` uses `P(play)+P(60+)`,
-  scales attack by expected minutes, makes clean sheets conditional on 60+, and gives DefCon
-  separate short/long exposure. Known zero DefCon is evidence; unavailable components print
+  scales attack by expected minutes, takes the
+  clean sheet **per fixture** as `exp(-xGA)` on the concession `ClubRates.projectedGoalsAgainst`
+  projects for that club against that opponent at that venue (KAR-30) — conditional on 60+, `null`
+  and labelled partial when no club projection exists, never the player's season-average xGC — and
+  gives DefCon separate short/long exposure. Club rates are read inside the same `RankingMetrics`
+  snapshot: team xG is `SUM` over the club's players per side, team xGC is `MAX` (FPL stamps the
+  team figure on every player), an unpopulated side (`xGC = 0`) is excluded, clubs bridge across
+  seasons by unique `short_name` the way players bridge by `web_name`, and the league mean and
+  home/away factors pool both seasons without a ramp. Known zero DefCon is evidence; unavailable components print
   partial/n/a rather than zero. Pick lists blend expected and realised per fixture and then
   **total that per-fixture composite over the club's fixtures in the horizon** — that horizon
   Score is what they rank on, and average FDR stays a tie-break, never a multiplier.
   `HorizonScorer` scores the squad over the same fixture population with the same expected
-  components and its existing coarse FDR objective — expected only, no realised blend and no
-  outer minutes multiplier. Shared population, distinct objectives; do not merge them.
+  components, expected only — no realised blend, no outer minutes multiplier — and FDR scales the
+  attacking term only: the clean sheet already carries the opponent, so an FDR multiplier on it
+  would count the fixture twice. Appearance and DefCon are not fixture-scaled. Shared population, distinct objectives; do not merge them.
 - Tools query Supabase via `JdbcTemplate`, annotated with Spring AI `@Tool`.
 - **No `@Tool` method takes a parameter that identifies an account.** The model fills tool
   parameters from the conversation, so a `userId` (or a team id) in a tool's schema is a working
@@ -198,6 +206,8 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
   borrowed from a previous season. A player with no previous-season record is ranked on this
   season alone once its floor is cleared and the reply says so. Do not reintroduce a single-season
   switch, and do not write the ramp a second time in SQL.
+  Club attack/defence rates (`ClubRates`) ride the same table, keyed on the club's own completed
+  current-season fixtures; league constants are pooled, not ramped.
 - **Tests seed the data they assert on and never depend on production content.** The suite runs
   against a disposable container (`scripts/test-db.sh`), which holds the tapas schema
   (`scripts/dump-test-schema.sh` regenerates the dump) and nothing else. Anything reading

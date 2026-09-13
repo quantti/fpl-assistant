@@ -4063,3 +4063,92 @@ while the machine is stopped. Disabled autostop on the existing production machi
 health (`UP`). No image deployment or extra machine. `fly.toml` now preserves always-on operation
 with autostop off and one minimum running machine; configuration validation passed. This restores
 future scheduled captures, not missed runs: existing stale data is not repaired by starting the VM.
+
+## Per-fixture clean sheets from club xG/xGC (KAR-30, 2026-09-13)
+
+Plan: `docs/superpowers/plans/2026-09-13-kar-30-club-clean-sheet-projection.md`, 7/7 tasks.
+The clean-sheet term in both ranking paths was the player's own season-average xGC — one number
+for the whole horizon, blind to who the club plays and where, with an average FDR printed beside
+it as a separate tie-break. A goalkeeper facing the leaders away and one facing a promoted side at
+home scored the same clean-sheet component, and the only opponent signal anywhere near it was a
+coarse multiplier that also scaled the attacking term.
+
+The component is now projected per fixture. For club D defending against opponent O:
+
+```text
+lambda = defence(D) × attack(O) / meanXg × venue(O)
+P(clean sheet | 60+) = exp(-lambda)
+clean-sheet points for the fixture = CLEAN_SHEET_POINTS[position] × P(60+) × exp(-lambda)
+```
+
+`attack(C)` is club C's mean team xG per fixture-side, `defence(C)` its mean team xGC per
+fixture-side, `meanXg` the league mean team xG per fixture-side, and `venue(O)` the league home
+or away factor. With both clubs average this reduces to the league's average home or away
+concession. `ClubRates` holds the model; `RankingMetrics` reads the sides inside the existing
+snapshot (team xG as `SUM` over the club's players per side, team xGC as `MAX` because FPL stamps
+the team figure on every player, sides with `xg_against = 0` excluded as unpopulated, clubs
+bridged across seasons by unique case-insensitive `short_name` the way players bridge by
+`web_name`); `ExpectedPoints.perFixture` takes the projection as an `OptionalDouble` and returns
+`null` — printed partial — when there is none, never a season average standing in for it.
+
+Three decisions. Club rates use the club's whole completed current season blended with its whole
+previous season on the shared `SeasonBlend` ramp, keyed on the club's own completed current-season
+fixtures: one ramp in one place, and Task 0 measured the alternative rather than tuning it.
+League constants (mean xG, home and away factors) pool both seasons without a ramp — the league
+mean is not a club's property — behind `MIN_LEAGUE_SIDES = 40` pooled sides, with
+`MIN_CLUB_FIXTURES = 2` for a club rate; below either floor the projection is unavailable, not
+zero. In the squad objective `fdrAdjust` now multiplies the attacking term only: the clean sheet
+already carries the opponent and the venue, so an FDR multiplier on it would count the fixture
+twice. Appearance and DefCon are not fixture-scaled, and the neutral-3 label is reworded "on the
+attacking term". Pick lists are unchanged here — FDR stays a tie-break.
+
+Task 0 measured the model offline on public vaastav CSVs, 2024-25 as the previous season and
+2025-26 held out, rates computed only from rows dated before the predicted gameweek, 720 scored
+fixture-sides:
+
+```
+variant            Brier    log-loss   n
+baseline           0.1839   0.5522   720
+opponent           0.1833   0.5484   720
+opponent-no-prev   0.1823   0.5468   720
+opponent-last10    0.1860   0.5563   720
+
+Brier by gameweek band
+GW3-10: baseline 0.1806, opponent 0.1820, opponent-no-prev 0.1792, opponent-last10 0.1820
+GW11-20: baseline 0.1895, opponent 0.1918, opponent-no-prev 0.1907, opponent-last10 0.1941
+GW21-38: baseline 0.1822, opponent 0.1791, opponent-no-prev 0.1790, opponent-last10 0.1832
+```
+
+The gate passes — `opponent` beats `baseline` overall on Brier (0.1833 vs 0.1839) and log-loss
+(0.5484 vs 0.5522) — but by 0.0006 Brier over 720 sides, which is thin. The shape is not the one
+the plan anticipated: `opponent` is worse than `baseline` in GW3-10 (0.1820 vs 0.1806) and GW11-20
+(0.1918 vs 0.1895) and only pulls ahead in GW21-38 (0.1791 vs 0.1822). The last-10-fixture club
+window was uniformly worse (0.1860), so the whole-season window shipped. **Open question for the
+owner:** `opponent-no-prev` — this season's club rates alone, no previous-season blend — scored
+better than the blend overall (0.1823 vs 0.1833) and at or better than it in all three bands. The
+ruling was to ship as specified, because the plan says Task 0 reports and does not tune and one
+ramp in one place is an AGENTS.md convention; dropping the previous-season club sides is a
+one-line change if the owner wants the measured variant instead.
+
+Printing: each pick's `CS` component is now the horizon total with its per-fixture list,
+`CS 1.93 over 2 fixtures (vs K07 h 61% at xGA 0.49; vs K12 a 38% at xGA 0.97)`; a fixture with no
+club projection prints `n/a` in that list and the row carries the existing partial label. The
+footer names the model, `expected/fixture` is the horizon average so `horizonScore = score × count`
+is unchanged, and the system prompt now tells the model to quote those per-fixture chances instead
+of a season average and not to discount a stopper again for a hard opponent.
+
+Verified: full `./gradlew cleanTest test` passed 899 tests with 0 failures, 0 errors and 0 skipped
+against the local disposable container only. No Supabase access and no live chat-model request.
+
+Honest limits. The attack term still has no opponent model at all in the pick lists and only the
+coarse FDR multiplier in the squad objective — this ticket modelled the defensive side. `xGA` here
+is FPL's own expected data as stored in `player_fixture_stats`, not a third-party xG model, and the
+projection is a plain Poisson `exp(-lambda)` with no low-scoring or draw-inflation correction; no
+calibration claim is made beyond the backtest above, whose margin is thin. Two known asymmetries
+from review: the side read excludes on `xg_against > 0` but not `xg_for > 0`, so an unpopulated
+attack beside a populated defence would be read as a real zero — unreachable with real data, since
+both columns arrive in the same payload — and clubs choose the direct-id path over the bridge on
+`metric.played().currentSeason()` where players use capture/metric season equality.
+
+The KAR-35 outcome section's sentence that "KAR-30's opponent-specific clean-sheet model is not
+implemented" is superseded by this section.

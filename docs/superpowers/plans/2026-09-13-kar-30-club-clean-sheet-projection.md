@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**PROGRESS:** Task 1/7 done.
+**PROGRESS:** Task 7/7 done.
 
 Issue: [KAR-30](https://linear.app/quantti/issue/KAR-30). Branch: `kar-30-club-clean-sheet-projection`
 (never `master`; push the branch and open a PR — see AGENTS.md).
@@ -1729,3 +1729,24 @@ No script adaptation was needed: both seasons' CSVs (`gw2024-25.csv`, `gw2025-26
 every row since both seasons are fully completed). The only header differences between seasons are
 columns the script does not use (2024-25's `mng_*` columns; 2025-26's added defensive-contribution
 columns).
+
+## Outcome
+
+All seven tasks implemented, reviewed and committed on `kar-30-club-clean-sheet-projection`.
+Full `./gradlew cleanTest test` on the local disposable container: 899 tests, 0 failures, 0 errors,
+0 skipped.
+
+Deviations from the plan as written:
+
+- **Task 0.** The gate passed by 0.0006 Brier over 720 sides, and `opponent` was worse than
+  `baseline` in GW3-10 and GW11-20, ahead only in GW21-38 — the opposite band from the one the
+  plan expected. `opponent-no-prev` (this season only) scored better than the blend in every band.
+  Ruling: ship as specified (whole-season rates on the shared ramp), report the no-prev result to
+  the owner in `docs/STATUS.md` as an open question rather than tuning here.
+- **Task 2.** Two `RankingMetrics.Snapshot` construction sites needed the new `clubRates()`
+  component, not the one the plan named.
+- **Task 3.** One existing test was given an equivalent λ rather than `OptionalDouble.empty()`,
+  keeping its original assertion meaningful.
+- **Task 4.** The tool descriptions took a comma the plan's wording did not have.
+- **Task 5.** After review the FDR test was rewritten against an asymmetric `window(2)` and renamed
+  `fdrScalesTheAttackingTermOnly`, so it fails if FDR ever scales a non-attacking term.
