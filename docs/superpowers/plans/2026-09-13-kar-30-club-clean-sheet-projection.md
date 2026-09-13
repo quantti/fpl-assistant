@@ -1750,3 +1750,9 @@ Deviations from the plan as written:
 - **Task 4.** The tool descriptions took a comma the plan's wording did not have.
 - **Task 5.** After review the FDR test was rewritten against an asymmetric `window(2)` and renamed
   `fdrScalesTheAttackingTermOnly`, so it fails if FDR ever scales a non-attacking term.
+- **Final review.** Two fixes in one wave: `ClubRates.league` became public and the league pool is
+  now taken from each season's raw, unbridged sides, so a relegated club still shapes `meanXg` as
+  it did in the Task 0 measurement; and the pick side's two summations (the Score's
+  `expected_per_fixture` and the printed `CS ... over N fixtures`) are pinned numerically against
+  each other and against the printed legs, replacing a comment that described arithmetic no test
+  performed.

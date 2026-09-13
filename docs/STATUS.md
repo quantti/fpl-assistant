@@ -4088,8 +4088,9 @@ concession. `ClubRates` holds the model; `RankingMetrics` reads the sides inside
 snapshot (team xG as `SUM` over the club's players per side, team xGC as `MAX` because FPL stamps
 the team figure on every player, sides with `xg_against = 0` excluded as unpopulated, clubs
 bridged across seasons by unique case-insensitive `short_name` the way players bridge by
-`web_name`); `ExpectedPoints.perFixture` takes the projection as an `OptionalDouble` and returns
-`null` — printed partial — when there is none, never a season average standing in for it.
+`web_name`); `ExpectedPoints.perFixture` takes the projection as an `OptionalDouble` and leaves
+the clean-sheet component `null` — printed partial — when there is none, never a season average
+standing in for it.
 
 Three decisions. Club rates use the club's whole completed current season blended with its whole
 previous season on the shared `SeasonBlend` ramp, keyed on the club's own completed current-season
@@ -4125,7 +4126,7 @@ the plan anticipated: `opponent` is worse than `baseline` in GW3-10 (0.1820 vs 0
 (0.1918 vs 0.1895) and only pulls ahead in GW21-38 (0.1791 vs 0.1822). The last-10-fixture club
 window was uniformly worse (0.1860), so the whole-season window shipped. **Open question for the
 owner:** `opponent-no-prev` — this season's club rates alone, no previous-season blend — scored
-better than the blend overall (0.1823 vs 0.1833) and at or better than it in all three bands. The
+better than the blend overall (0.1823 vs 0.1833) and better in every band. The
 ruling was to ship as specified, because the plan says Task 0 reports and does not tune and one
 ramp in one place is an AGENTS.md convention; dropping the previous-season club sides is a
 one-line change if the owner wants the measured variant instead.
@@ -4148,7 +4149,10 @@ calibration claim is made beyond the backtest above, whose margin is thin. Two k
 from review: the side read excludes on `xg_against > 0` but not `xg_for > 0`, so an unpopulated
 attack beside a populated defence would be read as a real zero — unreachable with real data, since
 both columns arrive in the same payload — and clubs choose the direct-id path over the bridge on
-`metric.played().currentSeason()` where players use capture/metric season equality.
+`metric.played().currentSeason()` where players use capture/metric season equality. The offline
+measurement pooled every previous-season club into the league constants, including the relegated
+clubs that bridge to nothing, and after the final review the shipped read does the same — it pools
+the raw, unbridged sides of each season — so the measured and shipped populations agree.
 
 The KAR-35 outcome section's sentence that "KAR-30's opponent-specific clean-sheet model is not
 implemented" is superseded by this section.
