@@ -4181,6 +4181,46 @@ the raw, unbridged sides of each season — so the measured and shipped populati
 The KAR-35 outcome section's sentence that "KAR-30's opponent-specific clean-sheet model is not
 implemented" is superseded by this section.
 
+## Wildcard comparison coverage — investigation and proposed fix (2026-09-13)
+
+Plan: `docs/superpowers/plans/2026-09-13-wildcard-data-coverage.md` — planning complete,
+implementation not started; no Linear identifier assigned yet.
+
+The morning's wildcard recommendation omitted Arsenal. Read-only investigation found seven
+elapsed GW4 fixtures still marked unfinished in the selected 02:10 UK schedule capture, affecting
+fourteen clubs; Arsenal's GW4 core PFS rows were also absent. `RESULT_PENDING` makes those clubs'
+players XI-ineligible before their points can compete. The solver can still produce a normal-looking
+squad from the remaining clubs, and the response failed to disclose that restricted comparison.
+This establishes a coverage/advice problem, not that the clean-sheet formula undervalues Arsenal.
+The original tool invocation was not replayed, and the source-side reason for the pending flags
+has not been established. Tapas' finalized-gameweek gate is a separate possible metric bottleneck.
+
+The plan preserves the hard minutes rule and proposes refusing general squad recommendations
+when whole clubs lack relevant match evidence, while reporting individual exclusions separately.
+That stricter availability tradeoff needs owner approval. It separates the immediate correctness
+guard from a measured sync remedy, which may require a separate Tapas PR; more schedule polls
+alone cannot supply absent core PFS rows. Independent plan review found no actionable issues.
+No production writes, model calls or implementation changes were made for this investigation.
+
+### Owner clarification — this service owns FPL ingestion
+
+The owner subsequently confirmed that updates belong to **this service, not Tapas**. The earlier
+proposal to retain the Tapas writer is superseded by
+`docs/superpowers/plans/2026-09-13-owned-matchday-sync.md` (implementation 0/10).
+The plan takes over existing core-table writes without changing their schema, combines core and
+DefCon history ingestion, polls repeatedly on every matchday, and requires both source
+`finished=true` and verified per-fixture player evidence before declaring post-match readiness.
+Two stable post-finish observations and subsequent correction checks are proposed; source
+finality is not guaranteed by a clock. Durable retries, budget/lease fencing, owner alerts and an
+external heartbeat make failures visible. A reviewed cutover disables all Tapas core writers,
+including embedded/manual paths, while preserving its unrelated jobs.
+
+Plan review caught two contract gaps, now resolved in the design: NOT NULL/default-zero PFS
+columns require durable per-player/component evidence and reader masking for unavailable metrics;
+pre-cutover intraday captures require staged publication so actual source timestamps are preserved
+without replacing a still-usable prior-day capture too early. The companion comparison-coverage
+plan remains required and now points to this ownership plan for ingestion. No updater has yet
+been implemented or switched on.
 ## Header facelift — FPL Sidekick wordmark and page links (2026-09-13)
 
 Built on the player-shortlist branch (PR #88), which introduced `HeaderNavigation`. The bar now
