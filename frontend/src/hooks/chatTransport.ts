@@ -1,4 +1,4 @@
-import { ChatRequest } from '../types'
+import { ChatRequest, PlayerCatalogue } from '../types'
 import { apiFetch } from '../auth/apiFetch'
 
 export type ChatOutcome =
@@ -11,6 +11,7 @@ export type ChatOutcome =
 export interface ChatEvents {
   onConversation(id: string): void
   onTruncated(dropped: number): void // NaN/≤0 allowed; the hook picks the wording
+  onCatalogue(catalogue: PlayerCatalogue): void
   onToken(accumulated: string): void
 }
 
@@ -137,6 +138,19 @@ export async function sendChatTurn(
     }
     if (eventName === 'truncated') {
       events.onTruncated(Number(data))
+      return
+    }
+    if (eventName === 'catalogue') {
+      try {
+        const catalogue = JSON.parse(data) as PlayerCatalogue
+        if (typeof catalogue.catalogueId === 'string'
+          && typeof catalogue.season === 'string'
+          && Array.isArray(catalogue.players)) {
+          events.onCatalogue(catalogue)
+        }
+      } catch {
+        // Catalogue metadata is optional; malformed identity evidence degrades to plain text.
+      }
       return
     }
     if (eventName === 'error') {

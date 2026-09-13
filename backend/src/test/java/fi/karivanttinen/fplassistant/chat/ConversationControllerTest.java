@@ -76,9 +76,12 @@ class ConversationControllerTest {
         mockMvc.perform(get("/api/conversations/" + id + "/messages")
                 .header("Authorization", bearer(USER_A)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$[0].role").value("user"))
-                .andExpect(jsonPath("$[0].content").value("Who should I captain?"))
-                .andExpect(jsonPath("$[1].role").value("assistant"));
+                .andExpect(jsonPath("$.messages[0].role").value("user"))
+                .andExpect(jsonPath("$.messages[0].content").value("Who should I captain?"))
+                .andExpect(jsonPath("$.messages[0].catalogueId").doesNotExist())
+                .andExpect(jsonPath("$.messages[1].role").value("assistant"))
+                .andExpect(jsonPath("$.messages[1].catalogueId").doesNotExist())
+                .andExpect(jsonPath("$.catalogues").isEmpty());
     }
 
     /** The one that matters: another user's id must not read as empty, it must read as absent. */

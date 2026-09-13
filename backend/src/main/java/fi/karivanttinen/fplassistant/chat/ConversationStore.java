@@ -48,7 +48,7 @@ public class ConversationStore {
 
     public record Summary(UUID id, String title, Instant updatedAt) {}
 
-    public record StoredMessage(String role, String content, Instant createdAt) {}
+    public record StoredMessage(String role, String content, Instant createdAt, UUID catalogueId) {}
 
     /**
      * Opens a conversation owned by this user, titled from the message that started it. The title
@@ -73,9 +73,13 @@ public class ConversationStore {
     }
 
     public void append(UUID conversationId, String role, String content) {
+        append(conversationId, role, content, null);
+    }
+
+    public void append(UUID conversationId, String role, String content, UUID catalogueId) {
         jdbc.update("INSERT INTO " + messageTable
-                + " (conversation_id, role, content) VALUES (?, ?, ?)",
-                conversationId, role, content);
+                + " (conversation_id, role, content, catalogue_id) VALUES (?, ?, ?, ?)",
+                conversationId, role, content, catalogueId);
     }
 
     /**
@@ -132,13 +136,14 @@ public class ConversationStore {
      */
     public List<StoredMessage> messages(UUID conversationId) {
         List<StoredMessage> newestFirst = jdbc.query(
-                "SELECT role, content, created_at FROM " + messageTable
+                "SELECT role, content, created_at, catalogue_id FROM " + messageTable
                         + " WHERE conversation_id = ? ORDER BY created_at DESC, id DESC"
                         + " LIMIT " + MAX_MESSAGES,
                 (rs, row) -> new StoredMessage(
                         rs.getString("role"),
                         rs.getString("content"),
-                        rs.getTimestamp("created_at").toInstant()),
+                        rs.getTimestamp("created_at").toInstant(),
+                        rs.getObject("catalogue_id", UUID.class)),
                 conversationId);
         return newestFirst.reversed();
     }

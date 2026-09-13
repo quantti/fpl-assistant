@@ -64,6 +64,13 @@
   gap: var(--space-12);
 }
 
+.headerActions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  margin-left: auto;
+}
+
 /* Below the breakpoint the sidebar is an overlay opened from here — the same
    shape as every chat product's phone layout, and the only way a 375px screen
    keeps its reading measure. Above it the sidebar is always there, so this
@@ -87,10 +94,12 @@
 .header {
   flex: 0 0 auto;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  height: 48px;
-  padding: 0 var(--space-16);
+  gap: var(--space-4) var(--space-8);
+  min-height: 48px;
+  padding: var(--space-8) var(--space-16);
   border-bottom: 1px solid var(--rule-section);
   font-family: var(--font-ui);
   font-weight: 600;
@@ -120,6 +129,7 @@
   }
 
   .header {
-    height: 56px;
+    min-height: 56px;
+    padding-block: 0;
   }
 }
