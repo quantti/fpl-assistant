@@ -434,6 +434,6 @@ class SquadFormatterTest {
 
         assertThat(withProjections(projections, horizon()))
                 .contains("8.00 xPts over 2 fixtures")
-                .contains("FDR n/a for 1 fixture, neutral 3 assumed");
+                .contains("FDR n/a for 1 fixture, neutral 3 assumed on the attacking term");
     }
 }

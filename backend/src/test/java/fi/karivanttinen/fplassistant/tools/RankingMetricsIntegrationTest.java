@@ -10,6 +10,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalDouble;
 import java.util.Set;
 
 import fi.karivanttinen.fplassistant.schedule.ScheduleSource;
@@ -30,6 +31,7 @@ import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.ActiveProfiles;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.within;
 
 @SpringBootTest
 @ActiveProfiles("test")
@@ -441,8 +443,8 @@ class RankingMetricsIntegrationTest {
                     .doesNotContainKeys("defcon_long_avg", "defcon_avg");
             Map<String, Object> row = new java.util.HashMap<>(candidate.blended().metrics());
             row.put("element_type", 2);
-            assertThat(ExpectedPoints.perFixture(row, candidate.blended().exposure())
-                    .orElseThrow().partialDefcon()).isTrue();
+            assertThat(ExpectedPoints.perFixture(row, candidate.blended().exposure(),
+                    OptionalDouble.empty()).orElseThrow().partialDefcon()).isTrue();
         }
     }
 
@@ -464,6 +466,165 @@ class RankingMetricsIntegrationTest {
         assertThat(window.totalMinutes()).isEqualTo(90);
         assertThat(window.appearances()).isEqualTo(1);
         assertThat(window.sixtyPlus()).isEqualTo(1);
+    }
+
+    /** Ghost element ids for one row per club side; never captured, so never candidates. */
+    private static final int GHOST_BASE = 9_900_000;
+
+    /**
+     * Finishes {@code gameweeks} rounds of the seeded schedule and gives every club one row per
+     * side at the same rates, so the league floor is met and every club is average.
+     */
+    private void seedAverageLeague(int gameweeks, double xg, double xgc) {
+        for (ScheduleSource.FixtureRow row : RankingSeed.fixtures(CAPTURED_AT, FIRST_DEADLINE)) {
+            if (row.gameweek() == null || row.gameweek() > gameweeks) {
+                continue;
+            }
+            Instant kickoff = Instant.parse("2026-08-01T12:00:00Z").plus(row.gameweek(), ChronoUnit.DAYS);
+            finishFixture(row.id(), kickoff);
+            seedSide(row.id(), row.homeTeamId(), xg, xgc);
+            seedSide(row.id(), row.awayTeamId(), xg, xgc);
+        }
+    }
+
+    private void seedSide(int fixtureId, int club, double xg, double xgc) {
+        int ghost = GHOST_BASE + club * 1000 + fixtureId % 1000;
+        seedPfs(ghost, fixtureId, 90, club, club, null);
+        jdbc.update("UPDATE player_fixture_stats SET expected_goals = ?, expected_goals_conceded = ?"
+                        + " WHERE season_id = ? AND player_id = ? AND fixture_id = ?",
+                xg, xgc, SEASON_ID, ghost, fixtureId);
+    }
+
+    /**
+     * The club's fixture in a named round. {@code fixtureIdsFor} lists rounds interleaved
+     * (GW1, GW20, GW2, GW21, ...), so its first two entries are not the two rounds
+     * {@code seedAverageLeague} finished.
+     */
+    private static int fixtureFor(int club, int gameweek) {
+        return RankingSeed.fixtureFor(RankingSeed.fixtures(CAPTURED_AT, FIRST_DEADLINE),
+                club, gameweek);
+    }
+
+    @Test
+    void clubSidesSumTheirPlayersAttackAndReadTheTeamConcessionOnce() {
+        int club = RankingSeed.team(1);
+        seedAverageLeague(2, 1.40, 1.40);
+        List<Integer> fixtures = List.of(fixtureFor(club, 1), fixtureFor(club, 2));
+        // A second player of the same club in the same two fixtures: xG adds, xGC does not.
+        seedDaily(PLAYER, "Second", club, 2, "a", CAPTURE_DATE, CAPTURED_AT);
+        for (int fixture : fixtures) {
+            seedPfs(PLAYER, fixture, 90, club, club, null);
+            jdbc.update("UPDATE player_fixture_stats SET expected_goals = 0.60,"
+                            + " expected_goals_conceded = 1.40"
+                            + " WHERE season_id = ? AND player_id = ? AND fixture_id = ?",
+                    SEASON_ID, PLAYER, fixture);
+        }
+
+        ClubRates.Rates rates = load(CAPTURE_DATE).clubRates();
+        ClubRates.ClubRate rate = rates.clubs().get(club);
+
+        assertThat(rate.fixturesThisSeason()).isEqualTo(2);
+        assertThat(rate.attack()).isCloseTo(2.00, within(1e-9));        // 1.40 ghost + 0.60
+        assertThat(rate.defence()).isCloseTo(1.40, within(1e-9));       // MAX, not 2.80
+        assertThat(rates.league()).isPresent();
+        assertThat(rates.league().orElseThrow().sides()).isEqualTo(40);
+    }
+
+    @Test
+    void clubSidesStopAtTheSnapshotInstantAndAtUnpopulatedConcession() {
+        int club = RankingSeed.team(1);
+        seedAverageLeague(3, 1.40, 1.40);
+        List<Integer> fixtures = List.of(fixtureFor(club, 1), fixtureFor(club, 2),
+                fixtureFor(club, 3));
+        // Third fixture finished but dated after asOf: not this snapshot's evidence.
+        finishFixture(fixtures.get(2), AS_OF.plus(1, ChronoUnit.DAYS));
+        // Second fixture's team concession never written: the side is unpopulated, not perfect.
+        jdbc.update("UPDATE player_fixture_stats SET expected_goals_conceded = 0"
+                        + " WHERE season_id = ? AND fixture_id = ? AND was_home = ?",
+                SEASON_ID, fixtures.get(1), fixtureInvolvesAsHome(fixtures.get(1), club));
+
+        ClubRates.ClubRate rate = load(CAPTURE_DATE).clubRates().clubs().get(club);
+
+        assertThat(rate).isNull();   // one usable side is under the two-side floor
+    }
+
+    private boolean fixtureInvolvesAsHome(int fixtureId, int club) {
+        Integer home = jdbc.queryForObject("SELECT team_h FROM " + fixtureTable
+                + " WHERE season = ? AND id = ?", Integer.class, SEASON, fixtureId);
+        return home != null && home == club;
+    }
+
+    @Test
+    void previousSeasonClubSidesBridgeByShortNameAndRampOnTheClubsOwnFixtures() {
+        int club = RankingSeed.team(1);
+        seedAverageLeague(2, 1.40, 1.40);
+        seedDaily(PLAYER, "Bridged", club, 2, "a", CAPTURE_DATE, CAPTURED_AT);
+        // The capture stamps every club 'K31'; give last season one club with that short name
+        // and 38 sides, plus a spare with another name that must not attach.
+        jdbc.update("""
+                INSERT INTO team (id, season_id, code, name, short_name, strength) VALUES
+                    (9861, ?, 9861, 'Prior Same Name', 'K31', 3),
+                    (9862, ?, 9862, 'Prior Other', 'PRO', 3),
+                    (9863, ?, 9863, 'Prior Relegated', 'ZZZ', 3)
+                """, PREVIOUS_SEASON_ID, PREVIOUS_SEASON_ID, PREVIOUS_SEASON_ID);
+        for (int index = 0; index < 38; index++) {
+            int fixture = 986_100 + index;
+            boolean home = index % 2 == 0;
+            Instant kickoff = Instant.parse("2025-08-01T12:00:00Z").plus(index, ChronoUnit.DAYS);
+            jdbc.update("""
+                    INSERT INTO fixture (id, season_id, gameweek, code, team_h, team_a,
+                                         kickoff_time, started, finished)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, true, true)
+                    """, fixture, PREVIOUS_SEASON_ID, index + 1, fixture,
+                    home ? 9861 : 9862, home ? 9862 : 9861, Timestamp.from(kickoff));
+            jdbc.update("""
+                    INSERT INTO player_fixture_stats (
+                        fixture_id, player_id, season_id, gameweek, player_team_id,
+                        opponent_team_id, was_home, kickoff_time, minutes, total_points,
+                        expected_goals, expected_assists, expected_goals_conceded, value, starts)
+                    VALUES (?, ?, ?, ?, 9861, 9862, ?, ?, 90, 4, 1.00, 0.10, 2.00, 50, 1)
+                    """, fixture, GHOST_BASE + 1, PREVIOUS_SEASON_ID, index + 1, home,
+                    Timestamp.from(kickoff));
+        }
+
+        // A relegated club: it bridges to nothing, so it carries no rate — but its sides still
+        // belong to the league the surviving clubs are measured against.
+        for (int index = 0; index < 2; index++) {
+            int fixture = 986_300 + index;
+            boolean home = index % 2 == 0;
+            Instant kickoff = Instant.parse("2025-08-01T12:00:00Z").plus(index, ChronoUnit.DAYS);
+            jdbc.update("""
+                    INSERT INTO fixture (id, season_id, gameweek, code, team_h, team_a,
+                                         kickoff_time, started, finished)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, true, true)
+                    """, fixture, PREVIOUS_SEASON_ID, index + 1, fixture,
+                    home ? 9863 : 9862, home ? 9862 : 9863, Timestamp.from(kickoff));
+            jdbc.update("""
+                    INSERT INTO player_fixture_stats (
+                        fixture_id, player_id, season_id, gameweek, player_team_id,
+                        opponent_team_id, was_home, kickoff_time, minutes, total_points,
+                        expected_goals, expected_assists, expected_goals_conceded, value, starts)
+                    VALUES (?, ?, ?, ?, 9863, 9862, ?, ?, 90, 1, 0.40, 0.05, 2.60, 45, 1)
+                    """, fixture, GHOST_BASE + 2, PREVIOUS_SEASON_ID, index + 1, home,
+                    Timestamp.from(kickoff));
+        }
+
+        ClubRates.ClubRate rate = loadWithPrevious().clubRates().clubs().get(club);
+
+        assertThat(rate.hasPrevious()).isTrue();
+        assertThat(rate.fixturesThisSeason()).isEqualTo(2);
+        assertThat(rate.weight()).isEqualTo(SeasonBlend.weight(2));
+        assertThat(rate.attack()).isCloseTo(0.30 * 1.40 + 0.70 * 1.00, within(1e-9));
+        assertThat(rate.defence()).isCloseTo(0.30 * 1.40 + 0.70 * 2.00, within(1e-9));
+        // No other club has a captured player in this test, so nothing else bridges: club 2
+        // stays on this season alone, which is what an unbridged club must do.
+        assertThat(loadWithPrevious().clubRates().clubs().get(RankingSeed.team(2)).hasPrevious())
+                .isFalse();
+        // The league pools every side of each season, bridged or not: 40 this season, 38 from the
+        // club that bridges and 2 from the relegated one, which itself gets no rate.
+        ClubRates.Rates rates = loadWithPrevious().clubRates();
+        assertThat(rates.league().orElseThrow().sides()).isEqualTo(40 + 38 + 2);
+        assertThat(rates.clubs()).doesNotContainKey(9863);
     }
 
     private RankingMetrics.Snapshot load(LocalDate date) {

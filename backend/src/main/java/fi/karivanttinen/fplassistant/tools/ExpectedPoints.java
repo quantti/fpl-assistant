@@ -2,6 +2,7 @@ package fi.karivanttinen.fplassistant.tools;
 
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalDouble;
 
 /**
  * FPL's own scoring applied to expected numbers — the one figure that compares a forward with a
@@ -112,12 +113,18 @@ public final class ExpectedPoints {
     }
 
     /**
-     * Expected components over one fixture at the supplied observed exposure rates. The xGC
-     * clean-sheet term remains a season-average conditional approximation; when that signal was
-     * never populated it is absent rather than treated as a certain clean sheet.
+     * Expected components over one fixture at the supplied observed exposure rates.
+     *
+     * <p>The clean-sheet term is the fixture's: {@code exp(-λ)} on the concession
+     * {@link ClubRates#projectedGoalsAgainst} projects for this club against this opponent at
+     * this venue, conditional on reaching sixty minutes. When no projection exists the term is
+     * absent — {@code null}, printed n/a and labelled partial — never the player's season
+     * average and never a certain clean sheet. Appearance, attack and DefCon do not depend on the
+     * fixture and are identical across a club's window.
      */
     public static Optional<PerFixture> perFixture(Map<String, Object> row,
-                                                   SeasonBlend.Exposure exposure) {
+                                                   SeasonBlend.Exposure exposure,
+                                                   OptionalDouble projectedGoalsAgainst) {
         if (exposure == null) {
             return Optional.empty();
         }
@@ -127,16 +134,11 @@ public final class ExpectedPoints {
                 + ASSIST_POINTS * numeric(row.get("xa90"))) * exposure.expectedMinutes() / 90;
 
         Double cleanSheet = 0.0;
-        if (cleanSheetPoints(position) > 0) {
-            Object xgc = row.get("xgc_per_match");
-            if (exposure.sixtyRate() == 0) {
-                cleanSheet = 0.0;
-            } else {
-                cleanSheet = hasCleanSheetSignal(xgc)
-                        ? cleanSheetPoints(position) * exposure.sixtyRate()
-                                * cleanSheetProbability(numeric(xgc))
-                        : null;
-            }
+        if (cleanSheetPoints(position) > 0 && exposure.sixtyRate() > 0) {
+            cleanSheet = projectedGoalsAgainst.isPresent()
+                    ? cleanSheetPoints(position) * exposure.sixtyRate()
+                            * cleanSheetProbability(projectedGoalsAgainst.getAsDouble())
+                    : null;
         }
 
         DefconFixture defcon = defconPerFixture(row, position, exposure);

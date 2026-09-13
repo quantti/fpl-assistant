@@ -9,6 +9,7 @@ import java.util.Optional;
 
 import fi.karivanttinen.fplassistant.schedule.HorizonFixtures;
 import fi.karivanttinen.fplassistant.schedule.ScheduleSource;
+import fi.karivanttinen.fplassistant.tools.ClubRates;
 import fi.karivanttinen.fplassistant.tools.MinutesModel;
 import fi.karivanttinen.fplassistant.tools.SeasonBlend;
 import org.junit.jupiter.api.Test;
@@ -93,7 +94,8 @@ class HorizonScorerIntegrationTest {
     }
 
     private static HorizonScorer.Projection projectionFor(int teamId, ScheduleSource.View view) {
-        return HorizonScorer.projection(playerAt(teamId), horizon(view).club(teamId));
+        return HorizonScorer.projection(playerAt(teamId), horizon(view).club(teamId),
+                ClubRates.NONE);
     }
 
     @Test
