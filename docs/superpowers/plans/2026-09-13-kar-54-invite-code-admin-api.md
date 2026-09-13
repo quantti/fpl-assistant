@@ -657,8 +657,10 @@ class InviteLedgerTest {
                 25, from, until, "read out in episode 12").orElseThrow();
 
         assertThat(created.code()).isEqualTo("Podcast");
-        assertThat(created.validFrom()).isEqualTo(from);
-        assertThat(created.validUntil()).isEqualTo(until);
+        // Instants, not OffsetDateTimes: Postgres hands the value back in the session's offset,
+        // and the JVM's default may differ. Same moment is what matters.
+        assertThat(created.validFrom().toInstant()).isEqualTo(from.toInstant());
+        assertThat(created.validUntil().toInstant()).isEqualTo(until.toInstant());
         assertThat(created.note()).isEqualTo("read out in episode 12");
         assertThat(created.createdAt()).isNotNull();
         assertThat(ledger.create("podcast", "again", 1, InviteCode.ACCESS, null, null, null, null))
