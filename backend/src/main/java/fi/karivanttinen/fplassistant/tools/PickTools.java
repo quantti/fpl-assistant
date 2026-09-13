@@ -66,7 +66,8 @@ import org.springframework.stereotype.Component;
  *
  * <p>The scale is FPL's own scoring, which makes one number fair across positions and across the
  * two kinds of defender. Per-fixture appearance points are {@code P(play) + P(60+)}, attack is
- * scaled by expected minutes, clean sheets are conditional on reaching 60, and DefCon uses
+ * scaled by expected minutes, clean sheets are projected per fixture from both clubs' expected-goal
+ * rates and the venue (KAR-30), conditional on reaching 60, and DefCon uses
  * separate short- and long-appearance exposure. A goal is worth 6 to a defender and 4 to a
  * forward; a clean sheet is worth 4 to a defender, 1 to a midfielder and nothing to a forward.
  *
@@ -151,9 +152,10 @@ public class PickTools implements FplTool {
             complete window can qualify after clearing the floor, but is labelled as a small
             sample. This history does not guarantee the next start.
             Ranking uses a horizon Score: expected FPL points per fixture — appearance and 60+
-            chances, attack scaled by expected minutes, 60+-conditional clean sheets and
-            short/long DefCon — blended with realised points per fixture, then totalled over every
-            fixture the club plays in the next nextN calendar gameweeks (clamped to 1-5, counted
+            chances, attack scaled by expected minutes, 60+-conditional clean sheets projected
+            per fixture from club xG/xGC rates and venue, and short/long DefCon — blended
+            with realised points per fixture, then totalled over every fixture the club plays
+            in the next nextN calendar gameweeks (clamped to 1-5, counted
             from the next editable deadline in that same schedule). A double gameweek adds a
             fixture, a blank removes one. A pick also needs a known horizon holding at least one
             fixture; clubs blanked across the window or with an unresolved schedule are excluded
@@ -220,9 +222,10 @@ public class PickTools implements FplTool {
             out. A short complete window can qualify after clearing the floor, but is labelled as
             a small sample. This history does not guarantee the next lineup.
             Ranking uses a horizon Score: expected FPL points per fixture — appearance and 60+
-            chances, attack scaled by expected minutes, 60+-conditional clean sheets and
-            short/long DefCon — blended with realised points per fixture, then totalled over every
-            fixture the club plays in the next nextN calendar gameweeks (clamped to 1-5, counted
+            chances, attack scaled by expected minutes, 60+-conditional clean sheets projected
+            per fixture from club xG/xGC rates and venue, and short/long DefCon — blended
+            with realised points per fixture, then totalled over every fixture the club plays
+            in the next nextN calendar gameweeks (clamped to 1-5, counted
             from the next editable deadline in that same schedule). A double gameweek adds a
             fixture, a blank removes one. A candidate also needs a known horizon holding at least
             one fixture; clubs blanked across the window or with an unresolved schedule are
@@ -387,10 +390,17 @@ public class PickTools implements FplTool {
         return horizon.reason().name().toLowerCase(Locale.ROOT).replace('_', ' ');
     }
 
+    /** One counted fixture's expected components, with the concession the clean sheet rests on. */
+    record FixtureProjection(HorizonFixtures.Fixture fixture,
+                             ExpectedPoints.PerFixture components,
+                             OptionalDouble goalsAgainst) {
+    }
+
     /** Consumer filters are applied only after RankingMetrics has seen the whole capture. */
     private static Selection candidates(RankingMetrics.Snapshot snapshot,
                                         HorizonFixtures.Result horizon,
                                         int elementType, double maxOwnership) {
+        Map<Integer, String> shortNames = clubShortNames(snapshot);
         List<Map<String, Object>> rows = new ArrayList<>();
         Map<MinutesModel.Eligibility, Integer> exclusions =
                 new EnumMap<>(MinutesModel.Eligibility.class);
@@ -433,17 +443,51 @@ public class PickTools implements FplTool {
             row.put("status", player.status());
             row.put("news", player.news());
             row.putAll(candidate.blended().metrics());
-            ExpectedPoints.PerFixture projection = ExpectedPoints.perFixture(
-                    row, candidate.blended().exposure(), OptionalDouble.empty()).orElseThrow();
-            row.put("expected_per_fixture", projection.points());
+            row.put("club_short_names", shortNames);
+            List<FixtureProjection> projections = new ArrayList<>(club.count());
+            double expectedHorizon = 0;
+            for (HorizonFixtures.Fixture fixture : club.fixtures()) {
+                OptionalDouble goalsAgainst = ClubRates.projectedGoalsAgainst(
+                        snapshot.clubRates(), player.teamId(), fixture.opponentTeamId(),
+                        fixture.home());
+                ExpectedPoints.PerFixture components = ExpectedPoints.perFixture(
+                        row, candidate.blended().exposure(), goalsAgainst).orElseThrow();
+                projections.add(new FixtureProjection(fixture, components, goalsAgainst));
+                expectedHorizon += components.points();
+            }
+            row.put("expected_per_fixture", expectedHorizon / club.count());
             row.put("points_per_fixture", candidate.blended().exposure().pointsPerFixture());
             row.put("current_window_minutes", candidate.current().window().totalMinutes());
-            row.put("projection", projection);
+            row.put("projection", projections.getFirst().components());
+            row.put("fixture_projections", List.copyOf(projections));
             row.put("ranking_candidate", candidate);
             rows.add(row);
         }
         return new Selection(List.copyOf(rows), Map.copyOf(exclusions),
                 knownZeroHorizon, unknownHorizon, matching);
+    }
+
+    /**
+     * Opponent short names for the per-fixture list, from the capture itself — the only same-season
+     * naming this reply already trusts. A club with no captured player is named by its id rather
+     * than left out: an unnamed opponent is still a fixture the Score counted.
+     */
+    private static Map<Integer, String> clubShortNames(RankingMetrics.Snapshot snapshot) {
+        Map<Integer, String> names = new HashMap<>();
+        for (RankingMetrics.Candidate candidate : snapshot.candidates()) {
+            RankingMetrics.CapturePlayer player = candidate.capture();
+            if (player.teamId() != null && player.teamShort() != null) {
+                names.putIfAbsent(player.teamId(), player.teamShort());
+            }
+        }
+        return Map.copyOf(names);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static String shortNameOf(Map<String, Object> row, HorizonFixtures.Fixture fixture) {
+        Map<Integer, String> names =
+                (Map<Integer, String>) row.getOrDefault("club_short_names", Map.of());
+        return names.getOrDefault(fixture.opponentTeamId(), "team " + fixture.opponentTeamId());
     }
 
     private static boolean matchesFilter(RankingMetrics.CapturePlayer player,
@@ -583,13 +627,47 @@ public class PickTools implements FplTool {
                 (ExpectedPoints.PerFixture) row.get("projection");
         return "appearance " + fixed(projection.appearance(), 2)
                 + ", attack " + fixed(projection.attack(), 2)
-                + (projection.cleanSheet() == null
-                        ? ", CS n/a"
-                        : ", CS " + fixed(projection.cleanSheet(), 2)
-                                + " (season-average conditional at xGC "
-                                + fixed(numeric(row.get("xgc_per_match")), 2) + ")")
+                + ", " + cleanSheets(row)
                 + ", DC " + fixed(projection.defensiveContribution(), 2)
                 + (projection.partialDefcon() ? " (partial: a minutes class lacks two known rows)" : "");
+    }
+
+    /**
+     * The clean-sheet term totalled over the window, then each fixture's chance beside the
+     * opponent, venue and projected concession it came from. A fixture with no club projection
+     * says n/a in that list; the total covers the fixtures that have one and the row is partial.
+     */
+    @SuppressWarnings("unchecked")
+    private static String cleanSheets(Map<String, Object> row) {
+        List<FixtureProjection> fixtures = (List<FixtureProjection>) row.get("fixture_projections");
+        int position = ((Number) row.get("element_type")).intValue();
+        if (ExpectedPoints.cleanSheetPoints(position) == 0) {
+            return "CS 0.00 (none at this position)";
+        }
+        double total = 0;
+        int unavailable = 0;
+        List<String> legs = new ArrayList<>(fixtures.size());
+        for (FixtureProjection leg : fixtures) {
+            String opponent = "vs " + shortNameOf(row, leg.fixture())
+                    + (leg.fixture().home() ? " h" : " a");
+            if (leg.components().cleanSheet() == null || leg.goalsAgainst().isEmpty()) {
+                unavailable++;
+                legs.add(opponent + " n/a");
+                continue;
+            }
+            total += leg.components().cleanSheet();
+            legs.add(opponent + " " + Math.round(100 * ExpectedPoints.cleanSheetProbability(
+                    leg.goalsAgainst().getAsDouble())) + "% at xGA "
+                    + fixed(leg.goalsAgainst().getAsDouble(), 2));
+        }
+        String head = unavailable == fixtures.size()
+                ? "CS n/a"
+                : "CS " + fixed(total, 2) + " over " + (fixtures.size() - unavailable) + " fixture"
+                        + (fixtures.size() - unavailable == 1 ? "" : "s");
+        return head + " (" + String.join("; ", legs) + ")"
+                + (unavailable > 0 && unavailable < fixtures.size()
+                        ? " (partial: no club projection for " + unavailable + " fixture"
+                                + (unavailable == 1 ? "" : "s") + ")" : "");
     }
 
     private static String exposureSegment(RankingMetrics.Candidate candidate,
@@ -638,8 +716,11 @@ public class PickTools implements FplTool {
                 + Math.round(realisedWeight * 100) + "%. The realised weight keeps its existing"
                 + " gameweek ramp and reaches at most " + Math.round(MAX_REALISED_WEIGHT * 100)
                 + "%. Appearance uses P(play)+P(60+); attack scales by observed expected minutes;"
-                + " clean sheets use P(60+) and a season-average conditional exp(-xGC)"
-                + " approximation.\n");
+                + " clean sheets are projected per fixture: exp(-xGA) where xGA is the club's"
+                + " expected concession rate times the opponent's expected scoring rate over the"
+                + " league mean, adjusted for venue, conditional on P(60+). Club rates blend both"
+                + " seasons on the shared ramp keyed on the club's own completed fixtures; a"
+                + " fixture with no club projection is n/a and its row is partial.\n");
         if (metric.blending()) {
             out.append("Ability and usable exposure rates follow the one player-specific ramp:"
                     + " 1 qualifying current-season match 10%, 2: 30%, 3: 60%, 4: 80%,"

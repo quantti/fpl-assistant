@@ -298,6 +298,14 @@ class PickToolsRankingTest {
         assertThat(PickTools.horizonScore(row, windows(window(1, 2, 4)), 0.5)).isEqualTo(6.0);
     }
 
+    @Test
+    void theHorizonScoreIsThePerFixtureAverageTimesTheCountSoASummedCleanSheetTotalsExactly() {
+        // Two fixtures worth 3.0 and 5.0 expected (different clean-sheet projections) average 4.0.
+        Map<String, Object> row = pick("Avg", 1, 1, 4.0);
+        assertThat(PickTools.horizonScore(row, windows(window(1, 3, 3)), 0.0))
+                .isCloseTo(3.0 + 5.0, within(1e-9));
+    }
+
     /** Two picks that print the same rounded Score still have an order, and it is the raw one. */
     @Test
     void equalRoundedHorizonScoresAreOrderedOnTheirRawValues() {
