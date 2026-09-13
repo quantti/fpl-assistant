@@ -3,12 +3,15 @@ import { useComputedColorScheme } from '@mantine/core'
 import { useChat } from '../../hooks/useChat'
 import { useConversations } from '../../hooks/useConversations'
 import { navigate, Route } from '../../router'
+import { useShortlist } from '../../shortlist/ShortlistContext'
 import AppMenu from '../AppMenu/AppMenu'
 import ConversationSidebar from '../ConversationSidebar/ConversationSidebar'
+import HeaderNavigation from '../HeaderNavigation/HeaderNavigation'
 import MessageThread from '../MessageThread/MessageThread'
 import MessageInput from '../MessageInput/MessageInput'
 import MyTeamPage from '../MyTeamPage/MyTeamPage'
 import SettingsPage from '../SettingsPage/SettingsPage'
+import ShortlistPage from '../ShortlistPage/ShortlistPage'
 import UsagePage from '../UsagePage/UsagePage'
 import classes from './ChatView.module.css'
 
@@ -20,6 +23,7 @@ export default function ChatView({ route }: Props) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const selectionRef = useRef(0)
   const conversations = useConversations()
+  const shortlist = useShortlist()
   const { messages, replaceMessages, streamingContent, isStreaming, sendMessage } = useChat({
     conversationId: conversations.currentId,
     onConversation: id => (id === null ? conversations.startNew() : conversations.adopt(id)),
@@ -115,10 +119,15 @@ export default function ChatView({ route }: Props) {
             </button>
             <span>⚽ FPL Assistant</span>
           </div>
-          <AppMenu route={route} />
+          <div className={classes.headerActions}>
+            <HeaderNavigation route={route} shortlistCount={shortlist.count} />
+            <AppMenu route={route} />
+          </div>
         </div>
         {route === '/my-team' ? (
           <MyTeamPage />
+        ) : route === '/shortlist' ? (
+          <ShortlistPage />
         ) : route === '/usage' ? (
           <UsagePage />
         ) : route === '/settings' ? (

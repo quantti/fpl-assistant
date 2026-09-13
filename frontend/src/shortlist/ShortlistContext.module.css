@@ -1,0 +1,15 @@
+.error {
+  position: fixed;
+  inset-block-start: var(--space-16);
+  inset-inline: var(--space-16);
+  z-index: 1000;
+  max-width: 36rem;
+  margin-inline: auto;
+  padding: var(--space-12) var(--space-16);
+  border: 1px solid var(--redcard);
+  border-radius: var(--space-4);
+  background: var(--paper);
+  color: var(--redcard);
+  font-family: var(--font-ui);
+  font-size: var(--text-sm);
+}

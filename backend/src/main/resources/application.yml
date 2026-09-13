@@ -131,6 +131,13 @@ fpl:
     # tier's cost ceiling is drawn against (30 x 20 messages a week is about EUR 38/month). A
     # property so the owner can move it without a deploy.
     max-accounts: ${INVITE_MAX_ACCOUNTS:30}
+  shortlist:
+    # Immutable identity catalogues are shared evidence derived from daily captures; the
+    # shortlist table is account-owned desired state validated against that evidence.
+    catalogue-table-name: fpl_player_catalogue
+    catalogue-player-table-name: fpl_player_catalogue_player
+    catalogue-alias-table-name: fpl_player_catalogue_alias
+    table-name: fpl_player_shortlist
   user:
     # Phase 5a. Names are properties for the same reason every other table's is: the test
     # profile pins them to isolated copies. fpl_user_profile is NOT app_user — tapas owns that

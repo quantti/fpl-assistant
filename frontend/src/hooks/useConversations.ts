@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { apiFetch } from '../auth/apiFetch'
-import { Conversation, Message } from '../types'
+import { Conversation, Message, PlayerCatalogue } from '../types'
 
 interface UseConversationsReturn {
   conversations: Conversation[]
@@ -57,9 +57,26 @@ export function useConversations(): UseConversationsReturn {
       if (response.status === 404) await refresh()
       return null
     }
-    const stored: Array<{ role: 'user' | 'assistant'; content: string }> = await response.json()
+    type StoredMessage = {
+      role: 'user' | 'assistant'
+      content: string
+      catalogueId?: string
+      catalogue?: PlayerCatalogue
+    }
+    const payload = await response.json() as
+      | StoredMessage[]
+      | { messages: StoredMessage[]; catalogues?: Record<string, PlayerCatalogue> }
+    const stored = Array.isArray(payload) ? payload : payload.messages
+    const catalogues = Array.isArray(payload) ? undefined : payload.catalogues
     setCurrentId(id)
-    return stored.map(({ role, content }) => ({ role, content }))
+    return stored.map(({ role, content, catalogueId, catalogue }) => {
+      const resolved = catalogue ?? (catalogueId ? catalogues?.[catalogueId] : undefined)
+      return {
+        role,
+        content,
+        ...(role === 'assistant' && resolved ? { catalogue: resolved } : {}),
+      }
+    })
   }, [refresh])
 
   const startNew = useCallback(() => setCurrentId(null), [])

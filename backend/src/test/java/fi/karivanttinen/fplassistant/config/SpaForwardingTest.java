@@ -56,6 +56,13 @@ class SpaForwardingTest {
     }
 
     @Test
+    void theShortlistDeepLinkLoadsTheApplication() throws Exception {
+        mockMvc.perform(get("/shortlist"))
+                .andExpect(status().isOk())
+                .andExpect(forwardedUrl("/index.html"));
+    }
+
+    @Test
     void theMyTeamApiIsNeverForwardedToTheApplication() throws Exception {
         mockMvc.perform(get("/api/my-team").header("Fly-Client-IP", "192.0.2.201"))
                 .andExpect(status().isUnauthorized())

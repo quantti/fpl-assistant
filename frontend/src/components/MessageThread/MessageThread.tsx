@@ -62,12 +62,11 @@ export default function MessageThread({ messages, streamingContent }: Props) {
             content={msg.content}
             isError={msg.isError}
             isNotice={msg.isNotice}
+            catalogue={msg.catalogue}
           />
         )
       )}
-      {streamingContent !== null && (
-        <AssistantMessage content={streamingContent} isStreaming />
-      )}
+      {streamingContent !== null && <AssistantMessage content={streamingContent} isStreaming />}
       <div ref={bottomRef} />
     </div>
   )

@@ -4064,6 +4064,30 @@ health (`UP`). No image deployment or extra machine. `fly.toml` now preserves al
 with autostop off and one minimum running machine; configuration validation passed. This restores
 future scheduled captures, not missed runs: existing stale data is not repaired by starting the VM.
 
+## Personal player shortlist — pre-delivery verification (2026-09-13)
+
+Approved scope is complete in the working tree: account-owned persistent shortlist membership,
+validated per-message player catalogues, accessible add/remove controls in assistant Markdown, shared
+chat/page/header state, a basic season-labelled shortlist page, dedicated My team/Shortlist navigation
+and `/shortlist` routing. The deliberate historical limitation remains: messages saved before catalogue
+binding have no identity evidence and stay plain rather than being reinterpreted against a later roster.
+
+Verification used only the ignored `backend/.env.shortlist-test` and dedicated
+`fpl-shortlist-test-db` on localhost:55438. A fresh reset followed by full `cleanTest test` passed 892
+tests with 0 failures, errors or skips; the pre-push shell contract passed 33/33. Frontend `npm test`
+passed 14 files and 103 tests. The production build passed contrast gates, TypeScript and Vite using a
+non-secret test-only publishable-key value; only the existing chunk-size advisory remained.
+
+A real headless Chromium run with mocked local auth and `/api` responses verified 320px and 390px
+light layouts without horizontal overflow, desktop light/dark layouts, keyboard send/add/remove/theme
+and navigation actions, shared mention/count/page membership, and chat preservation across navigation.
+No browser console errors occurred. Screenshots are temporary under
+`/tmp/fpl-shortlist-{mobile-light,mobile-shortlist,desktop-light,desktop-dark}.png` and are not
+repository artifacts. This did not verify live Supabase auth/API persistence, a real model response,
+external services or a headed device/browser;
+the headless host also lacks the football emoji glyph. Delivery remains Task 5/6 until commit, feature-
+branch push, PR and review are complete.
+
 ## Per-fixture clean sheets from club xG/xGC (KAR-30, 2026-09-13)
 
 Plan: `docs/superpowers/plans/2026-09-13-kar-30-club-clean-sheet-projection.md`, 7/7 tasks.
