@@ -121,7 +121,7 @@ export default function SignIn() {
     return (
       <div className={classes.root}>
         <div className={classes.card}>
-          <h1 className={classes.title}>⚽ FPL Assistant</h1>
+          <h1 className={classes.title}>FPL Sidekick</h1>
           <p className={classes.lede}>
             Check your email. We have sent a confirmation link to {email.trim()} — follow it, then
             sign in.
@@ -144,7 +144,7 @@ export default function SignIn() {
   return (
     <div className={classes.root}>
       <form className={classes.card} onSubmit={submit}>
-        <h1 className={classes.title}>⚽ FPL Assistant</h1>
+        <h1 className={classes.title}>FPL Sidekick</h1>
         <p className={classes.lede}>
           {signingUp
             ? 'Create an account with your invite code.'
