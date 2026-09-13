@@ -9,6 +9,7 @@ import java.util.Map;
 import java.util.OptionalDouble;
 
 import dev.quantti.fplassistant.schedule.HorizonFixtures;
+import dev.quantti.fplassistant.tools.ClubRates;
 import dev.quantti.fplassistant.tools.ExpectedPoints;
 import dev.quantti.fplassistant.tools.MinutesModel;
 import dev.quantti.fplassistant.tools.RankingMetrics;
@@ -22,6 +23,7 @@ class HorizonScorerTest {
 
     private static final int CLUB = 4242;
     private static final Instant KICKOFF = Instant.parse("2026-09-13T14:00:00Z");
+    private static final int OPPONENT = 1;   // window() fixtures are all "home vs club 1"
 
     /** A known window over the given per-fixture difficulties; a null difficulty is unpublished. */
     private static HorizonFixtures.ClubWindow window(Integer... difficulties) {
@@ -102,7 +104,8 @@ class HorizonScorerTest {
                 SquadCandidate.Tier.BODY, null, null,
                 MinutesModel.Eligibility.UNKNOWN_CURRENT_EVIDENCE);
 
-        HorizonScorer.Projection projection = HorizonScorer.projection(body, window(2, 2, 2));
+        HorizonScorer.Projection projection = HorizonScorer.projection(body, window(2, 2, 2),
+                ClubRates.NONE);
 
         assertThat(projection.available()).isFalse();
         assertThat(projection.horizonReason()).as("the schedule is fine; the record is not")
@@ -112,7 +115,7 @@ class HorizonScorerTest {
     @Test
     void anUnknownWindowIsUnscoredAndCarriesTheSchedulesOwnReason() {
         HorizonScorer.Projection projection = HorizonScorer.projection(candidate(90, 10, 0.5),
-                unknown(HorizonFixtures.UnknownReason.UNASSIGNED_FIXTURE));
+                unknown(HorizonFixtures.UnknownReason.UNASSIGNED_FIXTURE), ClubRates.NONE);
 
         assertThat(projection.available()).isFalse();
         assertThat(projection.optimizerPoints()).isZero();
@@ -124,7 +127,7 @@ class HorizonScorerTest {
     @Test
     void aKnownEmptyWindowIsARealZeroRatherThanAnAbsence() {
         HorizonScorer.Projection projection =
-                HorizonScorer.projection(candidate(90, 10, 0.5), window());
+                HorizonScorer.projection(candidate(90, 10, 0.5), window(), ClubRates.NONE);
 
         assertThat(projection.available()).as("a blank is a finding, not a gap").isTrue();
         assertThat(projection.optimizerPoints()).isZero();
@@ -138,8 +141,8 @@ class HorizonScorerTest {
     void anEasyFixtureIsWorthMoreThanAHardOne() {
         SquadCandidate player = candidate(90, 10, 0.5);
 
-        double easy = HorizonScorer.score(player, window(1));
-        double hard = HorizonScorer.score(player, window(5));
+        double easy = HorizonScorer.score(player, window(1), ClubRates.NONE);
+        double hard = HorizonScorer.score(player, window(5), ClubRates.NONE);
 
         assertThat(easy).isGreaterThan(hard);
         assertThat(HorizonScorer.fdrAdjust(3)).isEqualTo(1.0);
@@ -151,7 +154,7 @@ class HorizonScorerTest {
     void sharedPerFixtureComponentsAreNotScaledByMinutesTwice() {
         SquadCandidate player = candidate(60, 10, 0.5);
 
-        assertThat(HorizonScorer.score(player, window(3)))
+        assertThat(HorizonScorer.score(player, window(3), ClubRates.NONE))
                 .isCloseTo(perFixture(player), within(1e-9));
     }
 
@@ -159,19 +162,25 @@ class HorizonScorerTest {
     void eachFixtureContributesOnceToTheExistingCoarseHorizon() {
         SquadCandidate player = candidate(90, 10, 0.5);
 
-        assertThat(HorizonScorer.score(player, window(3, 3)))
-                .isCloseTo(HorizonScorer.score(player, window(3)) * 2, within(1e-9));
+        assertThat(HorizonScorer.score(player, window(3, 3), ClubRates.NONE))
+                .isCloseTo(HorizonScorer.score(player, window(3), ClubRates.NONE) * 2,
+                        within(1e-9));
     }
 
     @Test
     void aTwoFixtureWindowSumsBothFdrAdjustedPerFixtureValues() {
         SquadCandidate player = candidate(90, 10, 0.5);
+        ExpectedPoints.PerFixture components = ExpectedPoints.perFixture(player.metrics(),
+                player.exposure(), OptionalDouble.empty()).orElseThrow();
 
-        HorizonScorer.Projection projection = HorizonScorer.projection(player, window(2, 4));
+        HorizonScorer.Projection projection = HorizonScorer.projection(player, window(2, 4),
+                ClubRates.NONE);
 
         assertThat(projection.fixtures()).isEqualTo(2);
         assertThat(projection.optimizerPoints()).isCloseTo(
-                perFixture(player) * (HorizonScorer.fdrAdjust(2) + HorizonScorer.fdrAdjust(4)),
+                2 * (components.appearance() + components.defensiveContribution())
+                        + components.attack()
+                                * (HorizonScorer.fdrAdjust(2) + HorizonScorer.fdrAdjust(4)),
                 within(1e-9));
     }
 
@@ -182,7 +191,8 @@ class HorizonScorerTest {
 
         assertThat(perFixture(player)).isCloseTo(4.0, within(1e-9));
 
-        HorizonScorer.Projection projection = HorizonScorer.projection(player, window(2, 4));
+        HorizonScorer.Projection projection = HorizonScorer.projection(player, window(2, 4),
+                ClubRates.NONE);
 
         assertThat(projection.optimizerPoints()).isCloseTo(8.0, within(1e-9));
         assertThat(projection.partial()).isFalse();
@@ -193,21 +203,86 @@ class HorizonScorerTest {
     void aDoubleGameweekLegWithNoPublishedFdrKeepsTheCountAndGoesNeutralAlone() {
         SquadCandidate player = fourPointsPerFixture();
 
-        HorizonScorer.Projection projection = HorizonScorer.projection(player, window(2, null));
+        HorizonScorer.Projection projection = HorizonScorer.projection(player, window(2, null),
+                ClubRates.NONE);
 
         assertThat(projection.fixtures()).as("the leg is still played").isEqualTo(2);
         assertThat(projection.neutralFdrLegs()).isEqualTo(1);
         assertThat(projection.optimizerPoints()).isCloseTo(
-                4.0 * (HorizonScorer.fdrAdjust(2) + HorizonScorer.fdrAdjust(3)), within(1e-9));
+                2 * 2.0 + 2.0 * (HorizonScorer.fdrAdjust(2) + HorizonScorer.fdrAdjust(3)),
+                within(1e-9));
     }
 
     @Test
     void anOutOfRangeDifficultyIsTreatedAsUnpublishedRatherThanScored() {
         SquadCandidate player = fourPointsPerFixture();
 
-        HorizonScorer.Projection projection = HorizonScorer.projection(player, window(9));
+        HorizonScorer.Projection projection = HorizonScorer.projection(player, window(9),
+                ClubRates.NONE);
 
         assertThat(projection.neutralFdrLegs()).isEqualTo(1);
         assertThat(projection.optimizerPoints()).isCloseTo(4.0, within(1e-9));
+    }
+
+    /** Forty average sides so the league floor is met; CLUB and OPPONENT at the given rates. */
+    private static ClubRates.Rates rates(double clubDefence, double opponentAttack) {
+        Map<Integer, ClubRates.SeasonSide> sides = new HashMap<>();
+        for (int id = 100; id < 120; id++) {
+            sides.put(id, new ClubRates.SeasonSide(2, 2.8, 2.8, 1, 1.4));
+        }
+        sides.put(CLUB, new ClubRates.SeasonSide(2, 2.8, 2 * clubDefence, 1, 1.4));
+        sides.put(OPPONENT, new ClubRates.SeasonSide(2, 2 * opponentAttack, 2.8, 1, 1.4));
+        return ClubRates.blend(sides, Map.of());
+    }
+
+    /** A defender with no attacking or DefCon record: appearance plus whatever the clean sheet is. */
+    private static SquadCandidate defender() {
+        Map<String, Object> metrics = new HashMap<>();
+        metrics.put("element_type", 2);
+        metrics.put("xg90", BigDecimal.ZERO);
+        metrics.put("xa90", BigDecimal.ZERO);
+        metrics.put("defcon_avg", BigDecimal.ZERO);
+        metrics.put("defcon_matches", 2);
+        SeasonBlend.Exposure exposure = new SeasonBlend.Exposure(10, 10, 10, 900, 1, 1, 0, 90, 3);
+        return new SquadCandidate(4, "Stopper", "Stopper Player", "Ashfield Rovers", "ASH", 2,
+                45, 5.0, "a", null, CLUB, 90, metrics, SquadCandidate.Tier.RANKABLE, null,
+                exposure, MinutesModel.Eligibility.ELIGIBLE);
+    }
+
+    @Test
+    void fdrScalesTheAttackingTermOnlyAndTheCleanSheetFollowsTheOpponentModel() {
+        SquadCandidate player = fourPointsPerFixture();          // FWD: 2 appearance + 2 attack
+
+        HorizonScorer.Projection projection = HorizonScorer.projection(player, window(2, 4),
+                ClubRates.NONE);
+
+        // Appearance is not fixture-scaled; only the two attacking points are.
+        assertThat(projection.optimizerPoints()).isCloseTo(
+                2 * 2.0 + 2.0 * (HorizonScorer.fdrAdjust(2) + HorizonScorer.fdrAdjust(4)),
+                within(1e-9));
+    }
+
+    @Test
+    void aMeanerDefenceOrAWeakerOpponentRaisesTheProjectedCleanSheet() {
+        SquadCandidate stopper = defender();
+
+        double leaky = HorizonScorer.score(stopper, window(3), rates(2.0, 1.4));
+        double mean = HorizonScorer.score(stopper, window(3), rates(0.7, 1.4));
+        double weakOpponent = HorizonScorer.score(stopper, window(3), rates(1.4, 0.7));
+        double strongOpponent = HorizonScorer.score(stopper, window(3), rates(1.4, 2.5));
+
+        assertThat(mean).isGreaterThan(leaky);
+        assertThat(weakOpponent).isGreaterThan(strongOpponent);
+    }
+
+    @Test
+    void aFixtureWithoutAClubProjectionIsPartialAndContributesNoCleanSheet() {
+        SquadCandidate stopper = defender();
+
+        HorizonScorer.Projection projection = HorizonScorer.projection(stopper, window(3),
+                ClubRates.NONE);
+
+        assertThat(projection.partial()).isTrue();
+        assertThat(projection.optimizerPoints()).isCloseTo(2.0, within(1e-9));   // appearance only
     }
 }
