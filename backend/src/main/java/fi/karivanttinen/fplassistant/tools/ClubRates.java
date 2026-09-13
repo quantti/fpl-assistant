@@ -22,7 +22,10 @@ import java.util.Set;
  * with {@code MAX} — see {@code ExpectedStatsTools}. The current and previous seasons blend on the
  * one shared ramp, {@link SeasonBlend#weight}, keyed on the club's own completed fixtures this
  * season. League constants are pooled over both seasons and not ramped: the league mean and the
- * home/away effect are not a club's property.
+ * home/away effect are not a club's property. They are pooled over <em>every</em> club of each
+ * season, which is why {@link #league} is public and takes its own maps — a caller that bridges
+ * clubs between seasons must pool the raw, unbridged sides, so a club that bridges nowhere (a
+ * relegated side) still shapes the mean it is measured against.
  *
  * <p>Nothing here is a calibration claim. Below the floors the projection is absent rather than
  * estimated, and callers print n/a and label the row partial.
@@ -79,6 +82,20 @@ public final class ClubRates {
      * @param previous last season's sides per capture team id, empty when not blending
      */
     public static Rates blend(Map<Integer, SeasonSide> current, Map<Integer, SeasonSide> previous) {
+        return blend(current, previous, league(current, previous));
+    }
+
+    /**
+     * As {@link #blend(Map, Map)}, but with the league constants supplied by the caller — for a
+     * caller whose club maps have been bridged between seasons and which therefore must pool the
+     * league over the raw sides of each season instead.
+     *
+     * @param current this season's sides per capture team id, empty when none were read
+     * @param previous last season's sides per capture team id, empty when not blending
+     * @param league the pooled league constants, empty when they are below the floor
+     */
+    public static Rates blend(Map<Integer, SeasonSide> current, Map<Integer, SeasonSide> previous,
+                              Optional<League> league) {
         Map<Integer, ClubRate> clubs = new HashMap<>();
         Set<Integer> ids = new HashSet<>(current.keySet());
         ids.addAll(previous.keySet());
@@ -98,7 +115,7 @@ public final class ClubRates {
             clubs.put(club, new ClubRate(attack, defence, curFixtures + prevFixtures,
                     tableWeight, curFixtures, prev != null && prevFixtures > 0));
         }
-        return new Rates(clubs, league(current, previous));
+        return new Rates(clubs, league);
     }
 
     /**
@@ -121,8 +138,15 @@ public final class ClubRates {
         return OptionalDouble.of(defence.defence() * attack.attack() / league.meanXg() * venue);
     }
 
-    private static Optional<League> league(Map<Integer, SeasonSide> current,
-                                           Map<Integer, SeasonSide> previous) {
+    /**
+     * The league mean and venue factors, pooled over every side in the two maps — bridged or not,
+     * and whether or not the club clears {@link #MIN_CLUB_FIXTURES}. The league mean is not a
+     * club's property: a club that has no rate of its own, because it plays in only one of the two
+     * seasons, still belongs in the population its rivals are measured against. Empty below
+     * {@link #MIN_LEAGUE_SIDES} or when one venue is unrepresented.
+     */
+    public static Optional<League> league(Map<Integer, SeasonSide> current,
+                                          Map<Integer, SeasonSide> previous) {
         int sides = 0;
         int homeSides = 0;
         double xg = 0;

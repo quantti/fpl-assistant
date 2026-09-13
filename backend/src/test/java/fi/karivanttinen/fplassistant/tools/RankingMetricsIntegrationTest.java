@@ -564,8 +564,9 @@ class RankingMetricsIntegrationTest {
         jdbc.update("""
                 INSERT INTO team (id, season_id, code, name, short_name, strength) VALUES
                     (9861, ?, 9861, 'Prior Same Name', 'K31', 3),
-                    (9862, ?, 9862, 'Prior Other', 'PRO', 3)
-                """, PREVIOUS_SEASON_ID, PREVIOUS_SEASON_ID);
+                    (9862, ?, 9862, 'Prior Other', 'PRO', 3),
+                    (9863, ?, 9863, 'Prior Relegated', 'ZZZ', 3)
+                """, PREVIOUS_SEASON_ID, PREVIOUS_SEASON_ID, PREVIOUS_SEASON_ID);
         for (int index = 0; index < 38; index++) {
             int fixture = 986_100 + index;
             boolean home = index % 2 == 0;
@@ -586,6 +587,28 @@ class RankingMetricsIntegrationTest {
                     Timestamp.from(kickoff));
         }
 
+        // A relegated club: it bridges to nothing, so it carries no rate — but its sides still
+        // belong to the league the surviving clubs are measured against.
+        for (int index = 0; index < 2; index++) {
+            int fixture = 986_300 + index;
+            boolean home = index % 2 == 0;
+            Instant kickoff = Instant.parse("2025-08-01T12:00:00Z").plus(index, ChronoUnit.DAYS);
+            jdbc.update("""
+                    INSERT INTO fixture (id, season_id, gameweek, code, team_h, team_a,
+                                         kickoff_time, started, finished)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, true, true)
+                    """, fixture, PREVIOUS_SEASON_ID, index + 1, fixture,
+                    home ? 9863 : 9862, home ? 9862 : 9863, Timestamp.from(kickoff));
+            jdbc.update("""
+                    INSERT INTO player_fixture_stats (
+                        fixture_id, player_id, season_id, gameweek, player_team_id,
+                        opponent_team_id, was_home, kickoff_time, minutes, total_points,
+                        expected_goals, expected_assists, expected_goals_conceded, value, starts)
+                    VALUES (?, ?, ?, ?, 9863, 9862, ?, ?, 90, 1, 0.40, 0.05, 2.60, 45, 1)
+                    """, fixture, GHOST_BASE + 2, PREVIOUS_SEASON_ID, index + 1, home,
+                    Timestamp.from(kickoff));
+        }
+
         ClubRates.ClubRate rate = loadWithPrevious().clubRates().clubs().get(club);
 
         assertThat(rate.hasPrevious()).isTrue();
@@ -597,6 +620,11 @@ class RankingMetricsIntegrationTest {
         // stays on this season alone, which is what an unbridged club must do.
         assertThat(loadWithPrevious().clubRates().clubs().get(RankingSeed.team(2)).hasPrevious())
                 .isFalse();
+        // The league pools every side of each season, bridged or not: 40 this season, 38 from the
+        // club that bridges and 2 from the relegated one, which itself gets no rate.
+        ClubRates.Rates rates = loadWithPrevious().clubRates();
+        assertThat(rates.league().orElseThrow().sides()).isEqualTo(40 + 38 + 2);
+        assertThat(rates.clubs()).doesNotContainKey(9863);
     }
 
     private RankingMetrics.Snapshot load(LocalDate date) {

@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 
 import fi.karivanttinen.fplassistant.price.DailyPriceFreshnessCheck;
@@ -269,26 +270,33 @@ public class RankingMetrics {
         }
 
         // Club sides for the same seasons the player metrics came from, keyed by capture team id.
+        Map<Integer, ClubRates.SeasonSide> rawCurrentSides;
         Map<Integer, ClubRates.SeasonSide> currentSides;
         if (metric.played().currentSeason()) {
-            currentSides = currentSourceFailure(capture, metric.played(), schedule, asOf) != null
+            rawCurrentSides = currentSourceFailure(capture, metric.played(), schedule, asOf) != null
                     ? Map.of()
                     : loadClubSides(new CanonicalSource(schedules.fixtureTable(), "season",
                             schedule.snapshot().orElseThrow().season()),
                             metric.played().seasonId(), asOf);
+            currentSides = rawCurrentSides;
         } else {
-            currentSides = bridgeClubs(loadClubSides(new CanonicalSource("fixture", "season_id",
-                    metric.played().seasonId()), metric.played().seasonId(), null),
-                    metric.played().seasonId(), capturePlayers);
+            rawCurrentSides = loadClubSides(new CanonicalSource("fixture", "season_id",
+                    metric.played().seasonId()), metric.played().seasonId(), null);
+            currentSides = bridgeClubs(rawCurrentSides, metric.played().seasonId(), capturePlayers);
         }
+        Map<Integer, ClubRates.SeasonSide> rawPreviousSides = Map.of();
         Map<Integer, ClubRates.SeasonSide> previousSides = Map.of();
         if (metric.previous().isPresent()) {
             SeasonContext previous = metric.previous().orElseThrow();
-            previousSides = bridgeClubs(loadClubSides(new CanonicalSource("fixture", "season_id",
-                    previous.seasonId()), previous.seasonId(), null), previous.seasonId(),
-                    capturePlayers);
+            rawPreviousSides = loadClubSides(new CanonicalSource("fixture", "season_id",
+                    previous.seasonId()), previous.seasonId(), null);
+            previousSides = bridgeClubs(rawPreviousSides, previous.seasonId(), capturePlayers);
         }
-        ClubRates.Rates clubRates = ClubRates.blend(currentSides, previousSides);
+        // The league constants pool every club of each season, from the raw sides rather than the
+        // bridged ones: the mean is not a club's property, so a relegated club that bridges to no
+        // capture team still shapes it, and the shipped read matches the offline measurement.
+        Optional<ClubRates.League> league = ClubRates.league(rawCurrentSides, rawPreviousSides);
+        ClubRates.Rates clubRates = ClubRates.blend(currentSides, previousSides, league);
 
         List<Candidate> candidates = new ArrayList<>(capturePlayers.size());
         for (CapturePlayer player : capturePlayers) {

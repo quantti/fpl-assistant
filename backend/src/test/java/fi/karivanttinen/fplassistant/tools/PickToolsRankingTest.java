@@ -300,10 +300,12 @@ class PickToolsRankingTest {
 
     @Test
     void theHorizonScoreIsThePerFixtureAverageTimesTheCountSoASummedCleanSheetTotalsExactly() {
-        // Two fixtures worth 3.0 and 5.0 expected (different clean-sheet projections) average 4.0.
+        // horizonScore multiplies the row's per-fixture average by the window's fixture count, so
+        // a caller that stored the average of its per-fixture sums gets that sum back exactly.
+        // What the legs actually sum to is pinned end-to-end in PickToolsIntegrationTest.
         Map<String, Object> row = pick("Avg", 1, 1, 4.0);
         assertThat(PickTools.horizonScore(row, windows(window(1, 3, 3)), 0.0))
-                .isCloseTo(3.0 + 5.0, within(1e-9));
+                .isCloseTo(4.0 * 2, within(1e-9));
     }
 
     /** Two picks that print the same rounded Score still have an order, and it is the raw one. */
