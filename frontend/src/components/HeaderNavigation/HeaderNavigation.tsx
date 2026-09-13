@@ -3,10 +3,14 @@ import classes from './HeaderNavigation.module.css'
 
 interface Props {
   route: Route
-  shortlistCount: number | null
 }
 
-export default function HeaderNavigation({ route, shortlistCount }: Props) {
+/**
+ * The two pages a manager keeps coming back to, beside the wordmark. Small caps in the interface
+ * face, the same voice as the transcript's attribution labels; the count is on the shortlist page
+ * itself, not in its link.
+ */
+export default function HeaderNavigation({ route }: Props) {
   return (
     <nav className={classes.navigation} aria-label="Your FPL">
       <button
@@ -23,7 +27,7 @@ export default function HeaderNavigation({ route, shortlistCount }: Props) {
         aria-current={route === '/shortlist' ? 'page' : undefined}
         onClick={() => navigate('/shortlist')}
       >
-        Shortlist ({shortlistCount ?? '—'})
+        Shortlist
       </button>
     </nav>
   )
