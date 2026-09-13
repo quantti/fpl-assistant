@@ -4201,3 +4201,23 @@ That stricter availability tradeoff needs owner approval. It separates the immed
 guard from a measured sync remedy, which may require a separate Tapas PR; more schedule polls
 alone cannot supply absent core PFS rows. Independent plan review found no actionable issues.
 No production writes, model calls or implementation changes were made for this investigation.
+
+### Owner clarification — this service owns FPL ingestion
+
+The owner subsequently confirmed that updates belong to **this service, not Tapas**. The earlier
+proposal to retain the Tapas writer is superseded by
+`docs/superpowers/plans/2026-09-13-owned-matchday-sync.md` (implementation 0/10).
+The plan takes over existing core-table writes without changing their schema, combines core and
+DefCon history ingestion, polls repeatedly on every matchday, and requires both source
+`finished=true` and verified per-fixture player evidence before declaring post-match readiness.
+Two stable post-finish observations and subsequent correction checks are proposed; source
+finality is not guaranteed by a clock. Durable retries, budget/lease fencing, owner alerts and an
+external heartbeat make failures visible. A reviewed cutover disables all Tapas core writers,
+including embedded/manual paths, while preserving its unrelated jobs.
+
+Plan review caught two contract gaps, now resolved in the design: NOT NULL/default-zero PFS
+columns require durable per-player/component evidence and reader masking for unavailable metrics;
+pre-cutover intraday captures require staged publication so actual source timestamps are preserved
+without replacing a still-usable prior-day capture too early. The companion comparison-coverage
+plan remains required and now points to this ownership plan for ingestion. No updater has yet
+been implemented or switched on.

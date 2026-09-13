@@ -78,9 +78,12 @@ Make this a precise systemic gate, not "any ineligible player blocks everyone":
    They may retain explicitly labelled eligible-only lists under their existing contract, but
    the model must not use those lists to assemble a fallback squad or claim a league-wide best.
 
-No new chat-time public API calls, no changes to Tapas tables or core PFS ownership, no new
-per-player SQL, no parallel unversioned metric store. Reuse `RankingMetrics`' read-only
-REPEATABLE_READ snapshot and its single `asOf`, capture, schedule and canonical identities.
+No new chat-time public API calls, no new per-player ranking SQL, no parallel unversioned metric
+store. Reuse `RankingMetrics`' read-only REPEATABLE_READ snapshot and its single `asOf`, capture,
+schedule and canonical identities. **Owner clarification, 2026-09-13:** this service takes over
+core FPL updates from Tapas. The previous no-ownership-change boundary is superseded by
+`2026-09-13-owned-matchday-sync.md`; that plan defines the single-writer cutover and evidence
+receipts. The read-side correctness work here does not itself enable a new production writer.
 
 ## Task 1 — reproduce the bias and diagnose the data supply
 
@@ -164,28 +167,20 @@ question and the challenge. An optional owner-authorised model smoke must actual
 model; a string assertion on prompt text alone is not evidence of model compliance. Record the
 remaining stochastic limitation if no live-model smoke is run.
 
-## Task 5 — implement only the evidenced sync remedy
+## Task 5 — assistant-owned sync (superseded by the dedicated plan)
 
-Depends on Task 1's operational findings, not on an assumed delayed `finished` flag.
+Owner clarification: **this service, not Tapas, performs the updates.** Implement the bounded
+units in `2026-09-13-owned-matchday-sync.md`: repeated matchday fetching, full core history and
+DefCon ingestion, post-match verification, durable retries/alerts and a single-writer handover.
+The earlier proposal to leave ingestion in Tapas and only adjust its collection gate is withdrawn.
+A small Tapas PR is still needed to disable its embedded/manual core writers and preserve its
+remaining readers/jobs; it is not where the replacement updater is implemented.
 
-- If schedule polling is the bottleneck, add bounded sync-time recaptures around match completion
-  using the existing atomic writer. Specify cadence/request budget from observed source behaviour;
-  keep the baseline daily capture and date-cutover checks consistent. Test same-day recapture,
-  failed replacement rollback, timestamp coherence, UK/DST boundaries and no false freshness claim.
-- If core PFS waits for `data_checked` or the Tapas cron is broken, plan the minimal writer-side
-  change in **tapas-fpl-app**, with its owner/repository instructions and a separate reviewed PR.
-  Do not insert core rows from the assistant or claim that more schedule polls fix missing PFS.
-  Any intragameweek collection needs explicit correction/retry and idempotence tests; provisional
-  rows must not be represented as known-final merely because they exist.
-- Add narrowly targeted operational coverage reporting for pending/absent sides using the shared
-  semantics. Report status and dates, not a fabricated metric refresh timestamp; routine live
-  games must not be labelled failed syncs. Keep actionable outage alerts distinct from live status.
-- Leave DefCon cadence alone unless a separate measured DefCon problem warrants its own task.
-
-Verify: mock-source and local DB tests for the chosen path, then an owner-approved post-deploy
-read-only observation of pending → final schedule → populated core rows → admitted candidates.
-If upstream changes remain unapproved/unavailable, ship the correctness guard and explicitly
-record the availability limitation; this task remains blocked, not silently marked complete.
+Task 1's operational investigation remains useful but the decision to own ingestion no longer
+waits for proving the original delay's cause. Coordinate the two plans' read-path changes; do not
+implement two separate coverage models. Until handover/reconciliation completes, the correctness
+guard can ship first and must honestly expose limited availability. Mark this task complete only
+when the owned-sync plan's acceptance gates pass, not when this documentation is approved.
 
 ## Task 6 — review, release and document
 
