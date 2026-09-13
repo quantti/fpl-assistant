@@ -41,6 +41,11 @@ fpl:
     # user is told, and seeding 800k characters to reach the real budget would prove the same
     # thing slower. Every other test's messages are far below this.
     history-char-budget: 400
+  shortlist:
+    catalogue-table-name: fpl_player_catalogue_test
+    catalogue-player-table-name: fpl_player_catalogue_player_test
+    catalogue-alias-table-name: fpl_player_catalogue_alias_test
+    table-name: fpl_player_shortlist_test
   user:
     # Pinned off the live API for the same reason the syncs are off: a test that forgets to mock
     # the lookup must fail locally, not call fantasy.premierleague.com from CI. Port 1 refuses

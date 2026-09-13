@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
-import { Message } from '../types'
+import { Message, PlayerCatalogue } from '../types'
 import { sendChatTurn, GONE } from './chatTransport'
 
 interface UseChatOptions {
@@ -50,6 +50,7 @@ export function useChat({ conversationId, onConversation, onTurnFinished }: UseC
     setStreamingContent('')
     setIsStreaming(true)
 
+    let turnCatalogue: PlayerCatalogue | undefined
     try {
       const outcome = await sendChatTurn({ conversationId, message: content }, controller.signal, {
         onConversation: id => {
@@ -69,6 +70,9 @@ export function useChat({ conversationId, onConversation, onTurnFinished }: UseC
             isNotice: true,
           }])
         },
+        onCatalogue: catalogue => {
+          if (ownsTurn()) turnCatalogue = catalogue
+        },
         onToken: accumulated => {
           if (ownsTurn()) setStreamingContent(accumulated)
         },
@@ -78,7 +82,11 @@ export function useChat({ conversationId, onConversation, onTurnFinished }: UseC
 
       switch (outcome.kind) {
         case 'completed':
-          setMessages(prev => [...prev, { role: 'assistant', content: outcome.content }])
+          setMessages(prev => [...prev, {
+            role: 'assistant',
+            content: outcome.content,
+            ...(turnCatalogue ? { catalogue: turnCatalogue } : {}),
+          }])
           break
         case 'failed':
           setMessages(prev => [...prev, { role: 'assistant', content: outcome.message, isError: true }])

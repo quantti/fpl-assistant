@@ -2,10 +2,13 @@ package dev.quantti.fplassistant.chat;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.UUID;
 
 import dev.quantti.fplassistant.config.TokenSubject;
+import dev.quantti.fplassistant.shortlist.PlayerCatalogueMetadata;
+import dev.quantti.fplassistant.shortlist.PlayerCatalogueStore;
 import dev.quantti.fplassistant.user.QuotaExceededException;
 import dev.quantti.fplassistant.user.UsageService;
 
@@ -56,6 +59,7 @@ public class ChatController {
     private final ConversationStore conversations;
     private final HistoryBudget budget;
     private final UsageService usage;
+    private final PlayerCatalogueStore catalogues;
     private final String provider;
     // Local instance: Boot 4's web starter no longer guarantees an ObjectMapper bean, and
     // encoding a bare String needs no configuration.
@@ -63,11 +67,13 @@ public class ChatController {
 
     public ChatController(ChatService chatService, ConversationStore conversations,
                           HistoryBudget budget, UsageService usage,
+                          PlayerCatalogueStore catalogues,
                           @Value("${fpl.ai.provider:anthropic}") String provider) {
         this.chatService = chatService;
         this.conversations = conversations;
         this.budget = budget;
         this.usage = usage;
+        this.catalogues = catalogues;
         // Recorded per event: the two providers price differently, so usage that does not say
         // which one answered cannot be turned into a cost.
         this.provider = provider;
@@ -130,12 +136,18 @@ public class ChatController {
             throw e;
         }
 
+        // Identity evidence is selected once for this turn. If the stored capture is absent,
+        // malformed or temporarily unreadable, chat remains plain rather than failing or later
+        // reinterpreting the answer against a different roster.
+        Optional<PlayerCatalogueStore.Catalogue> catalogue = catalogue();
+
         // Token events carry the token as a JSON string: raw SSE data cannot round-trip a
         // leading space (the decoder strips the one after "data:"), and LLM tokens usually
         // start with one. The frontend JSON.parses each token event's data.
         Flux<ServerSentEvent<String>> tokens =
                 answerOutlivingTheClient(chatService.stream(history, userId, reported::set),
-                        conversationId, usageEventId, reported)
+                        conversationId, usageEventId, reported,
+                        catalogue.map(PlayerCatalogueStore.Catalogue::id).orElse(null))
                         .map(token -> ServerSentEvent.builder(json(token)).build())
                         .onErrorResume(e -> Flux.just(ServerSentEvent.<String>builder()
                                 .event("error")
@@ -150,6 +162,10 @@ public class ChatController {
                 dropped == 0 ? Flux.empty() : Flux.just(ServerSentEvent.<String>builder()
                         .event("truncated")
                         .data(String.valueOf(dropped))
+                        .build()),
+                catalogue.isEmpty() ? Flux.empty() : Flux.just(ServerSentEvent.<String>builder()
+                        .event("catalogue")
+                        .data(json(PlayerCatalogueMetadata.from(catalogue.orElseThrow())))
                         .build()),
                 tokens,
                 Flux.just(ServerSentEvent.<String>builder().event("done").data("").build()));
@@ -170,7 +186,8 @@ public class ChatController {
      */
     private Flux<String> answerOutlivingTheClient(Flux<String> source, UUID conversationId,
                                                   long usageEventId,
-                                                  AtomicReference<TokenUsage> reported) {
+                                                  AtomicReference<TokenUsage> reported,
+                                                  UUID catalogueId) {
         Sinks.Many<String> sink = Sinks.many().replay().all();
         StringBuilder answer = new StringBuilder();
         source
@@ -205,19 +222,19 @@ public class ChatController {
                     sink.tryEmitError(error);
                 },
                 () -> {
-                    persist(conversationId, answer.toString());
+                    persist(conversationId, answer.toString(), catalogueId);
                     recordTokens(usageEventId, reported.get());
                     sink.tryEmitComplete();
                 });
         return sink.asFlux();
     }
 
-    private void persist(UUID conversationId, String answer) {
+    private void persist(UUID conversationId, String answer, UUID catalogueId) {
         if (answer.isBlank()) {
             return;
         }
         try {
-            conversations.append(conversationId, ChatTurn.ASSISTANT, answer);
+            conversations.append(conversationId, ChatTurn.ASSISTANT, answer, catalogueId);
         } catch (RuntimeException e) {
             // The client has the answer either way; losing it from history is worth a log, not a
             // broken stream.
@@ -302,7 +319,16 @@ public class ChatController {
         throw new ResponseStatusException(HttpStatus.BAD_REQUEST, reason);
     }
 
-    private String json(String value) {
+    private Optional<PlayerCatalogueStore.Catalogue> catalogue() {
+        try {
+            return catalogues.latest();
+        } catch (RuntimeException e) {
+            log.error("could not bind a player catalogue to this answer; continuing without one", e);
+            return Optional.empty();
+        }
+    }
+
+    private String json(Object value) {
         try {
             return objectMapper.writeValueAsString(value);
         } catch (JsonProcessingException e) {
