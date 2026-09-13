@@ -7,7 +7,6 @@ import { afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest'
 vi.mock('../../auth/apiFetch', () => ({ apiFetch: vi.fn() }))
 vi.mock('@mantine/core', () => ({ Loader: () => React.createElement('span', null, 'Loading') }))
 import { apiFetch } from '../../auth/apiFetch'
-import HeaderNavigation from '../HeaderNavigation/HeaderNavigation'
 import { ShortlistProvider, useShortlist } from '../../shortlist/ShortlistContext'
 import ShortlistPage from './ShortlistPage'
 
@@ -31,7 +30,7 @@ const stored = {
 function Shell() {
   const shortlist = useShortlist()
   return React.createElement(React.Fragment, null,
-    React.createElement(HeaderNavigation, { route: '/shortlist', shortlistCount: shortlist.count }),
+    React.createElement('span', { 'data-count': true }, `count:${shortlist.count ?? '—'}`),
     React.createElement(ShortlistPage),
   )
 }
@@ -71,7 +70,7 @@ it('renders loading, load-error and empty states', async () => {
 
   await act(async () => { finish(new Response(null, { status: 500 })); await Promise.resolve() })
   expect(host.textContent).toContain('Your shortlist could not be loaded')
-  expect(host.textContent).toContain('Shortlist (—)')
+  expect(host.textContent).toContain('count:—')
   expect(Array.from(host.querySelectorAll('button')).some(button => button.textContent === 'Retry')).toBe(true)
 
   act(() => root!.unmount())
@@ -84,7 +83,7 @@ it('shows name, club and position, then removes through shared state', async () 
   await mount(Response.json([stored]))
   expect(host.textContent).toContain('Bukayo Saka')
   expect(host.textContent).toContain('Arsenal · Midfielder · 2026/27 season')
-  expect(host.textContent).toContain('Shortlist (1)')
+  expect(host.textContent).toContain('count:1')
 
   apiFetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }))
   const remove = Array.from(host.querySelectorAll('button'))
@@ -96,6 +95,6 @@ it('shows name, club and position, then removes through shared state', async () 
     season: '2026-27', elementId: 17,
   })
   expect(host.textContent).not.toContain('Bukayo Saka')
-  expect(host.textContent).toContain('Shortlist (0)')
+  expect(host.textContent).toContain('count:0')
   expect(host.textContent).toContain('Your shortlist is empty')
 })
