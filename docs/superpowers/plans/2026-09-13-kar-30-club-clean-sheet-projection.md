@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**PROGRESS:** Task 0/7 done.
+**PROGRESS:** Task 1/7 done.
 
 Issue: [KAR-30](https://linear.app/quantti/issue/KAR-30). Branch: `kar-30-club-clean-sheet-projection`
 (never `master`; push the branch and open a PR — see AGENTS.md).
@@ -1686,4 +1686,46 @@ branch, and stop — the owner merges.
 
 ## Outcome — Task 0
 
-_(to be filled by the executor)_
+Measured offline on public vaastav CSVs (2024-25 as "previous", 2025-26 as "this season", the
+held-out pair — 2026-27 has only four completed gameweeks today and cannot serve as the held-out
+season). Backtest over 2025-26 GW3-38, rates computed only from rows dated before the predicted
+gameweek. Population: 720 scored fixture-sides (20 clubs x 36 gameweeks, every gameweek fully
+populated — no silent skips beyond the brief's own floors).
+
+```
+variant            Brier    log-loss   n
+baseline           0.1839   0.5522   720
+opponent           0.1833   0.5484   720
+opponent-no-prev   0.1823   0.5468   720
+opponent-last10    0.1860   0.5563   720
+
+Brier by gameweek band
+GW3-10: baseline 0.1806, opponent 0.1820, opponent-no-prev 0.1792, opponent-last10 0.1820
+GW11-20: baseline 0.1895, opponent 0.1918, opponent-no-prev 0.1907, opponent-last10 0.1941
+GW21-38: baseline 0.1822, opponent 0.1791, opponent-no-prev 0.1790, opponent-last10 0.1832
+```
+
+`opponent` beats `baseline` on Brier overall (0.1833 vs 0.1839) and on log-loss overall (0.5484 vs
+0.5522) — the gate passes. The shape differs from what the brief anticipated, though: `opponent`
+is *worse* than `baseline` in GW3-10 (0.1820 vs 0.1806) and GW11-20 (0.1918 vs 0.1895), and only
+pulls ahead in GW21-38 (0.1791 vs 0.1822), the opposite band from where the largest gain was
+expected.
+
+- **Whole-season vs last-10:** whole-season club rates (`opponent`, 0.1833) beat the last-10-fixture
+  window (`opponent-last10`, 0.1860) overall and in every band — the last-10 window is not clearly
+  better as anticipated, it is uniformly worse, most likely because 10 fixtures per club is too
+  thin a window for a Poisson rate estimate at this population size.
+- **Previous season's contribution:** `opponent-no-prev` (0.1823) scores *better* overall than
+  `opponent` (0.1833), and at or better than it in all three bands, not just early — the blend
+  with 2024-25 rates does not earn its keep in this measurement; dropping the previous season did
+  not hurt (as expected going into GW21-38) but also did not converge from behind the way the
+  brief's "worse early, converging late" expectation predicted.
+
+No script adaptation was needed: both seasons' CSVs (`gw2024-25.csv`, `gw2025-26.csv`,
+`teams2024-25.csv`, `teams2025-26.csv`) carry the exact columns the script reads
+(`team`, `opponent_team`, `was_home`, `fixture`, `minutes`, `expected_goals`,
+`expected_goals_conceded`, `team_h_score`, `team_a_score`, `GW`) with the expected shapes
+(`team` a club name, `opponent_team` an integer id, `was_home` "True"/"False", scores present on
+every row since both seasons are fully completed). The only header differences between seasons are
+columns the script does not use (2024-25's `mng_*` columns; 2025-26's added defensive-contribution
+columns).
