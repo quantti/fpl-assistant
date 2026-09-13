@@ -1,0 +1,66 @@
+[
+  {
+    "file": "fixtures.json",
+    "source_url": "https://fantasy.premierleague.com/api/fixtures/",
+    "read_started_at": "2026-09-13T17:45:06.445472+00:00",
+    "read_completed_at": "2026-09-13T17:45:06.593102+00:00",
+    "http_status": 200,
+    "bytes": 206822
+  },
+  {
+    "file": "bootstrap-static.json",
+    "source_url": "https://fantasy.premierleague.com/api/bootstrap-static/",
+    "read_started_at": "2026-09-13T17:45:07.693745+00:00",
+    "read_completed_at": "2026-09-13T17:45:07.896876+00:00",
+    "http_status": 200,
+    "bytes": 1750769
+  },
+  {
+    "file": "event-3-live.json",
+    "source_url": "https://fantasy.premierleague.com/api/event/3/live/",
+    "read_started_at": "2026-09-13T17:45:25.840005+00:00",
+    "read_completed_at": "2026-09-13T17:45:25.985506+00:00",
+    "http_status": 200,
+    "bytes": 464355
+  },
+  {
+    "file": "event-4-live.json",
+    "source_url": "https://fantasy.premierleague.com/api/event/4/live/",
+    "read_started_at": "2026-09-13T17:45:27.086135+00:00",
+    "read_completed_at": "2026-09-13T17:45:27.207322+00:00",
+    "http_status": 200,
+    "bytes": 466700
+  },
+  {
+    "file": "element-summary-1.json",
+    "source_url": "https://fantasy.premierleague.com/api/element-summary/1/",
+    "read_started_at": "2026-09-13T17:46:18.763437+00:00",
+    "read_completed_at": "2026-09-13T17:46:18.868461+00:00",
+    "http_status": 200,
+    "bytes": 14703
+  },
+  {
+    "file": "element-summary-2.json",
+    "source_url": "https://fantasy.premierleague.com/api/element-summary/2/",
+    "read_started_at": "2026-09-13T17:46:19.968870+00:00",
+    "read_completed_at": "2026-09-13T17:46:20.060242+00:00",
+    "http_status": 200,
+    "bytes": 16375
+  },
+  {
+    "file": "element-summary-557.json",
+    "source_url": "https://fantasy.premierleague.com/api/element-summary/557/",
+    "read_started_at": "2026-09-13T17:46:21.160577+00:00",
+    "read_completed_at": "2026-09-13T17:46:21.222900+00:00",
+    "http_status": 200,
+    "bytes": 12333
+  },
+  {
+    "file": "element-summary-658.json",
+    "source_url": "https://fantasy.premierleague.com/api/element-summary/658/",
+    "read_started_at": "2026-09-13T17:46:22.323202+00:00",
+    "read_completed_at": "2026-09-13T17:46:22.405144+00:00",
+    "http_status": 200,
+    "bytes": 9444
+  }
+]
