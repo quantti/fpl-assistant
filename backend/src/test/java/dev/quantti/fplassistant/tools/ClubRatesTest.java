@@ -2,6 +2,7 @@ package dev.quantti.fplassistant.tools;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Optional;
 import java.util.OptionalDouble;
 
 import org.junit.jupiter.api.Test;
@@ -18,6 +19,7 @@ class ClubRatesTest {
 
     private static final int HOME_CLUB = 11;
     private static final int AWAY_CLUB = 12;
+    private static final int RELEGATED_CLUB = 99;
 
     /** A club that has played {@code fixtures} sides at the given per-fixture rates. */
     private static ClubRates.SeasonSide side(int fixtures, double xgPerFixture,
@@ -135,6 +137,25 @@ class ClubRatesTest {
         assertThat(rates.league().orElseThrow().sides()).isEqualTo(402);
         assertThat(rates.league().orElseThrow().meanXg())
                 .isCloseTo((400 * 1.4 + 2 * 3.0) / 402, within(1e-9));
+    }
+
+    @Test
+    void theLeagueIsPooledFromEverySideItIsGivenEvenForClubsWithNoRate() {
+        Map<Integer, ClubRates.SeasonSide> current = averageLeague();
+        // A club of the previous season alone — relegated, so it bridges to no capture team and
+        // carries no rate — still belongs to the population the mean is taken over.
+        Map<Integer, ClubRates.SeasonSide> relegated =
+                Map.of(RELEGATED_CLUB, side(38, 0.9, 2.0, 19, 1.0));
+
+        Optional<ClubRates.League> pooled = ClubRates.league(current, relegated);
+        ClubRates.Rates rates = ClubRates.blend(current, Map.of(), pooled);
+
+        assertThat(pooled.orElseThrow().sides()).isEqualTo(400 + 38);
+        assertThat(rates.clubs()).doesNotContainKey(RELEGATED_CLUB);
+        assertThat(rates.league().orElseThrow().meanXg())
+                .isCloseTo((400 * 1.4 + 38 * 0.9) / 438, within(1e-9))
+                .as("a below-mean club left out of the pool would raise the mean")
+                .isLessThan(ClubRates.blend(current, Map.of()).league().orElseThrow().meanXg());
     }
 
     @Test

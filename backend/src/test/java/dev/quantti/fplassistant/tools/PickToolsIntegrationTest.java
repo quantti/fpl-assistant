@@ -6,6 +6,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.List;
 
 import dev.quantti.fplassistant.schedule.ScheduleSource;
@@ -27,6 +28,7 @@ import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.ActiveProfiles;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.within;
 
 /** Pick-tool contract against a fresh, complete and entirely test-owned FPL snapshot. */
 @SpringBootTest
@@ -346,6 +348,48 @@ class PickToolsIntegrationTest {
         assertThat(defender).contains("CS ").contains(" over 2 fixtures (vs ")
                 .containsPattern("vs (K\\d\\d|team \\d+) [ha] \\d+% at xGA \\d+\\.\\d\\d")
                 .doesNotContain("season-average").doesNotContain("at xGC");
+    }
+
+    /**
+     * The Score and the printed {@code CS} total are two independent summations over the same
+     * horizon — one inside {@code expected_per_fixture}, one in the printed leg list. This pins
+     * both against the legs themselves: the total is the model's own {@code 4 × exp(-xGA)} per
+     * fixture (the Defender plays 90 minutes in every seeded fixture, so P(60+) is 1), and the
+     * per-fixture expectation is the fixture-independent components plus that total over the
+     * window. Tolerance 0.011 because every printed figure is rounded to two decimals.
+     */
+    @Test
+    void theCleanSheetTotalAndTheExpectedPerFixtureAgreeWithThePrintedLegs() {
+        String defender = lineFor(tools.getDifferentialPicks("DEF", 10, 2), "Defender");
+
+        List<Double> goalsAgainst = allNumbers(defender, "at xGA (\\d+\\.\\d\\d)");
+        double total = number(defender, "CS (\\d+\\.\\d\\d) over 2 fixtures");
+        double appearance = number(defender, "appearance (\\d+\\.\\d\\d)");
+        double attack = number(defender, "attack (\\d+\\.\\d\\d)");
+        double defcon = number(defender, "DC (\\d+\\.\\d\\d)");
+        double perFixture = number(defender, "expected/fixture (\\d+\\.\\d\\d)");
+
+        assertThat(goalsAgainst).hasSize(2);
+        assertThat(total).as("the printed CS total is 4 x exp(-xGA) summed over the legs: " + defender)
+                .isCloseTo(4 * (Math.exp(-goalsAgainst.get(0)) + Math.exp(-goalsAgainst.get(1))),
+                        within(0.011));
+        assertThat(perFixture).as("expected/fixture averages the same summation: " + defender)
+                .isCloseTo(appearance + attack + defcon + total / 2, within(0.011));
+    }
+
+    private static List<Double> allNumbers(String line, String pattern) {
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile(pattern).matcher(line);
+        List<Double> found = new ArrayList<>();
+        while (m.find()) {
+            found.add(Double.parseDouble(m.group(1)));
+        }
+        return found;
+    }
+
+    private static double number(String line, String pattern) {
+        List<Double> found = allNumbers(line, pattern);
+        assertThat(found).as("'" + pattern + "' in: " + line).hasSize(1);
+        return found.getFirst();
     }
 
     @Test
