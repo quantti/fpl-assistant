@@ -4290,6 +4290,27 @@ Chromium screenshots at 1280px and 375px in both schemes, with the sidebar overl
 the dev server with a stubbed session and no backend. Measured `.root` height unchanged after
 inserting 3000px of content, i.e. still height-bounded. Head to Head from the mockup is not built.
 
+## Owned sync — Uptime Kuma rollout preparation (2026-09-14)
+
+The owner selected the existing home-server Uptime Kuma and authorized the operational handover.
+Kuma 1.23.17 is on `plex`; authenticated API access works. Monitor 18, `FPL Assistant - owned sync`,
+was created **paused**, using the existing `Home network alert` SMTP channel. Its transport test
+was accepted; mailbox receipt is not independently verified. Separate high-entropy operator and
+monitor tokens are stored only in an ignored mode-0600 local rollout file, not installed in Fly.
+
+A bounded follow-up supports `OWNED_SYNC_ALERTS_VIA_MONITOR=true`: authenticated health is DOWN
+for stale/missing planner/watchdog heartbeats or any incident without its exact occurrence's
+recovery. The outbox records EXTERNAL rather than inventing delivery receipts. Monitor/webhook
+modes are exclusive, missing monitor authentication fails startup, and webhook redrive is refused
+while Kuma owns delivery. Normal webhook behavior remains the default. Focused verification:
+22 tests passed under the constrained runner; the full suite runs again in the normal pre-push gate.
+
+Both merged deployments were green at inspection. Production read-only checks identified playing
+season id 2 / `2026-27`, no owned schema yet, and RLS-enabled Tapas tables without policies. The
+role split therefore needs a restricted-table BYPASSRLS login for Tapas, not blanket privilege
+revocation or ownership changes. See `docs/OWNED-SYNC-OPERATIONS.md` for the preflight and next gates.
+No production flags, database roles/grants or core rows have changed; Tapas remains the writer.
+
 ## Owned matchday updates — code complete, not activated (2026-09-14)
 
 Tasks 4–10 code/local verification follow the foundation in PRs #91/#93. Full histories and DefCon,

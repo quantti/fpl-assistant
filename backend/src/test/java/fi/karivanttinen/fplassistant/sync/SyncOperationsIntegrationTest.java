@@ -162,6 +162,48 @@ class SyncOperationsIntegrationTest {
         assertThat(operations.healthy()).isFalse();
     }
 
+    @Test
+    void externalMonitorHealthTracksIncidentsAndTheirExactRecoveryWithoutClaimingDelivery() {
+        SyncOperations external = new SyncOperations(jdbc, tx, Clock.fixed(NOW, ZoneOffset.UTC),
+                TABLES, OwnedSyncMode.STAGING, true, false, true);
+        assertThat(external.healthy()).isFalse();
+        jdbc.update("INSERT INTO " + TABLES.plannerRuntime()
+                        + "(instance_id,started_at,heartbeat_at) VALUES (?,?,?),(?,?,?)",
+                "planner", Timestamp.from(NOW), Timestamp.from(NOW),
+                "watchdog:2026-27", Timestamp.from(NOW), Timestamp.from(NOW));
+        // No webhook configuration/delivery heartbeat is needed in explicitly delegated mode.
+        assertThat(external.healthy()).isTrue();
+        assertThatThrownBy(() -> external.redriveAlert(1))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("external monitor");
+        jdbc.update("INSERT INTO " + TABLES.alert()
+                        + "(incident_key,occurrence,event_type,category,severity,payload,delivery_state,created_at) "
+                        + "VALUES ('fixture',1,'INCIDENT','TEST','CRITICAL','{}','EXTERNAL',?)",
+                Timestamp.from(NOW));
+        assertThat(external.healthy()).isFalse();
+        jdbc.update("INSERT INTO " + TABLES.alert()
+                        + "(incident_key,occurrence,event_type,category,severity,payload,delivery_state,created_at) "
+                        + "VALUES ('fixture',1,'RECOVERY','TEST','INFO','{}','EXTERNAL',?)",
+                Timestamp.from(NOW));
+        assertThat(external.healthy()).isTrue();
+        jdbc.update("INSERT INTO " + TABLES.alert()
+                        + "(incident_key,occurrence,event_type,category,severity,payload,delivery_state,created_at) "
+                        + "VALUES ('fixture',2,'INCIDENT','TEST','CRITICAL','{}','EXTERNAL',?)",
+                Timestamp.from(NOW));
+        assertThat(external.healthy()).isFalse(); // occurrence 1 cannot clear occurrence 2
+        jdbc.update("INSERT INTO " + TABLES.alert()
+                        + "(incident_key,occurrence,event_type,category,severity,payload,delivery_state,created_at) "
+                        + "VALUES ('fixture',2,'RECOVERY','TEST','INFO','{}','EXTERNAL',?)",
+                Timestamp.from(NOW));
+        assertThat(external.healthy()).isTrue();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.alert()
+                + " WHERE delivered_at IS NOT NULL OR delivery_attempts<>0", Integer.class)).isZero();
+        jdbc.update("UPDATE " + TABLES.plannerRuntime() + " SET heartbeat_at=? WHERE instance_id LIKE 'watchdog:%'",
+                Timestamp.from(NOW.minusSeconds(601)));
+        assertThat(external.healthy()).isFalse();
+        assertThat(new SyncOperations(jdbc, tx, Clock.fixed(NOW, ZoneOffset.UTC),
+                TABLES, OwnedSyncMode.OFF, false, false, true).healthy()).isFalse();
+    }
+
     private long failedRun(long epoch, String mode) {
         jdbc.update("INSERT INTO " + TABLES.receipt()
                 + "(season,publication_key) VALUES ('2026-27','fixture:77')");

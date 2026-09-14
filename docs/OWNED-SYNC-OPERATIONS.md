@@ -9,7 +9,35 @@ Do not use a manual Fly deploy.
 `OWNED_SYNC_MODE=OFF` creates no owned runtime, watchdog schedule, alert delivery executor, schema,
 or outbound request. Operations and external health are also absent by default.
 
-Before a reviewed cutover, the owner must separately select and test:
+Before a reviewed cutover, select and test **one** notification route. The selected deployment
+uses Uptime Kuma on `plex`, with its existing `Home network alert` SMTP notification.
+
+### Uptime Kuma (selected)
+
+Set `OWNED_SYNC_ALERTS_VIA_MONITOR=true`, `OWNED_SYNC_ALERT_WEBHOOK_ENABLED=false`,
+`OWNED_SYNC_EXTERNAL_HEALTH_ENABLED=true` and a strong `OWNED_SYNC_MONITOR_TOKEN`. Enable operator
+status separately with `OWNED_SYNC_OPS_ENABLED=true` and a different `OWNED_SYNC_OPERATOR_TOKEN`.
+The monitor polls `https://fpl-assistant.fly.dev/ops/sync/health` using header
+`X-FPL-Monitor-Token`, requires HTTP 200 and body `"status":"UP"`, checks TLS, and follows no
+redirects. Poll every 60 seconds with two retries; enable DOWN and recovery mail through the
+existing notification channel. Do not enable the GitHub heartbeat workflow as a second route.
+
+In this explicitly delegated mode, health is DOWN while any incident lacks its own matching
+occurrence's recovery, or a planner/watchdog heartbeat is missing/stale, or the database is
+unavailable. OFF is not healthy. The outbox records `EXTERNAL`, never `DELIVERED`: the application
+cannot attest Kuma's mail delivery. Notification retries belong to Kuma in this mode; the
+application refuses webhook retries. Switching back to webhook additively redrives still-open external incidents.
+An enabled authenticated health endpoint is required; selecting both notification routes fails
+startup. A STAGING instance can intentionally be DOWN because it has not published/verified data.
+
+Kuma monitor **18**, `FPL Assistant - owned sync`, was created paused on 2026-09-14 through its
+authenticated API. Its SMTP transport test was accepted; inbox receipt is not independently proven.
+Unpause it for the monitored rollout, not while the application is OFF. Kuma is independent of Fly,
+not of its own home-server/network outage; no off-site availability SLA is claimed.
+
+### Webhook and optional GitHub heartbeat (alternative)
+
+For this alternative, leave `OWNED_SYNC_ALERTS_VIA_MONITOR=false` and configure:
 
 - an owner-controlled HTTPS notification destination;
 - `OWNED_SYNC_ALERT_WEBHOOK_ENABLED=true` and secret `OWNED_SYNC_ALERT_WEBHOOK_URL`;
@@ -27,6 +55,23 @@ loopback exists only as a package-private test seam. No real webhook is called b
 The GitHub schedule runs every ten minutes only when the repository variable is exactly `true`.
 GitHub scheduled workflows are best-effort and can be delayed or skipped; they are an independent
 way to detect a stopped machine/dead in-process scheduler, not an availability SLA.
+
+## Read-only preflight (2026-09-14)
+
+Both merged deployments succeeded. The configured playing season is database id `2`, code
+`2026-27`. No owned-sync schema existed at inspection, and no owned mode/monitor secrets were
+installed. The current database login is `postgres` (BYPASSRLS and CREATEROLE, not superuser).
+All inventoried Tapas core and derived tables have RLS enabled with no policies.
+
+The least disruptive role split is to keep the assistant's existing connection and give Tapas a
+new dedicated login: SELECT only on the five transferred core tables and season/evidence, named
+writes only on its manager/league/chip/derived tables, no CREATE/role-management or inherited
+postgres membership. This login needs BYPASSRLS alongside those restricted table grants; GRANT
+alone would silently hide the rows under the existing RLS setup. PostgreSQL 17 permits a role
+already holding BYPASSRLS to grant that attribute. Rehearse the complete privilege matrix in the
+disposable database and verify denied core writes before switching the live Tapas credential.
+Do not weaken RLS or change table ownership, and do not execute the partial role template blindly.
+No production role, grants, credential, mode or core data has been changed by this preflight.
 
 ## Activation and rollback gates
 

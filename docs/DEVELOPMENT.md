@@ -115,13 +115,16 @@ cgroup-v2 scopes do enforce limits (verified via `memory.max`). For a full suite
 local test environment, use:
 
 ```bash
-systemd-run --user --scope -p MemoryMax=1280M -p MemoryHigh=1152M \
+systemd-run --user --scope -p MemoryMax=1536M \
   -p MemorySwapMax=0 -p CPUQuota=200% ./gradlew --console=plain cleanTest test
 ```
 
 Check `free -m` first, allow at least 2.3 GiB available, monitor host memory and stop only this scope
 if available memory falls below 768 MiB. Do not kill other projects or disable the pre-push hook.
-The final owned-sync suite peaked at 1152 MiB in its scope and left at least 1889 MiB available.
+Do not add the former 1152 MiB soft limit: a later run suffered severe reclaim/CPU starvation and
+was stopped at its timeout. With a 1536 MiB hard limit and no lower soft limit, all 1165 tests passed
+at a 1228 MiB peak, leaving at least 1879 MiB available. Keep a wall-clock timeout on the runner too;
+a memory-safe process can still stall, and an interrupted run is not a passing verification.
 
 ### Frontend
 

@@ -332,7 +332,7 @@ public final class OwnedSyncWatchdog {
                     (ResultSetExtractor<Void>) rs -> null, "fpl-sync-alert-configuration-redrive");
             Instant now = clock.instant();
             List<Long> rows = jdbc.query("SELECT a.id FROM " + tables.alert() + " a "
-                            + "WHERE a.event_type='INCIDENT' AND a.delivery_state IN ('UNCONFIGURED','DISABLED') "
+                            + "WHERE a.event_type='INCIDENT' AND a.delivery_state IN ('UNCONFIGURED','DISABLED','EXTERNAL') "
                             + "AND NOT EXISTS (SELECT 1 FROM " + tables.alert() + " r "
                             + "WHERE r.incident_key=a.incident_key AND r.occurrence=a.occurrence "
                             + "AND r.event_type='RECOVERY') ORDER BY a.id FOR UPDATE",
@@ -457,9 +457,20 @@ public final class OwnedSyncWatchdog {
         }
     }
 
-    public record Notification(boolean enabled, boolean configured) {
-        String state() { return !enabled ? "DISABLED" : configured ? "PENDING" : "UNCONFIGURED"; }
-        String disabledReason() { return enabled ? configured ? null : "Owner webhook is unconfigured"
+    public record Notification(boolean enabled, boolean configured, boolean externalMonitor) {
+        public Notification(boolean enabled, boolean configured) {
+            this(enabled, configured, false);
+        }
+        public Notification {
+            if (externalMonitor && enabled) {
+                throw new IllegalArgumentException("Choose either webhook or external-monitor notification");
+            }
+        }
+        String state() { return externalMonitor ? "EXTERNAL"
+                : !enabled ? "DISABLED" : configured ? "PENDING" : "UNCONFIGURED"; }
+        String disabledReason() { return externalMonitor
+                ? "External monitor owns notification delivery; application cannot attest delivery"
+                : enabled ? configured ? null : "Owner webhook is unconfigured"
                 : "Owner webhook delivery is disabled"; }
     }
     public record CheckResult(int activeSignals, int incidentsOpened, int recoveriesOpened) { }
