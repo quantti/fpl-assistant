@@ -47,6 +47,7 @@ public final class OwnedSyncSchema {
                     publication_key VARCHAR(200) NOT NULL,
                     priority SMALLINT NOT NULL,
                     due_at TIMESTAMPTZ NOT NULL,
+                    requested_source_after TIMESTAMPTZ NOT NULL,
                     state VARCHAR(20) NOT NULL DEFAULT 'PENDING',
                     attempt_count INTEGER NOT NULL DEFAULT 0,
                     last_attempt_at TIMESTAMPTZ,
@@ -75,6 +76,12 @@ public final class OwnedSyncSchema {
                 )
                 """.formatted(tables.run(), tables.run(), tables.run(), tables.receipt(),
                 tables.run(), tables.run(), tables.run()));
+        jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS requested_source_after TIMESTAMPTZ"
+                .formatted(tables.run()));
+        jdbc.execute("UPDATE %s SET requested_source_after = GREATEST(created_at, due_at) "
+                .formatted(tables.run()) + "WHERE requested_source_after IS NULL");
+        jdbc.execute("ALTER TABLE %s ALTER COLUMN requested_source_after SET NOT NULL"
+                .formatted(tables.run()));
         jdbc.execute("ALTER TABLE %s DROP CONSTRAINT IF EXISTS fk_%s_receipt"
                 .formatted(tables.run(), tables.run()));
         jdbc.execute("ALTER TABLE %s ADD CONSTRAINT fk_%s_receipt FOREIGN KEY (season, publication_key) "
