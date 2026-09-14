@@ -18,12 +18,22 @@ public class SyncOperationsConfiguration {
                 "fpl.owned-sync.mode", "OFF").trim().toUpperCase());
         boolean monitorEnabled = environment.getProperty(
                 "fpl.owned-sync.external-health.enabled", Boolean.class, false);
-        boolean webhookEnabled = environment.getProperty(
-                "fpl.owned-sync.alerts.webhook-enabled", Boolean.class, false);
-        boolean webhookConfigured = !environment.getProperty(
-                "fpl.owned-sync.alerts.webhook-url", "").trim().isEmpty();
+        OwnedSyncWatchdog.Notification notification = notification(environment);
         return new SyncOperations(database.jdbc(), database.transaction(), Clock.systemUTC(),
                 OwnedSyncTables.defaults(), mode, monitorEnabled && mode != OwnedSyncMode.OFF,
-                webhookEnabled && webhookConfigured);
+                notification.enabled() && notification.configured(), notification.externalMonitor());
+    }
+
+    static OwnedSyncWatchdog.Notification notification(Environment environment) {
+        boolean external = environment.getProperty(
+                "fpl.owned-sync.alerts.via-monitor", Boolean.class, false);
+        if (external && (!environment.getProperty(
+                "fpl.owned-sync.external-health.enabled", Boolean.class, false)
+                || environment.getProperty("fpl.owned-sync.external-health.token", "").isBlank())) {
+            throw new IllegalArgumentException("Monitor notification requires authenticated external health");
+        }
+        return new OwnedSyncWatchdog.Notification(environment.getProperty(
+                "fpl.owned-sync.alerts.webhook-enabled", Boolean.class, false),
+                !environment.getProperty("fpl.owned-sync.alerts.webhook-url", "").isBlank(), external);
     }
 }

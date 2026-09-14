@@ -108,6 +108,8 @@ fpl:
     alerts:
       # Outbox rows are still persisted when disabled/unconfigured, with an explicit state.
       # The URL is an owner secret supplied only through the environment and must be HTTPS.
+      # Explicit alternative: the external monitor owns DOWN/recovery notifications.
+      via-monitor: ${OWNED_SYNC_ALERTS_VIA_MONITOR:false}
       webhook-enabled: ${OWNED_SYNC_ALERT_WEBHOOK_ENABLED:false}
       webhook-url: ${OWNED_SYNC_ALERT_WEBHOOK_URL:}
     ops:
