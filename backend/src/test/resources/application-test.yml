@@ -61,6 +61,10 @@ fpl:
     # The account cap, low so the tests can actually reach it. Codes themselves are rows the
     # tests seed; there is no shared secret any more.
     max-accounts: 2
+  admin:
+    # The one admin the suite knows. InviteCodeAdminControllerTest and UserProfileControllerTest
+    # mint tokens for this id; nothing else about it is special.
+    user-ids: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
   daily-price:
     table-name: fpl_daily_price_test
     # Port 1 refuses connections: a test that reaches FPL by accident fails fast instead of
