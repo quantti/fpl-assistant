@@ -103,8 +103,11 @@ public final class HorizonScorer {
             }
             total += components.appearance() + components.defensiveContribution()
                     + (components.cleanSheet() == null ? 0 : components.cleanSheet())
-                    + components.attack() * fdrAdjust(rated ? fixture.difficulty() : NEUTRAL_FDR);
-            partial |= components.cleanSheet() == null || components.partialDefcon();
+                    + (components.attack() == null ? 0
+                            : components.attack() * fdrAdjust(
+                                    rated ? fixture.difficulty() : NEUTRAL_FDR));
+            partial |= components.attack() == null || components.cleanSheet() == null
+                    || components.partialDefcon();
         }
         return new Projection(total, true, partial, window.count(), neutralFdrLegs, null);
     }

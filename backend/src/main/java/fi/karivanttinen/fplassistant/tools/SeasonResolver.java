@@ -23,9 +23,11 @@ import java.util.Optional;
 public class SeasonResolver {
 
     private final JdbcTemplate jdbc;
+    private final PfsReadSource pfs;
 
-    public SeasonResolver(JdbcTemplate jdbc) {
+    public SeasonResolver(JdbcTemplate jdbc, PfsReadSource pfs) {
         this.jdbc = jdbc;
+        this.pfs = pfs;
     }
 
     public SeasonContext resolve() {
@@ -111,11 +113,12 @@ public class SeasonResolver {
      */
     public int completedGameweeks(int seasonId) {
         Integer count = jdbc.queryForObject("""
+                WITH %s
                 SELECT count(*) FROM gameweek g
                 WHERE g.season_id = ? AND g.finished = true
-                  AND EXISTS (SELECT 1 FROM player_fixture_stats pfs
+                  AND EXISTS (SELECT 1 FROM pfs_read pfs
                               WHERE pfs.season_id = g.season_id AND pfs.gameweek = g.id)
-                """, Integer.class, seasonId);
+                """.formatted(pfs.cte()), Integer.class, seasonId);
         return count == null ? 0 : count;
     }
 
@@ -135,8 +138,8 @@ public class SeasonResolver {
      * shows as visibly old data rather than ranking silently on weeks-old numbers.
      */
     public int latestGameweek(int seasonId) {
-        Integer gw = jdbc.queryForObject(
-                "SELECT COALESCE(max(gameweek), 0) FROM player_fixture_stats WHERE season_id = ?",
+        Integer gw = jdbc.queryForObject("WITH " + pfs.cte()
+                        + " SELECT COALESCE(max(gameweek), 0) FROM pfs_read WHERE season_id = ?",
                 Integer.class, seasonId);
         return gw == null ? 0 : gw;
     }

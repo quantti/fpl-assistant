@@ -79,7 +79,12 @@ public class SecurityConfig {
                         session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(requests -> requests
                         // Fly's health check has no token to present.
-                        .requestMatchers("/actuator/health", "/actuator/health/**").permitAll()
+                        .requestMatchers("/actuator/health").permitAll()
+                        // These exact routes authenticate with dedicated operator/monitor tokens
+                        // in SyncOperationsController, not with chat-user Supabase JWTs. The
+                        // controller is absent by default and fails closed on blank tokens.
+                        .requestMatchers("/ops/sync/status", "/ops/sync/retry",
+                                "/ops/sync/alerts/retry", "/ops/sync/health").permitAll()
                         // The built frontend is served from static/ by this same application; it
                         // must load before the user has signed in.
                         .requestMatchers(HttpMethod.GET, "/", "/index.html", "/favicon.ico",

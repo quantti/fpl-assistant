@@ -57,6 +57,19 @@ public final class SquadFormatter {
                                 Map<Integer, HorizonScorer.Projection> projections,
                                 boolean noCandidateWasScoreable, String blendNote,
                                 HorizonFixtures.Result horizon) {
+        return format(solved, constraints, priceProvenance, metricProvenance, scheduleProvenance,
+                DataAge.METRIC_REFRESH, excludedForNoRecord, resolvedIncludes, resolvedExcludes,
+                projections, noCandidateWasScoreable, blendNote, horizon);
+    }
+
+    public static String format(SolvedSquad solved, SquadConstraints constraints,
+                                String priceProvenance, String metricProvenance,
+                                String scheduleProvenance, String metricRefresh,
+                                int excludedForNoRecord, List<SquadCandidate> resolvedIncludes,
+                                List<SquadCandidate> resolvedExcludes,
+                                Map<Integer, HorizonScorer.Projection> projections,
+                                boolean noCandidateWasScoreable, String blendNote,
+                                HorizonFixtures.Result horizon) {
         // All three source lines are required, and the third is the one a future caller is
         // likeliest to forget: an optional schedule line would let an unattributed reply compile.
         StringBuilder out = new StringBuilder();
@@ -64,8 +77,7 @@ public final class SquadFormatter {
                 .append(Objects.requireNonNull(metricProvenance, "metricProvenance")).append('\n')
                 .append(Objects.requireNonNull(scheduleProvenance, "scheduleProvenance"))
                 .append('\n');
-        // Every projection below rests on PFS metrics whose core-sync time is unknowable (KAR-9).
-        out.append(DataAge.METRIC_REFRESH).append('\n');
+        out.append(Objects.requireNonNull(metricRefresh, "metricRefresh")).append('\n');
         if (blendNote != null) {
             out.append(blendNote).append('\n');
         }

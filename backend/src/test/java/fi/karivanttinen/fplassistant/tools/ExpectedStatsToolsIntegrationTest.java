@@ -129,6 +129,8 @@ class ExpectedStatsToolsIntegrationTest {
 
     private static final String STORED_ROWS_ONLY =
             " Stored rows only; this does not show that every match through that date is present.";
+    private static final String METRIC_REFRESH = "Metric refresh: season "
+            + TapasSeed.POPULATED_SEASON_CODE + ", returned sample;";
 
     /** The notice and coverage sit after the season banner and before the first numeric row. */
     @Test
@@ -138,10 +140,10 @@ class ExpectedStatsToolsIntegrationTest {
         String coverage = "Stored match coverage: Okafor, season " + TapasSeed.POPULATED_SEASON_CODE
                 + " (3 returned fixture rows), known match dates from 2025-08-16 15:00 UK (389 days ago)"
                 + " to 2025-08-24 15:00 UK (381 days ago)." + STORED_ROWS_ONLY;
-        assertThat(result).containsOnlyOnce(DataAge.METRIC_REFRESH).containsOnlyOnce(coverage);
+        assertThat(result).containsOnlyOnce(METRIC_REFRESH).containsOnlyOnce(coverage);
         int banner = result.indexOf("Data source: season " + TapasSeed.POPULATED_SEASON_CODE);
         assertThat(banner).isZero();
-        assertThat(result.indexOf(DataAge.METRIC_REFRESH)).isGreaterThan(banner)
+        assertThat(result.indexOf(METRIC_REFRESH)).isGreaterThan(banner)
                 .isLessThan(result.indexOf(coverage));
         assertThat(result.indexOf(coverage)).isLessThan(result.indexOf("Expected stats for"));
         assertThat(result).doesNotContain("Stored-data age").doesNotContain("Data source: season "
@@ -164,7 +166,7 @@ class ExpectedStatsToolsIntegrationTest {
         String result = tools.getTeamExpectedGoals(TapasSeed.ASHFIELD, 5);
 
         // Ashfield: 9101 (2 player rows), 9103 (2), 9110 (2).
-        assertThat(result).containsOnlyOnce(DataAge.METRIC_REFRESH).contains(
+        assertThat(result).containsOnlyOnce(METRIC_REFRESH).contains(
                 "Stored match coverage: " + TapasSeed.ASHFIELD + ", season " + TapasSeed.POPULATED_SEASON_CODE
                         + " (3 returned fixtures from 6 stored player rows), known match dates from"
                         + " 2025-08-16 15:00 UK (389 days ago) to 2025-08-24 15:00 UK (381 days ago)."
@@ -175,7 +177,7 @@ class ExpectedStatsToolsIntegrationTest {
     @Test
     void noStoredRowsIsNotAZeroDayOldRecord() {
         String team = tools.getTeamExpectedGoals(TapasSeed.TEAM_WITHOUT_FIXTURES, 5);
-        assertThat(team).contains("No fixture-level expected stats yet").contains(DataAge.METRIC_REFRESH)
+        assertThat(team).contains("No fixture-level expected stats yet").contains(METRIC_REFRESH)
                 .contains("Stored match coverage: Woodbridge Athletic, season " + TapasSeed.POPULATED_SEASON_CODE
                         + ", no stored rows used; age unavailable.")
                 .doesNotContain(" ago");
@@ -228,7 +230,7 @@ class ExpectedStatsToolsIntegrationTest {
         String after = tools.getPlayerExpectedStats("Lindqvist", 5);
 
         assertThat(after).isEqualTo(before);
-        assertThat(after).contains(DataAge.METRIC_REFRESH)
+        assertThat(after).contains(METRIC_REFRESH)
                 .contains("Stored match coverage: Lindqvist, season " + TapasSeed.POPULATED_SEASON_CODE
                         + " (1 returned fixture row), known match date 2025-09-01 15:00 UK (373 days ago).")
                 .contains("77 min, xG 0.42");

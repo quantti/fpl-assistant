@@ -4221,6 +4221,54 @@ pre-cutover intraday captures require staged publication so actual source timest
 without replacing a still-usable prior-day capture too early. The companion comparison-coverage
 plan remains required and now points to this ownership plan for ingestion. No updater has yet
 been implemented or switched on.
+
+### Owned-sync implementation — Tasks 1–2 foundation (2026-09-13)
+
+Subagent implementation was split into source contracts, durable staging/leases, persisted request
+budget and HTTP transport, with orchestrator review between units and a final independent pass.
+The ownership plan is now 2/10; this is **not yet a running updater**. Task 3's dispatch/mappers,
+core publication, fixture verification, scheduling, reader evidence, alerts and cutover remain.
+No beans, scheduled jobs or startup hooks activate this infrastructure; schema initialization is
+explicit and the core shared tables are untouched. The old writers have not been disabled.
+
+`sync/OwnedSyncStore` provides season-scoped publication fences, coalescing, expiring leases,
+transactional callback publication, bounded staged bytes and retention that preserves active work.
+`OwnedSyncRequestBudget` persists one-second spacing, two permits, 5,000 rolling-day attempts
+and Retry-After/backoff. `OwnedSyncHttpClient` uses per-client Apache retry/redirect suppression,
+bounded bodies/total waits and bounded cancellation acknowledgement; uncertain cancellation holds
+its permit until expiry rather than releasing capacity early. These APIs are explicitly invoked,
+not a replacement scheduler hidden behind existing jobs.
+
+Eight public source captures and 13 test-only contract tests establish fixture-scoped participant
+and minutes evidence. The meaning of nonzero `points_modification` remains unproven; no corrected
+point total is inferred from it. Full inventory and limitations are in
+`docs/superpowers/specs/2026-09-13-owned-sync-source-contracts.md`. There are another 36
+store/budget/local-HTTP tests. Independent review fixes are recorded in the plan outcome.
+Production activation still requires source validation/publication, reader integration and an
+owner-approved single-writer handover. Linear linking remains outstanding because this harness
+has no configured Linear access.
+
+### Owned-sync implementation — Task 3 catalogue and schedule (2026-09-14)
+
+The owned-sync plan is now 3/10. Subagents implemented strict catalogue/schedule parsing,
+atomic named-column writers and explicit fetch/stage/resume dispatch in three reviewed units.
+Both publication groups use the same validated source batch but preserve their separate 02:00 UK
+price and 03:00 UK schedule cutovers. Core row timestamps record writes; capture and endpoint
+receipts record actual source reads. A shared season lock prevents cross-group team regressions.
+New/coalesced demand requires new enough source observations, so yesterday's or an earlier
+same-day batch cannot masquerade as a new update; retries retain their staged work.
+
+Full disposable-database suite: 1004 tests, zero failures/errors/skips. An order-dependent RLS
+failure in ad-hoc test-table setup was fixed without weakening the security assertion. Reviews
+also fixed historical IDs outside today's catalogue, independent nullable fixture fields,
+nullable season end dates, numeric capacity, cross-group locking and source/write-time separation.
+The plan's Task 3 outcome records details and remaining boundaries.
+
+The pipeline is still **inert**: no bean, scheduler, CLI or startup activation, no production core
+writes, no PFS writes and no Tapas job disabled. Task 4 adds full history/DefCon and component
+evidence; verification, scheduling, read-path integration, alerts and reviewed cutover still follow.
+AGENTS records the owner's core write-ownership exception with those deployment restrictions.
+
 ## Header facelift — FPL Sidekick wordmark and page links (2026-09-13)
 
 Built on the player-shortlist branch (PR #88), which introduced `HeaderNavigation`. The bar now
@@ -4241,6 +4289,42 @@ Verified: 103 frontend tests, `npm run build` (contrast check, `tsc -b`, Vite) a
 Chromium screenshots at 1280px and 375px in both schemes, with the sidebar overlay open, against
 the dev server with a stubbed session and no backend. Measured `.root` height unchanged after
 inserting 3000px of content, i.e. still height-bounded. Head to Head from the mockup is not built.
+
+## Owned matchday updates — code complete, not activated (2026-09-14)
+
+Tasks 4–10 code/local verification follow the foundation in PRs #91/#93. Full histories and DefCon,
+fixture-level stable-source verification, atomic publication/evidence, adaptive durable scheduling,
+reader masks and whole-club comparison refusals, watchdog/outbox and authenticated operations are
+implemented. OFF is still the default; no production writes, activation, Tapas disablement, secrets,
+role changes or real notification calls were performed. The separate Tapas compatibility/guard
+change is [PR #1](https://github.com/quantti/tapas-fpl-app/pull/1), defaulting core writes to true.
+
+Subagent implementations and independent review/fix rounds covered source contracts, publication
+races, retry/epoch fencing, pending/nullable metrics, derived jobs and notification recovery.
+Final serial review corrected cutover ordering (never require live owner publication before the
+old writer drains), preservation/revocation of receipts on rollback, and required season-row lock
+privileges in the review-only grant outline.
+
+Verification: 1132 backend tests, zero failures/errors/skips; 700 Tapas tests; 33 pre-push shell
+regressions. Fake-clock/FPL end-to-end coverage includes delayed finish, incomplete histories, 429,
+restart, independent fixture recovery, two stable batches, correction revocation and alert recovery.
+The 600-player/ten-fixture stress case demonstrates that desired cadence can exceed 5000 daily
+attempts: the ceiling defers work honestly, not an asserted freshness guarantee. Measure real
+throughput and backlog before activation. Tapas Ruff has no diagnostics on changed lines; 34
+existing diagnostics remain versus 38 in its base, and were not swept into this change.
+
+**Resource incident:** the owner reported three host crashes from memory exhaustion during the
+large implementation. No OOM-log root-cause proof was collected; final inspection did identify an
+idle project Gradle daemon retaining about 1.1 GiB, which was stopped. Finalization used no parallel
+agents/builds. Build/test heaps, worker count, Spring context cache and DB pools are now bounded;
+test Postgres buffers/connections are reduced. This WSL Docker cannot enforce container memory
+limits. A user-systemd cgroup-v2 scope did enforce a 1280 MiB limit: the full suite peaked at 1152
+MiB with at least 1889 MiB host memory available, and left no persistent Gradle daemon.
+
+**Still operationally gated:** owner-selected alert destination and delivery test, external monitor
+secrets, distinct reviewed DB roles, maintenance/drain evidence, current-season reconciliation and
+one observed real matchday. See `docs/OWNED-SYNC-OPERATIONS.md` and both updated plans. Linear access
+is unavailable in this harness, so no ticket identifier was invented or automatically closed.
 
 ## Invite-code admin API (KAR-54, 2026-09-13)
 

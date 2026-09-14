@@ -86,6 +86,17 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
   columns, never INSERTs a row: tapas owns the rows, this owns the columns. Neither writer can
   clear the other's values, because both write named column lists. Do not extend this exception to
   other tapas tables or other columns without the owner saying so.
+- **Owned-sync write takeover authorised by the owner on 2026-09-13:** this service, not Tapas,
+  will own core FPL updates. The implementation may add named-column writers for existing
+  `team`, `player`, `gameweek`, `fixture` and `player_fixture_stats` rows, preserving their shared
+  schema and season-qualified keys. This is a write-ownership exception, not permission to alter
+  their schema or unrelated tables. Until the reviewed single-writer cutover, these new APIs stay
+  inert: no automatic activation, production core writes or disabling Tapas jobs. Cutover must
+  drain/disable every old core writer first and preserve Tapas' unrelated jobs/readers. The current
+  DefCon-only writer rule above remains in force for the legacy path until that cutover. New
+  writes validate the configured playing season against the source, never the resolver's fallback;
+  do not create/change `season` rows automatically. Follow
+  `docs/superpowers/plans/2026-09-13-owned-matchday-sync.md` for the staged handover and evidence.
 - Player prices stored as integers ×10 (`now_cost=75` = £7.5m). `element_type`: 1=GK, 2=DEF, 3=MID, 4=FWD.
 - External APIs (vaastav CSVs, football-data.org, FPL `bootstrap-static`) are hit only at sync time, never at chat time — everything queries Supabase.
 - **Today's price and today's injury flags come from `fpl_daily_price`, not from the tapas `player` table.** That table is synced weekly by `tapas-fpl-app` and was measured 85 days stale; `fpl_daily_price` is captured daily at 02:00 UK from FPL's own API (prices change at 00:00 UK) and owes tapas nothing, so it also survives the season changeover. It carries `status`/`news` — the availability picture — and `penalties_order`/`direct_fk_order`/`corners_order` — the set-piece picture — alongside `now_cost`. Set-piece duty lives here rather than in the strategy corpus because a written list of takers is written before anyone has taken one, and the first weeks of a season revise it. Dated rows, so it answers *when* a flag appeared; it cannot be backfilled, since FPL publishes only today's state. **The daily-capture tools (`getPriceHistory`, `getPlayerAvailability`, `getFlaggedPlayers`, `getSetPieceTakers`) are a documented exception like `HistoricalTools`: they use `DailyPriceSource.provenance()` (season + capture date) instead of `SeasonContext.provenance()`, because the resolver would attribute changeover-window data to the wrong season. Do not "fix" them back onto `SeasonContext.provenance()`.** **`GameweekTools` and `FixtureTools` are the same kind of exception when a schedule capture exists: they read `fpl_gameweek`/`fpl_fixture` (FPL's own `events` and `/api/fixtures/`, captured daily at 02:10 UK) under `ScheduleSource.provenance()`, and fall back to the tapas tables under `SeasonContext.provenance()` only before the first capture. Gameweek status on the capture path is derived from `deadline_time` against the clock, never from the captured `is_current` flag.** `PickTools` (`getDifferentialPicks`, `getCaptainCandidates`) reads its candidate pool from this table too, beside `SquadTools.buildSquad`: metrics attach by element id while the capture and the resolved season are the same season, and by unique `web_name` when they are not. Note that `element_id` in this table is season-scoped (FPL renumbers every season) — every query keyed on it must also filter on `season`.
@@ -229,6 +240,28 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
   broad ticket with many independent tasks. Divide it into smaller dependency-ordered units, give
   each agent one clear unit with its own verification, and return control to the orchestrating
   agent between units. Keep sequential work sequential when agents share a working tree.
+
+### Resource safety
+
+Run one bounded agent/build/test unit at a time; never overlap full suites with subagents.
+Keep the checked-in Gradle heap/worker/context-cache limits. On memory-constrained WSL, use the
+cgroup-v2 scope and host-memory stop threshold in `docs/DEVELOPMENT.md`; do not assume this Docker
+supports hard memory limits. Stop only this project's idle daemons or test scopes, never another
+project's processes. Verify memory headroom before running the mandatory pre-push suite.
+
+### Owned publication evidence (not activated)
+
+The runtime is OFF by default. STAGING must not publish core data or poison legacy reads. ACTIVE
+requires explicit playing season and cutover confirmation only after every old writer drains.
+`FixtureVerification` requires complete source-consistent participant histories and two independent
+batches whose second start is at least ten minutes after the first end. `fpl_fixture_sync` and
+`fpl_player_fixture_evidence` fence publication and mask absent optional components before SQL
+aggregation through `PfsReadSource`. Physical defaults/retained values are not new observations.
+Corrections revoke verification; OFF rollback must not erase actual ownership or silently accept
+unverified data. Before restoring legacy writes, revoke current owner verification while preserving
+evidence, or new physical writes would inherit old receipts. Whole-club comparison outages require
+a squad refusal, not an alternative hand-built XI. Receipt source intervals are scoped to shown
+metrics; legacy PFS core-refresh time remains unknown. See `docs/OWNED-SYNC-OPERATIONS.md`.
 
 ## Commits and pull requests
 

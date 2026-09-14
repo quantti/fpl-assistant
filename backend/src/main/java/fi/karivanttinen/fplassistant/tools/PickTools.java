@@ -167,7 +167,9 @@ public class PickTools implements FplTool {
             the season, window evidence, exclusions and partial components. The metric season line
             covers the metrics only; price and fixtures come from the other two. Use for
             pick/differential questions with strategy guidance; do not fill an empty list with
-            ineligible names.
+            ineligible names. If whole-club comparison evidence is unavailable, the eligible-only
+            rows are labelled RESTRICTED COMPARISON POPULATION before the rows; they are not a
+            league-wide best list and cannot be used to assemble a squad.
             """)
     public String getDifferentialPicks(String position, double maxOwnership, int nextN) {
         try {
@@ -192,10 +194,12 @@ public class PickTools implements FplTool {
             HorizonFixtures.Result horizon = horizon(snapshot, capture, gameweekLimit);
             String provenance = provenanceFor(capture, season,
                     LocalDate.ofInstant(snapshot.asOf(), UkTime.zone()), scheduleSource(snapshot))
-                    + "\n" + DataAge.METRIC_REFRESH;
+                    + "\n" + snapshot.metricRefresh();
             Selection selection = candidates(snapshot, horizon, elementType, maxOwnership);
             if (selection.rows().isEmpty()) {
                 return provenance + "\n" + scheduleEvidence(snapshot, horizon, selection) + "\n"
+                        + ComparisonCoverageFormatter.restricted(snapshot.comparisonCoverage(),
+                                snapshot.asOf()) + "\n"
                         + noQualifyingPlayers("differentials", capture.season(), selection, horizon);
             }
 
@@ -237,6 +241,8 @@ public class PickTools implements FplTool {
             of the season, window evidence, exclusions and partial components. The metric season
             line covers the metrics only; price and fixtures come from the other two. Use with
             captaincy strategy; never add an ineligible fallback when the qualifying list is empty.
+            If whole-club comparison evidence is unavailable, the eligible-only rows are labelled
+            RESTRICTED COMPARISON POPULATION before the rows; they are not league-wide best picks.
             """)
     public String getCaptainCandidates(int nextN) {
         try {
@@ -253,10 +259,12 @@ public class PickTools implements FplTool {
             HorizonFixtures.Result horizon = horizon(snapshot, capture, gameweekLimit);
             String provenance = provenanceFor(capture, season,
                     LocalDate.ofInstant(snapshot.asOf(), UkTime.zone()), scheduleSource(snapshot))
-                    + "\n" + DataAge.METRIC_REFRESH;
+                    + "\n" + snapshot.metricRefresh();
             Selection selection = candidates(snapshot, horizon, ATTACKERS, 100.0);
             if (selection.rows().isEmpty()) {
                 return provenance + "\n" + scheduleEvidence(snapshot, horizon, selection) + "\n"
+                        + ComparisonCoverageFormatter.restricted(snapshot.comparisonCoverage(),
+                                snapshot.asOf()) + "\n"
                         + noQualifyingPlayers("captain candidates", capture.season(), selection,
                                 horizon);
             }
@@ -548,8 +556,9 @@ public class PickTools implements FplTool {
      * ranking on underlying numbers. A single non-zero anywhere is enough to rule that out.
      */
     private static boolean noUnderlyingSignal(List<Map<String, Object>> rows) {
-        return rows.stream().noneMatch(r ->
-                numeric(r.get("xg90")) > 0 || numeric(r.get("xa90")) > 0);
+        return !rows.isEmpty() && rows.stream().allMatch(r ->
+                r.get("xg90") instanceof Number && r.get("xa90") instanceof Number
+                        && numeric(r.get("xg90")) == 0 && numeric(r.get("xa90")) == 0);
     }
 
     private String formatPicks(String heading, Selection selection,
@@ -563,7 +572,9 @@ public class PickTools implements FplTool {
 
         StringBuilder out = new StringBuilder();
         out.append(heading).append(" (").append(metric.played().code()).append("):\n")
-                .append(scheduleEvidence(snapshot, horizon, selection)).append('\n');
+                .append(scheduleEvidence(snapshot, horizon, selection)).append('\n')
+                .append(ComparisonCoverageFormatter.restricted(snapshot.comparisonCoverage(),
+                        snapshot.asOf())).append('\n');
         for (Map<String, Object> row : ranked.subList(0, Math.min(MAX_PICKS, ranked.size()))) {
             int position = ((Number) row.get("element_type")).intValue();
             OptionalDouble avgFdr = averageDifficulty(row, windows);
@@ -626,7 +637,8 @@ public class PickTools implements FplTool {
         ExpectedPoints.PerFixture projection =
                 (ExpectedPoints.PerFixture) row.get("projection");
         return "appearance " + fixed(projection.appearance(), 2)
-                + ", attack " + fixed(projection.attack(), 2)
+                + ", attack " + (projection.attack() == null
+                        ? "n/a (partial: xG/xA unavailable)" : fixed(projection.attack(), 2))
                 + ", " + cleanSheets(row)
                 + ", DC " + fixed(projection.defensiveContribution(), 2)
                 + (projection.partialDefcon() ? " (partial: a minutes class lacks two known rows)" : "");

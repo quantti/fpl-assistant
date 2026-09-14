@@ -198,6 +198,10 @@ public final class SeasonBlend {
         if (a instanceof Number x && b instanceof Number y) {
             return w * x.doubleValue() + (1 - w) * y.doubleValue();
         }
+        if ((key.equals("xg90") || key.equals("xa90")) && current != null && previous != null
+                && (w > 0 && !(a instanceof Number) || w < 1 && !(b instanceof Number))) {
+            return null;
+        }
         return a instanceof Number ? a : b;
     }
 

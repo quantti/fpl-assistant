@@ -1,0 +1,34 @@
+package fi.karivanttinen.fplassistant.sync;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.timeout;
+import static org.mockito.Mockito.verify;
+
+import java.time.Instant;
+
+import org.junit.jupiter.api.Test;
+
+class OwnedMatchdayRuntimeTest {
+
+    @Test
+    void stopAlwaysClosesTransportWhenDurableDeactivationThrows() {
+        OwnedMatchdayCoordinator coordinator = mock(OwnedMatchdayCoordinator.class);
+        PlannerRuntimeRepository repository = mock(PlannerRuntimeRepository.class);
+        OwnedSyncHttpClient http = mock(OwnedSyncHttpClient.class);
+        OwnedSyncWatchdog watchdog = mock(OwnedSyncWatchdog.class);
+        var fence = new OwnedSyncStore.RuntimeFence(
+                "2026-27", OwnedSyncMode.STAGING, 7, Instant.EPOCH);
+        doThrow(new IllegalStateException("database unavailable")).when(repository).deactivate(fence);
+        OwnedMatchdayRuntime runtime = new OwnedMatchdayRuntime(coordinator, repository, http,
+                "test", fence, watchdog, "2026-27");
+
+        runtime.start();
+        runtime.stop();
+
+        assertThat(runtime.isRunning()).isFalse();
+        verify(repository).deactivate(fence);
+        verify(http, timeout(1_000)).close();
+    }
+}

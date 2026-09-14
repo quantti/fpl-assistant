@@ -172,6 +172,23 @@ class ExpectedPointsTest {
     }
 
     @Test
+    void unavailableAttackRatesRemainUnknownInsteadOfBecomingZero() {
+        Map<String, Object> missingXg = row(4, 0.5, 0.2, null);
+        missingXg.remove("xg90");
+        Map<String, Object> missingXa = row(4, 0.5, 0.2, null);
+        missingXa.put("xa90", null);
+
+        ExpectedPoints.PerFixture first = ExpectedPoints.perFixture(
+                missingXg, fullMinutes(), OptionalDouble.empty()).orElseThrow();
+        ExpectedPoints.PerFixture second = ExpectedPoints.perFixture(
+                missingXa, fullMinutes(), OptionalDouble.empty()).orElseThrow();
+
+        assertThat(first.attack()).isNull();
+        assertThat(second.attack()).isNull();
+        assertThat(first.points()).isEqualTo(first.appearance());
+    }
+
+    @Test
     void zeroExposureIsARealZeroWhileUnknownExposureHasNoProjection() {
         Map<String, Object> defender = row(2, 1, 1, null);
 

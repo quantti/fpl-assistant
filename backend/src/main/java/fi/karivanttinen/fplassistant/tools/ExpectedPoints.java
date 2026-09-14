@@ -104,7 +104,7 @@ public final class ExpectedPoints {
      */
     public static final double DEFCON_DISPERSION = 1.6;
 
-    public record PerFixture(double points, double appearance, double attack,
+    public record PerFixture(double points, double appearance, Double attack,
                              Double cleanSheet, double defensiveContribution,
                              boolean partialDefcon) {
     }
@@ -130,8 +130,11 @@ public final class ExpectedPoints {
         }
         int position = ((Number) row.get("element_type")).intValue();
         double appearance = exposure.appearanceRate() + exposure.sixtyRate();
-        double attack = (goalPoints(position) * numeric(row.get("xg90"))
-                + ASSIST_POINTS * numeric(row.get("xa90"))) * exposure.expectedMinutes() / 90;
+        Double attack = exposure.expectedMinutes() == 0 ? 0.0
+                : row.get("xg90") instanceof Number xg && row.get("xa90") instanceof Number xa
+                ? (goalPoints(position) * xg.doubleValue() + ASSIST_POINTS * xa.doubleValue())
+                        * exposure.expectedMinutes() / 90
+                : null;
 
         Double cleanSheet = 0.0;
         if (cleanSheetPoints(position) > 0 && exposure.sixtyRate() > 0) {
@@ -142,7 +145,8 @@ public final class ExpectedPoints {
         }
 
         DefconFixture defcon = defconPerFixture(row, position, exposure);
-        double points = appearance + attack + (cleanSheet == null ? 0 : cleanSheet)
+        double points = appearance + (attack == null ? 0 : attack)
+                + (cleanSheet == null ? 0 : cleanSheet)
                 + defcon.points();
         return Optional.of(new PerFixture(points, appearance, attack, cleanSheet,
                 defcon.points(), defcon.partial()));

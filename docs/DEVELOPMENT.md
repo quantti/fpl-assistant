@@ -76,7 +76,56 @@ set -a; source .env.test; set +a
 ./gradlew bootRun --args="--sync-schedule"        # capture FPL gameweeks and fixtures, then exit
 ```
 
-Frontend, from `frontend/`:
+### Owned-sync implementation (not activated)
+
+`OWNED_SYNC_MODE=OFF` is the default: no owned runtime, schema initialization or outbound work.
+The reviewed STAGING mode captures/validates without publishing core rows. ACTIVE additionally
+requires an explicit `OWNED_SYNC_PLAYING_SEASON` and `OWNED_SYNC_CUTOVER_CONFIRMED=true`; the owner
+must first disable/drain every Tapas core writer and verify distinct-role permissions. A flag is
+an acknowledgement, not proof that external processes have drained.
+
+`OwnedMatchdayRuntime` wires the durable planner, two fetch workers, independent watchdog and
+notification delivery. History/DefCon publication requires fixture-level verification, not just
+an HTTP 200. ACTIVE disables conflicting legacy price/schedule/current-season DefCon paths.
+See [OWNED-SYNC-OPERATIONS.md](OWNED-SYNC-OPERATIONS.md) and the separate Tapas cutover runbook.
+
+Run the new tests with the ordinary **local** `.env.test` setup:
+
+```bash
+./gradlew test --tests '*CatalogueSchedule*' --tests '*Owned*' --tests '*History*' --tests '*Fixture*'
+```
+
+Price publication waits until 02:00 UK and schedule publication until 03:00 UK. Source-read
+instants remain unchanged during that wait; compatibility `updated_at` records publication.
+A retry resumes staged work, but a new/coalesced refresh demand advances the source floor. An
+HTTP 200 or successful catalogue publication does not verify a completed match's player metrics.
+Plan and remaining operational gates: `docs/superpowers/plans/2026-09-13-owned-matchday-sync.md`.
+
+### Memory-constrained verification
+
+Do not overlap subagents, builds or full suites. `backend/gradle.properties` disables persistent
+Gradle daemons and parallel work, limits build heap to 256 MiB and workers to one. Tests use one
+384 MiB heap, two visible CPUs, two cached Spring contexts and pools of at most three connections.
+The disposable Postgres starts with 32 MiB shared/maintenance buffers, 2 MiB work memory and at most
+60 connections. These database settings are not a hard process-memory ceiling.
+
+On this WSL host, Docker reports no cgroup-v1 memory/CPU limit support; do not claim Docker flags
+are enforcing limits or reconfigure the shared daemon during another project's work. User-systemd
+cgroup-v2 scopes do enforce limits (verified via `memory.max`). For a full suite, after loading the
+local test environment, use:
+
+```bash
+systemd-run --user --scope -p MemoryMax=1280M -p MemoryHigh=1152M \
+  -p MemorySwapMax=0 -p CPUQuota=200% ./gradlew --console=plain cleanTest test
+```
+
+Check `free -m` first, allow at least 2.3 GiB available, monitor host memory and stop only this scope
+if available memory falls below 768 MiB. Do not kill other projects or disable the pre-push hook.
+The final owned-sync suite peaked at 1152 MiB in its scope and left at least 1889 MiB available.
+
+### Frontend
+
+From `frontend/`:
 
 ```bash
 npm run dev                                       # Vite on :5173, /api proxied to :8080

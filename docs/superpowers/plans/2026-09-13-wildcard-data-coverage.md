@@ -1,6 +1,6 @@
 # Wildcard recommendations must not optimise around missing clubs
 
-**PROGRESS:** Planning complete; implementation 0/6 tasks done.
+**PROGRESS:** Tasks 1–4 implemented and locally verified; Task 5 transferred to the owned-sync plan; Task 6 code/review complete, production release and real-matchday observation pending.
 
 Scope: ranking-data coverage and honest squad advice, not PR #89's header facelift.
 PR #89 was reviewed separately with no actionable findings. No Linear identifier has been
@@ -181,6 +181,19 @@ waits for proving the original delay's cause. Coordinate the two plans' read-pat
 implement two separate coverage models. Until handover/reconciliation completes, the correctness
 guard can ship first and must honestly expose limited availability. Mark this task complete only
 when the owned-sync plan's acceptance gates pass, not when this documentation is approved.
+
+## Implementation outcome (2026-09-14)
+
+`ComparisonCoverage` travels in the coherent ranking snapshot. A whole-club missing/pending
+comparison causes a squad refusal even when other clubs can supply fifteen players; individual
+player exclusions stay distinct. Pick replies label restricted comparisons. The prompt forbids
+constructing a fallback squad after that refusal. Tests cover pending → schedule-only → verified
+recovery, with no Arsenal quota, extra eligibility bypass or chat-time source request.
+
+The owned-sync implementation supplies fixture/component receipts and correction revocation.
+The original upstream reason for the stale GW4 source remains unproven; a reproduced coverage
+failure is not evidence of its upstream cause. Local full-suite verification passed 1132 backend
+tests; see the owned-sync plan for reviews, resource limits and the unactivated cutover gates.
 
 ## Task 6 — review, release and document
 

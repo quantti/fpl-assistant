@@ -1,6 +1,6 @@
 # Assistant-owned FPL sync and post-match verification
 
-**PROGRESS:** Planning complete; implementation 0/10 tasks done.
+**PROGRESS:** Code and local verification for Tasks 1–10 complete; Tasks 8–10 operational notification, single-writer cutover and real-matchday release gates remain pending owner approval. Runtime stays OFF.
 
 Owner decision: this service, **not Tapas**, will perform the FPL data updates. This supersedes
 Task 5's ownership assumption in `2026-09-13-wildcard-data-coverage.md`. That plan's comparison
@@ -238,9 +238,18 @@ children. Never prune a player needed by existing PFS history; missing players a
 DELETE instructions. Invalid/partial league payload preserves the prior complete capture.
 Keep startup/scheduled/CLI paths under the coordinator; remove duplicate legacy job dispatch.
 
+Core `updated_at` remains row publication/write time (the transaction clock), never source-read
+provenance; captured tables retain the actual source capture time. Fence bootstrap and fixture
+chronology through fixed per-season source receipts in `fpl_sync_receipt`, with bootstrap shared by
+catalogue and schedule and both endpoint intervals retained separately. The first owned publication
+over legacy rows requires a newly fetched, fully validated batch after legacy writers are drained:
+legacy `updated_at` cannot initialise or certify source chronology.
+
 Verify: season changeover/reused IDs, archived rows untouched, null kickoff/gameweek, same-day
-availability changes, complete timestamp-coherent schedule publication and transaction rollback.
-Reader cutover/date tests must pass, not merely mapper tests.
+availability changes, read-at-02:00/published-at-03:00 timestamp separation, same bootstrap reused
+across both publication groups, independently regressed bootstrap/fixture rejection, complete
+timestamp-coherent schedule publication and transaction rollback including source receipts. Reader
+cutover/date tests must pass, not merely mapper tests.
 
 ### 4. Full player-history ingestion and DefCon integration
 
@@ -349,6 +358,122 @@ correction check and delivered recovery/alert. Do not invent an upstream-latency
 - Legitimate zero minutes, historical club spells and season-scoped IDs retain their meaning.
 - Post-match corrections are collected and attributed; missing optional metrics stay partial.
 - No new chat-time FPL reads, no Arsenal-specific selection rule, no minutes-rule bypass.
+
+## Tasks 1–2 outcome — foundation only (2026-09-13)
+
+Task 1: eight public FPL captures with source URLs/read intervals, a writer inventory and 13
+source-contract tests in `sync/source`. The deliberately partial parser is test-only. See
+`docs/superpowers/specs/2026-09-13-owned-sync-source-contracts.md`. Fixture-scoped participants
+and minutes are evidenced; raw `points_modification` arithmetic remains unresolved. Later work
+must not derive corrected totals from it without evidence. Synthetic DGW/transfer/postponement
+and correction variants are labelled, not presented as captured real cases.
+
+Task 2 was split into three sequential, independently reviewed units: fenced durable runs and
+bounded payload staging; shared persisted request admission/cooldown; and bounded HTTP transport.
+`OwnedSyncSchema.initialize` is explicit, with no Spring registration or job activation. The
+schema currently creates only run/payload/publication-receipt and request-state/attempt tables;
+fixture verification and component evidence schema is deliberately deferred to Tasks 4–5, where
+its actual publication contract is implemented rather than invented speculatively here. This is
+infrastructure, not a functioning updater: Task 3 must connect dispatch/validation/staging to it.
+
+The store coalesces compatible work, fences leases and publication by season/key, bounds bodies
+at 2 MB and cumulative retained payloads per run at 20 MB, and protects active evidence from
+retention cleanup. Exceeding a cap fails visibly; later dispatch must terminate/escalate oversized
+work, not retry it forever. Request admission persists the one-second/two-permit/rolling-24-hour
+budget and cooldown across instances. Valid Retry-After is respected without truncating long
+but representable deadlines. Unpersistable deadlines use bounded malformed-header fallback.
+
+Transport uses Boot-managed Apache HttpClient5's per-client retry/redirect controls, not cached
+JDK-global properties. Body reads and total waits are bounded; cancellation acknowledgement has
+at most one additional second. An unconfirmed exchange teardown records outcome/cooldown but
+retains its permit until expiry. That bounds local admission; it does not prove when a remote
+peer has observed socket closure. HTTP 200 remains raw, unverified evidence.
+
+There are 49 new tests (13 source, 16 store, 8 budget, 12 local-HTTP). Review fixes covered JSON
+strictness, unproven correction arithmetic, incompatible coalescing, season-scoped fences,
+aggregate staging caps, Retry-After storage range and bounded cancellation. Final independent
+foundation review found no further actionable issues. No public API is called by these tests;
+all DB integration uses the disposable container. No Tapas files or production data were changed.
+Linear access is unavailable in this harness; the required Kari link remains outstanding rather
+than a fabricated issue/closure. The implementation PR is the interim tracking reference.
+
+## Task 3 outcome — explicit catalogue/schedule pipeline (2026-09-14)
+
+Implemented in three bounded subagent units with independent reviews between them:
+`CatalogueScheduleParser`, `CatalogueScheduleWriter`/`CatalogueScheduleTables`, and
+`CatalogueScheduleDispatcher`. The pipeline can be invoked explicitly but has no Spring bean,
+startup runner, CLI or scheduled registration. Legacy entry points remain unchanged until the
+Task 9 cutover; routing/activation belongs with Tasks 6/9, not an implicit switch in this task.
+
+The parser covers named compatibility/capture fields, validates schema numeric capacity and the
+configured season period, and reuses `ScheduleSource.assess` for the complete league invariant.
+Historical player references need not remain in today's bootstrap. Assigned-undated and
+unassigned-dated fixtures are both valid. A database season may have its actual August start and
+no end date; the source-validation period derives from its season code, not a fabricated DB row.
+
+Publication is split into canonical `catalogue-price` and `schedule` units for the 02:00/03:00 UK
+cutovers. Each atomically writes compatibility rows, its entire capture and source receipts;
+missing catalogue players are retained in core history but removed from the selected daily
+capture. Both units serialize on the same season row before checking shared-team chronology.
+Core `updated_at` is publication time; captures and separate bootstrap/fixture receipts retain
+source time. Older endpoints cannot slip through merely because a combined batch has a newer
+maximum timestamp. No PFS writes or existing-table schema changes are included.
+
+Dispatch enqueues both units, shares one coherent fetched/staged pair, survives first-endpoint
+interruption, and defers publication without backdating. A persisted source-demand floor advances
+on new/coalesced demand but not on retry: the next cycle cannot reuse an old same-day pair forever,
+and a demand arriving during a fetch is checked again under the publication lock. Obsolete pairs
+are refreshed rather than terminally rejected; malformed source, payload-cap failure, transient
+HTTP/budget deferral, lease loss and publication rollback remain distinct. Retry hints come from
+the persistent request budget instead of a second Retry-After interpretation in dispatch.
+
+Verified against disposable Postgres: 1004 tests, 0 failures/errors/skips, including 38 new parser,
+writer and dispatcher tests plus a new store demand-fence regression. Full-suite verification
+found that four ad-hoc failure/probe test tables lacked RLS; their initializers now enable it on
+both fresh and reused tables. The security assertion was not weakened. A final independent Task 3
+review found no further actionable issues. AGENTS now records the explicit write-ownership
+exception while forbidding activation/production core writes before the reviewed handover.
+
+Next is Task 4's full history/DefCon mapping and publication with component evidence. Fixture
+readiness, adaptive scheduling, reader masking, alerts and cutover remain incomplete. Do not
+interpret the new API or a parsed catalogue as a verified post-match result.
+
+## Tasks 4–10 implementation outcome (2026-09-14)
+
+Full current-season histories and DefCon now share strict parsing, historical-club mapping and
+component-presence evidence. Fixture-scoped publication is atomic and fenced; absent components
+mask retained/default storage values. Two independently fetched coherent batches are required,
+with the second starting at least ten minutes after the first finishes. Corrections revoke and
+reverify; partial sweeps, missing parents and 429 responses remain resumable pending work.
+
+The adaptive UK planner persists slots, retries, recovery and correction checks. OFF/STAGING/ACTIVE
+runtime epochs fence stale workers; ACTIVE requires explicit cutover confirmation and gates legacy
+current-season writers. Evidence-aware PFS reads, whole-club comparison refusal, restricted pick
+wording and the prompt preserve hard eligibility rather than filling missing clubs with alternatives.
+Watchdog, incident/recovery outbox, authenticated status/retry and opt-in external health are wired,
+with no real notification destination configured.
+
+The separate Tapas change is [PR #1](https://github.com/quantti/tapas-fpl-app/pull/1): all core writers
+are guarded, evidence-aware readers preserve pending appearances and unknown aggregates, and derived
+Points Against work survives core-write disablement. Defaults remain unchanged. Final runbook review
+corrected pre-publication/drain ordering, rollback receipt revocation and season-row lock grants;
+role SQL remains review-only. No grants, flags, jobs or production data were changed.
+
+Independent implementation reviews covered source completeness, concurrency, readers and cutover;
+findings were corrected before final serial verification. The final local full suite passed 1132
+tests with no failures/errors/skips, Tapas passed 700, and pre-push shell regressions passed 33.
+The integrated fake-clock/FPL test covers delayed finish, partial histories, 429/restart, stable
+observations, independent fixture recovery, corrections, component masks and incident/recovery.
+Its ten-fixture, 600-player stress case deliberately exceeds the 5000-attempt estimated demand:
+that budget is a hard ceiling, not a promise that every cadence can be fulfilled on a busy day.
+Budget denial must leave work pending and visible. Actual source/throughput measurements are still
+required during STAGING and the first approved real matchday; no upstream latency SLA is claimed.
+
+After host memory exhaustion was reported, finalization ran without parallel agents/builds.
+Checked-in Gradle/test/pool limits and smaller disposable Postgres buffers prevent the previous
+unbounded context retention/idle-daemon pattern. A kernel-enforced 1280 MiB scope ran the suite
+successfully (peak 1152 MiB; host available memory never below 1889 MiB). Docker on this WSL host
+cannot enforce its own memory flags; that limitation is documented, not silently bypassed.
 
 ## Remaining decisions before execution
 
