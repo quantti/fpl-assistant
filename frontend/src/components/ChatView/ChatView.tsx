@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useComputedColorScheme } from '@mantine/core'
+import { useProfile } from '../../auth/useProfile'
 import { useChat } from '../../hooks/useChat'
 import { useConversations } from '../../hooks/useConversations'
 import { navigate, Route } from '../../router'
@@ -21,6 +22,7 @@ interface Props {
 export default function ChatView({ route }: Props) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const selectionRef = useRef(0)
+  const profile = useProfile()
   const conversations = useConversations()
   const { messages, replaceMessages, streamingContent, isStreaming, sendMessage } = useChat({
     conversationId: conversations.currentId,
@@ -103,7 +105,7 @@ export default function ChatView({ route }: Props) {
           <HeaderNavigation route={route} />
         </div>
         <div className={classes.menu}>
-          <AppMenu route={route} />
+          <AppMenu route={route} admin={profile?.admin ?? false} />
         </div>
       </header>
       <div className={classes.body}>
