@@ -4290,6 +4290,30 @@ Chromium screenshots at 1280px and 375px in both schemes, with the sidebar overl
 the dev server with a stubbed session and no backend. Measured `.root` height unchanged after
 inserting 3000px of content, i.e. still height-bounded. Head to Head from the mockup is not built.
 
+## Owned sync — second STAGING exposed dependency starvation (2026-09-14)
+
+PR #97 deployed successfully with 1 GiB. The planner advanced and about 411 MiB remained available;
+115 public HTTP attempts produced 114 VALID payloads plus one unchecked checkpoint. However, 39
+high-priority fixture jobs repeatedly waited for missing histories: 659 history jobs and the two
+canonical jobs never received a worker turn. A fixture's source pair cannot replace the canonical
+catalogue pair required by history parsing. No receipts or player evidence were published.
+
+The bounded follow-up prioritizes canonical prerequisites and durably puts dependency-waiting
+fixtures behind histories. Ordinary retries restore normal priority, retaining ready-verification
+preference. Real-store coverage uses 39 fixtures/600 histories and checks source floors, stale
+leases and priority restoration; dispatcher coverage exercises the missing-history branch.
+The first full gate caught an end-to-end test's old queue-order assumption: it now injects the
+history failure before dispatch and pauses at that actual failure before checking the partial
+sweep, rather than draining unrelated work first. Publication/readiness assertions are unchanged.
+
+Production is OFF again. Fly forced the previous VM out before its durable activation marker was
+cleared; after verifying replacement by an OFF instance, a guarded metadata-only transaction
+fenced its 700 pending/leased runs and changed STAGING epoch 3 to OFF epoch 4. Evidence remains
+intact. The follow-up gives Fly a 60-second shutdown budget; the exact shutdown obstruction is
+unproven, so drain/epoch verification remains mandatory. Kuma recorded DOWN and is paused again;
+mailbox receipt/recovery, credential handover, ACTIVE and reconciliation are still unverified.
+No Tapas credential/flag or core-write ownership changed. See `docs/OWNED-SYNC-OPERATIONS.md`.
+
 ## Owned sync — STAGING blocked, safely returned to OFF (2026-09-14)
 
 PR #96 merged and deployed successfully. Its monitor/operations settings and tokens were installed;

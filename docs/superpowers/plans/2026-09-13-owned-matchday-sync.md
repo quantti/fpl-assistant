@@ -1,6 +1,6 @@
 # Assistant-owned FPL sync and post-match verification
 
-**PROGRESS:** Tasks 1–10 implemented and locally verified; operational rollout authorized, but first STAGING failed on shared-pool/transaction bounds. Runtime safely returned to OFF; the bounded fix awaits deployment. Tapas remains the core writer; notification, cutover, reconciliation and real-matchday gates remain open.
+**PROGRESS:** Tasks 1–10 implemented; pool fix deployed, second STAGING exposed dependency starvation. Production restored to OFF epoch 4; bounded queue/shutdown-budget follow-up awaits deployment. Tapas remains the core writer; notification, cutover, reconciliation and real-matchday gates remain open.
 
 Owner decision: this service, **not Tapas**, will perform the FPL data updates. This supersedes
 Task 5's ownership assumption in `2026-09-13-wildcard-data-coverage.md`. That plan's comparison
