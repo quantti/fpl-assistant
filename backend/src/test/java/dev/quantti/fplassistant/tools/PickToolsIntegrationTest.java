@@ -222,6 +222,44 @@ class PickToolsIntegrationTest {
     }
 
     @Test
+    void bothPickListsLabelRestrictedComparisonBeforeRowsAndKeepSourceLines() {
+        ScheduleSource.FixtureRow incident = RankingSeed.fixtures(CAPTURED_AT, FIRST_DEADLINE)
+                .stream().filter(row -> row.gameweek() == 4
+                        && row.homeTeamId() <= RankingSeed.team(9)
+                        && row.awayTeamId() <= RankingSeed.team(9))
+                .findFirst().orElseThrow();
+        jdbc.update("UPDATE " + scheduleSource.fixtureTable()
+                        + " SET kickoff_time=?, started=true, finished=false WHERE season=? AND id=?",
+                Timestamp.from(AS_OF.minusSeconds(1800)), SEASON, incident.id());
+
+        for (String result : List.of(tools.getDifferentialPicks("any", 100, 5),
+                tools.getCaptainCandidates(5))) {
+            assertThat(result).contains("Data source: FPL live prices", "Data source: season " + SEASON,
+                            "Data source: FPL's own gameweek and fixture list")
+                    .contains("RESTRICTED COMPARISON POPULATION")
+                    .contains("fixture " + incident.id() + " (GW4)")
+                    .contains("not a league-wide best list")
+                    .contains("Player comparison receipt:");
+            int coverage = result.indexOf("RESTRICTED COMPARISON POPULATION");
+            int firstRow = result.indexOf("  ", result.indexOf("Differential picks"));
+            if (firstRow < 0) {
+                firstRow = result.indexOf("  ", result.indexOf("Captain candidates"));
+            }
+            assertThat(coverage).isLessThan(firstRow);
+        }
+
+        jdbc.update("UPDATE " + scheduleSource.fixtureTable()
+                + " SET finished=true WHERE season=? AND id=?", SEASON, incident.id());
+        assertThat(tools.getDifferentialPicks("any", 100, 5))
+                .contains("completed side missing usable core rows");
+        seedGhostSide(incident, incident.homeTeamId(), 1.2, 1.2);
+        seedGhostSide(incident, incident.awayTeamId(), 1.2, 1.2);
+        assertThat(tools.getDifferentialPicks("any", 100, 5))
+                .contains("Comparison coverage: all clubs")
+                .doesNotContain("RESTRICTED COMPARISON POPULATION");
+    }
+
+    @Test
     void returnsOnlyEligibleDifferentialsWithPerFixtureEvidence() {
         String result = tools.getDifferentialPicks("any", 10, 5);
 
@@ -265,8 +303,8 @@ class PickToolsIntegrationTest {
                             line -> assertThat(line).startsWith("Data source: FPL live prices"),
                             line -> assertThat(line).startsWith("Data source: season " + SEASON),
                             line -> assertThat(line).startsWith("Data source: FPL's own gameweek"),
-                            line -> assertThat(line).isEqualTo(DataAge.METRIC_REFRESH));
-            assertThat(result.indexOf(DataAge.METRIC_REFRESH))
+                            line -> assertThat(line).isEqualTo(DataAge.RANKING_METRIC_REFRESH));
+            assertThat(result.indexOf(DataAge.RANKING_METRIC_REFRESH))
                     .as("before the schedule evidence and every numeric row")
                     .isLessThan(result.indexOf("Schedule evidence:"))
                     .isLessThan(result.indexOf("horizon Score"));
@@ -284,7 +322,7 @@ class PickToolsIntegrationTest {
                 .contains("Data source: FPL's own gameweek and fixture list for season " + SEASON)
                 .contains("complete FPL schedule capture at " + CAPTURED_AT
                         + ", judged as of " + AS_OF)
-                .containsSubsequence("Data source: FPL's own gameweek", DataAge.METRIC_REFRESH,
+                .containsSubsequence("Data source: FPL's own gameweek", DataAge.RANKING_METRIC_REFRESH,
                         "Schedule evidence:", "No differentials qualify");
     }
 
@@ -315,8 +353,8 @@ class PickToolsIntegrationTest {
 
         assertThat(tools.getDifferentialPicks("any", 100, 5)).isEqualTo(differentials);
         assertThat(tools.getCaptainCandidates(5)).isEqualTo(captains);
-        assertThat(differentials).contains(" Reliable (", "horizon Score", DataAge.METRIC_REFRESH);
-        assertThat(captains).contains(" Striker (", "horizon Score", DataAge.METRIC_REFRESH);
+        assertThat(differentials).contains(" Reliable (", "horizon Score", DataAge.RANKING_METRIC_REFRESH);
+        assertThat(captains).contains(" Striker (", "horizon Score", DataAge.RANKING_METRIC_REFRESH);
     }
 
     @Test
@@ -433,7 +471,7 @@ class PickToolsIntegrationTest {
         assertThat(tools.getDifferentialPicks("sweeper", 10, 5))
                 .contains("Unrecognised position").contains("sweeper")
                 .as("a malformed request reads no metrics, so it carries no refresh notice")
-                .doesNotContain(DataAge.METRIC_REFRESH);
+                .doesNotContain(DataAge.RANKING_METRIC_REFRESH);
     }
 
     @Test
@@ -538,7 +576,7 @@ class PickToolsIntegrationTest {
                 .contains("unknown horizon 4")
                 .contains("Data source: FPL's own gameweek and fixture list for season " + SEASON)
                 .contains("No editable window (no editable gameweek)")
-                .contains(DataAge.METRIC_REFRESH)
+                .contains(DataAge.RANKING_METRIC_REFRESH)
                 .doesNotContain(" Reliable (").doesNotContain("horizon Score");
     }
 

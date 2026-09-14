@@ -210,7 +210,47 @@ class SquadToolsIntegrationTest {
 
         assertThat(output).contains("Starting XI").contains("Bench").contains("Captain")
                 .contains("observed current-club 60+ 3/3")
-                .contains("Schedule evidence: complete FPL capture");
+                .contains("Schedule evidence: complete FPL capture")
+                .contains("Comparison coverage: all clubs")
+                .contains("Player comparison receipt: 97 eligible of 97");
+    }
+
+    @Test
+    void pendingThenScheduleOnlyThenPlayedSideRecoveryControlsTheWholeSquad() {
+        ScheduleSource.FixtureRow incident = RankingSeed.fixtures(CAPTURED_AT, FIRST_DEADLINE)
+                .stream().filter(row -> row.gameweek() == 4
+                        && row.homeTeamId() <= RankingSeed.team(CLUBS.length)
+                        && row.awayTeamId() <= RankingSeed.team(CLUBS.length))
+                .findFirst().orElseThrow();
+        jdbc.update("UPDATE " + scheduleSource.fixtureTable()
+                        + " SET kickoff_time=?, started=true, finished=false WHERE season=? AND id=?",
+                Timestamp.from(AS_OF.minus(30, ChronoUnit.MINUTES)), SEASON, incident.id());
+
+        String pending = tools.buildSquad("", "", "", 100.0, 5, "");
+        assertThat(pending).contains("COMPARISON_DATA_INCOMPLETE")
+                .contains("fixture " + incident.id() + " (GW4)")
+                .contains("relevant elapsed unfinished fixture")
+                .contains(clubName(incident.homeTeamId()), clubName(incident.awayTeamId()))
+                .contains("data exclusion, not evidence")
+                .doesNotContain("Starting XI");
+        assertThat(tools.buildSquad("P12000", "P12008", "Ashfield Rovers:<=0",
+                120.0, 5, "4-4-2")).contains("COMPARISON_DATA_INCOMPLETE")
+                .doesNotContain("Starting XI");
+
+        jdbc.update("UPDATE " + scheduleSource.fixtureTable()
+                + " SET finished=true WHERE season=? AND id=?", SEASON, incident.id());
+        String scheduleOnly = tools.buildSquad("", "", "", 100.0, 5, "");
+        assertThat(scheduleOnly).contains("COMPARISON_DATA_INCOMPLETE")
+                .contains("completed side missing usable core rows")
+                .doesNotContain("Starting XI");
+
+        seedPlayedSide(incident, incident.homeTeamId(),
+                FIRST_ID + (incident.homeTeamId() - RankingSeed.team(1)) * 8);
+        seedPlayedSide(incident, incident.awayTeamId(),
+                FIRST_ID + (incident.awayTeamId() - RankingSeed.team(1)) * 8);
+        String recovered = tools.buildSquad("", "", "", 100.0, 5, "");
+        assertThat(recovered).contains("Starting XI", "Comparison coverage: all clubs")
+                .doesNotContain("COMPARISON_DATA_INCOMPLETE");
     }
 
     /**
@@ -236,8 +276,8 @@ class SquadToolsIntegrationTest {
                         line -> assertThat(line).startsWith("Data source: FPL live prices"),
                         line -> assertThat(line).startsWith("Data source: season " + SEASON),
                         line -> assertThat(line).startsWith("Data source: FPL's own gameweek"),
-                        line -> assertThat(line).isEqualTo(DataAge.METRIC_REFRESH));
-        assertThat(output).containsSubsequence(DataAge.METRIC_REFRESH, "Schedule evidence:",
+                        line -> assertThat(line).isEqualTo(DataAge.RANKING_METRIC_REFRESH));
+        assertThat(output).containsSubsequence(DataAge.RANKING_METRIC_REFRESH, "Schedule evidence:",
                 "Horizon:", "Starting XI");
     }
 
@@ -250,7 +290,7 @@ class SquadToolsIntegrationTest {
                 .contains("Data source: FPL live prices for season " + SEASON)
                 .contains("Data source: season " + SEASON)
                 .contains("Data source: FPL's own gameweek and fixture list for season " + SEASON)
-                .containsSubsequence("Data source: FPL's own gameweek", DataAge.METRIC_REFRESH,
+                .containsSubsequence("Data source: FPL's own gameweek", DataAge.RANKING_METRIC_REFRESH,
                         "Schedule evidence:");
     }
 
@@ -269,7 +309,7 @@ class SquadToolsIntegrationTest {
 
         assertThat(tools.buildSquad("", "", "", 100.0, 5, ""))
                 .contains("No players are available to pick from today's capture.")
-                .containsSubsequence("Data source: FPL's own gameweek", DataAge.METRIC_REFRESH,
+                .containsSubsequence("Data source: FPL's own gameweek", DataAge.RANKING_METRIC_REFRESH,
                         "Schedule evidence:", "No players are available");
     }
 
@@ -296,7 +336,7 @@ class SquadToolsIntegrationTest {
         assertThat(pfsWrite(STAR_ID)).as("the trigger restamps the row").isAfter(pfsWrittenBefore);
 
         assertThat(tools.buildSquad("", "", "", 100.0, 5, "")).isEqualTo(before);
-        assertThat(before).contains("Captain: " + STAR_NAME, "xPts over", DataAge.METRIC_REFRESH);
+        assertThat(before).contains("Captain: " + STAR_NAME, "xPts over", DataAge.RANKING_METRIC_REFRESH);
     }
 
     /**
@@ -450,7 +490,7 @@ class SquadToolsIntegrationTest {
         assertThat(output).doesNotContain("Starting XI")
                 .contains("No editable gameweek remains in the captured schedule")
                 .contains("unknown rather than zero").contains("60+")
-                .containsSubsequence(DataAge.METRIC_REFRESH, "No editable gameweek remains");
+                .containsSubsequence(DataAge.RANKING_METRIC_REFRESH, "No editable gameweek remains");
     }
 
     @Test
@@ -458,6 +498,23 @@ class SquadToolsIntegrationTest {
         assertThat(tools.buildSquad("", "", "Ashfield Rovers:three", 100.0, 5, ""))
                 .contains("Ashfield Rovers:three").doesNotContain("Starting XI")
                 .doesNotContain(DataAge.METRIC_REFRESH);
+    }
+
+    private static String clubName(int teamId) {
+        return CLUBS[teamId - RankingSeed.team(1)];
+    }
+
+    private void seedPlayedSide(ScheduleSource.FixtureRow fixture, int club, int playerId) {
+        boolean home = fixture.homeTeamId() == club;
+        int opponent = home ? fixture.awayTeamId() : fixture.homeTeamId();
+        jdbc.update("""
+                INSERT INTO player_fixture_stats (
+                    fixture_id, player_id, season_id, gameweek, player_team_id,
+                    opponent_team_id, was_home, kickoff_time, minutes, total_points,
+                    expected_goals, expected_assists, expected_goals_conceded, value, starts)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 90, 2, 0.1, 0.1, 1.0, 45, 1)
+                """, fixture.id(), playerId, SEASON_ID, fixture.gameweek(), club, opponent,
+                home, Timestamp.from(AS_OF.minus(30, ChronoUnit.MINUTES)));
     }
 
     /** SharedStats {@code fixture} rows for the seeded schedule's finished fixtures, written at a known time. */

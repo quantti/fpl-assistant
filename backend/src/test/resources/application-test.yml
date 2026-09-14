@@ -14,6 +14,10 @@ supabase:
   audience: authenticated
 
 spring:
+  datasource:
+    hikari:
+      maximum-pool-size: 3
+      minimum-idle: 1
   ai:
     vectorstore:
       pgvector:
@@ -30,6 +34,10 @@ spring:
 # to run at 02:00 UK would otherwise call FPL's API for real. All three classes are covered by
 # tests that construct them directly.
 fpl:
+  owned-sync:
+    mode: "OFF"
+    fixture-table-name: fpl_fixture_sync_test
+    evidence-table-name: fpl_player_fixture_evidence_test
   historical:
     table-name: pl_match_result_test
     startup-sync: false

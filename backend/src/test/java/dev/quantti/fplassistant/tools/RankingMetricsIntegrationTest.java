@@ -283,11 +283,78 @@ class RankingMetricsIntegrationTest {
                         + " SET kickoff_time = ?, started = true, finished = false WHERE season = ? AND id = ?",
                 Timestamp.from(AS_OF.minus(30, ChronoUnit.MINUTES)), SEASON, live);
 
-        RankingMetrics.MinutesWindow window = candidate(load(CAPTURE_DATE), PLAYER)
-                .current().window();
+        RankingMetrics.Snapshot snapshot = load(CAPTURE_DATE);
+        RankingMetrics.MinutesWindow window = candidate(snapshot, PLAYER).current().window();
 
         assertThat(window.reason()).isEqualTo(RankingMetrics.WindowReason.RESULT_PENDING);
         assertThat(window.observed()).isEqualTo(3);
+        assertThat(snapshot.comparisonCoverage().affectedClubs()).singleElement()
+                .satisfies(affected -> {
+                    assertThat(affected.teamId()).isEqualTo(club);
+                    assertThat(affected.fixtures()).singleElement().satisfies(gap -> {
+                        assertThat(gap.fixtureId()).isEqualTo(live);
+                        assertThat(gap.reason()).isEqualTo(ComparisonCoverage.GapReason
+                                .RELEVANT_ELAPSED_UNFINISHED_FIXTURE);
+                    });
+                });
+    }
+
+    @Test
+    void completedSideAbsenceIsSystemicButOneMissingPlayerIsOnlyAnIndividualExclusion() {
+        int club = RankingSeed.team(1);
+        int teammate = PLAYER + 1;
+        seedDaily(PLAYER, "MissingIndividual", club, 2, "a", CAPTURE_DATE, CAPTURED_AT);
+        seedDaily(teammate, "SideWitness", club, 3, "a", CAPTURE_DATE, CAPTURED_AT);
+        List<Integer> fixtures = finishFixtures(club, 3);
+        fixtures.subList(0, 2).forEach(id -> seedPfs(PLAYER, id, 90, club, club, null));
+
+        RankingMetrics.Snapshot absent = load(CAPTURE_DATE);
+        assertThat(absent.comparisonCoverage().affectedClubs()).singleElement()
+                .satisfies(affected -> assertThat(affected.fixtures())
+                        .anySatisfy(gap -> assertThat(gap.reason()).isEqualTo(
+                                ComparisonCoverage.GapReason.COMPLETED_SIDE_MISSING_USABLE_CORE_ROWS)));
+
+        fixtures.forEach(id -> seedPfs(teammate, id, 90, club, club, null));
+        RankingMetrics.Snapshot populated = load(CAPTURE_DATE);
+        assertThat(populated.comparisonCoverage().affectedClubs()).isEmpty();
+        assertThat(candidate(populated, PLAYER).current().window().reason())
+                .isEqualTo(RankingMetrics.WindowReason.MISSING_OBSERVATION);
+        assertThat(populated.comparisonCoverage().playerExclusions())
+                .anySatisfy(exclusion -> {
+                    assertThat(exclusion.elementId()).isEqualTo(PLAYER);
+                    assertThat(exclusion.windowReason())
+                            .isEqualTo(RankingMetrics.WindowReason.MISSING_OBSERVATION);
+                });
+    }
+
+    @Test
+    void zeroMinutePlaceholdersDoNotCertifyAPlayedSide() {
+        int club = RankingSeed.team(1);
+        seedDaily(PLAYER, "Placeholder", club, 2, "a", CAPTURE_DATE, CAPTURED_AT);
+        int fixture = finishFixtures(club, 1).getFirst();
+        seedPfs(PLAYER, fixture, 0, club, club, null);
+
+        assertThat(load(CAPTURE_DATE).comparisonCoverage().affectedClubs()).singleElement()
+                .satisfies(affected -> assertThat(affected.fixtures()).singleElement()
+                        .satisfies(gap -> assertThat(gap.reason()).isEqualTo(
+                                ComparisonCoverage.GapReason.COMPLETED_SIDE_MISSING_USABLE_CORE_ROWS)));
+    }
+
+    @Test
+    void elapsedUnfinishedFixtureOlderThanTheCurrentRoleLastTenIsIrrelevant() {
+        int club = RankingSeed.team(1);
+        seedDaily(PLAYER, "Established", club, 2, "a", CAPTURE_DATE, CAPTURED_AT);
+        List<Integer> completed = finishFixtures(club, 10);
+        completed.forEach(id -> seedPfs(PLAYER, id, 90, club, club, null));
+        int oldPending = fixtureIdsFor(club).get(10);
+        jdbc.update("UPDATE " + fixtureTable
+                        + " SET kickoff_time=?, started=true, finished=false WHERE season=? AND id=?",
+                Timestamp.from(Instant.parse("2026-07-01T12:00:00Z")), SEASON, oldPending);
+
+        RankingMetrics.Snapshot snapshot = load(CAPTURE_DATE);
+        assertThat(candidate(snapshot, PLAYER).current().window().reason())
+                .isEqualTo(RankingMetrics.WindowReason.COMPLETE);
+        assertThat(snapshot.comparisonCoverage().affectedClubs()).isEmpty();
     }
 
     @Test
@@ -389,8 +456,10 @@ class RankingMetricsIntegrationTest {
             seedPfs(PLAYER, fixtures.get(index), 90, club, club, null);
         }
 
-        RankingMetrics.Candidate candidate = candidate(load(CAPTURE_DATE), PLAYER);
+        RankingMetrics.Snapshot snapshot = load(CAPTURE_DATE);
+        RankingMetrics.Candidate candidate = candidate(snapshot, PLAYER);
 
+        assertThat(snapshot.metricRefresh()).isEqualTo(DataAge.RANKING_METRIC_REFRESH);
         assertThat(candidate.current().window().expected()).isEqualTo(2);
         assertThat(candidate.blended().matchesThisSeason()).isEqualTo(2);
         assertThat(candidate.blended().weight()).isEqualTo(0.30);

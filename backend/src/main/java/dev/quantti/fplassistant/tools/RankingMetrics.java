@@ -100,10 +100,28 @@ public class RankingMetrics {
 
     public record Snapshot(Instant asOf, DailyPriceSource.Capture capture,
                            MetricSeasons metricSeasons, ScheduleSource.View schedule,
-                           List<Candidate> candidates, ClubRates.Rates clubRates) {
+                           List<Candidate> candidates, ClubRates.Rates clubRates,
+                           String metricRefresh, ComparisonCoverage comparisonCoverage) {
         public Snapshot {
             candidates = List.copyOf(candidates);
             clubRates = Objects.requireNonNull(clubRates);
+            metricRefresh = Objects.requireNonNull(metricRefresh);
+            comparisonCoverage = Objects.requireNonNull(comparisonCoverage);
+        }
+
+        public Snapshot(Instant asOf, DailyPriceSource.Capture capture,
+                        MetricSeasons metricSeasons, ScheduleSource.View schedule,
+                        List<Candidate> candidates, ClubRates.Rates clubRates) {
+            this(asOf, capture, metricSeasons, schedule, candidates, clubRates,
+                    DataAge.METRIC_REFRESH, ComparisonCoverage.assemble(candidates, List.of()));
+        }
+
+        public Snapshot(Instant asOf, DailyPriceSource.Capture capture,
+                        MetricSeasons metricSeasons, ScheduleSource.View schedule,
+                        List<Candidate> candidates, ClubRates.Rates clubRates,
+                        String metricRefresh) {
+            this(asOf, capture, metricSeasons, schedule, candidates, clubRates, metricRefresh,
+                    ComparisonCoverage.assemble(candidates, List.of()));
         }
     }
 
@@ -134,7 +152,9 @@ public class RankingMetrics {
         int sixtyPlus;
         double points;
         double xg;
+        int xgCount;
         double xa;
+        int xaCount;
         double xgc;
         int xgcCount;
         double shortDefcon;
@@ -152,7 +172,9 @@ public class RankingMetrics {
             sixtyPlus += other.sixtyPlus;
             points += other.points;
             xg += other.xg;
+            xgCount += other.xgCount;
             xa += other.xa;
+            xaCount += other.xaCount;
             xgc += other.xgc;
             xgcCount += other.xgcCount;
             shortDefcon += other.shortDefcon;
@@ -182,6 +204,14 @@ public class RankingMetrics {
     private record Target(int playerId, CanonicalFixture fixture) {
     }
 
+    private record SideTarget(int clubId, CanonicalFixture fixture) {
+    }
+
+    private record CurrentBuild(Map<Integer, SeasonMetrics> metrics,
+                                List<ComparisonCoverage.ClubGap> gaps,
+                                boolean comparisonAssessed) {
+    }
+
     private static final Comparator<ClubObservation> CHRONOLOGY = Comparator
             .comparing(ClubObservation::latestKickoff)
             .thenComparingInt(ClubObservation::latestFixtureId);
@@ -193,16 +223,19 @@ public class RankingMetrics {
     private final ScheduleSource schedules;
     private final String dailyTable;
     private final Clock clock;
+    private final PfsReadSource pfs;
     private final TransactionTemplate readTransaction;
 
     public RankingMetrics(JdbcTemplate jdbc, ScheduleSource schedules,
                           PlatformTransactionManager transactionManager,
                           ObjectProvider<Clock> clock,
-                          @Value("${fpl.daily-price.table-name}") String dailyTable) {
+                          @Value("${fpl.daily-price.table-name}") String dailyTable,
+                          PfsReadSource pfs) {
         this.jdbc = jdbc;
         this.schedules = schedules;
         this.dailyTable = dailyTable;
         this.clock = clock.getIfAvailable(Clock::systemUTC);
+        this.pfs = pfs;
         this.readTransaction = new TransactionTemplate(transactionManager);
         this.readTransaction.setReadOnly(true);
         this.readTransaction.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);
@@ -248,9 +281,14 @@ public class RankingMetrics {
         }
 
         Map<Integer, SeasonMetrics> currentMetrics;
+        List<ComparisonCoverage.ClubGap> coverageGaps = List.of();
+        boolean comparisonAssessed = false;
         if (metric.played().currentSeason()) {
-            currentMetrics = buildCurrentMetrics(capture, metric.played(), schedule, capturePlayers,
-                    currentIds, currentPositions, asOf);
+            CurrentBuild currentBuild = buildCurrentMetrics(capture, metric.played(), schedule,
+                    capturePlayers, currentIds, currentPositions, asOf);
+            currentMetrics = currentBuild.metrics();
+            coverageGaps = currentBuild.gaps();
+            comparisonAssessed = currentBuild.comparisonAssessed();
         } else {
             CanonicalSource source = new CanonicalSource("fixture", "season_id",
                     metric.played().seasonId());
@@ -322,7 +360,10 @@ public class RankingMetrics {
                             current == null ? null : current.window(),
                             metric.played().currentSeason())));
         }
-        return new Snapshot(asOf, capture, metric, schedule, candidates, clubRates);
+        ComparisonCoverage comparisonCoverage = ComparisonCoverage.assemble(
+                candidates, coverageGaps, comparisonAssessed);
+        return new Snapshot(asOf, capture, metric, schedule, candidates, clubRates,
+                DataAge.RANKING_METRIC_REFRESH, comparisonCoverage);
     }
 
     private List<CapturePlayer> loadCapture(DailyPriceSource.Capture capture) {
@@ -366,7 +407,7 @@ public class RankingMetrics {
         return matches.size() == 1 ? matches.getFirst() : null;
     }
 
-    private Map<Integer, SeasonMetrics> buildCurrentMetrics(
+    private CurrentBuild buildCurrentMetrics(
             DailyPriceSource.Capture capture, SeasonContext season, ScheduleSource.View schedule,
             List<CapturePlayer> players, Map<Integer, Integer> ids,
             Map<Integer, Integer> positions, Instant asOf) {
@@ -380,7 +421,7 @@ public class RankingMetrics {
                             Map.of(), emptyWindow(sourceFailure, player.teamId()), null));
                 }
             }
-            return unavailable;
+            return new CurrentBuild(unavailable, List.of(), false);
         }
 
         ScheduleSource.Snapshot selected = schedule.snapshot().orElseThrow();
@@ -404,6 +445,7 @@ public class RankingMetrics {
         Map<Integer, List<CanonicalFixture>> expected = new HashMap<>();
         Map<Integer, WindowReason> baseReasons = new HashMap<>();
         Map<Integer, Integer> clubs = new HashMap<>();
+        List<ComparisonCoverage.ClubGap> coverageGaps = new ArrayList<>();
         for (CapturePlayer player : players) {
             Integer playerId = ids.get(player.elementId());
             if (playerId == null) {
@@ -450,17 +492,22 @@ public class RankingMetrics {
             expected.put(playerId, completed);
 
             Instant oldest = completed.isEmpty() ? null : completed.getLast().kickoff();
-            boolean pending = clubFixtures.stream()
+            List<CanonicalFixture> pending = clubFixtures.stream()
                     .filter(fixture -> !fixture.finished() && fixture.kickoff() != null)
                     .filter(fixture -> !fixture.kickoff().isAfter(asOf))
                     .filter(fixture -> fence == null || fixture.kickoff().isAfter(fence))
-                    .anyMatch(fixture -> completed.size() < ExpectedPoints.WINDOW_MATCHES
-                            || !fixture.kickoff().isBefore(oldest));
-            if (pending) {
+                    .filter(fixture -> completed.size() < ExpectedPoints.WINDOW_MATCHES
+                            || !fixture.kickoff().isBefore(oldest))
+                    .toList();
+            if (!pending.isEmpty()) {
                 baseReasons.putIfAbsent(playerId, WindowReason.RESULT_PENDING);
+                pending.forEach(fixture -> coverageGaps.add(new ComparisonCoverage.ClubGap(
+                        club, fixture.id(), fixture.gameweek(), ComparisonCoverage.GapReason
+                                .RELEVANT_ELAPSED_UNFINISHED_FIXTURE)));
             }
         }
 
+        coverageGaps.addAll(loadCompletedSideCoverage(season, source, expected, clubs));
         Map<Integer, Aggregate> aggregates = loadTargetAggregates(season.seasonId(), expected);
         Map<Integer, List<FixtureOutcome>> outcomes = loadLatestOutcomes(season.seasonId(), expected);
         Map<Integer, SeasonMetrics> result = new HashMap<>();
@@ -477,7 +524,73 @@ public class RankingMetrics {
             result.put(playerId, new SeasonMetrics(season, playerId,
                     positions.get(player.elementId()), ability, window, exposure(window, aggregate)));
         }
-        return result;
+        return new CurrentBuild(result, List.copyOf(coverageGaps), true);
+    }
+
+    /** One set-based side-population read over the same expected windows as MinutesModel. */
+    private List<ComparisonCoverage.ClubGap> loadCompletedSideCoverage(
+            SeasonContext season, CanonicalSource source,
+            Map<Integer, List<CanonicalFixture>> expectedByPlayer,
+            Map<Integer, Integer> clubsByPlayer) {
+        Map<String, SideTarget> unique = new LinkedHashMap<>();
+        expectedByPlayer.forEach((playerId, fixtures) -> {
+            Integer club = clubsByPlayer.get(playerId);
+            if (club != null) {
+                fixtures.forEach(fixture -> unique.putIfAbsent(club + ":" + fixture.id(),
+                        new SideTarget(club, fixture)));
+            }
+        });
+        if (unique.isEmpty()) {
+            return List.of();
+        }
+        List<SideTarget> targets = new ArrayList<>(unique.values());
+        Set<Integer> fixtureIds = new HashSet<>();
+        targets.forEach(target -> fixtureIds.add(target.fixture().id()));
+        Map<Integer, PfsReadSource.FixtureReceipt> receipts = pfs.fixtureReceipts(
+                season.seasonId(), season.code(), fixtureIds);
+
+        List<Object> args = new ArrayList<>();
+        List<String> values = new ArrayList<>();
+        for (SideTarget target : targets) {
+            values.add("(?, ?)");
+            args.add(target.clubId());
+            args.add(target.fixture().id());
+        }
+        args.add(source.seasonValue());
+        args.add(season.seasonId());
+        Map<String, Integer> playedRows = new HashMap<>();
+        for (Map<String, Object> row : jdbc.queryForList("""
+                WITH %s, expected_side(club_id, fixture_id) AS (VALUES %s)
+                SELECT e.club_id, e.fixture_id,
+                       count(p.player_id) FILTER (WHERE p.minutes BETWEEN 1 AND 90
+                           AND p.total_points IS NOT NULL
+                           AND p.opponent_team_id = CASE WHEN p.was_home THEN f.team_a ELSE f.team_h END)
+                           AS played_rows
+                FROM expected_side e
+                JOIN %s f ON f.id=e.fixture_id AND f.%s=?
+                LEFT JOIN pfs_read p ON p.season_id=? AND p.fixture_id=e.fixture_id
+                    AND p.was_home=(e.club_id=f.team_h)
+                GROUP BY e.club_id, e.fixture_id
+                """.formatted(pfs.cte(), String.join(",", values), source.table(),
+                source.seasonColumn()), args.toArray())) {
+            playedRows.put(integer(row.get("club_id")) + ":" + integer(row.get("fixture_id")),
+                    integer(row.get("played_rows")));
+        }
+        List<ComparisonCoverage.ClubGap> gaps = new ArrayList<>();
+        for (SideTarget target : targets) {
+            PfsReadSource.FixtureReceipt receipt = receipts.getOrDefault(target.fixture().id(),
+                    PfsReadSource.FixtureReceipt.LEGACY);
+            ComparisonCoverage.GapReason reason = receipt == PfsReadSource.FixtureReceipt.UNVERIFIED_OWNED
+                    ? ComparisonCoverage.GapReason.UNVERIFIED_OWNED_RECEIPT
+                    : playedRows.getOrDefault(target.clubId() + ":" + target.fixture().id(), 0) == 0
+                            ? ComparisonCoverage.GapReason.COMPLETED_SIDE_MISSING_USABLE_CORE_ROWS
+                            : null;
+            if (reason != null) {
+                gaps.add(new ComparisonCoverage.ClubGap(target.clubId(), target.fixture().id(),
+                        target.fixture().gameweek(), reason));
+            }
+        }
+        return gaps;
     }
 
     private WindowReason currentSourceFailure(DailyPriceSource.Capture capture,
@@ -564,12 +677,15 @@ public class RankingMetrics {
                                                               Instant asOf) {
         String cutoff = asOf == null ? "" : " AND f.kickoff_time <= ?";
         String sql = """
-                WITH sides AS (
+                WITH %s, sides AS (
                     SELECT f.id AS fixture_id, p.was_home,
                            CASE WHEN p.was_home THEN f.team_h ELSE f.team_a END AS club,
-                           SUM(p.expected_goals) AS xg_for,
-                           MAX(p.expected_goals_conceded) AS xg_against
-                    FROM player_fixture_stats p
+                           CASE WHEN count(*) FILTER (WHERE p.owned_evidence
+                                                   AND p.expected_goals IS NULL)=0
+                                THEN SUM(p.expected_goals) END AS xg_for,
+                           CASE WHEN count(p.expected_goals_conceded)>0
+                                THEN MAX(p.expected_goals_conceded) END AS xg_against
+                    FROM pfs_read p
                     JOIN %s f ON f.id = p.fixture_id AND f.%s = ?
                     WHERE p.season_id = ?
                       AND COALESCE(f.finished, false) AND f.kickoff_time IS NOT NULL%s
@@ -581,8 +697,8 @@ public class RankingMetrics {
                        SUM(xg_against) AS xg_against,
                        count(*) FILTER (WHERE was_home) AS home_fixtures,
                        COALESCE(SUM(xg_for) FILTER (WHERE was_home), 0) AS home_xg_for
-                FROM sides WHERE xg_against > 0 GROUP BY club
-                """.formatted(source.table(), source.seasonColumn(), cutoff);
+                FROM sides WHERE xg_against > 0 AND xg_for IS NOT NULL GROUP BY club
+                """.formatted(pfs.cte(), source.table(), source.seasonColumn(), cutoff);
         List<Object> args = new ArrayList<>();
         args.add(source.seasonValue());
         args.add(seasonId);
@@ -645,14 +761,15 @@ public class RankingMetrics {
         String ids = placeholders(playerIds.size());
         String cutoff = asOf == null ? "" : " AND (f.kickoff_time IS NULL OR f.kickoff_time <= ?)";
         String sql = """
-                WITH mapped AS (
+                WITH %s, mapped AS (
                     SELECT p.player_id, p.fixture_id, p.minutes, p.total_points,
                            p.expected_goals, p.expected_assists, p.expected_goals_conceded,
+                           p.owned_evidence,
                            p.defensive_contribution, p.opponent_team_id, p.was_home,
                            f.id AS canonical_id, f.team_h, f.team_a, f.kickoff_time, f.finished,
                            CASE WHEN p.was_home THEN f.team_h ELSE f.team_a END AS actual_club,
                            CASE WHEN p.was_home THEN f.team_a ELSE f.team_h END AS actual_opponent
-                    FROM player_fixture_stats p
+                    FROM pfs_read p
                     LEFT JOIN %s f ON f.id = p.fixture_id AND f.%s = ?
                     WHERE p.season_id = ? AND p.player_id IN (%s)%s
                 ), grouped AS (
@@ -695,10 +812,18 @@ public class RankingMetrics {
                                AND COALESCE(finished, false) AND kickoff_time IS NOT NULL
                                AND opponent_team_id = actual_opponent
                                AND minutes BETWEEN 0 AND 90), 0) AS xg,
+                           count(*) FILTER (WHERE canonical_id IS NOT NULL
+                               AND COALESCE(finished, false) AND kickoff_time IS NOT NULL
+                               AND opponent_team_id = actual_opponent AND minutes BETWEEN 0 AND 90
+                               AND (expected_goals IS NOT NULL OR NOT owned_evidence)) AS xg_count,
                            COALESCE(sum(expected_assists) FILTER (WHERE canonical_id IS NOT NULL
                                AND COALESCE(finished, false) AND kickoff_time IS NOT NULL
                                AND opponent_team_id = actual_opponent
                                AND minutes BETWEEN 0 AND 90), 0) AS xa,
+                           count(*) FILTER (WHERE canonical_id IS NOT NULL
+                               AND COALESCE(finished, false) AND kickoff_time IS NOT NULL
+                               AND opponent_team_id = actual_opponent AND minutes BETWEEN 0 AND 90
+                               AND (expected_assists IS NOT NULL OR NOT owned_evidence)) AS xa_count,
                            COALESCE(sum(expected_goals_conceded) FILTER (WHERE canonical_id IS NOT NULL
                                AND COALESCE(finished, false) AND kickoff_time IS NOT NULL
                                AND opponent_team_id = actual_opponent AND minutes BETWEEN 60 AND 90), 0) AS xgc,
@@ -723,7 +848,7 @@ public class RankingMetrics {
                                AND defensive_contribution IS NOT NULL) AS long_dc_count
                     FROM mapped GROUP BY player_id, actual_club
                 ) SELECT * FROM grouped
-                """.formatted(source.table(), source.seasonColumn(), ids, cutoff);
+                """.formatted(pfs.cte(), source.table(), source.seasonColumn(), ids, cutoff);
         List<Object> args = new ArrayList<>();
         args.add(source.seasonValue());
         args.add(seasonId);
@@ -784,7 +909,7 @@ public class RankingMetrics {
         String values = targetValues(targets, args, false);
         args.add(seasonId);
         String sql = """
-                WITH expected(player_id, fixture_id) AS (VALUES %s)
+                WITH %s, expected(player_id, fixture_id) AS (VALUES %s)
                 SELECT e.player_id, count(*) AS expected,
                        count(p.player_id) AS observed,
                        count(*) FILTER (WHERE p.player_id IS NOT NULL
@@ -795,10 +920,15 @@ public class RankingMetrics {
                        count(*) FILTER (WHERE p.minutes BETWEEN 60 AND 90) AS matches60,
                        COALESCE(sum(p.total_points) FILTER (WHERE p.minutes BETWEEN 0 AND 90), 0) AS points,
                        COALESCE(sum(p.expected_goals) FILTER (WHERE p.minutes BETWEEN 0 AND 90), 0) AS xg,
+                       count(*) FILTER (WHERE p.minutes BETWEEN 0 AND 90
+                           AND (p.expected_goals IS NOT NULL OR NOT p.owned_evidence)) AS xg_count,
                        COALESCE(sum(p.expected_assists) FILTER (WHERE p.minutes BETWEEN 0 AND 90), 0) AS xa,
+                       count(*) FILTER (WHERE p.minutes BETWEEN 0 AND 90
+                           AND (p.expected_assists IS NOT NULL OR NOT p.owned_evidence)) AS xa_count,
                        COALESCE(sum(p.expected_goals_conceded)
                            FILTER (WHERE p.minutes BETWEEN 60 AND 90), 0) AS xgc,
-                       count(*) FILTER (WHERE p.minutes BETWEEN 60 AND 90) AS xgc_count,
+                       count(*) FILTER (WHERE p.minutes BETWEEN 60 AND 90
+                           AND (p.expected_goals_conceded IS NOT NULL OR NOT p.owned_evidence)) AS xgc_count,
                        COALESCE(sum(p.defensive_contribution)
                            FILTER (WHERE p.minutes BETWEEN 1 AND 59
                                AND p.defensive_contribution IS NOT NULL), 0) AS short_dc,
@@ -809,10 +939,10 @@ public class RankingMetrics {
                                AND p.defensive_contribution IS NOT NULL), 0) AS long_dc,
                        count(*) FILTER (WHERE p.minutes BETWEEN 60 AND 90
                            AND p.defensive_contribution IS NOT NULL) AS long_dc_count
-                FROM expected e LEFT JOIN player_fixture_stats p
+                FROM expected e LEFT JOIN pfs_read p
                   ON p.season_id = ? AND p.player_id = e.player_id AND p.fixture_id = e.fixture_id
                 GROUP BY e.player_id
-                """.formatted(values);
+                """.formatted(pfs.cte(), values);
         for (Map<String, Object> row : jdbc.queryForList(sql, args.toArray())) {
             aggregates.put(integer(row.get("player_id")), aggregate(row, integer(row.get("expected"))));
         }
@@ -830,12 +960,12 @@ public class RankingMetrics {
         args.add(seasonId);
         Map<Integer, List<FixtureOutcome>> outcomes = new HashMap<>();
         for (Map<String, Object> row : jdbc.queryForList("""
-                WITH expected(player_id, fixture_id, kickoff) AS (VALUES %s)
+                WITH %s, expected(player_id, fixture_id, kickoff) AS (VALUES %s)
                 SELECT e.player_id, e.fixture_id, e.kickoff, p.minutes
-                FROM expected e LEFT JOIN player_fixture_stats p
+                FROM expected e LEFT JOIN pfs_read p
                   ON p.season_id = ? AND p.player_id = e.player_id AND p.fixture_id = e.fixture_id
                 ORDER BY e.player_id, e.kickoff DESC, e.fixture_id DESC
-                """.formatted(values), args.toArray())) {
+                """.formatted(pfs.cte(), values), args.toArray())) {
             outcomes.computeIfAbsent(integer(row.get("player_id")), ignored -> new ArrayList<>())
                     .add(new FixtureOutcome(integer(row.get("fixture_id")),
                             instant(row.get("kickoff")), nullableInteger(row.get("minutes"))));
@@ -878,7 +1008,9 @@ public class RankingMetrics {
         aggregate.sixtyPlus = integer(row.get("matches60"));
         aggregate.points = number(row.get("points"));
         aggregate.xg = number(row.get("xg"));
+        aggregate.xgCount = integer(row.get("xg_count"));
         aggregate.xa = number(row.get("xa"));
+        aggregate.xaCount = integer(row.get("xa_count"));
         aggregate.xgc = number(row.get("xgc"));
         aggregate.xgcCount = integer(row.get("xgc_count"));
         aggregate.shortDefcon = number(row.get("short_dc"));
@@ -897,8 +1029,12 @@ public class RankingMetrics {
         metrics.put("matches", aggregate.appearances);
         metrics.put("matches60", wholeSeasonSixty);
         if (aggregate.totalMinutes > 0) {
-            metrics.put("xg90", aggregate.xg * 90 / aggregate.totalMinutes);
-            metrics.put("xa90", aggregate.xa * 90 / aggregate.totalMinutes);
+            if (aggregate.xgCount == aggregate.usableRows) {
+                metrics.put("xg90", aggregate.xg * 90 / aggregate.totalMinutes);
+            }
+            if (aggregate.xaCount == aggregate.usableRows) {
+                metrics.put("xa90", aggregate.xa * 90 / aggregate.totalMinutes);
+            }
             metrics.put("pts90", aggregate.points * 90 / aggregate.totalMinutes);
         }
         if (aggregate.xgcCount > 0) {

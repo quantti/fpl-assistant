@@ -31,6 +31,8 @@ dependencies {
     // verifies locally and no shared secret exists anywhere.
     implementation 'org.springframework.boot:spring-boot-starter-oauth2-resource-server'
     implementation 'org.postgresql:postgresql'
+    // Owned-sync transport needs per-client retry/redirect controls; version managed by Boot.
+    implementation 'org.apache.httpcomponents.client5:httpclient5'
     implementation 'org.springframework.ai:spring-ai-starter-model-anthropic'
     implementation 'org.springframework.ai:spring-ai-starter-model-openai'
     implementation 'org.springframework.ai:spring-ai-starter-model-google-genai'
@@ -56,6 +58,14 @@ dependencies {
 }
 
 tasks.named('test') {
+    // One bounded test JVM; do not retain every Spring context/pool across the full suite.
+    maxParallelForks = 1
+    minHeapSize = '64m'
+    maxHeapSize = '384m'
+    jvmArgs '-XX:MaxMetaspaceSize=256m', '-XX:MaxDirectMemorySize=64m',
+            '-XX:ReservedCodeCacheSize=64m', '-XX:ActiveProcessorCount=2', '-XX:+UseSerialGC'
+    systemProperty 'spring.test.context.cache.maxSize', '2'
+
     useJUnitPlatform {
         // Tests tagged 'realdata' assert against shared' fully-synced production tables (a whole
         // season of fixtures and clubs), which the ephemeral test database deliberately does not
