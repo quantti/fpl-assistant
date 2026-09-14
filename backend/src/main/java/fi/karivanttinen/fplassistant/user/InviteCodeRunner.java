@@ -1,6 +1,5 @@
 package fi.karivanttinen.fplassistant.user;
 
-import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Optional;
 
@@ -82,7 +81,7 @@ public class InviteCodeRunner implements ApplicationRunner {
         }
 
         Optional<InviteCode> created = ledger.create(code, code, maxUses, benefitKind,
-                benefitValue, (OffsetDateTime) null, null);
+                benefitValue, null, null, null);
         if (created.isEmpty()) {
             log.warn("invite code {} already exists; left untouched", code);
             return;

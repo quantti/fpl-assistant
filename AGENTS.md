@@ -170,6 +170,13 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
   `.toolContext(...)`), which Spring AI keeps out of the generated schema; `MyTeamTools.getMyTeam`
   reads it through `ToolUser.required`. `SecurityContextHolder` does not work there — tool calls
   run on the provider's reactive threads. The same context carries the turn's `FplBudget`.
+- **`/api/admin/**` is admin-only, decided on the path.** `AdminAccess` is the
+  `AuthorizationManager` `SecurityConfig` attaches to that matcher; it holds the JWT `sub` ids in
+  `fpl.admin.user-ids` (`ADMIN_USER_IDS`) and **an empty set refuses everyone**. A controller
+  under that path carries no check of its own and takes no user id. Invite codes are operated
+  through `InviteCodeAdminController` (KAR-54): a code's `state` is computed by
+  `InviteCode.state`, which `refusalReason` is written on, so the admin view and the sign-up
+  refusal cannot disagree. Codes are disabled, never deleted — redemption rows point at them.
 - **The my-team tools (`getMyTeam`, `getMyMiniLeagues`, `getMiniLeagueOpponents`) are a third
   documented chat-time exception to "external APIs only at sync time"**, alongside
   `FplEntryLookup`: a manager's squad is per user and per gameweek, so there is nothing to

@@ -10,6 +10,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import fi.karivanttinen.fplassistant.myteam.FplEntryClient.EntrySummary;
 import fi.karivanttinen.fplassistant.myteam.FplEntryClient.LockedSquad;
+import fi.karivanttinen.fplassistant.config.AdminAccess;
 import fi.karivanttinen.fplassistant.config.SecurityConfig;
 import fi.karivanttinen.fplassistant.myteam.FplEntryClient.Pick;
 import fi.karivanttinen.fplassistant.testsupport.LocalSigningKey;
@@ -40,7 +41,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @WebMvcTest(controllers = MyTeamController.class,
         properties = "fpl.myteam.max-requests-per-turn=7")
 @ActiveProfiles("test")
-@Import({SecurityConfig.class, LocalSigningKey.class})
+// The slice has to carry every bean the filter chain is built from — AdminAccess since KAR-54.
+@Import({SecurityConfig.class, AdminAccess.class, LocalSigningKey.class})
 class MyTeamControllerTest {
 
     private static final String USER_A = "11111111-1111-4111-8111-111111111111";

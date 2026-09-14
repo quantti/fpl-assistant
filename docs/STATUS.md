@@ -4325,3 +4325,83 @@ MiB with at least 1889 MiB host memory available, and left no persistent Gradle 
 secrets, distinct reviewed DB roles, maintenance/drain evidence, current-season reconciliation and
 one observed real matchday. See `docs/OWNED-SYNC-OPERATIONS.md` and both updated plans. Linear access
 is unavailable in this harness, so no ticket identifier was invented or automatically closed.
+
+## Invite-code admin API (KAR-54, 2026-09-13)
+
+Plan: `docs/superpowers/plans/2026-09-13-kar-54-invite-code-admin-api.md`. The page that uses it is KAR-55.
+
+Per-code ceilings, the `active` flag and per-code attribution have existed since PR #52; what did
+not exist was any way to operate them except SQL in the Supabase editor, because the CLI must not
+run on the production machine (`docs/EMAIL-SETUP.md` 5.1). `/api/admin/invite-codes` now lists
+every code with its counts and a server-computed state, creates codes, disables and enables them,
+moves or removes a ceiling, lists a code's redemptions and releases burnt places (older than ten
+minutes, then reconciles — KAR-18's procedure as one call).
+
+**Admin identity is `ADMIN_USER_IDS`**, a comma-separated set of JWT `sub` ids, enforced by
+`AdminAccess` on the `/api/admin/**` matcher in `SecurityConfig` rather than in the controller.
+Empty means nobody, the same fail-closed posture as the missing service-role key. Chosen over a
+Supabase `app_metadata` claim (cleaner if admins multiply, but a token round-trip and a dashboard
+setting for a population of one) and over a profile column (a table write that grants admin).
+`GET /api/profile` reports `admin` for the frontend's link; the API refuses regardless.
+
+`InviteCode.state()` is the one rule for whether a code is open, and `refusalReason()` is now
+written on it, so the list can never show OPEN for a code sign-up would refuse. Codes are never
+deleted. `InviteLedger.reserve` and `SignupController` are untouched.
+
+**Not set in production yet:** `fly secrets set ADMIN_USER_IDS=<owner sub>` — until then every
+admin call answers 403.
+
+Verified: `./gradlew test`, 942 tests, 0 real failures, including the new `AdminAccessTest`,
+`InviteCodeTest`, `InviteLedgerTest` and `InviteCodeAdminControllerTest`. The pre-push hook's
+fresh-database run then refused the push: 11 failures, all in `UserProfileControllerTest`
+(`Failed to obtain JDBC Connection` / "sorry, too many clients already"). The cause was
+`InviteCodeAdminControllerTest` itself — its `@Import(LocalSigningKey.class)` plus a mocked
+`SupabaseAdminClient` is a context no other class shares, and its cached 10-connection Hikari pool
+was the one more that crossed the KAR-51 ceiling. The class now carries
+`@DirtiesContext(AFTER_CLASS)`, the same KAR-42 workaround `SecurityHeadersTest` already uses and
+that KAR-51 records; the real pool-size fix is still KAR-51's. Re-run after that change:
+`../scripts/test-db.sh reset && ./gradlew cleanTest test`, 942 tests, 0 failures, 0 errors.
+
+Review follow-ups (PR #92): bounded the code to 64 characters with no spaces, refused a
+`benefitValue` sent with `benefitKind` `access` instead of nulling it silently, added the
+`Location` header on 201, closed the duplicate-create race with a `DuplicateKeyException` catch
+around the insert, made `summary()` a single read-only transaction, moved `release-burnt`'s grace
+cutoff onto the database clock instead of the JVM's, and made `isAdmin` null-safe.
+
+## Admin page for invite codes (KAR-55, 2026-09-14)
+
+Plan: `docs/superpowers/plans/2026-09-14-kar-55-admin-invite-codes-page.md`.
+
+`/admin` in the frontend, reached from an **Admin** item in the app menu that appears when
+`GET /api/profile` answers `admin: true` (`useProfile`, read once per signed-in shell). The item
+is a convenience: anyone can type the URL, the API answers 403 and the page says *This page is
+not available for this account.* — nothing in the browser decides who is an admin. The page shows
+the places line with **Release burnt places** when something is burnt, one row per code with the
+server-computed state in the spec's words (Open, Disabled, Used up, Expired, Not yet valid),
+Disable/Enable, and on expanding a row its ceiling (save, or **No ceiling**) and its redemptions
+newest first; a form below issues a new code. Every mutation re-renders from the `CodeView` the
+server returns, never from the click. Under 640px the table is one stacked block per code.
+
+Rulings: form dates are the admin's local days (`validUntil` is the end of that day); the places
+line always carries the burnt count; only Disabled and Used-up rows are muted; `SettingsPage` is
+untouched.
+
+Verified: `npm test` (124 tests green), `npm run build` clean (contrast check, `tsc -b`, Vite).
+Manual check with `npm run dev` against the local backend with `ADMIN_USER_IDS` set was **not**
+run in this session — left for the owner to do before relying on the page.
+
+Review follow-ups: the final whole-branch review's fix commit added digits-only validation on the
+new-code form's ceiling and discount percentage, made releasing burnt places collapse the expanded
+row instead of leaving it showing the just-deleted redemptions, dropped the details panel's inert
+`stopPropagation` click handler, wired `aria-controls` from the code button to its details row,
+restored details-row padding under 640px, and removed a duplicate local focus-visible rule already
+covered globally; `npm test` is now 125 tests green.
+
+PR review follow-ups (PR #94): a failed re-read after a successful burnt-place release no longer
+misreports the release or replaces the page; the mobile action cell now beats `.table td` on
+specificity; redemptions sort by parsed instant with an id tie-break instead of by ISO string;
+ceiling and discount inputs are bounded to the server's `int` range (`isCount`); a 403 on
+redemptions now reads the same not-available sentence as everywhere else; `problemDetail` and the
+status-line markup are each shared in one place (`auth/problemDetail.ts`, `AdminPage/StatusLine.tsx`)
+instead of duplicated across `SignIn`/`CodeDetails`/`NewCodeForm`; and the plan doc's step headings
+dropped their checkbox syntax. `npm test` is now 126 tests green.

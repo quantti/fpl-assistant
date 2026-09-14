@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Button, TextInput } from '@mantine/core'
 import { apiFetch } from '../../auth/apiFetch'
+import { Profile } from '../../types'
 import classes from './SettingsPage.module.css'
 
 type Status = { kind: 'saved' | 'cleared' | 'error'; message: string } | null
@@ -29,7 +30,7 @@ export default function SettingsPage() {
             + ' below may not be what is stored.' })
           return
         }
-        const profile: { fplTeamId: number | null } = await response.json()
+        const profile: Profile = await response.json()
         setStored(profile.fplTeamId)
         setTeamId(profile.fplTeamId === null ? '' : String(profile.fplTeamId))
       })
@@ -54,7 +55,7 @@ export default function SettingsPage() {
         body: JSON.stringify({ fplTeamId: Number(teamId) }),
       })
       if (response.ok) {
-        const profile: { fplTeamId: number | null } = await response.json()
+        const profile: Profile = await response.json()
         setStored(profile.fplTeamId)
         setStatus({ kind: 'saved', message: 'Saved.' })
       } else if (response.status === 503) {

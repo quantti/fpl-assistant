@@ -9,4 +9,8 @@ describe('client routes', () => {
   it('keeps unknown paths on chat', () => {
     expect(routeFromPath('/not-a-page')).toBe('/')
   })
+
+  it('recognizes the admin deep link', () => {
+    expect(routeFromPath('/admin')).toBe('/admin')
+  })
 })
