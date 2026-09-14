@@ -74,3 +74,12 @@ export interface Usage {
   used?: number
   limit?: number
 }
+
+/**
+ * What `GET /api/profile` answers. `admin` is for showing the Admin link; the API refuses a
+ * non-admin regardless of what the page shows, so nothing in the browser decides access on it.
+ */
+export interface Profile {
+  fplTeamId: number | null
+  admin: boolean
+}
