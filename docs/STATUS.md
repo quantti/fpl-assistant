@@ -4268,6 +4268,12 @@ deleted. `InviteLedger.reserve` and `SignupController` are untouched.
 admin call answers 403.
 
 Verified: `./gradlew test`, 942 tests, 0 real failures, including the new `AdminAccessTest`,
-`InviteCodeTest`, `InviteLedgerTest` and `InviteCodeAdminControllerTest`. The full run showed 11
-failures confined to `UserProfileControllerTest` (`Failed to obtain JDBC Connection` / "sorry,
-too many clients already" — pool exhaustion, KAR-51); that class alone is green.
+`InviteCodeTest`, `InviteLedgerTest` and `InviteCodeAdminControllerTest`. The pre-push hook's
+fresh-database run then refused the push: 11 failures, all in `UserProfileControllerTest`
+(`Failed to obtain JDBC Connection` / "sorry, too many clients already"). The cause was
+`InviteCodeAdminControllerTest` itself — its `@Import(LocalSigningKey.class)` plus a mocked
+`SupabaseAdminClient` is a context no other class shares, and its cached 10-connection Hikari pool
+was the one more that crossed the KAR-51 ceiling. The class now carries
+`@DirtiesContext(AFTER_CLASS)`, the same KAR-42 workaround `SecurityHeadersTest` already uses and
+that KAR-51 records; the real pool-size fix is still KAR-51's. Re-run after that change:
+`../scripts/test-db.sh reset && ./gradlew cleanTest test`, 942 tests, 0 failures, 0 errors.
