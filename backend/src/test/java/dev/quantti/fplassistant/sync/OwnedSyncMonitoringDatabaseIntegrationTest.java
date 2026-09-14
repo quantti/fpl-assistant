@@ -14,11 +14,28 @@ import org.springframework.mock.env.MockEnvironment;
 class OwnedSyncMonitoringDatabaseIntegrationTest {
 
     @Test
+    void saturatedWorkPoolLeavesMonitoringResponsive() throws Exception {
+        MockEnvironment environment = environment();
+        try (OwnedSyncMonitoringDatabase monitor = new OwnedSyncMonitoringDatabase(environment);
+             OwnedSyncMonitoringDatabase work = OwnedSyncMonitoringDatabase.work(environment);
+             Connection first = work.dataSource().getConnection();
+             Connection second = work.dataSource().getConnection();
+             Connection third = work.dataSource().getConnection();
+             Connection fourth = work.dataSource().getConnection()) {
+            assertThat(work.dataSource().getMaximumPoolSize()).isEqualTo(4);
+            assertThat(work.jdbc().getQueryTimeout()).isEqualTo(10);
+            assertThat(work.transaction().getTimeout()).isEqualTo(30);
+            assertThat(work.dataSource().getDataSourceProperties().getProperty("socketTimeout")).isEqualTo("10");
+            assertThat(monitor.dataSource().getMaximumPoolSize()).isEqualTo(2);
+            assertThat(monitor.jdbc().getQueryTimeout()).isEqualTo(5);
+            assertThat(monitor.transaction().getTimeout()).isEqualTo(5);
+            assertThat(monitor.jdbc().queryForObject("SELECT 1", Integer.class)).isOne();
+        }
+    }
+
+    @Test
     void lockWaitAndPoolAcquisitionAreActuallyBounded() throws Exception {
-        MockEnvironment environment = new MockEnvironment()
-                .withProperty("spring.datasource.url", required("DATABASE_URL"))
-                .withProperty("spring.datasource.username", required("DB_USER"))
-                .withProperty("spring.datasource.password", required("DB_PASSWORD"));
+        MockEnvironment environment = environment();
         try (OwnedSyncMonitoringDatabase database = new OwnedSyncMonitoringDatabase(environment)) {
             database.jdbc().execute("CREATE TABLE IF NOT EXISTS fpl_sync_timeout_probe_test "
                     + "(id integer primary key, value integer not null)");
@@ -45,6 +62,13 @@ class OwnedSyncMonitoringDatabaseIntegrationTest {
                 assertThat(Duration.between(started, Instant.now())).isLessThan(Duration.ofSeconds(4));
             }
         }
+    }
+
+    private static MockEnvironment environment() {
+        return new MockEnvironment()
+                .withProperty("spring.datasource.url", required("DATABASE_URL"))
+                .withProperty("spring.datasource.username", required("DB_USER"))
+                .withProperty("spring.datasource.password", required("DB_PASSWORD"));
     }
 
     private static String required(String name) {
