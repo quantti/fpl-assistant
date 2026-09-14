@@ -178,6 +178,11 @@ class HistoryFixtureDispatcherIntegrationTest {
                 + " WHERE kind='CATALOGUE_SCHEDULE' AND state='PENDING'", Integer.class)).isEqualTo(2);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
                 + " WHERE publication_key='player-history:999'", Integer.class)).isOne();
+        int waitingPriority = jdbc.queryForObject("SELECT priority FROM " + TABLES.run()
+                + " WHERE generation=?", Integer.class, run.generation());
+        int historyPriority = jdbc.queryForObject("SELECT min(priority) FROM " + TABLES.run()
+                + " WHERE kind='PLAYER_HISTORY'", Integer.class);
+        assertThat(waitingPriority).isGreaterThan(historyPriority);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM player_fixture_stats", Integer.class))
                 .isEqualTo(before);
     }
