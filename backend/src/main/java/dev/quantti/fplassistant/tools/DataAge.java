@@ -29,6 +29,41 @@ public final class DataAge {
             + "is unavailable; row writes can update defensive contribution alone. "
             + "Fixture dates describe the sample, not its refresh.";
 
+    public static final String RANKING_METRIC_REFRESH = "Metric refresh: refresh times for this ranking "
+            + "sample are unavailable; season-wide receipts do not establish its refresh.";
+
+    /**
+     * Actual owned-source and verified-publication times. The counts are explicit so legacy rows
+     * in a mixed sample remain labelled unknown instead of inheriting an owned timestamp.
+     */
+    public static String metricRefresh(Span sourceReads, Span publications, long totalRows) {
+        if (sourceReads.rows() == 0 || publications.rows() == 0
+                || sourceReads.oldest() == null || publications.oldest() == null) {
+            return METRIC_REFRESH;
+        }
+        long covered = Math.min(sourceReads.rows() - sourceReads.undated(),
+                publications.rows() - publications.undated());
+        String suffix = covered < totalRows
+                ? "; " + (totalRows - covered) + " legacy/uncovered row(s) retain unknown refresh"
+                : "";
+        return "Metric refresh: " + covered + " verified owned row(s), source reads "
+                + instantRange(sourceReads) + ", verified publications " + instantRange(publications)
+                + suffix + ".";
+    }
+
+    /** Adds an explicit sample scope without changing the owned/legacy disclosure rules. */
+    public static String metricRefresh(String scope, Span sourceReads, Span publications,
+                                       long totalRows) {
+        String line = metricRefresh(sourceReads, publications, totalRows);
+        return "Metric refresh: " + scope + "; " + line.substring("Metric refresh: ".length());
+    }
+
+    private static String instantRange(Span span) {
+        if (span.oldest() == null) return "unavailable";
+        if (span.oldest().equals(span.newest())) return UkTime.format(span.newest(), null);
+        return UkTime.format(span.oldest(), null) + " to " + UkTime.format(span.newest(), null);
+    }
+
     /** Tapas can insert a placeholder gameweek row locally, so its write time is not an FPL fetch. */
     public static final String GAMEWEEK_CAVEAT =
             "A gameweek row can be created locally, so its write time does not certify an FPL refresh.";
