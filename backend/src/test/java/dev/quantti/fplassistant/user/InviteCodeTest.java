@@ -56,6 +56,13 @@ class InviteCodeTest {
     }
 
     @Test
+    void theWindowIsInclusiveAtBothEnds() {
+        InviteCode edge = code(null, 0, true, NOW, NOW);
+        assertThat(edge.state(NOW)).isEqualTo(InviteCode.State.OPEN);
+        assertThat(edge.refusalReason(NOW)).isNull();
+    }
+
+    @Test
     void aCodeWithNoCeilingIsNeverExhausted() {
         InviteCode unlimited = code(null, 1_000, true, null, null);
         assertThat(unlimited.exhausted()).isFalse();
