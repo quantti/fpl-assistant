@@ -4241,3 +4241,45 @@ Verified: 103 frontend tests, `npm run build` (contrast check, `tsc -b`, Vite) a
 Chromium screenshots at 1280px and 375px in both schemes, with the sidebar overlay open, against
 the dev server with a stubbed session and no backend. Measured `.root` height unchanged after
 inserting 3000px of content, i.e. still height-bounded. Head to Head from the mockup is not built.
+
+## Invite-code admin API (KAR-54, 2026-09-13)
+
+Plan: `docs/superpowers/plans/2026-09-13-kar-54-invite-code-admin-api.md`. The page that uses it is KAR-55.
+
+Per-code ceilings, the `active` flag and per-code attribution have existed since PR #52; what did
+not exist was any way to operate them except SQL in the Supabase editor, because the CLI must not
+run on the production machine (`docs/EMAIL-SETUP.md` 5.1). `/api/admin/invite-codes` now lists
+every code with its counts and a server-computed state, creates codes, disables and enables them,
+moves or removes a ceiling, lists a code's redemptions and releases burnt places (older than ten
+minutes, then reconciles — KAR-18's procedure as one call).
+
+**Admin identity is `ADMIN_USER_IDS`**, a comma-separated set of JWT `sub` ids, enforced by
+`AdminAccess` on the `/api/admin/**` matcher in `SecurityConfig` rather than in the controller.
+Empty means nobody, the same fail-closed posture as the missing service-role key. Chosen over a
+Supabase `app_metadata` claim (cleaner if admins multiply, but a token round-trip and a dashboard
+setting for a population of one) and over a profile column (a table write that grants admin).
+`GET /api/profile` reports `admin` for the frontend's link; the API refuses regardless.
+
+`InviteCode.state()` is the one rule for whether a code is open, and `refusalReason()` is now
+written on it, so the list can never show OPEN for a code sign-up would refuse. Codes are never
+deleted. `InviteLedger.reserve` and `SignupController` are untouched.
+
+**Not set in production yet:** `fly secrets set ADMIN_USER_IDS=<owner sub>` — until then every
+admin call answers 403.
+
+Verified: `./gradlew test`, 942 tests, 0 real failures, including the new `AdminAccessTest`,
+`InviteCodeTest`, `InviteLedgerTest` and `InviteCodeAdminControllerTest`. The pre-push hook's
+fresh-database run then refused the push: 11 failures, all in `UserProfileControllerTest`
+(`Failed to obtain JDBC Connection` / "sorry, too many clients already"). The cause was
+`InviteCodeAdminControllerTest` itself — its `@Import(LocalSigningKey.class)` plus a mocked
+`SupabaseAdminClient` is a context no other class shares, and its cached 10-connection Hikari pool
+was the one more that crossed the KAR-51 ceiling. The class now carries
+`@DirtiesContext(AFTER_CLASS)`, the same KAR-42 workaround `SecurityHeadersTest` already uses and
+that KAR-51 records; the real pool-size fix is still KAR-51's. Re-run after that change:
+`../scripts/test-db.sh reset && ./gradlew cleanTest test`, 942 tests, 0 failures, 0 errors.
+
+Review follow-ups (PR #92): bounded the code to 64 characters with no spaces, refused a
+`benefitValue` sent with `benefitKind` `access` instead of nulling it silently, added the
+`Location` header on 201, closed the duplicate-create race with a `DuplicateKeyException` catch
+around the insert, made `summary()` a single read-only transaction, moved `release-burnt`'s grace
+cutoff onto the database clock instead of the JVM's, and made `isAdmin` null-safe.

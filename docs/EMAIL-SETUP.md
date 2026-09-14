@@ -473,6 +473,10 @@ easily the one serving traffic. Verified against `fly status` and `fly.toml` on 
 
 Use the Supabase SQL editor instead. Reading is free:
 
+Since KAR-54 the admin API is the intended path — `POST /api/admin/invite-codes` with the
+owner's token, once `ADMIN_USER_IDS` is set (`docs/DEVELOPMENT.md`, "The free tier and sign-up").
+The SQL below remains correct and is what the API does.
+
 ```sql
 SELECT code, label, max_uses, uses, active, valid_until
 FROM fpl_invite_code
