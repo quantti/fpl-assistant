@@ -231,3 +231,46 @@ it('saves a ceiling from the response and shows the 409 detail when refused', as
   expect(calls()).toContain('DELETE /api/admin/invite-codes/7/max-uses')
   expect(rowOf('podcast').textContent).toContain('7 / ∞')
 })
+
+it('posts a new code with a null ceiling, appends the created row and clears the form', async () => {
+  const created: InviteCodeView = {
+    id: 9, code: 'newsletter', label: 'newsletter', uses: 0, accounts: 0, burnt: 0,
+    benefitKind: 'discount_percent', benefitValue: 15, active: true, state: 'OPEN',
+    createdAt: '2026-09-14T00:00:00Z',
+  }
+  serve({
+    'GET /api/admin/invite-codes': () => json(200, list),
+    'POST /api/admin/invite-codes': () => json(201, created),
+  })
+  await mount()
+  expect(host.querySelector('[name="benefitValue"]')).toBeNull()
+
+  type('code', 'newsletter')
+  type('benefitKind', 'discount_percent')
+  type('benefitValue', '15')
+  await act(async () => { button('Create code')!.click() })
+  await flush()
+
+  expect(bodyOf('POST /api/admin/invite-codes')).toEqual({
+    code: 'newsletter', label: null, maxUses: null, benefitKind: 'discount_percent',
+    benefitValue: 15, validFrom: null, validUntil: null, note: null,
+  })
+  expect(host.querySelectorAll('tbody tr')).toHaveLength(3)
+  expect(rowOf('newsletter').textContent).toContain('0 / ∞')
+  expect(host.querySelector<HTMLInputElement>('[name="code"]')!.value).toBe('')
+})
+
+it('reports a duplicate code in the spec wording', async () => {
+  serve({
+    'GET /api/admin/invite-codes': () => json(200, list),
+    'POST /api/admin/invite-codes': () => json(409, { status: 409, detail: 'A code with that name already exists.' }),
+  })
+  await mount()
+
+  type('code', 'podcast')
+  await act(async () => { button('Create code')!.click() })
+  await flush()
+
+  expect(host.textContent).toContain('A code with that name already exists.')
+  expect(host.querySelectorAll('tbody tr')).toHaveLength(2)
+})
