@@ -15,6 +15,7 @@ import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
@@ -46,6 +47,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 @Import(LocalSigningKey.class)
+// A context no other class shares (LocalSigningKey plus a mocked SupabaseAdminClient): close it,
+// or its connection pool stays cached and the suite exhausts the test database's max_connections
+// (KAR-51).
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 class InviteCodeAdminControllerTest {
 
     /** The id application-test.yml names in fpl.admin.user-ids. */
