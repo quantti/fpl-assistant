@@ -76,7 +76,31 @@ set -a; source .env.test; set +a
 ./gradlew bootRun --args="--sync-schedule"        # capture FPL gameweeks and fixtures, then exit
 ```
 
-Frontend, from `frontend/`:
+### Owned-sync implementation (not activated)
+
+`sync/CatalogueScheduleDispatcher` is an explicitly invoked API, not a scheduled job or CLI.
+`enqueueCycle` creates the price/catalogue and schedule jobs; a caller acquires a lease from
+`OwnedSyncStore` and calls `process` with the configured playing season. It fetches/stages a
+coherent source pair and publishes through `CatalogueScheduleWriter` under canonical fences.
+`OwnedSyncSchema.initialize` and the capture schemas must already exist. No application wiring
+currently constructs or invokes these APIs; the existing sync commands above still use their
+legacy paths. Do not wire them to production until the plan's single-writer cutover is complete.
+
+Run the new tests with the ordinary **local** `.env.test` setup:
+
+```bash
+./gradlew test --tests '*CatalogueSchedule*' --tests '*OwnedSync*'
+```
+
+Price publication waits until 02:00 UK and schedule publication until 03:00 UK. Source-read
+instants remain unchanged during that wait; compatibility `updated_at` records publication.
+A retry resumes staged work, but a new/coalesced refresh demand advances the source floor. An
+HTTP 200 or successful catalogue publication does not verify a completed match's player metrics.
+Plan and next steps: `docs/superpowers/plans/2026-09-13-owned-matchday-sync.md`.
+
+### Frontend
+
+From `frontend/`:
 
 ```bash
 npm run dev                                       # Vite on :5173, /api proxied to :8080

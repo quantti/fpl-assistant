@@ -8,6 +8,7 @@ import java.time.Instant;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -115,10 +116,10 @@ public final class OwnedSyncRequestBudget {
      * exponential-jitter fallback for a missing, malformed, overflowing, or unpersistable header
      * is capped by {@link Limits#maximumBackoff()}.
      */
-    public void complete(Permit permit, Completion completion) {
+    public Optional<Instant> complete(Permit permit, Completion completion) {
         Objects.requireNonNull(permit);
         Objects.requireNonNull(completion);
-        tx.executeWithoutResult(status -> {
+        Instant nextAdmission = tx.execute(status -> {
             jdbc.queryForObject("SELECT singleton FROM %s WHERE singleton = TRUE FOR UPDATE"
                     .formatted(tables.requestState()), Boolean.class);
             Instant now = clock.instant();
@@ -126,7 +127,7 @@ public final class OwnedSyncRequestBudget {
                             .formatted(tables.requestAttempt())
                             + "WHERE permit_id = ? AND completed_at IS NULL",
                     timestamp(now), completion.holdUntilExpiry, permit.id);
-            if (completed == 0 || !completion.transientFailure()) return;
+            if (completed == 0 || !completion.transientFailure()) return null;
 
             Instant proposed = retryAfterDeadline(completion.retryAfter, now);
             if (proposed == null) {
@@ -138,7 +139,18 @@ public final class OwnedSyncRequestBudget {
                                 + "ELSE GREATEST(cooldown_until, ?) END WHERE singleton = TRUE",
                         timestamp(proposed), timestamp(proposed));
             }
+            Timestamp persisted = jdbc.queryForObject("SELECT cooldown_until FROM %s WHERE singleton = TRUE"
+                    .formatted(tables.requestState()), Timestamp.class);
+            return persisted == null ? null : persisted.toInstant();
         });
+        return Optional.ofNullable(nextAdmission);
+    }
+
+    /** Persisted shared cooldown hint; reading it never admits or consumes a permit. */
+    public Optional<Instant> nextAdmissionHint() {
+        Timestamp value = jdbc.queryForObject("SELECT cooldown_until FROM %s WHERE singleton = TRUE"
+                .formatted(tables.requestState()), Timestamp.class);
+        return Optional.ofNullable(value == null ? null : value.toInstant());
     }
 
     private Instant retryAfterDeadline(String value, Instant now) {

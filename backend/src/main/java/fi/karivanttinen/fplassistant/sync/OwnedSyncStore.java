@@ -6,6 +6,7 @@ import java.sql.Timestamp;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
@@ -53,24 +54,28 @@ public final class OwnedSyncStore {
         String validPublicationKey = bounded("publicationKey", publicationKey, 200);
         Objects.requireNonNull(dueAt);
         return tx.execute(status -> {
+            Instant enqueuedAt = now();
+            Instant requestedSourceAfter = dueAt.isAfter(enqueuedAt) ? dueAt : enqueuedAt;
             jdbc.update("INSERT INTO %s(season, publication_key) VALUES (?, ?) ON CONFLICT DO NOTHING"
                     .formatted(tables.receipt()), validSeason, validPublicationKey);
             Run result;
             try {
                 result = jdbc.queryForObject("""
                     INSERT INTO %s(kind, season, coalescing_key, publication_key, priority,
-                                   due_at, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                   due_at, requested_source_after, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT (kind, season, coalescing_key)
                         WHERE state IN ('PENDING', 'LEASED')
                     DO UPDATE SET due_at = LEAST(%s.due_at, EXCLUDED.due_at),
+                                  requested_source_after = GREATEST(
+                                      %s.requested_source_after, EXCLUDED.requested_source_after),
                                   updated_at = EXCLUDED.updated_at
                     WHERE %s.publication_key = EXCLUDED.publication_key
                     RETURNING generation, kind, season, coalescing_key, publication_key,
                               due_at, state, attempt_count
-                    """.formatted(tables.run(), tables.run(), tables.run()), this::run,
+                    """.formatted(tables.run(), tables.run(), tables.run(), tables.run()), this::run,
                         kind.name(), validSeason, validCoalescingKey, validPublicationKey, kind.priority,
-                        timestamp(dueAt), timestamp(now()), timestamp(now()));
+                        timestamp(dueAt), timestamp(requestedSourceAfter), timestamp(enqueuedAt), timestamp(enqueuedAt));
             } catch (EmptyResultDataAccessException e) {
                 throw new IllegalArgumentException(
                         "Active coalescing key is already bound to a different publicationKey");
@@ -173,16 +178,131 @@ public final class OwnedSyncStore {
         });
     }
 
+    /** Returns the durable source-read floor while proving the supplied lease is still current. */
+    public Instant requestedSourceAfter(Lease lease) {
+        return tx.execute(status -> {
+            lockAndValidate(lease);
+            return jdbc.queryForObject("SELECT requested_source_after FROM %s WHERE generation = ?"
+                    .formatted(tables.run()), Timestamp.class, lease.generation()).toInstant();
+        });
+    }
+
+    /** Returns the latest staged public response for this run while proving the lease is current. */
+    public Optional<StagedPayload> latestStagedPublicPayload(Lease lease, Endpoint endpoint) {
+        Objects.requireNonNull(endpoint);
+        requirePublicEndpoint(endpoint);
+        return tx.execute(status -> {
+            lockAndValidate(lease);
+            return jdbc.query("""
+                    SELECT id, run_generation, endpoint_kind, read_started_at, read_finished_at,
+                           validation_state, validation_error, body
+                    FROM %s WHERE run_generation = ? AND endpoint_kind = ?
+                    ORDER BY id DESC LIMIT 1
+                    """.formatted(tables.payload()), this::stagedPayload,
+                    lease.generation(), endpoint.kind().name()).stream().findFirst();
+        });
+    }
+
+    /**
+     * Returns a bounded newest-first set of complete, validated bootstrap/fixtures batches.
+     * Both documents always come from the same run; callers still parse the pair before use.
+     */
+    public List<PublicPayloadPair> latestValidPublicPayloadPairs(String season, int limit) {
+        String validSeason = bounded("season", season, 10);
+        if (limit < 1 || limit > 20) throw new IllegalArgumentException("limit must be between 1 and 20");
+        return jdbc.query("""
+                SELECT r.generation,
+                       b.id AS b_id, b.read_started_at AS b_started, b.read_finished_at AS b_finished,
+                       b.validation_state AS b_validation, b.validation_error AS b_error, b.body AS b_body,
+                       f.id AS f_id, f.read_started_at AS f_started, f.read_finished_at AS f_finished,
+                       f.validation_state AS f_validation, f.validation_error AS f_error, f.body AS f_body
+                FROM %s r
+                JOIN LATERAL (
+                    SELECT * FROM %s p WHERE p.run_generation = r.generation
+                      AND p.endpoint_kind = 'BOOTSTRAP_STATIC' AND p.validation_state = 'VALID'
+                    ORDER BY p.id DESC LIMIT 1
+                ) b ON TRUE
+                JOIN LATERAL (
+                    SELECT * FROM %s p WHERE p.run_generation = r.generation
+                      AND p.endpoint_kind = 'FIXTURES' AND p.validation_state = 'VALID'
+                    ORDER BY p.id DESC LIMIT 1
+                ) f ON TRUE
+                WHERE r.kind = 'CATALOGUE_SCHEDULE' AND r.season = ?
+                ORDER BY GREATEST(b.read_finished_at, f.read_finished_at) DESC, r.generation DESC
+                LIMIT ?
+                """.formatted(tables.run(), tables.payload(), tables.payload()), (rs, row) ->
+                new PublicPayloadPair(rs.getLong("generation"),
+                        stagedPayload(rs, "b", EndpointKind.BOOTSTRAP_STATIC),
+                        stagedPayload(rs, "f", EndpointKind.FIXTURES)), validSeason, limit);
+    }
+
+    /** Changes validation only for payloads owned by the current fenced run. */
+    public void validateStagedPayloads(Lease lease, List<Long> payloadIds, Validation validation) {
+        Objects.requireNonNull(payloadIds);
+        Objects.requireNonNull(validation);
+        if (payloadIds.isEmpty() || payloadIds.size() > 2 || payloadIds.stream().anyMatch(id -> id == null || id <= 0)) {
+            throw new IllegalArgumentException("one or two positive payload ids are required");
+        }
+        tx.executeWithoutResult(status -> {
+            lockAndValidate(lease);
+            int updated = 0;
+            for (Long payloadId : payloadIds) {
+                updated += jdbc.update("""
+                        UPDATE %s SET validation_state = ?, validation_error = ?
+                        WHERE run_generation = ? AND id = ?
+                        """.formatted(tables.payload()), validation.state().name(),
+                        boundedNullable(validation.error(), MAX_ERROR_CHARS),
+                        lease.generation(), payloadId);
+            }
+            if (updated != payloadIds.size()) {
+                throw new IllegalArgumentException("Payload ids must belong to the leased run");
+            }
+        });
+    }
+
+    /** Read-only chronology evidence used to avoid replaying obsolete staged source data. */
+    public Optional<SourceRead> sourceReceipt(String season, String publicationKey) {
+        String validSeason = bounded("season", season, 10);
+        String validKey = bounded("publicationKey", publicationKey, 200);
+        return jdbc.query("""
+                SELECT source_read_started_at, source_read_finished_at FROM %s
+                WHERE season = ? AND publication_key = ?
+                  AND source_read_started_at IS NOT NULL AND source_read_finished_at IS NOT NULL
+                """.formatted(tables.receipt()), (rs, row) -> new SourceRead(
+                instant(rs, "source_read_started_at"), instant(rs, "source_read_finished_at")),
+                validSeason, validKey).stream().findFirst();
+    }
+
     /**
      * Runs a database-only publication callback and records completion in the same transaction.
      * The callback must perform no network I/O. Any exception rolls back callback writes, receipt
      * advancement and completion together.
      */
     public <T> T publish(Lease lease, SourceRead read, Supplier<T> callback) {
+        return publish(lease, read, List.of(), callback);
+    }
+
+    /**
+     * Publishes only if every supplied source request began at or after the run's current durable
+     * demand floor. The run lock makes this check atomic with completion against concurrent
+     * coalescing; a newer demand can therefore never be hidden by an in-flight older fetch.
+     */
+    public <T> T publish(Lease lease, SourceRead read, List<SourceRead> demandReads,
+                         Supplier<T> callback) {
         Objects.requireNonNull(read);
+        Objects.requireNonNull(demandReads);
         Objects.requireNonNull(callback);
+        if (demandReads.stream().anyMatch(Objects::isNull)) {
+            throw new IllegalArgumentException("demand reads cannot contain null");
+        }
         return tx.execute(status -> {
             LockedRun run = lockAndValidate(lease);
+            Instant requestedAfter = jdbc.queryForObject(
+                    "SELECT requested_source_after FROM %s WHERE generation = ?"
+                            .formatted(tables.run()), Timestamp.class, lease.generation()).toInstant();
+            if (demandReads.stream().anyMatch(source -> source.startedAt().isBefore(requestedAfter))) {
+                throw new SourceDemandAdvancedException(lease.generation(), requestedAfter);
+            }
             Long latest = jdbc.queryForObject("""
                     SELECT latest_generation FROM %s
                     WHERE season = ? AND publication_key = ? FOR UPDATE
@@ -308,6 +428,21 @@ public final class OwnedSyncStore {
                 rs.getLong("lease_fence"), instant(rs, "lease_expires_at"), rs.getInt("attempt_count"));
     }
 
+    private StagedPayload stagedPayload(ResultSet rs, int row) throws SQLException {
+        return new StagedPayload(rs.getLong("id"), rs.getLong("run_generation"),
+                EndpointKind.valueOf(rs.getString("endpoint_kind")),
+                new SourceRead(instant(rs, "read_started_at"), instant(rs, "read_finished_at")),
+                ValidationState.valueOf(rs.getString("validation_state")),
+                rs.getString("validation_error"), rs.getBytes("body"));
+    }
+
+    private static StagedPayload stagedPayload(ResultSet rs, String prefix, EndpointKind kind) throws SQLException {
+        return new StagedPayload(rs.getLong(prefix + "_id"), rs.getLong("generation"), kind,
+                new SourceRead(instant(rs, prefix + "_started"), instant(rs, prefix + "_finished")),
+                ValidationState.valueOf(rs.getString(prefix + "_validation")),
+                rs.getString(prefix + "_error"), rs.getBytes(prefix + "_body"));
+    }
+
     private static Instant instant(ResultSet rs, String column) throws SQLException {
         Timestamp value = rs.getTimestamp(column);
         return value == null ? null : value.toInstant();
@@ -338,6 +473,13 @@ public final class OwnedSyncStore {
     private static String boundedNullable(String value, int max) {
         if (value == null) return null;
         return value.length() <= max ? value : value.substring(0, max);
+    }
+
+    private static void requirePublicEndpoint(Endpoint endpoint) {
+        validateEndpoint(endpoint);
+        if (endpoint.kind != EndpointKind.BOOTSTRAP_STATIC && endpoint.kind != EndpointKind.FIXTURES) {
+            throw new IllegalArgumentException("Only bounded public catalogue payloads can be read here");
+        }
     }
 
     private static void validateEndpoint(Endpoint endpoint) {
@@ -391,12 +533,44 @@ public final class OwnedSyncStore {
                         String publicationKey, String owner, UUID token, long fence,
                         Instant expiresAt, int attemptCount) { }
 
+    public record StagedPayload(long id, long runGeneration, EndpointKind endpointKind,
+                                SourceRead read, ValidationState validationState,
+                                String validationError, byte[] body) {
+        public StagedPayload {
+            Objects.requireNonNull(endpointKind);
+            Objects.requireNonNull(read);
+            Objects.requireNonNull(validationState);
+            body = Objects.requireNonNull(body).clone();
+            if (body.length > MAX_PAYLOAD_BYTES) throw new IllegalArgumentException("staged body is oversized");
+        }
+        @Override public byte[] body() { return body.clone(); }
+    }
+
+    public record PublicPayloadPair(long runGeneration, StagedPayload bootstrap,
+                                    StagedPayload fixtures) {
+        public PublicPayloadPair {
+            Objects.requireNonNull(bootstrap);
+            Objects.requireNonNull(fixtures);
+            if (bootstrap.runGeneration() != runGeneration || fixtures.runGeneration() != runGeneration
+                    || bootstrap.endpointKind() != EndpointKind.BOOTSTRAP_STATIC
+                    || fixtures.endpointKind() != EndpointKind.FIXTURES) {
+                throw new IllegalArgumentException("public payload pair must come from one run");
+            }
+        }
+    }
+
     private record LockedRun(long generation, SyncKind kind, String season, String coalescingKey,
                              String publicationKey, String state, String owner, UUID token,
                              long fence, Instant expiresAt, int attemptCount) { }
 
     public static final class LeaseLostException extends IllegalStateException {
         public LeaseLostException(String message) { super(message); }
+    }
+
+    public static final class SourceDemandAdvancedException extends IllegalStateException {
+        public SourceDemandAdvancedException(long generation, Instant requestedAfter) {
+            super("Run " + generation + " requires source requests from " + requestedAfter + " or later");
+        }
     }
 
     public static final class StaleGenerationException extends IllegalStateException {

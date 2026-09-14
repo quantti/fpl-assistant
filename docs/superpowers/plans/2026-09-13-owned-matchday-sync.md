@@ -1,6 +1,6 @@
 # Assistant-owned FPL sync and post-match verification
 
-**PROGRESS:** Implementation 2/10 tasks done — source-contract evidence and inert queue/budget/HTTP foundation; no updater activated.
+**PROGRESS:** Implementation 3/10 tasks done — source contracts, bounded transport/staging and inert catalogue/schedule dispatch/publication; no updater activated.
 
 Owner decision: this service, **not Tapas**, will perform the FPL data updates. This supersedes
 Task 5's ownership assumption in `2026-09-13-wildcard-data-coverage.md`. That plan's comparison
@@ -238,9 +238,18 @@ children. Never prune a player needed by existing PFS history; missing players a
 DELETE instructions. Invalid/partial league payload preserves the prior complete capture.
 Keep startup/scheduled/CLI paths under the coordinator; remove duplicate legacy job dispatch.
 
+Core `updated_at` remains row publication/write time (the transaction clock), never source-read
+provenance; captured tables retain the actual source capture time. Fence bootstrap and fixture
+chronology through fixed per-season source receipts in `fpl_sync_receipt`, with bootstrap shared by
+catalogue and schedule and both endpoint intervals retained separately. The first owned publication
+over legacy rows requires a newly fetched, fully validated batch after legacy writers are drained:
+legacy `updated_at` cannot initialise or certify source chronology.
+
 Verify: season changeover/reused IDs, archived rows untouched, null kickoff/gameweek, same-day
-availability changes, complete timestamp-coherent schedule publication and transaction rollback.
-Reader cutover/date tests must pass, not merely mapper tests.
+availability changes, read-at-02:00/published-at-03:00 timestamp separation, same bootstrap reused
+across both publication groups, independently regressed bootstrap/fixture rejection, complete
+timestamp-coherent schedule publication and transaction rollback including source receipts. Reader
+cutover/date tests must pass, not merely mapper tests.
 
 ### 4. Full player-history ingestion and DefCon integration
 
@@ -387,6 +396,47 @@ foundation review found no further actionable issues. No public API is called by
 all DB integration uses the disposable container. No Tapas files or production data were changed.
 Linear access is unavailable in this harness; the required Kari link remains outstanding rather
 than a fabricated issue/closure. The implementation PR is the interim tracking reference.
+
+## Task 3 outcome — explicit catalogue/schedule pipeline (2026-09-14)
+
+Implemented in three bounded subagent units with independent reviews between them:
+`CatalogueScheduleParser`, `CatalogueScheduleWriter`/`CatalogueScheduleTables`, and
+`CatalogueScheduleDispatcher`. The pipeline can be invoked explicitly but has no Spring bean,
+startup runner, CLI or scheduled registration. Legacy entry points remain unchanged until the
+Task 9 cutover; routing/activation belongs with Tasks 6/9, not an implicit switch in this task.
+
+The parser covers named compatibility/capture fields, validates schema numeric capacity and the
+configured season period, and reuses `ScheduleSource.assess` for the complete league invariant.
+Historical player references need not remain in today's bootstrap. Assigned-undated and
+unassigned-dated fixtures are both valid. A database season may have its actual August start and
+no end date; the source-validation period derives from its season code, not a fabricated DB row.
+
+Publication is split into canonical `catalogue-price` and `schedule` units for the 02:00/03:00 UK
+cutovers. Each atomically writes compatibility rows, its entire capture and source receipts;
+missing catalogue players are retained in core history but removed from the selected daily
+capture. Both units serialize on the same season row before checking shared-team chronology.
+Core `updated_at` is publication time; captures and separate bootstrap/fixture receipts retain
+source time. Older endpoints cannot slip through merely because a combined batch has a newer
+maximum timestamp. No PFS writes or existing-table schema changes are included.
+
+Dispatch enqueues both units, shares one coherent fetched/staged pair, survives first-endpoint
+interruption, and defers publication without backdating. A persisted source-demand floor advances
+on new/coalesced demand but not on retry: the next cycle cannot reuse an old same-day pair forever,
+and a demand arriving during a fetch is checked again under the publication lock. Obsolete pairs
+are refreshed rather than terminally rejected; malformed source, payload-cap failure, transient
+HTTP/budget deferral, lease loss and publication rollback remain distinct. Retry hints come from
+the persistent request budget instead of a second Retry-After interpretation in dispatch.
+
+Verified against disposable Postgres: 1004 tests, 0 failures/errors/skips, including 38 new parser,
+writer and dispatcher tests plus a new store demand-fence regression. Full-suite verification
+found that four ad-hoc failure/probe test tables lacked RLS; their initializers now enable it on
+both fresh and reused tables. The security assertion was not weakened. A final independent Task 3
+review found no further actionable issues. AGENTS now records the explicit write-ownership
+exception while forbidding activation/production core writes before the reviewed handover.
+
+Next is Task 4's full history/DefCon mapping and publication with component evidence. Fixture
+readiness, adaptive scheduling, reader masking, alerts and cutover remain incomplete. Do not
+interpret the new API or a parsed catalogue as a verified post-match result.
 
 ## Remaining decisions before execution
 

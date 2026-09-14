@@ -141,8 +141,13 @@ public class ScheduleSource {
         return new View(snapshot, events, fixtures, assess(snapshot, events, fixtures));
     }
 
-    static Completeness assess(Optional<Snapshot> snapshot, List<EventRow> events,
-                               List<FixtureRow> fixtures) {
+    /**
+     * Assesses the structural whole-league invariant independently of database loading.
+     * Owned-sync catalogue mapping composes this same check before publication so ranking and
+     * ingestion cannot drift on what constitutes a complete schedule.
+     */
+    public static Completeness assess(Optional<Snapshot> snapshot, List<EventRow> events,
+                                      List<FixtureRow> fixtures) {
         if (snapshot.isEmpty()) {
             return incomplete(CompletenessReason.NO_CAPTURE);
         }

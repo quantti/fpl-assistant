@@ -33,13 +33,17 @@ class ScheduleSourceTest {
     }
 
     @Test
-    void aCompleteScheduleHasEveryEventClubAndOrderedPair() {
+    void aCompleteScheduleAllowsGameweekAndKickoffToBeIndependentlyNull() {
         var snapshot = Optional.of(new ScheduleSource.Snapshot(RankingSeed.VIEW_SEASON, CAPTURED));
         var fixtures = new ArrayList<>(RankingSeed.fixtures(CAPTURED, FIRST_DEADLINE));
-        var unresolved = fixtures.getFirst();
-        fixtures.set(0, new ScheduleSource.FixtureRow(unresolved.id(), null,
-                unresolved.homeTeamId(), unresolved.awayTeamId(), null, false, false,
-                unresolved.homeDifficulty(), unresolved.awayDifficulty(), CAPTURED));
+        var unassigned = fixtures.getFirst();
+        fixtures.set(0, new ScheduleSource.FixtureRow(unassigned.id(), null,
+                unassigned.homeTeamId(), unassigned.awayTeamId(), unassigned.kickoff(), false, false,
+                unassigned.homeDifficulty(), unassigned.awayDifficulty(), CAPTURED));
+        var undated = fixtures.get(1);
+        fixtures.set(1, new ScheduleSource.FixtureRow(undated.id(), undated.gameweek(),
+                undated.homeTeamId(), undated.awayTeamId(), null, false, false,
+                undated.homeDifficulty(), undated.awayDifficulty(), CAPTURED));
 
         assertThat(ScheduleSource.assess(snapshot,
                 RankingSeed.events(CAPTURED, FIRST_DEADLINE), fixtures))

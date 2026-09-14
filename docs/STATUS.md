@@ -4248,6 +4248,27 @@ Production activation still requires source validation/publication, reader integ
 owner-approved single-writer handover. Linear linking remains outstanding because this harness
 has no configured Linear access.
 
+### Owned-sync implementation — Task 3 catalogue and schedule (2026-09-14)
+
+The owned-sync plan is now 3/10. Subagents implemented strict catalogue/schedule parsing,
+atomic named-column writers and explicit fetch/stage/resume dispatch in three reviewed units.
+Both publication groups use the same validated source batch but preserve their separate 02:00 UK
+price and 03:00 UK schedule cutovers. Core row timestamps record writes; capture and endpoint
+receipts record actual source reads. A shared season lock prevents cross-group team regressions.
+New/coalesced demand requires new enough source observations, so yesterday's or an earlier
+same-day batch cannot masquerade as a new update; retries retain their staged work.
+
+Full disposable-database suite: 1004 tests, zero failures/errors/skips. An order-dependent RLS
+failure in ad-hoc test-table setup was fixed without weakening the security assertion. Reviews
+also fixed historical IDs outside today's catalogue, independent nullable fixture fields,
+nullable season end dates, numeric capacity, cross-group locking and source/write-time separation.
+The plan's Task 3 outcome records details and remaining boundaries.
+
+The pipeline is still **inert**: no bean, scheduler, CLI or startup activation, no production core
+writes, no PFS writes and no Tapas job disabled. Task 4 adds full history/DefCon and component
+evidence; verification, scheduling, read-path integration, alerts and reviewed cutover still follow.
+AGENTS records the owner's core write-ownership exception with those deployment restrictions.
+
 ## Header facelift — FPL Sidekick wordmark and page links (2026-09-13)
 
 Built on the player-shortlist branch (PR #88), which introduced `HeaderNavigation`. The bar now
