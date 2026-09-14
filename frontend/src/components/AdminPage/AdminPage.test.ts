@@ -168,3 +168,66 @@ it('offers Release burnt places only when something is burnt, and reports the re
   expect(host.textContent).toContain('Released 1 place. Reconciled: testi.')
   expect(host.textContent).toContain('11 of 30 places taken · 0 burnt')
 })
+
+it('expands a row to its redemptions, newest first, burnt places named as such', async () => {
+  serve({
+    'GET /api/admin/invite-codes': () => json(200, list),
+    'GET /api/admin/invite-codes/8/redemptions': () => json(200, [
+      { id: 1, userId: null, redeemedAt: '2026-09-01T10:00:00Z' },
+      { id: 2, userId: '0f3a9c12-aaaa-bbbb-cccc-000000000000', redeemedAt: '2026-09-02T10:00:00Z' },
+    ]),
+  })
+  await mount()
+  await act(async () => { rowOf('launch').click() })
+  await flush()
+
+  const items = Array.from(host.querySelectorAll('li'))
+  expect(items).toHaveLength(2)
+  expect(items[0].textContent).toContain('0f3a9c12')
+  expect(items[0].querySelector('[title]')?.getAttribute('title')).toBe('0f3a9c12-aaaa-bbbb-cccc-000000000000')
+  expect(items[1].textContent).toContain('burnt')
+})
+
+it('says so when nobody has used a code', async () => {
+  serve({
+    'GET /api/admin/invite-codes': () => json(200, list),
+    'GET /api/admin/invite-codes/7/redemptions': () => json(200, []),
+  })
+  await mount()
+  await act(async () => { rowOf('podcast').click() })
+  await flush()
+  expect(host.textContent).toContain('Nobody has used this code yet.')
+})
+
+it('saves a ceiling from the response and shows the 409 detail when refused', async () => {
+  let refuse = true
+  serve({
+    'GET /api/admin/invite-codes': () => json(200, list),
+    'GET /api/admin/invite-codes/7/redemptions': () => json(200, []),
+    'PUT /api/admin/invite-codes/7/max-uses': () => refuse
+      ? json(409, { status: 409, detail: 'The ceiling cannot go below the 7 uses already spent; disable the code instead.' })
+      : json(200, { ...podcast, maxUses: 50, remaining: 43 }),
+    'DELETE /api/admin/invite-codes/7/max-uses': () => json(200, { ...podcast, maxUses: undefined, remaining: undefined }),
+  })
+  await mount()
+  await act(async () => { rowOf('podcast').click() })
+  await flush()
+
+  type('maxUses', '3')
+  await act(async () => { button('Save')!.click() })
+  await flush()
+  expect(bodyOf('PUT /api/admin/invite-codes/7/max-uses')).toEqual({ maxUses: 3 })
+  expect(host.textContent).toContain('disable the code instead')
+  expect(rowOf('podcast').textContent).toContain('7 / 100')
+
+  refuse = false
+  type('maxUses', '50')
+  await act(async () => { button('Save')!.click() })
+  await flush()
+  expect(rowOf('podcast').textContent).toContain('7 / 50')
+
+  await act(async () => { button('No ceiling')!.click() })
+  await flush()
+  expect(calls()).toContain('DELETE /api/admin/invite-codes/7/max-uses')
+  expect(rowOf('podcast').textContent).toContain('7 / ∞')
+})

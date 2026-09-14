@@ -3,6 +3,7 @@ import { Button, Loader } from '@mantine/core'
 import { apiFetch } from '../../auth/apiFetch'
 import typography from '../../styles/typography.module.css'
 import classes from './AdminPage.module.css'
+import CodeDetails from './CodeDetails'
 import {
   InviteCodeList, InviteCodeView, NOT_AVAILABLE, ReleaseResult, STATE_WORDS, benefitText,
   placesLine, releaseNote, usedText,
@@ -220,8 +221,7 @@ function CodeRowGroup({ code, muted, expanded, busy, onToggleExpand, onToggleAct
       {expanded && (
         <tr className={classes.detailsRow}>
           <td colSpan={COLUMNS}>
-            {/* Task 3: <CodeDetails code={code} onChange={onChange} /> replaces this. */}
-            {void onChange}
+            <CodeDetails code={code} onChange={onChange} />
           </td>
         </tr>
       )}
