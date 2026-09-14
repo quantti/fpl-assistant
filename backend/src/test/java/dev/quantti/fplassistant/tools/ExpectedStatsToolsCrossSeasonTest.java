@@ -79,10 +79,14 @@ class ExpectedStatsToolsCrossSeasonTest {
         String previous = "Stored match coverage: Ferreira, season " + SharedStatsSeed.POPULATED_SEASON_CODE
                 + " (2 returned fixture rows), known match dates from 2025-08-16 17:30 UK (389 days ago)"
                 + " to 2025-08-23 17:30 UK (382 days ago).";
-        assertThat(result).containsOnlyOnce(DataAge.METRIC_REFRESH)
+        String currentRefresh = "Metric refresh: season " + SharedStatsSeed.CURRENT_SEASON_CODE
+                + ", returned sample;";
+        String previousRefresh = "Metric refresh: season " + SharedStatsSeed.POPULATED_SEASON_CODE
+                + ", returned sample;";
+        assertThat(result).containsOnlyOnce(currentRefresh).containsOnlyOnce(previousRefresh)
                 .containsOnlyOnce(current).containsOnlyOnce(previous);
         int previousBanner = result.indexOf("a COMPLETED PREVIOUS season");
-        assertThat(result.indexOf(DataAge.METRIC_REFRESH)).isGreaterThan(previousBanner);
+        assertThat(result.indexOf(currentRefresh)).isGreaterThan(previousBanner);
         assertThat(result.indexOf(current)).isGreaterThan(previousBanner)
                 .isLessThan(result.indexOf("Expected stats for"));
         assertThat(result.indexOf(previous)).isLessThan(result.indexOf("Expected stats for"));
@@ -115,7 +119,11 @@ class ExpectedStatsToolsCrossSeasonTest {
         assertThat(result).contains("  " + SharedStatsSeed.CURRENT_SEASON_CODE + " GW101");
 
         // KAR-9: fixtures and their stored player rows are counted separately, per season.
-        assertThat(result).containsOnlyOnce(DataAge.METRIC_REFRESH)
+        assertThat(result)
+                .containsOnlyOnce("Metric refresh: season " + SharedStatsSeed.CURRENT_SEASON_CODE
+                        + ", returned sample;")
+                .containsOnlyOnce("Metric refresh: season " + SharedStatsSeed.POPULATED_SEASON_CODE
+                        + ", returned sample;")
                 .contains("Stored match coverage: " + SharedStatsSeed.ASHFIELD + ", season " + SharedStatsSeed.CURRENT_SEASON_CODE
                         + " (2 returned fixtures from 2 stored player rows), known match dates from"
                         + " 2026-08-15 15:00 UK (25 days ago) to 2026-08-16 15:00 UK (24 days ago).")

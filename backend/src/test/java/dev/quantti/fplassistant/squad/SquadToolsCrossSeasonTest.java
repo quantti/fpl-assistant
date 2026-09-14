@@ -239,7 +239,7 @@ class SquadToolsCrossSeasonTest {
         assertThat(output).doesNotContain("Starting XI");
         assertThat(output).contains("60+").containsIgnoringCase("budget")
                 .as("an infeasible-XI refusal still rests on PFS metrics")
-                .contains(DataAge.METRIC_REFRESH);
+                .contains(DataAge.RANKING_METRIC_REFRESH);
         assertThat(output).doesNotContain("Data source: season " + SharedStatsSeed.CURRENT_SEASON_CODE
                 + " — a COMPLETED PREVIOUS season");
     }

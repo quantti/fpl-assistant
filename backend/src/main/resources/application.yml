@@ -97,6 +97,27 @@ supabase:
   service-role-key: ${SUPABASE_SERVICE_ROLE_KEY:}
 
 fpl:
+  owned-sync:
+    # Ownership never activates implicitly. STAGING may fetch and validate into owned staging
+    # tables; only guarded ACTIVE can publish core/capture/PFS rows.
+    mode: ${OWNED_SYNC_MODE:OFF}
+    playing-season: ${OWNED_SYNC_PLAYING_SEASON:}
+    cutover-confirmed: ${OWNED_SYNC_CUTOVER_CONFIRMED:false}
+    fixture-table-name: fpl_fixture_sync
+    evidence-table-name: fpl_player_fixture_evidence
+    alerts:
+      # Outbox rows are still persisted when disabled/unconfigured, with an explicit state.
+      # The URL is an owner secret supplied only through the environment and must be HTTPS.
+      webhook-enabled: ${OWNED_SYNC_ALERT_WEBHOOK_ENABLED:false}
+      webhook-url: ${OWNED_SYNC_ALERT_WEBHOOK_URL:}
+    ops:
+      # Dedicated operator surface; never authenticated by a chat-user JWT.
+      enabled: ${OWNED_SYNC_OPS_ENABLED:false}
+      token: ${OWNED_SYNC_OPERATOR_TOKEN:}
+    external-health:
+      # Minimal DB-heartbeat signal for an external monitor. Default closed and absent.
+      enabled: ${OWNED_SYNC_EXTERNAL_HEALTH_ENABLED:false}
+      token: ${OWNED_SYNC_MONITOR_TOKEN:}
   ai:
     provider: ${SPRING_AI_PROVIDER:anthropic}
   historical:

@@ -66,6 +66,37 @@ public final class SharedStatsSeed {
     private SharedStatsSeed() {
     }
 
+    /** Dedicated canonical-code rows for owned-sync publication tests. */
+    public static void ensureOwnedSyncFixture(JdbcTemplate jdbc) {
+        ensure(jdbc);
+        jdbc.execute("""
+                INSERT INTO season (id, code, name, start_date, end_date, is_current) VALUES
+                    (9825, '2024-25', 'Owned sync test season', DATE '2024-08-16', DATE '2025-05-25', false)
+                ON CONFLICT (id) DO NOTHING;
+                INSERT INTO team (id, season_id, code, name, short_name, strength) VALUES
+                    (9801, 9825, 9801, 'Sync Home', 'SYH', 3),
+                    (9802, 9825, 9802, 'Sync Away', 'SYA', 3)
+                ON CONFLICT (id, season_id) DO NOTHING;
+                INSERT INTO player (id, season_id, team_id, first_name, second_name, web_name,
+                    element_type, now_cost, status) VALUES
+                    (98201, 9825, 9801, 'Home', 'Sync', 'HomeSync', 3, 75, 'a'),
+                    (98202, 9825, 9802, 'Away', 'Sync', 'AwaySync', 3, 75, 'a')
+                ON CONFLICT (id, season_id) DO NOTHING;
+                INSERT INTO fixture (id, season_id, gameweek, code, team_h, team_a, team_h_score,
+                    team_a_score, kickoff_time, started, finished, finished_provisional, minutes, stats) VALUES
+                    (98101, 9825, 1, 98101, 9801, 9802, 2, 1,
+                     TIMESTAMPTZ '2024-08-17T14:00:00Z', true, true, true, 90,
+                     '[{"identifier":"minutes","h":[{"element":98201,"value":90}],
+                         "a":[{"element":98202,"value":90}]}]'::jsonb)
+                ON CONFLICT (id, season_id) DO UPDATE SET gameweek=EXCLUDED.gameweek,
+                    code=EXCLUDED.code, team_h=EXCLUDED.team_h, team_a=EXCLUDED.team_a,
+                    team_h_score=EXCLUDED.team_h_score, team_a_score=EXCLUDED.team_a_score,
+                    kickoff_time=EXCLUDED.kickoff_time, started=EXCLUDED.started,
+                    finished=EXCLUDED.finished, finished_provisional=EXCLUDED.finished_provisional,
+                    minutes=EXCLUDED.minutes, stats=EXCLUDED.stats
+                """);
+    }
+
     /**
      * Seeds the fixture league, unless the connection points at the shared production database.
      *

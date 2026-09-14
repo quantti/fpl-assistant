@@ -1,0 +1,57 @@
+# GitHub cron is best-effort and may be delayed or skipped; this is an independent dead-process
+# signal, not an SLA. The entire job is absent unless the repository variable is explicitly true.
+name: owned sync external heartbeat
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  heartbeat:
+    if: vars.FPL_SYNC_MONITOR_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Check durable scheduler heartbeat
+        id: health
+        continue-on-error: true
+        env:
+          HEALTH_URL: ${{ secrets.FPL_SYNC_MONITOR_URL }}
+          MONITOR_TOKEN: ${{ secrets.FPL_SYNC_MONITOR_TOKEN }}
+        run: |
+          test -n "$HEALTH_URL" && test -n "$MONITOR_TOKEN"
+          python3 - "$HEALTH_URL" <<'PY'
+          import sys
+          from urllib.parse import urlsplit
+          value = urlsplit(sys.argv[1])
+          if value.scheme != "https" or not value.hostname or value.username or value.password or value.query or value.fragment:
+              raise SystemExit("monitor URL must be HTTPS without userinfo, query or fragment")
+          PY
+          response="$(curl --proto '=https' --globoff --fail --silent --show-error \
+            --connect-timeout 5 --max-time 10 \
+            --retry 2 --retry-delay 2 --retry-all-errors \
+            -H "X-FPL-Monitor-Token: $MONITOR_TOKEN" \
+            "$HEALTH_URL")"
+          jq -e 'type == "object" and keys == ["status"] and .status == "UP"' <<<"$response" >/dev/null
+
+      - name: Notify external monitor failure
+        if: steps.health.outcome == 'failure'
+        env:
+          FAILURE_WEBHOOK: ${{ secrets.FPL_SYNC_MONITOR_FAILURE_WEBHOOK }}
+        run: |
+          test -n "$FAILURE_WEBHOOK"
+          python3 - "$FAILURE_WEBHOOK" <<'PY'
+          import sys
+          from urllib.parse import urlsplit
+          value = urlsplit(sys.argv[1])
+          if value.scheme != "https" or not value.hostname or value.username or value.password or value.query or value.fragment:
+              raise SystemExit("failure webhook must be HTTPS without userinfo, query or fragment")
+          PY
+          curl --proto '=https' --globoff --fail --silent --show-error \
+            --connect-timeout 5 --max-time 10 \
+            --retry 2 --retry-delay 2 --retry-all-errors \
+            -H 'Content-Type: application/json' \
+            --data '{"event":"owned-sync-external-heartbeat-failed","source":"github-actions"}' \
+            "$FAILURE_WEBHOOK"
+          exit 1

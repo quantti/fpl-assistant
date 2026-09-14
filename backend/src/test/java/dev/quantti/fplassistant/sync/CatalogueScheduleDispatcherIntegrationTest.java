@@ -90,6 +90,28 @@ class CatalogueScheduleDispatcherIntegrationTest {
     }
 
     @Test
+    void stagingValidatesAndStoresPayloadsWithoutCoreCaptureOrFixtureStateWrites() {
+        dispatcher = new CatalogueScheduleDispatcher(store, null, fetch, clock, false);
+        int teams = jdbc.queryForObject("SELECT count(*) FROM team WHERE season_id=27", Integer.class);
+        int players = jdbc.queryForObject("SELECT count(*) FROM player WHERE season_id=27", Integer.class);
+        var cycle = dispatcher.enqueueCycle(SEASON, clock.instant());
+        Lease[] leases = acquireBoth();
+
+        assertThat(dispatcher.process(forGeneration(leases, cycle.cataloguePrice().generation()), SEASON))
+                .isEqualTo(Outcome.STAGED);
+        assertThat(dispatcher.process(forGeneration(leases, cycle.schedule().generation()), SEASON))
+                .isEqualTo(Outcome.STAGED);
+
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM team WHERE season_id=27", Integer.class)).isEqualTo(teams);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM player WHERE season_id=27", Integer.class)).isEqualTo(players);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + CAPTURED.dailyPrice(), Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + CAPTURED.fixture(), Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + OWNED.fixtureSync(), Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + OWNED.payload()
+                + " WHERE validation_state='VALID'", Integer.class)).isEqualTo(2);
+    }
+
+    @Test
     void twoCanonicalGroupsShareOnePostDemandPairButANewCycleFetchesAgain() {
         var cycle = dispatcher.enqueueCycle(SEASON, clock.instant());
         Lease[] leases = acquireBoth();

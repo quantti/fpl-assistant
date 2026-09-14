@@ -159,6 +159,19 @@ class HorizonScorerTest {
     }
 
     @Test
+    void unavailableAttackHasZeroOptimizerWeightAndKeepsProjectionLabelledPartial() {
+        SquadCandidate player = candidate(90, 10, 0.5);
+        player.metrics().remove("xg90");
+
+        HorizonScorer.Projection projection = HorizonScorer.projection(
+                player, window(1), ClubRates.NONE);
+
+        assertThat(projection.available()).isTrue();
+        assertThat(projection.partial()).isTrue();
+        assertThat(projection.optimizerPoints()).isEqualTo(2.0);
+    }
+
+    @Test
     void eachFixtureContributesOnceToTheExistingCoarseHorizon() {
         SquadCandidate player = candidate(90, 10, 0.5);
 
