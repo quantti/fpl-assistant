@@ -11,8 +11,8 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import fi.karivanttinen.fplassistant.tools.ComparisonCoverageFormatter;
 import fi.karivanttinen.fplassistant.tools.DailyPriceSource;
-import fi.karivanttinen.fplassistant.tools.DataAge;
 import fi.karivanttinen.fplassistant.schedule.HorizonFixtures;
 import fi.karivanttinen.fplassistant.schedule.ScheduleFreshnessCheck;
 import fi.karivanttinen.fplassistant.schedule.ScheduleSource;
@@ -81,7 +81,10 @@ public class SquadTools implements FplTool {
             minutes and 60+ in every fixture; known zeros count. Only a verified different-club
             observation fences the spell; otherwise expected fixtures start at season start.
             Doubtful, stale, missing, pending or inconsistent data causes abstention, and last-season
-            history cannot certify the role. One sub-60 fixture blocks selection
+            history cannot certify the role. A general squad is refused as
+            COMPARISON_DATA_INCOMPLETE when a relevant elapsed unfinished fixture or a completed
+            club side without usable verified core rows removes a whole club from comparison.
+            Filters, pins and constraints cannot hide or waive that refusal. One sub-60 fixture blocks selection
             until ten later completed club fixtures in that spell move it out. A short complete
             window can qualify after
             clearing the floor, but is labelled as a small sample. An ineligible mustInclude may be
@@ -140,8 +143,14 @@ public class SquadTools implements FplTool {
             String scheduleProvenance = scheduleProvenance(loaded.snapshot(), capture, season);
             String scheduleNote = scheduleEvidence(loaded.snapshot(), horizon);
             String evidenceHeader = priceProvenance + "\n" + metricProvenance
-                    + "\n" + scheduleProvenance + "\n" + DataAge.METRIC_REFRESH
+                    + "\n" + scheduleProvenance + "\n" + loaded.snapshot().metricRefresh()
                     + "\n" + scheduleNote;
+            if (horizon.status() == HorizonFixtures.Status.KNOWN
+                    && loaded.snapshot().comparisonCoverage().assessed()
+                    && !loaded.snapshot().comparisonCoverage().complete()) {
+                return evidenceHeader + "\n" + ComparisonCoverageFormatter.refusal(
+                        loaded.snapshot().comparisonCoverage(), loaded.snapshot().asOf());
+            }
             if (candidates.isEmpty()) {
                 return evidenceHeader + "\nNo players are available to pick from today's capture.";
             }
@@ -229,6 +238,8 @@ public class SquadTools implements FplTool {
                     : "Raw current-club 60+ evidence is separate from ability and is the"
                             + " non-relaxable XI rule.";
             blendNote += " " + scheduleNote;
+            blendNote += " " + ComparisonCoverageFormatter.success(
+                    loaded.snapshot().comparisonCoverage());
             blendNote += " Clean sheets are projected per fixture from club expected-goal rates:"
                     + " the club's expected concession times the opponent's expected scoring"
                     + " rate over the league mean, adjusted for venue, conditional on P(60+)."
@@ -242,7 +253,7 @@ public class SquadTools implements FplTool {
 
             return SquadFormatter.format(solved.get(), constraints,
                     priceProvenance, metricProvenance, scheduleProvenance,
-                    excludedForNoRecord, pinned, excludedPlayers, projections,
+                    loaded.snapshot().metricRefresh(), excludedForNoRecord, pinned, excludedPlayers, projections,
                     !anyCandidateWasScoreable, blendNote, horizon);
         } catch (DataAccessException e) {
             log.error("buildSquad failed", e);

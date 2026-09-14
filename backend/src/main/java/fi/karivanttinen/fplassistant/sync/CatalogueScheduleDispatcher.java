@@ -58,32 +58,54 @@ public final class CatalogueScheduleDispatcher {
     private final CatalogueScheduleWriter writer;
     private final Fetch fetch;
     private final Clock clock;
+    private final boolean publicationEnabled;
 
     /** Production construction uses exactly the bounded Task 2 HTTP GET. */
     public CatalogueScheduleDispatcher(OwnedSyncStore store, CatalogueScheduleWriter writer,
                                        OwnedSyncHttpClient http, Clock clock) {
         this(store, writer, (endpoint, attempt) -> withRetryHint(
-                http.get(endpoint, attempt), http.nextAdmissionHint()), clock);
+                http.get(endpoint, attempt), http.nextAdmissionHint()), clock, true);
     }
 
     /** Minimal test seam; callers supply raw transport results, not a second queue or transport. */
     CatalogueScheduleDispatcher(OwnedSyncStore store, CatalogueScheduleWriter writer,
                                 Fetch fetch, Clock clock) {
+        this(store, writer, fetch, clock, true);
+    }
+
+    CatalogueScheduleDispatcher(OwnedSyncStore store, CatalogueScheduleWriter writer,
+                                Fetch fetch, Clock clock, boolean publicationEnabled) {
         this.store = Objects.requireNonNull(store);
-        this.writer = Objects.requireNonNull(writer);
+        this.writer = writer;
         this.fetch = Objects.requireNonNull(fetch);
         this.clock = Objects.requireNonNull(clock);
+        this.publicationEnabled = publicationEnabled;
+        if (publicationEnabled) Objects.requireNonNull(writer);
+    }
+
+    static CatalogueScheduleDispatcher staging(OwnedSyncStore store, OwnedSyncHttpClient http,
+                                                Clock clock) {
+        return new CatalogueScheduleDispatcher(store, null, (endpoint, attempt) -> withRetryHint(
+                http.get(endpoint, attempt), http.nextAdmissionHint()), clock, false);
+    }
+
+    public Run enqueueCatalogue(Season season, Instant dueAt) {
+        return store.enqueue(SyncKind.CATALOGUE_SCHEDULE, season.code(),
+                CATALOGUE_PRICE_COALESCING_KEY,
+                CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY, dueAt);
+    }
+
+    public Run enqueueSchedule(Season season, Instant dueAt) {
+        return store.enqueue(SyncKind.CATALOGUE_SCHEDULE, season.code(),
+                SCHEDULE_COALESCING_KEY, CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY, dueAt);
     }
 
     /** Enqueues the two independently fenced publication groups for one explicit cycle. */
     public Cycle enqueueCycle(Season season, Instant dueAt) {
         Objects.requireNonNull(season);
         Objects.requireNonNull(dueAt);
-        Run catalogue = store.enqueue(SyncKind.CATALOGUE_SCHEDULE, season.code(),
-                CATALOGUE_PRICE_COALESCING_KEY,
-                CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY, dueAt);
-        Run schedule = store.enqueue(SyncKind.CATALOGUE_SCHEDULE, season.code(),
-                SCHEDULE_COALESCING_KEY, CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY, dueAt);
+        Run catalogue = enqueueCatalogue(season, dueAt);
+        Run schedule = enqueueSchedule(season, dueAt);
         return new Cycle(catalogue, schedule);
     }
 
@@ -125,6 +147,19 @@ public final class CatalogueScheduleDispatcher {
     }
 
     private Outcome publish(Lease lease, Season season, Documents documents) {
+        if (!publicationEnabled) {
+            ReadInterval bootstrap = documents.bootstrap.readInterval();
+            ReadInterval fixtures = documents.fixtures.readInterval();
+            SourceRead combined = new SourceRead(
+                    bootstrap.startedAt().isBefore(fixtures.startedAt())
+                            ? bootstrap.startedAt() : fixtures.startedAt(),
+                    bootstrap.completedAt().isAfter(fixtures.completedAt())
+                            ? bootstrap.completedAt() : fixtures.completedAt());
+            store.completeStaged(lease, combined, List.of(
+                    new SourceRead(bootstrap.startedAt(), bootstrap.completedAt()),
+                    new SourceRead(fixtures.startedAt(), fixtures.completedAt())));
+            return Outcome.STAGED;
+        }
         if (CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY.equals(lease.publicationKey())) {
             writer.publishCataloguePriceForDemand(lease, season, documents.bootstrap, documents.fixtures);
         } else {
@@ -227,12 +262,12 @@ public final class CatalogueScheduleDispatcher {
         }
         if (result instanceof Failure failure) {
             if (failure.kind() == FailureKind.OVERSIZE) {
-                store.fail(lease, bounded(failure.message()));
+                store.failFetch(lease, bounded(failure.message()));
                 throw new Stopped(Outcome.FAILED);
             }
             Instant due = failure.nextDue() == null
                     ? clock.instant().plus(backoff(lease.attemptCount())) : failure.nextDue();
-            store.retry(lease, strictlyFuture(due), bounded(failure.message()));
+            store.retryFetchFailure(lease, strictlyFuture(due), bounded(failure.message()));
             throw new Stopped(Outcome.RETRY_SCHEDULED);
         }
 
@@ -243,12 +278,13 @@ public final class CatalogueScheduleDispatcher {
             if (response.statusCode() == 429 || response.statusCode() >= 500) {
                 Instant due = response.nextDue() == null
                         ? clock.instant().plus(backoff(lease.attemptCount())) : response.nextDue();
-                store.retry(lease, strictlyFuture(due), "Transient HTTP " + response.statusCode());
+                store.retryFetchFailure(lease, strictlyFuture(due), "Transient HTTP " + response.statusCode());
                 throw new Stopped(Outcome.RETRY_SCHEDULED);
             }
-            store.fail(lease, "Terminal HTTP " + response.statusCode());
+            store.failFetch(lease, "Terminal HTTP " + response.statusCode());
             throw new Stopped(Outcome.FAILED);
         }
+        store.recordFetchSuccess(lease);
         long id = store.stage(lease, endpoint, response.read(), Validation.unchecked(), response.body());
         return new FetchResult(lease, new StagedPayload(id, lease.generation(), endpoint.kind(),
                 response.read(), ValidationState.UNCHECKED, null, response.body()));
@@ -383,7 +419,7 @@ public final class CatalogueScheduleDispatcher {
         OwnedSyncHttpClient.Result get(Endpoint endpoint, int failureAttempt);
     }
 
-    public enum Outcome { PUBLISHED, RETRY_SCHEDULED, FAILED }
+    public enum Outcome { STAGED, PUBLISHED, RETRY_SCHEDULED, FAILED }
 
     public record Cycle(Run cataloguePrice, Run schedule) {
         public Cycle {

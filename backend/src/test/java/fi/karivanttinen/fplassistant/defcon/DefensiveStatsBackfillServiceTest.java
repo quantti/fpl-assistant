@@ -5,6 +5,13 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
+
+import fi.karivanttinen.fplassistant.historical.VaastavSource;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
  * Unit tests for the vaastav mapping. The CSV text is shaped like the real
@@ -115,5 +122,24 @@ class DefensiveStatsBackfillServiceTest {
     @Test
     void anEmptyFileYieldsNothing() {
         assertThat(DefensiveStatsBackfillService.toUpdates(HEADER, 3, "2025-26")).isEmpty();
+    }
+
+    @Test
+    void activeModeRejectsPlayingSeasonBeforeArchiveNetworkAccess() {
+        VaastavSource source = mock(VaastavSource.class);
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        when(jdbc.queryForList("SELECT code FROM season WHERE is_current=true", String.class))
+                .thenReturn(List.of("2026-27"));
+        var service = new DefensiveStatsBackfillService(source, jdbc, "ACTIVE");
+
+        assertThatThrownBy(() -> service.backfill("2026-27"))
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("playing season");
+        verifyNoInteractions(source);
+    }
+
+    @Test
+    void commaSeparatedBackfillRequestExposesEverySeasonForPrevalidation() {
+        assertThat(DefensiveStatsRunner.requestedSeasons(List.of("2024-25,2026-27", "2023-24")))
+                .containsExactly("2024-25", "2026-27", "2023-24");
     }
 }

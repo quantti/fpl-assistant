@@ -104,6 +104,25 @@ class SeasonBlendTest {
     }
 
     @Test
+    void missingCurrentAttackCannotBeInventedFromPreviousWeightedEvidence() {
+        Map<String, Object> cur = season(180, 2, 0.60, 0.20, 1.0, 9.0, 2);
+        cur.remove("xg90");
+        Map<String, Object> prev = season(2700, 30, 0.20, 0.10, 1.5, 6.0, 30);
+
+        SeasonBlend.Blended blended = SeasonBlend.blend(cur, prev);
+
+        assertThat(blended.metrics()).doesNotContainKey("xg90").containsKey("xa90");
+    }
+
+    @Test
+    void missingAttackWithoutPreviousRecordRemainsUnknown() {
+        Map<String, Object> cur = season(180, 2, 0.60, 0.20, 1.0, 9.0, 2);
+        cur.remove("xa90");
+
+        assertThat(SeasonBlend.blend(cur, null).metrics()).doesNotContainKey("xa90");
+    }
+
+    @Test
     void aKeyPresentOnOneSideOnlyIsTakenFromThatSide() {
         // xGC needs a 60-minute match; this season's minutes were all in cameos.
         Map<String, Object> cur = season(100, 0, 0.60, 0.20, null, null, 0);

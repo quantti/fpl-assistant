@@ -4289,3 +4289,39 @@ Verified: 103 frontend tests, `npm run build` (contrast check, `tsc -b`, Vite) a
 Chromium screenshots at 1280px and 375px in both schemes, with the sidebar overlay open, against
 the dev server with a stubbed session and no backend. Measured `.root` height unchanged after
 inserting 3000px of content, i.e. still height-bounded. Head to Head from the mockup is not built.
+
+## Owned matchday updates — code complete, not activated (2026-09-14)
+
+Tasks 4–10 code/local verification follow the foundation in PRs #91/#93. Full histories and DefCon,
+fixture-level stable-source verification, atomic publication/evidence, adaptive durable scheduling,
+reader masks and whole-club comparison refusals, watchdog/outbox and authenticated operations are
+implemented. OFF is still the default; no production writes, activation, Tapas disablement, secrets,
+role changes or real notification calls were performed. The separate Tapas compatibility/guard
+change is [PR #1](https://github.com/quantti/tapas-fpl-app/pull/1), defaulting core writes to true.
+
+Subagent implementations and independent review/fix rounds covered source contracts, publication
+races, retry/epoch fencing, pending/nullable metrics, derived jobs and notification recovery.
+Final serial review corrected cutover ordering (never require live owner publication before the
+old writer drains), preservation/revocation of receipts on rollback, and required season-row lock
+privileges in the review-only grant outline.
+
+Verification: 1132 backend tests, zero failures/errors/skips; 700 Tapas tests; 33 pre-push shell
+regressions. Fake-clock/FPL end-to-end coverage includes delayed finish, incomplete histories, 429,
+restart, independent fixture recovery, two stable batches, correction revocation and alert recovery.
+The 600-player/ten-fixture stress case demonstrates that desired cadence can exceed 5000 daily
+attempts: the ceiling defers work honestly, not an asserted freshness guarantee. Measure real
+throughput and backlog before activation. Tapas Ruff has no diagnostics on changed lines; 34
+existing diagnostics remain versus 38 in its base, and were not swept into this change.
+
+**Resource incident:** the owner reported three host crashes from memory exhaustion during the
+large implementation. No OOM-log root-cause proof was collected; final inspection did identify an
+idle project Gradle daemon retaining about 1.1 GiB, which was stopped. Finalization used no parallel
+agents/builds. Build/test heaps, worker count, Spring context cache and DB pools are now bounded;
+test Postgres buffers/connections are reduced. This WSL Docker cannot enforce container memory
+limits. A user-systemd cgroup-v2 scope did enforce a 1280 MiB limit: the full suite peaked at 1152
+MiB with at least 1889 MiB host memory available, and left no persistent Gradle daemon.
+
+**Still operationally gated:** owner-selected alert destination and delivery test, external monitor
+secrets, distinct reviewed DB roles, maintenance/drain evidence, current-season reconciliation and
+one observed real matchday. See `docs/OWNED-SYNC-OPERATIONS.md` and both updated plans. Linear access
+is unavailable in this harness, so no ticket identifier was invented or automatically closed.

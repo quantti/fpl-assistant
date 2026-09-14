@@ -21,6 +21,28 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 class DataAgeTest {
 
+    @Test
+    void ownedMetricRefreshUsesSourceAndPublicationTimesWithoutDatingLegacyRows() {
+        Instant source = Instant.parse("2026-09-13T20:00:00Z");
+        Instant published = Instant.parse("2026-09-13T20:15:00Z");
+        String line = DataAge.metricRefresh(
+                DataAge.Span.aggregate(source, source, 3, 2),
+                DataAge.Span.aggregate(published, published, 3, 2), 3);
+
+        assertThat(line).contains("2 verified owned row(s)", "source reads", "verified publications",
+                "1 legacy/uncovered row(s) retain unknown refresh");
+        assertThat(line).doesNotContain("player_fixture_stats.updated_at");
+    }
+
+    @Test
+    void scopedMetricRefreshNamesOnlyTheReturnedSeasonSample() {
+        String line = DataAge.metricRefresh("season 2026-27, returned sample",
+                DataAge.Span.of(List.of()), DataAge.Span.of(List.of()), 0);
+
+        assertThat(line).startsWith("Metric refresh: season 2026-27, returned sample;")
+                .contains("core-stat sync time");
+    }
+
     private static final Instant AS_OF = Instant.parse("2026-09-10T06:00:00Z"); // 07:00 BST
     private static TimeZone original;
 

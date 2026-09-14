@@ -38,22 +38,42 @@ public final class OwnedSyncStore {
     private final TransactionTemplate tx;
     private final Clock clock;
     private final OwnedSyncTables tables;
+    private final RuntimeFence runtimeFence;
 
+    /** Unfenced constructor retained for isolated store tooling; the owned runtime always supplies a fence. */
     public OwnedSyncStore(JdbcTemplate jdbc, TransactionTemplate tx, Clock clock, OwnedSyncTables tables) {
+        this(jdbc, tx, clock, tables, null);
+    }
+
+    public OwnedSyncStore(JdbcTemplate jdbc, TransactionTemplate tx, Clock clock,
+                          OwnedSyncTables tables, RuntimeFence runtimeFence) {
         this.jdbc = Objects.requireNonNull(jdbc);
         this.tx = Objects.requireNonNull(tx);
         this.clock = Objects.requireNonNull(clock);
         this.tables = Objects.requireNonNull(tables);
+        this.runtimeFence = runtimeFence;
     }
 
     public Run enqueue(SyncKind kind, String season, String coalescingKey,
                        String publicationKey, Instant dueAt) {
+        return enqueue(kind, season, coalescingKey, publicationKey, dueAt, true);
+    }
+
+    /** Keeps checkpoint source floors intact when merely reflecting an already durable retry. */
+    public Run enqueuePreservingActiveDemand(SyncKind kind, String season, String coalescingKey,
+                                             String publicationKey, Instant dueAt) {
+        return enqueue(kind, season, coalescingKey, publicationKey, dueAt, false);
+    }
+
+    private Run enqueue(SyncKind kind, String season, String coalescingKey,
+                        String publicationKey, Instant dueAt, boolean advanceActiveDemand) {
         Objects.requireNonNull(kind);
         String validSeason = bounded("season", season, 10);
         String validCoalescingKey = bounded("coalescingKey", coalescingKey, 200);
         String validPublicationKey = bounded("publicationKey", publicationKey, 200);
         Objects.requireNonNull(dueAt);
         return tx.execute(status -> {
+            assertRuntimeFence(validSeason);
             Instant enqueuedAt = now();
             Instant requestedSourceAfter = dueAt.isAfter(enqueuedAt) ? dueAt : enqueuedAt;
             jdbc.update("INSERT INTO %s(season, publication_key) VALUES (?, ?) ON CONFLICT DO NOTHING"
@@ -62,20 +82,23 @@ public final class OwnedSyncStore {
             try {
                 result = jdbc.queryForObject("""
                     INSERT INTO %s(kind, season, coalescing_key, publication_key, priority,
-                                   due_at, requested_source_after, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                   due_at, requested_source_after, runtime_mode, runtime_epoch,
+                                   created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT (kind, season, coalescing_key)
                         WHERE state IN ('PENDING', 'LEASED')
                     DO UPDATE SET due_at = LEAST(%s.due_at, EXCLUDED.due_at),
-                                  requested_source_after = GREATEST(
-                                      %s.requested_source_after, EXCLUDED.requested_source_after),
+                                  requested_source_after = CASE WHEN ? THEN GREATEST(
+                                      %s.requested_source_after, EXCLUDED.requested_source_after)
+                                      ELSE %s.requested_source_after END,
                                   updated_at = EXCLUDED.updated_at
                     WHERE %s.publication_key = EXCLUDED.publication_key
                     RETURNING generation, kind, season, coalescing_key, publication_key,
                               due_at, state, attempt_count
-                    """.formatted(tables.run(), tables.run(), tables.run(), tables.run()), this::run,
+                    """.formatted(tables.run(), tables.run(), tables.run(), tables.run(), tables.run()), this::run,
                         kind.name(), validSeason, validCoalescingKey, validPublicationKey, kind.priority,
-                        timestamp(dueAt), timestamp(requestedSourceAfter), timestamp(enqueuedAt), timestamp(enqueuedAt));
+                        timestamp(dueAt), timestamp(requestedSourceAfter), runtimeMode(), runtimeEpoch(),
+                        timestamp(enqueuedAt), timestamp(enqueuedAt), advanceActiveDemand);
             } catch (EmptyResultDataAccessException e) {
                 throw new IllegalArgumentException(
                         "Active coalescing key is already bound to a different publicationKey");
@@ -84,22 +107,56 @@ public final class OwnedSyncStore {
         });
     }
 
+    /** Executes a non-run runtime mutation while holding the durable activation fence. */
+    public <T> T withinRuntimeFence(Supplier<T> callback) {
+        Objects.requireNonNull(callback);
+        if (runtimeFence == null) return callback.get();
+        return tx.execute(status -> {
+            assertRuntimeFence(runtimeFence.season());
+            return callback.get();
+        });
+    }
+
     /** Claims one due run. Priority, due time and generation make selection deterministic. */
     public Optional<Lease> acquire(String owner, Duration duration) {
+        return acquire(owner, duration, null);
+    }
+
+    /** Claims one due run for an explicitly configured season without consuming archived backlog. */
+    public Optional<Lease> acquireForSeason(String season, String owner, Duration duration) {
+        return acquire(owner, duration, bounded("season", season, 10));
+    }
+
+    private Optional<Lease> acquire(String owner, Duration duration, String season) {
         String validOwner = bounded("owner", owner, 128);
         Duration validDuration = leaseDuration(duration);
         Instant now = now();
         return tx.execute(status -> {
+            if (runtimeFence != null) assertRuntimeFence(runtimeFence.season());
             Long generation;
             try {
-                generation = jdbc.queryForObject("""
+                String seasonFilter = season == null ? "" : " AND season = ?";
+                String fenceFilter = runtimeFence == null
+                        ? " AND runtime_mode = 'OFF' AND runtime_epoch = 0"
+                        : " AND runtime_mode = ? AND runtime_epoch = ?";
+                String sql = """
                         SELECT generation FROM %s
-                        WHERE due_at <= ?
+                        WHERE due_at <= ?%s%s
                           AND (state = 'PENDING'
                                OR (state = 'LEASED' AND lease_expires_at <= ?))
                         ORDER BY priority, due_at, generation
                         LIMIT 1 FOR UPDATE SKIP LOCKED
-                        """.formatted(tables.run()), Long.class, timestamp(now), timestamp(now));
+                        """.formatted(tables.run(), seasonFilter, fenceFilter);
+                if (runtimeFence == null) {
+                    generation = season == null
+                            ? jdbc.queryForObject(sql, Long.class, timestamp(now), timestamp(now))
+                            : jdbc.queryForObject(sql, Long.class, timestamp(now), season, timestamp(now));
+                } else {
+                    generation = season == null
+                            ? jdbc.queryForObject(sql, Long.class, timestamp(now), runtimeMode(), runtimeEpoch(), timestamp(now))
+                            : jdbc.queryForObject(sql, Long.class, timestamp(now), season,
+                                    runtimeMode(), runtimeEpoch(), timestamp(now));
+                }
             } catch (EmptyResultDataAccessException e) {
                 return Optional.empty();
             }
@@ -189,18 +246,67 @@ public final class OwnedSyncStore {
 
     /** Returns the latest staged public response for this run while proving the lease is current. */
     public Optional<StagedPayload> latestStagedPublicPayload(Lease lease, Endpoint endpoint) {
-        Objects.requireNonNull(endpoint);
         requirePublicEndpoint(endpoint);
+        return latestStagedPayload(lease, endpoint);
+    }
+
+    /** Returns only an exact endpoint match; event/player ids can never alias another payload. */
+    public Optional<StagedPayload> latestStagedPayload(Lease lease, Endpoint endpoint) {
+        Objects.requireNonNull(endpoint);
+        validateEndpoint(endpoint);
         return tx.execute(status -> {
             lockAndValidate(lease);
             return jdbc.query("""
                     SELECT id, run_generation, endpoint_kind, read_started_at, read_finished_at,
                            validation_state, validation_error, body
                     FROM %s WHERE run_generation = ? AND endpoint_kind = ?
+                      AND event_id IS NOT DISTINCT FROM ? AND player_id IS NOT DISTINCT FROM ?
                     ORDER BY id DESC LIMIT 1
-                    """.formatted(tables.payload()), this::stagedPayload,
-                    lease.generation(), endpoint.kind().name()).stream().findFirst();
+                    """.formatted(tables.payload()), this::stagedPayload, lease.generation(),
+                    endpoint.kind().name(), endpoint.eventId(), endpoint.playerId()).stream().findFirst();
         });
+    }
+
+    /** Returns the latest exact endpoint payload in one validation state. */
+    public Optional<StagedPayload> latestStagedPayload(Lease lease, Endpoint endpoint,
+                                                        ValidationState state) {
+        Objects.requireNonNull(endpoint);
+        Objects.requireNonNull(state);
+        validateEndpoint(endpoint);
+        return tx.execute(status -> {
+            lockAndValidate(lease);
+            return jdbc.query("""
+                    SELECT id, run_generation, endpoint_kind, read_started_at, read_finished_at,
+                           validation_state, validation_error, body
+                    FROM %s WHERE run_generation = ? AND endpoint_kind = ?
+                      AND event_id IS NOT DISTINCT FROM ? AND player_id IS NOT DISTINCT FROM ?
+                      AND validation_state = ? ORDER BY id DESC LIMIT 1
+                    """.formatted(tables.payload()), this::stagedPayload, lease.generation(),
+                    endpoint.kind().name(), endpoint.eventId(), endpoint.playerId(), state.name())
+                    .stream().findFirst();
+        });
+    }
+
+    /** Latest reusable validated response for one exact endpoint, season and source-read floor. */
+    public Optional<StagedPayload> latestValidPayload(String season, Endpoint endpoint,
+                                                       Instant requestedSourceAfter) {
+        String validSeason = bounded("season", season, 10);
+        Objects.requireNonNull(endpoint);
+        Objects.requireNonNull(requestedSourceAfter);
+        validateEndpoint(endpoint);
+        return jdbc.query("""
+                SELECT p.id, p.run_generation, p.endpoint_kind, p.read_started_at,
+                       p.read_finished_at, p.validation_state, p.validation_error, p.body
+                FROM %s p JOIN %s r ON r.generation=p.run_generation
+                WHERE r.season=? AND p.endpoint_kind=?
+                  AND p.event_id IS NOT DISTINCT FROM ? AND p.player_id IS NOT DISTINCT FROM ?
+                  AND p.validation_state='VALID' AND p.read_started_at >= ?
+                  AND (? = FALSE OR (r.runtime_mode=? AND r.runtime_epoch=?))
+                ORDER BY p.read_finished_at DESC, p.id DESC LIMIT 1
+                """.formatted(tables.payload(), tables.run()), this::stagedPayload, validSeason,
+                endpoint.kind().name(), endpoint.eventId(), endpoint.playerId(),
+                timestamp(requestedSourceAfter), runtimeFence != null,
+                runtimeMode(), runtimeEpoch()).stream().findFirst();
     }
 
     /**
@@ -228,12 +334,14 @@ public final class OwnedSyncStore {
                     ORDER BY p.id DESC LIMIT 1
                 ) f ON TRUE
                 WHERE r.kind = 'CATALOGUE_SCHEDULE' AND r.season = ?
+                  AND (? = FALSE OR (r.runtime_mode=? AND r.runtime_epoch=?))
                 ORDER BY GREATEST(b.read_finished_at, f.read_finished_at) DESC, r.generation DESC
                 LIMIT ?
                 """.formatted(tables.run(), tables.payload(), tables.payload()), (rs, row) ->
                 new PublicPayloadPair(rs.getLong("generation"),
                         stagedPayload(rs, "b", EndpointKind.BOOTSTRAP_STATIC),
-                        stagedPayload(rs, "f", EndpointKind.FIXTURES)), validSeason, limit);
+                        stagedPayload(rs, "f", EndpointKind.FIXTURES)), validSeason,
+                runtimeFence != null, runtimeMode(), runtimeEpoch(), limit);
     }
 
     /** Changes validation only for payloads owned by the current fenced run. */
@@ -273,22 +381,57 @@ public final class OwnedSyncStore {
                 validSeason, validKey).stream().findFirst();
     }
 
-    /**
-     * Runs a database-only publication callback and records completion in the same transaction.
-     * The callback must perform no network I/O. Any exception rolls back callback writes, receipt
-     * advancement and completion together.
-     */
+    /** Completes validated staging without invoking a publisher or advancing a publication receipt. */
+    public void completeStaged(Lease lease, SourceRead read, List<SourceRead> demandReads) {
+        Objects.requireNonNull(read);
+        Objects.requireNonNull(demandReads);
+        if (demandReads.stream().anyMatch(Objects::isNull)) {
+            throw new IllegalArgumentException("demand reads cannot contain null");
+        }
+        tx.executeWithoutResult(status -> {
+            LockedRun run = lockAndValidate(lease);
+            Instant requestedAfter = jdbc.queryForObject(
+                    "SELECT requested_source_after FROM %s WHERE generation = ?"
+                            .formatted(tables.run()), Timestamp.class, lease.generation()).toInstant();
+            if (demandReads.stream().anyMatch(source -> source.startedAt().isBefore(requestedAfter))) {
+                throw new SourceDemandAdvancedException(lease.generation(), requestedAfter);
+            }
+            Instant completedAt = now();
+            requireNotExpired(run, completedAt);
+            requireReadNotFuture(read, completedAt);
+            jdbc.update("""
+                    UPDATE %s SET state = 'COMPLETED', lease_owner = NULL, lease_token = NULL,
+                        lease_expires_at = NULL, source_read_started_at = ?, source_read_finished_at = ?,
+                        last_error = NULL, completed_at = ?, updated_at = ? WHERE generation = ?
+                    """.formatted(tables.run()), timestamp(read.startedAt()), timestamp(read.finishedAt()),
+                    timestamp(completedAt), timestamp(completedAt), lease.generation());
+        });
+    }
+
+    /** Runs a database-only publication callback and advances the receipt on success. */
     public <T> T publish(Lease lease, SourceRead read, Supplier<T> callback) {
         return publish(lease, read, List.of(), callback);
     }
 
-    /**
-     * Publishes only if every supplied source request began at or after the run's current durable
-     * demand floor. The run lock makes this check atomic with completion against concurrent
-     * coalescing; a newer demand can therefore never be hidden by an in-flight older fetch.
-     */
     public <T> T publish(Lease lease, SourceRead read, List<SourceRead> demandReads,
                          Supplier<T> callback) {
+        Objects.requireNonNull(callback);
+        return publishConditionally(lease, read, demandReads,
+                () -> ConditionalPublication.published(callback.get()));
+    }
+
+    /**
+     * Invokes one database-only callback exactly once while holding the run and publication receipt
+     * locks. Both publication and durable non-publication outcomes complete the run atomically;
+     * only a published outcome advances the receipt. Any exception rolls everything back.
+     */
+    public <T> T publishConditionally(Lease lease, SourceRead read,
+                                      Supplier<ConditionalPublication<T>> callback) {
+        return publishConditionally(lease, read, List.of(), callback);
+    }
+
+    public <T> T publishConditionally(Lease lease, SourceRead read, List<SourceRead> demandReads,
+                                      Supplier<ConditionalPublication<T>> callback) {
         Objects.requireNonNull(read);
         Objects.requireNonNull(demandReads);
         Objects.requireNonNull(callback);
@@ -307,55 +450,75 @@ public final class OwnedSyncStore {
                     SELECT latest_generation FROM %s
                     WHERE season = ? AND publication_key = ? FOR UPDATE
                     """.formatted(tables.receipt()), Long.class, run.season, run.publicationKey);
-            // The receipt lock may have blocked. Expiry is checked again at the last boundary
-            // before user publication code can run.
-            Instant publicationStartedAt = now();
-            requireNotExpired(run, publicationStartedAt);
-            requireReadNotFuture(read, publicationStartedAt);
+            Instant callbackStartedAt = now();
+            requireNotExpired(run, callbackStartedAt);
+            requireReadNotFuture(read, callbackStartedAt);
             if (latest != null && latest >= run.generation) {
                 throw new StaleGenerationException(run.generation, latest, run.season, run.publicationKey);
             }
-            T result = callback.get();
-            Instant publishedAt = now();
-            // A callback is database-only and expected to be short, but expiry is still a hard
-            // commit fence: rolling the transaction back is safer than publishing after loss.
-            requireNotExpired(run, publishedAt);
-            jdbc.update("""
-                    UPDATE %s SET latest_generation = ?, source_read_started_at = ?,
-                        source_read_finished_at = ?, published_at = ?
-                    WHERE season = ? AND publication_key = ?
-                    """.formatted(tables.receipt()), run.generation, timestamp(read.startedAt()),
-                    timestamp(read.finishedAt()), timestamp(publishedAt), run.season, run.publicationKey);
+            ConditionalPublication<T> outcome = Objects.requireNonNull(callback.get(), "callback outcome");
+            Instant completedAt = now();
+            requireNotExpired(run, completedAt);
+            if (outcome.published()) {
+                jdbc.update("""
+                        UPDATE %s SET latest_generation = ?, source_read_started_at = ?,
+                            source_read_finished_at = ?, published_at = ?
+                        WHERE season = ? AND publication_key = ?
+                        """.formatted(tables.receipt()), run.generation, timestamp(read.startedAt()),
+                        timestamp(read.finishedAt()), timestamp(completedAt), run.season, run.publicationKey);
+            }
             jdbc.update("""
                     UPDATE %s SET state = 'COMPLETED', lease_owner = NULL, lease_token = NULL,
                         lease_expires_at = NULL, source_read_started_at = ?, source_read_finished_at = ?,
                         last_error = NULL, completed_at = ?, updated_at = ? WHERE generation = ?
                     """.formatted(tables.run()), timestamp(read.startedAt()), timestamp(read.finishedAt()),
-                    timestamp(publishedAt), timestamp(publishedAt), run.generation);
-            return result;
+                    timestamp(completedAt), timestamp(completedAt), run.generation);
+            return outcome.value();
         });
     }
 
+    /** Requeues work without treating admission or scheduling delay as a failed source fetch. */
     public void retry(Lease lease, Instant dueAt, String error) {
-        finishAttempt(lease, dueAt, error, false);
+        finishAttempt(lease, dueAt, error, false, false);
+    }
+
+    /** Requeues a real source failure and durably advances its consecutive-failure count. */
+    public void retryFetchFailure(Lease lease, Instant dueAt, String error) {
+        finishAttempt(lease, dueAt, error, false, true);
     }
 
     public void fail(Lease lease, String error) {
-        finishAttempt(lease, null, error, true);
+        finishAttempt(lease, null, error, true, false);
     }
 
-    private void finishAttempt(Lease lease, Instant dueAt, String error, boolean terminal) {
+    public void failFetch(Lease lease, String error) {
+        finishAttempt(lease, null, error, true, true);
+    }
+
+    /** A successful source response ends the consecutive failure sequence before later processing. */
+    public void recordFetchSuccess(Lease lease) {
+        tx.executeWithoutResult(status -> {
+            lockAndValidate(lease);
+            jdbc.update("UPDATE %s SET consecutive_fetch_failures=0 WHERE generation=?"
+                    .formatted(tables.run()), lease.generation());
+        });
+    }
+
+    private void finishAttempt(Lease lease, Instant dueAt, String error,
+                               boolean terminal, boolean fetchFailure) {
         if (!terminal) Objects.requireNonNull(dueAt);
         tx.executeWithoutResult(status -> {
             lockAndValidate(lease);
             Instant failedAt = now();
             jdbc.update("""
                     UPDATE %s SET state = ?, due_at = COALESCE(?, due_at), last_error = ?,
-                        failed_at = ?, lease_owner = NULL, lease_token = NULL,
+                        failed_at = ?, consecutive_fetch_failures = consecutive_fetch_failures + ?,
+                        lease_owner = NULL, lease_token = NULL,
                         lease_expires_at = NULL, updated_at = ? WHERE generation = ?
                     """.formatted(tables.run()), terminal ? "FAILED" : "PENDING",
                     dueAt == null ? null : timestamp(dueAt), boundedNullable(error, MAX_ERROR_CHARS),
-                    terminal ? timestamp(failedAt) : null, timestamp(failedAt), lease.generation());
+                    terminal ? timestamp(failedAt) : null, fetchFailure ? 1 : 0,
+                    timestamp(failedAt), lease.generation());
         });
     }
 
@@ -374,15 +537,25 @@ public final class OwnedSyncStore {
 
     private LockedRun lockAndValidate(Lease lease) {
         Objects.requireNonNull(lease);
+        assertRuntimeFence(lease.season());
         LockedRun run;
         try {
             run = jdbc.queryForObject("""
                     SELECT generation, kind, season, coalescing_key, publication_key, state,
-                           lease_owner, lease_token, lease_fence, lease_expires_at, attempt_count
+                           lease_owner, lease_token, lease_fence, lease_expires_at, attempt_count,
+                           runtime_mode, runtime_epoch
                     FROM %s WHERE generation = ? FOR UPDATE
                     """.formatted(tables.run()), this::lockedRun, lease.generation());
         } catch (EmptyResultDataAccessException e) {
             throw new LeaseLostException("Run no longer exists: " + lease.generation());
+        }
+        if (runtimeFence == null && (!OwnedSyncMode.OFF.name().equals(run.runtimeMode)
+                || run.runtimeEpoch != 0)) {
+            throw new RuntimeFenceLostException("A runtime-bound run requires its activation fence");
+        }
+        if (runtimeFence != null && (!runtimeFence.mode().name().equals(run.runtimeMode)
+                || runtimeFence.epoch() != run.runtimeEpoch)) {
+            throw new RuntimeFenceLostException("Run belongs to another owned-sync activation");
         }
         if (!"LEASED".equals(run.state)
                 || !lease.owner().equals(run.owner)
@@ -425,7 +598,8 @@ public final class OwnedSyncStore {
         return new LockedRun(rs.getLong("generation"), SyncKind.valueOf(rs.getString("kind")),
                 rs.getString("season"), rs.getString("coalescing_key"), rs.getString("publication_key"),
                 rs.getString("state"), rs.getString("lease_owner"), rs.getObject("lease_token", UUID.class),
-                rs.getLong("lease_fence"), instant(rs, "lease_expires_at"), rs.getInt("attempt_count"));
+                rs.getLong("lease_fence"), instant(rs, "lease_expires_at"), rs.getInt("attempt_count"),
+                rs.getString("runtime_mode"), rs.getLong("runtime_epoch"));
     }
 
     private StagedPayload stagedPayload(ResultSet rs, int row) throws SQLException {
@@ -446,6 +620,27 @@ public final class OwnedSyncStore {
     private static Instant instant(ResultSet rs, String column) throws SQLException {
         Timestamp value = rs.getTimestamp(column);
         return value == null ? null : value.toInstant();
+    }
+
+    private void assertRuntimeFence(String season) {
+        if (runtimeFence == null) return;
+        if (!runtimeFence.season().equals(season)) {
+            throw new RuntimeFenceLostException("Runtime is not activated for season " + season);
+        }
+        List<Long> epochs = jdbc.query("SELECT runtime_epoch FROM " + tables.plannerRuntime()
+                        + " WHERE instance_id=? AND runtime_mode=? FOR UPDATE",
+                (rs, row) -> rs.getLong(1), "mode:" + season, runtimeFence.mode().name());
+        if (epochs.size() != 1 || epochs.getFirst() != runtimeFence.epoch()) {
+            throw new RuntimeFenceLostException("Owned-sync runtime fence is no longer current for " + season);
+        }
+    }
+
+    private String runtimeMode() {
+        return runtimeFence == null ? OwnedSyncMode.OFF.name() : runtimeFence.mode().name();
+    }
+
+    private long runtimeEpoch() {
+        return runtimeFence == null ? 0 : runtimeFence.epoch();
     }
 
     private Instant now() {
@@ -526,6 +721,24 @@ public final class OwnedSyncStore {
         public static Validation invalid(String error) { return new Validation(ValidationState.INVALID, error); }
     }
 
+    public record ConditionalPublication<T>(T value, boolean published) {
+        public static <T> ConditionalPublication<T> published(T value) {
+            return new ConditionalPublication<>(value, true);
+        }
+        public static <T> ConditionalPublication<T> pending(T value) {
+            return new ConditionalPublication<>(value, false);
+        }
+    }
+
+    public record RuntimeFence(String season, OwnedSyncMode mode, long epoch, Instant sourceBoundary) {
+        public RuntimeFence {
+            bounded("season", season, 10);
+            Objects.requireNonNull(mode);
+            Objects.requireNonNull(sourceBoundary);
+            if (mode == OwnedSyncMode.OFF || epoch <= 0) throw new IllegalArgumentException("invalid runtime fence");
+        }
+    }
+
     public record Run(long generation, SyncKind kind, String season, String coalescingKey,
                       String publicationKey, Instant dueAt, RunState state, int attemptCount) { }
 
@@ -561,10 +774,15 @@ public final class OwnedSyncStore {
 
     private record LockedRun(long generation, SyncKind kind, String season, String coalescingKey,
                              String publicationKey, String state, String owner, UUID token,
-                             long fence, Instant expiresAt, int attemptCount) { }
+                             long fence, Instant expiresAt, int attemptCount,
+                             String runtimeMode, long runtimeEpoch) { }
 
-    public static final class LeaseLostException extends IllegalStateException {
+    public static class LeaseLostException extends IllegalStateException {
         public LeaseLostException(String message) { super(message); }
+    }
+
+    public static final class RuntimeFenceLostException extends LeaseLostException {
+        public RuntimeFenceLostException(String message) { super(message); }
     }
 
     public static final class SourceDemandAdvancedException extends IllegalStateException {

@@ -48,8 +48,11 @@ public final class OwnedSyncSchema {
                     priority SMALLINT NOT NULL,
                     due_at TIMESTAMPTZ NOT NULL,
                     requested_source_after TIMESTAMPTZ NOT NULL,
+                    runtime_mode VARCHAR(16) NOT NULL DEFAULT 'OFF',
+                    runtime_epoch BIGINT NOT NULL DEFAULT 0,
                     state VARCHAR(20) NOT NULL DEFAULT 'PENDING',
                     attempt_count INTEGER NOT NULL DEFAULT 0,
+                    consecutive_fetch_failures INTEGER NOT NULL DEFAULT 0,
                     last_attempt_at TIMESTAMPTZ,
                     lease_owner VARCHAR(128),
                     lease_token UUID,
@@ -82,6 +85,16 @@ public final class OwnedSyncSchema {
                 .formatted(tables.run()) + "WHERE requested_source_after IS NULL");
         jdbc.execute("ALTER TABLE %s ALTER COLUMN requested_source_after SET NOT NULL"
                 .formatted(tables.run()));
+        jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS runtime_mode VARCHAR(16)"
+                .formatted(tables.run()));
+        jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS runtime_epoch BIGINT"
+                .formatted(tables.run()));
+        jdbc.execute("UPDATE %s SET runtime_mode=COALESCE(runtime_mode, 'OFF'), "
+                .formatted(tables.run()) + "runtime_epoch=COALESCE(runtime_epoch, 0)");
+        jdbc.execute("ALTER TABLE %s ALTER COLUMN runtime_mode SET DEFAULT 'OFF'".formatted(tables.run()));
+        jdbc.execute("ALTER TABLE %s ALTER COLUMN runtime_epoch SET DEFAULT 0".formatted(tables.run()));
+        jdbc.execute("ALTER TABLE %s ALTER COLUMN runtime_mode SET NOT NULL".formatted(tables.run()));
+        jdbc.execute("ALTER TABLE %s ALTER COLUMN runtime_epoch SET NOT NULL".formatted(tables.run()));
         jdbc.execute("ALTER TABLE %s DROP CONSTRAINT IF EXISTS fk_%s_receipt"
                 .formatted(tables.run(), tables.run()));
         jdbc.execute("ALTER TABLE %s ADD CONSTRAINT fk_%s_receipt FOREIGN KEY (season, publication_key) "
@@ -157,11 +170,245 @@ public final class OwnedSyncSchema {
                         .formatted(tables.requestAttempt(), tables.requestAttempt())
                         + "WHERE completed_at IS NULL OR hold_until_expiry");
 
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS %s (
+                    season_id INTEGER NOT NULL REFERENCES season(id),
+                    season_code VARCHAR(10) NOT NULL,
+                    fixture_id INTEGER NOT NULL,
+                    state VARCHAR(24) NOT NULL,
+                    observation JSONB,
+                    observation_generation BIGINT REFERENCES %s(generation),
+                    current_verified_generation BIGINT REFERENCES %s(generation),
+                    last_verified_generation BIGINT REFERENCES %s(generation),
+                    verified_header VARCHAR(64),
+                    verified_stats_fingerprint VARCHAR(64),
+                    last_verified_at TIMESTAMPTZ,
+                    first_verified_at TIMESTAMPTZ,
+                    first_finished_observed_at TIMESTAMPTZ,
+                    data_checked_transition_at TIMESTAMPTZ,
+                    last_data_checked BOOLEAN NOT NULL DEFAULT FALSE,
+                    expected_participants INTEGER,
+                    received_participants INTEGER,
+                    missing_player_ids INTEGER[] NOT NULL DEFAULT '{}',
+                    validation_failures TEXT[] NOT NULL DEFAULT '{}',
+                    source_read_started_at TIMESTAMPTZ,
+                    source_read_finished_at TIMESTAMPTZ,
+                    next_due_at TIMESTAMPTZ,
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    last_error VARCHAR(1000),
+                    alert_state VARCHAR(24) NOT NULL DEFAULT 'NONE',
+                    updated_at TIMESTAMPTZ NOT NULL,
+                    PRIMARY KEY (season_id, fixture_id),
+                    CONSTRAINT ck_%s_state CHECK (state IN
+                        ('SCHEDULED', 'IN_PLAY', 'WAITING_FINISH', 'WAITING_STATS', 'VERIFYING', 'VERIFIED')),
+                    CONSTRAINT ck_%s_counts CHECK (
+                        (expected_participants IS NULL OR expected_participants >= 0)
+                        AND (received_participants IS NULL OR received_participants >= 0)),
+                    CONSTRAINT ck_%s_read_interval CHECK (
+                        source_read_started_at IS NULL OR source_read_finished_at IS NULL
+                        OR source_read_started_at <= source_read_finished_at),
+                    CONSTRAINT ck_%s_verified CHECK (
+                        (state = 'VERIFIED') = (current_verified_generation IS NOT NULL))
+                )
+                """.formatted(tables.fixtureSync(), tables.run(), tables.run(), tables.run(),
+                tables.fixtureSync(), tables.fixtureSync(), tables.fixtureSync(), tables.fixtureSync()));
+        jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS verified_header VARCHAR(64)"
+                .formatted(tables.fixtureSync()));
+        jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS verified_stats_fingerprint VARCHAR(64)"
+                .formatted(tables.fixtureSync()));
+        jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS last_verified_at TIMESTAMPTZ"
+                .formatted(tables.fixtureSync()));
+        jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS first_verified_at TIMESTAMPTZ"
+                .formatted(tables.fixtureSync()));
+        jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS first_finished_observed_at TIMESTAMPTZ"
+                .formatted(tables.fixtureSync()));
+        jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS data_checked_transition_at TIMESTAMPTZ"
+                .formatted(tables.fixtureSync()));
+        jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS last_data_checked BOOLEAN NOT NULL DEFAULT FALSE"
+                .formatted(tables.fixtureSync()));
+        jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS missing_player_ids INTEGER[] NOT NULL DEFAULT '{}'"
+                .formatted(tables.fixtureSync()));
+        jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS next_due_at TIMESTAMPTZ"
+                .formatted(tables.fixtureSync()));
+        jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS attempt_count INTEGER NOT NULL DEFAULT 0"
+                .formatted(tables.fixtureSync()));
+        jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS consecutive_fetch_failures INTEGER NOT NULL DEFAULT 0"
+                .formatted(tables.run()));
+        jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS last_error VARCHAR(1000)"
+                .formatted(tables.fixtureSync()));
+        jdbc.execute("CREATE INDEX IF NOT EXISTS idx_%s_due ON %s(next_due_at)"
+                .formatted(tables.fixtureSync(), tables.fixtureSync()));
+
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS %s (
+                    season_id INTEGER NOT NULL,
+                    season_code VARCHAR(10) NOT NULL,
+                    player_id INTEGER NOT NULL,
+                    fixture_id INTEGER NOT NULL,
+                    fingerprint VARCHAR(64) NOT NULL,
+                    source_read_finished_at TIMESTAMPTZ NOT NULL,
+                    updated_at TIMESTAMPTZ NOT NULL,
+                    PRIMARY KEY (season_id, player_id, fixture_id)
+                )
+                """.formatted(tables.historyFingerprint()));
+        for (String constraint : jdbc.queryForList("""
+                SELECT conname FROM pg_constraint WHERE conrelid=?::regclass AND contype='f'
+                """, String.class, tables.historyFingerprint())) {
+            jdbc.execute("ALTER TABLE %s DROP CONSTRAINT %s"
+                    .formatted(tables.historyFingerprint(), constraint));
+        }
+
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS %s (
+                    season_id INTEGER NOT NULL REFERENCES season(id),
+                    season_code VARCHAR(10) NOT NULL,
+                    fixture_id INTEGER NOT NULL,
+                    player_id INTEGER NOT NULL,
+                    generation BIGINT NOT NULL REFERENCES %s(generation),
+                    component_presence BIGINT NOT NULL,
+                    source_read_started_at TIMESTAMPTZ NOT NULL,
+                    source_read_finished_at TIMESTAMPTZ NOT NULL,
+                    PRIMARY KEY (season_id, fixture_id, player_id, generation),
+                    CONSTRAINT ck_%s_identity CHECK (
+                        length(season_code) > 0
+                        AND fixture_id > 0 AND player_id > 0 AND generation > 0),
+                    CONSTRAINT ck_%s_components CHECK (
+                        component_presence >= 0 AND component_presence <= %d),
+                    CONSTRAINT ck_%s_read_interval CHECK (
+                        source_read_started_at <= source_read_finished_at)
+                )
+                """.formatted(tables.playerFixtureEvidence(), tables.run(),
+                tables.playerFixtureEvidence(), tables.playerFixtureEvidence(),
+                HistoryParser.Component.allMask(), tables.playerFixtureEvidence()));
+        jdbc.execute("""
+                CREATE OR REPLACE FUNCTION fpl_validate_evidence_season() RETURNS trigger AS $$
+                BEGIN
+                    IF NOT EXISTS (SELECT 1 FROM season
+                                   WHERE id = NEW.season_id AND code = NEW.season_code) THEN
+                        RAISE EXCEPTION 'player-fixture evidence season id/code mismatch';
+                    END IF;
+                    RETURN NEW;
+                END;
+                $$ LANGUAGE plpgsql
+                """);
+        jdbc.execute("DROP TRIGGER IF EXISTS trg_validate_evidence_season ON "
+                + tables.playerFixtureEvidence());
+        jdbc.execute("CREATE TRIGGER trg_validate_evidence_season BEFORE INSERT ON "
+                + tables.playerFixtureEvidence()
+                + " FOR EACH ROW EXECUTE FUNCTION fpl_validate_evidence_season()");
+        jdbc.execute("""
+                CREATE OR REPLACE FUNCTION fpl_reject_evidence_mutation() RETURNS trigger AS $$
+                BEGIN
+                    RAISE EXCEPTION 'player-fixture evidence is immutable; publish a new generation';
+                END;
+                $$ LANGUAGE plpgsql
+                """);
+        jdbc.execute("DROP TRIGGER IF EXISTS trg_immutable_evidence ON "
+                + tables.playerFixtureEvidence());
+        jdbc.execute("CREATE TRIGGER trg_immutable_evidence BEFORE UPDATE OR DELETE ON "
+                + tables.playerFixtureEvidence()
+                + " FOR EACH ROW EXECUTE FUNCTION fpl_reject_evidence_mutation()");
+
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS %s (
+                    slot_id VARCHAR(300) PRIMARY KEY,
+                    season VARCHAR(10) NOT NULL,
+                    kind VARCHAR(40) NOT NULL,
+                    due_at TIMESTAMPTZ NOT NULL,
+                    fixture_ids INTEGER[] NOT NULL,
+                    player_ids INTEGER[] NOT NULL,
+                    reason VARCHAR(40) NOT NULL,
+                    estimated_requests INTEGER NOT NULL,
+                    enqueued_at TIMESTAMPTZ NOT NULL,
+                    CONSTRAINT ck_%s_estimate CHECK (estimated_requests >= 0)
+                )
+                """.formatted(tables.plannerSlot(), tables.plannerSlot()));
+        jdbc.execute("CREATE INDEX IF NOT EXISTS idx_%s_season_due ON %s(season, due_at)"
+                .formatted(tables.plannerSlot(), tables.plannerSlot()));
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS %s (
+                    instance_id VARCHAR(128) PRIMARY KEY,
+                    started_at TIMESTAMPTZ NOT NULL,
+                    heartbeat_at TIMESTAMPTZ NOT NULL,
+                    last_error VARCHAR(1000),
+                    last_error_at TIMESTAMPTZ,
+                    runtime_mode VARCHAR(16),
+                    runtime_epoch BIGINT NOT NULL DEFAULT 0,
+                    activation_boundary TIMESTAMPTZ,
+                    CONSTRAINT ck_%s_error CHECK ((last_error IS NULL) = (last_error_at IS NULL))
+                )
+                """.formatted(tables.plannerRuntime(), tables.plannerRuntime()));
+        jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS runtime_mode VARCHAR(16)"
+                .formatted(tables.plannerRuntime()));
+        jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS runtime_epoch BIGINT NOT NULL DEFAULT 0"
+                .formatted(tables.plannerRuntime()));
+        jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS activation_boundary TIMESTAMPTZ"
+                .formatted(tables.plannerRuntime()));
+        // A failed planner tick is not a successful heartbeat. Older schemas required a value;
+        // watchdog liveness needs to represent "started but never succeeded" explicitly.
+        jdbc.execute("ALTER TABLE %s ALTER COLUMN heartbeat_at DROP NOT NULL"
+                .formatted(tables.plannerRuntime()));
+
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS %s (
+                    id BIGSERIAL PRIMARY KEY,
+                    incident_key VARCHAR(240) NOT NULL,
+                    occurrence INTEGER NOT NULL,
+                    event_type VARCHAR(12) NOT NULL,
+                    category VARCHAR(40) NOT NULL,
+                    severity VARCHAR(12) NOT NULL,
+                    season VARCHAR(10),
+                    fixture_id INTEGER,
+                    payload JSONB NOT NULL,
+                    delivery_state VARCHAR(16) NOT NULL,
+                    delivery_attempts INTEGER NOT NULL DEFAULT 0,
+                    next_delivery_at TIMESTAMPTZ,
+                    delivery_token UUID,
+                    delivery_lease_until TIMESTAMPTZ,
+                    last_delivery_error VARCHAR(1000),
+                    created_at TIMESTAMPTZ NOT NULL,
+                    delivered_at TIMESTAMPTZ,
+                    CONSTRAINT ck_%s_event CHECK (event_type IN ('INCIDENT', 'RECOVERY', 'REDRIVE')),
+                    CONSTRAINT ck_%s_delivery CHECK (delivery_state IN
+                        ('PENDING', 'DELIVERING', 'DELIVERED', 'FAILED', 'DISABLED', 'UNCONFIGURED', 'SUPERSEDED')),
+                    CONSTRAINT ck_%s_attempts CHECK (delivery_attempts BETWEEN 0 AND 3),
+                    CONSTRAINT ck_%s_delivery_lease CHECK (
+                        (delivery_state='DELIVERING' AND delivery_token IS NOT NULL
+                         AND delivery_lease_until IS NOT NULL)
+                        OR (delivery_state<>'DELIVERING' AND delivery_token IS NULL
+                            AND delivery_lease_until IS NULL))
+                )
+                """.formatted(tables.alert(), tables.alert(), tables.alert(),
+                tables.alert(), tables.alert()));
+        jdbc.execute("ALTER TABLE %s DROP CONSTRAINT IF EXISTS %s_incident_key_occurrence_event_type_key"
+                .formatted(tables.alert(), tables.alert()));
+        jdbc.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_%s_incident_event ON %s"
+                .formatted(tables.alert(), tables.alert())
+                + "(incident_key,occurrence,event_type) WHERE event_type<>'REDRIVE'");
+        jdbc.execute("ALTER TABLE %s DROP CONSTRAINT IF EXISTS ck_%s_delivery"
+                .formatted(tables.alert(), tables.alert()));
+        jdbc.execute("ALTER TABLE %s ADD CONSTRAINT ck_%s_delivery CHECK (delivery_state IN "
+                .formatted(tables.alert(), tables.alert())
+                + "('PENDING','DELIVERING','DELIVERED','FAILED','DISABLED','UNCONFIGURED','SUPERSEDED'))");
+        jdbc.execute("ALTER TABLE %s DROP CONSTRAINT IF EXISTS ck_%s_event"
+                .formatted(tables.alert(), tables.alert()));
+        jdbc.execute("ALTER TABLE %s ADD CONSTRAINT ck_%s_event CHECK "
+                .formatted(tables.alert(), tables.alert())
+                + "(event_type IN ('INCIDENT', 'RECOVERY', 'REDRIVE'))");
+        jdbc.execute("CREATE INDEX IF NOT EXISTS idx_%s_delivery ON %s(delivery_state, next_delivery_at)"
+                .formatted(tables.alert(), tables.alert()));
+
         jdbc.execute("ALTER TABLE %s ENABLE ROW LEVEL SECURITY".formatted(tables.run()));
         jdbc.execute("ALTER TABLE %s ENABLE ROW LEVEL SECURITY".formatted(tables.payload()));
         jdbc.execute("ALTER TABLE %s ENABLE ROW LEVEL SECURITY".formatted(tables.receipt()));
         jdbc.execute("ALTER TABLE %s ENABLE ROW LEVEL SECURITY".formatted(tables.requestState()));
         jdbc.execute("ALTER TABLE %s ENABLE ROW LEVEL SECURITY".formatted(tables.requestAttempt()));
+        jdbc.execute("ALTER TABLE %s ENABLE ROW LEVEL SECURITY".formatted(tables.fixtureSync()));
+        jdbc.execute("ALTER TABLE %s ENABLE ROW LEVEL SECURITY".formatted(tables.historyFingerprint()));
+        jdbc.execute("ALTER TABLE %s ENABLE ROW LEVEL SECURITY".formatted(tables.playerFixtureEvidence()));
+        jdbc.execute("ALTER TABLE %s ENABLE ROW LEVEL SECURITY".formatted(tables.plannerSlot()));
+        jdbc.execute("ALTER TABLE %s ENABLE ROW LEVEL SECURITY".formatted(tables.plannerRuntime()));
+        jdbc.execute("ALTER TABLE %s ENABLE ROW LEVEL SECURITY".formatted(tables.alert()));
     }
 
     /** Upgrades the pre-review publication-key-only receipt without deleting runs or evidence. */

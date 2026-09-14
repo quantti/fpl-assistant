@@ -234,6 +234,28 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
   each agent one clear unit with its own verification, and return control to the orchestrating
   agent between units. Keep sequential work sequential when agents share a working tree.
 
+### Resource safety
+
+Run one bounded agent/build/test unit at a time; never overlap full suites with subagents.
+Keep the checked-in Gradle heap/worker/context-cache limits. On memory-constrained WSL, use the
+cgroup-v2 scope and host-memory stop threshold in `docs/DEVELOPMENT.md`; do not assume this Docker
+supports hard memory limits. Stop only this project's idle daemons or test scopes, never another
+project's processes. Verify memory headroom before running the mandatory pre-push suite.
+
+### Owned publication evidence (not activated)
+
+The runtime is OFF by default. STAGING must not publish core data or poison legacy reads. ACTIVE
+requires explicit playing season and cutover confirmation only after every old writer drains.
+`FixtureVerification` requires complete source-consistent participant histories and two independent
+batches whose second start is at least ten minutes after the first end. `fpl_fixture_sync` and
+`fpl_player_fixture_evidence` fence publication and mask absent optional components before SQL
+aggregation through `PfsReadSource`. Physical defaults/retained values are not new observations.
+Corrections revoke verification; OFF rollback must not erase actual ownership or silently accept
+unverified data. Before restoring legacy writes, revoke current owner verification while preserving
+evidence, or new physical writes would inherit old receipts. Whole-club comparison outages require
+a squad refusal, not an alternative hand-built XI. Receipt source intervals are scoped to shown
+metrics; legacy PFS core-refresh time remains unknown. See `docs/OWNED-SYNC-OPERATIONS.md`.
+
 ## Commits and pull requests
 
 A ticket implementation is not complete while it exists only in the working tree. Finish every

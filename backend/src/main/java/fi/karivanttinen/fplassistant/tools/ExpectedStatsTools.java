@@ -13,6 +13,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
@@ -46,12 +47,22 @@ public class ExpectedStatsTools implements FplTool {
     private final JdbcTemplate jdbc;
     private final SeasonResolver seasonResolver;
     private final Clock clock;
+    private final PfsReadSource pfs;
 
+    @Autowired
     public ExpectedStatsTools(JdbcTemplate jdbc, SeasonResolver seasonResolver,
-                              ObjectProvider<Clock> clock) {
+                              ObjectProvider<Clock> clock, PfsReadSource pfs) {
         this.jdbc = jdbc;
         this.seasonResolver = seasonResolver;
         this.clock = clock.getIfAvailable(Clock::systemUTC);
+        this.pfs = pfs;
+    }
+
+    /** Compatibility constructor for focused legacy tests. */
+    ExpectedStatsTools(JdbcTemplate jdbc, SeasonResolver seasonResolver,
+                       ObjectProvider<Clock> clock) {
+        this(jdbc, seasonResolver, clock,
+                new PfsReadSource(jdbc, "OFF", "", "fpl_fixture_sync", "fpl_player_fixture_evidence"));
     }
 
     @Tool(description = """
@@ -91,17 +102,19 @@ public class ExpectedStatsTools implements FplTool {
                     players.stream().map(p -> String.valueOf(p.get("web_name"))).toList());
 
             List<Map<String, Object>> rows = jdbc.queryForList("""
+                    WITH %s
                     SELECT pfs.gameweek, pfs.was_home, pfs.minutes,
                            pfs.goals_scored, pfs.assists,
                            pfs.expected_goals, pfs.expected_assists, pfs.expected_goal_involvements,
-                           pfs.kickoff_time,
+                           pfs.kickoff_time, pfs.source_read_finished_at,
+                           pfs.verified_published_at,
                            opp.short_name AS opponent
-                    FROM player_fixture_stats pfs
+                    FROM pfs_read pfs
                     LEFT JOIN team opp ON opp.id = pfs.opponent_team_id AND opp.season_id = pfs.season_id
                     WHERE pfs.season_id = ? AND pfs.player_id = ?
                     ORDER BY pfs.kickoff_time DESC NULLS LAST
                     LIMIT ?
-                    """, season.seasonId(), playerId, limit);
+                    """.formatted(pfs.cte()), season.seasonId(), playerId, limit);
 
             List<Map<String, Object>> shown = new ArrayList<>(rows);
             for (Map<String, Object> r : shown) {
@@ -178,25 +191,32 @@ public class ExpectedStatsTools implements FplTool {
             // the conceded figures are per-team values repeated on every player (see class javadoc).
             // The kickoff span and source-row counts date the group without hiding undated rows.
             List<Map<String, Object>> fixtures = jdbc.queryForList("""
+                    WITH %s
                     SELECT pfs.gameweek, pfs.was_home,
                            opp.short_name AS opponent,
-                           COALESCE(SUM(pfs.expected_goals), 0) AS xg,
-                           COALESCE(SUM(pfs.expected_assists), 0) AS xa,
-                           COALESCE(SUM(pfs.expected_goal_involvements), 0) AS xgi,
+                           CASE WHEN COUNT(*) FILTER (WHERE pfs.owned_evidence AND pfs.expected_goals IS NULL)=0 THEN COALESCE(SUM(pfs.expected_goals), 0) END AS xg,
+                           CASE WHEN COUNT(*) FILTER (WHERE pfs.owned_evidence AND pfs.expected_assists IS NULL)=0 THEN COALESCE(SUM(pfs.expected_assists), 0) END AS xa,
+                           CASE WHEN COUNT(*) FILTER (WHERE pfs.owned_evidence AND pfs.expected_goal_involvements IS NULL)=0 THEN COALESCE(SUM(pfs.expected_goal_involvements), 0) END AS xgi,
                            COALESCE(SUM(pfs.goals_scored), 0) AS goals,
-                           COALESCE(MAX(pfs.expected_goals_conceded), 0) AS xga,
+                           CASE WHEN COUNT(pfs.expected_goals_conceded)>0 THEN MAX(pfs.expected_goals_conceded) END AS xga,
                            COALESCE(MAX(pfs.goals_conceded), 0) AS conceded,
                            MIN(pfs.kickoff_time) AS kickoff_min,
                            MAX(pfs.kickoff_time) AS kickoff_max,
                            COUNT(*) AS source_rows,
-                           COUNT(pfs.kickoff_time) AS dated_rows
-                    FROM player_fixture_stats pfs
+                           COUNT(pfs.kickoff_time) AS dated_rows,
+                           MIN(pfs.source_read_finished_at) AS source_read_min,
+                           MAX(pfs.source_read_finished_at) AS source_read_max,
+                           COUNT(pfs.source_read_finished_at) AS owned_rows,
+                           MIN(pfs.verified_published_at) AS publication_min,
+                           MAX(pfs.verified_published_at) AS publication_max,
+                           COUNT(pfs.verified_published_at) AS published_rows
+                    FROM pfs_read pfs
                     LEFT JOIN team opp ON opp.id = pfs.opponent_team_id AND opp.season_id = pfs.season_id
                     WHERE pfs.season_id = ? AND pfs.player_team_id = ?
                     GROUP BY pfs.fixture_id, pfs.gameweek, pfs.was_home, opp.short_name
                     ORDER BY MAX(pfs.kickoff_time) DESC NULLS LAST
                     LIMIT ?
-                    """, season.seasonId(), teamId, limit);
+                    """.formatted(pfs.cte()), season.seasonId(), teamId, limit);
 
             List<Map<String, Object>> shown = new ArrayList<>(fixtures);
             for (Map<String, Object> f : shown) {
@@ -256,17 +276,19 @@ public class ExpectedStatsTools implements FplTool {
             return List.of();
         }
         List<Map<String, Object>> rows = jdbc.queryForList("""
+                WITH %s
                 SELECT pfs.gameweek, pfs.was_home, pfs.minutes,
                        pfs.goals_scored, pfs.assists,
                        pfs.expected_goals, pfs.expected_assists, pfs.expected_goal_involvements,
-                       pfs.kickoff_time,
+                       pfs.kickoff_time, pfs.source_read_finished_at,
+                       pfs.verified_published_at,
                        opp.short_name AS opponent
-                FROM player_fixture_stats pfs
+                FROM pfs_read pfs
                 LEFT JOIN team opp ON opp.id = pfs.opponent_team_id AND opp.season_id = pfs.season_id
                 WHERE pfs.season_id = ? AND pfs.player_id = ?
                 ORDER BY pfs.kickoff_time DESC NULLS LAST
                 LIMIT ?
-                """, previous.seasonId(), ids.getFirst(), limit);
+                """.formatted(pfs.cte()), previous.seasonId(), ids.getFirst(), limit);
         for (Map<String, Object> r : rows) {
             r.put("season_code", previous.code());
         }
@@ -283,25 +305,32 @@ public class ExpectedStatsTools implements FplTool {
             return List.of();
         }
         List<Map<String, Object>> rows = jdbc.queryForList("""
+                WITH %s
                 SELECT pfs.gameweek, pfs.was_home,
                        opp.short_name AS opponent,
-                       COALESCE(SUM(pfs.expected_goals), 0) AS xg,
-                       COALESCE(SUM(pfs.expected_assists), 0) AS xa,
-                       COALESCE(SUM(pfs.expected_goal_involvements), 0) AS xgi,
+                       CASE WHEN COUNT(*) FILTER (WHERE pfs.owned_evidence AND pfs.expected_goals IS NULL)=0 THEN COALESCE(SUM(pfs.expected_goals), 0) END AS xg,
+                       CASE WHEN COUNT(*) FILTER (WHERE pfs.owned_evidence AND pfs.expected_assists IS NULL)=0 THEN COALESCE(SUM(pfs.expected_assists), 0) END AS xa,
+                       CASE WHEN COUNT(*) FILTER (WHERE pfs.owned_evidence AND pfs.expected_goal_involvements IS NULL)=0 THEN COALESCE(SUM(pfs.expected_goal_involvements), 0) END AS xgi,
                        COALESCE(SUM(pfs.goals_scored), 0) AS goals,
-                       COALESCE(MAX(pfs.expected_goals_conceded), 0) AS xga,
+                       CASE WHEN COUNT(pfs.expected_goals_conceded)>0 THEN MAX(pfs.expected_goals_conceded) END AS xga,
                        COALESCE(MAX(pfs.goals_conceded), 0) AS conceded,
                        MIN(pfs.kickoff_time) AS kickoff_min,
                        MAX(pfs.kickoff_time) AS kickoff_max,
                        COUNT(*) AS source_rows,
-                       COUNT(pfs.kickoff_time) AS dated_rows
-                FROM player_fixture_stats pfs
+                       COUNT(pfs.kickoff_time) AS dated_rows,
+                       MIN(pfs.source_read_finished_at) AS source_read_min,
+                       MAX(pfs.source_read_finished_at) AS source_read_max,
+                       COUNT(pfs.source_read_finished_at) AS owned_rows,
+                       MIN(pfs.verified_published_at) AS publication_min,
+                       MAX(pfs.verified_published_at) AS publication_max,
+                       COUNT(pfs.verified_published_at) AS published_rows
+                FROM pfs_read pfs
                 LEFT JOIN team opp ON opp.id = pfs.opponent_team_id AND opp.season_id = pfs.season_id
                 WHERE pfs.season_id = ? AND pfs.player_team_id = ?
                 GROUP BY pfs.fixture_id, pfs.gameweek, pfs.was_home, opp.short_name
                 ORDER BY MAX(pfs.kickoff_time) DESC NULLS LAST
                 LIMIT ?
-                """, previous.seasonId(), ids.getFirst(), limit);
+                """.formatted(pfs.cte()), previous.seasonId(), ids.getFirst(), limit);
         for (Map<String, Object> r : rows) {
             r.put("season_code", previous.code());
         }
@@ -317,11 +346,42 @@ public class ExpectedStatsTools implements FplTool {
                                          String currentCode, Optional<SeasonContext> previous,
                                          BiFunction<List<Map<String, Object>>, String, String> coverage) {
         int split = shown.size() - fromPrevious;
-        String out = DataAge.METRIC_REFRESH + "\n" + coverage.apply(shown.subList(0, split), currentCode);
+        List<Map<String, Object>> currentRows = shown.subList(0, split);
+        String out = metricRefresh(currentRows, currentCode) + "\n"
+                + coverage.apply(currentRows, currentCode);
         if (fromPrevious > 0) {
-            out += "\n" + coverage.apply(shown.subList(split, shown.size()), previous.orElseThrow().code());
+            String previousCode = previous.orElseThrow().code();
+            List<Map<String, Object>> previousRows = shown.subList(split, shown.size());
+            out += "\n" + metricRefresh(previousRows, previousCode) + "\n"
+                    + coverage.apply(previousRows, previousCode);
         }
         return out;
+    }
+
+    private static String metricRefresh(List<Map<String, Object>> rows, String seasonCode) {
+        DataAge.Span source = DataAge.Span.of(List.of());
+        DataAge.Span publication = DataAge.Span.of(List.of());
+        long total = 0;
+        for (Map<String, Object> row : rows) {
+            if (row.containsKey("source_rows")) {
+                long sourceRows = ((Number) row.get("source_rows")).longValue();
+                long ownedRows = ((Number) row.get("owned_rows")).longValue();
+                long publishedRows = ((Number) row.get("published_rows")).longValue();
+                total += sourceRows;
+                source = source.plus(DataAge.Span.aggregate(row.get("source_read_min"),
+                        row.get("source_read_max"), sourceRows, ownedRows));
+                publication = publication.plus(DataAge.Span.aggregate(row.get("publication_min"),
+                        row.get("publication_max"), sourceRows, publishedRows));
+            } else {
+                total++;
+                source = source.plus(DataAge.Span.of(java.util.Collections.singletonList(
+                        row.get("source_read_finished_at"))));
+                publication = publication.plus(DataAge.Span.of(java.util.Collections.singletonList(
+                        row.get("verified_published_at"))));
+            }
+        }
+        return DataAge.metricRefresh("season " + seasonCode + ", returned sample",
+                source, publication, total);
     }
 
     private static String playerCoverage(String webName, List<Map<String, Object>> rows, String code,
@@ -375,34 +435,40 @@ public class ExpectedStatsTools implements FplTool {
     static String formatPlayer(String webName, List<Map<String, Object>> rows, String currentCode,
                                int fromPrevious) {
         double xg = 0, xa = 0, xgi = 0;
+        boolean xgComplete = true, xaComplete = true, xgiComplete = true;
         int goals = 0, assists = 0, minutes = 0;
         StringBuilder out = new StringBuilder("Expected stats for ").append(webName)
                 .append(" (last ").append(rows.size()).append(" fixtures")
                 .append(windowLabel(rows, currentCode, fromPrevious)).append("):\n");
         for (Map<String, Object> r : rows) {
+            xgComplete &= r.get("expected_goals") != null;
+            xaComplete &= r.get("expected_assists") != null;
+            xgiComplete &= r.get("expected_goal_involvements") != null;
             xg += num(r, "expected_goals");
             xa += num(r, "expected_assists");
             xgi += num(r, "expected_goal_involvements");
             goals += (int) num(r, "goals_scored");
             assists += (int) num(r, "assists");
             minutes += (int) num(r, "minutes");
-            out.append("  %sGW%s vs %s %s: %d min, xG %.2f xA %.2f (G%d A%d)\n".formatted(
+            out.append("  %sGW%s vs %s %s: %d min, xG %s xA %s (G%d A%d)\n".formatted(
                     seasonPrefix(r, fromPrevious), r.get("gameweek"), opponent(r),
                     Boolean.TRUE.equals(r.get("was_home")) ? "(H)" : "(A)",
-                    (int) num(r, "minutes"),
-                    num(r, "expected_goals"), num(r, "expected_assists"),
+                    (int) num(r, "minutes"), metric(r, "expected_goals"),
+                    metric(r, "expected_assists"),
                     (int) num(r, "goals_scored"), (int) num(r, "assists")));
         }
-        out.append("\nTotals over window: xG %.2f | xA %.2f | xGI %.2f | Goals %d | Assists %d | Minutes %d\n"
-                .formatted(xg, xa, xgi, goals, assists, minutes));
-        out.append("Actual vs expected goal involvements: %d actual vs %.2f expected.\n"
-                .formatted(goals + assists, xgi));
+        out.append("\nTotals over window: xG %s | xA %s | xGI %s | Goals %d | Assists %d | Minutes %d\n"
+                .formatted(metric(xg, xgComplete), metric(xa, xaComplete),
+                        metric(xgi, xgiComplete), goals, assists, minutes));
+        out.append("Actual vs expected goal involvements: %d actual vs %s expected.\n"
+                .formatted(goals + assists, metric(xgi, xgiComplete)));
         return out.toString();
     }
 
     static String formatTeam(String name, List<Map<String, Object>> fixtures,
                              String currentCode, int fromPrevious) {
         double totalXg = 0, totalXa = 0, totalXgi = 0, totalXga = 0;
+        boolean xgComplete = true, xaComplete = true, xgiComplete = true, xgaComplete = true;
         int totalGoals = 0, totalConceded = 0;
         StringBuilder out = new StringBuilder("Expected output for ").append(name)
                 .append(" (last ").append(fixtures.size()).append(" fixtures")
@@ -412,6 +478,10 @@ public class ExpectedStatsTools implements FplTool {
             double xa = num(f, "xa");
             double xgi = num(f, "xgi");
             double xga = num(f, "xga");
+            xgComplete &= f.get("xg") != null;
+            xaComplete &= f.get("xa") != null;
+            xgiComplete &= f.get("xgi") != null;
+            xgaComplete &= f.get("xga") != null;
             int goals = (int) num(f, "goals");
             int conceded = (int) num(f, "conceded");
             totalXg += xg;
@@ -420,15 +490,17 @@ public class ExpectedStatsTools implements FplTool {
             totalXga += xga;
             totalGoals += goals;
             totalConceded += conceded;
-            out.append("  %sGW%s vs %s %s: xG %.2f xA %.2f xGI %.2f (scored %d) | xGA %.2f (conceded %d)\n"
+            out.append("  %sGW%s vs %s %s: xG %s xA %s xGI %s (scored %d) | xGA %s (conceded %d)\n"
                     .formatted(seasonPrefix(f, fromPrevious), f.get("gameweek"), opponent(f),
                             Boolean.TRUE.equals(f.get("was_home")) ? "(H)" : "(A)",
-                            xg, xa, xgi, goals, xga, conceded));
+                            metric(f, "xg"), metric(f, "xa"), metric(f, "xgi"), goals,
+                            metric(f, "xga"), conceded));
         }
-        out.append("\nAttack over window: xG %.2f | xA %.2f | xGI %.2f | Goals %d\n"
-                .formatted(totalXg, totalXa, totalXgi, totalGoals));
-        out.append("Defence over window: xGA %.2f | Goals conceded %d\n"
-                .formatted(totalXga, totalConceded));
+        out.append("\nAttack over window: xG %s | xA %s | xGI %s | Goals %d\n"
+                .formatted(metric(totalXg, xgComplete), metric(totalXa, xaComplete),
+                        metric(totalXgi, xgiComplete), totalGoals));
+        out.append("Defence over window: xGA %s | Goals conceded %d\n"
+                .formatted(metric(totalXga, xgaComplete), totalConceded));
         return out.toString();
     }
 
@@ -436,6 +508,15 @@ public class ExpectedStatsTools implements FplTool {
     private static String opponent(Map<String, Object> row) {
         Object opponent = row.get("opponent");
         return opponent == null ? "?" : opponent.toString();
+    }
+
+    private static String metric(Map<String, Object> row, String key) {
+        Object value = row.get(key);
+        return value instanceof Number number ? "%.2f".formatted(number.doubleValue()) : "n/a";
+    }
+
+    private static String metric(double value, boolean complete) {
+        return complete ? "%.2f".formatted(value) : "n/a (partial evidence)";
     }
 
     private static double num(Map<String, Object> r, String key) {

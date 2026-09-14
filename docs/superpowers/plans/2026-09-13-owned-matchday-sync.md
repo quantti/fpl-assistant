@@ -1,6 +1,6 @@
 # Assistant-owned FPL sync and post-match verification
 
-**PROGRESS:** Implementation 3/10 tasks done — source contracts, bounded transport/staging and inert catalogue/schedule dispatch/publication; no updater activated.
+**PROGRESS:** Code and local verification for Tasks 1–10 complete; Tasks 8–10 operational notification, single-writer cutover and real-matchday release gates remain pending owner approval. Runtime stays OFF.
 
 Owner decision: this service, **not Tapas**, will perform the FPL data updates. This supersedes
 Task 5's ownership assumption in `2026-09-13-wildcard-data-coverage.md`. That plan's comparison
@@ -437,6 +437,43 @@ exception while forbidding activation/production core writes before the reviewed
 Next is Task 4's full history/DefCon mapping and publication with component evidence. Fixture
 readiness, adaptive scheduling, reader masking, alerts and cutover remain incomplete. Do not
 interpret the new API or a parsed catalogue as a verified post-match result.
+
+## Tasks 4–10 implementation outcome (2026-09-14)
+
+Full current-season histories and DefCon now share strict parsing, historical-club mapping and
+component-presence evidence. Fixture-scoped publication is atomic and fenced; absent components
+mask retained/default storage values. Two independently fetched coherent batches are required,
+with the second starting at least ten minutes after the first finishes. Corrections revoke and
+reverify; partial sweeps, missing parents and 429 responses remain resumable pending work.
+
+The adaptive UK planner persists slots, retries, recovery and correction checks. OFF/STAGING/ACTIVE
+runtime epochs fence stale workers; ACTIVE requires explicit cutover confirmation and gates legacy
+current-season writers. Evidence-aware PFS reads, whole-club comparison refusal, restricted pick
+wording and the prompt preserve hard eligibility rather than filling missing clubs with alternatives.
+Watchdog, incident/recovery outbox, authenticated status/retry and opt-in external health are wired,
+with no real notification destination configured.
+
+The separate Tapas change is [PR #1](https://github.com/quantti/tapas-fpl-app/pull/1): all core writers
+are guarded, evidence-aware readers preserve pending appearances and unknown aggregates, and derived
+Points Against work survives core-write disablement. Defaults remain unchanged. Final runbook review
+corrected pre-publication/drain ordering, rollback receipt revocation and season-row lock grants;
+role SQL remains review-only. No grants, flags, jobs or production data were changed.
+
+Independent implementation reviews covered source completeness, concurrency, readers and cutover;
+findings were corrected before final serial verification. The final local full suite passed 1132
+tests with no failures/errors/skips, Tapas passed 700, and pre-push shell regressions passed 33.
+The integrated fake-clock/FPL test covers delayed finish, partial histories, 429/restart, stable
+observations, independent fixture recovery, corrections, component masks and incident/recovery.
+Its ten-fixture, 600-player stress case deliberately exceeds the 5000-attempt estimated demand:
+that budget is a hard ceiling, not a promise that every cadence can be fulfilled on a busy day.
+Budget denial must leave work pending and visible. Actual source/throughput measurements are still
+required during STAGING and the first approved real matchday; no upstream latency SLA is claimed.
+
+After host memory exhaustion was reported, finalization ran without parallel agents/builds.
+Checked-in Gradle/test/pool limits and smaller disposable Postgres buffers prevent the previous
+unbounded context retention/idle-daemon pattern. A kernel-enforced 1280 MiB scope ran the suite
+successfully (peak 1152 MiB; host available memory never below 1889 MiB). Docker on this WSL host
+cannot enforce its own memory flags; that limitation is documented, not silently bypassed.
 
 ## Remaining decisions before execution
 

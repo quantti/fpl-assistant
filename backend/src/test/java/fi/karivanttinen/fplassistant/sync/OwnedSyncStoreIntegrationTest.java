@@ -12,6 +12,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import javax.sql.DataSource;
 
@@ -112,6 +113,21 @@ class OwnedSyncStoreIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT requested_source_after FROM " + TABLES.run()
                 + " WHERE generation=?", java.sql.Timestamp.class, lease.generation()).toInstant())
                 .isEqualTo(floor);
+    }
+
+    @Test
+    void admissionDeferralDoesNotIncreaseDurableFetchFailures() {
+        Run run = store.enqueue(SyncKind.PLAYER_HISTORY, "2097-98", "history", "history", clock.instant());
+        Lease first = store.acquire("worker", Duration.ofMinutes(5)).orElseThrow();
+        store.retry(first, clock.instant().plusSeconds(1), "HTTP admission deferred: cooldown");
+        clock.advance(Duration.ofSeconds(1));
+        Lease second = store.acquire("worker", Duration.ofMinutes(5)).orElseThrow();
+        store.retryFetchFailure(second, clock.instant().plusSeconds(1), "timed out");
+
+        assertThat(jdbc.queryForObject("SELECT attempt_count FROM " + TABLES.run()
+                + " WHERE generation=?", Integer.class, run.generation())).isEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT consecutive_fetch_failures FROM " + TABLES.run()
+                + " WHERE generation=?", Integer.class, run.generation())).isOne();
     }
 
     @Test
@@ -228,6 +244,49 @@ class OwnedSyncStoreIntegrationTest {
     }
 
     @Test
+    void conditionalPendingInvokesCallbackOnceCompletesAndDoesNotAdvanceReceipt() {
+        enqueue("fixture-conditional", "fixture:conditional");
+        Lease lease = store.acquire("worker", Duration.ofMinutes(5)).orElseThrow();
+        AtomicInteger invocations = new AtomicInteger();
+
+        String value = store.publishConditionally(lease, read(), () -> {
+            invocations.incrementAndGet();
+            jdbc.update("INSERT INTO " + PROBE + " VALUES ('fixture:conditional', 1)");
+            return OwnedSyncStore.ConditionalPublication.pending("pending");
+        });
+
+        assertThat(value).isEqualTo("pending");
+        assertThat(invocations).hasValue(1);
+        assertThat(count(PROBE)).isOne();
+        assertThat(jdbc.queryForObject("SELECT state FROM " + TABLES.run() + " WHERE generation=?",
+                String.class, lease.generation())).isEqualTo("COMPLETED");
+        assertThat(jdbc.queryForObject("SELECT latest_generation FROM " + TABLES.receipt()
+                + " WHERE season='2097-98' AND publication_key='fixture:conditional'", Long.class))
+                .isNull();
+    }
+
+    @Test
+    void staleConditionalGenerationNeverInvokesCallback() {
+        var older = store.enqueue(SyncKind.FIXTURE_VERIFICATION, "2097-98", "conditional-old",
+                "fixture:conditional-stale", clock.instant());
+        var newer = store.enqueue(SyncKind.FIXTURE_VERIFICATION, "2097-98", "conditional-new",
+                "fixture:conditional-stale", clock.instant());
+        Lease first = store.acquire("worker-a", Duration.ofMinutes(5)).orElseThrow();
+        Lease second = store.acquire("worker-b", Duration.ofMinutes(5)).orElseThrow();
+        Lease oldLease = first.generation() == older.generation() ? first : second;
+        Lease newLease = first.generation() == newer.generation() ? first : second;
+        store.publishConditionally(newLease, read(), () ->
+                OwnedSyncStore.ConditionalPublication.published("verified"));
+        AtomicInteger invocations = new AtomicInteger();
+
+        assertThatThrownBy(() -> store.publishConditionally(oldLease, read(), () -> {
+            invocations.incrementAndGet();
+            return OwnedSyncStore.ConditionalPublication.pending("pending");
+        })).isInstanceOf(StaleGenerationException.class);
+        assertThat(invocations).hasValue(0);
+    }
+
+    @Test
     void callbackFailureRollsBackPublicationReceiptAndCompletion() {
         enqueue("fixture-10", "fixture:10");
         Lease lease = store.acquire("worker", Duration.ofMinutes(5)).orElseThrow();
@@ -287,6 +346,25 @@ class OwnedSyncStoreIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT latest_generation FROM " + TABLES.receipt()
                 + " WHERE season = '2097-98' AND publication_key = 'fixture:seasonal'", Long.class))
                 .isEqualTo(newSeason.generation());
+    }
+
+    @Test
+    void endpointSpecificReuseCannotAliasIdsSeasonsOrOlderSourceReads() {
+        store.enqueue(SyncKind.PLAYER_HISTORY, "2097-98", "player-history:7",
+                "player-history:7", clock.instant());
+        Lease lease = store.acquire("worker", Duration.ofMinutes(5)).orElseThrow();
+        SourceRead older = new SourceRead(clock.instant().minusSeconds(2), clock.instant().minusSeconds(1));
+        long history = store.stage(lease, Endpoint.elementSummary(7), older, Validation.valid(), new byte[]{7});
+        store.stage(lease, Endpoint.eventLive(7), older, Validation.valid(), new byte[]{70});
+
+        assertThat(store.latestStagedPayload(lease, Endpoint.elementSummary(7))).get()
+                .extracting(payload -> payload.id()).isEqualTo(history);
+        assertThat(store.latestStagedPayload(lease, Endpoint.elementSummary(8))).isEmpty();
+        assertThat(store.latestValidPayload("2097-98", Endpoint.elementSummary(7), older.startedAt())).isPresent();
+        assertThat(store.latestValidPayload("2097-98", Endpoint.elementSummary(7), older.startedAt().plusMillis(1)))
+                .isEmpty();
+        assertThat(store.latestValidPayload("2096-97", Endpoint.elementSummary(7), older.startedAt()))
+                .isEmpty();
     }
 
     @Test

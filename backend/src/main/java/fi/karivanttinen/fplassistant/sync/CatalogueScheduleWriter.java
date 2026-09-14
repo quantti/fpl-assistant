@@ -55,6 +55,7 @@ public final class CatalogueScheduleWriter {
     private final OwnedSyncStore store;
     private final OwnedSyncTables ownedTables;
     private final CatalogueScheduleTables capturedTables;
+    private final FixtureSyncRepository fixtureSync;
 
     public CatalogueScheduleWriter(JdbcTemplate jdbc, Clock clock, OwnedSyncStore store,
                                    OwnedSyncTables ownedTables,
@@ -64,6 +65,7 @@ public final class CatalogueScheduleWriter {
         this.store = Objects.requireNonNull(store);
         this.ownedTables = Objects.requireNonNull(ownedTables);
         this.capturedTables = Objects.requireNonNull(capturedTables);
+        this.fixtureSync = new FixtureSyncRepository(jdbc, ownedTables);
     }
 
     /** Parses the source documents again at the publication boundary, then atomically publishes. */
@@ -123,6 +125,7 @@ public final class CatalogueScheduleWriter {
             Instant publishedAt = clock.instant();
             int written = writeTeams(snapshot.teams(), publishedAt);
             written += writeCoreGameweeks(snapshot.gameweeks(), publishedAt);
+            fixtureSync.invalidateCorrections(snapshot.fixtures(), publishedAt);
             written += writeCoreFixtures(snapshot.fixtures(), publishedAt);
             written += writeCapturedGameweeks(snapshot.gameweeks(), read.finishedAt());
             written += writeCapturedFixtures(snapshot.fixtures(), read.finishedAt());

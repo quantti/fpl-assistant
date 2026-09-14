@@ -212,6 +212,38 @@ class CatalogueScheduleWriterIntegrationTest {
     }
 
     @Test
+    void statsOnlyScheduleCorrectionRevokesVerifiedFixture() throws Exception {
+        Documents original = documents(Instant.parse("2026-09-13T17:45:00Z"));
+        Lease originalLease = lease("original-schedule", CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY);
+        writer.publishSchedule(originalLease, SEASON, original.bootstrap, original.fixtures);
+        var fixture = CatalogueScheduleParser.parse(SEASON, original.bootstrap, original.fixtures)
+                .fixtures().getFirst();
+        jdbc.update("INSERT INTO " + OWNED.fixtureSync() + " (season_id, season_code, fixture_id,"
+                        + " state, current_verified_generation, last_verified_generation, verified_header,"
+                        + " verified_stats_fingerprint, last_verified_at, validation_failures, updated_at)"
+                        + " VALUES (?, ?, ?, 'VERIFIED', ?, ?, ?, ?, ?, '{}', ?)",
+                SEASON.id(), SEASON.code(), fixture.id(), originalLease.generation(),
+                originalLease.generation(), FixtureVerification.verifiedHeader(fixture),
+                FixtureStatsFingerprint.of(fixture), java.sql.Timestamp.from(clock.instant()),
+                java.sql.Timestamp.from(clock.instant()));
+
+        ArrayNode correctedFixtures = (ArrayNode) JSON.readTree(fixtures);
+        ((ObjectNode) correctedFixtures.get(0).withArray("stats").get(0)
+                .withArray("h").get(0)).put("value", 2);
+        Documents corrected = documents(Instant.parse("2026-09-13T17:50:00Z"), bootstrap,
+                JSON.writeValueAsBytes(correctedFixtures));
+        writer.publishSchedule(lease("corrected-schedule", CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY),
+                SEASON, corrected.bootstrap, corrected.fixtures);
+
+        assertThat(jdbc.queryForObject("SELECT state FROM " + OWNED.fixtureSync()
+                + " WHERE season_id=27 AND fixture_id=1", String.class)).isEqualTo("VERIFYING");
+        assertThat(jdbc.queryForObject("SELECT validation_failures::text FROM " + OWNED.fixtureSync()
+                + " WHERE season_id=27 AND fixture_id=1", String.class)).isEqualTo("{SOURCE_CORRECTION}");
+        assertThat(jdbc.queryForObject("SELECT current_verified_generation IS NULL FROM "
+                + OWNED.fixtureSync() + " WHERE season_id=27 AND fixture_id=1", Boolean.class)).isTrue();
+    }
+
+    @Test
     void exactCutoffsAcceptButEarlierPublicationDefersAndWrongDayOrFutureReadsReject() {
         clock.set(Instant.parse("2026-09-13T00:30:00Z")); // 01:30 BST
         Documents oneAm = documents(Instant.parse("2026-09-13T00:10:00Z"));
@@ -519,6 +551,7 @@ class CatalogueScheduleWriterIntegrationTest {
     }
 
     private static void cleanWriterRows() {
+        jdbc.update("DELETE FROM " + OWNED.fixtureSync());
         jdbc.update("DELETE FROM " + OWNED.payload());
         jdbc.update("DELETE FROM " + OWNED.run());
         jdbc.update("DELETE FROM " + OWNED.receipt());
