@@ -32,6 +32,7 @@ public class OwnedSyncRuntimeConfiguration {
                 "fpl.owned-sync.cutover-confirmed", Boolean.class, false);
         validateActivation(mode, configured, cutover);
         validateLegacyArguments(mode, arguments);
+        OwnedSyncWatchdog.Notification notification = SyncOperationsConfiguration.notification(environment);
         Season season = configuredSeason(jdbc, configured);
 
         Clock clock = Clock.systemUTC();
@@ -71,12 +72,8 @@ public class OwnedSyncRuntimeConfiguration {
         OwnedMatchdayCoordinator coordinator = new OwnedMatchdayCoordinator(season,
                 new AdaptiveMatchdayPlanner(clock), inputRepository, runtimeRepository, store,
                 catalogue, histories, instanceId);
-        boolean notificationsEnabled = environment.getProperty(
-                "fpl.owned-sync.alerts.webhook-enabled", Boolean.class, false);
         String webhook = environment.getProperty("fpl.owned-sync.alerts.webhook-url", "").trim();
-        OwnedSyncWatchdog.Notification notification = new OwnedSyncWatchdog.Notification(
-                notificationsEnabled, !webhook.isEmpty());
-        OwnedSyncWatchdog.AlertSender sender = notificationsEnabled && !webhook.isEmpty()
+        OwnedSyncWatchdog.AlertSender sender = notification.enabled() && notification.configured()
                 ? new OwnedSyncWatchdog.HttpsWebhookSender(webhook)
                 : payload -> { };
         OwnedSyncWatchdog watchdog = new OwnedSyncWatchdog(jdbc, tx, clock, owned, notification, sender);
