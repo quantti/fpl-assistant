@@ -106,11 +106,33 @@ account cap `fpl.invite.max-accounts`, creates the account unconfirmed through S
 API, and asks GoTrue to send the confirmation mail. Supabase's own public sign-up stays **off**: a
 code checked in the browser would be decoration.
 
-Codes are rows, not a secret (since PR #52). Create one with the CLI against `.env.supabase` —
-`--create-invite-code=launch:10`, `--list-invite-codes`, `--reconcile-invite-codes` — or with a
-plain `INSERT`, which is all the CLI does; `docs/EMAIL-SETUP.md` 5.1 has the SQL and explains why
-the CLI must not run on the production machine. The `INVITE_CODE` Fly secret still exists and is
-ignored.
+Codes are rows, not a secret (since PR #52), and since KAR-54 they are operated through the admin
+API rather than SQL. Who may call it is `ADMIN_USER_IDS` (`fpl.admin.user-ids`): the owner's JWT
+`sub`, comma-separated if there is ever more than one, and **empty means nobody** — an unset
+variable closes `/api/admin/**` with 403. `GET /api/profile` reports `admin` so the page knows
+whether to show the link; the API refuses a non-admin regardless.
+
+| Call | Does |
+|---|---|
+| `GET /api/admin/invite-codes` | every code with `uses`, `accounts`, `burnt`, `lastRedeemedAt` and a server-computed `state` (`OPEN`, `DISABLED`, `EXHAUSTED`, `NOT_YET_VALID`, `EXPIRED`), plus `accountCap`, `placesTaken`, `burnt` overall |
+| `POST /api/admin/invite-codes` | `{code, label?, maxUses?, benefitKind?, benefitValue?, validFrom?, validUntil?, note?}` → 201; 409 if the code exists in any case |
+| `POST …/{id}/disable`, `POST …/{id}/enable` | switch a code off or on; sign-up refuses a disabled code on its next attempt |
+| `PUT …/{id}/max-uses` `{maxUses}`, `DELETE …/{id}/max-uses` | move or remove the ceiling; 409 below what is already spent — disable the code instead |
+| `GET …/{id}/redemptions` | who came in on the code, newest first; a null `userId` is a burnt place |
+| `POST …/release-burnt` | deletes burnt places older than ten minutes and reconciles every counter |
+
+Codes are never deleted: redemption rows point at them. With `curl`, a token from the browser's
+session and the admin's account:
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" https://fpl-sidekick.com/api/admin/invite-codes | jq .
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+     -d '{"code":"podcast","maxUses":50}' https://fpl-sidekick.com/api/admin/invite-codes
+```
+
+The CLI (`--create-invite-code=launch:10`, `--list-invite-codes`, `--reconcile-invite-codes`)
+still works locally against `.env.supabase`; `docs/EMAIL-SETUP.md` 5.1 explains why it must not
+run on the production machine. The `INVITE_CODE` Fly secret still exists and is ignored.
 
 Production needs one secret for any of it to work, and it is not in the repository:
 
@@ -123,11 +145,11 @@ defaults to 30 and moves with `fly secrets set INVITE_MAX_ACCOUNTS=n`. The domai
 `CORS_ORIGINS`, or every sign-up is refused as an invalid code — `docs/EMAIL-SETUP.md` 4.1.
 
 A failed Supabase call leaves a reserved row with a null `user_id` — one burnt place, chosen over
-an account nobody counted (see `InviteLedger`). Release burnt places by hand, then bring each
-code's counter back in line with its rows (what `--reconcile-invite-codes` does):
+an account nobody counted (see `InviteLedger`). `POST /api/admin/invite-codes/release-burnt` is
+the documented way to release them; the SQL it runs, for a database you can reach directly:
 
 ```sql
-DELETE FROM fpl_invite_redemption WHERE user_id IS NULL;
+DELETE FROM fpl_invite_redemption WHERE user_id IS NULL AND redeemed_at < now() - interval '10 minutes';
 UPDATE fpl_invite_code c
    SET uses = (SELECT count(*) FROM fpl_invite_redemption r WHERE r.code_id = c.id)
  WHERE c.uses <> (SELECT count(*) FROM fpl_invite_redemption r WHERE r.code_id = c.id);

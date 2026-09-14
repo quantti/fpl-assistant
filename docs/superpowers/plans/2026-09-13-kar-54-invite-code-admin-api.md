@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Progress is the single `**PROGRESS:**` line below, updated once per task — no per-step checkboxes.
 
-**PROGRESS:** Task 0/4 done.
+**PROGRESS:** Task 4/4 done.
 
 Issue: [KAR-54](https://linear.app/quantti/issue/KAR-54/invite-code-admin-api-per-code-ceilings-disable-attribution).
 Baseline: `origin/master` at `4a925d9`. Branch `invite-code-limits`, own worktree
@@ -1567,3 +1567,18 @@ git commit -m "Document the invite-code admin API and ADMIN_USER_IDS"
 - Docs and config → Task 4. Type names are consistent across tasks (`CodeSummary`, `Summary`,
   `Redemption`, `Release`, `CeilingBelowUsesException`, `InviteCode.State`, `CodeView`).
 - Not rate limited, never a `@Tool`, no user id in any admin signature — by construction.
+
+## Outcome
+
+Tasks 1–4 done. Deviations from the plan:
+
+- Task 1 needed a fix round after Task 3's full-suite run: `MyTeamControllerTest`, a
+  `@WebMvcTest` slice importing `SecurityConfig`, lacked the new `AdminAccess` bean; fixed in
+  735f4bb by adding it to the slice's `@Import`.
+- A plan edit before Task 2: the ledger validity test compares instants rather than
+  `OffsetDateTime`s.
+
+Full suite: 942 tests, 0 real failures. The full run showed 11 failures, all in
+`UserProfileControllerTest`, all `Failed to obtain JDBC Connection` / "sorry, too many clients
+already" — connection-pool exhaustion (KAR-51), not a regression from this work; that class run
+alone (`./gradlew test --tests "*UserProfileControllerTest"`) is green.
