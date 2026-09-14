@@ -4302,6 +4302,9 @@ The bounded follow-up prioritizes canonical prerequisites and durably puts depen
 fixtures behind histories. Ordinary retries restore normal priority, retaining ready-verification
 preference. Real-store coverage uses 39 fixtures/600 histories and checks source floors, stale
 leases and priority restoration; dispatcher coverage exercises the missing-history branch.
+The first full gate caught an end-to-end test's old queue-order assumption: it now injects the
+history failure before dispatch and pauses at that actual failure before checking the partial
+sweep, rather than draining unrelated work first. Publication/readiness assertions are unchanged.
 
 Production is OFF again. Fly forced the previous VM out before its durable activation marker was
 cleared; after verifying replacement by an OFF instance, a guarded metadata-only transaction
