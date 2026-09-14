@@ -4,6 +4,7 @@ import { apiFetch } from '../../auth/apiFetch'
 import typography from '../../styles/typography.module.css'
 import classes from './AdminPage.module.css'
 import CodeDetails from './CodeDetails'
+import NewCodeForm from './NewCodeForm'
 import {
   InviteCodeList, InviteCodeView, NOT_AVAILABLE, ReleaseResult, STATE_WORDS, benefitText,
   placesLine, releaseNote, usedText,
@@ -172,8 +173,7 @@ export default function AdminPage() {
         </p>
       )}
 
-      {/* Task 4: <NewCodeForm onCreated={appendCode} /> goes here. */}
-      {void appendCode}
+      <NewCodeForm onCreated={appendCode} />
     </div>
   )
 }

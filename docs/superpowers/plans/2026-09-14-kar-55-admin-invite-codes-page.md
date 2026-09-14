@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Progress is the single `**PROGRESS:**` line below, updated once per task — no per-step checkboxes.
 
-**PROGRESS:** Task 0/4 done.
+**PROGRESS:** Task 4/4 done.
 
 Issue: [KAR-55](https://linear.app/quantti/issue/KAR-55/admin-page-for-invite-codes).
 Baseline: `origin/master` at `ad86657` (KAR-54 merged). Branch `kar-55-admin-page`, worktree
@@ -1619,3 +1619,20 @@ git commit -m "Add the new-code form to the admin page and document KAR-55"
 - New code form fields, conditional percentage, POST → 201 append + clear, 409/400/403/401/other wording: Task 4.
 - Tests named in the spec: router (T1), AppMenu (T1), AdminPage list/state words/disable-from-response/403/form body/409/release-absent (T2, T4); `npm run build` + `npm test` (T4); manual check (T4 docs, reported honestly).
 - Out of scope respected: no edit of label/note/validity, no delete, no other admin function, no admin layout.
+
+## Outcome
+
+Shipped: `/admin` route + `useProfile` + Admin menu item (Task 1); `AdminPage` with places line,
+release, codes table and 403 handling (Task 2); `CodeDetails` for ceiling and redemptions per
+expanded row (Task 3); `NewCodeForm` below the table, wired to `appendCode`, plus the form-grid
+CSS and the docs updates in this task. All four tasks landed as separate commits on
+`kar-55-admin-page`.
+
+Tests: 124 frontend tests green (`npm test`), up from 122 before this task's two new
+`AdminPage.test.ts` cases (and the `EMPTY` clear-form assertion). `npx tsc -b` clean.
+`npm run build` clean: `check-contrast` passes every gated pairing, `tsc -b` clean, Vite build
+succeeds (pre-existing >500 kB chunk-size warning, unrelated to this work).
+
+Deferred: the manual `npm run dev` check against a local backend with `ADMIN_USER_IDS` set was
+not run in this session — left for the owner before relying on the page in practice. No other
+scope was deferred.

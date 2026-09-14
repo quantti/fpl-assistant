@@ -4283,3 +4283,25 @@ Review follow-ups (PR #92): bounded the code to 64 characters with no spaces, re
 `Location` header on 201, closed the duplicate-create race with a `DuplicateKeyException` catch
 around the insert, made `summary()` a single read-only transaction, moved `release-burnt`'s grace
 cutoff onto the database clock instead of the JVM's, and made `isAdmin` null-safe.
+
+## Admin page for invite codes (KAR-55, 2026-09-14)
+
+Plan: `docs/superpowers/plans/2026-09-14-kar-55-admin-invite-codes-page.md`.
+
+`/admin` in the frontend, reached from an **Admin** item in the app menu that appears when
+`GET /api/profile` answers `admin: true` (`useProfile`, read once per signed-in shell). The item
+is a convenience: anyone can type the URL, the API answers 403 and the page says *This page is
+not available for this account.* — nothing in the browser decides who is an admin. The page shows
+the places line with **Release burnt places** when something is burnt, one row per code with the
+server-computed state in the spec's words (Open, Disabled, Used up, Expired, Not yet valid),
+Disable/Enable, and on expanding a row its ceiling (save, or **No ceiling**) and its redemptions
+newest first; a form below issues a new code. Every mutation re-renders from the `CodeView` the
+server returns, never from the click. Under 640px the table is one stacked block per code.
+
+Rulings: form dates are the admin's local days (`validUntil` is the end of that day); the places
+line always carries the burnt count; only Disabled and Used-up rows are muted; `SettingsPage` is
+untouched.
+
+Verified: `npm test` (124 tests green), `npm run build` clean (contrast check, `tsc -b`, Vite).
+Manual check with `npm run dev` against the local backend with `ADMIN_USER_IDS` set was **not**
+run in this session — left for the owner to do before relying on the page.
