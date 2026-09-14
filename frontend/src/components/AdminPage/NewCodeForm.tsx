@@ -35,6 +35,14 @@ export default function NewCodeForm({ onCreated }: Props) {
 
   async function submit(event: React.FormEvent) {
     event.preventDefault()
+    if (fields.maxUses !== '' && !/^\d+$/.test(fields.maxUses)) {
+      setStatus({ kind: 'error', message: 'A ceiling is a plain number, digits only.' })
+      return
+    }
+    if (fields.benefitKind === 'discount_percent' && !/^\d+$/.test(fields.benefitValue)) {
+      setStatus({ kind: 'error', message: 'A discount is a plain percentage, digits only.' })
+      return
+    }
     setBusy(true)
     setStatus(null)
     try {

@@ -85,11 +85,6 @@
   cursor: pointer;
 }
 
-.codeButton:focus-visible {
-  outline: 2px solid var(--pitch);
-  outline-offset: 2px;
-}
-
 .actionCell {
   text-align: right;
   white-space: nowrap;
@@ -138,6 +133,11 @@
   .table td::before {
     content: attr(data-label);
     color: var(--muted);
+  }
+
+  .detailsRow td {
+    display: block;
+    padding-block: var(--space-16);
   }
 
   .detailsRow td::before {

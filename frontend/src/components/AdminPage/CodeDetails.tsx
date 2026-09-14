@@ -78,7 +78,7 @@ export default function CodeDetails({ code, onChange }: Props) {
   }
 
   return (
-    <div className={classes.details} onClick={event => event.stopPropagation()}>
+    <div className={classes.details}>
       <form className={classes.ceiling} onSubmit={save}>
         <h3 className={`${typography.label} ${classes.label}`}>Ceiling</h3>
         <div className={classes.ceilingRow}>
