@@ -1575,8 +1575,8 @@ Tasks 1–4 done. Deviations from the plan:
 - Task 1 needed a fix round after Task 3's full-suite run: `MyTeamControllerTest`, a
   `@WebMvcTest` slice importing `SecurityConfig`, lacked the new `AdminAccess` bean; fixed in
   735f4bb by adding it to the slice's `@Import`.
-- A plan edit before Task 2: the ledger validity test compares instants rather than
-  `OffsetDateTime`s.
+- A plan edit before Task 2: the ledger validity test compares instants (`toInstant()`) rather
+  than `OffsetDateTime`s.
 - Fix wave 2: the pre-push hook's fresh-database run refused the push with 11 failures, all in
   `UserProfileControllerTest`, "sorry, too many clients already" — `InviteCodeAdminControllerTest`
   (`@Import(LocalSigningKey.class)` plus a mocked `SupabaseAdminClient`, a context no other class
@@ -1590,3 +1590,5 @@ already" — connection-pool exhaustion (KAR-51), not a regression from this wor
 alone (`./gradlew test --tests "*UserProfileControllerTest"`) is green. After the fix-wave-2
 `@DirtiesContext` change: `../scripts/test-db.sh reset && ./gradlew cleanTest test`, 942 tests,
 0 failures, 0 errors.
+
+Review follow-ups landed after the PR opened; `docs/STATUS.md` lists them.

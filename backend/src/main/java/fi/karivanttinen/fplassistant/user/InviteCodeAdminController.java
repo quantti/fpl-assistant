@@ -1,5 +1,6 @@
 package fi.karivanttinen.fplassistant.user;
 
+import java.net.URI;
 import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.util.List;
@@ -42,6 +43,9 @@ public class InviteCodeAdminController {
      * may be a sign-up whose Supabase call has not answered yet.
      */
     static final Duration BURNT_GRACE = Duration.ofMinutes(10);
+
+    /** Codes are typed and read aloud; sixty-four is generous for that. */
+    static final int MAX_CODE_LENGTH = 64;
 
     private final InviteLedger ledger;
 
@@ -94,6 +98,13 @@ public class InviteCodeAdminController {
         if (request == null || request.code() == null || request.code().isBlank()) {
             throw bad("A code is required.");
         }
+        String code = request.code().trim();
+        if (code.length() > MAX_CODE_LENGTH) {
+            throw bad("A code is at most " + MAX_CODE_LENGTH + " characters.");
+        }
+        if (code.chars().anyMatch(Character::isWhitespace)) {
+            throw bad("A code contains no spaces.");
+        }
         if (request.maxUses() != null && request.maxUses() < 1) {
             throw bad("maxUses must be at least 1, or absent for no ceiling.");
         }
@@ -101,7 +112,10 @@ public class InviteCodeAdminController {
         if (!InviteCode.ACCESS.equals(benefitKind) && !InviteCode.DISCOUNT_PERCENT.equals(benefitKind)) {
             throw bad("benefitKind must be 'access' or 'discount_percent'.");
         }
-        Integer benefitValue = InviteCode.ACCESS.equals(benefitKind) ? null : request.benefitValue();
+        if (InviteCode.ACCESS.equals(benefitKind) && request.benefitValue() != null) {
+            throw bad("benefitValue is only meaningful with benefitKind 'discount_percent'.");
+        }
+        Integer benefitValue = request.benefitValue();
         if (InviteCode.DISCOUNT_PERCENT.equals(benefitKind)
                 && (benefitValue == null || benefitValue < 1 || benefitValue > 100)) {
             throw bad("A discount code needs a benefitValue of 1-100.");
@@ -110,13 +124,13 @@ public class InviteCodeAdminController {
                 && request.validUntil().isBefore(request.validFrom())) {
             throw bad("validUntil must not be before validFrom.");
         }
-        String code = request.code().trim();
         String label = request.label() == null || request.label().isBlank() ? code : request.label().trim();
         InviteCode created = ledger.create(code, label, request.maxUses(), benefitKind, benefitValue,
                         request.validFrom(), request.validUntil(), request.note())
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.CONFLICT,
                         "A code with that name already exists."));
-        return ResponseEntity.status(HttpStatus.CREATED).body(view(created.id()));
+        return ResponseEntity.created(URI.create("/api/admin/invite-codes/" + created.id()))
+                .body(view(created.id()));
     }
 
     @PostMapping("/{id}/disable")

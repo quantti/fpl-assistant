@@ -4277,3 +4277,9 @@ was the one more that crossed the KAR-51 ceiling. The class now carries
 `@DirtiesContext(AFTER_CLASS)`, the same KAR-42 workaround `SecurityHeadersTest` already uses and
 that KAR-51 records; the real pool-size fix is still KAR-51's. Re-run after that change:
 `../scripts/test-db.sh reset && ./gradlew cleanTest test`, 942 tests, 0 failures, 0 errors.
+
+Review follow-ups (PR #92): bounded the code to 64 characters with no spaces, refused a
+`benefitValue` sent with `benefitKind` `access` instead of nulling it silently, added the
+`Location` header on 201, closed the duplicate-create race with a `DuplicateKeyException` catch
+around the insert, made `summary()` a single read-only transaction, moved `release-burnt`'s grace
+cutoff onto the database clock instead of the JVM's, and made `isAdmin` null-safe.

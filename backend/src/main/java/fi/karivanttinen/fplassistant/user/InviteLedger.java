@@ -7,6 +7,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -182,15 +183,24 @@ public class InviteLedger {
         if (findByCode(code).isPresent()) {
             return Optional.empty();
         }
-        jdbc.update("""
-                INSERT INTO %s (code, label, max_uses, benefit_kind, benefit_value, valid_from,
-                                valid_until, note)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """.formatted(codeTable),
-                code.trim(), label, maxUses, benefitKind, benefitValue, validFrom, validUntil, note);
+        // The read above and the insert below are not atomic: two simultaneous creates of the
+        // same code can both pass it, so the unique index on LOWER(code) is the real guard.
+        try {
+            jdbc.update("""
+                    INSERT INTO %s (code, label, max_uses, benefit_kind, benefit_value,
+                                    valid_from, valid_until, note)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """.formatted(codeTable),
+                    code.trim(), label, maxUses, benefitKind, benefitValue, validFrom, validUntil,
+                    note);
+        } catch (DuplicateKeyException e) {
+            return Optional.empty();
+        }
         return findByCode(code);
     }
 
+    /** The overall counts and the per-code counts describe the same instant. */
+    @Transactional(readOnly = true)
     public Summary summary() {
         Integer taken = jdbc.queryForObject("SELECT count(*) FROM " + redemptionTable,
                 Integer.class);
@@ -280,15 +290,16 @@ public class InviteLedger {
      * two-statement procedure from {@code docs/DEVELOPMENT.md} as one call, under the sign-up
      * lock. A burnt row younger than the grace period is left alone: it may be a sign-up whose
      * Supabase call has not yet answered, and deleting it would let that account through
-     * uncounted.
+     * uncounted. {@code redeemed_at} is written by the database's {@code now()}, so the cutoff is
+     * taken from that same clock rather than the JVM's.
      */
     @Transactional
     public Release releaseBurnt(Duration grace) {
         jdbc.queryForObject("SELECT pg_advisory_xact_lock(hashtext(?))", Object.class,
                 redemptionTable);
         int released = jdbc.update("DELETE FROM " + redemptionTable
-                        + " WHERE user_id IS NULL AND redeemed_at < ?",
-                OffsetDateTime.now().minus(grace));
+                        + " WHERE user_id IS NULL AND redeemed_at < now() - ?::interval",
+                grace.toSeconds() + " seconds");
         return new Release(released, reconcile());
     }
 

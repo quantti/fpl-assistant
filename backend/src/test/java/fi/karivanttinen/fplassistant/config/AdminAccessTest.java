@@ -4,6 +4,7 @@ import java.util.UUID;
 import java.util.function.Supplier;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.security.authentication.AnonymousAuthenticationToken;
 import org.springframework.security.authorization.AuthorizationResult;
 import org.springframework.security.core.Authentication;
@@ -13,6 +14,7 @@ import org.springframework.security.oauth2.server.resource.authentication.JwtAut
 import org.springframework.security.web.access.intercept.RequestAuthorizationContext;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Who is an admin: the configured set, and nobody else. The empty set is the case that matters
@@ -62,14 +64,19 @@ class AdminAccessTest {
 
     @Test
     void aMalformedIdInTheSettingFailsAtStartupNotAtRequestTime() {
-        org.assertj.core.api.Assertions.assertThatThrownBy(() -> new AdminAccess("not-a-uuid"))
+        assertThatThrownBy(() -> new AdminAccess("not-a-uuid"))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void aNullUserIdIsNotAnAdmin() {
+        assertThat(new AdminAccess(ADMIN).isAdmin(null)).isFalse();
     }
 
     private static boolean granted(AdminAccess access, Authentication authentication) {
         Supplier<Authentication> supplier = () -> authentication;
         AuthorizationResult result = access.authorize(supplier,
-                new RequestAuthorizationContext(new org.springframework.mock.web.MockHttpServletRequest()));
+                new RequestAuthorizationContext(new MockHttpServletRequest()));
         return result != null && result.isGranted();
     }
 

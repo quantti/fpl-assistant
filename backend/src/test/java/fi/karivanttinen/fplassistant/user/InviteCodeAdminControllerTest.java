@@ -24,6 +24,7 @@ import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilde
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.hasSize;
+import static org.hamcrest.Matchers.matchesPattern;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -32,6 +33,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -153,6 +155,7 @@ class InviteCodeAdminControllerTest {
                         + "\"benefitValue\":25,\"validUntil\":\"2027-06-01T00:00:00Z\","
                         + "\"note\":\"episode 12\"}")))
                 .andExpect(status().isCreated())
+                .andExpect(header().string("Location", matchesPattern("/api/admin/invite-codes/\\d+")))
                 .andExpect(jsonPath("$.code").value("Podcast"))
                 .andExpect(jsonPath("$.label").value("Podcast"))
                 .andExpect(jsonPath("$.maxUses").value(50))
@@ -166,6 +169,8 @@ class InviteCodeAdminControllerTest {
         mockMvc.perform(as(ADMIN, post(BASE).contentType(MediaType.APPLICATION_JSON)
                 .content("{\"code\":\"podcast\",\"maxUses\":1}")))
                 .andExpect(status().isConflict());
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + codeTable, Integer.class))
+                .isEqualTo(1);
     }
 
     @Test
@@ -178,6 +183,9 @@ class InviteCodeAdminControllerTest {
                 "{\"code\":\"x\",\"maxUses\":1,\"benefitKind\":\"free_forever\"}",
                 "{\"code\":\"x\",\"maxUses\":1,\"validFrom\":\"2027-01-02T00:00:00Z\","
                         + "\"validUntil\":\"2027-01-01T00:00:00Z\"}",
+                "{\"code\":\"x\",\"maxUses\":1,\"benefitKind\":\"access\",\"benefitValue\":10}",
+                "{\"code\":\"has space\",\"maxUses\":1}",
+                "{\"code\":\"" + "a".repeat(65) + "\",\"maxUses\":1}",
         };
         for (String body : bodies) {
             mockMvc.perform(as(ADMIN, post(BASE).contentType(MediaType.APPLICATION_JSON).content(body)))

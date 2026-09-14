@@ -115,7 +115,7 @@ whether to show the link; the API refuses a non-admin regardless.
 | Call | Does |
 |---|---|
 | `GET /api/admin/invite-codes` | every code with `uses`, `accounts`, `burnt`, `lastRedeemedAt` and a server-computed `state` (`OPEN`, `DISABLED`, `EXHAUSTED`, `NOT_YET_VALID`, `EXPIRED`), plus `accountCap`, `placesTaken`, `burnt` overall |
-| `POST /api/admin/invite-codes` | `{code, label?, maxUses?, benefitKind?, benefitValue?, validFrom?, validUntil?, note?}` → 201; 409 if the code exists in any case |
+| `POST /api/admin/invite-codes` | `{code, label?, maxUses?, benefitKind?, benefitValue?, validFrom?, validUntil?, note?}` → 201 with a `Location` header; 409 if the code exists in any case; the code is at most 64 characters with no spaces, and `benefitValue` is accepted only with `benefitKind` `discount_percent` |
 | `POST …/{id}/disable`, `POST …/{id}/enable` | switch a code off or on; sign-up refuses a disabled code on its next attempt |
 | `PUT …/{id}/max-uses` `{maxUses}`, `DELETE …/{id}/max-uses` | move or remove the ceiling; 409 below what is already spent — disable the code instead |
 | `GET …/{id}/redemptions` | who came in on the code, newest first; a null `userId` is a burnt place |
