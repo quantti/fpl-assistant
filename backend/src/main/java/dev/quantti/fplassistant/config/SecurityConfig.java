@@ -52,7 +52,8 @@ public class SecurityConfig {
     private static final Logger log = LoggerFactory.getLogger(SecurityConfig.class);
 
     @Bean
-    SecurityFilterChain filterChain(HttpSecurity http, JwtDecoder jwtDecoder) throws Exception {
+    SecurityFilterChain filterChain(HttpSecurity http, JwtDecoder jwtDecoder, AdminAccess adminAccess)
+            throws Exception {
         return http
                 // The API is called with a bearer token and keeps no session cookie, so CSRF
                 // has nothing to protect: an attacker's page cannot make the browser attach a
@@ -102,6 +103,11 @@ public class SecurityConfig {
                         // and the account cap, both checked in SignupController — never in the
                         // browser, which could not be trusted with either.
                         .requestMatchers(HttpMethod.POST, "/api/auth/signup").permitAll()
+                        // KAR-54: the admin API is for the accounts named in ADMIN_USER_IDS and
+                        // nobody else. On the path rather than in the controller, so a new
+                        // endpoint under /api/admin cannot forget it. An empty set refuses
+                        // everyone — see AdminAccess.
+                        .requestMatchers("/api/admin/**").access(adminAccess)
                         .requestMatchers("/api/**").authenticated()
                         // Fail closed: a new endpoint is protected until someone says otherwise.
                         // The previous catch-all permitAll made anything outside /api/** public

@@ -1,8 +1,10 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useComputedColorScheme } from '@mantine/core'
+import { useProfile } from '../../auth/useProfile'
 import { useChat } from '../../hooks/useChat'
 import { useConversations } from '../../hooks/useConversations'
 import { navigate, Route } from '../../router'
+import AdminPage from '../AdminPage/AdminPage'
 import AppMenu from '../AppMenu/AppMenu'
 import ConversationSidebar from '../ConversationSidebar/ConversationSidebar'
 import HeaderNavigation from '../HeaderNavigation/HeaderNavigation'
@@ -21,6 +23,7 @@ interface Props {
 export default function ChatView({ route }: Props) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const selectionRef = useRef(0)
+  const profile = useProfile()
   const conversations = useConversations()
   const { messages, replaceMessages, streamingContent, isStreaming, sendMessage } = useChat({
     conversationId: conversations.currentId,
@@ -103,7 +106,7 @@ export default function ChatView({ route }: Props) {
           <HeaderNavigation route={route} />
         </div>
         <div className={classes.menu}>
-          <AppMenu route={route} />
+          <AppMenu route={route} admin={profile?.admin ?? false} />
         </div>
       </header>
       <div className={classes.body}>
@@ -132,6 +135,8 @@ export default function ChatView({ route }: Props) {
             <UsagePage />
           ) : route === '/settings' ? (
             <SettingsPage />
+          ) : route === '/admin' ? (
+            <AdminPage />
           ) : messages.length === 0 && streamingContent === null ? (
             <div className={classes.empty}>
               Ask me anything about Fantasy Premier League — players, fixtures, strategy, chips, transfers.

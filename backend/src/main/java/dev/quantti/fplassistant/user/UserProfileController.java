@@ -2,6 +2,7 @@ package dev.quantti.fplassistant.user;
 
 import java.util.UUID;
 
+import dev.quantti.fplassistant.config.AdminAccess;
 import dev.quantti.fplassistant.config.TokenSubject;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -31,24 +32,34 @@ public class UserProfileController {
 
     private final UserProfileService profiles;
     private final FplEntryLookup entries;
+    private final AdminAccess adminAccess;
 
-    public UserProfileController(UserProfileService profiles, FplEntryLookup entries) {
+    public UserProfileController(UserProfileService profiles, FplEntryLookup entries,
+                                 AdminAccess adminAccess) {
         this.profiles = profiles;
         this.entries = entries;
+        this.adminAccess = adminAccess;
     }
 
-    public record ProfileResponse(Integer fplTeamId) {}
+    /**
+     * @param admin whether this account may call {@code /api/admin/**}. For the frontend to show
+     *              or hide the link; the API refuses a non-admin regardless of what the page
+     *              believes.
+     */
+    public record ProfileResponse(Integer fplTeamId, boolean admin) {}
 
     public record TeamIdRequest(Integer fplTeamId) {}
 
     @GetMapping
     public ProfileResponse profile(@AuthenticationPrincipal Jwt jwt) {
-        return new ProfileResponse(profiles.teamIdOf(TokenSubject.userId(jwt)).orElse(null));
+        UUID userId = TokenSubject.userId(jwt);
+        return new ProfileResponse(profiles.teamIdOf(userId).orElse(null), adminAccess.isAdmin(userId));
     }
 
     @PutMapping("/fpl-team-id")
     public ProfileResponse setTeamId(@AuthenticationPrincipal Jwt jwt,
                                      @RequestBody TeamIdRequest request) {
+        UUID userId = TokenSubject.userId(jwt);
         Integer teamId = request.fplTeamId();
         if (teamId == null) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
@@ -79,14 +90,15 @@ public class UserProfileController {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, rejection);
         }
 
-        profiles.setTeamId(TokenSubject.userId(jwt), teamId);
-        return new ProfileResponse(teamId);
+        profiles.setTeamId(userId, teamId);
+        return new ProfileResponse(teamId, adminAccess.isAdmin(userId));
     }
 
     @DeleteMapping("/fpl-team-id")
     public ProfileResponse clearTeamId(@AuthenticationPrincipal Jwt jwt) {
-        profiles.setTeamId(TokenSubject.userId(jwt), null);
-        return new ProfileResponse(null);
+        UUID userId = TokenSubject.userId(jwt);
+        profiles.setTeamId(userId, null);
+        return new ProfileResponse(null, adminAccess.isAdmin(userId));
     }
 
 }
