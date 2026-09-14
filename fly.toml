@@ -4,6 +4,8 @@ app = 'fpl-assistant'
 # deploy error). flyctl launch originally registered the app at cdg anyway — the hand-correction
 # of primary_region to mad in Phase 1 was only valid while mad still accepted new resources.
 primary_region = 'cdg'
+# Allow the durable epoch fence and bounded worker drain before forced termination.
+kill_timeout = '60s'
 
 [build]
   dockerfile = 'Dockerfile'
