@@ -32,7 +32,11 @@ import org.springframework.stereotype.Component;
  *
  * <p>Applied as the {@link AuthorizationManager} on the path in {@code SecurityConfig}, not per
  * controller, so a controller under {@code /api/admin} cannot forget it. An anonymous caller is
- * refused here and Spring turns that into the usual 401; a signed-in non-admin gets 403.
+ * refused here and Spring turns that into the usual 401; a signed-in non-admin gets 403. That
+ * refusal rests on the principal not being a {@link Jwt} — only the resource-server provider
+ * builds one, and it marks the token authenticated — so no separate {@code isAuthenticated()}
+ * check is made; a test-built {@code JwtAuthenticationToken(Jwt)} is not marked authenticated,
+ * which is why the check is on the principal type.
  */
 @Component
 public class AdminAccess implements AuthorizationManager<RequestAuthorizationContext> {
@@ -48,7 +52,7 @@ public class AdminAccess implements AuthorizationManager<RequestAuthorizationCon
     }
 
     public boolean isAdmin(UUID userId) {
-        return adminIds.contains(userId);
+        return userId != null && adminIds.contains(userId);
     }
 
     @Override
