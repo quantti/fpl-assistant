@@ -25,6 +25,7 @@ public final class SyncOperations {
     private final OwnedSyncMode localMode;
     private final boolean alertDeliveryRequired;
     private final boolean alertDeliveryConfigured;
+    private final boolean externalMonitor;
 
     public SyncOperations(JdbcTemplate jdbc, TransactionTemplate tx, Clock clock, OwnedSyncTables tables) {
         this(jdbc, tx, clock, tables, OwnedSyncMode.OFF);
@@ -38,6 +39,14 @@ public final class SyncOperations {
     public SyncOperations(JdbcTemplate jdbc, TransactionTemplate tx, Clock clock,
                           OwnedSyncTables tables, OwnedSyncMode localMode,
                           boolean alertDeliveryRequired, boolean alertDeliveryConfigured) {
+        this(jdbc, tx, clock, tables, localMode, alertDeliveryRequired, alertDeliveryConfigured, false);
+    }
+
+    public SyncOperations(JdbcTemplate jdbc, TransactionTemplate tx, Clock clock,
+                          OwnedSyncTables tables, OwnedSyncMode localMode,
+                          boolean alertDeliveryRequired, boolean alertDeliveryConfigured,
+                          boolean externalMonitor) {
+        this.externalMonitor = externalMonitor;
         this.jdbc = Objects.requireNonNull(jdbc);
         this.tx = Objects.requireNonNull(tx);
         this.clock = Objects.requireNonNull(clock);
@@ -90,6 +99,17 @@ public final class SyncOperations {
                     Timestamp.class);
             Timestamp watchdog = jdbc.queryForObject("SELECT max(heartbeat_at) FROM "
                     + tables.plannerRuntime() + " WHERE instance_id LIKE 'watchdog:%'", Timestamp.class);
+            if (externalMonitor) {
+                // Kuma delivers DOWN/recovery notifications. Never interpret a delivered webhook,
+                // an old recovery, or a disabled outbox as proof that the current incident cleared.
+                Long open = jdbc.queryForObject("SELECT count(*) FROM " + tables.alert() + " a "
+                        + "WHERE a.event_type='INCIDENT' AND NOT EXISTS (SELECT 1 FROM "
+                        + tables.alert() + " r WHERE r.incident_key=a.incident_key "
+                        + "AND r.occurrence=a.occurrence AND r.event_type='RECOVERY')", Long.class);
+                Instant cutoff = clock.instant().minus(HEALTH_LIMIT);
+                return localMode != OwnedSyncMode.OFF && fresh(planner, cutoff)
+                        && fresh(watchdog, cutoff) && open != null && open == 0;
+            }
             Timestamp delivery = jdbc.queryForObject("SELECT max(heartbeat_at) FROM "
                     + tables.plannerRuntime() + " WHERE instance_id LIKE 'delivery%'", Timestamp.class);
             Long undelivered = jdbc.queryForObject("SELECT count(*) FROM " + tables.alert() + " failed "
@@ -151,6 +171,9 @@ public final class SyncOperations {
 
     /** Additive redelivery: the exhausted row stays immutable evidence and a new outbox row is created. */
     public long redriveAlert(long failedAlertId) {
+        if (externalMonitor) {
+            throw new IllegalArgumentException("Notification retries belong to the external monitor");
+        }
         if (failedAlertId <= 0) throw new IllegalArgumentException("failedAlertId must be positive");
         if (localMode == OwnedSyncMode.OFF) throw new StaleOperatorRequestException("Local owned-sync mode is OFF");
         return tx.execute(status -> {
