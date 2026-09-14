@@ -9,6 +9,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -206,6 +207,10 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
         return fallback;
     }
 
+    Optional<Instant> nextAdmissionHint() {
+        return budget.nextAdmissionHint();
+    }
+
     private static Failure failure(FailureKind kind, String message, Instant started, Instant finished,
                                    Headers headers) {
         return new Failure(kind, message, headers == null ? null : headers.statusCode,
@@ -356,7 +361,11 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
     }
 
     /** Raw transport evidence only; a 200 response is not parsed, validated, staged or verified. */
-    public record Response(int statusCode, byte[] body, String retryAfter, SourceRead read) implements Result {
+    public record Response(int statusCode, byte[] body, String retryAfter, SourceRead read,
+                           Instant nextDue) implements Result {
+        public Response(int statusCode, byte[] body, String retryAfter, SourceRead read) {
+            this(statusCode, body, retryAfter, read, null);
+        }
         public Response {
             if (statusCode < 100 || statusCode > 599) throw new IllegalArgumentException("invalid HTTP status");
             body = Objects.requireNonNull(body).clone();
@@ -366,7 +375,11 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
     }
 
     public record Failure(FailureKind kind, String message, Integer statusCode,
-                          String retryAfter, SourceRead read) implements Result {
+                          String retryAfter, SourceRead read, Instant nextDue) implements Result {
+        public Failure(FailureKind kind, String message, Integer statusCode,
+                       String retryAfter, SourceRead read) {
+            this(kind, message, statusCode, retryAfter, read, null);
+        }
         public Failure {
             Objects.requireNonNull(kind);
             Objects.requireNonNull(message);

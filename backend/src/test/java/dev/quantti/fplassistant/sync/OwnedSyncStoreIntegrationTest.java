@@ -20,6 +20,7 @@ import dev.quantti.fplassistant.sync.OwnedSyncStore.EndpointKind;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.Lease;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.LeaseLostException;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.PayloadRetentionLimitException;
+import dev.quantti.fplassistant.sync.OwnedSyncStore.Run;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.SourceRead;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.StaleGenerationException;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.SyncKind;
@@ -59,6 +60,7 @@ class OwnedSyncStoreIntegrationTest {
         new OwnedSyncSchema(jdbc, TABLES).initialize();
         jdbc.execute("CREATE TABLE IF NOT EXISTS " + PROBE
                 + " (publication_key VARCHAR(200) PRIMARY KEY, value INTEGER NOT NULL)");
+        jdbc.execute("ALTER TABLE " + PROBE + " ENABLE ROW LEVEL SECURITY");
     }
 
     @BeforeEach
@@ -90,6 +92,26 @@ class OwnedSyncStoreIntegrationTest {
 
         var next = store.enqueue(SyncKind.PLAYER_HISTORY, "2097-98", "all-players", "history", clock.instant());
         assertThat(next.generation()).isGreaterThan(first.generation());
+    }
+
+    @Test
+    void sourceDemandFloorAdvancesOnlyForNewCoalescedDemandNotRetries() {
+        Run first = store.enqueue(SyncKind.CATALOGUE_SCHEDULE, "2097-98", "catalogue",
+                "catalogue", clock.instant().minusSeconds(30));
+        Lease lease = store.acquire("worker", Duration.ofMinutes(5)).orElseThrow();
+        assertThat(store.requestedSourceAfter(lease)).isEqualTo(clock.instant());
+
+        clock.advance(Duration.ofSeconds(20));
+        Run coalesced = store.enqueue(SyncKind.CATALOGUE_SCHEDULE, "2097-98", "catalogue",
+                "catalogue", clock.instant().minusSeconds(10));
+        assertThat(coalesced.generation()).isEqualTo(first.generation());
+        assertThat(store.requestedSourceAfter(lease)).isEqualTo(clock.instant());
+
+        Instant floor = clock.instant();
+        store.retry(lease, clock.instant().plus(Duration.ofHours(3)), "cutover");
+        assertThat(jdbc.queryForObject("SELECT requested_source_after FROM " + TABLES.run()
+                + " WHERE generation=?", java.sql.Timestamp.class, lease.generation()).toInstant())
+                .isEqualTo(floor);
     }
 
     @Test
