@@ -58,6 +58,14 @@ dependencies {
 }
 
 tasks.named('test') {
+    // One bounded test JVM; do not retain every Spring context/pool across the full suite.
+    maxParallelForks = 1
+    minHeapSize = '64m'
+    maxHeapSize = '384m'
+    jvmArgs '-XX:MaxMetaspaceSize=256m', '-XX:MaxDirectMemorySize=64m',
+            '-XX:ReservedCodeCacheSize=64m', '-XX:ActiveProcessorCount=2', '-XX:+UseSerialGC'
+    systemProperty 'spring.test.context.cache.maxSize', '2'
+
     useJUnitPlatform {
         // Tests tagged 'realdata' assert against tapas' fully-synced production tables (a whole
         // season of fixtures and clubs), which the ephemeral test database deliberately does not
