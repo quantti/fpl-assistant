@@ -370,7 +370,7 @@ public final class OwnedSyncSchema {
                     delivered_at TIMESTAMPTZ,
                     CONSTRAINT ck_%s_event CHECK (event_type IN ('INCIDENT', 'RECOVERY', 'REDRIVE')),
                     CONSTRAINT ck_%s_delivery CHECK (delivery_state IN
-                        ('PENDING', 'DELIVERING', 'DELIVERED', 'FAILED', 'DISABLED', 'UNCONFIGURED', 'SUPERSEDED')),
+                        ('PENDING', 'DELIVERING', 'DELIVERED', 'FAILED', 'DISABLED', 'UNCONFIGURED', 'SUPERSEDED', 'EXTERNAL')),
                     CONSTRAINT ck_%s_attempts CHECK (delivery_attempts BETWEEN 0 AND 3),
                     CONSTRAINT ck_%s_delivery_lease CHECK (
                         (delivery_state='DELIVERING' AND delivery_token IS NOT NULL
@@ -389,7 +389,7 @@ public final class OwnedSyncSchema {
                 .formatted(tables.alert(), tables.alert()));
         jdbc.execute("ALTER TABLE %s ADD CONSTRAINT ck_%s_delivery CHECK (delivery_state IN "
                 .formatted(tables.alert(), tables.alert())
-                + "('PENDING','DELIVERING','DELIVERED','FAILED','DISABLED','UNCONFIGURED','SUPERSEDED'))");
+                + "('PENDING','DELIVERING','DELIVERED','FAILED','DISABLED','UNCONFIGURED','SUPERSEDED','EXTERNAL'))");
         jdbc.execute("ALTER TABLE %s DROP CONSTRAINT IF EXISTS ck_%s_event"
                 .formatted(tables.alert(), tables.alert()));
         jdbc.execute("ALTER TABLE %s ADD CONSTRAINT ck_%s_event CHECK "
