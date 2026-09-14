@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react'
 import { Button, TextInput } from '@mantine/core'
 import { apiFetch } from '../../auth/apiFetch'
+import { problemDetail } from '../../auth/problemDetail'
 import typography from '../../styles/typography.module.css'
 import classes from './AdminPage.module.css'
+import StatusLine, { Status } from './StatusLine'
 import {
-  InviteCodeView, NOT_AVAILABLE, Redemption, SAVE_FAILED, byNewest, problemDetail, shortUserId,
+  InviteCodeView, NOT_AVAILABLE, Redemption, SAVE_FAILED, byNewest, isCount, shortUserId,
 } from './inviteCodes'
 
 interface Props {
@@ -12,8 +14,10 @@ interface Props {
   onChange: (view: InviteCodeView) => void
 }
 
-type Status = { kind: 'note' | 'error'; message: string } | null
-type Redemptions = { kind: 'loading' } | { kind: 'failed' } | { kind: 'ready'; rows: Redemption[] }
+type Redemptions =
+  | { kind: 'loading' }
+  | { kind: 'failed'; message: string }
+  | { kind: 'ready'; rows: Redemption[] }
 
 /**
  * The expanded row: the code's ceiling, and who came in on it.
@@ -32,11 +36,19 @@ export default function CodeDetails({ code, onChange }: Props) {
     let cancelled = false
     apiFetch(`/api/admin/invite-codes/${code.id}/redemptions`)
       .then(async response => {
+        if (response.status === 403) {
+          if (!cancelled) setRedemptions({ kind: 'failed', message: NOT_AVAILABLE })
+          return
+        }
         if (!response.ok) throw new Error(String(response.status))
         const rows: Redemption[] = await response.json()
         if (!cancelled) setRedemptions({ kind: 'ready', rows: [...rows].sort(byNewest) })
       })
-      .catch(() => { if (!cancelled) setRedemptions({ kind: 'failed' }) })
+      .catch(() => {
+        if (!cancelled) {
+          setRedemptions({ kind: 'failed', message: 'Redemptions could not be loaded.' })
+        }
+      })
     return () => { cancelled = true }
   }, [code.id])
 
@@ -66,7 +78,7 @@ export default function CodeDetails({ code, onChange }: Props) {
 
   function save(event: React.FormEvent) {
     event.preventDefault()
-    if (!/^\d+$/.test(ceiling)) {
+    if (!isCount(ceiling)) {
       setStatus({ kind: 'error', message: 'A ceiling is a plain number, digits only.' })
       return
     }
@@ -92,18 +104,13 @@ export default function CodeDetails({ code, onChange }: Props) {
             </Button>
           )}
         </div>
-        {status && (
-          <p className={status.kind === 'error' ? classes.error : classes.muted}
-             role={status.kind === 'error' ? 'alert' : 'status'}>
-            {status.message}
-          </p>
-        )}
+        <StatusLine status={status} />
       </form>
 
       <div className={classes.redemptions}>
         <h3 className={`${typography.label} ${classes.label}`}>Redemptions</h3>
         {redemptions.kind === 'loading' && <p className={classes.muted}>Loading…</p>}
-        {redemptions.kind === 'failed' && <p className={classes.error}>Redemptions could not be loaded.</p>}
+        {redemptions.kind === 'failed' && <p className={classes.error}>{redemptions.message}</p>}
         {redemptions.kind === 'ready' && redemptions.rows.length === 0 && (
           <p className={classes.muted}>Nobody has used this code yet.</p>
         )}

@@ -86,7 +86,7 @@ Error bodies are Spring problem details (`spring.mvc.problemdetails.enabled: tru
 - Produces: `Route` includes `'/admin'`; `Profile` in `types.ts`; `useProfile(): Profile | null`; `AppMenu` props `{ route: Route; admin: boolean }`.
 - Task 2 adds the `/admin` branch in `ChatView`'s page switch; this task only wires the menu.
 
-- [ ] **Step 1: Failing router test**
+**Step 1: Failing router test**
 
 Append to `frontend/src/router.test.ts` inside the `describe`:
 
@@ -98,11 +98,11 @@ Append to `frontend/src/router.test.ts` inside the `describe`:
 
 Run: `cd frontend && npx vitest run src/router.test.ts` → the new case FAILS (`'/'` received).
 
-- [ ] **Step 2: Route**
+**Step 2: Route**
 
 In `frontend/src/router.ts`: `export type Route = '/' | '/my-team' | '/shortlist' | '/usage' | '/settings' | '/admin'` and add `|| path === '/admin'` to `routeFromPath`. Update the doc comment's "five top-level views" to "six". Run the router test → PASS.
 
-- [ ] **Step 3: Profile type and hook**
+**Step 3: Profile type and hook**
 
 Append to `frontend/src/types.ts`:
 
@@ -149,7 +149,7 @@ export function useProfile(): Profile | null {
 }
 ```
 
-- [ ] **Step 4: Failing AppMenu test**
+**Step 4: Failing AppMenu test**
 
 Create `frontend/src/components/AppMenu/AppMenu.test.ts`:
 
@@ -227,7 +227,7 @@ it('has no Admin item for everyone else', () => {
 
 Run: `npx vitest run src/components/AppMenu/AppMenu.test.ts` → FAILS (no Admin item; TypeScript complains about the `admin` prop — both expected).
 
-- [ ] **Step 5: AppMenu**
+**Step 5: AppMenu**
 
 In `AppMenu.tsx`: `interface Props { route: Route; admin: boolean }`, destructure `admin`, and after the `APP_MENU_LINKS.map(...)` block add:
 
@@ -239,11 +239,11 @@ In `AppMenu.tsx`: `interface Props { route: Route; admin: boolean }`, destructur
 
 Extend the component doc comment with one line: "Admin appears only when the profile says so."
 
-- [ ] **Step 6: ChatView passes the flag**
+**Step 6: ChatView passes the flag**
 
 In `ChatView.tsx`: `import { useProfile } from '../../auth/useProfile'`; inside the component `const profile = useProfile()`; render `<AppMenu route={route} admin={profile?.admin ?? false} />`. Do not add the `/admin` page branch yet (Task 2).
 
-- [ ] **Step 7: Verify and commit**
+**Step 7: Verify and commit**
 
 Run: `cd frontend && npm test` → all green, including `HeaderNavigation.test.ts` (`APP_MENU_LINKS` unchanged). Run `npx tsc -b` → clean.
 
@@ -264,7 +264,7 @@ git commit -m "Add the /admin route and the Admin menu item for admins"
 **Interfaces:**
 - Produces: everything exported from `inviteCodes.ts` below; `AdminPage` default export (no props); in `AdminPage`, `replaceCode(view)` and `appendCode(view)` state updaters and an `expandedId` — Task 3 mounts `CodeDetails` in the expanded row, Task 4 mounts `NewCodeForm` below the table. Leave both slots as the comments below mark them.
 
-- [ ] **Step 1: Failing helper tests**
+**Step 1: Failing helper tests**
 
 Create `frontend/src/components/AdminPage/inviteCodes.test.ts`:
 
@@ -342,7 +342,7 @@ describe('createBody', () => {
 
 Run: `npx vitest run src/components/AdminPage/inviteCodes.test.ts` → FAILS (module missing).
 
-- [ ] **Step 2: The helpers module**
+**Step 2: The helpers module**
 
 Create `frontend/src/components/AdminPage/inviteCodes.ts`:
 
@@ -495,7 +495,7 @@ export async function problemDetail(response: Response): Promise<string | null> 
 
 Run the helper tests → PASS.
 
-- [ ] **Step 3: Failing page tests**
+**Step 3: Failing page tests**
 
 Create `frontend/src/components/AdminPage/AdminPage.test.ts`. The Mantine stand-ins forward `name`, `value`, `onChange`, `type`, `placeholder` so the form tests (Task 3, Task 4) can type into fields; write them now so later tasks only add cases.
 
@@ -674,7 +674,7 @@ it('offers Release burnt places only when something is burnt, and reports the re
 
 Run: `npx vitest run src/components/AdminPage/AdminPage.test.ts` → FAILS (component missing).
 
-- [ ] **Step 4: The page**
+**Step 4: The page**
 
 Create `frontend/src/components/AdminPage/AdminPage.tsx`:
 
@@ -913,7 +913,7 @@ function CodeRowGroup({ code, muted, expanded, busy, onToggleExpand, onToggleAct
 
 The two `{void …}` expressions keep `appendCode` and `onChange` referenced so `tsc` does not reject the slots as unused; Tasks 3 and 4 remove them.
 
-- [ ] **Step 5: The stylesheet**
+**Step 5: The stylesheet**
 
 Create `frontend/src/components/AdminPage/AdminPage.module.css`:
 
@@ -1074,11 +1074,11 @@ Create `frontend/src/components/AdminPage/AdminPage.module.css`:
 }
 ```
 
-- [ ] **Step 6: Route it**
+**Step 6: Route it**
 
 In `ChatView.tsx`: `import AdminPage from '../AdminPage/AdminPage'` and add `: route === '/admin' ? (<AdminPage />)` to the page switch, after the `/settings` branch.
 
-- [ ] **Step 7: Verify and commit**
+**Step 7: Verify and commit**
 
 Run: `cd frontend && npm test` → all green. `npx tsc -b` → clean. Check the four AdminPage cases in particular; if the release test's second mount races, the `flush()` after the click is where to look (two awaited fetches: release, then list).
 
@@ -1100,7 +1100,7 @@ git commit -m "Add the admin page: places, codes table, disable and enable"
 - Consumes: `InviteCodeView`, `Redemption`, `NOT_AVAILABLE`, `SAVE_FAILED`, `byNewest`, `shortUserId`, `problemDetail` from `inviteCodes.ts`; `replaceCode` arrives as the `onChange` prop.
 - Produces: `CodeDetails` default export, props `{ code: InviteCodeView; onChange: (view: InviteCodeView) => void }`.
 
-- [ ] **Step 1: Failing tests**
+**Step 1: Failing tests**
 
 Append to `AdminPage.test.ts`:
 
@@ -1173,7 +1173,7 @@ Note `rowOf` finds the first `tbody tr` containing the code text; the details ro
 
 Run: `npx vitest run src/components/AdminPage/AdminPage.test.ts` → the three new cases FAIL.
 
-- [ ] **Step 2: CodeDetails**
+**Step 2: CodeDetails**
 
 Create `frontend/src/components/AdminPage/CodeDetails.tsx`:
 
@@ -1309,7 +1309,7 @@ The wrapping `div`'s `stopPropagation` above turned out to be inert — the deta
 sibling of the clickable row, not a descendant, so nothing bubbles there — and was removed in the
 final whole-branch review.
 
-- [ ] **Step 3: Mount it and style it**
+**Step 3: Mount it and style it**
 
 In `AdminPage.tsx`: `import CodeDetails from './CodeDetails'`; in `CodeRowGroup` replace the placeholder comment and `{void onChange}` with `<CodeDetails code={code} onChange={onChange} />`.
 
@@ -1356,7 +1356,7 @@ Append to `AdminPage.module.css`:
 }
 ```
 
-- [ ] **Step 4: Verify and commit**
+**Step 4: Verify and commit**
 
 Run: `cd frontend && npm test` → all green. `npx tsc -b` → clean.
 
@@ -1379,7 +1379,7 @@ git commit -m "Expand an invite code to its ceiling and redemptions"
 - Consumes: `NewCodeFields`, `createBody`, `InviteCodeView`, `NOT_AVAILABLE`, `SAVE_FAILED`, `problemDetail`; `appendCode` arrives as `onCreated`.
 - Produces: `NewCodeForm` default export, props `{ onCreated: (view: InviteCodeView) => void }`.
 
-- [ ] **Step 1: Failing tests**
+**Step 1: Failing tests**
 
 Append to `AdminPage.test.ts`:
 
@@ -1431,7 +1431,7 @@ Also assert, in the first test, that the percentage field is absent before the k
 
 Run: `npx vitest run src/components/AdminPage/AdminPage.test.ts` → the two new cases FAIL.
 
-- [ ] **Step 2: NewCodeForm**
+**Step 2: NewCodeForm**
 
 Create `frontend/src/components/AdminPage/NewCodeForm.tsx`:
 
@@ -1539,7 +1539,7 @@ export default function NewCodeForm({ onCreated }: Props) {
 }
 ```
 
-- [ ] **Step 3: Mount it and style it**
+**Step 3: Mount it and style it**
 
 In `AdminPage.tsx`: `import NewCodeForm from './NewCodeForm'`; replace the Task 4 comment and `{void appendCode}` with `<NewCodeForm onCreated={appendCode} />`.
 
@@ -1566,11 +1566,11 @@ Append to `AdminPage.module.css`:
 }
 ```
 
-- [ ] **Step 4: Verify**
+**Step 4: Verify**
 
 Run from `frontend/`: `npm test` → all green; `npm run build` → contrast check, `tsc -b` and the Vite build all pass (needs `VITE_SUPABASE_ANON_KEY` in `frontend/.env.local`; if it is absent, run `VITE_SUPABASE_ANON_KEY=x npm run build` — the value is not used by the build itself). Report the exact output lines.
 
-- [ ] **Step 5: Docs**
+**Step 5: Docs**
 
 `docs/DEVELOPMENT.md`, in the invite-code section beside the KAR-54 endpoint table (around the sentence "since KAR-54 they are operated through the admin API rather than SQL"): add one sentence — *Since KAR-55 the app's `/admin` page (menu item **Admin**, shown when `GET /api/profile` says `admin: true`) is the front for that API; the `curl` lines below remain for a session without a browser.* Keep everything else.
 
@@ -1602,7 +1602,7 @@ state that it was not run and why>.
 
 Update this plan: `**PROGRESS:** Task 4/4 done.` and add an `## Outcome` block at the end (5–10 lines: what shipped, test counts, anything deferred).
 
-- [ ] **Step 6: Commit**
+**Step 6: Commit**
 
 ```bash
 git add frontend/src/components/AdminPage docs/STATUS.md docs/DEVELOPMENT.md docs/superpowers/plans/2026-09-14-kar-55-admin-invite-codes-page.md

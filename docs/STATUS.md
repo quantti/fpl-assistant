@@ -4312,3 +4312,12 @@ row instead of leaving it showing the just-deleted redemptions, dropped the deta
 `stopPropagation` click handler, wired `aria-controls` from the code button to its details row,
 restored details-row padding under 640px, and removed a duplicate local focus-visible rule already
 covered globally; `npm test` is now 125 tests green.
+
+PR review follow-ups (PR #94): a failed re-read after a successful burnt-place release no longer
+misreports the release or replaces the page; the mobile action cell now beats `.table td` on
+specificity; redemptions sort by parsed instant with an id tie-break instead of by ISO string;
+ceiling and discount inputs are bounded to the server's `int` range (`isCount`); a 403 on
+redemptions now reads the same not-available sentence as everywhere else; `problemDetail` and the
+status-line markup are each shared in one place (`auth/problemDetail.ts`, `AdminPage/StatusLine.tsx`)
+instead of duplicated across `SignIn`/`CodeDetails`/`NewCodeForm`; and the plan doc's step headings
+dropped their checkbox syntax. `npm test` is now 126 tests green.
