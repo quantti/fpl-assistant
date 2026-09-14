@@ -4,6 +4,7 @@ import { useProfile } from '../../auth/useProfile'
 import { useChat } from '../../hooks/useChat'
 import { useConversations } from '../../hooks/useConversations'
 import { navigate, Route } from '../../router'
+import AdminPage from '../AdminPage/AdminPage'
 import AppMenu from '../AppMenu/AppMenu'
 import ConversationSidebar from '../ConversationSidebar/ConversationSidebar'
 import HeaderNavigation from '../HeaderNavigation/HeaderNavigation'
@@ -134,6 +135,8 @@ export default function ChatView({ route }: Props) {
             <UsagePage />
           ) : route === '/settings' ? (
             <SettingsPage />
+          ) : route === '/admin' ? (
+            <AdminPage />
           ) : messages.length === 0 && streamingContent === null ? (
             <div className={classes.empty}>
               Ask me anything about Fantasy Premier League — players, fixtures, strategy, chips, transfers.
