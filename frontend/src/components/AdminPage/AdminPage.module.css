@@ -144,11 +144,11 @@
     content: none;
   }
 
-  .actionCell {
+  .table td.actionCell {
     justify-content: flex-end;
   }
 
-  .actionCell::before {
+  .table td.actionCell::before {
     content: none;
   }
 }

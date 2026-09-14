@@ -1,17 +1,17 @@
 import { useState } from 'react'
 import { Button, NativeSelect, TextInput } from '@mantine/core'
 import { apiFetch } from '../../auth/apiFetch'
+import { problemDetail } from '../../auth/problemDetail'
 import typography from '../../styles/typography.module.css'
 import classes from './AdminPage.module.css'
+import StatusLine, { Status } from './StatusLine'
 import {
-  BenefitKind, InviteCodeView, NOT_AVAILABLE, NewCodeFields, SAVE_FAILED, createBody, problemDetail,
+  BenefitKind, InviteCodeView, NOT_AVAILABLE, NewCodeFields, SAVE_FAILED, createBody, isCount,
 } from './inviteCodes'
 
 interface Props {
   onCreated: (view: InviteCodeView) => void
 }
-
-type Status = { kind: 'note' | 'error'; message: string } | null
 
 const EMPTY: NewCodeFields = {
   code: '', label: '', maxUses: '', benefitKind: 'access', benefitValue: '', validFrom: '',
@@ -35,11 +35,11 @@ export default function NewCodeForm({ onCreated }: Props) {
 
   async function submit(event: React.FormEvent) {
     event.preventDefault()
-    if (fields.maxUses !== '' && !/^\d+$/.test(fields.maxUses)) {
+    if (fields.maxUses !== '' && !isCount(fields.maxUses)) {
       setStatus({ kind: 'error', message: 'A ceiling is a plain number, digits only.' })
       return
     }
-    if (fields.benefitKind === 'discount_percent' && !/^\d+$/.test(fields.benefitValue)) {
+    if (fields.benefitKind === 'discount_percent' && !isCount(fields.benefitValue)) {
       setStatus({ kind: 'error', message: 'A discount is a plain percentage, digits only.' })
       return
     }
@@ -97,12 +97,7 @@ export default function NewCodeForm({ onCreated }: Props) {
       </div>
       <div className={classes.formActions}>
         <Button type="submit" loading={busy} disabled={fields.code.trim() === ''}>Create code</Button>
-        {status && (
-          <p className={status.kind === 'error' ? classes.error : classes.muted}
-             role={status.kind === 'error' ? 'alert' : 'status'}>
-            {status.message}
-          </p>
-        )}
+        <StatusLine status={status} />
       </div>
     </form>
   )

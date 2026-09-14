@@ -49,6 +49,14 @@ export interface ReleaseResult {
 export const NOT_AVAILABLE = 'This page is not available for this account.'
 export const SAVE_FAILED = 'That could not be saved. Nothing was changed — try again shortly.'
 
+export const MAX_INT = 2147483647
+
+/** Digits only, and within the server's `int` range — a larger value passes the regex but fails
+ * the write with Spring's generic "Failed to read request". */
+export function isCount(value: string): boolean {
+  return /^\d+$/.test(value) && Number(value) <= MAX_INT
+}
+
 /** The server's state, in the page's words. Rendered from the response, never computed here. */
 export const STATE_WORDS: Record<CodeState, string> = {
   OPEN: 'Open',
@@ -87,7 +95,7 @@ export function shortUserId(userId: string): string {
 }
 
 export function byNewest(a: Redemption, b: Redemption): number {
-  return b.redeemedAt.localeCompare(a.redeemedAt)
+  return Date.parse(b.redeemedAt) - Date.parse(a.redeemedAt) || b.id - a.id
 }
 
 /** The new-code form's fields as typed — strings, so an empty field is '' and not a NaN. */
@@ -130,15 +138,5 @@ export function createBody(fields: NewCodeFields): CreateBody {
     validFrom: fields.validFrom === '' ? null : new Date(`${fields.validFrom}T00:00:00`).toISOString(),
     validUntil: fields.validUntil === '' ? null : new Date(`${fields.validUntil}T23:59:59`).toISOString(),
     note: text(fields.note),
-  }
-}
-
-/** The `detail` of a Spring problem-details body, or null when the body is not one. */
-export async function problemDetail(response: Response): Promise<string | null> {
-  try {
-    const body: { detail?: unknown } = await response.json()
-    return typeof body.detail === 'string' ? body.detail : null
-  } catch {
-    return null
   }
 }
