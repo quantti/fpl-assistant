@@ -5,6 +5,7 @@ import { navigate, Route } from '../../router'
 
 interface Props {
   route: Route
+  admin: boolean
 }
 
 export const APP_MENU_LINKS = [
@@ -18,8 +19,10 @@ export const APP_MENU_LINKS = [
  *
  * There is no "Sign in" item, and there cannot be: the menu lives inside the signed-in shell, so
  * anyone who can open it is already signed in.
+ *
+ * Admin appears only when the profile says so.
  */
-export default function AppMenu({ route }: Props) {
+export default function AppMenu({ route, admin }: Props) {
   const [open, setOpen] = useState(false)
   const { setColorScheme } = useMantineColorScheme()
   const scheme = useComputedColorScheme('light')
@@ -36,6 +39,9 @@ export default function AppMenu({ route }: Props) {
         {APP_MENU_LINKS.map(item => (
           <Menu.Item key={item.route} onClick={() => navigate(item.route)}>{item.label}</Menu.Item>
         ))}
+        {/* A convenience, not a gate: the API answers 403 to a non-admin whatever this shows,
+            and the page says so. Kept out of APP_MENU_LINKS, which is the fixed list. */}
+        {admin && <Menu.Item onClick={() => navigate('/admin')}>Admin</Menu.Item>}
         <Menu.Item onClick={() => setColorScheme(scheme === 'dark' ? 'light' : 'dark')}>
           {scheme === 'dark' ? 'Light theme' : 'Dark theme'}
         </Menu.Item>

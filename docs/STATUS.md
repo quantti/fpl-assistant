@@ -4283,3 +4283,41 @@ Review follow-ups (PR #92): bounded the code to 64 characters with no spaces, re
 `Location` header on 201, closed the duplicate-create race with a `DuplicateKeyException` catch
 around the insert, made `summary()` a single read-only transaction, moved `release-burnt`'s grace
 cutoff onto the database clock instead of the JVM's, and made `isAdmin` null-safe.
+
+## Admin page for invite codes (KAR-55, 2026-09-14)
+
+Plan: `docs/superpowers/plans/2026-09-14-kar-55-admin-invite-codes-page.md`.
+
+`/admin` in the frontend, reached from an **Admin** item in the app menu that appears when
+`GET /api/profile` answers `admin: true` (`useProfile`, read once per signed-in shell). The item
+is a convenience: anyone can type the URL, the API answers 403 and the page says *This page is
+not available for this account.* — nothing in the browser decides who is an admin. The page shows
+the places line with **Release burnt places** when something is burnt, one row per code with the
+server-computed state in the spec's words (Open, Disabled, Used up, Expired, Not yet valid),
+Disable/Enable, and on expanding a row its ceiling (save, or **No ceiling**) and its redemptions
+newest first; a form below issues a new code. Every mutation re-renders from the `CodeView` the
+server returns, never from the click. Under 640px the table is one stacked block per code.
+
+Rulings: form dates are the admin's local days (`validUntil` is the end of that day); the places
+line always carries the burnt count; only Disabled and Used-up rows are muted; `SettingsPage` is
+untouched.
+
+Verified: `npm test` (124 tests green), `npm run build` clean (contrast check, `tsc -b`, Vite).
+Manual check with `npm run dev` against the local backend with `ADMIN_USER_IDS` set was **not**
+run in this session — left for the owner to do before relying on the page.
+
+Review follow-ups: the final whole-branch review's fix commit added digits-only validation on the
+new-code form's ceiling and discount percentage, made releasing burnt places collapse the expanded
+row instead of leaving it showing the just-deleted redemptions, dropped the details panel's inert
+`stopPropagation` click handler, wired `aria-controls` from the code button to its details row,
+restored details-row padding under 640px, and removed a duplicate local focus-visible rule already
+covered globally; `npm test` is now 125 tests green.
+
+PR review follow-ups (PR #94): a failed re-read after a successful burnt-place release no longer
+misreports the release or replaces the page; the mobile action cell now beats `.table td` on
+specificity; redemptions sort by parsed instant with an id tie-break instead of by ISO string;
+ceiling and discount inputs are bounded to the server's `int` range (`isCount`); a 403 on
+redemptions now reads the same not-available sentence as everywhere else; `problemDetail` and the
+status-line markup are each shared in one place (`auth/problemDetail.ts`, `AdminPage/StatusLine.tsx`)
+instead of duplicated across `SignIn`/`CodeDetails`/`NewCodeForm`; and the plan doc's step headings
+dropped their checkbox syntax. `npm test` is now 126 tests green.

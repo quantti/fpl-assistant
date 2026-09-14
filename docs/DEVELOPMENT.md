@@ -110,7 +110,9 @@ Codes are rows, not a secret (since PR #52), and since KAR-54 they are operated 
 API rather than SQL. Who may call it is `ADMIN_USER_IDS` (`fpl.admin.user-ids`): the owner's JWT
 `sub`, comma-separated if there is ever more than one, and **empty means nobody** — an unset
 variable closes `/api/admin/**` with 403. `GET /api/profile` reports `admin` so the page knows
-whether to show the link; the API refuses a non-admin regardless.
+whether to show the link; the API refuses a non-admin regardless. Since KAR-55 the app's `/admin`
+page (menu item **Admin**, shown when `GET /api/profile` says `admin: true`) is the front for
+that API; the `curl` lines below remain for a session without a browser.
 
 | Call | Does |
 |---|---|

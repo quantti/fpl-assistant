@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Anchor, Button, PasswordInput, TextInput } from '@mantine/core'
 import { supabase } from '../../auth/supabaseClient'
 import { consumeSessionEnded } from '../../auth/apiFetch'
+import { problemDetail } from '../../auth/problemDetail'
 import classes from './SignIn.module.css'
 
 /**
@@ -202,14 +203,4 @@ export default function SignIn() {
       </form>
     </div>
   )
-}
-
-/** The human-readable sentence out of Spring's problem response, or null if there is none. */
-async function problemDetail(response: Response): Promise<string | null> {
-  try {
-    const problem: { detail?: string } = await response.json()
-    return problem.detail?.trim() || null
-  } catch {
-    return null
-  }
 }

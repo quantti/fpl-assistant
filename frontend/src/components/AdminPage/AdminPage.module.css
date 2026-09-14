@@ -1,0 +1,212 @@
+.page {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-24);
+  padding: var(--space-32) var(--space-16);
+  font-family: var(--font-ui);
+  color: var(--ink);
+  overflow-y: auto;
+}
+
+.title {
+  margin: 0;
+  font-size: var(--text-lg);
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+}
+
+/* typography.label sets no colour on purpose (see that file); a section label here is chrome. */
+.label {
+  margin: 0;
+  color: var(--muted);
+}
+
+.places {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-8) var(--space-16);
+}
+
+.line,
+.muted,
+.error {
+  margin: 0;
+  font-size: var(--text-sm);
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.error {
+  color: var(--redcard);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.table th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--muted);
+  padding: var(--space-4) var(--space-8) var(--space-8) 0;
+  border-bottom: 1px solid var(--rule-section);
+}
+
+.table td {
+  padding: var(--space-8) var(--space-8) var(--space-8) 0;
+  border-bottom: 1px solid var(--rule-row);
+  vertical-align: top;
+}
+
+.table tbody tr:not(.detailsRow) {
+  cursor: pointer;
+}
+
+.mutedRow {
+  color: var(--muted);
+}
+
+.codeButton {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.actionCell {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.detailsRow td {
+  padding-block: var(--space-16);
+}
+
+.visuallyHidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* One stacked block per code: the label line first, then key/value lines, so the column never
+   scrolls sideways. The header row is what the data-labels replace. */
+@media (max-width: 639px) {
+  .table thead {
+    display: none;
+  }
+
+  .table,
+  .table tbody,
+  .table tr,
+  .table td {
+    display: block;
+  }
+
+  .table tr {
+    padding-block: var(--space-12);
+    border-bottom: 1px solid var(--rule-row);
+  }
+
+  .table td {
+    display: flex;
+    justify-content: space-between;
+    gap: var(--space-16);
+    padding: var(--space-4) 0;
+    border-bottom: 0;
+  }
+
+  .table td::before {
+    content: attr(data-label);
+    color: var(--muted);
+  }
+
+  .detailsRow td {
+    display: block;
+    padding-block: var(--space-16);
+  }
+
+  .detailsRow td::before {
+    content: none;
+  }
+
+  .table td.actionCell {
+    justify-content: flex-end;
+  }
+
+  .table td.actionCell::before {
+    content: none;
+  }
+}
+
+.details {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-16);
+  cursor: default;
+}
+
+.ceiling,
+.redemptions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+}
+
+.ceilingRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-8);
+}
+
+.ceilingRow > :first-child {
+  width: 8rem;
+}
+
+.redemptionList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.redemptionList li {
+  display: flex;
+  gap: var(--space-16);
+}
+
+.formGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-12) var(--space-16);
+}
+
+.formActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-12);
+}
+
+@media (max-width: 639px) {
+  .formGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
