@@ -1,7 +1,10 @@
 package dev.quantti.fplassistant.sync;
 
 import java.time.Duration;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
@@ -17,6 +20,7 @@ import dev.quantti.fplassistant.sync.OwnedSyncStore.SyncKind;
 public final class OwnedMatchdayCoordinator {
 
     private static final Duration LEASE = Duration.ofMinutes(5);
+    private static final int MAX_PLAYERS_PER_SLOT = 32;
 
     private final Season season;
     private final AdaptiveMatchdayPlanner planner;
@@ -59,7 +63,9 @@ public final class OwnedMatchdayCoordinator {
                         ? source.playerIds() : slot.playerIds();
                 WorkSlot expanded = players.equals(slot.playerIds()) ? slot : new WorkSlot(slot.id(), slot.kind(),
                         slot.dueAt(), slot.fixtureIds(), players, slot.reason(), players.size());
-                if (runtimeRepository.enqueueOnce(season.code(), expanded, this::enqueue)) materialized++;
+                for (WorkSlot bounded : boundedPlayerSlots(expanded)) {
+                    if (runtimeRepository.enqueueOnce(season.code(), bounded, this::enqueue)) materialized++;
+                }
             }
             runtimeRepository.heartbeat(instanceId);
             return new TickResult(materialized, plan.dueSlots().size(), plan.alerts().size(), plan.nextDueAt().orElse(null));
@@ -86,6 +92,19 @@ public final class OwnedMatchdayCoordinator {
             store.fail(lease, "Unsupported owned runtime kind: " + lease.kind());
         }
         return true;
+    }
+
+    private static List<WorkSlot> boundedPlayerSlots(WorkSlot slot) {
+        if ((slot.kind() != WorkKind.FULL_PLAYER_RECONCILE && slot.kind() != WorkKind.AFFECTED_HISTORY)
+                || slot.playerIds().size() <= MAX_PLAYERS_PER_SLOT) return List.of(slot);
+        // Element-id ranges stay stable when roster membership changes, unlike list-index chunks.
+        Map<Integer, Set<Integer>> playersByRange = new LinkedHashMap<>();
+        slot.playerIds().stream().sorted().forEach(player -> playersByRange
+                .computeIfAbsent(Math.floorDiv(player - 1, MAX_PLAYERS_PER_SLOT),
+                        ignored -> new HashSet<>()).add(player));
+        return playersByRange.entrySet().stream().map(entry -> new WorkSlot(
+                slot.id() + ":player-range=" + entry.getKey(), slot.kind(), slot.dueAt(),
+                slot.fixtureIds(), entry.getValue(), slot.reason(), entry.getValue().size())).toList();
     }
 
     private void enqueue(WorkSlot slot) {

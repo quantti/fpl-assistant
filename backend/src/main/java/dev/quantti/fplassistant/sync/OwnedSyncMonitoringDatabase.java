@@ -17,31 +17,43 @@ import org.springframework.transaction.support.TransactionTemplate;
 public final class OwnedSyncMonitoringDatabase implements AutoCloseable {
 
     static final int QUERY_TIMEOUT_SECONDS = 5;
+    static final int WORK_QUERY_TIMEOUT_SECONDS = 10;
     private final HikariDataSource dataSource;
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transaction;
 
     OwnedSyncMonitoringDatabase(Environment environment) {
+        this(environment, "owned-sync-monitor", 2, QUERY_TIMEOUT_SECONDS, QUERY_TIMEOUT_SECONDS);
+    }
+
+    static OwnedSyncMonitoringDatabase work(Environment environment) {
+        return new OwnedSyncMonitoringDatabase(environment, "owned-sync-work", 4,
+                WORK_QUERY_TIMEOUT_SECONDS, 30);
+    }
+
+    private OwnedSyncMonitoringDatabase(Environment environment, String poolName, int poolSize,
+                                        int queryTimeoutSeconds, int transactionTimeoutSeconds) {
         HikariConfig config = new HikariConfig();
-        config.setPoolName("owned-sync-monitor");
+        config.setPoolName(poolName);
         config.setJdbcUrl(environment.getRequiredProperty("spring.datasource.url"));
         config.setUsername(environment.getRequiredProperty("spring.datasource.username"));
         config.setPassword(environment.getRequiredProperty("spring.datasource.password"));
         config.setDriverClassName(environment.getProperty("spring.datasource.driver-class-name", "org.postgresql.Driver"));
-        config.setMaximumPoolSize(2);
+        config.setMaximumPoolSize(poolSize);
         config.setMinimumIdle(0);
         config.setConnectionTimeout(Duration.ofSeconds(2).toMillis());
         config.setValidationTimeout(Duration.ofSeconds(1).toMillis());
         config.setInitializationFailTimeout(-1);
         config.addDataSourceProperty("connectTimeout", "3");
-        config.addDataSourceProperty("socketTimeout", Integer.toString(QUERY_TIMEOUT_SECONDS));
+        config.addDataSourceProperty("socketTimeout", Integer.toString(queryTimeoutSeconds));
         config.addDataSourceProperty("prepareThreshold", "0");
-        config.addDataSourceProperty("options", "-c statement_timeout=5000 -c lock_timeout=3000");
+        config.addDataSourceProperty("options", "-c statement_timeout=" + (queryTimeoutSeconds * 1_000)
+                + " -c lock_timeout=3000");
         dataSource = new HikariDataSource(config);
         jdbc = new JdbcTemplate(dataSource);
-        jdbc.setQueryTimeout(QUERY_TIMEOUT_SECONDS);
+        jdbc.setQueryTimeout(queryTimeoutSeconds);
         transaction = new TransactionTemplate(new DataSourceTransactionManager(dataSource));
-        transaction.setTimeout(QUERY_TIMEOUT_SECONDS);
+        transaction.setTimeout(transactionTimeoutSeconds);
     }
 
     JdbcTemplate jdbc() { return jdbc; }
