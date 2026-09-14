@@ -56,6 +56,40 @@ The GitHub schedule runs every ten minutes only when the repository variable is 
 GitHub scheduled workflows are best-effort and can be delayed or skipped; they are an independent
 way to detect a stopped machine/dead in-process scheduler, not an availability SLA.
 
+## STAGING attempt and rollback (2026-09-14 22:15–22:17 UTC)
+
+The approved release consumed staged configuration and started STAGING. It failed before source
+work could be queued: `PlannerInputRepository.observeTransitions` performed 380 separate round
+trips inside the monitoring pool's five-second transaction. The two fetch workers also shared that
+same two-connection pool with planner/watchdog/operations, causing acquisition failures.
+
+The runtime was returned to OFF using an environment-only machine update. Confirmed afterward:
+application health UP, owned health DOWN as expected, durable mode OFF at epoch 2; zero owned runs,
+source payloads, request attempts, fixture observations, player evidence or published receipts.
+Only owned schema/runtime metadata was created. Tapas remains the core writer; no role or credential
+switch occurred. Kuma monitor 18 remains paused. The local rollout file describes desired STAGING
+configuration, not the current production mode: do not import it again before the fix is deployed.
+
+The bounded fix separates work (four connections, 10s query/socket and 30s transaction bounds) from
+monitoring (two connections, original 5s bounds), batches fixture observations and persists large
+daily/matchday player work in stable ranges of at most 32 players per transaction. Committed chunks
+survive interruption; the failing chunk rolls back and resumes. Small slot ids and total request
+estimates are preserved. No readiness, source-floor, lease or ranking bypass was added.
+
+The Fly instance had only about 104 MiB available while OFF on its 512 MiB allocation. The reviewed
+fix raises that allocation to 1 GiB before retrying STAGING. After deployment, require advancing
+planner heartbeats and staged source work without pool/transaction failures before proceeding.
+STAGING is still not permission to write core rows, and publication cutovers/readiness can keep the
+owned health signal DOWN until the subsequent reconciliation completes.
+
+The Tapas privilege split was rehearsed on disposable Postgres with the real core schema plus a
+read-only, DDL-only export of its derived tables: 20/20 INSERT/UPDATE/DELETE/TRUNCATE probes on core
+tables were refused, core SELECT counts matched the owner, all eleven derived tables had their
+required DML and sequence privileges, and schema CREATE was refused. The probe role/grants were
+rolled back. This is privilege evidence, not a claim that a production cron cycle has run under the
+new credential. Its current credential is backed up in an ignored mode-0600 file for controlled
+rollback, preserving the existing session-pooler port 5432. No new production login exists yet.
+
 ## Read-only preflight (2026-09-14)
 
 Both merged deployments succeeded. The configured playing season is database id `2`, code
