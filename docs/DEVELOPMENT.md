@@ -121,6 +121,10 @@ whether to show the link; the API refuses a non-admin regardless.
 | `GET …/{id}/redemptions` | who came in on the code, newest first; a null `userId` is a burnt place |
 | `POST …/release-burnt` | deletes burnt places older than ten minutes and reconciles every counter |
 
+Optional fields (`maxUses`, `remaining`, `lastRedeemedAt`, `validFrom`, `validUntil`, `note`,
+`benefitValue`) are omitted from the JSON when unset, never sent as `null`; the one deliberate
+`null` is `userId` on a redemption, which marks a burnt place.
+
 Codes are never deleted: redemption rows point at them. With `curl`, a token from the browser's
 session and the admin's account:
 
@@ -142,7 +146,9 @@ fly secrets set SUPABASE_SERVICE_ROLE_KEY=...   # Project Settings -> API -> ser
 
 Unset, it closes sign-up rather than opening it: the endpoint answers `503`. The account cap
 defaults to 30 and moves with `fly secrets set INVITE_MAX_ACCOUNTS=n`. The domain must also be in
-`CORS_ORIGINS`, or every sign-up is refused as an invalid code — `docs/EMAIL-SETUP.md` 4.1.
+`CORS_ORIGINS`, or every sign-up is refused as an invalid code — `docs/EMAIL-SETUP.md` 4.1. The
+admin API needs `fly secrets set ADMIN_USER_IDS=<the owner's sub>` on top; unset, every
+`/api/admin/**` call answers `403`.
 
 A failed Supabase call leaves a reserved row with a null `user_id` — one burnt place, chosen over
 an account nobody counted (see `InviteLedger`). `POST /api/admin/invite-codes/release-burnt` is
