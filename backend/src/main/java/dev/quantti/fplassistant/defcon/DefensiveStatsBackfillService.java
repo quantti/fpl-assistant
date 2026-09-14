@@ -13,6 +13,8 @@ import org.apache.commons.csv.CSVParser;
 import org.apache.commons.csv.CSVRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
@@ -47,14 +49,23 @@ public class DefensiveStatsBackfillService {
 
     private final VaastavSource vaastav;
     private final JdbcTemplate jdbc;
+    private final boolean ownedActive;
 
     public DefensiveStatsBackfillService(VaastavSource vaastav, JdbcTemplate jdbc) {
+        this(vaastav, jdbc, "OFF");
+    }
+
+    @Autowired
+    public DefensiveStatsBackfillService(VaastavSource vaastav, JdbcTemplate jdbc,
+                                         @Value("${fpl.owned-sync.mode:OFF}") String ownedMode) {
         this.vaastav = vaastav;
         this.jdbc = jdbc;
+        this.ownedActive = "ACTIVE".equalsIgnoreCase(ownedMode.trim());
     }
 
     /** @return number of rows updated, for logging and tests */
     public int backfill(String seasonCode) {
+        validateArchiveSeason(seasonCode);
         Integer seasonId = seasonId(seasonCode);
         if (seasonId == null) {
             log.warn("defcon backfill: no season row for {}; nothing written", seasonCode);
@@ -145,6 +156,22 @@ public class DefensiveStatsBackfillService {
             }
         }
         return updated;
+    }
+
+    /** Guards direct service calls as well as the CLI runner, before any archive network read. */
+    public void validateArchiveSeason(String seasonCode) {
+        if (seasonCode == null || seasonCode.isBlank()) {
+            throw new IllegalArgumentException("defcon backfill season is required");
+        }
+        if (!ownedActive) return;
+        List<String> playing = jdbc.queryForList(
+                "SELECT code FROM season WHERE is_current=true", String.class);
+        if (playing.size() != 1) {
+            throw new IllegalStateException("ACTIVE defcon backfill requires exactly one playing season");
+        }
+        if (playing.getFirst().equals(seasonCode.trim())) {
+            throw new IllegalStateException("ACTIVE owned sync forbids DefCon backfill of the playing season");
+        }
     }
 
     private Integer seasonId(String seasonCode) {

@@ -68,7 +68,9 @@ start() {
             remove_container
             docker run -d --name "$CONTAINER" \
                 -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=postgres \
-                -p "$PORT:5432" "$IMAGE" >/dev/null
+                -p "$PORT:5432" "$IMAGE" \
+                -c shared_buffers=32MB -c work_mem=2MB \
+                -c maintenance_work_mem=32MB -c max_connections=60 >/dev/null
             echo "Started $CONTAINER ($IMAGE) on port $PORT."
         fi
     else
@@ -76,7 +78,9 @@ start() {
         [[ "$status" -eq 1 ]] || return "$status"
         docker run -d --name "$CONTAINER" \
             -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=postgres \
-            -p "$PORT:5432" "$IMAGE" >/dev/null
+            -p "$PORT:5432" "$IMAGE" \
+            -c shared_buffers=32MB -c work_mem=2MB \
+            -c maintenance_work_mem=32MB -c max_connections=60 >/dev/null
         echo "Started $CONTAINER ($IMAGE) on port $PORT."
     fi
 
