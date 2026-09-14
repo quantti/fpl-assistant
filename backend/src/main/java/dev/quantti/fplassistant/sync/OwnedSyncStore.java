@@ -479,20 +479,25 @@ public final class OwnedSyncStore {
 
     /** Requeues work without treating admission or scheduling delay as a failed source fetch. */
     public void retry(Lease lease, Instant dueAt, String error) {
-        finishAttempt(lease, dueAt, error, false, false);
+        finishAttempt(lease, dueAt, error, false, false, false);
+    }
+
+    /** Requeues a dependent behind the work needed to make it ready. */
+    public void retryForDependency(Lease lease, Instant dueAt, String error) {
+        finishAttempt(lease, dueAt, error, false, false, true);
     }
 
     /** Requeues a real source failure and durably advances its consecutive-failure count. */
     public void retryFetchFailure(Lease lease, Instant dueAt, String error) {
-        finishAttempt(lease, dueAt, error, false, true);
+        finishAttempt(lease, dueAt, error, false, true, false);
     }
 
     public void fail(Lease lease, String error) {
-        finishAttempt(lease, null, error, true, false);
+        finishAttempt(lease, null, error, true, false, false);
     }
 
     public void failFetch(Lease lease, String error) {
-        finishAttempt(lease, null, error, true, true);
+        finishAttempt(lease, null, error, true, true, false);
     }
 
     /** A successful source response ends the consecutive failure sequence before later processing. */
@@ -505,17 +510,18 @@ public final class OwnedSyncStore {
     }
 
     private void finishAttempt(Lease lease, Instant dueAt, String error,
-                               boolean terminal, boolean fetchFailure) {
+                               boolean terminal, boolean fetchFailure, boolean dependencyWaiting) {
         if (!terminal) Objects.requireNonNull(dueAt);
         tx.executeWithoutResult(status -> {
-            lockAndValidate(lease);
+            LockedRun run = lockAndValidate(lease);
             Instant failedAt = now();
+            int priority = dependencyWaiting ? SyncKind.DEPENDENCY_WAITING_PRIORITY : run.kind.priority;
             jdbc.update("""
-                    UPDATE %s SET state = ?, due_at = COALESCE(?, due_at), last_error = ?,
+                    UPDATE %s SET state = ?, priority = ?, due_at = COALESCE(?, due_at), last_error = ?,
                         failed_at = ?, consecutive_fetch_failures = consecutive_fetch_failures + ?,
                         lease_owner = NULL, lease_token = NULL,
                         lease_expires_at = NULL, updated_at = ? WHERE generation = ?
-                    """.formatted(tables.run()), terminal ? "FAILED" : "PENDING",
+                    """.formatted(tables.run()), terminal ? "FAILED" : "PENDING", priority,
                     dueAt == null ? null : timestamp(dueAt), boundedNullable(error, MAX_ERROR_CHARS),
                     terminal ? timestamp(failedAt) : null, fetchFailure ? 1 : 0,
                     timestamp(failedAt), lease.generation());
@@ -687,7 +693,8 @@ public final class OwnedSyncStore {
     }
 
     public enum SyncKind {
-        FIXTURE_VERIFICATION(0), SOURCE_STATUS(1), PLAYER_HISTORY(2), CATALOGUE_SCHEDULE(3);
+        CATALOGUE_SCHEDULE(0), FIXTURE_VERIFICATION(1), SOURCE_STATUS(2), PLAYER_HISTORY(3);
+        private static final int DEPENDENCY_WAITING_PRIORITY = 4;
         private final int priority;
         SyncKind(int priority) { this.priority = priority; }
     }
