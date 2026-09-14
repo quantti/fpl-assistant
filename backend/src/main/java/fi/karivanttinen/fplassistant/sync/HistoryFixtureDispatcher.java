@@ -228,7 +228,8 @@ public final class HistoryFixtureDispatcher {
             }
         }
         if (histories.size() != players.size()) {
-            retry(lease, clock.instant().plus(Duration.ofMinutes(2)), "Waiting for fresh player histories");
+            retryForDependency(lease, clock.instant().plus(Duration.ofMinutes(2)),
+                    "Waiting for fresh player histories");
             throw new Stopped(DispatchResult.waiting());
         }
 
@@ -417,6 +418,14 @@ public final class HistoryFixtureDispatcher {
     }
 
     private void retry(Lease lease, Instant dueAt, String error) {
+        store.retry(lease, recordRetryDue(lease, dueAt, error), bounded(error));
+    }
+
+    private void retryForDependency(Lease lease, Instant dueAt, String error) {
+        store.retryForDependency(lease, recordRetryDue(lease, dueAt, error), bounded(error));
+    }
+
+    private Instant recordRetryDue(Lease lease, Instant dueAt, String error) {
         Instant selected = dueAt.isAfter(clock.instant()) ? dueAt : clock.instant().plusSeconds(1);
         if (publicationEnabled && lease.kind() == SyncKind.FIXTURE_VERIFICATION) {
             int fixtureId = fixtureId(lease.publicationKey());
@@ -425,7 +434,7 @@ public final class HistoryFixtureDispatcher {
                     () -> publisher.recordFailedAttempt(lease.season(), fixtureId, minimum, error));
             if (adaptive.isAfter(selected)) selected = adaptive;
         }
-        store.retry(lease, selected, bounded(error));
+        return selected;
     }
 
     private void retryFetchFailure(Lease lease, Instant dueAt, String error) {

@@ -179,7 +179,56 @@ class OwnedSyncStoreIntegrationTest {
         store.enqueue(SyncKind.CATALOGUE_SCHEDULE, "2097-98", "catalogue", "catalogue", clock.instant());
         store.enqueue(SyncKind.FIXTURE_VERIFICATION, "2097-98", "fixture-8", "fixture:8", clock.instant());
         assertThat(store.acquire("worker", Duration.ofMinutes(5)).orElseThrow().kind())
-                .isEqualTo(SyncKind.FIXTURE_VERIFICATION);
+                .isEqualTo(SyncKind.CATALOGUE_SCHEDULE);
+    }
+
+    @Test
+    void prerequisitesAndDependenciesCannotBeStarvedByWaitingFixtureFanout() {
+        Lease firstWaiting = null;
+        Instant firstDemand = null;
+        for (int fixture = 1; fixture <= 39; fixture++) {
+            Run run = store.enqueue(SyncKind.FIXTURE_VERIFICATION, "2097-98", "fixture-" + fixture,
+                    "fixture:" + fixture, clock.instant());
+            Lease lease = store.acquire("fixture-worker", Duration.ofMinutes(5)).orElseThrow();
+            assertThat(lease.generation()).isEqualTo(run.generation());
+            if (fixture == 1) {
+                firstWaiting = lease;
+                firstDemand = store.requestedSourceAfter(lease);
+            }
+            store.retryForDependency(lease, clock.instant(), "waiting for histories");
+        }
+        Lease staleWaiting = firstWaiting;
+        assertThat(jdbc.queryForObject("SELECT requested_source_after FROM " + TABLES.run()
+                + " WHERE generation=?", java.sql.Timestamp.class, staleWaiting.generation()).toInstant())
+                .isEqualTo(firstDemand);
+        assertThatThrownBy(() -> store.retryForDependency(staleWaiting, clock.instant(), "stale retry"))
+                .isInstanceOf(LeaseLostException.class);
+
+        for (int player = 1; player <= 600; player++) {
+            store.enqueue(SyncKind.PLAYER_HISTORY, "2097-98", "player-history:" + player,
+                    "player-history:" + player, clock.instant());
+        }
+        store.enqueue(SyncKind.CATALOGUE_SCHEDULE, "2097-98", "catalogue", "catalogue", clock.instant());
+        store.enqueue(SyncKind.CATALOGUE_SCHEDULE, "2097-98", "schedule", "schedule", clock.instant());
+
+        for (int prerequisite = 0; prerequisite < 2; prerequisite++) {
+            Lease lease = store.acquire("worker", Duration.ofMinutes(5)).orElseThrow();
+            assertThat(lease.kind()).isEqualTo(SyncKind.CATALOGUE_SCHEDULE);
+            store.fail(lease, "test cleanup");
+        }
+        for (int player = 0; player < 600; player++) {
+            Lease lease = store.acquire("worker", Duration.ofMinutes(5)).orElseThrow();
+            assertThat(lease.kind()).isEqualTo(SyncKind.PLAYER_HISTORY);
+            store.fail(lease, "test cleanup");
+        }
+
+        Lease readyRetry = store.acquire("worker", Duration.ofMinutes(5)).orElseThrow();
+        assertThat(readyRetry.kind()).isEqualTo(SyncKind.FIXTURE_VERIFICATION);
+        store.retry(readyRetry, clock.instant(), "ordinary retry");
+        store.enqueue(SyncKind.PLAYER_HISTORY, "2097-98", "player-history:601",
+                "player-history:601", clock.instant());
+        assertThat(store.acquire("worker", Duration.ofMinutes(5)).orElseThrow().generation())
+                .isEqualTo(readyRetry.generation());
     }
 
     @Test

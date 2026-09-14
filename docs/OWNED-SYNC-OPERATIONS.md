@@ -56,6 +56,39 @@ The GitHub schedule runs every ten minutes only when the repository variable is 
 GitHub scheduled workflows are best-effort and can be delayed or skipped; they are an independent
 way to detect a stopped machine/dead in-process scheduler, not an availability SLA.
 
+## Second STAGING attempt (2026-09-14 23:10–23:18 UTC)
+
+PR #97 deployed with 1 GiB. The planner heartbeat advanced without the earlier pool/transaction
+failure; sampled available memory was about 411 MiB. Source parsing worked, but queue dependencies
+starved: 39 fixture verifications repeatedly waited for histories while 659 histories and both
+catalogue/schedule jobs still had zero attempts. A history needs a canonical catalogue/schedule
+pair; valid pairs belonging to fixture-verification runs deliberately do not substitute for it.
+
+The bounded correction gives canonical prerequisites first admission. A fixture waiting for
+histories persists a priority behind histories; an ordinary retry restores its kind's normal
+priority. Thus ready verification still outranks ordinary history work, but a blocked dependent
+cannot consume every worker turn. Lease/epoch validation, requested-source floors, retry dates,
+adaptive backoff and the rolling request ceiling remain unchanged. A real-queue regression covers
+39 waiting fixtures, 600 histories and both canonical jobs; the dispatcher regression exercises
+its actual dependency retry path.
+
+The instance was returned to OFF. Fly sent SIGINT at 23:18:47, SIGTERM at 23:18:50 and reported an
+abrupt VM exit at 23:18:56. The replacement OFF instance started successfully, but the old durable
+activation row remained STAGING epoch 3. The precise shutdown obstruction is unproven. After
+confirming the old instance had been replaced and OFF was effective, a guarded maintenance
+transaction fenced only epoch 3's 700 PENDING/LEASED rows and advanced the mode row to OFF epoch 4.
+Payloads, receipts and evidence were retained. The next release allows a 60-second Fly shutdown
+budget for the durable fence and bounded worker drain; verify both process drain and durable mode
+again rather than treating the environment flag alone as proof.
+
+Final evidence: 115 HTTP attempts; 114 VALID payloads and one UNCHECKED checkpoint; zero published
+receipts and zero player-evidence rows. VALID parsing is not completed fixture verification. Tapas
+credentials/core-write flags and all five core tables were untouched by the owned runtime.
+Kuma 18 was resumed, recorded real HTTP-503 DOWN beats, and was paused again after rollback.
+Mailbox delivery and an actual recovery remain unverified. Read-only privilege inspection also
+found no public-table write grants to PUBLIC and no PUBLIC-executable SECURITY DEFINER routines;
+no production role has been created or switched.
+
 ## STAGING attempt and rollback (2026-09-14 22:15–22:17 UTC)
 
 The approved release consumed staged configuration and started STAGING. It failed before source
