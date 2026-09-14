@@ -109,6 +109,8 @@ class OwnedMatchdayEndToEndIntegrationTest {
 
         // The first fixture read is checkpointed before a 429. Rebuilding every runtime collaborator
         // proves the durable checkpoint is reused and cannot be labelled complete.
+        int failedPlayer = fpl.playersByFixture.get(DELAYED).getLast();
+        fpl.failPlayerOnce = failedPlayer;
         fpl.rateLimitNextFixtures = true;
         harness.histories.enqueueFixtureVerification(SEASON, DELAYED, clock.instant());
         harness.coordinator.dispatchOne("rate-limited");
@@ -124,16 +126,20 @@ class OwnedMatchdayEndToEndIntegrationTest {
         assertThat(fpl.fixtureCallsAfterRateLimit).isPositive();
 
         // One player history fails after its peers have completed. No partial PFS/evidence publication is visible.
-        int failedPlayer = fpl.playersByFixture.get(DELAYED).getLast();
-        fpl.failPlayerOnce = failedPlayer;
-        harness.drainDue();
+        // Stop at the injected failure, not at an ordering-dependent end of the whole queue.
+        for (int i = 0; i < 500 && fpl.failPlayerOnce != null; i++) {
+            assertThat(harness.coordinator.dispatchOne("until-history-failure-" + i)).isTrue();
+        }
+        assertThat(fpl.failPlayerOnce).isNull();
         assertThat(jdbc.queryForObject("SELECT count(*) FROM player_fixture_stats WHERE season_id=27 AND fixture_id=29",
                 Integer.class)).isZero();
         assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.playerFixtureEvidence()
                 + " WHERE fixture_id=29", Integer.class)).isZero();
         assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
                 + " WHERE publication_key=? AND state='PENDING'", Integer.class,
-                HistoryFixtureDispatcher.playerHistoryPublicationKey(failedPlayer))).isOne();
+                HistoryFixtureDispatcher.playerHistoryPublicationKey(failedPlayer)))
+                .withFailMessage("runs=%s", jdbc.queryForList("SELECT publication_key,state,last_error FROM " + TABLES.run()))
+                .isOne();
 
         harness = harness(clock, activeFence, fpl); // second restart resumes the partial sweep
         clock.advance(Duration.ofMinutes(3));
