@@ -26,5 +26,6 @@ primary_region = 'cdg'
     timeout = '5s'
 
 [[vm]]
-  memory = '512mb'
+  # Continuous owned sync needs headroom beyond the web/LLM process (about 104 MiB free at 512 MiB).
+  memory = '1gb'
   cpus = 1

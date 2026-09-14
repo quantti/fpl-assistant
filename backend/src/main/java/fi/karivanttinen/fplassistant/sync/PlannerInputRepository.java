@@ -103,38 +103,42 @@ public final class PlannerInputRepository {
 
     private void observeTransitions(Season season, List<Fixture> fixtures) {
         Instant now = clock.instant();
-        for (Fixture fixture : fixtures) {
-            jdbc.update("""
-                    INSERT INTO %s(season_id, season_code, fixture_id, state,
-                        first_finished_observed_at, data_checked_transition_at, last_data_checked, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (season_id, fixture_id) DO UPDATE SET
-                        state=CASE WHEN %s.state='VERIFIED' THEN %s.state ELSE EXCLUDED.state END,
-                        next_due_at=CASE WHEN %s.first_finished_observed_at IS NULL
-                            AND EXCLUDED.first_finished_observed_at IS NOT NULL
-                            THEN EXCLUDED.first_finished_observed_at ELSE %s.next_due_at END,
-                        attempt_count=CASE WHEN %s.first_finished_observed_at IS NULL
-                            AND EXCLUDED.first_finished_observed_at IS NOT NULL
-                            THEN 0 ELSE %s.attempt_count END,
-                        last_error=CASE WHEN %s.first_finished_observed_at IS NULL
-                            AND EXCLUDED.first_finished_observed_at IS NOT NULL
-                            THEN NULL ELSE %s.last_error END,
-                        first_finished_observed_at=COALESCE(%s.first_finished_observed_at,
-                            EXCLUDED.first_finished_observed_at),
-                        data_checked_transition_at=CASE
-                            WHEN NOT %s.last_data_checked AND EXCLUDED.last_data_checked
-                            THEN EXCLUDED.data_checked_transition_at
-                            ELSE %s.data_checked_transition_at END,
-                        last_data_checked=EXCLUDED.last_data_checked, updated_at=EXCLUDED.updated_at
-                    """.formatted(owned.fixtureSync(), owned.fixtureSync(), owned.fixtureSync(),
-                    owned.fixtureSync(), owned.fixtureSync(), owned.fixtureSync(), owned.fixtureSync(),
-                    owned.fixtureSync(), owned.fixtureSync(), owned.fixtureSync(), owned.fixtureSync(),
-                    owned.fixtureSync()),
-                    season.id(), season.code(), fixture.id(), fixture.started() ?
-                            (fixture.finished() ? "VERIFYING" : "WAITING_FINISH") : "SCHEDULED",
-                    fixture.finished() ? timestamp(fixture.sourceObservedAt()) : null,
-                    fixture.dataChecked() ? timestamp(fixture.sourceObservedAt()) : null,
-                    fixture.dataChecked(), timestamp(now));
-        }
+        String sql = """
+                INSERT INTO %s(season_id, season_code, fixture_id, state,
+                    first_finished_observed_at, data_checked_transition_at, last_data_checked, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (season_id, fixture_id) DO UPDATE SET
+                    state=CASE WHEN %s.state='VERIFIED' THEN %s.state ELSE EXCLUDED.state END,
+                    next_due_at=CASE WHEN %s.first_finished_observed_at IS NULL
+                        AND EXCLUDED.first_finished_observed_at IS NOT NULL
+                        THEN EXCLUDED.first_finished_observed_at ELSE %s.next_due_at END,
+                    attempt_count=CASE WHEN %s.first_finished_observed_at IS NULL
+                        AND EXCLUDED.first_finished_observed_at IS NOT NULL
+                        THEN 0 ELSE %s.attempt_count END,
+                    last_error=CASE WHEN %s.first_finished_observed_at IS NULL
+                        AND EXCLUDED.first_finished_observed_at IS NOT NULL
+                        THEN NULL ELSE %s.last_error END,
+                    first_finished_observed_at=COALESCE(%s.first_finished_observed_at,
+                        EXCLUDED.first_finished_observed_at),
+                    data_checked_transition_at=CASE
+                        WHEN NOT %s.last_data_checked AND EXCLUDED.last_data_checked
+                        THEN EXCLUDED.data_checked_transition_at
+                        ELSE %s.data_checked_transition_at END,
+                    last_data_checked=EXCLUDED.last_data_checked, updated_at=EXCLUDED.updated_at
+                """.formatted(owned.fixtureSync(), owned.fixtureSync(), owned.fixtureSync(),
+                owned.fixtureSync(), owned.fixtureSync(), owned.fixtureSync(), owned.fixtureSync(),
+                owned.fixtureSync(), owned.fixtureSync(), owned.fixtureSync(), owned.fixtureSync(),
+                owned.fixtureSync());
+        List<Object[]> observations = fixtures.stream().map(fixture -> new Object[] {
+                season.id(), season.code(), fixture.id(), fixture.started()
+                    ? (fixture.finished() ? "VERIFYING" : "WAITING_FINISH") : "SCHEDULED",
+                fixture.finished() ? timestamp(fixture.sourceObservedAt()) : null,
+                fixture.dataChecked() ? timestamp(fixture.sourceObservedAt()) : null,
+                fixture.dataChecked(), timestamp(now)
+        }).toList();
+        jdbc.batchUpdate(sql, observations, new int[] {
+                java.sql.Types.INTEGER, java.sql.Types.VARCHAR, java.sql.Types.INTEGER, java.sql.Types.VARCHAR,
+                java.sql.Types.TIMESTAMP, java.sql.Types.TIMESTAMP, java.sql.Types.BOOLEAN, java.sql.Types.TIMESTAMP
+        });
     }
 
     private List<FixtureProgress> progress(Season season) {

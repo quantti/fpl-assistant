@@ -6,6 +6,7 @@ import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
 
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.context.annotation.Bean;
@@ -20,11 +21,18 @@ import fi.karivanttinen.fplassistant.sync.CatalogueScheduleParser.Season;
 @ConditionalOnExpression("T(fi.karivanttinen.fplassistant.sync.OwnedSyncMode).valueOf('${fpl.owned-sync.mode:OFF}') != T(fi.karivanttinen.fplassistant.sync.OwnedSyncMode).OFF")
 public class OwnedSyncRuntimeConfiguration {
 
+    @Bean(destroyMethod = "close")
+    OwnedSyncMonitoringDatabase ownedSyncWorkDatabase(Environment environment) {
+        return OwnedSyncMonitoringDatabase.work(environment);
+    }
+
     @Bean
-    OwnedMatchdayRuntime ownedMatchdayRuntime(OwnedSyncMonitoringDatabase database,
-                                              Environment environment,
-                                              ApplicationArguments arguments) {
-        JdbcTemplate jdbc = database.jdbc();
+    OwnedMatchdayRuntime ownedMatchdayRuntime(
+            @Qualifier("ownedSyncMonitoringDatabase") OwnedSyncMonitoringDatabase monitoringDatabase,
+            @Qualifier("ownedSyncWorkDatabase") OwnedSyncMonitoringDatabase workDatabase,
+            Environment environment,
+            ApplicationArguments arguments) {
+        JdbcTemplate jdbc = workDatabase.jdbc();
         OwnedSyncMode mode = OwnedSyncMode.valueOf(environment.getProperty(
                 "fpl.owned-sync.mode", "OFF").trim().toUpperCase());
         String configured = environment.getProperty("fpl.owned-sync.playing-season", "").trim();
@@ -43,7 +51,7 @@ public class OwnedSyncRuntimeConfiguration {
                 environment.getRequiredProperty("fpl.schedule.fixture-table-name"));
         new OwnedSyncSchema(jdbc, owned).initialize();
 
-        var tx = database.transaction();
+        var tx = workDatabase.transaction();
         PlannerRuntimeRepository activationRepository = new PlannerRuntimeRepository(jdbc, tx, clock, owned);
         OwnedSyncStore.RuntimeFence runtimeFence = activationRepository.activate(season.code(), mode);
         PlannerRuntimeRepository runtimeRepository = new PlannerRuntimeRepository(
@@ -76,7 +84,8 @@ public class OwnedSyncRuntimeConfiguration {
         OwnedSyncWatchdog.AlertSender sender = notification.enabled() && notification.configured()
                 ? new OwnedSyncWatchdog.HttpsWebhookSender(webhook)
                 : payload -> { };
-        OwnedSyncWatchdog watchdog = new OwnedSyncWatchdog(jdbc, tx, clock, owned, notification, sender);
+        OwnedSyncWatchdog watchdog = new OwnedSyncWatchdog(monitoringDatabase.jdbc(),
+                monitoringDatabase.transaction(), clock, owned, notification, sender);
         return new OwnedMatchdayRuntime(coordinator, runtimeRepository, http, instanceId, runtimeFence,
                 watchdog, season.code());
     }

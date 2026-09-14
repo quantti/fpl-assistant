@@ -1,6 +1,6 @@
 # Assistant-owned FPL sync and post-match verification
 
-**PROGRESS:** Code and local verification for Tasks 1–10 complete; Tasks 8–10 operational notification, single-writer cutover and real-matchday release gates remain pending owner approval. Runtime stays OFF.
+**PROGRESS:** Tasks 1–10 implemented and locally verified; operational rollout authorized, but first STAGING failed on shared-pool/transaction bounds. Runtime safely returned to OFF; the bounded fix awaits deployment. Tapas remains the core writer; notification, cutover, reconciliation and real-matchday gates remain open.
 
 Owner decision: this service, **not Tapas**, will perform the FPL data updates. This supersedes
 Task 5's ownership assumption in `2026-09-13-wildcard-data-coverage.md`. That plan's comparison

@@ -4290,6 +4290,33 @@ Chromium screenshots at 1280px and 375px in both schemes, with the sidebar overl
 the dev server with a stubbed session and no backend. Measured `.root` height unchanged after
 inserting 3000px of content, i.e. still height-bounded. Head to Head from the mockup is not built.
 
+## Owned sync — STAGING blocked, safely returned to OFF (2026-09-14)
+
+PR #96 merged and deployed successfully. Its monitor/operations settings and tokens were installed;
+the first STAGING attempt then exposed database starvation before any source work was queued.
+The planner's 380 per-fixture updates exceeded its five-second transaction, and two workers shared
+the same two-connection pool with monitoring. At 22:17 UTC the runtime was returned to OFF.
+Post-rollback checks confirmed HTTP application health UP, durable OFF epoch 2, and zero owned
+runs, source payloads/attempts, fixture observations/evidence or published receipts. Tapas still
+owns core writes; Kuma 18 remains paused. There was no production role/credential handover.
+
+The narrow fix isolates work and monitoring pools, batches fixture observations and makes large
+daily/matchday player materialization resumable in at-most-32-player transactions. Thirteen focused
+local tests pass, including full-league batching, exhausted work-pool isolation and a real queue
+rollback/restart between chunks. The first local rerun correctly refused the ACL rehearsal database
+because it contained Tapas' `manager` table; resetting only our disposable container restored the
+normal schema, without weakening that safety guard. Runs stayed within the enforced 1536 MiB scope.
+The Fly allocation changes from 512 MiB to 1 GiB: OFF already left only about 104 MiB available.
+Neither the corrected runtime nor the memory increase is deployed until the owner merges the fix.
+
+The restricted Tapas role's DML/sequence matrix passed locally against representative real DDL
+(20/20 core mutations refused, eleven derived tables writable, schema CREATE refused). Probe grants
+were rolled back; the current production connection was backed up privately, not replaced. Before
+cutover still verify production effective privileges/functions, STAGING progress, notification
+DOWN/recovery, old-writer drain and denied core writes. Then reconcile and observe a real matchday.
+Details and the distinction between desired rollout-file STAGING and actual production OFF are in
+`docs/OWNED-SYNC-OPERATIONS.md`.
+
 ## Owned sync — Uptime Kuma rollout preparation (2026-09-14)
 
 The owner selected the existing home-server Uptime Kuma and authorized the operational handover.

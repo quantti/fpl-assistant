@@ -19,6 +19,7 @@ class OwnedSyncRuntimeConfigurationTest {
                         SyncOperationsConfiguration.class)
                 .run(context -> {
                     org.assertj.core.api.Assertions.assertThat(context)
+                            .doesNotHaveBean("ownedSyncWorkDatabase")
                             .doesNotHaveBean(OwnedMatchdayRuntime.class)
                             .doesNotHaveBean(OwnedMatchdayCoordinator.class)
                             .doesNotHaveBean(OwnedSyncHttpClient.class)
