@@ -95,6 +95,24 @@ class OwnedSyncWatchdogIntegrationTest {
     }
 
     @Test
+    void externalNotificationIsRecordedWithoutSendingAndCanBeHandedBackToWebhook() {
+        OwnedSyncWatchdog external = new OwnedSyncWatchdog(jdbc, tx, Clock.fixed(NOW, ZoneOffset.UTC),
+                TABLES, new OwnedSyncWatchdog.Notification(false, false, true),
+                payload -> { throw new AssertionError("external monitor must not send webhooks"); });
+        assertThat(external.check("2024-25").incidentsOpened()).isPositive();
+        assertThat(external.deliver()).isZero();
+        assertThat(jdbc.queryForList("SELECT DISTINCT delivery_state FROM " + TABLES.alert(), String.class))
+                .containsExactly("EXTERNAL");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.alert()
+                + " WHERE delivered_at IS NOT NULL OR delivery_attempts<>0", Integer.class)).isZero();
+        List<String> sent = new CopyOnWriteArrayList<>();
+        assertThat(watchdog(true, true, sent::add).deliver()).isPositive();
+        assertThat(sent).isNotEmpty();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.alert()
+                + " WHERE delivery_state='SUPERSEDED'", Integer.class)).isPositive();
+    }
+
+    @Test
     void deduplicatesIncidentAndRecoversFixtureOnlyAfterVerifiedState() {
         long generation = run("fixture:98101", "fixture:98101", "FAILED");
         jdbc.update("INSERT INTO " + TABLES.fixtureSync()
