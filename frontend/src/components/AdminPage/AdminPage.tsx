@@ -99,6 +99,7 @@ export default function AdminPage() {
       const response = await apiFetch('/api/admin/invite-codes/release-burnt', { method: 'POST' })
       if (response.ok) {
         const result: ReleaseResult = await response.json()
+        setExpandedId(null)
         // The release answers with what it did, not with the counts; the line is re-read.
         const list = await load()
         setNotice({ kind: 'note', message: releaseNote(result, list?.burnt ?? 0) })
@@ -199,7 +200,8 @@ function CodeRowGroup({ code, muted, expanded, busy, onToggleExpand, onToggleAct
     <>
       <tr className={muted ? classes.mutedRow : undefined} onClick={onToggleExpand}>
         <td data-label="Code">
-          <button type="button" className={classes.codeButton} aria-expanded={expanded}>{code.code}</button>
+          <button type="button" className={classes.codeButton} aria-expanded={expanded}
+            aria-controls={`code-${code.id}-details`}>{code.code}</button>
         </td>
         <td data-label="Label">{code.label}</td>
         <td data-label="Used">{usedText(code)}</td>
@@ -219,7 +221,7 @@ function CodeRowGroup({ code, muted, expanded, busy, onToggleExpand, onToggleAct
         </td>
       </tr>
       {expanded && (
-        <tr className={classes.detailsRow}>
+        <tr className={classes.detailsRow} id={`code-${code.id}-details`}>
           <td colSpan={COLUMNS}>
             <CodeDetails code={code} onChange={onChange} />
           </td>

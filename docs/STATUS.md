@@ -4305,3 +4305,10 @@ untouched.
 Verified: `npm test` (124 tests green), `npm run build` clean (contrast check, `tsc -b`, Vite).
 Manual check with `npm run dev` against the local backend with `ADMIN_USER_IDS` set was **not**
 run in this session — left for the owner to do before relying on the page.
+
+Review follow-ups: the final whole-branch review's fix commit added digits-only validation on the
+new-code form's ceiling and discount percentage, made releasing burnt places collapse the expanded
+row instead of leaving it showing the just-deleted redemptions, dropped the details panel's inert
+`stopPropagation` click handler, wired `aria-controls` from the code button to its details row,
+restored details-row padding under 640px, and removed a duplicate local focus-visible rule already
+covered globally; `npm test` is now 125 tests green.

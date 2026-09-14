@@ -1305,7 +1305,9 @@ export default function CodeDetails({ code, onChange }: Props) {
 }
 ```
 
-The wrapping `div`'s `stopPropagation` keeps a click inside the details (typing, Save) from collapsing the row.
+The wrapping `div`'s `stopPropagation` above turned out to be inert — the details `<tr>` is a
+sibling of the clickable row, not a descendant, so nothing bubbles there — and was removed in the
+final whole-branch review.
 
 - [ ] **Step 3: Mount it and style it**
 

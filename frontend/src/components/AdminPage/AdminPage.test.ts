@@ -260,6 +260,19 @@ it('posts a new code with a null ceiling, appends the created row and clears the
   expect(host.querySelector<HTMLInputElement>('[name="code"]')!.value).toBe('')
 })
 
+it('refuses a non-numeric ceiling on the new-code form and posts nothing', async () => {
+  serve({ 'GET /api/admin/invite-codes': () => json(200, list) })
+  await mount()
+
+  type('code', 'newsletter')
+  type('maxUses', '1o')
+  await act(async () => { button('Create code')!.click() })
+  await flush()
+
+  expect(host.textContent).toContain('A ceiling is a plain number, digits only.')
+  expect(calls()).not.toContain('POST /api/admin/invite-codes')
+})
+
 it('reports a duplicate code in the spec wording', async () => {
   serve({
     'GET /api/admin/invite-codes': () => json(200, list),
