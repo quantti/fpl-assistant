@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 import java.time.Clock;
@@ -15,6 +16,8 @@ import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Set;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import javax.sql.DataSource;
 
@@ -87,8 +90,85 @@ class OwnedMatchdayCoordinatorIntegrationTest {
         verify(histories, times(1)).enqueuePlayerHistory(any(), org.mockito.ArgumentMatchers.eq(1), any());
         verify(histories, times(1)).enqueuePlayerHistory(any(), org.mockito.ArgumentMatchers.eq(2), any());
         verify(histories, times(1)).enqueuePlayerHistory(any(), org.mockito.ArgumentMatchers.eq(3), any());
-        assertThat(runtimeRepository.loadSlots("2097-98")).hasSize(3);
+        assertThat(runtimeRepository.loadSlots("2097-98")).hasSize(3)
+                .noneSatisfy(row -> assertThat(row.slot().id()).contains(":player-range="));
         assertThat(runtimeRepository.loadRuntime("instance-a")).isPresent();
+    }
+
+    @Test
+    void largeDailyPlayerSweepUsesBoundedDeterministicSlotsAndRestartDoesNotDuplicate() {
+        Set<Integer> players = IntStream.rangeClosed(1, 601).boxed().collect(Collectors.toUnmodifiableSet());
+        when(inputs.load(any())).thenReturn(new PlannerInputRepository.PlannerSnapshot(
+                players, List.of(), List.of(), true));
+
+        OwnedMatchdayCoordinator.TickResult first = coordinator.tick();
+        List<PlannerRuntimeRepository.DurableSlot> playerSlots = runtimeRepository.loadSlots("2097-98")
+                .stream().filter(row -> row.slot().kind()
+                        == AdaptiveMatchdayPlanner.WorkKind.FULL_PLAYER_RECONCILE).toList();
+
+        assertThat(first.materializedSlots()).isEqualTo(21);
+        assertThat(playerSlots).hasSize(19);
+        assertThat(playerSlots).allSatisfy(row -> {
+            assertThat(row.slot().id()).contains(":player-range=");
+            assertThat(row.slot().playerIds()).hasSizeLessThanOrEqualTo(32);
+            assertThat(row.slot().estimatedRequests()).isEqualTo(row.slot().playerIds().size());
+        });
+        assertThat(playerSlots.stream().flatMap(row -> row.slot().playerIds().stream()).distinct())
+                .hasSize(601);
+        verify(histories, times(601)).enqueuePlayerHistory(any(), any(Integer.class), any());
+
+        assertThat(coordinator.tick().materializedSlots()).isZero();
+        verifyNoMoreInteractions(histories);
+        assertThat(runtimeRepository.loadSlots("2097-98")).hasSize(21);
+    }
+
+    @Test
+    void partialPlayerMaterializationRollsBackOnlyItsChunkAndResumesAfterRestart() {
+        Set<Integer> players = IntStream.rangeClosed(1, 65).boxed().collect(Collectors.toUnmodifiableSet());
+        when(inputs.load(any())).thenReturn(new PlannerInputRepository.PlannerSnapshot(
+                players, List.of(), List.of(), true));
+        var failOnce = new java.util.concurrent.atomic.AtomicBoolean(true);
+        when(histories.enqueuePlayerHistory(any(), any(Integer.class), any())).thenAnswer(call -> {
+            int player = call.getArgument(1);
+            var run = store.enqueue(SyncKind.PLAYER_HISTORY, "2097-98", "player-history:" + player,
+                    "player-history:" + player, NOW);
+            if (player == 33 && failOnce.getAndSet(false)) throw new IllegalStateException("interrupted chunk");
+            return run;
+        });
+        assertThatThrownBy(() -> coordinator.tick()).hasMessageContaining("interrupted chunk");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run(), Integer.class)).isEqualTo(32);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.plannerSlot()
+                + " WHERE kind='FULL_PLAYER_RECONCILE'", Integer.class)).isOne();
+
+        Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
+        var restarted = new OwnedMatchdayCoordinator(new Season(1, "2097-98",
+                LocalDate.of(2097, 8, 1), LocalDate.of(2098, 5, 31)), new AdaptiveMatchdayPlanner(clock),
+                inputs, new PlannerRuntimeRepository(jdbc, tx, clock, TABLES),
+                new OwnedSyncStore(jdbc, tx, clock, TABLES), catalogue, histories, "restarted");
+        assertThat(restarted.tick().materializedSlots()).isEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run(), Integer.class)).isEqualTo(65);
+        assertThat(restarted.tick().materializedSlots()).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run(), Integer.class)).isEqualTo(65);
+    }
+
+    @Test
+    void matchdayPlayerRefreshIsBoundedLikeTheDailySweep() {
+        Set<Integer> players = IntStream.rangeClosed(1, 601).boxed().collect(Collectors.toUnmodifiableSet());
+        Instant kickoff = Instant.parse("2097-09-19T14:00:00Z");
+        when(inputs.load(any())).thenReturn(new PlannerInputRepository.PlannerSnapshot(players,
+                List.of(new AdaptiveMatchdayPlanner.Fixture(9, 1, kickoff, true, false, false,
+                        kickoff, players)), List.of(), true));
+        Clock clock = Clock.fixed(kickoff, ZoneOffset.UTC);
+        var matchday = new OwnedMatchdayCoordinator(new Season(1, "2097-98",
+                LocalDate.of(2097, 8, 1), LocalDate.of(2098, 5, 31)), new AdaptiveMatchdayPlanner(clock),
+                inputs, new PlannerRuntimeRepository(jdbc, tx, clock, TABLES),
+                new OwnedSyncStore(jdbc, tx, clock, TABLES), catalogue, histories, "matchday");
+        matchday.tick();
+        var affected = runtimeRepository.loadSlots("2097-98").stream().filter(row ->
+                row.slot().kind() == AdaptiveMatchdayPlanner.WorkKind.AFFECTED_HISTORY).toList();
+        assertThat(affected).hasSize(19).allSatisfy(row ->
+                assertThat(row.slot().playerIds()).hasSizeLessThanOrEqualTo(32));
+        assertThat(affected.stream().mapToInt(row -> row.slot().estimatedRequests()).sum()).isEqualTo(601);
     }
 
     @Test
