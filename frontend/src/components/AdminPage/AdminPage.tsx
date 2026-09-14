@@ -5,6 +5,7 @@ import typography from '../../styles/typography.module.css'
 import classes from './AdminPage.module.css'
 import CodeDetails from './CodeDetails'
 import NewCodeForm from './NewCodeForm'
+import StatusLine, { Status } from './StatusLine'
 import {
   InviteCodeList, InviteCodeView, NOT_AVAILABLE, ReleaseResult, STATE_WORDS, benefitText,
   placesLine, releaseNote, usedText,
@@ -15,8 +16,6 @@ type Page =
   | { kind: 'unavailable' }
   | { kind: 'failed' }
   | { kind: 'ready'; list: InviteCodeList }
-
-type Notice = { kind: 'note' | 'error'; message: string } | null
 
 const COLUMNS = 8
 
@@ -32,7 +31,7 @@ const COLUMNS = 8
  */
 export default function AdminPage() {
   const [page, setPage] = useState<Page>({ kind: 'loading' })
-  const [notice, setNotice] = useState<Notice>(null)
+  const [notice, setNotice] = useState<Status>(null)
   const [busy, setBusy] = useState(false)
   const [expandedId, setExpandedId] = useState<number | null>(null)
 
@@ -46,6 +45,19 @@ export default function AdminPage() {
       setPage({ kind: 'failed' })
       return null
     }
+    const list: InviteCodeList = await response.json()
+    setPage({ kind: 'ready', list })
+    return list
+  }
+
+  /**
+   * Re-reads the list after a mutation that already changed something server-side. Unlike
+   * `load()`, a failed re-read never flips an already-ready page to failed/unavailable — the
+   * mutation went through and the table on screen is still true, just possibly stale.
+   */
+  async function refresh(): Promise<InviteCodeList> {
+    const response = await apiFetch('/api/admin/invite-codes')
+    if (!response.ok) throw new Error(String(response.status))
     const list: InviteCodeList = await response.json()
     setPage({ kind: 'ready', list })
     return list
@@ -95,14 +107,11 @@ export default function AdminPage() {
   async function releaseBurnt() {
     setBusy(true)
     setNotice(null)
+    let result: ReleaseResult | undefined
     try {
       const response = await apiFetch('/api/admin/invite-codes/release-burnt', { method: 'POST' })
       if (response.ok) {
-        const result: ReleaseResult = await response.json()
-        setExpandedId(null)
-        // The release answers with what it did, not with the counts; the line is re-read.
-        const list = await load()
-        setNotice({ kind: 'note', message: releaseNote(result, list?.burnt ?? 0) })
+        result = await response.json()
       } else if (response.status === 403) {
         setNotice({ kind: 'error', message: NOT_AVAILABLE })
       } else if (response.status !== 401) {
@@ -110,9 +119,24 @@ export default function AdminPage() {
       }
     } catch {
       setNotice({ kind: 'error', message: 'Nothing was released — try again shortly.' })
-    } finally {
-      setBusy(false)
     }
+
+    if (result) {
+      setExpandedId(null)
+      // The release answers with what it did, not with the counts; the line is re-read. A failed
+      // re-read must not flip the page to failed/unavailable — the release itself went through.
+      try {
+        const list = await refresh()
+        setNotice({ kind: 'note', message: releaseNote(result, list.burnt) })
+      } catch {
+        setNotice({
+          kind: 'error',
+          message: `${releaseNote(result, 0)} The list could not be refreshed — reload the page.`,
+        })
+      }
+    }
+
+    setBusy(false)
   }
 
   if (page.kind === 'loading') {
@@ -167,12 +191,7 @@ export default function AdminPage() {
         </table>
       </section>
 
-      {notice && (
-        <p className={notice.kind === 'error' ? classes.error : classes.muted}
-           role={notice.kind === 'error' ? 'alert' : 'status'}>
-          {notice.message}
-        </p>
-      )}
+      <StatusLine status={notice} />
 
       <NewCodeForm onCreated={appendCode} />
     </div>

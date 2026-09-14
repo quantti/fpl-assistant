@@ -39,6 +39,16 @@ describe('invite-code display helpers', () => {
     const newer = { id: 2, userId: 'u', redeemedAt: '2026-09-02T10:00:00Z' }
     expect([older, newer].sort(byNewest)).toEqual([newer, older])
   })
+
+  it('orders fractional-second timestamps by instant, not by string, and ties by id', () => {
+    const whole = { id: 1, userId: null, redeemedAt: '2026-09-01T10:00:00Z' }
+    const fractional = { id: 2, userId: 'u', redeemedAt: '2026-09-01T10:00:00.5Z' }
+    expect([whole, fractional].sort(byNewest)).toEqual([fractional, whole])
+
+    const lowerId = { id: 1, userId: null, redeemedAt: '2026-09-01T10:00:00Z' }
+    const higherId = { id: 2, userId: 'u', redeemedAt: '2026-09-01T10:00:00Z' }
+    expect([lowerId, higherId].sort(byNewest)).toEqual([higherId, lowerId])
+  })
 })
 
 describe('createBody', () => {
