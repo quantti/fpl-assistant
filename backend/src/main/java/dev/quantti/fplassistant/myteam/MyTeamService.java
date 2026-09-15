@@ -313,8 +313,8 @@ public class MyTeamService {
             return "Whether Gameweek " + event + " is finished could not be read from FPL.";
         }
         if (!status.finished()) {
-            return "Gameweek " + event + " is not finished: points are provisional, bonus is added"
-                    + " after each match, and automatic substitutions apply only once FPL marks"
+            return "FPL has not marked Gameweek " + event + " finished yet: points are provisional,"
+                    + " bonus can still change, and automatic substitutions apply only once FPL marks"
                     + " the gameweek final.";
         }
         if (!status.dataChecked()) {
