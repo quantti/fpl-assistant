@@ -4290,6 +4290,56 @@ Chromium screenshots at 1280px and 375px in both schemes, with the sidebar overl
 the dev server with a stubbed session and no backend. Measured `.root` height unchanged after
 inserting 3000px of content, i.e. still height-bounded. Head to Head from the mockup is not built.
 
+## Owned sync — attended STAGING drained initial work, verification not reached (2026-09-15)
+
+PR #103 deployed (machine v86, `-Xmx320m`). A first attempt, epoch 40 (12:33–12:36 UTC), was
+stopped after three minutes by the observer on a single transport `URLError`; OFF epoch 41, no
+manual fence, nothing published. The observer now retries one transport failure once.
+
+Owner-attended **epoch 42** ran 15:36–16:20 UTC. The owner extended the bound in session, and the
+observer was handed over at 15:50 UTC without re-requesting STAGING. All initial queued work
+completed with zero failed runs:
+
+- canonical: 78 runs, 183 attempts;
+- fixture verification: 40 runs, 241 attempts;
+- histories: 659 runs, 1236 attempts. The first completed history was seen at 15:47, about eleven
+  minutes after start.
+
+Memory stayed flat: 44 samples on one Java process, sampled RSS at most 545.5 MiB, guest
+available memory at least 260.0 MiB, heartbeat age at most 51.7 s. The run stopped at 16:19:55 on
+five minutes without progress, because the queue was empty, not because anything stalled. The
+graceful stop recorded **OFF epoch 43**, application UP, with no manual fence.
+
+The watchdog fix held in production. Its first check at 15:41:49 opened 699 `DUE_WORK` incidents
+plus three others without a transaction timeout, and all 699 recovered by 16:16:54.
+
+- **Not demonstrated:** `fpl_fixture_sync` holds 40 `VERIFYING` rows, 340 `SCHEDULED` and zero
+  `VERIFIED`. The second independent observation batch was not reached.
+- **Nothing published:** zero player-evidence rows and zero receipts.
+- **Still open:** `FIXTURE_VERIFICATION_12H` (1) and `MISSED_DAILY_CAPTURE` (2), so owned health
+  stayed DOWN.
+- **Kuma 18:** the owner received its DOWN mail, the first verified delivery. Recovery mail is
+  unverified. The monitor was paused again after OFF.
+- **Tapas** remains the writer.
+
+The eleven-minute delay before histories is most likely queue order, not memory. This is an
+inference; what the code shows is:
+
+- The dispatcher orders by priority, then due time, with no dependency filter
+  (`OwnedSyncStore:148`), and every lease counts as an attempt (`:167`).
+- Every fixture attempt that fetched a public pair queues a priority-0 parent refresh
+  (`HistoryFixtureDispatcher:178`).
+- A retry restores the kind's own priority unless the run is waiting on a dependency
+  (`OwnedSyncStore:558`).
+
+Two candidate fixes are not implemented yet:
+
+- refresh the parent only when the fetched pair differs from the latest canonical pair;
+- keep the priority on admission-only deferrals.
+
+The next attended run must last past the second verification batch to show `VERIFIED` fixtures.
+Details are in the [memory report](OWNED-SYNC-MEMORY-REPORT.md).
+
 ## Owned sync — supervised stop and runtime-pressure follow-up (2026-09-15)
 
 PR #100 deployed; epoch 36 stopped at the conservative guest-memory threshold (153.5 MiB

@@ -4,15 +4,20 @@ This is an implementation reference, not authorization to activate the owned wri
 mode, webhook destination, monitor, repository variable, URL, or secret is configured by this change.
 Do not use a manual Fly deploy.
 
-Latest supervised outcome (2026-09-15, after PR #101): **OFF epoch 39**, application UP,
-Tapas still writer and Kuma 18 paused. Epoch 38 remained on one Java process and its last complete
-sample held about 271 MiB guest memory available; it did not OOM. The first five-minute watchdog
-check timed out while opening hundreds of due-work incidents and caused the external-health alert.
-The pending correction batches those durable incidents and their recovery evidence without
-coalescing or dropping signals. See [the memory report](OWNED-SYNC-MEMORY-REPORT.md) for measured
-limits and the revised cold-start progress gate. A fixed five-minute history-only check is
-insufficient while initial verification/parent work is progressing. Resolve the Java PID by
-identity and give each new activation its own bounded startup-heartbeat grace period.
+Latest supervised outcome (2026-09-15, after PR #103): **OFF epoch 43**, application UP,
+Tapas still the writer and Kuma 18 paused.
+
+In attended epoch 42, all 78 canonical runs, 40 verification jobs and 659 history runs completed
+with no failures. Memory stayed at or below 545.5 MiB sampled RSS, with at least 260 MiB guest
+memory available. The batched watchdog opened 702 incidents in its first check and recovered all
+699 due-work ones.
+
+No fixture reached `VERIFIED` (40 `VERIFYING`), because the second observation batch was not
+reached. `FIXTURE_VERIFICATION_12H` and `MISSED_DAILY_CAPTURE` stayed open. Kuma DOWN mail
+delivery is verified; recovery mail is not. See [the memory report](OWNED-SYNC-MEMORY-REPORT.md).
+
+Resolve the Java PID by identity. Give each new activation its own bounded startup-heartbeat grace
+period.
 
 ## Safe defaults and required configuration
 
