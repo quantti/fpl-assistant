@@ -130,7 +130,6 @@ function Ready({ data }: { data: ReadyResponse }) {
     <>
       <section className={classes.snapshot} aria-labelledby="team-name">
         <h2 id="team-name" className={classes.teamName}>{data.entry.name}</h2>
-        <p>Entry {data.entry.id} · Squad published for locked GW {data.lockedGameweek}</p>
         {data.deadline && <p>Deadline {formatTimestamp(data.deadline)}</p>}
         <p>Loaded {formatTimestamp(data.loadedAt)}</p>
       </section>
@@ -153,7 +152,7 @@ function Ready({ data }: { data: ReadyResponse }) {
               value={data.lockedSquad.value}
               players={data.lockedSquad.players}
               choiceGameweek={data.lockedGameweek}
-              note={'These temporary picks belong to the named gameweek only and did not carry forward. The funds are from this Free Hit snapshot.'}
+              note={'These picks were for this gameweek only and did not carry forward. The bank and value are the Free Hit squad’s.'}
             />
           </details>
         </>
@@ -163,14 +162,14 @@ function Ready({ data }: { data: ReadyResponse }) {
         <SquadSection
           title={primary.context === 'continuing'
             ? `Continuing squad — restored at the GW ${primary.restoredAtGameweek} deadline`
-            : `Squad locked for GW ${primary.sourceGameweek}`}
+            : `Squad for GW ${primary.sourceGameweek}`}
           bank={primary.bank}
           value={primary.value}
           players={primary.players}
           choiceGameweek={primary.sourceGameweek}
           note={primary.context === 'continuing'
             ? `Restored from the GW ${primary.sourceGameweek} picks. Its bank is the restored estimate before any later transfers; its captain and bench order are GW ${primary.sourceGameweek} choices, not a recommendation.`
-            : 'This is the published deadline snapshot. Transfers made after that deadline are not visible.'}
+            : 'Transfers you make for the next gameweek show here once its deadline passes.'}
         />
       ) : (
         <section className={classes.warning} aria-labelledby="continuing-unavailable-title">
@@ -184,17 +183,6 @@ function Ready({ data }: { data: ReadyResponse }) {
       )}
 
       <ChipSection data={data} />
-
-      <section className={classes.caveats} aria-labelledby="snapshot-notes-title">
-        <h2 id="snapshot-notes-title" className={classes.sectionTitle}>About this snapshot</h2>
-        <p>Transfers made after the locked gameweek’s deadline are not visible here.</p>
-        <p>FPL responses and player details may be cached. If a refresh failed, an older player
-          snapshot may survive; “Loaded” is when this page assembled the response, not when FPL
-          updated it.</p>
-        <p>Player prices are market prices from that player snapshot and may describe a different
-          moment from the recorded bank and squad value. Selling prices and free-transfer counts
-          are unavailable, so this is not an exact transfer budget.</p>
-      </section>
     </>
   )
 }
@@ -205,11 +193,11 @@ function GameweekPointsSection({ data }: { data: ReadyResponse }) {
       <h2 id="gameweek-points-title" className={classes.sectionTitle}>GW {data.gameweekPoints.gameweek} points</h2>
       <p>{data.gameweekPoints.entryTotal === null
         ? 'FPL has not published a total for this entry.'
-        : `${data.gameweekPoints.entryTotal} points — FPL's own total for this entry, before transfer costs.`}</p>
+        : <><strong className={classes.total}>{data.gameweekPoints.entryTotal}</strong> points — total before transfer costs.</>}</p>
       <p>{describeGameweekStatus(data.gameweekPoints.gameweek, data.gameweekPoints.status)}</p>
       <p>{data.gameweekPoints.playersAsOf === null
         ? 'Per-player points could not be read from FPL just now.'
-        : `Per-player points read ${formatTimestamp(data.gameweekPoints.playersAsOf)} from FPL's live feed; player lines need not sum to the total.`}</p>
+        : `Per-player points read ${formatTimestamp(data.gameweekPoints.playersAsOf)} from FPL's live feed. Each line is the player's own score; your total applies the captain multiplier, leaves out the bench and counts automatic substitutions.`}</p>
     </section>
   )
 }
@@ -218,7 +206,7 @@ function ChipSection({ data }: { data: ReadyResponse }) {
   return (
     <section className={classes.chips} aria-labelledby="chips-title">
       <h2 id="chips-title" className={classes.sectionTitle}>Chips</h2>
-      <p>Used for locked GW {data.lockedGameweek}: {data.lockedSquad.activeChip === null
+      <p>Played in GW {data.lockedGameweek}: {data.lockedSquad.activeChip === null
         ? 'None'
         : formatChipName(data.lockedSquad.activeChip)}.</p>
       {data.chips.known ? (

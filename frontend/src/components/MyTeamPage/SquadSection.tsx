@@ -53,13 +53,13 @@ function PlayerGroup({ title, gameweek, players }: {
                 </span>
                 {(player.captain || player.viceCaptain) && (
                   <span className={classes.roles}>
-                    {player.captain && <span className={classes.role}>Captain</span>}
+                    {player.captain && <span className={`${classes.role} ${classes.captain}`}>Captain</span>}
                     {player.viceCaptain && <span className={classes.role}>Vice-captain</span>}
                   </span>
                 )}
                 <span className={classes.playerMeta}>
                   {player.gameweekPoints !== null && (
-                    <>{`GW ${gameweek}: ${player.gameweekPoints} pts · ${player.gameweekMinutes ?? 0} min`}{' · '}</>
+                    <>GW {gameweek}: <strong className={classes.points}>{player.gameweekPoints} pts</strong>{` · ${player.gameweekMinutes ?? 0} min · `}</>
                   )}
                   {player.marketPrice === null
                     ? 'Market price unavailable'
