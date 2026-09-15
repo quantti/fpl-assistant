@@ -25,7 +25,6 @@ import dev.quantti.fplassistant.sync.OwnedSyncStore.Endpoint;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.EndpointKind;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.Lease;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.PayloadRetentionLimitException;
-import dev.quantti.fplassistant.sync.OwnedSyncStore.PublicPayloadPair;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.Run;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.SourceDemandAdvancedException;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.SourceRead;
@@ -231,18 +230,20 @@ public final class CatalogueScheduleDispatcher {
     }
 
     private Optional<Documents> reusablePair(Season season, Instant requestedAfter) {
-        for (PublicPayloadPair pair : store.latestValidPublicPayloadPairs(season.code(), REUSABLE_PAIR_LIMIT)) {
+        Instant dayStart = date(clock.instant()).atStartOfDay(UK).toInstant();
+        Instant minimumReadStart = requestedAfter.isAfter(dayStart) ? requestedAfter : dayStart;
+        return store.findInLatestValidPublicPayloadPairs(season.code(), REUSABLE_PAIR_LIMIT, minimumReadStart, pair -> {
             Documents documents = documents(pair.bootstrap(), pair.fixtures());
             if (!isToday(documents) || !startsAtOrAfter(documents, requestedAfter)
-                    || regressesReceipts(season.code(), documents)) continue;
+                    || regressesReceipts(season.code(), documents)) return Optional.empty();
             try {
                 CatalogueScheduleParser.parse(season, documents.bootstrap, documents.fixtures);
                 return Optional.of(documents);
             } catch (IllegalArgumentException ignored) {
                 // VALID is staging metadata, not permission to bypass the strict pair parser.
+                return Optional.empty();
             }
-        }
-        return Optional.empty();
+        });
     }
 
     private Optional<StagedPayload> usableOwn(Lease lease, Endpoint endpoint, Instant requestedAfter) {
