@@ -4290,6 +4290,59 @@ Chromium screenshots at 1280px and 375px in both schemes, with the sidebar overl
 the dev server with a stubbed session and no backend. Measured `.root` height unchanged after
 inserting 3000px of content, i.e. still height-bounded. Head to Head from the mockup is not built.
 
+## Owned sync — overnight OOM and bounded investigation (2026-09-15)
+
+The third STAGING run did not converge. The activation advanced from epoch 5 to 32 across
+restarts; the latest Fly exit explicitly reports `oom_killed=true`, exit 137, and the kernel logged
+Java at 877728 KiB anonymous RSS at 07:29 UTC. Application health timed out. In epoch 32, twelve
+catalogue/schedule runs completed but all 659 history jobs still had attempt count zero. Across
+STAGING epochs there were no completed history jobs; total HTTP attempts were 1673. No owned
+receipt was published and no player evidence existed. This is not a successful staging rehearsal.
+
+Containment: configured OFF, verified the replacement OFF process and HTTP 200/UP, then fenced
+only the drained epoch-32 pending/leased runs (701 rows) in a guarded metadata transaction and
+advanced the durable mode to OFF epoch 33. Source evidence was retained. Tapas credentials and
+core-write ownership were not changed. The previous temporary Kuma pause helper was absent, so
+no pause was performed in this containment; do not claim that the monitor is paused.
+
+Read-only production size inspection found bootstrap bodies averaging 1.67 MiB, fixtures 0.20 MiB,
+and live bodies 0.44 MiB. Epoch 32 held six valid canonical pairs (11.25 MiB raw). A disposable
+Postgres probe using the checked-in full-size source fixtures reproduced the lookup with six
+pairs, without contacting FPL: `latestValidPublicPayloadPairs` plus parsing the first pair allocated
+70.32 MiB per call over twelve iterations. Selecting only one pair for measurement allocated
+32.33 MiB per call. This is a diagnostic comparison, not a deployed change: simply removing the
+fallback would lose required validation behavior. JFR samples locate the largest allocations in
+PGStream tuple reception, PGbytea hex decoding and StagedPayload's defensive clone. After explicit
+GC the probe retained about 27 MiB; this short run neither proves a leak nor excludes one in the
+full runtime.
+
+Separately, a local flags probe with `MaxRAMPercentage=75` and 1 GiB permits a 768 MiB heap;
+read-only production HotSpot counters refine the actual maximum to about 722 MiB on the guest's
+smaller usable memory. An OFF sample had about 328 MiB RSS and 76 MiB committed metaspace. Metaspace
+was not explicitly capped and code-cache reservation was 240 MiB (reservation is not committed
+RSS). No full application OOM reproduction or exclusive root-cause attribution has been made.
+
+All diagnostic Java processes were serialized under a 768 MiB cgroup hard limit, no swap, one CPU,
+a 150-second deadline and host-memory stop threshold; the workload used a 256 MiB heap. Its local
+DB was isolated at port 55436 and stopped afterward; the other worktree's port-55432 DB was not
+modified. Private JFR/output files are under `/tmp/fpl-memory-*` and are not committed. Next bounded
+work: preserve newest-valid fallback while fetching bodies only on demand, establish an explicit
+whole-process JVM budget, and measure the full-size workload before considering another STAGING
+run. Production stays OFF; do not substitute another memory increase for that verification.
+
+**Bounded correction:** all three canonical consumers now select metadata first and fetch only the
+pair they inspect; catalogue reuse rejects stale request/day floors before loading bodies. Strict
+newest-valid fallback, pair coherence and validation/epoch filters remain. Measured allocation fell
+from 70.32 to 33.00 MiB per selection; stale-only candidates used 0.01 MiB. A twenty-pair,
+300-selection repeat used 32.13 MiB per selection, finished in 17.96 seconds and retained 17.43 MiB
+heap after GC. The whole corrected probe peaked at 443 MiB RSS. The Docker launch now budgets
+448 MiB heap, 160 MiB metaspace, 64 MiB code cache and 32 MiB direct buffers; VM size remains 1 GiB.
+This is a local correction, not a claim of successful full-runtime staging. One focused test run
+was stopped safely when host headroom reached 691 MiB (own scope peak 983 MiB); no other process
+was killed. Full verification/publication evidence belongs to the correction PR.
+See `docs/OWNED-SYNC-MEMORY-REPORT.md` for measured facts, uncertainties, reproducible diagnostics
+and the attended, bounded next-rollout proposal. Core-write handover remains blocked.
+
 ## Owned sync — second STAGING exposed dependency starvation (2026-09-14)
 
 PR #97 deployed successfully with 1 GiB. The planner advanced and about 411 MiB remained available;

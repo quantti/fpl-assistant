@@ -8,6 +8,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -18,7 +19,6 @@ import fi.karivanttinen.fplassistant.sync.CatalogueScheduleParser.ReadInterval;
 import fi.karivanttinen.fplassistant.sync.CatalogueScheduleParser.Season;
 import fi.karivanttinen.fplassistant.sync.CatalogueScheduleParser.Snapshot;
 import fi.karivanttinen.fplassistant.sync.CatalogueScheduleParser.SourceDocument;
-import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.PublicPayloadPair;
 
 /** Builds planner input from durable source staging, falling back to the existing FPL captures. */
 public final class PlannerInputRepository {
@@ -50,14 +50,15 @@ public final class PlannerInputRepository {
     }
 
     private Snapshot latestOwnedSnapshot(Season season) {
-        for (PublicPayloadPair pair : store.latestValidPublicPayloadPairs(season.code(), 20)) {
+        return store.findInLatestValidPublicPayloadPairs(season.code(), 20, pair -> {
             try {
-                return CatalogueScheduleParser.parse(season, document(pair.bootstrap()), document(pair.fixtures()));
+                return Optional.of(CatalogueScheduleParser.parse(
+                        season, document(pair.bootstrap()), document(pair.fixtures())));
             } catch (IllegalArgumentException ignored) {
                 // Validation metadata never bypasses the strict parser.
+                return Optional.empty();
             }
-        }
-        return null;
+        }).orElse(null);
     }
 
     private SourceState sourceState(Snapshot snapshot) {

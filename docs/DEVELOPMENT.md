@@ -88,6 +88,9 @@ an acknowledgement, not proof that external processes have drained.
 notification delivery. History/DefCon publication requires fixture-level verification, not just
 an HTTP 200. ACTIVE disables conflicting legacy price/schedule/current-season DefCon paths.
 See [OWNED-SYNC-OPERATIONS.md](OWNED-SYNC-OPERATIONS.md) and the separate Tapas cutover runbook.
+The overnight OOM investigation, explicit Docker JVM budget and reproducible bounded allocation
+probe are in [OWNED-SYNC-MEMORY-REPORT.md](OWNED-SYNC-MEMORY-REPORT.md). Test JVM limits below are
+separate from that production budget.
 
 Run the new tests with the ordinary **local** `.env.test` setup:
 
