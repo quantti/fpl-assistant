@@ -229,7 +229,7 @@ function ChipSection({ data }: { data: ReadyResponse }) {
               : data.chips.playable.map(formatChipName).join(', ')
           }.</p>
           {data.chips.openingLater.length > 0 && data.chips.openingGameweek !== null && (
-            <p>Opening in GW {data.chips.openingGameweek}: {
+            <p>Second set from GW {data.chips.openingGameweek}: {
               data.chips.openingLater.map(formatChipName).join(', ')
             }.</p>
           )}

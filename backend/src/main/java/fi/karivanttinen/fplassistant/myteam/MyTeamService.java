@@ -361,7 +361,9 @@ public class MyTeamService {
      * the manager has not played it inside that window. The windows are per chip and there are
      * two sets a season — in 2026/27 the wildcard's first window is GW2-19 while the bench
      * boost's is GW1-19, because until the GW1 deadline transfers are unlimited and a wildcard
-     * would buy nothing — so they are read from the payload rather than assumed.
+     * would buy nothing — so they are read from the payload rather than assumed. The next window
+     * to open lists every chip it brings, including ones still playable now: an unused chip does
+     * not carry over into the next window, so the next window is a fresh set.
      */
     private static Chips chipsFor(FplBootstrap.Snapshot snapshot, List<ChipPlayed> played,
                                   int event) {
@@ -386,7 +388,6 @@ public class MyTeamService {
         List<String> openingLater = opensAt == null ? List.of() : later.entrySet().stream()
                 .filter(entry -> entry.getValue().equals(opensAt))
                 .map(Map.Entry::getKey)
-                .filter(name -> !playable.contains(name))
                 .toList();
         return new Chips(playable, openingLater, openingLater.isEmpty() ? null : opensAt, true);
     }
@@ -478,7 +479,7 @@ public class MyTeamService {
                     .append(squad.playableChips().isEmpty() ? "none"
                             : String.join(", ", squad.playableChips()));
             if (!squad.chipsOpeningLater().isEmpty()) {
-                out.append(". Opening in GW").append(squad.chipsOpenAt()).append(": ")
+                out.append(". Second set from GW").append(squad.chipsOpenAt()).append(": ")
                         .append(String.join(", ", squad.chipsOpeningLater()));
             }
         }
