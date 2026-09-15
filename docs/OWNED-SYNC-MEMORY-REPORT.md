@@ -1,5 +1,48 @@
 # Owned-sync memory incident — 2026-09-15
 
+## Epoch 42 after PR #103: initial work drained, verification not reached
+
+The owner attended the epoch-42 run from 15:36 to 16:20 UTC; epoch 40 had stopped after three
+minutes on one transport error. The observer was the one described below, with three changes:
+
+- one transport-error retry;
+- an attach mode, used when the owner-authorised extension handed the run to a new observer at
+  15:50 without re-requesting STAGING;
+- the five-minute no-progress stop now applies after histories start as well.
+
+The rest of the procedure was unchanged: memory, heartbeat and restart stops, identity-resolved
+PID and a durable OFF check.
+
+| Measure | Result |
+|---|---|
+| Samples / process | 44, one Java process identity throughout |
+| Sampled RSS peak | 545.5 MiB (stop threshold 720) |
+| Guest available minimum | 260.0 MiB (stop threshold 192) |
+| Heartbeat age maximum | 51.7 s (stop threshold 180) |
+| Canonical runs | 78 completed, 183 attempts |
+| Fixture-verification runs | 40 completed, 241 attempts |
+| History runs | 659 completed, 1236 attempts; first completion seen 15:47 |
+| Failed runs / published receipts / evidence rows | 0 / 0 / 0 |
+| End state | stall stop at 16:19:55 (queue empty) → OFF epoch 43, no manual fence |
+
+The watchdog's first check at 15:41:49 opened 699 `DUE_WORK` incidents, one
+`FIXTURE_VERIFICATION_12H` and two `MISSED_DAILY_CAPTURE` without a timeout. All `DUE_WORK`
+incidents recovered by 16:16:54. The other three stayed open, so owned health remained DOWN.
+
+`fpl_fixture_sync` ended with 40 `VERIFYING` and 340 `SCHEDULED` rows. **No fixture reached
+`VERIFIED`**: completed verification jobs are not the two-observation readiness rule.
+
+The eleven-minute wait before the first history matches the finite-initial-work interpretation
+below. The attempt counts reflect admission deferrals, because every lease increments the count.
+A read-only review points at two queue costs:
+
+- fixture-driven parent refreshes at priority 0;
+- deferrals restoring priority 1.
+
+These are candidate fixes, not measured changes. The next attended run must extend past the second
+verification batch. Durable success means `VERIFIED` fixtures with staged evidence and the open
+incidents recovering; memory alone does not establish it.
+
 ## Follow-up after PRs #100–101: bounded stops, not another OOM
 
 PR #100 deployed as `546a207` (workflow 34950247318). The supervised 09:20–09:26 UTC

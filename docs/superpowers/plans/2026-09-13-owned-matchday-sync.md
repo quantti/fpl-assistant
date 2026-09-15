@@ -1,6 +1,6 @@
 # Assistant-owned FPL sync and post-match verification
 
-**PROGRESS:** Tasks 1–10 implemented; PR #101 deployed. Epoch 38 stayed below memory stops but its first watchdog check timed out opening high-cardinality incidents; OFF epoch 39 verified. Batched watchdog persistence/recovery passes focused local tests but is not deployed or operationally accepted; Tapas remains writer and all cutover/reconciliation gates remain open.
+**PROGRESS:** Tasks 1–10 implemented; PR #103 deployed. Attended epoch 42 drained all initial canonical/verification/history work with stable memory and no watchdog timeout; OFF epoch 43 verified. No fixture reached VERIFIED (second observation batch not reached) and nothing was published; Tapas remains writer and all cutover/reconciliation gates remain open.
 
 Owner decision: this service, **not Tapas**, will perform the FPL data updates. This supersedes
 Task 5's ownership assumption in `2026-09-13-wildcard-data-coverage.md`. That plan's comparison
