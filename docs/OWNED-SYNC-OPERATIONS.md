@@ -56,6 +56,19 @@ The GitHub schedule runs every ten minutes only when the repository variable is 
 GitHub scheduled workflows are best-effort and can be delayed or skipped; they are an independent
 way to detect a stopped machine/dead in-process scheduler, not an availability SLA.
 
+## Overnight OOM containment (2026-09-15)
+
+The next STAGING run repeatedly restarted and did not complete player histories. Fly confirmed
+an OOM kill; application health timed out. The replacement OFF process was verified healthy,
+and the drained epoch-32 queue was fenced in a guarded metadata-only transaction to OFF epoch 33.
+No owned receipts or player evidence had been published; Tapas remains the core writer.
+
+The bounded memory correction and its evidence/limits are documented in
+[OWNED-SYNC-MEMORY-REPORT.md](OWNED-SYNC-MEMORY-REPORT.md). Do not infer operational readiness from
+the local allocation probe. The next STAGING run must be attended and time-bounded, with actual
+history completion and stable memory checked, and an explicit stop/drain/epoch check afterward.
+Do not leave it running overnight on the strength of an initial heartbeat or catalogue completion.
+
 ## Second STAGING attempt (2026-09-14 23:10–23:18 UTC)
 
 PR #97 deployed with 1 GiB. The planner heartbeat advanced without the earlier pool/transaction

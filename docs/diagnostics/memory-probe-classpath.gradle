@@ -1,0 +1,8 @@
+allprojects {
+    afterEvaluate {
+        tasks.register('memoryProbeClasspath') {
+            dependsOn tasks.named('classes')
+            doLast { new File('/tmp/fpl-probe-classpath.txt').text = sourceSets.main.runtimeClasspath.asPath }
+        }
+    }
+}

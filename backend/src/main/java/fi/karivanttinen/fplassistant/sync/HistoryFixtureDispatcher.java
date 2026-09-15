@@ -23,7 +23,6 @@ import fi.karivanttinen.fplassistant.sync.OwnedSyncHttpClient.Response;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.Endpoint;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.Lease;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.PayloadRetentionLimitException;
-import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.PublicPayloadPair;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.Run;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.SourceRead;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.StagedPayload;
@@ -339,16 +338,16 @@ public final class HistoryFixtureDispatcher {
     }
 
     private Optional<CanonicalPair> canonicalSnapshot(Season season) {
-        for (PublicPayloadPair pair : store.latestValidPublicPayloadPairs(season.code(), PUBLIC_PAIR_LIMIT)) {
+        return store.findInLatestValidPublicPayloadPairs(season.code(), PUBLIC_PAIR_LIMIT, pair -> {
             try {
                 return Optional.of(new CanonicalPair(pair.bootstrap(), pair.fixtures(),
                         CatalogueScheduleParser.parse(season,
                                 document(pair.bootstrap()), document(pair.fixtures()))));
             } catch (IllegalArgumentException ignored) {
                 // VALID staging metadata never bypasses strict parsing in this dispatcher.
+                return Optional.empty();
             }
-        }
-        return Optional.empty();
+        });
     }
 
     private StagedPayload fetchAndStage(Lease lease, Endpoint endpoint) {
