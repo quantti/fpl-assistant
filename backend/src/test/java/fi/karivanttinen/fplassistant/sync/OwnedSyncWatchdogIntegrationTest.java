@@ -164,6 +164,39 @@ class OwnedSyncWatchdogIntegrationTest {
     }
 
     @Test
+    void batchesHighCardinalityIncidentsAndRecoveriesWithinMonitorTransaction() {
+        jdbc.update("INSERT INTO " + TABLES.plannerRuntime()
+                        + "(instance_id,started_at,heartbeat_at) VALUES (?,?,?)",
+                "healthy", ts(NOW), ts(NOW));
+        jdbc.update("INSERT INTO " + TABLES.receipt()
+                + "(season,publication_key) SELECT '2024-25','bulk:' || n FROM generate_series(1,700) n");
+        jdbc.update("INSERT INTO " + TABLES.run()
+                + "(kind,season,coalescing_key,publication_key,priority,due_at,requested_source_after,"
+                + "runtime_mode,runtime_epoch,state,created_at,updated_at) SELECT "
+                + "'PLAYER_HISTORY','2024-25','bulk:' || n,'bulk:' || n,3,?,?,?,?,"
+                + "'PENDING',?,? FROM generate_series(1,700) n",
+                ts(NOW.minusSeconds(600)), ts(NOW.minusSeconds(600)), "STAGING", 38,
+                ts(NOW.minusSeconds(600)), ts(NOW.minusSeconds(600)));
+        TransactionTemplate bounded = new TransactionTemplate(tx.getTransactionManager());
+        bounded.setTimeout(5);
+        OwnedSyncWatchdog watchdog = new OwnedSyncWatchdog(jdbc, bounded,
+                Clock.fixed(NOW, ZoneOffset.UTC), TABLES,
+                new OwnedSyncWatchdog.Notification(false, false, true), payload -> { });
+
+        assertThat(watchdog.check("2024-25").incidentsOpened()).isGreaterThanOrEqualTo(700);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.alert()
+                + " WHERE category='DUE_WORK' AND event_type='INCIDENT'", Integer.class)).isEqualTo(700);
+
+        jdbc.update("UPDATE " + TABLES.run() + " SET state='COMPLETED',completed_at=?,updated_at=?",
+                ts(NOW), ts(NOW));
+        assertThat(watchdog.check("2024-25").recoveriesOpened()).isGreaterThanOrEqualTo(700);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.alert()
+                + " WHERE category='DUE_WORK' AND event_type='RECOVERY'", Integer.class)).isEqualTo(700);
+        assertThat(jdbc.queryForObject("SELECT count(DISTINCT occurrence) FROM " + TABLES.alert()
+                + " WHERE category='DUE_WORK'", Integer.class)).isOne();
+    }
+
+    @Test
     void pendingRunAlertsOnActualConsecutiveFetchFailuresButNotHealthyDeferrals() {
         jdbc.update("INSERT INTO " + TABLES.plannerRuntime()
                         + "(instance_id,started_at,heartbeat_at) VALUES (?,?,?)",

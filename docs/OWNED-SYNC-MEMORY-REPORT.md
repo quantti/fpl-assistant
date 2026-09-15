@@ -1,6 +1,6 @@
 # Owned-sync memory incident — 2026-09-15
 
-## Follow-up after PR #100: bounded stop, not another OOM
+## Follow-up after PRs #100–101: bounded stops, not another OOM
 
 PR #100 deployed as `546a207` (workflow 34950247318). The supervised 09:20–09:26 UTC
 STAGING attempt, epoch 36, stopped when guest available memory reached **153.5 MiB**, below the
@@ -75,10 +75,33 @@ cd backend
 ```
 
 The init script restricts selection to this one test and applies the proposed JVM caps. The normal
-suite keeps its checked-in budget. A subsequent reviewed release still needs an attended bounded
-STAGING run: keep the memory/health/restart stops, assess cold-start queue progress rather than
-only history count, and verify durable OFF on exit. **No new STAGING was started during this
-follow-up investigation.** Final full-suite/PR evidence is recorded with the correction's PR.
+suite keeps its checked-in budget.
+
+### Epoch 38 and watchdog correction
+
+PR #101 deployed the five-second planner and 320 MiB heap. Epoch 38 kept one identified Java
+process from 11:22 UTC through the observer's last complete sample. RSS levelled at about 537 MiB
+and guest available memory at about 271 MiB; no OOM/restart occurred. Initial work continued:
+68 canonical runs had completed, 40 verification jobs were accumulating first-pass attempts and
+659 histories remained unattempted. This remains an incomplete rehearsal, not evidence of eventual
+convergence.
+
+At 11:27 the first scheduled watchdog check exceeded its isolated five-second transaction. The
+stack ended in `nextOccurrence`: after collecting hundreds of due-work signals, the old code read
+an occurrence and inserted an alert once per signal. The check rolled back and external health
+alerted. The user's message interrupted the local observer, not the Fly process; OFF was requested
+immediately. Graceful shutdown recorded **OFF epoch 39**, failed the epoch's 40 active verification
+and 659 history runs, retained 74 completed canonical runs, and published zero core receipts. Kuma
+18 is paused while OFF; Tapas remains writer.
+
+The pending correction preserves one durable incident per signal and advisory-lock atomicity. It
+loads all next occurrences in one grouped query and writes incidents/recoveries in one JDBC batch.
+It also replaces per-open-incident recovery queries with one completed-run read, one verified-
+fixture read and one grouped capture-receipt read. A disposable test creates and then recovers 700
+due-work incidents using the real five-second transaction limit. Eleven focused watchdog/database
+tests pass under a hard 768 MiB, no-swap, 150-second diagnostic scope. This is local verification,
+not Supabase latency evidence. A reviewed release and another attended STAGING are still required;
+keep memory/health/restart stops, assess cold-start queue progress, and verify durable OFF on exit.
 
 ## Overnight incident (before PR #100)
 

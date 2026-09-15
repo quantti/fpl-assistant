@@ -4312,9 +4312,24 @@ VM still 1 GiB). A bounded diagnostic under those JVM limits passed: 555.1 MiB s
 The final 1536 MiB scope peaked at 941 MiB with host headroom at least 2348 MiB. Failed/interrupted
 diagnostic setup runs are not passing evidence or application OOM reproductions.
 
-No production activation occurred during this follow-up. Full evidence, reproduction and revised
-cold-start monitoring gates: [memory report](OWNED-SYNC-MEMORY-REPORT.md). Final suite/PR evidence
-belongs with the correction's PR; owner merge and a further attended STAGING remain required.
+PR #101 deployed this correction. Supervised epoch 38 remained on one Java process and levelled at
+about 537 MiB sampled RSS / 271 MiB guest available through its last complete sample. It completed
+68 canonical runs by then; 40 verification jobs were still making first-pass attempts and 659
+histories remained unattempted. The external monitor alerted at the first five-minute watchdog
+check. Logs show the watchdog's isolated five-second transaction timing out in `nextOccurrence`
+after building the high-cardinality due-work signal set; this was not an OOM or process restart.
+The operator interruption stopped the local observer, so the runtime was immediately returned to
+**OFF epoch 39**, UP. Epoch-38 shutdown fenced 40 verification and 659 history runs as FAILED;
+74 canonical runs had completed. Zero core receipts were published. Kuma 18 is paused while OFF.
+
+The watchdog correction retains one incident per signal but replaces per-incident occurrence reads
+and inserts with one grouped occurrence read and a batch insert. Recovery evidence for runs,
+fixtures and captures is also loaded in three bounded metadata reads rather than one query per open
+incident. A disposable-Postgres regression opens and recovers 700 due-work incidents inside the
+real five-second monitor transaction; 11 focused tests pass under a 768 MiB/150-second diagnostic
+scope. Full evidence, reproduction and revised cold-start monitoring gates remain in the
+[memory report](OWNED-SYNC-MEMORY-REPORT.md). A reviewed deploy and another attended STAGING are
+required; Tapas remains writer.
 
 ## Owned sync — overnight OOM and bounded investigation (2026-09-15)
 
