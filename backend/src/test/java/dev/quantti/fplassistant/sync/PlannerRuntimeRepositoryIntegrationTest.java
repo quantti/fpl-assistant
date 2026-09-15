@@ -3,14 +3,19 @@ package dev.quantti.fplassistant.sync;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.io.IOException;
+import java.io.InputStream;
 import java.time.Clock;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import javax.sql.DataSource;
 
@@ -18,6 +23,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.RowMapper;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -25,6 +31,13 @@ import org.springframework.transaction.support.TransactionTemplate;
 import dev.quantti.fplassistant.sync.AdaptiveMatchdayPlanner.SlotReason;
 import dev.quantti.fplassistant.sync.AdaptiveMatchdayPlanner.WorkKind;
 import dev.quantti.fplassistant.sync.AdaptiveMatchdayPlanner.WorkSlot;
+import dev.quantti.fplassistant.sync.CatalogueScheduleParser.ReadInterval;
+import dev.quantti.fplassistant.sync.CatalogueScheduleParser.Season;
+import dev.quantti.fplassistant.sync.CatalogueScheduleParser.SourceDocument;
+import dev.quantti.fplassistant.sync.OwnedSyncStore.Endpoint;
+import dev.quantti.fplassistant.sync.OwnedSyncStore.SourceRead;
+import dev.quantti.fplassistant.sync.OwnedSyncStore.SyncKind;
+import dev.quantti.fplassistant.sync.OwnedSyncStore.Validation;
 
 class PlannerRuntimeRepositoryIntegrationTest {
 
@@ -179,10 +192,89 @@ class PlannerRuntimeRepositoryIntegrationTest {
         var secondFence = repository(FIRST.plusSeconds(2)).activate("2026-27", OwnedSyncMode.ACTIVE);
         OwnedSyncStore secondStore = fencedStore(FIRST.plusSeconds(2), secondFence);
 
-        assertThat(secondStore.latestValidPublicPayloadPairs("2026-27", 20)).isEmpty();
+        assertThat(secondStore.findInLatestValidPublicPayloadPairs(
+                "2026-27", 20, pair -> java.util.Optional.of(pair))).isEmpty();
         assertThatThrownBy(() -> firstStore.enqueue(OwnedSyncStore.SyncKind.PLAYER_HISTORY,
                 "2026-27", "late", "late", FIRST.plusSeconds(2)))
                 .isInstanceOf(OwnedSyncStore.RuntimeFenceLostException.class);
+    }
+
+    @Test
+    void canonicalFallbackLoadsOnlyVisitedFullSizePairsAndKeepsAllFences() throws Exception {
+        byte[] bootstrap = resource("bootstrap-static.json");
+        byte[] fixtures = resource("fixtures.json");
+        byte[] malformedBootstrap = bootstrap.clone();
+        malformedBootstrap[0] = '[';
+        Season season = new Season(27, "2026-27", LocalDate.of(2026, 8, 21), null);
+        TrackingJdbcTemplate tracking = new TrackingJdbcTemplate(dataSource);
+
+        var oldFence = repository(FIRST).activate(season.code(), OwnedSyncMode.STAGING);
+        stagePair(new OwnedSyncStore(tracking, tx, Clock.fixed(FIRST, ZoneOffset.UTC), TABLES, oldFence),
+                season.code(), "old-epoch", FIRST, bootstrap, fixtures, true);
+        var fence = repository(FIRST.plusSeconds(1)).activate(season.code(), OwnedSyncMode.STAGING);
+
+        OwnedSyncStore wrongSeasonStore = new OwnedSyncStore(tracking, tx,
+                Clock.fixed(FIRST.plusSeconds(2), ZoneOffset.UTC), TABLES, fence);
+        long wrongSeason = stagePair(wrongSeasonStore, season.code(), "wrong-season",
+                FIRST.plusSeconds(2), bootstrap, fixtures, true);
+        jdbc.update("INSERT INTO " + TABLES.receipt()
+                + "(season,publication_key) VALUES ('2098-99','wrong-season')");
+        jdbc.update("UPDATE " + TABLES.run() + " SET season='2098-99' WHERE generation=?", wrongSeason);
+
+        long expected = 0;
+        OwnedSyncStore current = null;
+        for (int index = 0; index < 6; index++) {
+            Instant at = FIRST.plusSeconds(3 + index);
+            current = new OwnedSyncStore(tracking, tx, Clock.fixed(at, ZoneOffset.UTC), TABLES, fence);
+            long generation = stagePair(current, season.code(), "candidate-" + index, at,
+                    index == 5 ? malformedBootstrap : bootstrap, fixtures, true);
+            if (index == 4) expected = generation;
+        }
+        Instant incompleteAt = FIRST.plusSeconds(10);
+        OwnedSyncStore incompleteStore = new OwnedSyncStore(tracking, tx,
+                Clock.fixed(incompleteAt, ZoneOffset.UTC), TABLES, fence);
+        stagePair(incompleteStore, season.code(), "incomplete", incompleteAt,
+                bootstrap, fixtures, false);
+
+        AtomicInteger visited = new AtomicInteger();
+        Optional<Long> selected = current.findInLatestValidPublicPayloadPairs(season.code(), 20, pair -> {
+            visited.incrementAndGet();
+            try {
+                CatalogueScheduleParser.parse(season,
+                        new SourceDocument(pair.bootstrap().body(), new ReadInterval(
+                                pair.bootstrap().read().startedAt(), pair.bootstrap().read().finishedAt())),
+                        new SourceDocument(pair.fixtures().body(), new ReadInterval(
+                                pair.fixtures().read().startedAt(), pair.fixtures().read().finishedAt())));
+                return Optional.of(pair.runGeneration());
+            } catch (IllegalArgumentException invalid) {
+                return Optional.empty();
+            }
+        });
+
+        assertThat(selected).contains(expected);
+        assertThat(visited).hasValue(2);
+        assertThat(tracking.bodyPairQueries()).isEqualTo(2);
+
+        assertThat(current.findInLatestValidPublicPayloadPairs(season.code(), 20,
+                incompleteAt.plusSeconds(1), pair -> {
+                    throw new AssertionError("Stale bodies must not reach the visitor");
+                })).isEmpty();
+        assertThat(tracking.bodyPairQueries()).isEqualTo(2);
+    }
+
+    @Test
+    void canonicalPairInvalidatedAfterMetadataSelectionIsNotReturned() {
+        var fence = repository(FIRST).activate("2026-27", OwnedSyncMode.STAGING);
+        TrackingJdbcTemplate tracking = new TrackingJdbcTemplate(dataSource);
+        var store = new OwnedSyncStore(tracking, tx, Clock.fixed(FIRST, ZoneOffset.UTC), TABLES, fence);
+        long older = stagePair(store, "2026-27", "older", FIRST, new byte[]{1}, new byte[]{2}, true);
+        long newer = stagePair(store, "2026-27", "newer", FIRST, new byte[]{3}, new byte[]{4}, true);
+        tracking.afterCandidateQuery = () -> jdbc.update("UPDATE " + TABLES.payload()
+                + " SET validation_state='INVALID' WHERE run_generation=?", newer);
+
+        assertThat(store.findInLatestValidPublicPayloadPairs("2026-27", 20, FIRST,
+                pair -> Optional.of(pair.runGeneration()))).contains(older);
+        assertThat(tracking.bodyPairQueries()).isEqualTo(2);
     }
 
     @Test
@@ -204,6 +296,26 @@ class PlannerRuntimeRepositoryIntegrationTest {
                 Boolean.class, TABLES.plannerSlot())).isTrue();
         assertThat(jdbc.queryForObject("SELECT relrowsecurity FROM pg_class WHERE oid=to_regclass(?)",
                 Boolean.class, TABLES.plannerRuntime())).isTrue();
+    }
+
+    private static long stagePair(OwnedSyncStore store, String season, String key, Instant at,
+                                  byte[] bootstrap, byte[] fixtures, boolean complete) {
+        var run = store.enqueue(SyncKind.CATALOGUE_SCHEDULE, season, key, key, at);
+        var lease = store.acquireForSeason(season, key + "-worker", java.time.Duration.ofMinutes(5))
+                .orElseThrow();
+        SourceRead read = new SourceRead(at, at);
+        store.stage(lease, Endpoint.bootstrap(), read, Validation.valid(), bootstrap);
+        if (complete) store.stage(lease, Endpoint.fixtures(), read, Validation.valid(), fixtures);
+        store.publish(lease, read, () -> null);
+        return run.generation();
+    }
+
+    private static byte[] resource(String name) throws IOException {
+        try (InputStream input = PlannerRuntimeRepositoryIntegrationTest.class.getResourceAsStream(
+                "/owned-sync-source-fixtures/" + name)) {
+            if (input == null) throw new IOException("Missing fixture " + name);
+            return input.readAllBytes();
+        }
     }
 
     private PlannerRuntimeRepository repository(Instant now) {
@@ -247,5 +359,31 @@ class PlannerRuntimeRepositoryIntegrationTest {
         if (manager != null) throw new IllegalStateException("Refusing planner integration test writes to shared DB");
         assertThat(TABLES.plannerSlot()).endsWith("_test");
         assertThat(TABLES.plannerRuntime()).endsWith("_test");
+    }
+
+    private static final class TrackingJdbcTemplate extends JdbcTemplate {
+        private final AtomicInteger bodyPairQueries = new AtomicInteger();
+        private Runnable afterCandidateQuery;
+
+        private TrackingJdbcTemplate(DataSource dataSource) {
+            super(dataSource);
+        }
+
+        @Override
+        public <T> List<T> query(String sql, RowMapper<T> rowMapper, Object... args) {
+            if (sql.contains("b.body AS b_body")) bodyPairQueries.incrementAndGet();
+            List<T> result = super.query(sql, rowMapper, args);
+            if (afterCandidateQuery != null && sql.contains("b.id AS b_id")
+                    && !sql.contains("b.body AS b_body")) {
+                Runnable callback = afterCandidateQuery;
+                afterCandidateQuery = null;
+                callback.run();
+            }
+            return result;
+        }
+
+        private int bodyPairQueries() {
+            return bodyPairQueries.get();
+        }
     }
 }

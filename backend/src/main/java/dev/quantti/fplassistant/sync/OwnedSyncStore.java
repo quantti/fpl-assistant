@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 import org.springframework.dao.EmptyResultDataAccessException;
@@ -310,26 +311,33 @@ public final class OwnedSyncStore {
     }
 
     /**
-     * Returns a bounded newest-first set of complete, validated bootstrap/fixtures batches.
-     * Both documents always come from the same run; callers still parse the pair before use.
+     * Visits a bounded newest-first set of complete, validated bootstrap/fixtures batches.
+     * Candidate metadata is fetched first; bodies are loaded only for the pair currently being
+     * visited. Both documents always come from the same run, and the first mapped value wins.
      */
-    public List<PublicPayloadPair> latestValidPublicPayloadPairs(String season, int limit) {
+    public <T> Optional<T> findInLatestValidPublicPayloadPairs(
+            String season, int limit, Function<PublicPayloadPair, Optional<T>> visitor) {
+        return findInLatestValidPublicPayloadPairs(season, limit, null, visitor);
+    }
+
+    /** Rejects stale candidates from metadata before fetching any of their body bytes. */
+    public <T> Optional<T> findInLatestValidPublicPayloadPairs(
+            String season, int limit, Instant minimumReadStart,
+            Function<PublicPayloadPair, Optional<T>> visitor) {
         String validSeason = bounded("season", season, 10);
         if (limit < 1 || limit > 20) throw new IllegalArgumentException("limit must be between 1 and 20");
-        return jdbc.query("""
-                SELECT r.generation,
-                       b.id AS b_id, b.read_started_at AS b_started, b.read_finished_at AS b_finished,
-                       b.validation_state AS b_validation, b.validation_error AS b_error, b.body AS b_body,
-                       f.id AS f_id, f.read_started_at AS f_started, f.read_finished_at AS f_finished,
-                       f.validation_state AS f_validation, f.validation_error AS f_error, f.body AS f_body
+        Objects.requireNonNull(visitor);
+        List<PublicPayloadPairMetadata> candidates = jdbc.query("""
+                SELECT r.generation, b.id AS b_id, f.id AS f_id,
+                       b.read_started_at AS b_started, f.read_started_at AS f_started
                 FROM %s r
                 JOIN LATERAL (
-                    SELECT * FROM %s p WHERE p.run_generation = r.generation
+                    SELECT id, read_started_at, read_finished_at FROM %s p WHERE p.run_generation = r.generation
                       AND p.endpoint_kind = 'BOOTSTRAP_STATIC' AND p.validation_state = 'VALID'
                     ORDER BY p.id DESC LIMIT 1
                 ) b ON TRUE
                 JOIN LATERAL (
-                    SELECT * FROM %s p WHERE p.run_generation = r.generation
+                    SELECT id, read_started_at, read_finished_at FROM %s p WHERE p.run_generation = r.generation
                       AND p.endpoint_kind = 'FIXTURES' AND p.validation_state = 'VALID'
                     ORDER BY p.id DESC LIMIT 1
                 ) f ON TRUE
@@ -338,10 +346,42 @@ public final class OwnedSyncStore {
                 ORDER BY GREATEST(b.read_finished_at, f.read_finished_at) DESC, r.generation DESC
                 LIMIT ?
                 """.formatted(tables.run(), tables.payload(), tables.payload()), (rs, row) ->
+                new PublicPayloadPairMetadata(rs.getLong("generation"), rs.getLong("b_id"),
+                        rs.getLong("f_id"), instant(rs, "b_started"), instant(rs, "f_started")),
+                validSeason, runtimeFence != null, runtimeMode(), runtimeEpoch(), limit);
+        for (PublicPayloadPairMetadata candidate : candidates) {
+            if (minimumReadStart != null && (candidate.bootstrapStartedAt().isBefore(minimumReadStart)
+                    || candidate.fixturesStartedAt().isBefore(minimumReadStart))) continue;
+            Optional<PublicPayloadPair> pair = loadPublicPayloadPair(validSeason, candidate);
+            if (pair.isEmpty()) continue;
+            Optional<T> mapped = Objects.requireNonNull(visitor.apply(pair.get()),
+                    "public payload pair visitor result");
+            if (mapped.isPresent()) return mapped;
+        }
+        return Optional.empty();
+    }
+
+    private Optional<PublicPayloadPair> loadPublicPayloadPair(
+            String season, PublicPayloadPairMetadata candidate) {
+        return jdbc.query("""
+                SELECT r.generation,
+                       b.id AS b_id, b.read_started_at AS b_started, b.read_finished_at AS b_finished,
+                       b.validation_state AS b_validation, b.validation_error AS b_error, b.body AS b_body,
+                       f.id AS f_id, f.read_started_at AS f_started, f.read_finished_at AS f_finished,
+                       f.validation_state AS f_validation, f.validation_error AS f_error, f.body AS f_body
+                FROM %s r
+                JOIN %s b ON b.run_generation=r.generation AND b.id=?
+                  AND b.endpoint_kind='BOOTSTRAP_STATIC' AND b.validation_state='VALID'
+                JOIN %s f ON f.run_generation=r.generation AND f.id=?
+                  AND f.endpoint_kind='FIXTURES' AND f.validation_state='VALID'
+                WHERE r.generation=? AND r.kind='CATALOGUE_SCHEDULE' AND r.season=?
+                  AND (? = FALSE OR (r.runtime_mode=? AND r.runtime_epoch=?))
+                """.formatted(tables.run(), tables.payload(), tables.payload()), (rs, row) ->
                 new PublicPayloadPair(rs.getLong("generation"),
                         stagedPayload(rs, "b", EndpointKind.BOOTSTRAP_STATIC),
-                        stagedPayload(rs, "f", EndpointKind.FIXTURES)), validSeason,
-                runtimeFence != null, runtimeMode(), runtimeEpoch(), limit);
+                        stagedPayload(rs, "f", EndpointKind.FIXTURES)), candidate.bootstrapId(),
+                candidate.fixturesId(), candidate.runGeneration(), season, runtimeFence != null,
+                runtimeMode(), runtimeEpoch()).stream().findFirst();
     }
 
     /** Changes validation only for payloads owned by the current fenced run. */
@@ -778,6 +818,9 @@ public final class OwnedSyncStore {
             }
         }
     }
+
+    private record PublicPayloadPairMetadata(long runGeneration, long bootstrapId, long fixturesId,
+                                             Instant bootstrapStartedAt, Instant fixturesStartedAt) { }
 
     private record LockedRun(long generation, SyncKind kind, String season, String coalescingKey,
                              String publicationKey, String state, String owner, UUID token,

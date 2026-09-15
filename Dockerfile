@@ -23,5 +23,5 @@ FROM eclipse-temurin:25-jre
 WORKDIR /app
 COPY --from=backend-build /app/build/libs/*.jar app.jar
 EXPOSE 8080
-# Default heap is ~25% of the 512MB VM; Spring Boot 4 + Spring AI need more.
-ENTRYPOINT ["java", "-XX:MaxRAMPercentage=75", "-jar", "app.jar"]
+# Budget the whole process on the 1 GiB VM, not just its heap; leave native/OS headroom.
+ENTRYPOINT ["java", "-Xmx448m", "-XX:MaxMetaspaceSize=160m", "-XX:ReservedCodeCacheSize=64m", "-XX:MaxDirectMemorySize=32m", "-XX:+ExitOnOutOfMemoryError", "-jar", "app.jar"]
