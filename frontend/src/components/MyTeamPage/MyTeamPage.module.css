@@ -135,11 +135,6 @@
   font-size: var(--text-sm);
 }
 
-.groupTitle span {
-  color: var(--muted);
-  font-weight: 400;
-}
-
 .playerList {
   display: flex;
   flex-direction: column;
