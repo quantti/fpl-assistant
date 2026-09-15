@@ -160,7 +160,7 @@ export function formatMoney(tenths: number | null): string {
 export function describeGameweekStatus(gameweek: number, status: GameweekStatus): string {
   switch (status) {
     case 'in_progress':
-      return `GW ${gameweek} is not finished: points are provisional, bonus is added after each match, and automatic substitutions apply only once FPL marks the gameweek final.`
+      return `FPL has not marked GW ${gameweek} finished yet: points are provisional, bonus can still change, and automatic substitutions apply only once FPL marks the gameweek final.`
     case 'finished_unchecked':
       return `GW ${gameweek} has finished but FPL has not confirmed it: bonus and automatic substitutions may still change.`
     case 'final':

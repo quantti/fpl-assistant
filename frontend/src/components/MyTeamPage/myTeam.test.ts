@@ -204,7 +204,7 @@ describe('loadMyTeam', () => {
   })
 
   it('words each gameweek status without promising a final score early', () => {
-    expect(describeGameweekStatus(5, 'in_progress')).toContain('not finished')
+    expect(describeGameweekStatus(5, 'in_progress')).toContain('not marked GW 5 finished yet')
     expect(describeGameweekStatus(5, 'finished_unchecked')).toContain('not confirmed')
     expect(describeGameweekStatus(5, 'final')).toBe('GW 5 is final.')
     expect(describeGameweekStatus(5, 'final_scores_provisional'))

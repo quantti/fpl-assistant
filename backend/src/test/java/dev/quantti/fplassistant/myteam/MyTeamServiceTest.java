@@ -440,7 +440,7 @@ class MyTeamServiceTest {
 
         assertThat(card)
                 .contains("Gameweek 1 points: 55 (FPL's own total for this entry, before transfer costs)")
-                .contains("Gameweek 1 is not finished")
+                .contains("FPL has not marked Gameweek 1 finished yet")
                 .contains("Player gameweek points read ")
                 .contains("Salah (LIV, MID) GBP 12.6m - CAPTAIN - GW1: 8 pts, 90 min, counts x2")
                 .contains("Sels (NFO, GK) GBP 5.0m - vice - GW1: 0 pts, 0 min");
