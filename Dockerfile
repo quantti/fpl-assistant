@@ -24,4 +24,4 @@ WORKDIR /app
 COPY --from=backend-build /app/build/libs/*.jar app.jar
 EXPOSE 8080
 # Budget the whole process on the 1 GiB VM, not just its heap; leave native/OS headroom.
-ENTRYPOINT ["java", "-Xmx448m", "-XX:MaxMetaspaceSize=160m", "-XX:ReservedCodeCacheSize=64m", "-XX:MaxDirectMemorySize=32m", "-XX:+ExitOnOutOfMemoryError", "-jar", "app.jar"]
+ENTRYPOINT ["java", "-Xmx320m", "-XX:MaxMetaspaceSize=160m", "-XX:ReservedCodeCacheSize=64m", "-XX:MaxDirectMemorySize=32m", "-XX:+ExitOnOutOfMemoryError", "-jar", "app.jar"]
