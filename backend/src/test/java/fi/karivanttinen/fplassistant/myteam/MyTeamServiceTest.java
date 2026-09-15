@@ -290,7 +290,10 @@ class MyTeamServiceTest {
                         + " triple captain");
     }
 
-    /** A chip spent inside its own window is gone until the next window opens. */
+    /**
+     * A chip spent inside its own window is gone until the next window opens, and that window
+     * brings every chip, not only the spent ones: unused first-half chips expire at GW19.
+     */
     @Test
     void aWildcardPlayedInThisHalfIsNotOfferedAgainUntilTheSecond() {
         currentEvent = 3;
@@ -300,7 +303,7 @@ class MyTeamServiceTest {
 
         assertThat(service.render(service.myTeam(USER, budget())))
                 .contains("Playable at the next deadline (GW4): bench boost, triple captain")
-                .contains("Opening in GW20: wildcard");
+                .contains("Second set from GW20: wildcard, bench boost, triple captain");
     }
 
     /**
@@ -437,7 +440,7 @@ class MyTeamServiceTest {
 
         assertThat(card)
                 .contains("Gameweek 1 points: 55 (FPL's own total for this entry, before transfer costs)")
-                .contains("Gameweek 1 is not finished")
+                .contains("FPL has not marked Gameweek 1 finished yet")
                 .contains("Player gameweek points read ")
                 .contains("Salah (LIV, MID) GBP 12.6m - CAPTAIN - GW1: 8 pts, 90 min, counts x2")
                 .contains("Sels (NFO, GK) GBP 5.0m - vice - GW1: 0 pts, 0 min");
