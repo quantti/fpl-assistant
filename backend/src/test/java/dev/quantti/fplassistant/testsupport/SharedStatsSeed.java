@@ -66,6 +66,16 @@ public final class SharedStatsSeed {
     private SharedStatsSeed() {
     }
 
+    /** Shared capture-season parent for owned-sync staging tests; never changes current flags. */
+    public static void ensureOwnedSyncCaptureSeason(JdbcTemplate jdbc) {
+        ensure(jdbc);
+        jdbc.update("""
+                INSERT INTO season (id, code, name, start_date, is_current)
+                VALUES (27, '2026-27', 'Owned sync capture test', DATE '2026-08-21', false)
+                ON CONFLICT (id) DO NOTHING
+                """);
+    }
+
     /** Dedicated canonical-code rows for owned-sync publication tests. */
     public static void ensureOwnedSyncFixture(JdbcTemplate jdbc) {
         ensure(jdbc);
