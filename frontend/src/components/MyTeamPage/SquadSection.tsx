@@ -36,7 +36,7 @@ function PlayerGroup({ title, gameweek, players }: {
 }) {
   return (
     <section className={classes.playerGroup}>
-      <h3 className={classes.groupTitle}>{title} <span>(GW {gameweek} choices)</span></h3>
+      <h3 className={classes.groupTitle}>{title}</h3>
       {players.length === 0 ? (
         <p className={classes.emptyGroup}>No published picks in this group.</p>
       ) : (
