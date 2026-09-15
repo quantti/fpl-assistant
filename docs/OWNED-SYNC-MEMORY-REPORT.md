@@ -1,6 +1,86 @@
 # Owned-sync memory incident — 2026-09-15
 
-## Outcome and current safety state
+## Follow-up after PR #100: bounded stop, not another OOM
+
+PR #100 deployed as `546a207` (workflow 34950247318). The supervised 09:20–09:26 UTC
+STAGING attempt, epoch 36, stopped when guest available memory reached **153.5 MiB**, below the
+192 MiB guard. No OOM/restart was observed. Twenty-eight canonical jobs completed; 659 histories
+had zero attempts. OFF **epoch 37** and application UP were verified after graceful shutdown;
+no manual database fence was required and no core receipt was published. Tapas remains writer.
+Kuma 18 was resumed; mailbox delivery/recovery is still unverified.
+
+An earlier, brief epoch-34 attempt was stopped by a **monitor error**, not an application failure:
+it compared a previous instance's heartbeat before the new instance completed its first tick.
+It shut down to OFF 35. Monitoring must allow at most three minutes for the first successful
+heartbeat of the new activation. Also resolve the Java PID by process identity, not a hard-coded
+635: that PID produced implausible 20 MiB OFF samples. The epoch-36 guest-memory stop does not
+depend on that flawed PID assumption; its recorded PID RSS rose 317→644 MiB, but process identity
+was not independently recorded with each sample.
+
+### Findings and next correction
+
+- Cold fixture verification fetches its own bootstrap/fixtures pair and queues two canonical
+  parent jobs. Canonical jobs are priority 0, initial verification priority 1, histories priority
+  3; verification waiting for histories yields at priority 4. Completed parent jobs can be
+  recreated by the next fixture. This is expensive **finite initial work**, not proof of starvation.
+  Do not remove parent refreshes or globally promote all histories over urgent verification.
+- A planner tick loads/parses the selected full-size pair, batches fixture transition writes and
+  materializes durable slots. Its old fixed delay was one second **after tick completion**, not a
+  guaranteed 60 ticks/minute. Change only that delay to **five seconds**, retaining immediate
+  startup and the two one-second workers. The ideal polling ceiling falls 60→12/minute; the actual
+  reduction depends on tick duration. Slot identities, source floors and verification stay intact.
+- Reduce the Docker heap from 448 to **320 MiB**, keeping metaspace 160, code cache 64, direct 32
+  MiB and ExitOnOutOfMemoryError. The VM stays 1 GiB. This reserves another 128 MiB outside the
+  heap; it is not a whole-process hard cap or a demonstrated production high-water mark.
+
+### Reproduction and measured limits
+
+`OwnedMatchdayWarmStartPressureIntegrationTest` boots the real Spring web context with external
+APIs and automatic sync disabled. Its manual, strictly parsed STAGING pipeline uses a disposable
+DB, 40 synthetic completed fixtures and the checked-in 657-player catalogue (production had 659).
+One second of **virtual**, not wall-clock, time passes per fake HTTP request. It drains a two-tick
+initial queue serially, then retains three concurrently selected/parsed snapshots for ten rounds.
+It does not simulate continuing planner ticks, two-worker dispatch/admission, a real API, provider
+chat traffic, ACTIVE publication or two separated verification observations.
+
+The initial queue drained: **657 histories, 40 fixture jobs, 84 canonical jobs**, 821 dispatches,
+981 fake HTTP attempts (122 public pairs, 80 live reads, 657 histories), zero active jobs. The first
+history started at virtual second **204**; the drain ended at 981. These are demand/progress
+measurements, not a production completion-time promise. A fixed five-minute “no history” rule
+confuses necessary initial work with starvation: inspect initial verification/dependency-wait
+counts as well as completed catalogue jobs.
+
+Under the proposed 320/160/64/32 MiB limits, SerialGC and one reported processor, the successful
+bounded diagnostic took 77 seconds of workload time (93 seconds including Gradle). Sampled peak
+RSS was **555.1 MiB**, heap use **252.2 MiB**, committed heap **309.4 MiB**, and metaspace used/
+committed **82.0/82.8 MiB**. After releasing selections and a diagnostic-only explicit GC, heap use
+was **80.4 MiB**, while committed heap/RSS remained **309.4/554.9 MiB**. Reserved/committed space,
+live objects and RSS are different measurements; high RSS alone does not prove retained-heap
+leakage. There is no forced GC in production.
+
+An earlier 384 MiB-heap web-context serial run passed at 609.1 MiB sampled RSS, 285.3 MiB peak
+sampled heap use and 361.3 MiB committed heap. This is supporting evidence, not a controlled
+heap-only comparison: the later run also adds concurrent retention and runs without the separate
+Mockito runtime tests. The final hard 1536 MiB scope peaked at 941 MiB; host headroom stayed above
+2348 MiB. Earlier diagnostics were stopped by host pressure or an erroneously smaller 1024 MiB
+whole-Gradle scope; those interruptions are **not** application OOM reproductions or passing tests.
+Only disposable port-55438 databases were used and removed afterward.
+
+Reproduce the single-class diagnostic under the enforced scope in `DEVELOPMENT.md`, with a private
+disposable database and test credentials (never Supabase):
+
+```bash
+cd backend
+./gradlew -I ../docs/diagnostics/owned-runtime-budget.gradle cleanTest test
+```
+
+The init script restricts selection to this one test and applies the proposed JVM caps. The normal
+suite keeps its checked-in budget. A subsequent reviewed release still needs an attended bounded
+STAGING run: keep the memory/health/restart stops, assess cold-start queue progress rather than
+only history count, and verify durable OFF on exit. **No new STAGING was started during this
+follow-up investigation.** Final full-suite/PR evidence is recorded with the correction's PR.
+
+## Overnight incident (before PR #100)
 
 The overnight STAGING run failed; it did not establish readiness for writer takeover.
 Fly confirmed a Java OOM kill at 07:29 UTC (exit 137, anonymous RSS 877728 KiB).
@@ -12,7 +92,7 @@ player evidence.
 The replacement process was verified OFF and application health returned HTTP 200/UP. A guarded
 metadata-only transaction then fenced the drained epoch-32 queue and recorded OFF epoch 33.
 Payloads/evidence were preserved. Tapas remains the core writer; its credentials and flags were
-not changed. The memory correction described below is not deployed or activated by this report.
+not changed. The subsequent deployment and supervised attempt are described above.
 
 ## What is established, and what remains uncertain
 
@@ -37,7 +117,7 @@ nor excludes a leak elsewhere in the full application. No production heap dump w
 Repeated restarts also discard the usable activation's work and amplify cold-start work; the
 failed queue records alone must not be misreported as individual upstream failures.
 
-## Correction
+## First correction (PR #100)
 
 - Select at most twenty candidate IDs and read timestamps first. Fetch one exact same-run body
   pair at a time and stop after the first acceptable result. All three consumers use this path:
@@ -112,8 +192,12 @@ Sample health, current activation, job progress and process/guest memory at leas
 Stop immediately on an OOM/restart, unresponsive application health, or planner heartbeat older
 than three minutes. Stop conservatively at 720 MiB JVM RSS or less than 192 MiB guest available
 memory; these are rehearsal stop thresholds, not player/data eligibility rules. If canonical work
-is ready but history attempts remain zero for five minutes, stop and investigate instead of
-waiting indefinitely. Always verify process drain and the durable OFF epoch afterward.
+is ready but histories have not started, also inspect the initial verification jobs moving into
+dependency wait. Stop after five minutes without either upstream first-pass progress or history
+progress, rather than assuming zero history attempts alone proves a stall. Do not extend the
+attended time bound silently. Allow a new activation three minutes to produce its first heartbeat;
+never use an old activation's heartbeat for that startup check. Resolve the Java PID by identity.
+Always verify process drain and the durable OFF epoch afterward.
 
 Success requires completed canonical **and history** work with advancing verification staging and
 stable memory—not merely VALID raw payloads or a fresh planner heartbeat. Full reconciliation,

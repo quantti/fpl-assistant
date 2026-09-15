@@ -1,0 +1,14 @@
+// Single-class diagnostic only. The normal suite keeps backend/build.gradle's JVM limits.
+gradle.projectsEvaluated {
+    gradle.rootProject.tasks.named('test') {
+        minHeapSize = '64m'
+        maxHeapSize = '320m'
+        setJvmArgs(['-XX:MaxMetaspaceSize=160m', '-XX:ReservedCodeCacheSize=64m',
+                    '-XX:MaxDirectMemorySize=32m', '-XX:+UseSerialGC',
+                    '-XX:ActiveProcessorCount=1', '-XX:+ExitOnOutOfMemoryError'])
+        filter {
+            includeTestsMatching 'fi.karivanttinen.fplassistant.sync.OwnedMatchdayWarmStartPressureIntegrationTest'
+        }
+        testLogging.showStandardStreams = true
+    }
+}
