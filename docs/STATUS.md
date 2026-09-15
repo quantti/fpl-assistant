@@ -4290,6 +4290,32 @@ Chromium screenshots at 1280px and 375px in both schemes, with the sidebar overl
 the dev server with a stubbed session and no backend. Measured `.root` height unchanged after
 inserting 3000px of content, i.e. still height-bounded. Head to Head from the mockup is not built.
 
+## Owned sync — supervised stop and runtime-pressure follow-up (2026-09-15)
+
+PR #100 deployed; epoch 36 stopped at the conservative guest-memory threshold (153.5 MiB
+available versus the 192 MiB guard), not an observed OOM. Its 28 canonical completions and 659
+unattempted histories did not establish readiness. Graceful shutdown verified **OFF epoch 37**, UP,
+without a manual database fence; zero core publications. Tapas remains writer. A preceding short
+epoch-34 run was aborted by the local monitor's old-heartbeat/startup mistake, not a service fault.
+The fixed-PID RSS sampler must also be replaced by process-identity discovery.
+
+Local full-size staging reproduction drained 657 synthetic histories, 40 fixture jobs and 84
+canonical jobs: 981 fake HTTP requests, first history at virtual second 204. This demonstrates
+finite initial work, not production timing or absence of starvation under continuing arrivals.
+The new regression boots the web context, drains two planner ticks serially and additionally holds
+three selected snapshots concurrently; it is not a full runtime/provider soak.
+
+The follow-up changes planner polling from one to five seconds after each completed tick, leaving
+workers, source floors and priorities alone. Heap becomes 320 MiB (other caps 160/64/32 unchanged,
+VM still 1 GiB). A bounded diagnostic under those JVM limits passed: 555.1 MiB sampled RSS peak,
+252.2 MiB sampled heap-use peak, 309.4 MiB committed heap and 80.4 MiB post-release/post-GC heap use.
+The final 1536 MiB scope peaked at 941 MiB with host headroom at least 2348 MiB. Failed/interrupted
+diagnostic setup runs are not passing evidence or application OOM reproductions.
+
+No production activation occurred during this follow-up. Full evidence, reproduction and revised
+cold-start monitoring gates: [memory report](OWNED-SYNC-MEMORY-REPORT.md). Final suite/PR evidence
+belongs with the correction's PR; owner merge and a further attended STAGING remain required.
+
 ## Owned sync — overnight OOM and bounded investigation (2026-09-15)
 
 The third STAGING run did not converge. The activation advanced from epoch 5 to 32 across

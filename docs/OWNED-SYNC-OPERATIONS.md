@@ -4,6 +4,14 @@ This is an implementation reference, not authorization to activate the owned wri
 mode, webhook destination, monitor, repository variable, URL, or secret is configured by this change.
 Do not use a manual Fly deploy.
 
+Latest supervised outcome (2026-09-15, after PR #100): **OFF epoch 37**, application UP,
+Tapas still writer. Epoch 36 stopped on the 192 MiB guest-memory guard (153.5 MiB available),
+without an observed OOM; graceful OFF required no manual fence. The next correction reduces
+planner polling pressure and heap size. See [the memory report](OWNED-SYNC-MEMORY-REPORT.md)
+for measured limits and the revised cold-start progress gate. A fixed five-minute history-only
+check is insufficient while initial verification/parent work is progressing. Resolve the Java PID
+by identity and give each new activation its own bounded startup-heartbeat grace period.
+
 ## Safe defaults and required configuration
 
 `OWNED_SYNC_MODE=OFF` creates no owned runtime, watchdog schedule, alert delivery executor, schema,
