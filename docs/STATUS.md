@@ -4322,13 +4322,15 @@ plus three others without a transaction timeout, and all 699 recovered by 16:16:
   unverified. The monitor was paused again after OFF.
 - **Tapas** remains the writer.
 
-The eleven-minute delay before histories is queue order, not memory. The following were confirmed
-in code:
+The eleven-minute delay before histories is most likely queue order, not memory. This is an
+inference; what the code shows is:
 
-- The dispatcher orders by priority alone.
+- The dispatcher orders by priority, then due time, with no dependency filter
+  (`OwnedSyncStore:148`), and every lease counts as an attempt (`:167`).
 - Every fixture attempt that fetched a public pair queues a priority-0 parent refresh
   (`HistoryFixtureDispatcher:178`).
-- An admission deferral resets a fixture to priority 1, and counts as an attempt.
+- A retry restores the kind's own priority unless the run is waiting on a dependency
+  (`OwnedSyncStore:558`).
 
 Two candidate fixes are not implemented yet:
 
