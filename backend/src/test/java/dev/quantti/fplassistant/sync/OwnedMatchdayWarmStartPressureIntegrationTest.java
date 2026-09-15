@@ -73,6 +73,7 @@ class OwnedMatchdayWarmStartPressureIntegrationTest {
     private static HikariDataSource dataSource;
     private static JdbcTemplate jdbc;
     private static TransactionTemplate tx;
+    private static boolean initialized;
 
     @Autowired
     private ConfigurableApplicationContext applicationContext;
@@ -93,13 +94,15 @@ class OwnedMatchdayWarmStartPressureIntegrationTest {
         new OwnedSyncSchema(jdbc, TABLES).initialize();
         createCapturedTables();
         tx = new TransactionTemplate(new DataSourceTransactionManager(dataSource));
+        initialized = true;
     }
 
     @AfterAll
     static void closePool() {
         if (dataSource != null) {
             try {
-                resetProbeRows();
+                // JUnit also invokes cleanup when the production-database guard refused setup.
+                if (initialized) resetProbeRows();
             } finally {
                 dataSource.close();
             }
