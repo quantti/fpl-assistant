@@ -288,6 +288,31 @@ public final class OwnedSyncStore {
         });
     }
 
+    /**
+     * Earliest validated response this run staged at or after a floor. Reuse deliberately prefers
+     * the oldest usable read: the newest one is the post-fan-out recheck, and anchoring a later
+     * attempt to it would invalidate every player history already fetched against the older read.
+     */
+    public Optional<StagedPayload> earliestValidStagedPayload(Lease lease, Endpoint endpoint,
+                                                              Instant floor) {
+        Objects.requireNonNull(endpoint);
+        Objects.requireNonNull(floor);
+        validateEndpoint(endpoint);
+        return tx.execute(status -> {
+            lockAndValidate(lease);
+            return jdbc.query("""
+                    SELECT id, run_generation, endpoint_kind, read_started_at, read_finished_at,
+                           validation_state, validation_error, body
+                    FROM %s WHERE run_generation = ? AND endpoint_kind = ?
+                      AND event_id IS NOT DISTINCT FROM ? AND player_id IS NOT DISTINCT FROM ?
+                      AND validation_state = 'VALID' AND read_started_at >= ?
+                    ORDER BY read_started_at ASC, id ASC LIMIT 1
+                    """.formatted(tables.payload()), this::stagedPayload, lease.generation(),
+                    endpoint.kind().name(), endpoint.eventId(), endpoint.playerId(),
+                    timestamp(floor)).stream().findFirst();
+        });
+    }
+
     /** Latest reusable validated response for one exact endpoint, season and source-read floor. */
     public Optional<StagedPayload> latestValidPayload(String season, Endpoint endpoint,
                                                        Instant requestedSourceAfter) {

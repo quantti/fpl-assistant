@@ -4316,10 +4316,13 @@ Two findings remain open, both about cost rather than correctness:
   at 4,717 requests before the second observation wave, so verification would continue the
   following day. A cutover therefore leaves current-season stats unverified — and the
   receipt-enforced readers refusing — for a day or more.
-- Each verification attempt re-fetches its fixture's player histories because the freshness floor
-  advances with every canonical pair, which is what consumes the budget: 3,957 history fetches for
-  40 fixtures. Reusing an already-fetched history that is newer than the attempt's own pair would
-  cut that roughly in half.
+- Each verification attempt re-fetched its fixture's player histories because the freshness floor
+  advanced with every canonical pair: 3,957 history fetches for 40 fixtures. `usableOwn` took the
+  run's *newest* validated read, which after a fan-out is the post-history recheck, so the next
+  attempt's floor invalidated everything already fetched. It now takes the earliest validated read
+  at or after the run's own demand floor (`OwnedSyncStore.earliestValidStagedPayload`), which keeps
+  the floor still between attempts. Every ordering guarantee is unchanged: histories are still read
+  after the pair, and the recheck after the histories.
 
 ## Owned sync — attended STAGING drained initial work, verification not reached (2026-09-15)
 
