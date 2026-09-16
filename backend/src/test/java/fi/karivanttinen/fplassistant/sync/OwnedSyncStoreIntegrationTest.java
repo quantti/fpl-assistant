@@ -398,6 +398,28 @@ class OwnedSyncStoreIntegrationTest {
     }
 
     @Test
+    void reusesTheEarliestValidPayloadAtOrAfterTheFloor() {
+        store.enqueue(SyncKind.FIXTURE_VERIFICATION, "2097-98", "fixture:11",
+                "fixture:11", clock.instant());
+        Lease lease = store.acquire("worker", Duration.ofMinutes(5)).orElseThrow();
+        SourceRead first = new SourceRead(clock.instant().minusSeconds(600), clock.instant().minusSeconds(590));
+        SourceRead recheck = new SourceRead(clock.instant().minusSeconds(60), clock.instant().minusSeconds(50));
+        long firstRead = store.stage(lease, Endpoint.bootstrap(), first, Validation.valid(), new byte[]{1});
+        long recheckRead = store.stage(lease, Endpoint.bootstrap(), recheck, Validation.valid(), new byte[]{2});
+
+        // Without this, a later attempt would pick the recheck read and every history fetched
+        // against the first read would count as stale.
+        assertThat(store.earliestValidStagedPayload(lease, Endpoint.bootstrap(),
+                clock.instant().minusSeconds(3600))).get()
+                .extracting(OwnedSyncStore.StagedPayload::id).isEqualTo(firstRead);
+        assertThat(store.earliestValidStagedPayload(lease, Endpoint.bootstrap(),
+                clock.instant().minusSeconds(120))).get()
+                .extracting(OwnedSyncStore.StagedPayload::id).isEqualTo(recheckRead);
+        assertThat(store.earliestValidStagedPayload(lease, Endpoint.bootstrap(),
+                clock.instant())).isEmpty();
+    }
+
+    @Test
     void endpointSpecificReuseCannotAliasIdsSeasonsOrOlderSourceReads() {
         store.enqueue(SyncKind.PLAYER_HISTORY, "2097-98", "player-history:7",
                 "player-history:7", clock.instant());

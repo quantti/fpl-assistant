@@ -327,8 +327,7 @@ public final class HistoryFixtureDispatcher {
     }
 
     private Optional<StagedPayload> usableOwn(Lease lease, Endpoint endpoint, Instant floor) {
-        Optional<StagedPayload> valid = store.latestStagedPayload(lease, endpoint, ValidationState.VALID)
-                .filter(payload -> !payload.read().startedAt().isBefore(floor));
+        Optional<StagedPayload> valid = store.earliestValidStagedPayload(lease, endpoint, floor);
         return valid.isPresent() ? valid : uncheckedOwn(lease, endpoint, floor);
     }
 
