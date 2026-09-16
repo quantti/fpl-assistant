@@ -132,7 +132,10 @@ public final class PlannerInputRepository {
         List<Object[]> observations = fixtures.stream().map(fixture -> new Object[] {
                 season.id(), season.code(), fixture.id(), fixture.started()
                     ? (fixture.finished() ? "VERIFYING" : "WAITING_FINISH") : "SCHEDULED",
-                fixture.finished() ? timestamp(fixture.sourceObservedAt()) : null,
+                // Our own first sighting, not the capture's finish time: the retry window that
+                // follows it is about how long we have been trying, so a backlog fixture seen for
+                // the first time at cutover still gets the normal follow-up cadence.
+                fixture.finished() ? timestamp(now) : null,
                 fixture.dataChecked() ? timestamp(fixture.sourceObservedAt()) : null,
                 fixture.dataChecked(), timestamp(now)
         }).toList();
