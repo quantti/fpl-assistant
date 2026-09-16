@@ -4290,6 +4290,37 @@ Chromium screenshots at 1280px and 375px in both schemes, with the sidebar overl
 the dev server with a stubbed session and no backend. Measured `.root` height unchanged after
 inserting 3000px of content, i.e. still height-bounded. Head to Head from the mockup is not built.
 
+## Owned sync — backlog fixtures were parked until the daily sweep (2026-09-16)
+
+An ACTIVE rehearsal on a disposable copy of production showed why no fixture had ever reached
+`VERIFIED`. `PlannerInputRepository.observeTransitions` stamped `first_finished_observed_at` with
+the *capture's* observation time. For a fixture that FPL finished weeks ago, that instant is
+already outside the twelve-hour follow-up window `FixtureSyncRepository.admitAttempt` and
+`scheduleNextAttempt` measure, so every backlog fixture was marked `DAILY_ONLY` and allowed one
+attempt per day at 03:00 UK. Two coherent observations are required, so a backlog fixture needed
+two calendar days, and a cutover would leave the whole season unverified meanwhile.
+
+The column now records when **we** first saw the fixture finished. Live matchdays are unaffected —
+we observe a finish within minutes of the capture — while a cutover gives the backlog the normal
+10/20/40/60-minute cadence. An integration test seeds a fixture whose capture says it finished ten
+days ago and asserts both the stamp and that `admitAttempt` still admits an hour later.
+
+Rehearsal evidence with the fix, against real FPL data (local disposable Postgres, ACTIVE):
+both core receipts published within 90 seconds, 663 publications, zero failed runs, stable memory
+(peak 538 MiB), and **all 40 finished fixtures recorded their first observation**. Before the fix
+that was impossible on the same data.
+
+Two findings remain open, both about cost rather than correctness:
+
+- The first backlog pass does not fit the 5,000-request rolling day: the run reached the ceiling
+  at 4,717 requests before the second observation wave, so verification would continue the
+  following day. A cutover therefore leaves current-season stats unverified — and the
+  receipt-enforced readers refusing — for a day or more.
+- Each verification attempt re-fetches its fixture's player histories because the freshness floor
+  advances with every canonical pair, which is what consumes the budget: 3,957 history fetches for
+  40 fixtures. Reusing an already-fetched history that is newer than the attempt's own pair would
+  cut that roughly in half.
+
 ## Owned sync — attended STAGING drained initial work, verification not reached (2026-09-15)
 
 PR #103 deployed (machine v86, `-Xmx320m`). A first attempt, epoch 40 (12:33–12:36 UTC), was

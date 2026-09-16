@@ -63,6 +63,46 @@ class PlannerInputRepositoryIntegrationTest {
         }
     }
 
+    @Test
+    void stampsTheFirstFinishedObservationWhenWeSeeIt() {
+        try (OwnedSyncMonitoringDatabase work = OwnedSyncMonitoringDatabase.work(environment())) {
+            var jdbc = work.jdbc();
+            TapasSeed.ensure(jdbc);
+            new OwnedSyncSchema(jdbc, TABLES).initialize();
+            createCapturedTables(jdbc);
+            jdbc.update("DELETE FROM " + TABLES.fixtureSync() + " WHERE season_id=?", SEASON.id());
+            jdbc.update("DELETE FROM " + TABLES.plannerSlot() + " WHERE season=?", SEASON.code());
+            jdbc.update("DELETE FROM " + TABLES.plannerRuntime() + " WHERE instance_id=?", "mode:" + SEASON.code());
+            jdbc.update("DELETE FROM season WHERE id=?", SEASON.id());
+            jdbc.update("INSERT INTO season(id,code,name,start_date,end_date,is_current) VALUES (?,?,?,?,?,false)",
+                    SEASON.id(), SEASON.code(), "Backlog season", SEASON.startsOn(), SEASON.endsOn());
+            jdbc.update("INSERT INTO " + CAPTURED.gameweek()
+                    + "(season,id,data_checked) VALUES (?,1,false)", SEASON.code());
+            // The capture says this fixture finished ten days ago; we are seeing it for the first time.
+            jdbc.update("INSERT INTO " + CAPTURED.fixture()
+                    + "(season,id,gameweek,team_h,team_a,kickoff_time,started,finished,captured_at)"
+                    + " VALUES (?,20001,1,1,2,'2097-09-09T18:00:00Z',true,true,?)", SEASON.code(),
+                    java.sql.Timestamp.from(Instant.parse("2097-09-09T20:00:00Z")));
+
+            Instant observedNow = Instant.parse("2097-09-19T03:01:00Z");
+            Clock clock = Clock.fixed(observedNow, ZoneOffset.UTC);
+            var activator = new PlannerRuntimeRepository(jdbc, work.transaction(), clock, TABLES);
+            var fence = activator.activate(SEASON.code(), OwnedSyncMode.STAGING);
+            var store = new OwnedSyncStore(jdbc, work.transaction(), clock, TABLES, fence);
+            var repository = new PlannerInputRepository(jdbc, store, TABLES, CAPTURED, clock);
+
+            repository.load(SEASON);
+
+            assertThat(jdbc.queryForObject("SELECT first_finished_observed_at FROM " + TABLES.fixtureSync()
+                    + " WHERE season_id=? AND fixture_id=?", java.sql.Timestamp.class, SEASON.id(), 20001)
+                    .toInstant()).isEqualTo(observedNow);
+            // The twelve-hour follow-up window now runs from that sighting, so an hour later the
+            // fixture is still on the fast cadence instead of being parked until the daily sweep.
+            assertThat(new FixtureSyncRepository(jdbc, TABLES)
+                    .admitAttempt(SEASON, 20001, observedNow.plusSeconds(3600)).admitted()).isTrue();
+        }
+    }
+
     private static void createCapturedTables(org.springframework.jdbc.core.JdbcTemplate jdbc) {
         jdbc.execute("CREATE TABLE IF NOT EXISTS " + CAPTURED.dailyPrice()
                 + " (season varchar(10), price_date date, element_id integer, team_id integer)");
