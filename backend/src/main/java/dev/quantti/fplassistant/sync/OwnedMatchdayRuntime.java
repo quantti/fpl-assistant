@@ -71,6 +71,9 @@ public final class OwnedMatchdayRuntime implements SmartLifecycle {
         deliveryExecutor.scheduleWithFixedDelay(
                 () -> guarded("alert-delivery", watchdog::deliver),
                 0, 30, TimeUnit.SECONDS);
+        watchdogExecutor.scheduleWithFixedDelay(
+                () -> guarded("payload-retention", coordinator::pruneStagedPayloads),
+                0, 1, TimeUnit.HOURS);
     }
 
     private void guarded(String task, Runnable operation) {
