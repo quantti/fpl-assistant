@@ -4290,6 +4290,42 @@ Chromium screenshots at 1280px and 375px in both schemes, with the sidebar overl
 the dev server with a stubbed session and no backend. Measured `.root` height unchanged after
 inserting 3000px of content, i.e. still height-bounded. Head to Head from the mockup is not built.
 
+## Owned sync — cutover to ACTIVE, and the outage on the way there (2026-09-16/17)
+
+The owner cut production over on the evening of 2026-09-16: Tapas cron stopped,
+`FPL_CORE_WRITES_ENABLED=false`, a least-privilege `tapas_runtime` login provisioned and probed
+(core writes and DDL refused, its own manager/league/chip tables writable), Tapas' `DATABASE_URL`
+switched to it, the assistant set to `OWNED_SYNC_MODE=ACTIVE` with the playing season and cutover
+confirmation, and the Tapas cron restarted with core writes disabled. `tapas_runtime` uses the
+direct database host; the assistant keeps its `postgres` connection through the transaction pooler.
+
+**Outage, 21:10–22:08 UTC, caused by this project's own operations.** Read-only inspection
+queries through the Supabase *transaction* pooler (port 6543) had been issuing
+`SET default_transaction_read_only = on` as a safety measure. In transaction pooling a session
+setting outlives the client that set it: it stays on the pooler's shared server session and every
+later client inherits it, including the assistant. The owned runtime failed with "cannot execute
+SELECT FOR UPDATE in a read-only transaction", and once the app restarted it could not start at
+all, because `PgVectorStore` runs `CREATE EXTENSION IF NOT EXISTS vector` during context
+initialisation. A production observer script re-applied the setting every two minutes, so the
+first resets did not hold. Recovery: stop the observer, `RESET default_transaction_read_only` on
+every pooled backend, restart. **Rule: never run session `SET` statements through the transaction
+pooler.** Read-only intent is expressed by writing only SELECTs.
+
+Two further facts from the same night:
+
+- `fpl_sync_payload` had grown to 394 MB of a 455 MB database (3,064 staged source bodies across
+  every STAGING/ACTIVE epoch since 2026-09-14). `deleteTerminalPayloadsOlderThan` existed but
+  nothing called it. The table was truncated during the incident (staged bodies only; receipts,
+  observations and evidence are separate tables) and this change wires an hourly prune with a
+  24-hour retention on the watchdog executor. One backlog pass stages about 170 MB, so retention
+  keeps the free-tier database well under its 500 MB limit.
+- The 2026-09-16 first-sighting fix (PR #105) only stamps rows on insert. Production's 40 fixture
+  rows already existed from earlier STAGING epochs with capture-time stamps, so ACTIVE parked all
+  of them as `DAILY_ONLY` until 2026-09-18 02:00 UTC. The owner re-anchored those 40 rows to the
+  activation instant in a one-off maintenance update on 2026-09-17 07:28 UTC; the first two
+  fixtures verified at 08:09 UTC and the rest followed. No code change was needed for this: the
+  rule is right for every row created from now on.
+
 ## Owned sync — backlog fixtures were parked until the daily sweep (2026-09-16)
 
 An ACTIVE rehearsal on a disposable copy of production showed why no fixture had ever reached
