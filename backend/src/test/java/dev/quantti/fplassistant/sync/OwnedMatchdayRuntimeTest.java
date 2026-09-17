@@ -34,6 +34,25 @@ class OwnedMatchdayRuntimeTest {
     }
 
     @Test
+    void prunesStagedPayloadsOnStartAndThenHourly() {
+        OwnedMatchdayCoordinator coordinator = mock(OwnedMatchdayCoordinator.class);
+        PlannerRuntimeRepository repository = mock(PlannerRuntimeRepository.class);
+        OwnedSyncHttpClient http = mock(OwnedSyncHttpClient.class);
+        OwnedSyncWatchdog watchdog = mock(OwnedSyncWatchdog.class);
+        var fence = new OwnedSyncStore.RuntimeFence(
+                "2026-27", OwnedSyncMode.STAGING, 7, Instant.EPOCH);
+        OwnedMatchdayRuntime runtime = new OwnedMatchdayRuntime(coordinator, repository, http,
+                "test", fence, watchdog, "2026-27");
+        try {
+            runtime.start();
+            verify(coordinator, timeout(1_000)).pruneStagedPayloads();
+            verify(coordinator, after(1_500).times(1)).pruneStagedPayloads();
+        } finally {
+            runtime.stop();
+        }
+    }
+
+    @Test
     void stopAlwaysClosesTransportWhenDurableDeactivationThrows() {
         OwnedMatchdayCoordinator coordinator = mock(OwnedMatchdayCoordinator.class);
         PlannerRuntimeRepository repository = mock(PlannerRuntimeRepository.class);

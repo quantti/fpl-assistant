@@ -20,6 +20,10 @@ import dev.quantti.fplassistant.sync.OwnedSyncStore.SyncKind;
 public final class OwnedMatchdayCoordinator {
 
     private static final Duration LEASE = Duration.ofMinutes(5);
+    // Staged source bodies are evidence only while a run can still use them. Terminal runs keep
+    // theirs for a day of diagnosis; without this bound one backlog pass stores ~170 MB and a
+    // 500 MB database fills within days.
+    static final Duration PAYLOAD_RETENTION = Duration.ofHours(24);
     private static final int MAX_PLAYERS_PER_SLOT = 32;
 
     private final Season season;
@@ -73,6 +77,11 @@ public final class OwnedMatchdayCoordinator {
             runtimeRepository.recordError(instanceId, bounded(failure));
             throw failure;
         }
+    }
+
+    /** Drops staged bodies of finished runs older than the retention; active work is untouched. */
+    public int pruneStagedPayloads() {
+        return store.deleteTerminalPayloadsOlderThan(PAYLOAD_RETENTION);
     }
 
     /** Claims and routes one run. Database leases/fences remain authoritative across instances. */
