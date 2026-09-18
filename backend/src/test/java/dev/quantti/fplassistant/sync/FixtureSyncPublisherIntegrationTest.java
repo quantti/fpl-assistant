@@ -198,6 +198,39 @@ class FixtureSyncPublisherIntegrationTest {
     }
 
     @Test
+    void dependencyWaitIsNotAnAttemptAndADailyOnlyFixtureIsAdmittedAgainTheSameDay() {
+        tx.executeWithoutResult(status -> {
+            jdbc.update("UPDATE season SET is_current=(id=?)", SEASON.id());
+            Inputs first = inputs(FIRST, false);
+            publisher.publishParsed(lease(), SEASON, first.fixture, first.fixtureRead,
+                    first.live, first.histories);
+            FixtureSyncRepository repository = new FixtureSyncRepository(jdbc, TABLES);
+            // Thirteen hours after our first sighting the fixture is on the daily cadence.
+            jdbc.update("UPDATE " + TABLES.fixtureSync() + " SET first_finished_observed_at=?,"
+                            + " alert_state='DAILY_ONLY', next_due_at=? WHERE fixture_id=98101",
+                    java.sql.Timestamp.from(clock.instant().minusSeconds(13 * 3_600)),
+                    java.sql.Timestamp.from(clock.instant()));
+            int attemptsBefore = jdbc.queryForObject("SELECT attempt_count FROM " + TABLES.fixtureSync()
+                    + " WHERE fixture_id=98101", Integer.class);
+
+            Instant wait = clock.instant().plusSeconds(120);
+            repository.recordDependencyWait(SEASON, 98101, wait,
+                    "Waiting for fresh player histories", clock.instant());
+
+            Map<String, Object> row = jdbc.queryForMap("SELECT attempt_count, next_due_at, last_error,"
+                    + " alert_state FROM " + TABLES.fixtureSync() + " WHERE fixture_id=98101");
+            assertThat(row.get("attempt_count")).isEqualTo(attemptsBefore);
+            assertThat(row.get("alert_state")).isEqualTo("DAILY_ONLY");
+            assertThat(row.get("last_error")).isEqualTo("Waiting for fresh player histories");
+            assertThat(((java.sql.Timestamp) row.get("next_due_at")).toInstant()).isEqualTo(wait);
+            // One attempt a day can never finish a verification that has to wait for histories,
+            // so the follow-up of a wait is admitted at its own due time, not at the next sweep.
+            assertThat(repository.admitAttempt(SEASON, 98101, wait).admitted()).isTrue();
+            status.setRollbackOnly();
+        });
+    }
+
+    @Test
     void failedAttemptMetadataDoesNotReplaceReadinessAndSuccessClearsError() {
         tx.executeWithoutResult(status -> {
             jdbc.update("UPDATE season SET is_current=(id=?)", SEASON.id());

@@ -146,6 +146,10 @@ public final class FixtureSyncPublisher {
         return repository.admitAttempt(season, fixtureId, clock.instant());
     }
 
+    Instant recordDependencyWait(String seasonCode, int fixtureId, Instant dueAt, String error) {
+        return repository.recordDependencyWait(seasonCode, fixtureId, dueAt, error, clock.instant());
+    }
+
     Instant recordFailedAttempt(String seasonCode, int fixtureId, Instant minimumDue, String error) {
         return repository.recordFailedAttempt(seasonCode, fixtureId, minimumDue, error, clock.instant());
     }
