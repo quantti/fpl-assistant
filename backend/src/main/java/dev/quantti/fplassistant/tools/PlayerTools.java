@@ -14,7 +14,6 @@ import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
@@ -28,13 +27,15 @@ public class PlayerTools implements FplTool {
     private final SeasonResolver seasonResolver;
     private final DailyPriceSource daily;
     private final Clock clock;
+    private final PlayerNameSearch names;
 
     public PlayerTools(JdbcTemplate jdbc, SeasonResolver seasonResolver, DailyPriceSource daily,
-                       ObjectProvider<Clock> clock) {
+                       ObjectProvider<Clock> clock, PlayerNameSearch names) {
         this.jdbc = jdbc;
         this.seasonResolver = seasonResolver;
         this.daily = daily;
         this.clock = clock.getIfAvailable(Clock::systemUTC);
+        this.names = names;
     }
 
     @Tool(description = """
@@ -224,8 +225,14 @@ public class PlayerTools implements FplTool {
      */
     private Map<Integer, List<Map<String, Object>>> seasonRows(String playerName, int seasonId,
                                                                Integer previousSeasonId) {
-        String pattern = "%" + LikePatterns.escape(playerName.toLowerCase(Locale.ROOT)) + "%";
         int second = previousSeasonId == null ? seasonId : previousSeasonId;
+        PlayerNameSearch.Fragment match = names.fragment(playerName, "p.web_name",
+                "p.web_name || ' ' || p.first_name || ' ' || p.second_name",
+                "t.name || ' ' || t.short_name");
+        List<Object> args = new ArrayList<>(match.orderArgs());
+        args.add(seasonId);
+        args.add(second);
+        args.addAll(match.whereArgs());
         List<Map<String, Object>> rows = jdbc.queryForList("""
                 SELECT * FROM (
                     SELECT p.season_id, p.web_name, p.first_name, p.second_name,
@@ -235,18 +242,15 @@ public class PlayerTools implements FplTool {
                            p.minutes, p.expected_goals, p.expected_assists,
                            p.selected_by_percent, p.status, p.news, p.updated_at,
                            ROW_NUMBER() OVER (PARTITION BY p.season_id
-                                              ORDER BY p.total_points DESC) AS rn
+                                              ORDER BY %s, p.total_points DESC) AS rn
                     FROM player p
                     JOIN team t ON t.id = p.team_id AND t.season_id = p.season_id
                     WHERE p.season_id IN (?, ?)
-                      AND (LOWER(p.web_name) LIKE ?
-                           OR LOWER(p.second_name) LIKE ?
-                           OR LOWER(p.first_name) LIKE ?
-                           OR LOWER(p.first_name || ' ' || p.second_name) LIKE ?)
+                      AND %s
                 ) ranked
                 WHERE rn <= 5
                 ORDER BY season_id, rn
-                """, seasonId, second, pattern, pattern, pattern, pattern);
+                """.formatted(match.exactFirst(), match.where()), args.toArray());
         return rows.stream().collect(Collectors.groupingBy(
                 r -> ((Number) r.get("season_id")).intValue(),
                 LinkedHashMap::new, Collectors.toList()));
