@@ -36,7 +36,7 @@ public class DailyPriceSource {
 
     private static final String WEB_NAME = "web_name";
     private static final String NAME = "web_name || ' ' || COALESCE(full_name, '')";
-    private static final String CLUB = "COALESCE(team_name, '') || ' ' || team_short";
+    private static final String CLUB = "COALESCE(team_name, '') || ' ' || COALESCE(team_short, '')";
 
     private final JdbcTemplate jdbc;
     private final String table;

@@ -26,8 +26,10 @@ class PlayerNamePromptContractTest {
                 "\"konsa\" is Konsa, not Konaté",
                 "ignores accents and case",
                 "pass the club along with the name",
+                "the way FPL writes it",
                 "is the player they meant",
                 "try once more with the surname alone",
+                "without the club",
                 "go back and answer the question they originally asked");
     }
 }
