@@ -41,7 +41,9 @@ public class PlayerTools implements FplTool {
     @Tool(description = """
             Search for an FPL player by name (web name or surname), using the name the user
             gave — never a corrected or similar-looking name. The name may be a surname, a
-            full name, or a name followed by the club ("Hall Newcastle"); accents are optional.
+            full name, or a name followed by the club as FPL writes it — short name or
+            three-letter code ("Hall Newcastle", "Fernandes Man Utd", "Fernandes MUN");
+            accents are optional.
             Answers from this season's FPL squad first (club, position, today's price,
             ownership, availability) and adds
             per-season statistics beneath it: once the season being played holds statistics, it
@@ -76,14 +78,19 @@ public class PlayerTools implements FplTool {
             // previous season is shown beside it — without that, the day the resolver moves to
             // the new season, last season's 38-match evidence silently vanishes and every answer
             // leans on a one-or-two-match sample.
-            List<SeasonStats> stats = seasonStatsBlocks(playerName, season);
+            // Looked up by the matched web name once the capture has identified the player: each
+            // season's rows carry that season's club, so a club token in the query would drop the
+            // season a summer signing spent at his old club.
+            List<SeasonStats> stats = seasonStatsBlocks(current.isEmpty()
+                    ? playerName : String.valueOf(current.getFirst().get("web_name")), season);
 
             if (current.isEmpty() && stats.isEmpty()) {
                 // Spelled out, because the failure mode is the model quietly trying a
                 // similar-looking name and answering about whoever that finds.
                 return season.provenance() + "\nNo player matched \"" + playerName + "\"."
-                        + " The lookup already ignores accents and accepts a club after the name."
-                        + " You may retry once with the surname alone. Do not search for a"
+                        + " The lookup already ignores accents and accepts a club after the name,"
+                        + " written the way FPL writes it (\"Man Utd\", \"MUN\")."
+                        + " You may retry once with the surname alone, without the club. Do not search for a"
                         + " similar-looking name or answer about a different player: otherwise"
                         + " tell the user this name was not found and ask for the club or a"
                         + " fuller spelling.";
@@ -231,7 +238,7 @@ public class PlayerTools implements FplTool {
                                                                Integer previousSeasonId) {
         int second = previousSeasonId == null ? seasonId : previousSeasonId;
         PlayerNameSearch.Fragment match = names.fragment(playerName, "p.web_name",
-                "p.web_name || ' ' || p.first_name || ' ' || p.second_name",
+                "p.web_name || ' ' || COALESCE(p.first_name, '') || ' ' || COALESCE(p.second_name, '')",
                 "t.name || ' ' || t.short_name");
         List<Object> args = new ArrayList<>(match.orderArgs());
         args.add(seasonId);

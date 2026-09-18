@@ -153,14 +153,16 @@ class ExpectedStatsToolsIntegrationTest {
     void unaccentedFullNameFindsTheAccentedPlayersExpectedStats() {
         seedAccentedPlayer();
         String result = tools.getPlayerExpectedStats("Tarik Muharemovic", 5);
-        assertThat(result).doesNotContain("Player not found");
+        // The web name, not only the absence of "Player not found": the database-error reply
+        // satisfies that on its own, and would leave a broken query at this site green.
+        assertThat(result).contains("Muharemović").doesNotContain("Player not found");
     }
 
     @Test
     void aClubAfterTheNameStillFindsThePlayersExpectedStats() {
         seedAccentedPlayer();
         String result = tools.getPlayerExpectedStats("Muharemovic Ashfield", 5);
-        assertThat(result).doesNotContain("Player not found");
+        assertThat(result).contains("Muharemović").doesNotContain("Player not found");
     }
 
     // --- KAR-9: sample dates and the unknown core-sync time --------------------------------

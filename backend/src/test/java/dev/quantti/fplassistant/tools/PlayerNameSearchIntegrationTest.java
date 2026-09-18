@@ -26,7 +26,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 class PlayerNameSearchIntegrationTest {
 
     private static final String SEASON = "test-ns"; // season columns are VARCHAR(10)
-    private static final LocalDate DAY = LocalDate.of(2026, 9, 18);
+    /**
+     * Far-future, in the style of {@link DailyPriceSourceCaptureTest}: {@code matchPlayers}
+     * filters on {@code price_date} alone, and other classes seed today's date into this table.
+     * Still older than that class's own row, which must stay the newest capture in the table.
+     */
+    private static final LocalDate DAY = LocalDate.now().plusYears(40);
 
     private static final int MUHAREMOVIC = 9201;
     private static final int HALL_NEWCASTLE = 9202;

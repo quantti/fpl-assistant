@@ -6,8 +6,10 @@ import org.springframework.jdbc.core.JdbcTemplate;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class PlayerNameSearchTest {
 
@@ -69,6 +71,31 @@ class PlayerNameSearchTest {
     void aDatabaseThatRefusesTheExtensionDoesNotFailConstruction() {
         JdbcTemplate jdbc = mock(JdbcTemplate.class);
         doThrow(new DataAccessResourceFailureException("read-only")).when(jdbc).execute(anyString());
+        when(jdbc.queryForObject(anyString(), eq(String.class)))
+                .thenThrow(new DataAccessResourceFailureException("read-only"));
+        var f = new PlayerNameSearch(jdbc).fragment("Hall", "web_name", "N", "C");
+        assertThat(f.where()).doesNotContain("unaccent");
+    }
+
+    /**
+     * A refused CREATE is not an unusable function — read-only mode refuses the statement while
+     * the extension is already installed and callable.
+     */
+    @Test
+    void aRefusedCreateStillProbesAndFoldsWhenTheFunctionIsCallable() {
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        doThrow(new DataAccessResourceFailureException("read-only")).when(jdbc).execute(anyString());
+        when(jdbc.queryForObject("SELECT unaccent('ć')", String.class)).thenReturn("c");
+        var f = new PlayerNameSearch(jdbc).fragment("Hall", "web_name", "N", "C");
+        assertThat(f.where()).contains("unaccent");
+    }
+
+    /** Not every startup failure is SQL-shaped: a pool failure is a bare RuntimeException. */
+    @Test
+    void aNonSqlRuntimeFailureFromTheProbeDoesNotFailConstruction() {
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        when(jdbc.queryForObject(anyString(), eq(String.class)))
+                .thenThrow(new IllegalStateException("pool not initialised"));
         var f = new PlayerNameSearch(jdbc).fragment("Hall", "web_name", "N", "C");
         assertThat(f.where()).doesNotContain("unaccent");
     }
