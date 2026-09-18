@@ -229,6 +229,87 @@ class ExpectedStatsToolsIntegrationTest {
                 .doesNotContain(" ago");
     }
 
+    // --- KAR-58: defensive contribution on the named-player reply --------------------------
+
+    private void seedDefconPlayer(int elementType) {
+        jdbc.update("""
+                INSERT INTO player (id, season_id, team_id, first_name, second_name, web_name,
+                                    element_type, now_cost, status, total_points, minutes)
+                VALUES (9291, 9026, 9004, 'Aksel', 'Lindqvist', 'Lindqvist', ?, 50, 'a', 9, 270)
+                """, elementType);
+    }
+
+    private void seedDefconRow(int fixtureId, int gameweek, String kickoff, int minutes, Integer defcon) {
+        jdbc.update("""
+                INSERT INTO player_fixture_stats (fixture_id, player_id, season_id, gameweek,
+                        player_team_id, opponent_team_id, was_home, kickoff_time, minutes,
+                        goals_scored, assists, expected_goals, expected_assists,
+                        expected_goal_involvements, value, defensive_contribution)
+                VALUES (?, 9291, 9026, ?, 9004, 9001, true, ?::timestamptz, ?, 0, 0, 0.05, 0.02, 0.07, 50, ?)
+                """, fixtureId, gameweek, kickoff, minutes, defcon);
+    }
+
+    /**
+     * A comparison of two defenders is built from this reply, so it has to carry the DefCon
+     * record: each match's count, how often the threshold was reached, and the rate. A match
+     * with no reading is unknown, not a miss, and a match he did not play is not an appearance.
+     */
+    @Test
+    @Transactional
+    void aDefendersReplyCarriesHisDefconRecord() {
+        seedDefconPlayer(2);
+        seedDefconRow(9191, 4, "2025-09-01 14:00:00+00", 90, 12);
+        seedDefconRow(9192, 5, "2025-09-08 14:00:00+00", 90, 8);
+        seedDefconRow(9193, 6, "2025-09-15 14:00:00+00", 90, null);
+        seedDefconRow(9194, 7, "2025-09-22 14:00:00+00", 0, 0);
+
+        String result = tools.getPlayerExpectedStats("Lindqvist", 5);
+
+        assertThat(result).contains("GW4 vs ASH (H): 90 min, xG 0.05 xA 0.02 (G0 A0) | DC 12")
+                .contains("GW5 vs ASH (H): 90 min, xG 0.05 xA 0.02 (G0 A0) | DC 8")
+                .contains("(G0 A0) | DC n/a")
+                .contains("Defensive contribution (DEF: 2 pts at 10+ CBIT): reached in 1 of 2"
+                        + " appearances with a reading | 10.00 per 90 | 1 appearance without a reading.");
+    }
+
+    /** A midfielder needs 12, recoveries included, so 11 is a miss where a defender's 11 is a hit. */
+    @Test
+    @Transactional
+    void aMidfieldersDefconIsJudgedAtTwelve() {
+        seedDefconPlayer(3);
+        seedDefconRow(9191, 4, "2025-09-01 14:00:00+00", 90, 11);
+        seedDefconRow(9192, 5, "2025-09-08 14:00:00+00", 45, 13);
+
+        String result = tools.getPlayerExpectedStats("Lindqvist", 5);
+
+        assertThat(result).contains("Defensive contribution (MID: 2 pts at 12+ CBIRT): reached in 1 of 2"
+                + " appearances with a reading | 16.00 per 90.");
+    }
+
+    @Test
+    @Transactional
+    void noReadingAtAllIsSaidNotShownAsZero() {
+        seedDefconPlayer(2);
+        seedDefconRow(9191, 4, "2025-09-01 14:00:00+00", 90, null);
+
+        String result = tools.getPlayerExpectedStats("Lindqvist", 5);
+
+        assertThat(result).contains("Defensive contribution (DEF: 2 pts at 10+ CBIT): no reading in this"
+                + " window — unknown, not zero.");
+    }
+
+    @Test
+    @Transactional
+    void aGoalkeeperEarnsNoDefcon() {
+        seedDefconPlayer(1);
+        seedDefconRow(9191, 4, "2025-09-01 14:00:00+00", 90, 3);
+
+        String result = tools.getPlayerExpectedStats("Lindqvist", 5);
+
+        assertThat(result).contains("Defensive contribution: not awarded to goalkeepers.")
+                .doesNotContain("| DC ");
+    }
+
     /**
      * The real {@code trg_pfs_updated_at} trigger stamps {@code updated_at} on any UPDATE, so a
      * DefCon-only enrichment write makes an old football sample look freshly written. The reply
@@ -247,12 +328,14 @@ class ExpectedStatsToolsIntegrationTest {
                 INSERT INTO player_fixture_stats (fixture_id, player_id, season_id, gameweek,
                         player_team_id, opponent_team_id, was_home, kickoff_time, minutes,
                         goals_scored, assists, expected_goals, expected_assists,
-                        expected_goal_involvements, value, updated_at)
+                        expected_goal_involvements, value, defensive_contribution, updated_at)
                 VALUES (9191, 9291, 9026, 5, 9004, 9001, true, TIMESTAMPTZ '2025-09-01 14:00:00+00',
-                        77, 1, 0, 0.42, 0.11, 0.53, 50, ?)
+                        77, 1, 0, 0.42, 0.11, 0.53, 50, 7, ?)
                 """, oldWrite);
         String before = tools.getPlayerExpectedStats("Lindqvist", 5);
 
+        // The enrichment sync rewrites every match, so the usual DefCon-only write repeats the
+        // value already stored; the reply now shows that value (KAR-58), and a new one would move it.
         int updated = jdbc.update("""
                 UPDATE player_fixture_stats SET defensive_contribution = 7
                 WHERE fixture_id = 9191 AND player_id = 9291 AND season_id = 9026
