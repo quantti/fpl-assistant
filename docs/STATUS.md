@@ -4306,6 +4306,15 @@ the attempt count, the ladder and the daily cadence are untouched, and `admitAtt
 follow-up at that due time. Real failures still use `recordFailedAttempt`. The two fixtures were
 re-anchored by hand on 2026-09-18 08:27 UTC so GW1–4 could complete before GW5.
 
+The same morning showed why owned health could never return to UP. Eight `DUE_WORK` incidents
+stayed open after all forty fixtures had verified, and every one pointed at a run that had been
+fenced `FAILED` when its activation ended (STAGING epoch 3, ACTIVE epoch 46). The watchdog accepted
+only a `COMPLETED` run as recovery evidence, and a fenced run can never complete: its epoch is over
+and the work was planned again under the next one. `OwnedSyncWatchdog.recoveryEvidence` now also
+treats a `FAILED` run as settled when its `(runtime_mode, runtime_epoch)` is no longer the live
+activation. A failure inside the live activation still keeps its incident open. Kuma monitor 18
+stays paused until this is deployed, because external health would otherwise read DOWN for ever.
+
 ## Owned sync — cutover to ACTIVE, and the outage on the way there (2026-09-16/17)
 
 The owner cut production over on the evening of 2026-09-16: Tapas cron stopped,
