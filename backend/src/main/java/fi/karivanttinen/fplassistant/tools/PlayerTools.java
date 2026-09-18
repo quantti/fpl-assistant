@@ -14,7 +14,6 @@ import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
@@ -28,19 +27,25 @@ public class PlayerTools implements FplTool {
     private final SeasonResolver seasonResolver;
     private final DailyPriceSource daily;
     private final Clock clock;
+    private final PlayerNameSearch names;
 
     public PlayerTools(JdbcTemplate jdbc, SeasonResolver seasonResolver, DailyPriceSource daily,
-                       ObjectProvider<Clock> clock) {
+                       ObjectProvider<Clock> clock, PlayerNameSearch names) {
         this.jdbc = jdbc;
         this.seasonResolver = seasonResolver;
         this.daily = daily;
         this.clock = clock.getIfAvailable(Clock::systemUTC);
+        this.names = names;
     }
 
     @Tool(description = """
-            Search for an FPL player by name (web name or surname), spelled exactly as the user
-            wrote it — never a corrected or similar-looking name. Answers from this season's FPL
-            squad first (club, position, today's price, ownership, availability) and adds
+            Search for an FPL player by name (web name or surname), using the name the user
+            gave — never a corrected or similar-looking name. The name may be a surname, a
+            full name, or a name followed by the club as FPL writes it — short name or
+            three-letter code ("Hall Newcastle", "Fernandes Man Utd", "Fernandes MUN");
+            accents are optional.
+            Answers from this season's FPL squad first (club, position, today's price,
+            ownership, availability) and adds
             per-season statistics beneath it: once the season being played holds statistics, it
             and the previous season are shown side by side, each labelled with the season it came
             from — weigh them per the early-season rule. Until then the most recent completed
@@ -73,15 +78,22 @@ public class PlayerTools implements FplTool {
             // previous season is shown beside it — without that, the day the resolver moves to
             // the new season, last season's 38-match evidence silently vanishes and every answer
             // leans on a one-or-two-match sample.
-            List<SeasonStats> stats = seasonStatsBlocks(playerName, season);
+            // Looked up by the matched web name once the capture has identified the player: each
+            // season's rows carry that season's club, so a club token in the query would drop the
+            // season a summer signing spent at his old club.
+            List<SeasonStats> stats = seasonStatsBlocks(current.isEmpty()
+                    ? playerName : String.valueOf(current.getFirst().get("web_name")), season);
 
             if (current.isEmpty() && stats.isEmpty()) {
                 // Spelled out, because the failure mode is the model quietly trying a
                 // similar-looking name and answering about whoever that finds.
                 return season.provenance() + "\nNo player matched \"" + playerName + "\"."
-                        + " Do not search for a similar-looking name or answer about a different"
-                        + " player: tell the user this name was not found and ask for the club or"
-                        + " a fuller spelling.";
+                        + " The lookup already ignores accents and accepts a club after the name,"
+                        + " written the way FPL writes it (\"Man Utd\", \"MUN\")."
+                        + " You may retry once with the surname alone, without the club. Do not search for a"
+                        + " similar-looking name or answer about a different player: otherwise"
+                        + " tell the user this name was not found and ask for the club or a"
+                        + " fuller spelling.";
             }
 
             if (captured == null) {
@@ -224,8 +236,14 @@ public class PlayerTools implements FplTool {
      */
     private Map<Integer, List<Map<String, Object>>> seasonRows(String playerName, int seasonId,
                                                                Integer previousSeasonId) {
-        String pattern = "%" + LikePatterns.escape(playerName.toLowerCase(Locale.ROOT)) + "%";
         int second = previousSeasonId == null ? seasonId : previousSeasonId;
+        PlayerNameSearch.Fragment match = names.fragment(playerName, "p.web_name",
+                "p.web_name || ' ' || COALESCE(p.first_name, '') || ' ' || COALESCE(p.second_name, '')",
+                "t.name || ' ' || t.short_name");
+        List<Object> args = new ArrayList<>(match.orderArgs());
+        args.add(seasonId);
+        args.add(second);
+        args.addAll(match.whereArgs());
         List<Map<String, Object>> rows = jdbc.queryForList("""
                 SELECT * FROM (
                     SELECT p.season_id, p.web_name, p.first_name, p.second_name,
@@ -235,18 +253,15 @@ public class PlayerTools implements FplTool {
                            p.minutes, p.expected_goals, p.expected_assists,
                            p.selected_by_percent, p.status, p.news, p.updated_at,
                            ROW_NUMBER() OVER (PARTITION BY p.season_id
-                                              ORDER BY p.total_points DESC) AS rn
+                                              ORDER BY %s, p.total_points DESC) AS rn
                     FROM player p
                     JOIN team t ON t.id = p.team_id AND t.season_id = p.season_id
                     WHERE p.season_id IN (?, ?)
-                      AND (LOWER(p.web_name) LIKE ?
-                           OR LOWER(p.second_name) LIKE ?
-                           OR LOWER(p.first_name) LIKE ?
-                           OR LOWER(p.first_name || ' ' || p.second_name) LIKE ?)
+                      AND %s
                 ) ranked
                 WHERE rn <= 5
                 ORDER BY season_id, rn
-                """, seasonId, second, pattern, pattern, pattern, pattern);
+                """.formatted(match.exactFirst(), match.where()), args.toArray());
         return rows.stream().collect(Collectors.groupingBy(
                 r -> ((Number) r.get("season_id")).intValue(),
                 LinkedHashMap::new, Collectors.toList()));

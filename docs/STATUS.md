@@ -4725,3 +4725,67 @@ redemptions now reads the same not-available sentence as everywhere else; `probl
 status-line markup are each shared in one place (`auth/problemDetail.ts`, `AdminPage/StatusLine.tsx`)
 instead of duplicated across `SignIn`/`CodeDetails`/`NewCodeForm`; and the plan doc's step headings
 dropped their checkbox syntax. `npm test` is now 126 tests green.
+
+## Player name search (KAR-57, 2026-09-18)
+
+Plan: `docs/superpowers/plans/2026-09-18-player-name-search.md`. Ticket: KAR-57.
+
+Production evidence, from one conversation over three turns: `Tarik Muharemovic` came back not found because
+`lower('Tarik Muharemović') LIKE '%tarik muharemovic%'` is false — `ć` ≠ `c`; `Hall Newcastle` came
+back not found because the whole string was matched against `web_name`/`full_name` and the club is
+not in that haystack; asked to name the club, `Leeds` still failed because no lookup accepted a
+club at all; and the pasted, correctly-accented `Muharemović` was found but answered only "he is
+listed as Muharemović" — nothing told the model to go back and answer the comparison it was asked.
+
+**The fix is one component, `PlayerNameSearch`** (`backend/.../tools/PlayerNameSearch.java`):
+folds both the name and a club expression through Postgres `unaccent(lower(...))`, tokenises the
+query on whitespace/commas, and requires every token to hit the name or the club while at least one
+token must hit the name — a club alone (`Newcastle`) matches nobody. An exact folded `web_name`
+match is ranked first, so a cheaper exact hit is never outranked by a pricier substring hit. It
+replaces the hand-written `LOWER(col) LIKE ?` lookups in `DailyPriceSource.matchPlayers` (serving
+`getPlayerStats`'s current-squad block, `getPriceHistory`, `getPlayerAvailability`),
+`PlayerTools.seasonRows` and `ExpectedStatsTools.getPlayerExpectedStats`. The four affected `@Tool`
+descriptions gained a sentence that the name may be a surname, a full name, or a name followed by a
+club, and that accents are optional; `getPlayerStats`'s description dropped "spelled exactly as the
+user wrote it", which had told the model the opposite of what is now true. The system prompt
+section "Player names are the user's, not yours" now tells the model to pass a given club along
+with the name, that an accent/case/first-name/club difference is still a match, to retry once on
+the surname alone when nothing matches, and — the fourth evidence row — to go back and answer the
+original question once the player is identified rather than stopping at "here is how they're
+listed".
+
+**Clubs are FPL's abbreviated names, and the retry drops the club** (final review, Important 1–2):
+the club haystack is `team_name || team_short`, so "Manchester United" narrows nothing while
+"Man Utd" and "MUN" do — the prompt and the four `@Tool` descriptions now say which form to pass,
+and the surname-only retry drops the club rather than keeping it. And because each season's rows
+carry that season's club, `getPlayerStats` looks the per-season statistics up by the matched
+`web_name` — the project's cross-season bridge — once the daily capture has identified the player:
+on the raw query a club token would drop the season a summer signing spent at his old club, which
+is the season an early-season answer needs most.
+
+**`unaccent` is probed, not assumed** (owner-approved option A, 2026-09-18): the extension is
+`CREATE EXTENSION IF NOT EXISTS`-ed at construction and then exercised (`unaccent('ć') = 'c'`). A
+refused `CREATE` is logged at WARN and the probe runs anyway — read-only mode or a role without
+`CREATE` refuses the statement while the function is installed and callable. Any `RuntimeException`
+from the probe, or a fold that does not return `c`, degrades the search to plain `lower()` — the
+pre-KAR-57 behaviour — and logs at ERROR; nothing about startup can throw. No session `SET` is used anywhere in the probe, per the pooler rule. Folding only
+removes accents and case; it never maps one name onto a similar-looking one — `konsa` still does not
+match Konaté.
+
+Out of scope, deliberately untouched: `RankingMetrics`' and `ExpectedStatsTools`'s cross-season
+`web_name` bridges (both sides are FPL's own spelling, nothing to fold), `SquadTools.fold` (pins are
+already folded in Java), every team-name lookup (`FixtureTools`, `FixtureDifficultyTools`,
+`AvailabilityTools`/`SetPieceTools` team queries, `HistoricalTeamResolver` — no club name carries an
+accent), and the frontend player linker — which linked `Hall` inside a reply that said Hall could
+not be found; whether that is still true is a post-deploy check, and if it recurs it is a separate
+frontend ticket, not a reopening of this one.
+
+**Before merging:** the owner should enable `unaccent` in the Supabase dashboard, so it lands in the
+`extensions` schema and the app's `CREATE` is a no-op; created by the app it would land in `public`,
+which Supabase's advisor flags. Do not add `WITH SCHEMA extensions` to the code — that schema exists
+neither locally nor in CI.
+
+**Not yet verified:** production confirmation is deferred until this PR is merged and deployed —
+`fly logs` should read "Player name search: accent folding ON", and re-asking the original chat
+question (`Tarik Muharemovic vs Hall Newcastlesta wild cardilla, kumpi parempi`) should resolve and
+compare both players on the first turn. Neither has been checked yet.
