@@ -40,8 +40,10 @@ public class PlayerTools implements FplTool {
 
     @Tool(description = """
             Search for an FPL player by name (web name or surname), spelled exactly as the user
-            wrote it — never a corrected or similar-looking name. Answers from this season's FPL
-            squad first (club, position, today's price, ownership, availability) and adds
+            wrote it — never a corrected or similar-looking name. The name may be a surname, a
+            full name, or a name followed by the club ("Hall Newcastle"); accents are optional.
+            Answers from this season's FPL squad first (club, position, today's price,
+            ownership, availability) and adds
             per-season statistics beneath it: once the season being played holds statistics, it
             and the previous season are shown side by side, each labelled with the season it came
             from — weigh them per the early-season rule. Until then the most recent completed
@@ -80,9 +82,11 @@ public class PlayerTools implements FplTool {
                 // Spelled out, because the failure mode is the model quietly trying a
                 // similar-looking name and answering about whoever that finds.
                 return season.provenance() + "\nNo player matched \"" + playerName + "\"."
-                        + " Do not search for a similar-looking name or answer about a different"
-                        + " player: tell the user this name was not found and ask for the club or"
-                        + " a fuller spelling.";
+                        + " The lookup already ignores accents and accepts a club after the name."
+                        + " You may retry once with the surname alone. Do not search for a"
+                        + " similar-looking name or answer about a different player: otherwise"
+                        + " tell the user this name was not found and ask for the club or a"
+                        + " fuller spelling.";
             }
 
             if (captured == null) {
