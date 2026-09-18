@@ -169,6 +169,17 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
   components, expected only — no realised blend, no outer minutes multiplier — and FDR scales the
   attacking term only: the clean sheet already carries the opponent, so an FDR multiplier on it
   would count the fixture twice. Appearance and DefCon are not fixture-scaled. Shared population, distinct objectives; do not merge them.
+- **A named player's DefCon lives on `getPlayerExpectedStats`, as an observed record (KAR-58).**
+  Each match row prints the raw count as `DefCon actions N` and the reply ends with one
+  `Defensive contribution, season …` line **per season** in the window: that season's position
+  threshold (`ExpectedPoints.defconThreshold`), hits over appearances with a reading, the same
+  over 60+ appearances, and actions per 90. Never pool a filled window's two seasons into one
+  rate, never judge a CBIT season at the CBIRT threshold, never count a NULL reading or a
+  zero-minute row as a miss. The cell is deliberately **not** called `DC`: in the pick lists `DC`
+  is modelled expected points per fixture, a different unit, and the prompt forbids setting one
+  against the other. The prompt requires DefCon in every defender *and midfielder* comparison
+  and forbids arguing it from role alone (`DefconComparisonPromptContractTest`). `getPlayerStats`
+  carries none on purpose — its card is tapas `player` season totals; do not add a second home.
 - Tools query Supabase via `JdbcTemplate`, annotated with Spring AI `@Tool`.
 - **A player name typed by a user becomes SQL in one place, `PlayerNameSearch` (KAR-57).**
   Accent-folded through `unaccent`, tokenised, club fields may narrow but never match alone,

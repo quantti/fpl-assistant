@@ -4813,3 +4813,15 @@ arguing it from role alone (`DefconComparisonPromptContractTest`).
 
 Not done: `getPlayerStats` still has no DefCon — its card is built from the tapas `player`
 season totals, which carry none, and one PFS-grain home for the figure is enough.
+
+Shipped in two pull requests: #110 (the DefCon line and the prompt rule) merged before its review
+finished, so the review's fixes — per-season lines, the `DefCon actions` name, the 60+ split —
+followed as #111. Both are on `master` and deployed 2026-09-18 with the run for #112 (the run for
+#111 itself was cancelled as superseded seconds later; same code). The rule agents must keep is
+in `AGENTS.md` under Conventions.
+
+Observed while verifying, not fixed: a second full suite against the same test container fails
+`RowLevelSecurityTest` (left-over `fpl_plan_*_test` / `fpl_pressure_*_test` tables without RLS) and
+`CatalogueScheduleDispatcherIntegrationTest` (380 residual fixture rows). The pre-push hook and CI
+always start from a fresh database, so neither sees it; a hand-run second suite does. See
+`docs/DEVELOPMENT.md`, "The test database".

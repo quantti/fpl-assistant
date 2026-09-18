@@ -341,6 +341,13 @@ Tests run against a disposable Postgres container using the same image as CI. Or
 for iterative development: it reuses a running container and retains its schema and data. Use
 `reset` when the starting state must be fresh; the pre-push hook always does so.
 
+**A full suite is not re-runnable on the same container.** The second `./gradlew test` fails
+`RowLevelSecurityTest` and `CatalogueScheduleDispatcherIntegrationTest` on what the first run left
+behind (observed 2026-09-18). Focused `--tests` runs are fine on a reused container; before a
+full suite, `reset`, and let it print — check for `Loaded tapas-schema.sql` before starting
+Gradle. A suite started against a container without the tapas schema fails a couple of hundred
+tests on `relation "season" does not exist`, which looks like a code problem and is not.
+
 ```bash
 scripts/test-db.sh up       # start if needed; reuse existing schema and data
 scripts/test-db.sh reset    # destroy all local test data, then recreate and load the tapas schema
