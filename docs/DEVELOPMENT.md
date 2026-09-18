@@ -132,7 +132,7 @@ systemd-run --user --scope -p MemoryMax=1536M \
 ```
 
 Check `free -m` first, allow at least 2.0 GiB available, monitor host memory and stop only this scope
-if available memory falls below 768 MiB. Do not kill other projects or disable the pre-push hook.
+if available memory falls below 768 MiB. Do not kill other projects.
 Do not add the former 1152 MiB soft limit: a later run suffered severe reclaim/CPU starvation and
 was stopped at its timeout. With a 1536 MiB hard limit and no lower soft limit, all 1165 tests passed
 at a 1228 MiB peak, leaving at least 1879 MiB available. Keep a wall-clock timeout on the runner too;
@@ -153,8 +153,7 @@ refuses to load without `VITE_SUPABASE_ANON_KEY`; a unit test needs no key. Test
 environment by default. The isolated `useChat.test.ts` mounted-hook regression opts into jsdom
 with a file-level Vitest environment directive; it uses React's real root and does not add a
 browser harness. The remaining tests cover pure UI decisions such as `viewportHeight` and
-`MessageThread/follow`. The pre-push hook does not run the frontend suite; run it before pushing
-frontend work.
+`MessageThread/follow`. No hook runs the frontend suite; run it before pushing frontend work.
 
 ## The free tier and sign-up
 
@@ -311,26 +310,21 @@ real thing; for now the substitute is a hook, installed once per clone:
 git config core.hooksPath scripts/hooks
 ```
 
-**On the VPS it is deliberately not installed.** The hook exits 1 when `docker` is absent, so
-there it would refuse every push rather than gate one. That leaves the VPS without the typed
-master confirmation, so on that host the rule against pushing to `master` is policy alone —
-push a branch, open a pull request, and let CI test it. Closing that gap in the hook itself is
-KAR-59: keep the master guard unconditional, let only the suite step degrade when Docker is absent.
+Install it on both hosts. It needs only bash and git — no Docker, JDK or Node — which closes
+the gap KAR-59 described: the VPS now has the typed master confirmation too.
 
-`scripts/hooks/pre-push` then does two things before any push leaves the machine:
+`scripts/hooks/pre-push` does one thing before a push leaves the machine: **a push to `master`
+needs typed confirmation** (`push to master`, exactly). With no terminal to confirm at — an
+agent, a script, CI — it is refused outright. master deploys, so a push there is a release.
 
-1. **A push to `master` needs typed confirmation** (`push to master`, exactly). With no terminal
-   to confirm at — an agent, a script, CI — it is refused outright. master deploys, so a push
-   there is a release.
-2. **The backend suite runs** after destroying and recreating the local `fpl-test-db` container
-   (`scripts/test-db.sh reset`), with `cleanTest` so Gradle cannot report a green it did not earn.
-   The reset deletes all data in that container. A reset or test failure refuses the push.
-
-Before changing Docker, the hook loads `backend/.env.test` and requires the fixed disposable
-endpoint: `localhost` (or `127.0.0.1`), `${TEST_DB_PORT:-55432}`, database `postgres`, and the
-fixture's `postgres` credentials. It refuses datasource overrides, unsupported JDBC URLs, an
-unavailable daemon, and remote Docker contexts rather than risking another database or container.
-It also runs the fast stub-only lifecycle regressions that CI runs; those tests do not use Docker.
+**It does not run the suite.** Until 2026-09-19 it reset the test container and ran
+`cleanTest test` on every push; six minutes and 1.2 GiB per push was too heavy for the cloud
+host. The division of labour now: run the tests you wrote or touched while developing
+(`./gradlew test --tests '…'`), and GitHub runs the whole suite on every pull request and again
+on the merge to `master`, where `needs: test` blocks a red deploy. A full local suite is still
+available by hand — see the memory-scoped command above — but nothing requires it.
+`scripts/tests/pre-push-test.sh` keeps the stub-only contracts for the master guard and for
+`scripts/test-db.sh reset`; CI runs it.
 
 `git push --no-verify` skips the hook entirely. That is git's escape hatch for a human who knows
 what they are skipping; treat it as bypassing branch protection, because that is what it is.
@@ -339,7 +333,14 @@ what they are skipping; treat it as bypassing branch protection, because that is
 
 Tests run against a disposable Postgres container using the same image as CI. Ordinary `up` is
 for iterative development: it reuses a running container and retains its schema and data. Use
-`reset` when the starting state must be fresh; the pre-push hook always does so.
+`reset` when the starting state must be fresh; CI always starts from an empty container.
+
+**A full suite is not re-runnable on the same container.** The second `./gradlew test` fails
+`RowLevelSecurityTest` and `CatalogueScheduleDispatcherIntegrationTest` on what the first run left
+behind (observed 2026-09-18). Focused `--tests` runs are fine on a reused container; before a
+full suite, `reset`, and let it print — check for `Loaded tapas-schema.sql` before starting
+Gradle. A suite started against a container without the tapas schema fails a couple of hundred
+tests on `relation "season" does not exist`, which looks like a code problem and is not.
 
 ```bash
 scripts/test-db.sh up       # start if needed; reuse existing schema and data

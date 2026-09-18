@@ -169,6 +169,17 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
   components, expected only — no realised blend, no outer minutes multiplier — and FDR scales the
   attacking term only: the clean sheet already carries the opponent, so an FDR multiplier on it
   would count the fixture twice. Appearance and DefCon are not fixture-scaled. Shared population, distinct objectives; do not merge them.
+- **A named player's DefCon lives on `getPlayerExpectedStats`, as an observed record (KAR-58).**
+  Each match row prints the raw count as `DefCon actions N` and the reply ends with one
+  `Defensive contribution, season …` line **per season** in the window: that season's position
+  threshold (`ExpectedPoints.defconThreshold`), hits over appearances with a reading, the same
+  over 60+ appearances, and actions per 90. Never pool a filled window's two seasons into one
+  rate, never judge a CBIT season at the CBIRT threshold, never count a NULL reading or a
+  zero-minute row as a miss. The cell is deliberately **not** called `DC`: in the pick lists `DC`
+  is modelled expected points per fixture, a different unit, and the prompt forbids setting one
+  against the other. The prompt requires DefCon in every defender *and midfielder* comparison
+  and forbids arguing it from role alone (`DefconComparisonPromptContractTest`). `getPlayerStats`
+  carries none on purpose — its card is tapas `player` season totals; do not add a second home.
 - Tools query Supabase via `JdbcTemplate`, annotated with Spring AI `@Tool`.
 - **A player name typed by a user becomes SQL in one place, `PlayerNameSearch` (KAR-57).**
   Accent-folded through `unaccent`, tokenised, club fields may narrow but never match alone,
@@ -266,7 +277,10 @@ Run one bounded agent/build/test unit at a time; never overlap full suites with 
 Keep the checked-in Gradle heap/worker/context-cache limits. On memory-constrained WSL, use the
 cgroup-v2 scope and host-memory stop threshold in `docs/DEVELOPMENT.md`; do not assume this Docker
 supports hard memory limits. Stop only this project's idle daemons or test scopes, never another
-project's processes. Verify memory headroom before running the mandatory pre-push suite.
+project's processes. Verify memory headroom before a full suite. **Nothing local runs the full
+suite for you** (owner decision 2026-09-19, too heavy for the cloud host): run the tests you
+wrote or touched while developing, and let GitHub run the whole suite on the pull request and
+again on the merge. A red PR run is a blocker, exactly as a refused push used to be.
 
 ### Owned publication evidence (not activated)
 
@@ -326,9 +340,10 @@ serving API + frontend. Frontend built in a Docker multi-stage build, copied int
 >
 > There is no branch protection to catch a mistake: GitHub refuses it for private repositories on
 > the Free plan (verified 2026-08-19 — the protection and rulesets APIs both answer 403 "Upgrade
-> to GitHub Pro"). The substitute is the `scripts/hooks/pre-push` hook, which runs the suite and
-> refuses a master push that has no terminal to confirm at — which is exactly the case for an
-> agent. **Do not work around it: never `git push --no-verify`, never re-point `core.hooksPath`,
+> to GitHub Pro"). The substitute is the `scripts/hooks/pre-push` hook, which refuses a master
+> push that has no terminal to confirm at — which is exactly the case for an agent. It no longer
+> runs the suite (2026-09-19); the pull request's GitHub run is the test gate. **Do not work
+> around it: never `git push --no-verify`, never re-point `core.hooksPath`,
 > never push to master "because the tests passed anyway".** If a push is refused, that is the
 > intended outcome, not an obstacle to route around.
 
@@ -338,9 +353,8 @@ the suite against an ephemeral Postgres container and, if it passes, runs
 requests run the tests only. `workflow_dispatch` re-deploys without a push. A manual
 `fly deploy` is for emergencies, and is the one path that can ship a red suite.
 
-Install the pre-push hook once per clone: `git config core.hooksPath scripts/hooks` — on the
-WSL2 host. On the VPS the hook cannot pass (it needs Docker) and is left uninstalled, so
-nothing there enforces the master guard mechanically: push a branch and open a pull request.
+Install the pre-push hook once per clone, on every host: `git config core.hooksPath scripts/hooks`.
+It needs only bash and git, so the VPS gets the master guard too.
 
 A manual `fly deploy` always prompts first: `.claude/settings.json` routes any Bash command
 that runs one through `scripts/hooks/ask-before-deploy.sh`, whatever path or wrapper it is

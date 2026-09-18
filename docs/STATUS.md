@@ -4813,3 +4813,27 @@ arguing it from role alone (`DefconComparisonPromptContractTest`).
 
 Not done: `getPlayerStats` still has no DefCon — its card is built from the tapas `player`
 season totals, which carry none, and one PFS-grain home for the figure is enough.
+
+Shipped in two pull requests: #110 (the DefCon line and the prompt rule) merged before its review
+finished, so the review's fixes — per-season lines, the `DefCon actions` name, the 60+ split —
+followed as #111. Both are on `master` and deployed 2026-09-18 with the run for #112 (the run for
+#111 itself was cancelled as superseded seconds later; same code). The rule agents must keep is
+in `AGENTS.md` under Conventions.
+
+Observed while verifying, not fixed: a second full suite against the same test container fails
+`RowLevelSecurityTest` (left-over `fpl_plan_*_test` / `fpl_pressure_*_test` tables without RLS) and
+`CatalogueScheduleDispatcherIntegrationTest` (380 residual fixture rows). CI always starts from
+a fresh database and never sees it; a hand-run second suite does. See `docs/DEVELOPMENT.md`,
+"The test database".
+
+## The pre-push hook no longer runs the suite (2026-09-19)
+
+Owner decision: the hook's `test-db.sh reset` + `cleanTest test` on every push (about six minutes,
+1.2 GiB peak) was too heavy for the cloud host this is also developed on. `scripts/hooks/pre-push`
+is now the master guard alone — typed confirmation at a terminal, outright refusal without one —
+and needs only bash and git, so it installs on the VPS as well, which is what KAR-59 asked for.
+Tests: the ones you wrote or touched while developing; the whole suite on GitHub for every pull
+request and on the merge, where `needs: test` still blocks a red deploy. What is given up: a red
+suite is now discovered on the PR rather than before the push. `scripts/tests/pre-push-test.sh`
+lost the hook's database-preflight contracts with the code they tested and keeps the master
+guard, the deletion no-op and the `test-db.sh reset` contracts (13, run in CI).
