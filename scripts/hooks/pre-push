@@ -4,15 +4,15 @@
 #
 #     git config core.hooksPath scripts/hooks
 #
-# It does two things, in this order:
+# It refuses a push to master unless a human confirms it at the terminal. There is no branch
+# protection on this repository — GitHub blocks it for private repos on the Free plan (verified
+# 2026-08-19: both the protection and the rulesets API answer 403 "Upgrade to GitHub Pro"). This
+# hook is the substitute, so treat a bypass as bypassing branch protection.
 #
-#   1. Refuses a push to master unless a human confirms it at the terminal. There is no branch
-#      protection on this repository — GitHub blocks it for private repos on the Free plan
-#      (verified 2026-08-19: both the protection and the rulesets API answer 403 "Upgrade to
-#      GitHub Pro"). This hook is the substitute, so treat a bypass as bypassing branch
-#      protection.
-#   2. Runs the backend suite against the local ephemeral database, and refuses the push if it
-#      fails.
+# It does not run the suite. It did until 2026-09-19; a six-minute Gradle run on every push was
+# too heavy for the cloud host this is also developed on. New tests are run while developing,
+# and the whole suite runs on GitHub for every pull request and again on the merge to master.
+# The hook needs nothing but bash and git, so it installs on every host.
 #
 # `git push --no-verify` skips all of this. That is git's escape hatch for humans in a hurry,
 # not a normal step — and agents must never use it (see AGENTS.md).
@@ -28,7 +28,7 @@ has_content=false
 while read -r _local_ref local_sha remote_ref _remote_sha; do
     [[ -z "${remote_ref:-}" ]] && continue
     if [[ "$local_sha" == "$ZERO" ]]; then
-        continue  # deleting a remote branch; nothing to test
+        continue  # deleting a remote branch; nothing to guard
     fi
     has_content=true
     if [[ "$remote_ref" == "refs/heads/master" ]]; then
@@ -70,108 +70,3 @@ if [[ "$pushing_master" == true ]]; then
     fi
     echo
 fi
-
-echo "pre-push: running the backend suite against a fresh local test database..."
-
-ENV_FILE="$REPO_ROOT/backend/.env.test"
-SCHEMA="$REPO_ROOT/backend/src/test/resources/db/shared-stats-schema.sql"
-
-if [[ ! -f "$ENV_FILE" ]]; then
-    echo "pre-push: backend/.env.test is missing." >&2
-    echo "          Copy backend/.env.test.example and fill in OPENAI_API_KEY (the RAG tests" >&2
-    echo "          embed for real and fail with 401 without it)." >&2
-    exit 1
-fi
-
-# These must come from .env.test, not from a production environment inherited by the hook.
-unset DATABASE_URL DB_USER DB_PASSWORD
-set -a
-# shellcheck disable=SC1091
-source "$ENV_FILE"
-set +a
-for variable in DATABASE_URL DB_USER DB_PASSWORD; do
-    if [[ -z "${!variable:-}" ]]; then
-        echo "pre-push: $variable must be set explicitly in backend/.env.test." >&2
-        exit 1
-    fi
-done
-
-if [[ -n "${SPRING_DATASOURCE_URL:-}" || -n "${SPRING_DATASOURCE_USERNAME:-}" \
-        || -n "${SPRING_DATASOURCE_PASSWORD:-}" ]]; then
-    echo "pre-push: refusing competing SPRING_DATASOURCE_* settings; the test destination" >&2
-    echo "          must come only from backend/.env.test." >&2
-    exit 1
-fi
-
-PORT="${TEST_DB_PORT:-55432}"
-if [[ ! "$PORT" =~ ^[0-9]+$ ]] || (( 10#$PORT < 1 || 10#$PORT > 65535 )); then
-    echo "pre-push: TEST_DB_PORT must be a valid local TCP port." >&2
-    exit 1
-fi
-if [[ "$DATABASE_URL" != "jdbc:postgresql://localhost:$PORT/postgres" \
-        && "$DATABASE_URL" != "jdbc:postgresql://127.0.0.1:$PORT/postgres" ]]; then
-    echo "pre-push: DATABASE_URL must identify the disposable local test database as" >&2
-    echo "          jdbc:postgresql://localhost:<TEST_DB_PORT>/postgres (127.0.0.1 is also allowed)." >&2
-    exit 1
-fi
-if [[ "$DB_USER" != postgres || "$DB_PASSWORD" != postgres ]]; then
-    echo "pre-push: DB_USER and DB_PASSWORD must match the local test fixture credentials." >&2
-    exit 1
-fi
-if [[ ! -r "$SCHEMA" ]]; then
-    echo "pre-push: test schema is missing or unreadable: backend/src/test/resources/db/shared-stats-schema.sql" >&2
-    exit 1
-fi
-
-if ! command -v docker >/dev/null 2>&1; then
-    echo "pre-push: docker not found, so the test database cannot be reset." >&2
-    exit 1
-fi
-if [[ -n "${DOCKER_CONTEXT:-}" ]]; then
-    if ! DOCKER_ENDPOINT="$(docker context inspect "$DOCKER_CONTEXT" --format '{{ (index .Endpoints "docker").Host }}' 2>/dev/null)"; then
-        echo "pre-push: the selected Docker context could not be inspected; no test database was changed." >&2
-        exit 1
-    fi
-elif [[ -n "${DOCKER_HOST:-}" ]]; then
-    DOCKER_ENDPOINT="$DOCKER_HOST"
-elif ! DOCKER_ENDPOINT="$(docker context inspect --format '{{ (index .Endpoints "docker").Host }}' 2>/dev/null)"; then
-    echo "pre-push: the active Docker context could not be inspected; no test database was changed." >&2
-    exit 1
-fi
-case "$DOCKER_ENDPOINT" in
-    unix://*|npipe://*) ;;
-    *)
-        echo "pre-push: refusing a nonlocal Docker context; reset is only safe on a local daemon." >&2
-        exit 1
-        ;;
-esac
-if ! docker info >/dev/null 2>&1; then
-    echo "pre-push: the Docker daemon is unavailable; no test database was changed." >&2
-    exit 1
-fi
-
-# Catch regressions in this destructive gate before it resets the real local fixture.
-bash "$REPO_ROOT/scripts/tests/pre-push-test.sh"
-"$REPO_ROOT/scripts/test-db.sh" reset > /dev/null
-
-# SDKMAN puts java on the PATH from ~/.zshrc, which this non-interactive shell does not read.
-if [[ -f "$HOME/.sdkman/bin/sdkman-init.sh" ]]; then
-    # set +eu around it: sdkman-init.sh reads ZSH_VERSION unguarded, which `set -u` treats as
-    # an error and kills the hook before a single test runs.
-    set +eu
-    # shellcheck disable=SC1091
-    source "$HOME/.sdkman/bin/sdkman-init.sh"
-    set -eu
-fi
-
-cd "$REPO_ROOT/backend"
-
-# cleanTest, because Gradle reports BUILD SUCCESSFUL without running anything when the task is
-# up to date — a green that proves nothing is worse than no check at all.
-if ! ./gradlew --console=plain --quiet cleanTest test; then
-    echo >&2
-    echo "pre-push: tests failed — push refused." >&2
-    exit 1
-fi
-
-echo "pre-push: suite green."
