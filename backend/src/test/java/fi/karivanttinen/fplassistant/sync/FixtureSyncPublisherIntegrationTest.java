@@ -198,6 +198,39 @@ class FixtureSyncPublisherIntegrationTest {
     }
 
     @Test
+    void aRecheckInsideTheStabilityWindowDoesNotRevokeAVerifiedFixture() {
+        tx.executeWithoutResult(status -> {
+            jdbc.update("UPDATE season SET is_current=(id=?)", SEASON.id());
+            Inputs first = inputs(FIRST, false);
+            publisher.publishParsed(lease(), SEASON, first.fixture, first.fixtureRead,
+                    first.live, first.histories);
+            clock.set(FIRST.plusSeconds(620));
+            Inputs second = inputs(FIRST.plusSeconds(605), false);
+            assertThat(publisher.publishParsed(lease(), SEASON, second.fixture, second.fixtureRead,
+                    second.live, second.histories).state()).isEqualTo(FixtureVerification.State.VERIFIED);
+            Map<String, Object> verified = jdbc.queryForMap("SELECT state, current_verified_generation,"
+                    + " observation_generation FROM " + TABLES.fixtureSync() + " WHERE fixture_id=98101");
+
+            // A follow-up planned before the fixture verified runs seconds later: too early to
+            // compare is not a contradiction, so it must leave the verification alone.
+            clock.set(FIRST.plusSeconds(660));
+            Inputs early = inputs(FIRST.plusSeconds(650), false);
+            var decision = publisher.publishParsed(lease(), SEASON, early.fixture, early.fixtureRead,
+                    early.live, early.histories);
+            assertThat(decision.state()).isEqualTo(FixtureVerification.State.PENDING);
+            assertThat(decision.reasons()).containsExactly(FixtureVerification.Reason.STABILITY_WINDOW);
+
+            Map<String, Object> after = jdbc.queryForMap("SELECT state, current_verified_generation,"
+                    + " observation_generation FROM " + TABLES.fixtureSync() + " WHERE fixture_id=98101");
+            assertThat(after.get("state")).isEqualTo("VERIFIED");
+            assertThat(after.get("current_verified_generation"))
+                    .isEqualTo(verified.get("current_verified_generation"));
+            assertThat(after.get("observation_generation")).isEqualTo(verified.get("observation_generation"));
+            status.setRollbackOnly();
+        });
+    }
+
+    @Test
     void dependencyWaitIsNotAnAttemptAndADailyOnlyFixtureIsAdmittedAgainTheSameDay() {
         tx.executeWithoutResult(status -> {
             jdbc.update("UPDATE season SET is_current=(id=?)", SEASON.id());

@@ -4315,6 +4315,15 @@ treats a `FAILED` run as settled when its `(runtime_mode, runtime_epoch)` is no 
 activation. A failure inside the live activation still keeps its incident open. Kuma monitor 18
 stays paused until this is deployed, because external health would otherwise read DOWN for ever.
 
+A third defect showed itself twenty seconds after fixtures 4 and 40 verified at 08:31 UTC: both
+lost their verification again. A follow-up run planned before they verified executed right after,
+`FixtureVerification` answered `PENDING` with the single reason `STABILITY_WINDOW` — too early to
+compare, less than ten minutes after the previous observation — and `saveDecision` overwrote
+`state` and nulled `current_verified_generation`, as it does for every pending decision. Too early
+is not a contradiction. `FixtureSyncPublisher` now returns that decision without saving it when the
+row is currently verified, so only real evidence (a changed fingerprint, a finish regression, a
+source correction) can revoke. The two fixtures re-verify on their own at the next follow-up.
+
 ## Owned sync — cutover to ACTIVE, and the outage on the way there (2026-09-16/17)
 
 The owner cut production over on the evening of 2026-09-16: Tapas cron stopped,
