@@ -72,8 +72,8 @@ public class ExpectedStatsTools implements FplTool {
             filled from last season when this season has fewer than N — every row names its
             season — expected goals (xG), expected assists (xA), expected goal
             involvements (xGI), alongside actual goals, assists and minutes, and his defensive
-            contribution (DefCon): each match's action count as `DC`, and how often he reached
-            the threshold that pays 2 points. Call this for every player in a comparison of
+            contribution (DefCon): each match's raw action count, and per season how often he
+            reached the threshold that pays 2 points. Call this for every player in a comparison of
             defenders or midfielders. The name may be a
             surname, a full name, or a name followed by the club as FPL writes it — short name
             or three-letter code ("Hall Newcastle", "Fernandes Man Utd", "Fernandes MUN");
@@ -487,56 +487,80 @@ public class ExpectedStatsTools implements FplTool {
         return row.get("element_type") instanceof Number n ? n.intValue() : 0;
     }
 
-    private static int defconThreshold(int position) {
-        return position >= 0 && position < ExpectedPoints.DEFCON_THRESHOLD.length
-                ? ExpectedPoints.DEFCON_THRESHOLD[position] : 0;
-    }
-
-    /** The match's DefCon action count; nothing at a position FPL awards none to. */
+    /**
+     * The match's DefCon action count — a raw count, not the pick lists' {@code DC} expected
+     * points, hence the different name. Nothing at a position FPL awards none to.
+     */
     private static String defconCell(Map<String, Object> row) {
-        if (defconThreshold(position(row)) == 0) {
+        if (ExpectedPoints.defconThreshold(position(row)) == 0) {
             return "";
         }
-        return " | DC " + (row.get("defensive_contribution") instanceof Number n ? n.intValue() : "n/a");
+        return " | DefCon actions "
+                + (row.get("defensive_contribution") instanceof Number n ? n.intValue() : "n/a");
     }
 
     /**
      * How often the player reached his position's threshold in the window (KAR-58) — the record a
-     * named-player comparison of defenders or midfielders quotes. Only appearances count, a match
-     * with no reading is unknown rather than a miss, and a previous-season row from the other
-     * DefCon definition (CBIT for a defender, CBIRT otherwise) is left out: its count is not the
-     * same measurement.
+     * named-player comparison of defenders or midfielders quotes. One line per season, each judged
+     * at the position he held that season: seasons are never pooled, and a CBIT count is not a
+     * CBIRT count. The fill is appended after the resolved season's rows, so the split is positional.
      */
     private static String defconSummary(List<Map<String, Object>> rows) {
-        int headline = position(rows.getFirst());
-        int threshold = defconThreshold(headline);
-        if (threshold == 0) {
-            return headline == 1 ? "Defensive contribution: not awarded to goalkeepers.\n" : "";
+        StringBuilder out = new StringBuilder();
+        int from = 0;
+        for (int i = 1; i <= rows.size(); i++) {
+            if (i == rows.size() || !java.util.Objects.equals(
+                    rows.get(i).get("season_code"), rows.get(from).get("season_code"))) {
+                out.append(defconSeasonLine(rows.subList(from, i)));
+                from = i;
+            }
         }
-        int known = 0, hits = 0, unknown = 0, minutes = 0;
+        return out.toString();
+    }
+
+    /**
+     * Only appearances count and a match with no reading is unknown rather than a miss. The 60+
+     * split is printed beside the whole because a five-minute cameo cannot reach the threshold
+     * and would otherwise read as a failure to.
+     */
+    private static String defconSeasonLine(List<Map<String, Object>> rows) {
+        int position = position(rows.getFirst());
+        int threshold = ExpectedPoints.defconThreshold(position);
+        String season = "Defensive contribution, season " + rows.getFirst().get("season_code");
+        if (threshold == 0) {
+            return position == 1 ? season + ": not awarded to goalkeepers.\n" : "";
+        }
+        int known = 0, hits = 0, longKnown = 0, longHits = 0, unknown = 0, minutes = 0;
         double actions = 0;
         for (Map<String, Object> r : rows) {
-            if (num(r, "minutes") <= 0 || defconThreshold(position(r)) != threshold) {
+            int played = (int) num(r, "minutes");
+            if (played <= 0) {
                 continue;
             }
             if (r.get("defensive_contribution") instanceof Number n) {
+                boolean hit = n.intValue() >= threshold;
                 known++;
-                hits += n.intValue() >= threshold ? 1 : 0;
+                hits += hit ? 1 : 0;
+                if (played >= 60) {
+                    longKnown++;
+                    longHits += hit ? 1 : 0;
+                }
                 actions += n.doubleValue();
-                minutes += (int) num(r, "minutes");
+                minutes += played;
             } else {
                 unknown++;
             }
         }
-        String label = "Defensive contribution (%s: 2 pts at %d+ %s): ".formatted(
-                headline == 2 ? "DEF" : headline == 3 ? "MID" : "FWD", threshold,
-                headline == 2 ? "CBIT" : "CBIRT");
+        String label = season + " (%s: 2 pts at %d+ %s): ".formatted(
+                position == 2 ? "DEF" : position == 3 ? "MID" : "FWD", threshold,
+                position == 2 ? "CBIT" : "CBIRT");
         if (known == 0) {
             return label + "no reading in this window — unknown, not zero.\n";
         }
-        return label + "reached in %d of %s with a reading | %.2f per 90%s.\n".formatted(
-                hits, plural(known, "appearance"), actions * 90 / minutes,
-                unknown == 0 ? "" : " | " + plural(unknown, "appearance") + " without a reading");
+        return label + "reached in %d of %s with a reading (%d of %d at 60+ min) | %.2f actions per 90%s.\n"
+                .formatted(hits, plural(known, "appearance"), longHits, longKnown,
+                        actions * 90 / minutes,
+                        unknown == 0 ? "" : " | " + plural(unknown, "appearance") + " without a reading");
     }
 
     static String formatTeam(String name, List<Map<String, Object>> fixtures,
