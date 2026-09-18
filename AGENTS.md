@@ -170,6 +170,12 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
   attacking term only: the clean sheet already carries the opponent, so an FDR multiplier on it
   would count the fixture twice. Appearance and DefCon are not fixture-scaled. Shared population, distinct objectives; do not merge them.
 - Tools query Supabase via `JdbcTemplate`, annotated with Spring AI `@Tool`.
+- **A player name typed by a user becomes SQL in one place, `PlayerNameSearch` (KAR-57).**
+  Accent-folded through `unaccent`, tokenised, club fields may narrow but never match alone,
+  exact folded `web_name` first. Do not hand-write `LOWER(web_name) LIKE ?` in a new tool. The
+  extension is probed at startup and the search degrades to plain `lower()` if it is missing —
+  a startup statement must never be able to take the app down. The cross-season `web_name`
+  bridges are not name *searches* and stay exact.
 - **No `@Tool` method takes a parameter that identifies an account.** The model fills tool
   parameters from the conversation, so a `userId` (or a team id) in a tool's schema is a working
   request for someone else's data the moment a user asks for it. The user id travels from the JWT
