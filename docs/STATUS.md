@@ -4730,7 +4730,7 @@ dropped their checkbox syntax. `npm test` is now 126 tests green.
 
 Plan: `docs/superpowers/plans/2026-09-18-player-name-search.md`. Ticket: KAR-57.
 
-Production evidence, all from the same chat turn: `Tarik Muharemovic` came back not found because
+Production evidence, from one conversation over three turns: `Tarik Muharemovic` came back not found because
 `lower('Tarik Muharemović') LIKE '%tarik muharemovic%'` is false — `ć` ≠ `c`; `Hall Newcastle` came
 back not found because the whole string was matched against `web_name`/`full_name` and the club is
 not in that haystack; asked to name the club, `Leeds` still failed because no lookup accepted a
@@ -4754,11 +4754,21 @@ the surname alone when nothing matches, and — the fourth evidence row — to g
 original question once the player is identified rather than stopping at "here is how they're
 listed".
 
+**Clubs are FPL's abbreviated names, and the retry drops the club** (final review, Important 1–2):
+the club haystack is `team_name || team_short`, so "Manchester United" narrows nothing while
+"Man Utd" and "MUN" do — the prompt and the four `@Tool` descriptions now say which form to pass,
+and the surname-only retry drops the club rather than keeping it. And because each season's rows
+carry that season's club, `getPlayerStats` looks the per-season statistics up by the matched
+`web_name` — the project's cross-season bridge — once the daily capture has identified the player:
+on the raw query a club token would drop the season a summer signing spent at his old club, which
+is the season an early-season answer needs most.
+
 **`unaccent` is probed, not assumed** (owner-approved option A, 2026-09-18): the extension is
-`CREATE EXTENSION IF NOT EXISTS`-ed and exercised (`unaccent('ć') = 'c'`) at construction, inside a
-`DataAccessException` catch. If it cannot be created or does not fold as expected, the search
-silently degrades to plain `lower()` — the pre-KAR-57 behaviour — and logs at ERROR; nothing about
-startup can throw. No session `SET` is used anywhere in the probe, per the pooler rule. Folding only
+`CREATE EXTENSION IF NOT EXISTS`-ed at construction and then exercised (`unaccent('ć') = 'c'`). A
+refused `CREATE` is logged at WARN and the probe runs anyway — read-only mode or a role without
+`CREATE` refuses the statement while the function is installed and callable. Any `RuntimeException`
+from the probe, or a fold that does not return `c`, degrades the search to plain `lower()` — the
+pre-KAR-57 behaviour — and logs at ERROR; nothing about startup can throw. No session `SET` is used anywhere in the probe, per the pooler rule. Folding only
 removes accents and case; it never maps one name onto a similar-looking one — `konsa` still does not
 match Konaté.
 
@@ -4769,6 +4779,11 @@ already folded in Java), every team-name lookup (`FixtureTools`, `FixtureDifficu
 accent), and the frontend player linker — which linked `Hall` inside a reply that said Hall could
 not be found; whether that is still true is a post-deploy check, and if it recurs it is a separate
 frontend ticket, not a reopening of this one.
+
+**Before merging:** the owner should enable `unaccent` in the Supabase dashboard, so it lands in the
+`extensions` schema and the app's `CREATE` is a no-op; created by the app it would land in `public`,
+which Supabase's advisor flags. Do not add `WITH SCHEMA extensions` to the code — that schema exists
+neither locally nor in CI.
 
 **Not yet verified:** production confirmation is deferred until this PR is merged and deployed —
 `fly logs` should read "Player name search: accent folding ON", and re-asking the original chat

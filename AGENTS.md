@@ -172,7 +172,8 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
 - Tools query Supabase via `JdbcTemplate`, annotated with Spring AI `@Tool`.
 - **A player name typed by a user becomes SQL in one place, `PlayerNameSearch` (KAR-57).**
   Accent-folded through `unaccent`, tokenised, club fields may narrow but never match alone,
-  exact folded `web_name` first. Do not hand-write `LOWER(web_name) LIKE ?` in a new tool. The
+  exact folded `web_name` first. A club token is matched against FPL's own short name or
+  three-letter code ("Man Utd", "MUN"), never a club's full name. Do not hand-write `LOWER(web_name) LIKE ?` in a new tool. The
   extension is probed at startup and the search degrades to plain `lower()` if it is missing —
   a startup statement must never be able to take the app down. The cross-season `web_name`
   bridges are not name *searches* and stay exact.
