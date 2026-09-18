@@ -103,7 +103,9 @@
        keyboard user would tab from the header straight into an invisible list. Transitioned so
        it disappears after the slide rather than during it. */
     visibility: hidden;
-    transition: transform 120ms ease-out, visibility 120ms;
+    transition:
+      transform 120ms ease-out,
+      visibility 120ms;
   }
 
   .open {

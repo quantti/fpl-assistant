@@ -14,6 +14,11 @@
 # and the whole suite runs on GitHub for every pull request and again on the merge to master.
 # The hook needs nothing but bash and git, so it installs on every host.
 #
+# After the guard it runs the frontend's static checks (KAR-60) — `npm run lint` (ESLint) and
+# `npm run format:check` (Biome) — but only when the push touches frontend/ and the tools are
+# installed. Where they are not (the VPS has no Node) it says so and lets the push through:
+# .github/workflows/deploy.yml runs the same two checks on every pull request.
+#
 # `git push --no-verify` skips all of this. That is git's escape hatch for humans in a hurry,
 # not a normal step — and agents must never use it (see AGENTS.md).
 set -euo pipefail
@@ -23,9 +28,25 @@ ZERO="0000000000000000000000000000000000000000"
 
 pushing_master=false
 has_content=false
+touches_frontend=false
+
+# Whether the commits being pushed change anything under frontend/. A new branch has no remote
+# sha to diff against, so it is compared with where it left origin/master; when even that cannot
+# be worked out the answer is yes — an unnecessary lint is cheap, a skipped one is the gap.
+changes_frontend() {
+    local local_sha="$1" remote_sha="$2" base
+    if [[ "$remote_sha" != "$ZERO" ]]; then
+        base="$remote_sha"
+    else
+        base="$(git merge-base "$local_sha" refs/remotes/origin/master 2>/dev/null)" || return 0
+    fi
+    local changed
+    changed="$(git diff --name-only "$base" "$local_sha" -- frontend 2>/dev/null)" || return 0
+    [[ -n "$changed" ]]
+}
 
 # stdin: <local ref> <local sha> <remote ref> <remote sha>, one line per ref being pushed.
-while read -r _local_ref local_sha remote_ref _remote_sha; do
+while read -r _local_ref local_sha remote_ref remote_sha; do
     [[ -z "${remote_ref:-}" ]] && continue
     if [[ "$local_sha" == "$ZERO" ]]; then
         continue  # deleting a remote branch; nothing to guard
@@ -33,6 +54,9 @@ while read -r _local_ref local_sha remote_ref _remote_sha; do
     has_content=true
     if [[ "$remote_ref" == "refs/heads/master" ]]; then
         pushing_master=true
+    fi
+    if changes_frontend "$local_sha" "$remote_sha"; then
+        touches_frontend=true
     fi
 done
 
@@ -69,4 +93,23 @@ if [[ "$pushing_master" == true ]]; then
         exit 1
     fi
     echo
+fi
+
+if [[ "$touches_frontend" != true ]]; then
+    exit 0
+fi
+
+if ! command -v npm >/dev/null 2>&1 || [[ ! -x "$REPO_ROOT/frontend/node_modules/.bin/eslint" ]]; then
+    echo "pre-push: frontend changed, but npm or frontend/node_modules is missing here — lint and"
+    echo "          format are left to the pull request's GitHub run."
+    exit 0
+fi
+
+echo "pre-push: frontend changed — running lint and format:check..."
+if ! npm --prefix "$REPO_ROOT/frontend" run --silent lint \
+        || ! npm --prefix "$REPO_ROOT/frontend" run --silent format:check; then
+    echo >&2
+    echo "pre-push: frontend lint or format check failed — push refused." >&2
+    echo "          Fix the lint errors; \`npm run format\` in frontend/ fixes formatting." >&2
+    exit 1
 fi

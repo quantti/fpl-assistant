@@ -100,6 +100,14 @@ jobs:
           npm ci
           npm run build
 
+      # The enforcement for KAR-60. The pre-push hook runs the same two checks, but only on a
+      # host that has Node, so a push from the VPS reaches this step unchecked.
+      - name: Lint and format-check the frontend
+        working-directory: frontend
+        run: |
+          npm run lint
+          npm run format:check
+
       - name: Run the backend suite
         working-directory: backend
         run: ./gradlew test
