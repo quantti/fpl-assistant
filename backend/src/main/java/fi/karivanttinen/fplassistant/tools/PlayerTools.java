@@ -39,8 +39,8 @@ public class PlayerTools implements FplTool {
     }
 
     @Tool(description = """
-            Search for an FPL player by name (web name or surname), spelled exactly as the user
-            wrote it — never a corrected or similar-looking name. The name may be a surname, a
+            Search for an FPL player by name (web name or surname), using the name the user
+            gave — never a corrected or similar-looking name. The name may be a surname, a
             full name, or a name followed by the club ("Hall Newcastle"); accents are optional.
             Answers from this season's FPL squad first (club, position, today's price,
             ownership, availability) and adds
