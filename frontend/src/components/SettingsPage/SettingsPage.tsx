@@ -1,10 +1,10 @@
-import { useEffect, useState } from 'react'
-import { Button, TextInput } from '@mantine/core'
-import { apiFetch } from '../../auth/apiFetch'
-import { Profile } from '../../types'
-import classes from './SettingsPage.module.css'
+import { useEffect, useState } from 'react';
+import { Button, TextInput } from '@mantine/core';
+import { apiFetch } from '../../auth/apiFetch';
+import { type Profile } from '../../types';
+import classes from './SettingsPage.module.css';
 
-type Status = { kind: 'saved' | 'cleared' | 'error'; message: string } | null
+type Status = { kind: 'saved' | 'cleared' | 'error'; message: string } | null;
 
 /**
  * The user's own settings. One field today: the FPL team id.
@@ -15,61 +15,67 @@ type Status = { kind: 'saved' | 'cleared' | 'error'; message: string } | null
  * case read as the first, and the user would go hunting for a mistake they did not make.
  */
 export default function SettingsPage() {
-  const [teamId, setTeamId] = useState('')
-  const [stored, setStored] = useState<number | null>(null)
-  const [busy, setBusy] = useState(false)
-  const [status, setStatus] = useState<Status>(null)
+  const [teamId, setTeamId] = useState('');
+  const [stored, setStored] = useState<number | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<Status>(null);
 
   useEffect(() => {
     apiFetch('/api/profile')
-      .then(async response => {
+      .then(async (response) => {
         // A blank field is what "nothing saved" looks like, so a failed read must not be allowed
         // to look like one — the user would conclude their id is gone and save it again.
         if (!response.ok) {
-          setStatus({ kind: 'error', message: 'Your settings could not be loaded. What is shown'
-            + ' below may not be what is stored.' })
-          return
+          setStatus({
+            kind: 'error',
+            message:
+              'Your settings could not be loaded. What is shown' +
+              ' below may not be what is stored.',
+          });
+          return;
         }
-        const profile: Profile = await response.json()
-        setStored(profile.fplTeamId)
-        setTeamId(profile.fplTeamId === null ? '' : String(profile.fplTeamId))
+        const profile: Profile = await response.json();
+        setStored(profile.fplTeamId);
+        setTeamId(profile.fplTeamId === null ? '' : String(profile.fplTeamId));
       })
-      .catch(() => setStatus({ kind: 'error', message: 'Your settings could not be loaded.' }))
-  }, [])
+      .catch(() => setStatus({ kind: 'error', message: 'Your settings could not be loaded.' }));
+  }, []);
 
   async function save(event: React.FormEvent) {
-    event.preventDefault()
+    event.preventDefault();
     // Digits only, checked here: Number('12a') is NaN, which JSON.stringify writes as null, and
     // the server answers the same 400 it uses for a missing field — the user would be told FPL
     // does not know an id they never actually sent.
     if (!/^\d+$/.test(teamId)) {
-      setStatus({ kind: 'error', message: 'An FPL team id is a plain number, digits only.' })
-      return
+      setStatus({ kind: 'error', message: 'An FPL team id is a plain number, digits only.' });
+      return;
     }
-    setBusy(true)
-    setStatus(null)
+    setBusy(true);
+    setStatus(null);
     try {
       const response = await apiFetch('/api/profile/fpl-team-id', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ fplTeamId: Number(teamId) }),
-      })
+      });
       if (response.ok) {
-        const profile: Profile = await response.json()
-        setStored(profile.fplTeamId)
-        setStatus({ kind: 'saved', message: 'Saved.' })
+        const profile: Profile = await response.json();
+        setStored(profile.fplTeamId);
+        setStatus({ kind: 'saved', message: 'Saved.' });
       } else if (response.status === 503) {
         setStatus({
           kind: 'error',
-          message: 'Could not reach FPL to check that id just now. Nothing was saved — the number'
-            + ' may well be fine, so try again shortly.',
-        })
+          message:
+            'Could not reach FPL to check that id just now. Nothing was saved — the number' +
+            ' may well be fine, so try again shortly.',
+        });
       } else if (response.status === 400) {
         setStatus({
           kind: 'error',
-          message: 'FPL does not know a team with that id. It is the number in the address of'
-            + ' your own points page on fantasy.premierleague.com.',
-        })
+          message:
+            'FPL does not know a team with that id. It is the number in the address of' +
+            ' your own points page on fantasy.premierleague.com.',
+        });
       } else if (response.status !== 401) {
         // 401 is not reported: apiFetch has already ended the session, and the sign-in screen is
         // one render away. Everything else is ours, not the user's — saying "no such team" for a
@@ -77,31 +83,31 @@ export default function SettingsPage() {
         setStatus({
           kind: 'error',
           message: 'Something went wrong saving that. Nothing was changed — try again shortly.',
-        })
+        });
       }
     } catch {
-      setStatus({ kind: 'error', message: 'Nothing was saved — the request did not go through.' })
+      setStatus({ kind: 'error', message: 'Nothing was saved — the request did not go through.' });
     } finally {
-      setBusy(false)
+      setBusy(false);
     }
   }
 
   async function clear() {
-    setBusy(true)
-    setStatus(null)
+    setBusy(true);
+    setStatus(null);
     try {
-      const response = await apiFetch('/api/profile/fpl-team-id', { method: 'DELETE' })
+      const response = await apiFetch('/api/profile/fpl-team-id', { method: 'DELETE' });
       if (response.ok) {
-        setStored(null)
-        setTeamId('')
-        setStatus({ kind: 'cleared', message: 'Removed.' })
+        setStored(null);
+        setTeamId('');
+        setStatus({ kind: 'cleared', message: 'Removed.' });
       } else {
-        setStatus({ kind: 'error', message: 'The id could not be removed. Try again shortly.' })
+        setStatus({ kind: 'error', message: 'The id could not be removed. Try again shortly.' });
       }
     } catch {
-      setStatus({ kind: 'error', message: 'The id could not be removed. Try again shortly.' })
+      setStatus({ kind: 'error', message: 'The id could not be removed. Try again shortly.' });
     } finally {
-      setBusy(false)
+      setBusy(false);
     }
   }
 
@@ -112,10 +118,12 @@ export default function SettingsPage() {
       <form className={classes.form} onSubmit={save}>
         <TextInput
           label="FPL team id"
-          description={'Optional. Used by My team and by chat answers about your own squad.'
-            + ' Find it in the address of your points page on fantasy.premierleague.com.'}
+          description={
+            'Optional. Used by My team and by chat answers about your own squad.' +
+            ' Find it in the address of your points page on fantasy.premierleague.com.'
+          }
           value={teamId}
-          onChange={event => setTeamId(event.currentTarget.value.trim())}
+          onChange={(event) => setTeamId(event.currentTarget.value.trim())}
           inputMode="numeric"
           placeholder="1234567"
         />
@@ -141,5 +149,5 @@ export default function SettingsPage() {
         )}
       </form>
     </div>
-  )
+  );
 }
