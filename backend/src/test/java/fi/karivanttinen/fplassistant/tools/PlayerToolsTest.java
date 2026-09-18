@@ -37,9 +37,12 @@ class PlayerToolsTest {
     @Autowired
     DailyPriceSource daily;
 
+    @Autowired
+    PlayerNameSearch names;
+
     @BeforeEach
     void buildTools() {
-        playerTools = new PlayerTools(jdbc, seasonResolver, daily, DataAgeClock.provider());
+        playerTools = new PlayerTools(jdbc, seasonResolver, daily, DataAgeClock.provider(), names);
     }
 
     @Value("${fpl.daily-price.table-name}")
@@ -385,5 +388,39 @@ class PlayerToolsTest {
         String result = playerTools.getPlayerStats("%");
 
         assertThat(result).containsIgnoringCase("not found");
+    }
+
+    /** Id this class inserts for KAR-57 accent/club-hint coverage, and removes again. */
+    private static final int ACCENTED_PLAYER_ID = 9311;
+
+    private void seedAccentedPlayer() {
+        jdbc.update("""
+                INSERT INTO player (id, season_id, team_id, first_name, second_name, web_name,
+                                    element_type, now_cost, status, total_points, minutes,
+                                    goals_scored, assists, form, selected_by_percent)
+                VALUES (9311, ?, ?, 'Tarik', 'Muharemović', 'Muharemović', 2, 45, 'a', 20, 360,
+                        0, 0, 3.0, 1.5)
+                ON CONFLICT (id, season_id) DO NOTHING
+                """, TapasSeed.POPULATED_SEASON_ID, TapasSeed.TEAM_ASHFIELD);
+    }
+
+    @AfterEach
+    void deleteAccentedPlayer() {
+        jdbc.update("DELETE FROM player WHERE season_id = ? AND id = ?",
+                TapasSeed.POPULATED_SEASON_ID, ACCENTED_PLAYER_ID);
+    }
+
+    @Test
+    void unaccentedFullNameFindsTheAccentedPlayersSeasonStats() {
+        seedAccentedPlayer();
+        String result = playerTools.getPlayerStats("Tarik Muharemovic");
+        assertThat(result).contains("Muharemović").doesNotContain("No player matched");
+    }
+
+    @Test
+    void aClubAfterTheNameStillFindsThePlayer() {
+        seedAccentedPlayer();
+        String result = playerTools.getPlayerStats("Muharemovic Ashfield");
+        assertThat(result).contains("Muharemović").doesNotContain("No player matched");
     }
 }

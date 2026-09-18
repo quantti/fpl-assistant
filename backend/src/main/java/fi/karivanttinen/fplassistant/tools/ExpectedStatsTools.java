@@ -48,21 +48,23 @@ public class ExpectedStatsTools implements FplTool {
     private final SeasonResolver seasonResolver;
     private final Clock clock;
     private final PfsReadSource pfs;
+    private final PlayerNameSearch names;
 
     @Autowired
     public ExpectedStatsTools(JdbcTemplate jdbc, SeasonResolver seasonResolver,
-                              ObjectProvider<Clock> clock, PfsReadSource pfs) {
+                              ObjectProvider<Clock> clock, PfsReadSource pfs, PlayerNameSearch names) {
         this.jdbc = jdbc;
         this.seasonResolver = seasonResolver;
         this.clock = clock.getIfAvailable(Clock::systemUTC);
         this.pfs = pfs;
+        this.names = names;
     }
 
     /** Compatibility constructor for focused legacy tests. */
     ExpectedStatsTools(JdbcTemplate jdbc, SeasonResolver seasonResolver,
-                       ObjectProvider<Clock> clock) {
+                       ObjectProvider<Clock> clock, PlayerNameSearch names) {
         this(jdbc, seasonResolver, clock,
-                new PfsReadSource(jdbc, "OFF", "", "fpl_fixture_sync", "fpl_player_fixture_evidence"));
+                new PfsReadSource(jdbc, "OFF", "", "fpl_fixture_sync", "fpl_player_fixture_evidence"), names);
     }
 
     @Tool(description = """
@@ -80,17 +82,22 @@ public class ExpectedStatsTools implements FplTool {
             Instant asOf = clock.instant();
             SeasonContext season = seasonResolver.resolve();
             int limit = Math.max(1, Math.min(lastN, MAX_FIXTURES));
-            String pattern = "%" + LikePatterns.escape(playerName.toLowerCase(Locale.ROOT)) + "%";
+            PlayerNameSearch.Fragment match = names.fragment(playerName, "p.web_name",
+                    "p.web_name || ' ' || p.first_name || ' ' || p.second_name",
+                    "t.name || ' ' || t.short_name");
+            List<Object> args = new ArrayList<>();
+            args.add(season.seasonId());
+            args.addAll(match.whereArgs());
+            args.addAll(match.orderArgs());
+            args.add(MAX_NAME_MATCHES);
 
             List<Map<String, Object>> players = jdbc.queryForList("""
-                    SELECT id, web_name FROM player
-                    WHERE season_id = ?
-                      AND (LOWER(web_name) LIKE ?
-                           OR LOWER(second_name) LIKE ?
-                           OR LOWER(first_name || ' ' || second_name) LIKE ?)
-                    ORDER BY total_points DESC
+                    SELECT p.id, p.web_name FROM player p
+                    JOIN team t ON t.id = p.team_id AND t.season_id = p.season_id
+                    WHERE p.season_id = ? AND %s
+                    ORDER BY %s, p.total_points DESC
                     LIMIT ?
-                    """, season.seasonId(), pattern, pattern, pattern, MAX_NAME_MATCHES);
+                    """.formatted(match.where(), match.exactFirst()), args.toArray());
 
             if (players.isEmpty()) {
                 return season.provenance() + "\nPlayer not found: " + playerName;
