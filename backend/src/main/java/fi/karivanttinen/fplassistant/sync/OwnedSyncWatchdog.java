@@ -274,8 +274,15 @@ public final class OwnedSyncWatchdog {
     }
 
     private RecoveryEvidence recoveryEvidence(String season) {
-        Set<Long> completedRuns = Set.copyOf(jdbc.queryForList("SELECT generation FROM " + tables.run()
-                + " WHERE season=? AND state='COMPLETED'", Long.class, season));
+        // A run fenced FAILED when its activation ended is settled too: that epoch is over and the
+        // work was planned again under the next one, so it can never complete and must not hold a
+        // due-work incident (and external health) open for ever. A failure inside the live
+        // activation is different and stays open.
+        Set<Long> completedRuns = Set.copyOf(jdbc.queryForList("SELECT r.generation FROM " + tables.run()
+                + " r WHERE r.season=? AND (r.state='COMPLETED' OR (r.state='FAILED' AND NOT EXISTS ("
+                + "SELECT 1 FROM " + tables.plannerRuntime() + " m WHERE m.instance_id=?"
+                + " AND m.runtime_mode=r.runtime_mode AND m.runtime_epoch=r.runtime_epoch)))",
+                Long.class, season, "mode:" + season));
         Set<Integer> verifiedFixtures = Set.copyOf(jdbc.queryForList("SELECT fixture_id FROM "
                 + tables.fixtureSync() + " WHERE season_code=? AND state='VERIFIED' "
                 + "AND current_verified_generation IS NOT NULL", Integer.class, season));
