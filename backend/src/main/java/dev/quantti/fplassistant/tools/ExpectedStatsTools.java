@@ -71,7 +71,10 @@ public class ExpectedStatsTools implements FplTool {
             Get a player's underlying expected stats over their last N fixtures this season,
             filled from last season when this season has fewer than N — every row names its
             season — expected goals (xG), expected assists (xA), expected goal
-            involvements (xGI), alongside actual goals, assists and minutes. The name may be a
+            involvements (xGI), alongside actual goals, assists and minutes, and his defensive
+            contribution (DefCon): each match's action count as `DC`, and how often he reached
+            the threshold that pays 2 points. Call this for every player in a comparison of
+            defenders or midfielders. The name may be a
             surname, a full name, or a name followed by the club as FPL writes it — short name
             or three-letter code ("Hall Newcastle", "Fernandes Man Utd", "Fernandes MUN");
             accents are optional. Use this to judge whether a player is over- or under-performing their
@@ -94,7 +97,7 @@ public class ExpectedStatsTools implements FplTool {
             args.add(MAX_NAME_MATCHES);
 
             List<Map<String, Object>> players = jdbc.queryForList("""
-                    SELECT p.id, p.web_name FROM player p
+                    SELECT p.id, p.web_name, p.element_type FROM player p
                     JOIN team t ON t.id = p.team_id AND t.season_id = p.season_id
                     WHERE p.season_id = ? AND %s
                     ORDER BY %s, p.total_points DESC
@@ -107,6 +110,7 @@ public class ExpectedStatsTools implements FplTool {
 
             int playerId = ((Number) players.getFirst().get("id")).intValue();
             String webName = (String) players.getFirst().get("web_name");
+            Object position = players.getFirst().get("element_type");
             String ambiguity = NameMatch.ambiguityNote(
                     players.stream().map(p -> String.valueOf(p.get("web_name"))).toList());
 
@@ -115,6 +119,7 @@ public class ExpectedStatsTools implements FplTool {
                     SELECT pfs.gameweek, pfs.was_home, pfs.minutes,
                            pfs.goals_scored, pfs.assists,
                            pfs.expected_goals, pfs.expected_assists, pfs.expected_goal_involvements,
+                           pfs.defensive_contribution,
                            pfs.kickoff_time, pfs.source_read_finished_at,
                            pfs.verified_published_at,
                            opp.short_name AS opponent
@@ -128,6 +133,7 @@ public class ExpectedStatsTools implements FplTool {
             List<Map<String, Object>> shown = new ArrayList<>(rows);
             for (Map<String, Object> r : shown) {
                 r.put("season_code", season.code());
+                r.put("element_type", position);
             }
             Optional<SeasonContext> previous = Optional.empty();
             int fromPrevious = 0;
@@ -278,9 +284,9 @@ public class ExpectedStatsTools implements FplTool {
         if (twins == null || twins != 1) {
             return List.of();
         }
-        List<Integer> ids = jdbc.queryForList("""
-                SELECT id FROM player WHERE season_id = ? AND LOWER(web_name) = LOWER(?)
-                """, Integer.class, previous.seasonId(), webName);
+        List<Map<String, Object>> ids = jdbc.queryForList("""
+                SELECT id, element_type FROM player WHERE season_id = ? AND LOWER(web_name) = LOWER(?)
+                """, previous.seasonId(), webName);
         if (ids.size() != 1) {
             return List.of();
         }
@@ -289,6 +295,7 @@ public class ExpectedStatsTools implements FplTool {
                 SELECT pfs.gameweek, pfs.was_home, pfs.minutes,
                        pfs.goals_scored, pfs.assists,
                        pfs.expected_goals, pfs.expected_assists, pfs.expected_goal_involvements,
+                       pfs.defensive_contribution,
                        pfs.kickoff_time, pfs.source_read_finished_at,
                        pfs.verified_published_at,
                        opp.short_name AS opponent
@@ -297,9 +304,10 @@ public class ExpectedStatsTools implements FplTool {
                 WHERE pfs.season_id = ? AND pfs.player_id = ?
                 ORDER BY pfs.kickoff_time DESC NULLS LAST
                 LIMIT ?
-                """.formatted(pfs.cte()), previous.seasonId(), ids.getFirst(), limit);
+                """.formatted(pfs.cte()), previous.seasonId(), ids.getFirst().get("id"), limit);
         for (Map<String, Object> r : rows) {
             r.put("season_code", previous.code());
+            r.put("element_type", ids.getFirst().get("element_type"));
         }
         return rows;
     }
@@ -459,19 +467,76 @@ public class ExpectedStatsTools implements FplTool {
             goals += (int) num(r, "goals_scored");
             assists += (int) num(r, "assists");
             minutes += (int) num(r, "minutes");
-            out.append("  %sGW%s vs %s %s: %d min, xG %s xA %s (G%d A%d)\n".formatted(
+            out.append("  %sGW%s vs %s %s: %d min, xG %s xA %s (G%d A%d)%s\n".formatted(
                     seasonPrefix(r, fromPrevious), r.get("gameweek"), opponent(r),
                     Boolean.TRUE.equals(r.get("was_home")) ? "(H)" : "(A)",
                     (int) num(r, "minutes"), metric(r, "expected_goals"),
                     metric(r, "expected_assists"),
-                    (int) num(r, "goals_scored"), (int) num(r, "assists")));
+                    (int) num(r, "goals_scored"), (int) num(r, "assists"), defconCell(r)));
         }
         out.append("\nTotals over window: xG %s | xA %s | xGI %s | Goals %d | Assists %d | Minutes %d\n"
                 .formatted(metric(xg, xgComplete), metric(xa, xaComplete),
                         metric(xgi, xgiComplete), goals, assists, minutes));
         out.append("Actual vs expected goal involvements: %d actual vs %s expected.\n"
                 .formatted(goals + assists, metric(xgi, xgiComplete)));
+        out.append(defconSummary(rows));
         return out.toString();
+    }
+
+    private static int position(Map<String, Object> row) {
+        return row.get("element_type") instanceof Number n ? n.intValue() : 0;
+    }
+
+    private static int defconThreshold(int position) {
+        return position >= 0 && position < ExpectedPoints.DEFCON_THRESHOLD.length
+                ? ExpectedPoints.DEFCON_THRESHOLD[position] : 0;
+    }
+
+    /** The match's DefCon action count; nothing at a position FPL awards none to. */
+    private static String defconCell(Map<String, Object> row) {
+        if (defconThreshold(position(row)) == 0) {
+            return "";
+        }
+        return " | DC " + (row.get("defensive_contribution") instanceof Number n ? n.intValue() : "n/a");
+    }
+
+    /**
+     * How often the player reached his position's threshold in the window (KAR-58) — the record a
+     * named-player comparison of defenders or midfielders quotes. Only appearances count, a match
+     * with no reading is unknown rather than a miss, and a previous-season row from the other
+     * DefCon definition (CBIT for a defender, CBIRT otherwise) is left out: its count is not the
+     * same measurement.
+     */
+    private static String defconSummary(List<Map<String, Object>> rows) {
+        int headline = position(rows.getFirst());
+        int threshold = defconThreshold(headline);
+        if (threshold == 0) {
+            return headline == 1 ? "Defensive contribution: not awarded to goalkeepers.\n" : "";
+        }
+        int known = 0, hits = 0, unknown = 0, minutes = 0;
+        double actions = 0;
+        for (Map<String, Object> r : rows) {
+            if (num(r, "minutes") <= 0 || defconThreshold(position(r)) != threshold) {
+                continue;
+            }
+            if (r.get("defensive_contribution") instanceof Number n) {
+                known++;
+                hits += n.intValue() >= threshold ? 1 : 0;
+                actions += n.doubleValue();
+                minutes += (int) num(r, "minutes");
+            } else {
+                unknown++;
+            }
+        }
+        String label = "Defensive contribution (%s: 2 pts at %d+ %s): ".formatted(
+                headline == 2 ? "DEF" : headline == 3 ? "MID" : "FWD", threshold,
+                headline == 2 ? "CBIT" : "CBIRT");
+        if (known == 0) {
+            return label + "no reading in this window — unknown, not zero.\n";
+        }
+        return label + "reached in %d of %s with a reading | %.2f per 90%s.\n".formatted(
+                hits, plural(known, "appearance"), actions * 90 / minutes,
+                unknown == 0 ? "" : " | " + plural(unknown, "appearance") + " without a reading");
     }
 
     static String formatTeam(String name, List<Map<String, Object>> fixtures,
