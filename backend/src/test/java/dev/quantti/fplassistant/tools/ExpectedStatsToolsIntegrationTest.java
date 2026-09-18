@@ -265,11 +265,12 @@ class ExpectedStatsToolsIntegrationTest {
 
         String result = tools.getPlayerExpectedStats("Lindqvist", 5);
 
-        assertThat(result).contains("GW4 vs ASH (H): 90 min, xG 0.05 xA 0.02 (G0 A0) | DC 12")
-                .contains("GW5 vs ASH (H): 90 min, xG 0.05 xA 0.02 (G0 A0) | DC 8")
-                .contains("(G0 A0) | DC n/a")
-                .contains("Defensive contribution (DEF: 2 pts at 10+ CBIT): reached in 1 of 2"
-                        + " appearances with a reading | 10.00 per 90 | 1 appearance without a reading.");
+        assertThat(result).contains("GW4 vs ASH (H): 90 min, xG 0.05 xA 0.02 (G0 A0) | DefCon actions 12")
+                .contains("GW5 vs ASH (H): 90 min, xG 0.05 xA 0.02 (G0 A0) | DefCon actions 8")
+                .contains("(G0 A0) | DefCon actions n/a")
+                .contains("Defensive contribution, season " + SharedStatsSeed.POPULATED_SEASON_CODE + " (DEF: 2 pts at 10+ CBIT):"
+                        + " reached in 1 of 2 appearances with a reading (1 of 2 at 60+ min)"
+                        + " | 10.00 actions per 90 | 1 appearance without a reading.");
     }
 
     /** A midfielder needs 12, recoveries included, so 11 is a miss where a defender's 11 is a hit. */
@@ -282,8 +283,8 @@ class ExpectedStatsToolsIntegrationTest {
 
         String result = tools.getPlayerExpectedStats("Lindqvist", 5);
 
-        assertThat(result).contains("Defensive contribution (MID: 2 pts at 12+ CBIRT): reached in 1 of 2"
-                + " appearances with a reading | 16.00 per 90.");
+        assertThat(result).contains("Defensive contribution, season " + SharedStatsSeed.POPULATED_SEASON_CODE + " (MID: 2 pts at 12+ CBIRT):"
+                + " reached in 1 of 2 appearances with a reading (0 of 1 at 60+ min) | 16.00 actions per 90.");
     }
 
     @Test
@@ -294,8 +295,8 @@ class ExpectedStatsToolsIntegrationTest {
 
         String result = tools.getPlayerExpectedStats("Lindqvist", 5);
 
-        assertThat(result).contains("Defensive contribution (DEF: 2 pts at 10+ CBIT): no reading in this"
-                + " window — unknown, not zero.");
+        assertThat(result).contains("Defensive contribution, season " + SharedStatsSeed.POPULATED_SEASON_CODE + " (DEF: 2 pts at 10+ CBIT):"
+                + " no reading in this window — unknown, not zero.");
     }
 
     @Test
@@ -306,8 +307,8 @@ class ExpectedStatsToolsIntegrationTest {
 
         String result = tools.getPlayerExpectedStats("Lindqvist", 5);
 
-        assertThat(result).contains("Defensive contribution: not awarded to goalkeepers.")
-                .doesNotContain("| DC ");
+        assertThat(result).contains("Defensive contribution, season " + SharedStatsSeed.POPULATED_SEASON_CODE + ": not awarded to goalkeepers.")
+                .doesNotContain("DefCon actions");
     }
 
     /**
@@ -328,14 +329,12 @@ class ExpectedStatsToolsIntegrationTest {
                 INSERT INTO player_fixture_stats (fixture_id, player_id, season_id, gameweek,
                         player_team_id, opponent_team_id, was_home, kickoff_time, minutes,
                         goals_scored, assists, expected_goals, expected_assists,
-                        expected_goal_involvements, value, defensive_contribution, updated_at)
+                        expected_goal_involvements, value, updated_at)
                 VALUES (9191, 9291, 9026, 5, 9004, 9001, true, TIMESTAMPTZ '2025-09-01 14:00:00+00',
-                        77, 1, 0, 0.42, 0.11, 0.53, 50, 7, ?)
+                        77, 1, 0, 0.42, 0.11, 0.53, 50, ?)
                 """, oldWrite);
         String before = tools.getPlayerExpectedStats("Lindqvist", 5);
 
-        // The enrichment sync rewrites every match, so the usual DefCon-only write repeats the
-        // value already stored; the reply now shows that value (KAR-58), and a new one would move it.
         int updated = jdbc.update("""
                 UPDATE player_fixture_stats SET defensive_contribution = 7
                 WHERE fixture_id = 9191 AND player_id = 9291 AND season_id = 9026
@@ -352,13 +351,21 @@ class ExpectedStatsToolsIntegrationTest {
 
         String after = tools.getPlayerExpectedStats("Lindqvist", 5);
 
-        assertThat(after).isEqualTo(before);
+        // KAR-58: the write moves the DefCon cell and line, and nothing else in the reply.
+        assertThat(before).contains("DefCon actions n/a").contains("no reading in this window");
+        assertThat(after).contains("DefCon actions 7").contains("reached in 0 of 1 appearance with a reading");
+        assertThat(withoutDefcon(after)).isEqualTo(withoutDefcon(before));
         assertThat(after).contains(METRIC_REFRESH)
                 .contains("Stored match coverage: Lindqvist, season " + SharedStatsSeed.POPULATED_SEASON_CODE
                         + " (1 returned fixture row), known match date 2025-09-01 15:00 UK (373 days ago).")
                 .contains("77 min, xG 0.42");
         String restamped = UkTime.format(((java.sql.Timestamp) row.get("updated_at")).toInstant(), null);
         assertThat(after).doesNotContain(restamped.substring(0, 10)).doesNotContain("2025-09-02");
+    }
+
+    private static String withoutDefcon(String reply) {
+        return reply.replaceAll(" \\| DefCon actions \\S+", "")
+                .replaceAll("(?m)^Defensive contribution.*\\R", "");
     }
 
     /**

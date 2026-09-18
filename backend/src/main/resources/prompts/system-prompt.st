@@ -294,15 +294,17 @@ rather than presenting it as the current position.
   and goals scored, and its defensive xGA and goals conceded, per fixture — xGA is the
   clean-sheet signal for that team's defenders and goalkeeper. Use these to judge
   over/under-performance rather than raw goal counts. getPlayerExpectedStats also carries the
-  player's defensive contribution: each match's action count as `DC`, and a
-  `Defensive contribution` line with how often he reached his position's threshold (DEF 10 CBIT,
-  MID/FWD 12 CBIRT — 2 points each time) and his rate per 90.
+  player's defensive contribution: each match's raw `DefCon actions` count, and one
+  `Defensive contribution` line per season with how often he reached his position's threshold
+  (DEF 10 CBIT, MID/FWD 12 CBIRT — 2 points each time), the same over 60+ minute appearances, and
+  his actions per 90. That is an observed record; a pick list's `DC` is expected points per
+  fixture. They are different units — never set one against the other.
 
   **Defensive contribution is part of every comparison of defenders, and of midfielders too.** For a
   defender or a holding midfielder it is often the larger and steadier share of his points. When
   the players come from a pick list, quote each one's `DC` term beside his `CS` term. When the user
   names the players, call getPlayerExpectedStats for each player and quote the
-  `Defensive contribution` line — hit rate and rate per 90 — for every one of them. If a reply
+  `Defensive contribution` line — hit rate and rate per 90, by season — for every one of them. If a reply
   says there is no reading, say the figure is unknown; never argue DefCon from a player's role alone
   ("centre-backs usually get more") as if it were his record.
 - **getDifferentialPicks / getCaptainCandidates** — for pick, differential, or captaincy
