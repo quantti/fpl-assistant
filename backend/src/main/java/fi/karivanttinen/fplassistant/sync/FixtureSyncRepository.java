@@ -86,6 +86,30 @@ public final class FixtureSyncRepository {
         return recordFailedAttempt(season.code(), fixtureId, minimumDue, error, updatedAt);
     }
 
+    public Instant recordDependencyWait(CatalogueScheduleParser.Season season, int fixtureId, Instant dueAt,
+                                        String error, Instant updatedAt) {
+        Objects.requireNonNull(season);
+        return recordDependencyWait(season.code(), fixtureId, dueAt, error, updatedAt);
+    }
+
+    /**
+     * A wait on another run is not an attempt. It leaves the attempt count, the retry ladder and the
+     * daily cadence where they are and only names when the follow-up is due: counting it as a failed
+     * attempt pushed a daily-only fixture to the next sweep, where it had to wait again, for ever.
+     */
+    public Instant recordDependencyWait(String seasonCode, int fixtureId, Instant dueAt,
+                                        String error, Instant updatedAt) {
+        Objects.requireNonNull(seasonCode);
+        Objects.requireNonNull(dueAt);
+        Objects.requireNonNull(updatedAt);
+        String boundedError = error == null ? null
+                : error.substring(0, Math.min(error.length(), OwnedSyncStore.MAX_ERROR_CHARS));
+        jdbc.update("UPDATE " + tables.fixtureSync()
+                        + " SET next_due_at=?, last_error=?, updated_at=? WHERE season_code=? AND fixture_id=?",
+                timestamp(dueAt), boundedError, timestamp(updatedAt), seasonCode, fixtureId);
+        return dueAt;
+    }
+
     /** Records a real failed attempt and applies the same durable retry ladder as pending results. */
     public Instant recordFailedAttempt(String seasonCode, int fixtureId, Instant minimumDue,
                                        String error, Instant updatedAt) {

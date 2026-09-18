@@ -420,7 +420,13 @@ public final class HistoryFixtureDispatcher {
     }
 
     private void retryForDependency(Lease lease, Instant dueAt, String error) {
-        store.retryForDependency(lease, recordRetryDue(lease, dueAt, error), bounded(error));
+        Instant selected = dueAt.isAfter(clock.instant()) ? dueAt : clock.instant().plusSeconds(1);
+        if (publicationEnabled && lease.kind() == SyncKind.FIXTURE_VERIFICATION) {
+            int fixtureId = fixtureId(lease.publicationKey());
+            store.withinRuntimeFence(
+                    () -> publisher.recordDependencyWait(lease.season(), fixtureId, selected, error));
+        }
+        store.retryForDependency(lease, selected, bounded(error));
     }
 
     private Instant recordRetryDue(Lease lease, Instant dueAt, String error) {

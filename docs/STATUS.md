@@ -4290,6 +4290,22 @@ Chromium screenshots at 1280px and 375px in both schemes, with the sidebar overl
 the dev server with a stubbed session and no backend. Measured `.root` height unchanged after
 inserting 3000px of content, i.e. still height-bounded. Head to Head from the mockup is not built.
 
+## Owned sync — a wait for histories is not a failed attempt (2026-09-18)
+
+Two of the forty backlog fixtures (4 and 40) never verified. The request ceiling held them past
+their twelve-hour follow-up window, they became `DAILY_ONLY`, and from then on each 03:00 UK
+attempt asked for fresh player histories and was rescheduled to the *next* sweep, where it had to
+ask again. `HistoryFixtureDispatcher.retryForDependency` went through `recordFailedAttempt`, so a
+dependency wait counted as a failed attempt: it advanced the 10/20/40/60-minute ladder for every
+fixture (which is why first observations took about 85 minutes) and, for a daily-only fixture,
+consumed the day's single admission. One attempt a day can never finish work that needs a second
+attempt the same day.
+
+`FixtureSyncRepository.recordDependencyWait` now records only when the follow-up is due and why;
+the attempt count, the ladder and the daily cadence are untouched, and `admitAttempt` admits the
+follow-up at that due time. Real failures still use `recordFailedAttempt`. The two fixtures were
+re-anchored by hand on 2026-09-18 08:27 UTC so GW1–4 could complete before GW5.
+
 ## Owned sync — cutover to ACTIVE, and the outage on the way there (2026-09-16/17)
 
 The owner cut production over on the evening of 2026-09-16: Tapas cron stopped,
