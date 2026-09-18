@@ -86,6 +86,15 @@ public final class FixtureSyncRepository {
         return recordFailedAttempt(season.code(), fixtureId, minimumDue, error, updatedAt);
     }
 
+    /** True while the row carries a live verification; call under the lock taken by lockObservation. */
+    public boolean isCurrentlyVerified(CatalogueScheduleParser.Season season, int fixtureId) {
+        Objects.requireNonNull(season);
+        return Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS (SELECT 1 FROM " + tables.fixtureSync()
+                        + " WHERE season_id=? AND season_code=? AND fixture_id=? AND state='VERIFIED'"
+                        + " AND current_verified_generation IS NOT NULL)",
+                Boolean.class, season.id(), season.code(), fixtureId));
+    }
+
     public Instant recordDependencyWait(CatalogueScheduleParser.Season season, int fixtureId, Instant dueAt,
                                         String error, Instant updatedAt) {
         Objects.requireNonNull(season);
