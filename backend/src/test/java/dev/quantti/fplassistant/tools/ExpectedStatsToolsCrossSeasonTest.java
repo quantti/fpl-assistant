@@ -95,6 +95,18 @@ class ExpectedStatsToolsCrossSeasonTest {
         assertThat(result.indexOf(previous)).isLessThan(result.indexOf("Expected stats for"));
     }
 
+    /** KAR-58: a filled window never pools two seasons' DefCon into one unattributed rate. */
+    @Test
+    void aFilledWindowReportsDefconPerSeason() {
+        String result = tools.getPlayerExpectedStats("Ferreira", 5);
+
+        assertThat(result)
+                .containsOnlyOnce("Defensive contribution, season " + SharedStatsSeed.CURRENT_SEASON_CODE)
+                .containsOnlyOnce("Defensive contribution, season " + SharedStatsSeed.POPULATED_SEASON_CODE);
+        assertThat(result.indexOf("Defensive contribution, season " + SharedStatsSeed.CURRENT_SEASON_CODE))
+                .isLessThan(result.indexOf("Defensive contribution, season " + SharedStatsSeed.POPULATED_SEASON_CODE));
+    }
+
     @Test
     void enoughCurrentFixturesMeansNoFillAndNoSecondProvenanceLine() {
         String result = tools.getPlayerExpectedStats("Ferreira", 2);
