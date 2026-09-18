@@ -173,9 +173,12 @@ purpose: Spotless would reformat hundreds of files and put Gradle back into the 
 `eslint-suppressions.json` is the baseline: the 363 violations the code had on the day the rules
 arrived, per file and rule. They do not fail the lint; **a new violation does.** Burn the baseline
 down when touching a file — fix, then `npx eslint . --prune-suppressions` — and never grow it
-with `--suppress-all` to get a push through. **Do not run a blanket `eslint --fix`:** unicorn's
-autofixes rewrite to `replaceAll`/`.at()`, which the ES2020 `lib` does not have, and the first
-attempt broke `tsc` and four tests. Only `consistent-type-imports` was autofixed.
+with `--suppress-all` to get a push through. **Do not run a blanket `eslint --fix`:** the first
+attempt broke `tsc` and four tests. The `tsc` half was unicorn rewriting to `replaceAll`/`.at()`
+against what was then an ES2020 `lib`; `tsconfig.json` is ES2022 since (the ceiling Vite 8's
+default browser target supports in full — ES2023's `toSorted` needs a newer Firefox), but the
+four test failures were behavioural and would come back. Autofix one rule at a time and run the
+tests. Only `consistent-type-imports` was autofixed.
 
 ## The free tier and sign-up
 

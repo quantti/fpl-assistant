@@ -4847,6 +4847,8 @@ pinned to the same versions. One mechanical commit: Biome reformatted 63 fronten
 on the result. The other 363 violations are baselined in `frontend/eslint-suppressions.json`
 rather than fixed — a blanket `eslint --fix` was tried first and broke `tsc` (ES2021+ APIs against
 an ES2020 `lib`) and four tests, so the burn-down is by hand, file by file, as files are touched.
+That exposed the stale compiler setting: `tsconfig.json` went from ES2020 to ES2022 `target`/`lib`,
+which Vite 8's default browser target (Chrome/Edge 111, Firefox 114, Safari 16.4) supports in full.
 The hook lints only when a push touches `frontend/` and Node is present; `deploy.yml` runs
 `lint` and `format:check` on every pull request and is the enforcement. Java is out of scope by
 owner decision.
