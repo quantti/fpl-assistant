@@ -315,7 +315,7 @@ git config core.hooksPath scripts/hooks
 there it would refuse every push rather than gate one. That leaves the VPS without the typed
 master confirmation, so on that host the rule against pushing to `master` is policy alone —
 push a branch, open a pull request, and let CI test it. Closing that gap in the hook itself is
-open work, not a decision taken here.
+KAR-59: keep the master guard unconditional, let only the suite step degrade when Docker is absent.
 
 `scripts/hooks/pre-push` then does two things before any push leaves the machine:
 
