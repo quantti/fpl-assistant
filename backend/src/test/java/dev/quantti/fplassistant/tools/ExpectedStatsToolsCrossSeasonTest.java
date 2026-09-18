@@ -35,9 +35,12 @@ class ExpectedStatsToolsCrossSeasonTest {
     @Autowired
     SeasonResolver seasonResolver;
 
+    @Autowired
+    PlayerNameSearch names;
+
     @BeforeEach
     void buildTools() {
-        tools = new ExpectedStatsTools(jdbc, seasonResolver, DataAgeClock.provider());
+        tools = new ExpectedStatsTools(jdbc, seasonResolver, DataAgeClock.provider(), names);
     }
 
     @Autowired
