@@ -1,23 +1,30 @@
-import { useEffect, useState } from 'react'
-import { Button, Loader } from '@mantine/core'
-import { apiFetch } from '../../auth/apiFetch'
-import typography from '../../styles/typography.module.css'
-import classes from './AdminPage.module.css'
-import CodeDetails from './CodeDetails'
-import NewCodeForm from './NewCodeForm'
-import StatusLine, { Status } from './StatusLine'
+import { useEffect, useState } from 'react';
+import { Button, Loader } from '@mantine/core';
+import { apiFetch } from '../../auth/apiFetch';
+import typography from '../../styles/typography.module.css';
+import classes from './AdminPage.module.css';
+import CodeDetails from './CodeDetails';
+import NewCodeForm from './NewCodeForm';
+import StatusLine, { type Status } from './StatusLine';
 import {
-  InviteCodeList, InviteCodeView, NOT_AVAILABLE, ReleaseResult, STATE_WORDS, benefitText,
-  placesLine, releaseNote, usedText,
-} from './inviteCodes'
+  type InviteCodeList,
+  type InviteCodeView,
+  NOT_AVAILABLE,
+  type ReleaseResult,
+  STATE_WORDS,
+  benefitText,
+  placesLine,
+  releaseNote,
+  usedText,
+} from './inviteCodes';
 
 type Page =
   | { kind: 'loading' }
   | { kind: 'unavailable' }
   | { kind: 'failed' }
-  | { kind: 'ready'; list: InviteCodeList }
+  | { kind: 'ready'; list: InviteCodeList };
 
-const COLUMNS = 8
+const COLUMNS = 8;
 
 /**
  * Operating the invite codes: places taken, every code with the state the server computed for
@@ -30,24 +37,24 @@ const COLUMNS = 8
  * there from the same rule sign-up refuses by and the page must not disagree with the gate.
  */
 export default function AdminPage() {
-  const [page, setPage] = useState<Page>({ kind: 'loading' })
-  const [notice, setNotice] = useState<Status>(null)
-  const [busy, setBusy] = useState(false)
-  const [expandedId, setExpandedId] = useState<number | null>(null)
+  const [page, setPage] = useState<Page>({ kind: 'loading' });
+  const [notice, setNotice] = useState<Status>(null);
+  const [busy, setBusy] = useState(false);
+  const [expandedId, setExpandedId] = useState<number | null>(null);
 
   async function load(): Promise<InviteCodeList | null> {
-    const response = await apiFetch('/api/admin/invite-codes')
+    const response = await apiFetch('/api/admin/invite-codes');
     if (response.status === 403) {
-      setPage({ kind: 'unavailable' })
-      return null
+      setPage({ kind: 'unavailable' });
+      return null;
     }
     if (!response.ok) {
-      setPage({ kind: 'failed' })
-      return null
+      setPage({ kind: 'failed' });
+      return null;
     }
-    const list: InviteCodeList = await response.json()
-    setPage({ kind: 'ready', list })
-    return list
+    const list: InviteCodeList = await response.json();
+    setPage({ kind: 'ready', list });
+    return list;
   }
 
   /**
@@ -56,100 +63,129 @@ export default function AdminPage() {
    * mutation went through and the table on screen is still true, just possibly stale.
    */
   async function refresh(): Promise<InviteCodeList> {
-    const response = await apiFetch('/api/admin/invite-codes')
-    if (!response.ok) throw new Error(String(response.status))
-    const list: InviteCodeList = await response.json()
-    setPage({ kind: 'ready', list })
-    return list
+    const response = await apiFetch('/api/admin/invite-codes');
+    if (!response.ok) throw new Error(String(response.status));
+    const list: InviteCodeList = await response.json();
+    setPage({ kind: 'ready', list });
+    return list;
   }
 
   useEffect(() => {
-    load().catch(() => setPage({ kind: 'failed' }))
-  }, [])
+    load().catch(() => setPage({ kind: 'failed' }));
+  }, []);
 
   function replaceCode(view: InviteCodeView) {
-    setPage(current => current.kind !== 'ready' ? current : {
-      kind: 'ready',
-      list: { ...current.list, codes: current.list.codes.map(code => (code.id === view.id ? view : code)) },
-    })
+    setPage((current) =>
+      current.kind !== 'ready'
+        ? current
+        : {
+            kind: 'ready',
+            list: {
+              ...current.list,
+              codes: current.list.codes.map((code) => (code.id === view.id ? view : code)),
+            },
+          },
+    );
   }
 
   // Task 4's form appends the created row here.
   function appendCode(view: InviteCodeView) {
-    setPage(current => current.kind !== 'ready' ? current : {
-      kind: 'ready',
-      list: { ...current.list, codes: [...current.list.codes, view] },
-    })
+    setPage((current) =>
+      current.kind !== 'ready'
+        ? current
+        : {
+            kind: 'ready',
+            list: { ...current.list, codes: [...current.list.codes, view] },
+          },
+    );
   }
 
   async function toggle(code: InviteCodeView) {
-    setBusy(true)
-    setNotice(null)
+    setBusy(true);
+    setNotice(null);
     try {
       const response = await apiFetch(
         `/api/admin/invite-codes/${code.id}/${code.active ? 'disable' : 'enable'}`,
         { method: 'POST' },
-      )
+      );
       if (response.ok) {
-        replaceCode(await response.json())
+        replaceCode(await response.json());
       } else if (response.status === 403) {
-        setNotice({ kind: 'error', message: NOT_AVAILABLE })
+        setNotice({ kind: 'error', message: NOT_AVAILABLE });
       } else if (response.status !== 401) {
-        setNotice({ kind: 'error', message: 'That change did not go through. The code is as it was — try again shortly.' })
+        setNotice({
+          kind: 'error',
+          message: 'That change did not go through. The code is as it was — try again shortly.',
+        });
       }
     } catch {
-      setNotice({ kind: 'error', message: 'That change did not go through. The code is as it was — try again shortly.' })
+      setNotice({
+        kind: 'error',
+        message: 'That change did not go through. The code is as it was — try again shortly.',
+      });
     } finally {
-      setBusy(false)
+      setBusy(false);
     }
   }
 
   async function releaseBurnt() {
-    setBusy(true)
-    setNotice(null)
-    let result: ReleaseResult | undefined
+    setBusy(true);
+    setNotice(null);
+    let result: ReleaseResult | undefined;
     try {
-      const response = await apiFetch('/api/admin/invite-codes/release-burnt', { method: 'POST' })
+      const response = await apiFetch('/api/admin/invite-codes/release-burnt', { method: 'POST' });
       if (response.ok) {
-        result = await response.json()
+        result = await response.json();
       } else if (response.status === 403) {
-        setNotice({ kind: 'error', message: NOT_AVAILABLE })
+        setNotice({ kind: 'error', message: NOT_AVAILABLE });
       } else if (response.status !== 401) {
-        setNotice({ kind: 'error', message: 'Nothing was released — try again shortly.' })
+        setNotice({ kind: 'error', message: 'Nothing was released — try again shortly.' });
       }
     } catch {
-      setNotice({ kind: 'error', message: 'Nothing was released — try again shortly.' })
+      setNotice({ kind: 'error', message: 'Nothing was released — try again shortly.' });
     }
 
     if (result) {
-      setExpandedId(null)
+      setExpandedId(null);
       // The release answers with what it did, not with the counts; the line is re-read. A failed
       // re-read must not flip the page to failed/unavailable — the release itself went through.
       try {
-        const list = await refresh()
-        setNotice({ kind: 'note', message: releaseNote(result, list.burnt) })
+        const list = await refresh();
+        setNotice({ kind: 'note', message: releaseNote(result, list.burnt) });
       } catch {
         setNotice({
           kind: 'error',
           message: `${releaseNote(result, 0)} The list could not be refreshed — reload the page.`,
-        })
+        });
       }
     }
 
-    setBusy(false)
+    setBusy(false);
   }
 
   if (page.kind === 'loading') {
-    return <div className={classes.page}><Loader /></div>
+    return (
+      <div className={classes.page}>
+        <Loader />
+      </div>
+    );
   }
   if (page.kind === 'unavailable') {
-    return <div className={classes.page}><p className={classes.muted}>{NOT_AVAILABLE}</p></div>
+    return (
+      <div className={classes.page}>
+        <p className={classes.muted}>{NOT_AVAILABLE}</p>
+      </div>
+    );
   }
   if (page.kind === 'failed') {
-    return <div className={classes.page}><p className={classes.error}>Invite codes could not be loaded.</p></div>
+    return (
+      <div className={classes.page}>
+        <p className={classes.error}>Invite codes could not be loaded.</p>
+      </div>
+    );
   }
 
-  const { list } = page
+  const { list } = page;
   return (
     <div className={classes.page}>
       <h1 className={classes.title}>Admin</h1>
@@ -171,21 +207,34 @@ export default function AdminPage() {
         <table className={classes.table}>
           <thead>
             <tr>
-              <th>Code</th><th>Label</th><th>Used</th><th>Accounts</th><th>State</th>
-              <th>Valid until</th><th>Benefit</th><th><span className={classes.visuallyHidden}>Action</span></th>
+              <th>Code</th>
+              <th>Label</th>
+              <th>Used</th>
+              <th>Accounts</th>
+              <th>State</th>
+              <th>Valid until</th>
+              <th>Benefit</th>
+              <th>
+                <span className={classes.visuallyHidden}>Action</span>
+              </th>
             </tr>
           </thead>
           <tbody>
-            {list.codes.map(code => {
-              const muted = code.state === 'DISABLED' || code.state === 'EXHAUSTED'
-              const expanded = expandedId === code.id
+            {list.codes.map((code) => {
+              const muted = code.state === 'DISABLED' || code.state === 'EXHAUSTED';
+              const expanded = expandedId === code.id;
               return (
-                <CodeRowGroup key={code.id} code={code} muted={muted} expanded={expanded} busy={busy}
+                <CodeRowGroup
+                  key={code.id}
+                  code={code}
+                  muted={muted}
+                  expanded={expanded}
+                  busy={busy}
                   onToggleExpand={() => setExpandedId(expanded ? null : code.id)}
                   onToggleActive={() => toggle(code)}
                   onChange={replaceCode}
                 />
-              )
+              );
             })}
           </tbody>
         </table>
@@ -195,17 +244,17 @@ export default function AdminPage() {
 
       <NewCodeForm onCreated={appendCode} />
     </div>
-  )
+  );
 }
 
 interface RowProps {
-  code: InviteCodeView
-  muted: boolean
-  expanded: boolean
-  busy: boolean
-  onToggleExpand: () => void
-  onToggleActive: () => void
-  onChange: (view: InviteCodeView) => void
+  code: InviteCodeView;
+  muted: boolean;
+  expanded: boolean;
+  busy: boolean;
+  onToggleExpand: () => void;
+  onToggleActive: () => void;
+  onChange: (view: InviteCodeView) => void;
 }
 
 /**
@@ -214,18 +263,33 @@ interface RowProps {
  * reachable from the keyboard, and its click bubbles to the row rather than toggling twice. The
  * action button stops propagation, or every disable would also expand.
  */
-function CodeRowGroup({ code, muted, expanded, busy, onToggleExpand, onToggleActive, onChange }: RowProps) {
+function CodeRowGroup({
+  code,
+  muted,
+  expanded,
+  busy,
+  onToggleExpand,
+  onToggleActive,
+  onChange,
+}: RowProps) {
   return (
     <>
       <tr className={muted ? classes.mutedRow : undefined} onClick={onToggleExpand}>
         <td data-label="Code">
-          <button type="button" className={classes.codeButton} aria-expanded={expanded}
-            aria-controls={`code-${code.id}-details`}>{code.code}</button>
+          <button
+            type="button"
+            className={classes.codeButton}
+            aria-expanded={expanded}
+            aria-controls={`code-${code.id}-details`}
+          >
+            {code.code}
+          </button>
         </td>
         <td data-label="Label">{code.label}</td>
         <td data-label="Used">{usedText(code)}</td>
         <td data-label="Accounts">
-          {code.accounts}{code.burnt > 0 && <span className={classes.muted}> ({code.burnt} burnt)</span>}
+          {code.accounts}
+          {code.burnt > 0 && <span className={classes.muted}> ({code.burnt} burnt)</span>}
         </td>
         <td data-label="State">{STATE_WORDS[code.state]}</td>
         <td data-label="Valid until">
@@ -233,8 +297,15 @@ function CodeRowGroup({ code, muted, expanded, busy, onToggleExpand, onToggleAct
         </td>
         <td data-label="Benefit">{benefitText(code)}</td>
         <td data-label="Action" className={classes.actionCell}>
-          <Button size="compact-sm" variant="subtle" disabled={busy}
-            onClick={event => { event.stopPropagation(); onToggleActive() }}>
+          <Button
+            size="compact-sm"
+            variant="subtle"
+            disabled={busy}
+            onClick={(event) => {
+              event.stopPropagation();
+              onToggleActive();
+            }}
+          >
             {code.active ? 'Disable' : 'Enable'}
           </Button>
         </td>
@@ -247,5 +318,5 @@ function CodeRowGroup({ code, muted, expanded, busy, onToggleExpand, onToggleAct
         </tr>
       )}
     </>
-  )
+  );
 }

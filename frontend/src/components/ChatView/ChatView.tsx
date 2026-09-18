@@ -1,35 +1,35 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { useComputedColorScheme } from '@mantine/core'
-import { useProfile } from '../../auth/useProfile'
-import { useChat } from '../../hooks/useChat'
-import { useConversations } from '../../hooks/useConversations'
-import { navigate, Route } from '../../router'
-import AdminPage from '../AdminPage/AdminPage'
-import AppMenu from '../AppMenu/AppMenu'
-import ConversationSidebar from '../ConversationSidebar/ConversationSidebar'
-import HeaderNavigation from '../HeaderNavigation/HeaderNavigation'
-import MessageThread from '../MessageThread/MessageThread'
-import MessageInput from '../MessageInput/MessageInput'
-import MyTeamPage from '../MyTeamPage/MyTeamPage'
-import SettingsPage from '../SettingsPage/SettingsPage'
-import ShortlistPage from '../ShortlistPage/ShortlistPage'
-import UsagePage from '../UsagePage/UsagePage'
-import classes from './ChatView.module.css'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useComputedColorScheme } from '@mantine/core';
+import { useProfile } from '../../auth/useProfile';
+import { useChat } from '../../hooks/useChat';
+import { useConversations } from '../../hooks/useConversations';
+import { navigate, type Route } from '../../router';
+import AdminPage from '../AdminPage/AdminPage';
+import AppMenu from '../AppMenu/AppMenu';
+import ConversationSidebar from '../ConversationSidebar/ConversationSidebar';
+import HeaderNavigation from '../HeaderNavigation/HeaderNavigation';
+import MessageThread from '../MessageThread/MessageThread';
+import MessageInput from '../MessageInput/MessageInput';
+import MyTeamPage from '../MyTeamPage/MyTeamPage';
+import SettingsPage from '../SettingsPage/SettingsPage';
+import ShortlistPage from '../ShortlistPage/ShortlistPage';
+import UsagePage from '../UsagePage/UsagePage';
+import classes from './ChatView.module.css';
 
 interface Props {
-  route: Route
+  route: Route;
 }
 
 export default function ChatView({ route }: Props) {
-  const [sidebarOpen, setSidebarOpen] = useState(false)
-  const selectionRef = useRef(0)
-  const profile = useProfile()
-  const conversations = useConversations()
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const selectionRef = useRef(0);
+  const profile = useProfile();
+  const conversations = useConversations();
   const { messages, replaceMessages, streamingContent, isStreaming, sendMessage } = useChat({
     conversationId: conversations.currentId,
-    onConversation: id => (id === null ? conversations.startNew() : conversations.adopt(id)),
+    onConversation: (id) => (id === null ? conversations.startNew() : conversations.adopt(id)),
     onTurnFinished: conversations.refresh,
-  })
+  });
 
   // Mantine's own colour-scheme system is the single source of truth for the
   // toggle — it already persists the choice and listens to
@@ -42,50 +42,52 @@ export default function ChatView({ route }: Props) {
   // way Mantine's own data-mantine-color-scheme write does internally. A
   // post-paint useEffect leaves a one-frame gap on reload whenever the
   // persisted choice opposes the OS preference.
-  const computedColorScheme = useComputedColorScheme('light')
+  const computedColorScheme = useComputedColorScheme('light');
 
   useLayoutEffect(() => {
-    document.documentElement.dataset.theme = computedColorScheme
-  }, [computedColorScheme])
+    document.documentElement.dataset.theme = computedColorScheme;
+  }, [computedColorScheme]);
 
   // The overlay covers the button that opened it, so without this a phone user who opened the
   // sidebar to look at it has no way back other than picking something.
   useEffect(() => {
-    if (!sidebarOpen) return
+    if (!sidebarOpen) return;
     const onEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setSidebarOpen(false)
-    }
-    window.addEventListener('keydown', onEscape)
-    return () => window.removeEventListener('keydown', onEscape)
-  }, [sidebarOpen])
+      if (event.key === 'Escape') setSidebarOpen(false);
+    };
+    window.addEventListener('keydown', onEscape);
+    return () => window.removeEventListener('keydown', onEscape);
+  }, [sidebarOpen]);
 
   async function openConversation(id: string) {
     // Two clicks in a row race, and the slower answer must not win. Only the newest selection
     // may write to the thread.
-    const selection = ++selectionRef.current
-    setSidebarOpen(false)
+    const selection = ++selectionRef.current;
+    setSidebarOpen(false);
     // The sidebar is visible on every page, so opening a conversation from Settings has to take
     // the user to where the conversation is.
-    navigate('/')
-    const stored = await conversations.select(id)
-    if (selection !== selectionRef.current) return
+    navigate('/');
+    const stored = await conversations.select(id);
+    if (selection !== selectionRef.current) return;
     if (stored) {
-      replaceMessages(stored)
+      replaceMessages(stored);
     } else {
-      replaceMessages([{
-        role: 'assistant',
-        content: 'That conversation could not be opened. It may have been removed.',
-        isError: true,
-      }])
+      replaceMessages([
+        {
+          role: 'assistant',
+          content: 'That conversation could not be opened. It may have been removed.',
+          isError: true,
+        },
+      ]);
     }
   }
 
   function newConversation() {
-    selectionRef.current++
-    conversations.startNew()
-    replaceMessages([])
-    setSidebarOpen(false)
-    navigate('/')
+    selectionRef.current++;
+    conversations.startNew();
+    replaceMessages([]);
+    setSidebarOpen(false);
+    navigate('/');
   }
 
   return (
@@ -96,7 +98,7 @@ export default function ChatView({ route }: Props) {
           className={classes.sidebarToggle}
           aria-label="Conversations"
           aria-expanded={sidebarOpen}
-          onClick={() => setSidebarOpen(open => !open)}
+          onClick={() => setSidebarOpen((open) => !open)}
         >
           ☰
         </button>
@@ -139,7 +141,8 @@ export default function ChatView({ route }: Props) {
             <AdminPage />
           ) : messages.length === 0 && streamingContent === null ? (
             <div className={classes.empty}>
-              Ask me anything about Fantasy Premier League — players, fixtures, strategy, chips, transfers.
+              Ask me anything about Fantasy Premier League — players, fixtures, strategy, chips,
+              transfers.
             </div>
           ) : (
             <MessageThread messages={messages} streamingContent={streamingContent} />
@@ -148,5 +151,5 @@ export default function ChatView({ route }: Props) {
         </div>
       </div>
     </div>
-  )
+  );
 }

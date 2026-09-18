@@ -1,24 +1,24 @@
 export interface CataloguePlayer {
-  elementId: number
-  webName: string
-  fullName: string
-  teamShort: string
-  teamName: string
-  elementType: number
-  aliases: string[]
+  elementId: number;
+  webName: string;
+  fullName: string;
+  teamShort: string;
+  teamName: string;
+  elementType: number;
+  aliases: string[];
 }
 
 export interface PlayerCatalogue {
-  catalogueId: string
-  season: string
-  players: CataloguePlayer[]
+  catalogueId: string;
+  season: string;
+  players: CataloguePlayer[];
 }
 
 export interface Message {
-  role: 'user' | 'assistant'
-  content: string
+  role: 'user' | 'assistant';
+  content: string;
   /** Immutable identity evidence attached only to a completed assistant answer. */
-  catalogue?: PlayerCatalogue
+  catalogue?: PlayerCatalogue;
   /**
    * Client-side only: marks a turn the app generated to report a failure,
    * not something the model said. The spec reserves red for errors, and an
@@ -26,14 +26,14 @@ export interface Message {
    * Never reaches the backend — since Task 4 the client sends only the new
    * message, and errors are not messages.
    */
-  isError?: boolean
+  isError?: boolean;
   /**
    * Client-side only: a note from the app about the conversation itself —
    * currently that the oldest turns no longer fit and were left out of what
    * the model was given. Not an error: nothing failed, but the user is
    * entitled to know the answer was written without the beginning.
    */
-  isNotice?: boolean
+  isNotice?: boolean;
 }
 
 /**
@@ -47,15 +47,15 @@ export interface Message {
  * stream's first event.
  */
 export interface ChatRequest {
-  conversationId: string | null
-  message: string
+  conversationId: string | null;
+  message: string;
 }
 
 /** A conversation as the list shows it: enough to recognise and to order by. */
 export interface Conversation {
-  id: string
-  title: string | null
-  updatedAt: string
+  id: string;
+  title: string | null;
+  updatedAt: string;
 }
 
 /**
@@ -67,12 +67,12 @@ export interface Conversation {
  * is why they are optional here.
  */
 export interface Usage {
-  plan: 'FREE'
-  remainingPercent: number
-  unlimited: boolean
-  nextFreeAt: string | null
-  used?: number
-  limit?: number
+  plan: 'FREE';
+  remainingPercent: number;
+  unlimited: boolean;
+  nextFreeAt: string | null;
+  used?: number;
+  limit?: number;
 }
 
 /**
@@ -80,6 +80,6 @@ export interface Usage {
  * non-admin regardless of what the page shows, so nothing in the browser decides access on it.
  */
 export interface Profile {
-  fplTeamId: number | null
-  admin: boolean
+  fplTeamId: number | null;
+  admin: boolean;
 }

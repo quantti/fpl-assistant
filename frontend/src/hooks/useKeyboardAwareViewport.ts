@@ -1,9 +1,9 @@
-import { useEffect } from 'react'
-import { keyboardAwareHeight } from './viewportHeight'
+import { useEffect } from 'react';
+import { keyboardAwareHeight } from './viewportHeight';
 
-const PROPERTY = '--app-height'
+const PROPERTY = '--app-height';
 /** How close to the bottom, in px, still counts as "reading the latest message". */
-const BOTTOM_TOLERANCE = 40
+const BOTTOM_TOLERANCE = 40;
 
 /**
  * Keeps `--app-height` on <html> equal to the visual viewport's height while a software
@@ -16,44 +16,47 @@ const BOTTOM_TOLERANCE = 40
  */
 export function useKeyboardAwareViewport(): void {
   useEffect(() => {
-    const vv = window.visualViewport
-    if (!vv) return
-    const root = document.documentElement
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const root = document.documentElement;
 
     const apply = () => {
       const height = keyboardAwareHeight(
         { height: vv.height, offsetTop: vv.offsetTop, scale: vv.scale },
         window.innerHeight,
-      )
+      );
       // Read before the height changes: once the thread is shorter, "was at the bottom" is
       // no longer measurable. A reader who had scrolled up is left where they were.
-      const thread = document.querySelector<HTMLElement>('[data-thread]')
-      const wasAtBottom = thread !== null
-        && thread.scrollHeight - thread.scrollTop - thread.clientHeight < BOTTOM_TOLERANCE
+      const thread = document.querySelector<HTMLElement>('[data-thread]');
+      const wasAtBottom =
+        thread !== null &&
+        thread.scrollHeight - thread.scrollTop - thread.clientHeight < BOTTOM_TOLERANCE;
       if (height === null) {
-        root.style.removeProperty(PROPERTY)
+        root.style.removeProperty(PROPERTY);
       } else {
-        root.style.setProperty(PROPERTY, `${height}px`)
+        root.style.setProperty(PROPERTY, `${height}px`);
         // WebKit also scrolls the layout viewport to bring the focused field into view. With
         // the shell now no taller than the visual viewport that scroll only pushes the header
         // off the top, so undo it. If this fights Safari on a device — visible jitter while
         // typing — the alternative is `--app-offset: ${vv.offsetTop}px` plus
         // `transform: translateY(var(--app-offset, 0))` on .shell, which follows the scroll
         // instead of undoing it.
-        if (window.scrollY !== 0) window.scrollTo(0, 0)
+        if (window.scrollY !== 0) window.scrollTo(0, 0);
       }
       if (thread && wasAtBottom) {
-        requestAnimationFrame(() => { thread.scrollTop = thread.scrollHeight })
+        requestAnimationFrame(() => {
+          thread.scrollTop = thread.scrollHeight;
+        });
       }
-    }
+    };
 
-    vv.addEventListener('resize', apply)
-    vv.addEventListener('scroll', apply)
-    apply()
+    vv.addEventListener('resize', apply);
+    vv.addEventListener('scroll', apply);
+    apply();
     return () => {
-      vv.removeEventListener('resize', apply)
-      vv.removeEventListener('scroll', apply)
-      root.style.removeProperty(PROPERTY)
-    }
-  }, [])
+      vv.removeEventListener('resize', apply);
+      vv.removeEventListener('scroll', apply);
+      root.style.removeProperty(PROPERTY);
+    };
+  }, []);
 }

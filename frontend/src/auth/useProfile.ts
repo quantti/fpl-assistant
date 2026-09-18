@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
-import { apiFetch } from './apiFetch'
-import { Profile } from '../types'
+import { useEffect, useState } from 'react';
+import { apiFetch } from './apiFetch';
+import { type Profile } from '../types';
 
 /**
  * The signed-in account's profile, read once per mount of the signed-in shell. Null until it
@@ -9,19 +9,21 @@ import { Profile } from '../types'
  * non-admin nothing (the API answers 403 and the page says so).
  */
 export function useProfile(): Profile | null {
-  const [profile, setProfile] = useState<Profile | null>(null)
+  const [profile, setProfile] = useState<Profile | null>(null);
 
   useEffect(() => {
-    let cancelled = false
+    let cancelled = false;
     apiFetch('/api/profile')
-      .then(async response => {
-        if (!response.ok) return
-        const next: Profile = await response.json()
-        if (!cancelled) setProfile(next)
+      .then(async (response) => {
+        if (!response.ok) return;
+        const next: Profile = await response.json();
+        if (!cancelled) setProfile(next);
       })
-      .catch(() => {})
-    return () => { cancelled = true }
-  }, [])
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
-  return profile
+  return profile;
 }

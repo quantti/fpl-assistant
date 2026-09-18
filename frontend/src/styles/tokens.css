@@ -21,26 +21,26 @@
      --pitch-contrast further down — see the comment there for why
      --pitch-contrast can't just say var(--ink): this is what removes that
      duplication without a second, unlinked copy of the hex. */
-  --ink-900: #171E2E;
+  --ink-900: #171e2e;
 
   /* Light palette */
-  --paper: #F7F9F7;
+  --paper: #f7f9f7;
   --ink: var(--ink-900);
   /* Redefined in both dark blocks below — see the comment there. */
-  --muted: #414D66;
-  --rule-row: #C4CBD8;
-  --rule-section: #8792A8;
-  --pitch: #18811C;
-  --card: #F0D04C;
-  --redcard: #9A261D;
-  --flood: #1D819A;
-  --kit: #9A531D;
+  --muted: #414d66;
+  --rule-row: #c4cbd8;
+  --rule-section: #8792a8;
+  --pitch: #18811c;
+  --card: #f0d04c;
+  --redcard: #9a261d;
+  --flood: #1d819a;
+  --kit: #9a531d;
 
   /* Invariant across themes. Not part of the seven-colour palette itself —
      added so Mantine's theme.white (used for the "white label on pitch/
      redcard" pairings the spec measures) can reference a token instead of
      a literal hex, per the project rule that hex lives only in this file. */
-  --white: #FFFFFF;
+  --white: #ffffff;
 
   /* Text colour for content placed on a --pitch background (e.g. the
      composer's send button). White passes AA on the light palette's dark
@@ -66,8 +66,8 @@
   /* Type roles. Reading: Newsreader (assistant answers, prose). Interface:
      Archivo (user messages, labels, chrome, buttons). Fonts loaded in
      ./fonts.css. */
-  --font-reading: 'Newsreader Variable', ui-serif, Georgia, 'Times New Roman', serif;
-  --font-ui: 'Archivo Variable', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-reading: "Newsreader Variable", ui-serif, Georgia, "Times New Roman", serif;
+  --font-ui: "Archivo Variable", ui-sans-serif, system-ui, -apple-system, sans-serif;
 
   /* Type scale. The plan's architecture line promised custom properties for
      the type scale alongside the palette and spacing; only the families were
@@ -106,17 +106,17 @@
      exempts inactive components, so these are gated as [info] in
      check-contrast.mjs: recorded and drift-protected, not held to a minimum
      they are meant to sit under. */
-  --disabled-surface: #DCE1E9;
+  --disabled-surface: #dce1e9;
   /* Byte-identical to --rule-section — coincidence of two independent
      derivations from the navy family, not a shared value; changing one does
      not (and should not) move the other. */
-  --disabled-ink: #8792A8;
+  --disabled-ink: #8792a8;
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --paper: #10151F;
-    --ink: #E9ECF2;
+    --paper: #10151f;
+    --ink: #e9ecf2;
     /* The spec's dark palette table never listed a muted value, so until now
        --muted kept its light navy (#414D66) in dark mode — 2.16:1 against
        dark --paper, measured in a headless browser. That is the transcript's
@@ -126,9 +126,9 @@
        and saturation (22%) as #414D66, lightness inverted 32.7% -> 70%,
        which measures 8.09:1 on #10151F — mirroring light's own ink/muted
        relationship (15.73/8.01). Gated by check-contrast.mjs in both themes. */
-    --muted: #A2ADC3;
-    --pitch: #8DEC90;
-    --redcard: #EC938D;
+    --muted: #a2adc3;
+    --pitch: #8dec90;
+    --redcard: #ec938d;
     /* NOT var(--ink): --ink is redefined to a light colour in this same
        block (for body text against dark --paper), but --pitch inverts the
        OTHER way (dark green -> light green), so it needs a genuinely dark
@@ -142,20 +142,20 @@
        rather than inherited: light's #DCE1E9 surface would glare against
        #10151F, and light's #8792A8 ink measures 4.72:1 on the dark surface,
        which is bright enough to look enabled. Hue held at 219-221deg. */
-    --disabled-surface: #1F2839;
-    --disabled-ink: #5A657D;
+    --disabled-surface: #1f2839;
+    --disabled-ink: #5a657d;
   }
 }
 
 :root[data-theme="dark"] {
-  --paper: #10151F;
-  --ink: #E9ECF2;
-  --muted: #A2ADC3;
-  --pitch: #8DEC90;
-  --redcard: #EC938D;
+  --paper: #10151f;
+  --ink: #e9ecf2;
+  --muted: #a2adc3;
+  --pitch: #8dec90;
+  --redcard: #ec938d;
   --pitch-contrast: var(--ink-900);
-  --disabled-surface: #1F2839;
-  --disabled-ink: #5A657D;
+  --disabled-surface: #1f2839;
+  --disabled-ink: #5a657d;
 }
 
 /* Quality floor: every interactive element gets a visible --pitch focus
@@ -184,7 +184,9 @@
    higher-specificity dependency rule competes. Gated to coarse pointers so
    desktop keeps the designed sizes. */
 @media (pointer: coarse) {
-  input, textarea, select {
+  input,
+  textarea,
+  select {
     --input-fz: 1rem;
     font-size: 1rem;
   }
