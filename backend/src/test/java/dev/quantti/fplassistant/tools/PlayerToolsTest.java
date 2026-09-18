@@ -37,9 +37,12 @@ class PlayerToolsTest {
     @Autowired
     DailyPriceSource daily;
 
+    @Autowired
+    PlayerNameSearch names;
+
     @BeforeEach
     void buildTools() {
-        playerTools = new PlayerTools(jdbc, seasonResolver, daily, DataAgeClock.provider());
+        playerTools = new PlayerTools(jdbc, seasonResolver, daily, DataAgeClock.provider(), names);
     }
 
     @Value("${fpl.daily-price.table-name}")
@@ -75,8 +78,11 @@ class PlayerToolsTest {
      */
     @AfterEach
     void unflipSeason() {
-        jdbc.update("DELETE FROM player WHERE season_id = ? AND id IN (?, ?)",
-                SharedStatsSeed.CURRENT_SEASON_ID, FLIP_PLAYER_IDS.get(0), FLIP_PLAYER_IDS.get(1));
+        // The transferred player's current-season row goes with them: it references the flipped
+        // team, so it must be gone before that team is.
+        jdbc.update("DELETE FROM player WHERE season_id = ? AND id IN (?, ?, ?)",
+                SharedStatsSeed.CURRENT_SEASON_ID, FLIP_PLAYER_IDS.get(0), FLIP_PLAYER_IDS.get(1),
+                TRANSFERRED_CURRENT_ID);
         jdbc.update("DELETE FROM gameweek WHERE season_id = ? AND id = ?",
                 SharedStatsSeed.CURRENT_SEASON_ID, FLIP_GAMEWEEK_ID);
         jdbc.update("DELETE FROM team WHERE season_id = ? AND id = ?",
@@ -185,12 +191,16 @@ class PlayerToolsTest {
 
     /** One row of the daily capture: this season's squad, as FPL's own API reports it. */
     private void captureToday(String webName, String fullName) {
+        captureToday(webName, fullName, "TST", "Testville United");
+    }
+
+    private void captureToday(String webName, String fullName, String teamShort, String teamName) {
         jdbc.update("INSERT INTO " + dailyTable + " (season, price_date, element_id, web_name,"
                         + " full_name, team_short, team_name, element_type, now_cost,"
                         + " cost_change_event, cost_change_start, selected_by_percent, status, news)"
-                        + " VALUES (?, ?, 9901, ?, ?, 'TST', 'Testville United', 2, 55, 0, 0,"
+                        + " VALUES (?, ?, 9901, ?, ?, ?, ?, 2, 55, 0, 0,"
                         + " 12.3, 'a', '')",
-                CURRENT_SEASON, LocalDate.now(), webName, fullName);
+                CURRENT_SEASON, LocalDate.now(), webName, fullName, teamShort, teamName);
     }
 
     @Test
@@ -385,5 +395,110 @@ class PlayerToolsTest {
         String result = playerTools.getPlayerStats("%");
 
         assertThat(result).containsIgnoringCase("not found");
+    }
+
+    /** Id this class inserts for KAR-57 accent/club-hint coverage, and removes again. */
+    private static final int ACCENTED_PLAYER_ID = 9311;
+
+    private void seedAccentedPlayer() {
+        jdbc.update("""
+                INSERT INTO player (id, season_id, team_id, first_name, second_name, web_name,
+                                    element_type, now_cost, status, total_points, minutes,
+                                    goals_scored, assists, form, selected_by_percent)
+                VALUES (9311, ?, ?, 'Tarik', 'Muharemović', 'Muharemović', 2, 45, 'a', 20, 360,
+                        0, 0, 3.0, 1.5)
+                ON CONFLICT (id, season_id) DO NOTHING
+                """, SharedStatsSeed.POPULATED_SEASON_ID, SharedStatsSeed.TEAM_ASHFIELD);
+    }
+
+    @AfterEach
+    void deleteAccentedPlayer() {
+        jdbc.update("DELETE FROM player WHERE season_id = ? AND id = ?",
+                SharedStatsSeed.POPULATED_SEASON_ID, ACCENTED_PLAYER_ID);
+    }
+
+    @Test
+    void unaccentedFullNameFindsTheAccentedPlayersSeasonStats() {
+        seedAccentedPlayer();
+        String result = playerTools.getPlayerStats("Tarik Muharemovic");
+        assertThat(result).contains("Muharemović").doesNotContain("No player matched");
+    }
+
+    @Test
+    void aClubAfterTheNameStillFindsThePlayer() {
+        seedAccentedPlayer();
+        String result = playerTools.getPlayerStats("Muharemovic Ashfield");
+        assertThat(result).contains("Muharemović").doesNotContain("No player matched");
+    }
+
+    /** Ids this class inserts for the summer-transfer and NULL-name cases, and removes again. */
+    private static final int TRANSFERRED_PREVIOUS_ID = 9321;
+    private static final int TRANSFERRED_CURRENT_ID = 9322;
+    private static final int NULL_NAMED_PLAYER_ID = 9331;
+    private static final String TRANSFERRED_WEB_NAME = "Trevelyan";
+
+    @AfterEach
+    void deleteTransferredAndNullNamedPlayers() {
+        jdbc.update("DELETE FROM player WHERE season_id = ? AND id IN (?, ?)",
+                SharedStatsSeed.POPULATED_SEASON_ID, TRANSFERRED_PREVIOUS_ID, NULL_NAMED_PLAYER_ID);
+    }
+
+    /** One player, one web name, two clubs: Northmoor City last season, Ashfield this one. */
+    private void seedTransferredPlayer() {
+        jdbc.update("""
+                INSERT INTO player (id, season_id, team_id, first_name, second_name, web_name,
+                                    element_type, now_cost, status, total_points, minutes,
+                                    goals_scored, assists, form, selected_by_percent)
+                VALUES (9321, ?, ?, 'Owen', 'Trevelyan', 'Trevelyan', 3, 70, 'a', 44, 2700,
+                        7, 4, 5.0, 9.0)
+                ON CONFLICT (id, season_id) DO NOTHING
+                """, SharedStatsSeed.POPULATED_SEASON_ID, SharedStatsSeed.TEAM_NORTHMOOR_CITY);
+        jdbc.update("""
+                INSERT INTO player (id, season_id, team_id, first_name, second_name, web_name,
+                                    element_type, now_cost, status, total_points, minutes,
+                                    goals_scored, assists, form, selected_by_percent)
+                VALUES (9322, ?, ?, 'Owen', 'Trevelyan', 'Trevelyan', 3, 75, 'a', 9, 175,
+                        1, 0, 3.0, 4.0)
+                ON CONFLICT (id, season_id) DO NOTHING
+                """, SharedStatsSeed.CURRENT_SEASON_ID, FLIP_TEAM_ID);
+    }
+
+    /**
+     * The prompt tells the model to pass the club, but each season's rows carry that season's
+     * club: matching the season statistics on the raw query drops the season a summer signing
+     * spent at his old club — and September is when that player is asked about.
+     */
+    @Test
+    void aClubTokenDoesNotHideThePreviousSeasonOfATransferredPlayer() {
+        flipToCurrentSeason(true);
+        seedTransferredPlayer();
+        captureToday(TRANSFERRED_WEB_NAME, "Owen Trevelyan",
+                SharedStatsSeed.ASHFIELD_SHORT, SharedStatsSeed.ASHFIELD);
+
+        String result = playerTools.getPlayerStats(
+                TRANSFERRED_WEB_NAME + " " + SharedStatsSeed.ASHFIELD_SHORT);
+
+        assertThat(result).contains("Data source: season " + SharedStatsSeed.CURRENT_SEASON_CODE
+                + " (the season currently being played)");
+        assertThat(result).contains("Minutes: 175"); // this season, at the new club
+        assertThat(result).contains("Data source: season " + SharedStatsSeed.POPULATED_SEASON_CODE
+                + " — a COMPLETED PREVIOUS season");
+        assertThat(result).contains("Minutes: 2700"); // last season, at the old one
+    }
+
+    /** Both name columns are nullable in the shared schema, and one NULL nulls the whole chain. */
+    @Test
+    void aPlayerWithNoStoredFirstNameIsStillFoundByWebName() {
+        jdbc.update("""
+                INSERT INTO player (id, season_id, team_id, first_name, second_name, web_name,
+                                    element_type, now_cost, status, total_points, minutes,
+                                    goals_scored, assists, form, selected_by_percent)
+                VALUES (9331, ?, ?, NULL, NULL, 'Pendlebury', 2, 45, 'a', 11, 450,
+                        0, 1, 2.0, 0.8)
+                ON CONFLICT (id, season_id) DO NOTHING
+                """, SharedStatsSeed.POPULATED_SEASON_ID, SharedStatsSeed.TEAM_ASHFIELD);
+
+        assertThat(playerTools.getPlayerStats("Pendlebury"))
+                .contains("Pendlebury").doesNotContain("No player matched");
     }
 }

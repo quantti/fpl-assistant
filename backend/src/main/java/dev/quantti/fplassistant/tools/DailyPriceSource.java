@@ -1,8 +1,8 @@
 package dev.quantti.fplassistant.tools;
 
 import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 
@@ -34,13 +34,20 @@ public class DailyPriceSource {
 
     static final int MAX_NAME_MATCHES = 4;
 
+    private static final String WEB_NAME = "web_name";
+    private static final String NAME = "web_name || ' ' || COALESCE(full_name, '')";
+    private static final String CLUB = "COALESCE(team_name, '') || ' ' || COALESCE(team_short, '')";
+
     private final JdbcTemplate jdbc;
     private final String table;
+    private final PlayerNameSearch names;
 
     public DailyPriceSource(JdbcTemplate jdbc,
-                            @Value("${fpl.daily-price.table-name}") String table) {
+                            @Value("${fpl.daily-price.table-name}") String table,
+                            PlayerNameSearch names) {
         this.jdbc = jdbc;
         this.table = table;
+        this.names = names;
     }
 
     String table() {
@@ -82,20 +89,27 @@ public class DailyPriceSource {
      * Name matches on the given date, best first; empty when nothing matched. "Best" is an
      * exact {@code web_name} match, then the priciest substring match — without the exact
      * tier, "son" would rank a pricier Wilson or Maddison above Son and the tool would
-     * answer for the wrong player.
+     * answer for the wrong player. Matching itself is {@link PlayerNameSearch} (KAR-57): it
+     * folds accents, matches a multi-word name against {@code web_name}/{@code full_name}, and
+     * lets a club token narrow an ambiguous surname.
      */
     List<Map<String, Object>> matchPlayers(String playerName, LocalDate date) {
-        String pattern = "%" + LikePatterns.escape(playerName.toLowerCase(Locale.ROOT)) + "%";
+        PlayerNameSearch.Fragment match = names.fragment(playerName, WEB_NAME, NAME, CLUB);
+        List<Object> args = new ArrayList<>();
+        args.add(date);
+        args.addAll(match.whereArgs());
+        args.addAll(match.orderArgs());
+        args.add(MAX_NAME_MATCHES);
         return jdbc.queryForList("""
                 SELECT element_id, web_name, full_name, team_short, element_type,
                        now_cost, cost_change_event, cost_change_start,
                        selected_by_percent, status, news, season, price_date
                 FROM %s
                 WHERE price_date = ?
-                  AND (LOWER(web_name) LIKE ? OR LOWER(full_name) LIKE ?)
-                ORDER BY (LOWER(web_name) = LOWER(?)) DESC, now_cost DESC
+                  AND %s
+                ORDER BY %s, now_cost DESC
                 LIMIT ?
-                """.formatted(table), date, pattern, pattern, playerName, MAX_NAME_MATCHES);
+                """.formatted(table, match.where(), match.exactFirst()), args.toArray());
     }
 
     /**

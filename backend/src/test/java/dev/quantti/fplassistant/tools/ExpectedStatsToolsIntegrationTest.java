@@ -7,6 +7,7 @@ import java.util.Map;
 
 import dev.quantti.fplassistant.testsupport.DataAgeClock;
 import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -38,9 +39,12 @@ class ExpectedStatsToolsIntegrationTest {
     @Autowired
     SeasonResolver seasonResolver;
 
+    @Autowired
+    PlayerNameSearch names;
+
     @BeforeEach
     void buildTools() {
-        tools = new ExpectedStatsTools(jdbc, seasonResolver, DataAgeClock.provider());
+        tools = new ExpectedStatsTools(jdbc, seasonResolver, DataAgeClock.provider(), names);
     }
 
     @BeforeEach
@@ -123,6 +127,42 @@ class ExpectedStatsToolsIntegrationTest {
         String result = tools.getTeamExpectedGoals(SharedStatsSeed.AMBIGUOUS_TEAM_PREFIX, 3);
 
         assertThat(result).contains("The name also matched:");
+    }
+
+    /** Id this class inserts for KAR-57 accent/club-hint coverage, and removes again. */
+    private static final int ACCENTED_PLAYER_ID = 9311;
+
+    private void seedAccentedPlayer() {
+        jdbc.update("""
+                INSERT INTO player (id, season_id, team_id, first_name, second_name, web_name,
+                                    element_type, now_cost, status, total_points, minutes,
+                                    goals_scored, assists, form, selected_by_percent)
+                VALUES (9311, ?, ?, 'Tarik', 'Muharemović', 'Muharemović', 2, 45, 'a', 20, 360,
+                        0, 0, 3.0, 1.5)
+                ON CONFLICT (id, season_id) DO NOTHING
+                """, SharedStatsSeed.POPULATED_SEASON_ID, SharedStatsSeed.TEAM_ASHFIELD);
+    }
+
+    @AfterEach
+    void deleteAccentedPlayer() {
+        jdbc.update("DELETE FROM player WHERE season_id = ? AND id = ?",
+                SharedStatsSeed.POPULATED_SEASON_ID, ACCENTED_PLAYER_ID);
+    }
+
+    @Test
+    void unaccentedFullNameFindsTheAccentedPlayersExpectedStats() {
+        seedAccentedPlayer();
+        String result = tools.getPlayerExpectedStats("Tarik Muharemovic", 5);
+        // The web name, not only the absence of "Player not found": the database-error reply
+        // satisfies that on its own, and would leave a broken query at this site green.
+        assertThat(result).contains("Muharemović").doesNotContain("Player not found");
+    }
+
+    @Test
+    void aClubAfterTheNameStillFindsThePlayersExpectedStats() {
+        seedAccentedPlayer();
+        String result = tools.getPlayerExpectedStats("Muharemovic Ashfield", 5);
+        assertThat(result).contains("Muharemović").doesNotContain("Player not found");
     }
 
     // --- KAR-9: sample dates and the unknown core-sync time --------------------------------
