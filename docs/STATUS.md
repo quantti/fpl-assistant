@@ -4789,3 +4789,25 @@ neither locally nor in CI.
 `fly logs` should read "Player name search: accent folding ON", and re-asking the original chat
 question (`Tarik Muharemovic vs Hall Newcastlesta wild cardilla, kumpi parempi`) should resolve and
 compare both players on the first turn. Neither has been checked yet.
+
+## DefCon on the named-player reply (KAR-58, 2026-09-18)
+
+Production evidence: asked to compare defenders (Hall, Muharemović), the assistant left defensive
+contribution out, and when challenged argued it from the players' roles with no numbers. It had
+none. DefCon was modelled only inside the ranking paths (`PickTools`' `DC` term, `HorizonScorer`);
+`getPlayerStats` and `getPlayerExpectedStats` — what the model calls for players the user names —
+never read `player_fixture_stats.defensive_contribution`, and the prompt's only comparison rule
+for defenders was the clean-sheet chance.
+
+`getPlayerExpectedStats` now prints each match's action count as `DC` and a
+`Defensive contribution` line: the position's threshold, how often it was reached, and the rate per
+90. It is an observed hit rate over the returned window, not the ranking model's probability —
+the two are not the same number and the reply does not pretend otherwise. Only appearances count;
+a NULL reading is "without a reading", never a miss; a previous-season fill row from the other
+DefCon definition (CBIT vs CBIRT) is left out of the rate, as `RankingMetrics` leaves it out of
+the blend. Read through `PfsReadSource`, so owned-sync masking holds. Goalkeepers get one line
+saying none is awarded. The prompt now requires DefCon in every DEF/MID comparison and forbids
+arguing it from role alone (`DefconComparisonPromptContractTest`).
+
+Not done: `getPlayerStats` still has no DefCon — its card is built from the tapas `player`
+season totals, which carry none, and one PFS-grain home for the figure is enough.
