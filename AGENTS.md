@@ -257,6 +257,11 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
 
 ### Resource safety
 
+Two hosts: a **WSL2 machine** with the full toolchain, and a **Hetzner VPS** that has no JDK,
+Gradle, Node or Docker and therefore cannot build or test locally at all — from there, verification
+is the GitHub Actions run on the pull request. Neither host's setup notes may be deleted in favour
+of the other's; see `docs/DEVELOPMENT.md`.
+
 Run one bounded agent/build/test unit at a time; never overlap full suites with subagents.
 Keep the checked-in Gradle heap/worker/context-cache limits. On memory-constrained WSL, use the
 cgroup-v2 scope and host-memory stop threshold in `docs/DEVELOPMENT.md`; do not assume this Docker
@@ -333,7 +338,9 @@ the suite against an ephemeral Postgres container and, if it passes, runs
 requests run the tests only. `workflow_dispatch` re-deploys without a push. A manual
 `fly deploy` is for emergencies, and is the one path that can ship a red suite.
 
-Install the pre-push hook once per clone: `git config core.hooksPath scripts/hooks`.
+Install the pre-push hook once per clone: `git config core.hooksPath scripts/hooks` — on the
+WSL2 host. On the VPS the hook cannot pass (it needs Docker) and is left uninstalled, so
+nothing there enforces the master guard mechanically: push a branch and open a pull request.
 
 A manual `fly deploy` always prompts first: `.claude/settings.json` routes any Bash command
 that runs one through `scripts/hooks/ask-before-deploy.sh`, whatever path or wrapper it is

@@ -1,7 +1,14 @@
 # Development setup
 
-Everything needed to build, test and run this project from a clean shell. Written for WSL2 /
-Ubuntu with zsh, which is the environment it was set up in.
+Everything needed to build, test and run this project from a clean shell. Written for the
+**WSL2 / Ubuntu host with zsh**, which is the environment it was set up in and the only one that
+carries the full toolchain.
+
+This project is also developed from a **Hetzner VPS** (KVM, Ubuntu 26.04, 2 vCPU, 3.7 GiB RAM).
+That host is for editing, review and git work only: it has no JDK, Gradle, Node or Docker, so
+nothing below that builds or runs the suite applies there. **Tests are run in GitHub Actions**
+— push the branch, open the pull request, and let `.github/workflows/deploy.yml` test it. Where a
+section's behaviour differs between the two, it says so; everything else is WSL2.
 
 ## Toolchain
 
@@ -111,6 +118,8 @@ Gradle daemons and parallel work, limits build heap to 256 MiB and workers to on
 384 MiB heap, two visible CPUs, two cached Spring contexts and pools of at most three connections.
 The disposable Postgres starts with 32 MiB shared/maintenance buffers, 2 MiB work memory and at most
 60 connections. These database settings are not a hard process-memory ceiling.
+
+This section is WSL2-only — the VPS has no Docker and no Gradle, and verifies in CI instead.
 
 On this WSL host, Docker reports no cgroup-v1 memory/CPU limit support; do not claim Docker flags
 are enforcing limits or reconfigure the shared daemon during another project's work. User-systemd
@@ -302,6 +311,12 @@ real thing; for now the substitute is a hook, installed once per clone:
 git config core.hooksPath scripts/hooks
 ```
 
+**On the VPS it is deliberately not installed.** The hook exits 1 when `docker` is absent, so
+there it would refuse every push rather than gate one. That leaves the VPS without the typed
+master confirmation, so on that host the rule against pushing to `master` is policy alone —
+push a branch, open a pull request, and let CI test it. Closing that gap in the hook itself is
+open work, not a decision taken here.
+
 `scripts/hooks/pre-push` then does two things before any push leaves the machine:
 
 1. **A push to `master` needs typed confirmation** (`push to master`, exactly). With no terminal
@@ -490,7 +505,11 @@ Connection details that cost time to rediscover:
 
 - **Use the transaction pooler, not the direct host.** `db.itmykooxrbrdbgqwsesb.supabase.co`
   publishes only an AAAA record, and WSL2 generally cannot reach it. The pooler is
-  `aws-1-eu-west-1.pooler.supabase.com:6543`.
+  `aws-1-eu-west-1.pooler.supabase.com:6543`. The VPS has native IPv6 and *can* open a socket to
+  the direct host (measured 2026-09-19), so a failure there will not look the same on the two
+  machines — but keep using the pooler on both, so one connection string is exercised everywhere.
+  Reachability is not a licence to widen access: the session-`SET` prohibition in `AGENTS.md`
+  covers the pooler regardless of host.
 - **The pooler username is `postgres.<project-ref>`**, not `postgres`. With plain `postgres` it
   fails as `FATAL: (ENOTFOUND) tenant/user ... not found`, which reads like a wrong password but
   is not. The same error appears when the project is on a different pooler — this project answers
