@@ -71,11 +71,12 @@ public class ExpectedStatsTools implements FplTool {
             Get a player's underlying expected stats over their last N fixtures this season,
             filled from last season when this season has fewer than N — every row names its
             season — expected goals (xG), expected assists (xA), expected goal
-            involvements (xGI), alongside actual goals, assists and minutes. Use this to
-            judge whether a player is over- or under-performing their underlying numbers,
-            not just their raw goal/assist counts. N is capped at 10. The reply begins with
-            the season the numbers come from; if that is not the season currently being
-            played, tell the user the figures are historical.
+            involvements (xGI), alongside actual goals, assists and minutes. The name may be a
+            surname, a full name, or a name followed by the club ("Hall Newcastle"); accents
+            are optional. Use this to judge whether a player is over- or under-performing their
+            underlying numbers, not just their raw goal/assist counts. N is capped at 10. The
+            reply begins with the season the numbers come from; if that is not the season
+            currently being played, tell the user the figures are historical.
             """)
     public String getPlayerExpectedStats(String playerName, int lastN) {
         try {
