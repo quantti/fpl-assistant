@@ -124,6 +124,13 @@ public final class FixtureSyncPublisher {
                 cataloguePlayers);
         Decision decision = FixtureVerification.verify(season, fixture, fixtureRead, liveDocument,
                 histories, prior, now, parentFailures);
+        if (decision.state() == FixtureVerification.State.PENDING
+                && decision.reasons().equals(Set.of(FixtureVerification.Reason.STABILITY_WINDOW))
+                && repository.isCurrentlyVerified(season, fixture.id())) {
+            // Too early to compare is not a contradiction. Saving it would overwrite the state and
+            // null the verified generation, revoking a verification on no evidence at all.
+            return decision;
+        }
         if (decision.state() == FixtureVerification.State.VERIFIED) {
             writePfs(rows, now);
             writeEvidence(rows, histories, lease.generation());
@@ -144,6 +151,10 @@ public final class FixtureSyncPublisher {
 
     FixtureSyncRepository.AttemptAdmission admitAttempt(Season season, int fixtureId) {
         return repository.admitAttempt(season, fixtureId, clock.instant());
+    }
+
+    Instant recordDependencyWait(String seasonCode, int fixtureId, Instant dueAt, String error) {
+        return repository.recordDependencyWait(seasonCode, fixtureId, dueAt, error, clock.instant());
     }
 
     Instant recordFailedAttempt(String seasonCode, int fixtureId, Instant minimumDue, String error) {

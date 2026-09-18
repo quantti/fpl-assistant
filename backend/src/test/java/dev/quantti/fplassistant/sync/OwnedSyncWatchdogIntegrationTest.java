@@ -197,6 +197,43 @@ class OwnedSyncWatchdogIntegrationTest {
     }
 
     @Test
+    void dueWorkOnARunFencedInASupersededEpochRecoversButACurrentFailureStaysOpen() {
+        jdbc.update("INSERT INTO " + TABLES.plannerRuntime()
+                        + "(instance_id,started_at,heartbeat_at) VALUES (?,?,?)",
+                "healthy", ts(NOW), ts(NOW));
+        jdbc.update("INSERT INTO " + TABLES.plannerRuntime()
+                        + "(instance_id,started_at,heartbeat_at,runtime_mode,runtime_epoch) VALUES (?,?,?,?,?)",
+                "mode:2024-25", ts(NOW), ts(NOW), "ACTIVE", 9);
+        jdbc.update("INSERT INTO " + TABLES.receipt()
+                + "(season,publication_key) VALUES ('2024-25','fenced:1'),('2024-25','current:1')");
+        String insert = "INSERT INTO " + TABLES.run()
+                + "(kind,season,coalescing_key,publication_key,priority,due_at,requested_source_after,"
+                + "runtime_mode,runtime_epoch,state,created_at,updated_at) "
+                + "VALUES ('PLAYER_HISTORY','2024-25',?,?,3,?,?,?,?,'PENDING',?,?) RETURNING generation";
+        long fenced = jdbc.queryForObject(insert, Long.class, "fenced:1", "fenced:1",
+                ts(NOW.minusSeconds(600)), ts(NOW.minusSeconds(600)), "STAGING", 8,
+                ts(NOW.minusSeconds(600)), ts(NOW.minusSeconds(600)));
+        long current = jdbc.queryForObject(insert, Long.class, "current:1", "current:1",
+                ts(NOW.minusSeconds(600)), ts(NOW.minusSeconds(600)), "ACTIVE", 9,
+                ts(NOW.minusSeconds(600)), ts(NOW.minusSeconds(600)));
+        OwnedSyncWatchdog watchdog = watchdog(false, false, payload -> { });
+
+        watchdog.check("2024-25");
+        assertThat(eventCount("due-work:" + fenced, "INCIDENT")).isOne();
+        assertThat(eventCount("due-work:" + current, "INCIDENT")).isOne();
+
+        // Deactivation fences the old epoch's run; the current epoch's run fails on its own.
+        jdbc.update("UPDATE " + TABLES.run() + " SET state='FAILED',failed_at=?,last_error=?,updated_at=?"
+                        + " WHERE generation IN (?,?)", ts(NOW), "fenced or failed", ts(NOW), fenced, current);
+        watchdog.check("2024-25");
+
+        // A fenced run's epoch is over and its work was planned again, so it is not overdue work.
+        assertThat(eventCount("due-work:" + fenced, "RECOVERY")).isOne();
+        // A failure inside the live activation is not evidence that anything recovered.
+        assertThat(eventCount("due-work:" + current, "RECOVERY")).isZero();
+    }
+
+    @Test
     void pendingRunAlertsOnActualConsecutiveFetchFailuresButNotHealthyDeferrals() {
         jdbc.update("INSERT INTO " + TABLES.plannerRuntime()
                         + "(instance_id,started_at,heartbeat_at) VALUES (?,?,?)",
