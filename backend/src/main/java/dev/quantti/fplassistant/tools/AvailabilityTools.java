@@ -43,8 +43,9 @@ public class AvailabilityTools implements FplTool {
     @Tool(description = """
             Check whether a specific player is fit, doubtful, injured or suspended, with FPL's
             own news note and how many days the flag has been standing. The name may be a
-            surname, a full name, or a name followed by the club ("Hall Newcastle"); accents
-            are optional. Use this for any question about a player's availability, fitness,
+            surname, a full name, or a name followed by the club as FPL writes it — short name
+            or three-letter code ("Hall Newcastle", "Fernandes Man Utd", "Fernandes MUN");
+            accents are optional. Use this for any question about a player's availability, fitness,
             injury or return date before recommending a transfer or a captain. The reply
             states which day's capture the answer comes from; if that is not today, say so,
             because FPL updates availability continuously.

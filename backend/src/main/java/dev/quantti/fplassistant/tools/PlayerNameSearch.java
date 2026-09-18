@@ -8,7 +8,6 @@ import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
@@ -26,8 +25,10 @@ import org.springframework.stereotype.Component;
  *
  * <p>{@code unaccent} is ensured here rather than in a schema class because nothing else needs
  * it, and it is <b>probed, not assumed</b>: a startup statement that throws has taken production
- * down before. If the extension cannot be created or called the search degrades to plain
- * {@code lower()} — the pre-KAR-57 behaviour — and says so at ERROR.
+ * down before. A refused {@code CREATE} is logged at WARN and the probe still runs — the
+ * extension may exist already while the statement is refused — and if the function cannot be
+ * called the search degrades to plain {@code lower()}, the pre-KAR-57 behaviour, and says so at
+ * ERROR. Nothing here can fail startup: both steps catch {@code RuntimeException}.
  */
 @Component
 public class PlayerNameSearch {
@@ -50,6 +51,12 @@ public class PlayerNameSearch {
     private static boolean probe(JdbcTemplate jdbc) {
         try {
             jdbc.execute("CREATE EXTENSION IF NOT EXISTS unaccent");
+        } catch (RuntimeException e) {
+            // A refused CREATE is not an unusable function: read-only mode, or a role without
+            // CREATE, refuses it while the extension is already there and callable.
+            log.warn("Player name search: could not create the unaccent extension, probing anyway", e);
+        }
+        try {
             String folded = jdbc.queryForObject("SELECT unaccent('ć')", String.class);
             boolean ok = "c".equals(folded);
             if (ok) {
@@ -58,7 +65,7 @@ public class PlayerNameSearch {
                 log.error("Player name search: unaccent('ć') returned '{}', accent folding OFF", folded);
             }
             return ok;
-        } catch (DataAccessException e) {
+        } catch (RuntimeException e) {
             log.error("Player name search: unaccent unavailable, accent folding OFF", e);
             return false;
         }

@@ -72,8 +72,9 @@ public class ExpectedStatsTools implements FplTool {
             filled from last season when this season has fewer than N — every row names its
             season — expected goals (xG), expected assists (xA), expected goal
             involvements (xGI), alongside actual goals, assists and minutes. The name may be a
-            surname, a full name, or a name followed by the club ("Hall Newcastle"); accents
-            are optional. Use this to judge whether a player is over- or under-performing their
+            surname, a full name, or a name followed by the club as FPL writes it — short name
+            or three-letter code ("Hall Newcastle", "Fernandes Man Utd", "Fernandes MUN");
+            accents are optional. Use this to judge whether a player is over- or under-performing their
             underlying numbers, not just their raw goal/assist counts. N is capped at 10. The
             reply begins with the season the numbers come from; if that is not the season
             currently being played, tell the user the figures are historical.
@@ -84,7 +85,7 @@ public class ExpectedStatsTools implements FplTool {
             SeasonContext season = seasonResolver.resolve();
             int limit = Math.max(1, Math.min(lastN, MAX_FIXTURES));
             PlayerNameSearch.Fragment match = names.fragment(playerName, "p.web_name",
-                    "p.web_name || ' ' || p.first_name || ' ' || p.second_name",
+                    "p.web_name || ' ' || COALESCE(p.first_name, '') || ' ' || COALESCE(p.second_name, '')",
                     "t.name || ' ' || t.short_name");
             List<Object> args = new ArrayList<>();
             args.add(season.seasonId());
