@@ -39,7 +39,7 @@ public class UsageService {
     public UsageService(JdbcTemplate jdbc,
                         @Value("${fpl.user.usage-table-name}") String usageTable,
                         @Value("${fpl.user.profile-table-name}") String profileTable,
-                        @Value("${fpl.quota.free-messages-per-week}") int freeLimit) {
+                        @Value("${fpl.quota.free-messages-per-gameweek}") int freeLimit) {
         this.jdbc = jdbc;
         this.usageTable = usageTable;
         this.profileTable = profileTable;
@@ -140,7 +140,7 @@ public class UsageService {
                 Integer.class, userId);
         Integer override = stored.isEmpty() ? null : stored.getFirst();
         // The sentinel applies to the configured default too. It is documented beside the
-        // property, so someone will set QUOTA_FREE_MESSAGES_PER_WEEK=-1 to open the gates — and
+        // property, so someone will set QUOTA_FREE_MESSAGES_PER_GAMEWEEK=-1 to open the gates — and
         // reading it literally would refuse every account with "all -1 messages used".
         int limit = override == null ? limitFor(plan) : override;
         return limit < 0 ? null : limit;

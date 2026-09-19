@@ -39,7 +39,7 @@ class UsageServiceTest {
     @Value("${fpl.user.conversation-table-name}")
     String conversationTable;
 
-    @Value("${fpl.quota.free-messages-per-week}")
+    @Value("${fpl.quota.free-messages-per-gameweek}")
     int freeLimit;
 
     @AfterEach
