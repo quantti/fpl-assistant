@@ -63,20 +63,28 @@ export default function PrivacyPage() {
           </p>
           <p>
             Strategy-document search queries are sent to OpenAI to create embeddings even when a
-            different chat provider is configured. We have not verified provider-specific region,
-            retention, training or transfer terms for publication, so this notice does not promise
-            EU-only processing, no provider retention, no training use or particular contractual
-            safeguards. These services may process data outside the EEA; contact the controller for
-            the arrangements applying to your request.
+            different chat provider is configured. OpenAI’s published{' '}
+            <a href="https://platform.openai.com/docs/guides/your-data">API data policy</a> says API
+            data is not used to train or improve its models unless the customer opts in. It also
+            says default abuse-monitoring logs may contain prompts and responses and are retained
+            for up to 30 days, with legal and safety exceptions. We have not inspected this
+            project’s OpenAI opt-in, retention-control or region settings, so those public defaults
+            are not a guarantee about the account. This notice does not promise EU-only processing,
+            zero retention or that an optional retention control is enabled.
           </p>
         </section>
 
         <section>
           <h2>Where data is handled</h2>
           <p>
-            Supabase provides authentication and database storage. The application is hosted on
-            Fly.io in Paris. This does not mean that every supplier or every processing operation
-            remains in the EU.
+            Supabase provides authentication and database storage. The application is configured to
+            run on Fly.io in Paris. This does not mean that every supplier or every processing
+            operation remains in the EU. Supabase publishes a{' '}
+            <a href="https://supabase.com/legal/dpa">data processing addendum</a>, and Fly.io makes
+            its DPA available to signed-in customers through its{' '}
+            <a href="https://fly.io/documents">compliance documents page</a>. These public documents
+            do not establish which agreement, region or transfer setting applies to this project;
+            contact the controller for the arrangements applying to your request.
           </p>
         </section>
 

@@ -40,7 +40,16 @@ it('states the controller, purposes, storage and processing boundaries accuratel
   expect(text).toContain('cached for minutes');
   expect(text).toContain('Production is documented as using OpenAI for chat');
   expect(text).toContain('search queries are sent to OpenAI to create embeddings');
-  expect(text).toContain('Fly.io in Paris');
+  expect(text).toContain('not used to train or improve its models unless the customer opts in');
+  expect(text).toContain('retained for up to 30 days');
+  expect(text).toContain('public defaults are not a guarantee about the account');
+  expect(
+    page.querySelector('a[href="https://platform.openai.com/docs/guides/your-data"]'),
+  ).not.toBeNull();
+  expect(text).toContain('configured to run on Fly.io in Paris');
+  expect(page.querySelector('a[href="https://supabase.com/legal/dpa"]')).not.toBeNull();
+  expect(page.querySelector('a[href="https://fly.io/documents"]')).not.toBeNull();
+  expect(text).toContain('do not establish which agreement, region or transfer setting applies');
   expect(text).toContain('process your IP address');
   expect(text).toContain('removed after 14 days');
   expect(text).toContain('ordinary operational logs');

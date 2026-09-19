@@ -1,14 +1,25 @@
 # Status — Phase 1
 
+## Privacy vendor and retention research (2026-09-19)
+
+`docs/PRIVACY-OPERATIONS.md` records official OpenAI, Supabase and Fly sources, separates their
+public terms from unverified project-account settings, inventories personal-data stores, and
+proposes—but does not activate—bounded retention and a manual DSAR workflow. The public notice now
+states OpenAI's no-training-unless-opt-in and default up-to-30-day abuse-log policy with explicit
+account-setting qualifications, and links the official Supabase and Fly DPA routes. Owner decisions
+remain on retention periods, account inactivity, invite tombstones, DPAs/transfers, regions,
+backups/logs and the current SMTP provider.
+
 ## Privacy disclosure publication blockers
 
-The public notice deliberately makes no GDPR-compliance claim. Before publishing stronger vendor
-assurances, operations must verify the active AI provider's processing region, retention/training
-terms and any international-transfer arrangements. The current notice says these points are
-unverified and that processing may occur outside the EEA; it does not invent EU-only processing,
-no-training terms or safeguards that have not been checked. The notice distinguishes 14-day chat
-traces from ordinary operational logs, whose retention follows the relevant service configuration,
-and discloses IP-address processing for request rate limiting.
+The public notice deliberately makes no GDPR-compliance claim. It now reports OpenAI's public API
+policy—no model training unless the customer opts in and default abuse-monitoring retention up to
+30 days with exceptions—but explicitly says the project's opt-in, retention-control and region
+settings were not inspected. Before publishing account-specific assurances, operations must verify
+the active provider, region, controls, DPA and international-transfer arrangements. The notice does
+not invent EU-only processing, zero retention or contractual safeguards. It distinguishes 14-day
+chat traces from ordinary operational logs, whose retention follows the relevant service
+configuration, and discloses IP-address processing for request rate limiting.
 
 The browser-storage notice is informational, not a consent banner: Supabase auth tokens/session
 and Mantine's theme preference use `localStorage`, while the “Got it” acknowledgement uses only
