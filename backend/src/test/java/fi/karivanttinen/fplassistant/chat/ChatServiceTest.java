@@ -63,7 +63,7 @@ class ChatServiceTest {
         AtomicReference<StreamAdvisor> usageAdvisor = new AtomicReference<>();
         when(chatClient.prompt()).thenReturn(requestSpec);
         when(requestSpec.messages(anyList())).thenReturn(requestSpec);
-        when(requestSpec.tools(any(Object[].class))).thenReturn(requestSpec);
+        when(requestSpec.toolCallbacks(anyList())).thenReturn(requestSpec);
         when(requestSpec.toolContext(anyMap())).thenReturn(requestSpec);
         when(requestSpec.advisors(any(Advisor[].class))).thenAnswer(invocation -> {
             usageAdvisor.set(invocation.getArgument(0));
@@ -412,13 +412,27 @@ class ChatServiceTest {
 
     @Test
     void everyInjectedToolIsRegistered() {
-        List<FplTool> tools = List.of(new FplTool() {}, new FplTool() {}, new FplTool() {});
+        List<FplTool> tools = List.of(new RegisteredToolA(), new RegisteredToolB(), new RegisteredToolC());
         ChatService service = serviceStreaming(tools, Flux.empty());
 
         service.stream(List.of(new ChatTurn(ChatTurn.USER, "hi")), USER, IGNORE_USAGE).blockLast();
 
-        ArgumentCaptor<Object[]> captor = ArgumentCaptor.forClass(Object[].class);
-        verify(requestSpec).tools(captor.capture());
-        assertThat(captor.getValue()).containsExactlyElementsOf(tools);
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<org.springframework.ai.tool.ToolCallback>> captor =
+                ArgumentCaptor.forClass(List.class);
+        verify(requestSpec).toolCallbacks(captor.capture());
+        assertThat(captor.getValue()).hasSize(tools.size());
+    }
+
+    private static final class RegisteredToolA implements FplTool {
+        @org.springframework.ai.tool.annotation.Tool String toolA() { return "a"; }
+    }
+
+    private static final class RegisteredToolB implements FplTool {
+        @org.springframework.ai.tool.annotation.Tool String toolB() { return "b"; }
+    }
+
+    private static final class RegisteredToolC implements FplTool {
+        @org.springframework.ai.tool.annotation.Tool String toolC() { return "c"; }
     }
 }
