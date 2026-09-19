@@ -4290,6 +4290,44 @@ Chromium screenshots at 1280px and 375px in both schemes, with the sidebar overl
 the dev server with a stubbed session and no backend. Measured `.root` height unchanged after
 inserting 3000px of content, i.e. still height-bounded. Head to Head from the mockup is not built.
 
+## Owned sync — Supabase egress containment (2026-09-19)
+
+Supabase reported organisation egress at **88.78 GB / 5.5 GB** and shortened the Fair Use grace
+to 2026-09-21. This is not just a past STAGING spike. `pg_stat_statements` showed 59,812 calls to
+the query returning a complete canonical bootstrap/fixtures body pair; a live 60.6-second sample
+while ACTIVE recorded **56 more calls**. At about 1.88 MiB per pair that workload alone was running
+near 105 MiB/minute (about 6.2 GiB/hour) during the backlog. Even an otherwise idle five-second
+planner would repeatedly read the same pair up to twelve times a minute. One Fly machine was
+running, so duplicate application instances do not explain it.
+
+Payload storage and transfer are different facts. The retained bodies totalled about 940 MiB when
+uncompressed, led by about 743 MiB of bootstrap copies, but TOAST compression kept
+`fpl_sync_payload` at 169 MiB physical and the whole database at 249 MiB. The hourly 24-hour
+retention is running: `pg_stat_statements` records 45 deletes / 8,313 rows, and only 37.5 MiB logical
+was currently old enough and terminal enough to delete. Retention controls storage; PostgreSQL
+expands the selected `bytea` bodies on the wire, so it does not control this egress defect.
+
+Immediate containment was a normal mode transition to **OFF epoch 61**, application UP, with no
+active queue left; Kuma 18 was paused only after OFF was verified. Tapas core writes remain disabled,
+so there is deliberately no core writer during this short hotfix window. Do not leave this state
+in place after a reviewed fix, and do not re-enable Tapas as an unreviewed shortcut.
+
+The hotfix keeps the metadata candidate query and exact season/generation/payload-id/endpoint/
+VALID/runtime-epoch recheck on every lookup, but retains the raw immutable pair in a two-entry,
+process-local LRU. Concurrent misses are single-flight. Strict parsing and newest-valid fallback
+stay in each caller; a validation update evicts matching entries and payload pruning clears the
+small cache. Thus a stable pair crosses the Supabase connection once per process instead of once
+per planner/history/catalogue call. The bound is two pairs (8 MiB at the schema's absolute payload
+caps; normally about 3.8 MiB).
+
+Verified locally against a disposable database: 11 planner/store integration tests plus the
+full-size 657-player Spring web-context pressure test pass. Regressions cover repeated malformed-
+newest fallback without another body read, invalidation between candidate selection and cache
+recheck, three concurrent readers producing one body query, and defensive byte arrays. The hard
+scope peaked at 1,494 MiB with at least 2,651 MiB host memory available. Independent review found
+no actionable issue. Production egress reduction is not verified until the reviewed release is
+ACTIVE and `pg_stat_statements` is sampled again.
+
 ## Owned sync — a wait for histories is not a failed attempt (2026-09-18)
 
 Two of the forty backlog fixtures (4 and 40) never verified. The request ceiling held them past
