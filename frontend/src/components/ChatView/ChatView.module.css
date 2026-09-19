@@ -19,16 +19,14 @@
  * `env(safe-area-inset-bottom)` on the composer's own box is all that's
  * needed — nothing here clips or duplicates it.
  *
- * `--app-height` is written by useKeyboardAwareViewport only while an iOS
- * software keyboard is up — WebKit ignores interactive-widget=resizes-content
- * (bug 259770), so dvh stays full-height there and the keyboard would cover
- * the composer. Elsewhere the property is absent and the fallback is exactly
- * what it was.
+ * App owns the visual-viewport height so its in-flow storage notice reserves
+ * exactly its rendered height. This shell fills the remaining space, including
+ * while useKeyboardAwareViewport reduces the app for an iOS software keyboard.
  */
 .shell {
   display: flex;
   flex-direction: column;
-  height: var(--app-height, 100dvh);
+  height: 100%;
   background: var(--paper);
   color: var(--ink);
 }
@@ -144,8 +142,10 @@
 .empty {
   flex: 1;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: var(--space-16);
   /* Was var(--mantine-color-dimmed), which resolved to Mantine's own #868E96
      — 3.14:1 on --paper at this size, a WCAG AA failure on the first screen
      every user sees. theme.ts now maps --mantine-color-dimmed onto --muted
@@ -155,6 +155,21 @@
   font-size: var(--text-sm);
   text-align: center;
   padding: var(--space-32);
+}
+
+.empty p {
+  margin: 0;
+}
+
+.chatDisclosure {
+  max-width: 34rem;
+  font-size: var(--text-xs);
+  line-height: 1.5;
+}
+
+.chatDisclosure a {
+  color: inherit;
+  font-weight: 700;
 }
 
 @media (min-width: 640px) {

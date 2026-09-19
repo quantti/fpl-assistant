@@ -1,0 +1,88 @@
+.page {
+  min-height: 100%;
+  padding: 0 var(--space-24) var(--space-48);
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-ui);
+}
+
+.header,
+.content {
+  width: 100%;
+  max-width: 48rem;
+  margin: 0 auto;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 72px;
+  border-bottom: 1px solid var(--rule-row);
+}
+
+.header a {
+  color: var(--ink);
+  font-size: var(--text-sm);
+}
+
+.brand {
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.content {
+  padding-top: var(--space-48);
+  padding-bottom: var(--space-48);
+}
+
+.content h1 {
+  margin: 0 0 var(--space-16);
+  font-size: var(--text-display);
+}
+
+.content h2 {
+  margin: 0 0 var(--space-12);
+  font-size: var(--text-lg);
+}
+
+.content section {
+  padding: var(--space-24) 0;
+  border-top: 1px solid var(--rule-row);
+}
+
+.content p,
+.content li {
+  font-family: var(--font-reading);
+  font-size: var(--text-base);
+  line-height: 1.6;
+}
+
+.content p {
+  margin: 0 0 var(--space-16);
+}
+
+.content ul {
+  display: grid;
+  gap: var(--space-12);
+  padding-left: var(--space-24);
+}
+
+.content a {
+  color: var(--ink);
+  font-weight: 650;
+}
+
+@media (max-width: 36rem) {
+  .page {
+    padding-inline: var(--space-16);
+  }
+
+  .header {
+    min-height: 64px;
+  }
+
+  .content {
+    padding-top: var(--space-32);
+  }
+}
