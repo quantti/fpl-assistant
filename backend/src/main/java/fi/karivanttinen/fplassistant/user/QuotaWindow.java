@@ -5,9 +5,11 @@ import java.time.Instant;
 /**
  * The period one message allowance covers.
  *
- * <p>Bounds are half-open, {@code from} inclusive and {@code until} exclusive, and either may be
- * null for unbounded — which is what the off-season is before the first deadline has ever been
- * captured, and after the last one until the new season is published.
+ * <p>Bounds are half-open, {@code from} inclusive and {@code until} exclusive. On a real window
+ * {@code from} is always known: a period whose start nothing records is not a window but the
+ * fallback, because counting from the beginning of time would charge an account for every message
+ * it has ever sent. {@code until} may be null — the off-season after the last captured deadline,
+ * before the new season is published.
  *
  * <p>A {@link Kind#FALLBACK} window carries no bounds, no gameweek and no season. Its counting
  * lives in the rolling-window query it delegates to, and a second copy of those bounds here would

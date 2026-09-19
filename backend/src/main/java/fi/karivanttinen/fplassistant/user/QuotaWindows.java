@@ -8,7 +8,6 @@ import fi.karivanttinen.fplassistant.schedule.ScheduleSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Component;
 
 /**
@@ -85,7 +84,11 @@ public class QuotaWindows {
                 return List.of();
             }
             return all;
-        } catch (DataAccessException e) {
+        } catch (RuntimeException e) {
+            // Not only DataAccessException: ScheduleSource.instantOf throws IllegalStateException
+            // by design when a timestamp column comes back as an unexpected type. This runs inside
+            // every chat turn's claim, so letting anything escape would 500 every message — which
+            // is the fail-closed outage this class exists to avoid.
             log.warn("quota window: schedule unreadable; counting the rolling window", e);
             return List.of();
         }
@@ -113,12 +116,20 @@ public class QuotaWindows {
             }
         }
 
-        if (previous != null && next != null && previous.season().equals(next.season())) {
+        if (previous == null) {
+            // Every captured deadline is still ahead: nothing says when this period began, and an
+            // unbounded count would charge the account for every message it has ever sent —
+            // months of history against one off-season allowance. Nothing is known, so nothing is
+            // claimed. The changeover gap is the other case and keeps its lower bound, because
+            // the season that ended supplies one.
+            return new QuotaWindow(QuotaWindow.Kind.FALLBACK, null, null, gameweekLimit,
+                    null, null);
+        }
+        if (next != null && previous.season().equals(next.season())) {
             return new QuotaWindow(QuotaWindow.Kind.GAMEWEEK, previous.deadline(), next.deadline(),
                     gameweekLimit, next.gameweek(), next.season());
         }
-        return new QuotaWindow(QuotaWindow.Kind.OFF_SEASON,
-                previous == null ? null : previous.deadline(),
+        return new QuotaWindow(QuotaWindow.Kind.OFF_SEASON, previous.deadline(),
                 next == null ? null : next.deadline(),
                 offSeasonLimit, null, next != null ? next.season() : previous.season());
     }

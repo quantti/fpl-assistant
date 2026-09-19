@@ -80,9 +80,12 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
   from **every captured season's** deadlines read as one timeline: the newest season alone cannot
   see the changeover, and a preseason request would then count the whole previous season against a
   user. Both ends present and naming the same season is a gameweek window at the gameweek
-  allowance; anything else — the gap between two seasons, or either edge of the timeline — is one
+  allowance; a known start whose next deadline is absent or belongs to another season is one
   off-season window at its own larger allowance, a single window for the whole break that does not
-  reset inside itself. **The capture's freshness is deliberately not checked**, unlike
+  reset inside itself. **A window always knows when it began** — when every captured deadline is
+  still ahead, nothing records the start, and counting from the beginning of time would charge an
+  account for every message it has ever sent, so that case is the fallback rather than an
+  unbounded window. **The capture's freshness is deliberately not checked**, unlike
   `HorizonFixtures`: the schedule sync refuses to write all summer, so requiring it would abolish
   the off-season window, and a deadline that moved late shifts a quota boundary by hours where a
   moved fixture makes a horizon meaningless. Only the newest season's events must be a clean 1..38

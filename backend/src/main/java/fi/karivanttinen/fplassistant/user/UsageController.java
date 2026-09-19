@@ -72,14 +72,18 @@ public class UsageController {
         // A suspended account (limit 0) is told neither count nor limit — the same silence the
         // 429 keeps: no number is the reason it cannot send, and "3 of 0 messages used" would
         // be a sentence about nothing. Unlimited falls out the same way: limit is null.
-        boolean statesTheNumbers = quota.plan() == Plan.FREE && quota.limit() != null && quota.limit() > 0;
+        boolean suspended = quota.limit() != null && quota.limit() == 0;
+        boolean statesTheNumbers = quota.plan() == Plan.FREE && !suspended && quota.limit() != null;
         QuotaWindow window = quota.window();
         return new UsageResponse(quota.plan(), remainingPercent(quota), quota.limit() == null,
                 quota.retryAfterSeconds().isEmpty() ? null : quota.nextFreeAt(),
                 statesTheNumbers ? quota.used() : null,
                 statesTheNumbers ? quota.limit() : null,
                 new WindowResponse(window.kind(), window.gameweek(), window.season()),
-                quota.resetsAt());
+                // A suspended account is not shown the reset either. It is the same silence the
+                // 429 keeps: the window does reopen, but not for this account, and pointing at
+                // the deadline would send it to wait for something that will not happen.
+                suspended ? null : quota.resetsAt());
     }
 
     private static int remainingPercent(UsageService.Quota quota) {

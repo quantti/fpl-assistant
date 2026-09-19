@@ -32,14 +32,20 @@ The window's **kind** follows from its two ends:
 | `prev` | `next` | same season | kind | limit |
 |---|---|---|---|---|
 | present | present | yes | `GAMEWEEK` | 20 |
-| anything else | | | `OFF_SEASON` | 100 |
+| present | absent, or another season | | `OFF_SEASON` | 100 |
+| absent | | | `FALLBACK` | 20 |
 
-`OFF_SEASON` therefore covers three shapes without needing a branch for each: the gap between one
-season's GW38 deadline and the next season's GW1 deadline, the period before any deadline has ever
-been captured, and the period after the last captured deadline when the new season's schedule has
-not been published yet. Its ends may be unbounded — `prev` null means "count everything before
-`next`", `next` null means "count everything after `prev`" — and it is **one window for the whole
-break**: it does not reset inside itself.
+`OFF_SEASON` therefore covers two shapes without needing a branch for each: the gap between one
+season's GW38 deadline and the next season's GW1 deadline, and the period after the last captured
+deadline when the new season's schedule has not been published yet. `next` may be null, which means
+"count everything after `prev`", and it is **one window for the whole break**: it does not reset
+inside itself.
+
+`prev` is never null on a real window. When every captured deadline is still ahead — the only
+captured season being one that has not started — nothing records when the period began, and an
+unbounded count would charge an account for every message it has ever sent: months of history
+against one off-season allowance. That case is the fallback instead. (Found in review of PR #115;
+the first draft of this spec made it an unbounded `OFF_SEASON` window.)
 
 ```
 … GW37 ──┬── GW38 ──────────── off-season ──────────── GW1 ──┬── GW2 …
@@ -82,7 +88,8 @@ one definition rather than two.
 ## Fallback
 
 When the window cannot be resolved — no capture at all, the latest season's events are not a clean
-1..38, or the read throws `DataAccessException` — the quota falls back to **exactly today's rule**:
+1..38, every captured deadline still ahead, or the read throws — the quota falls back to **exactly
+today's rule**:
 the rolling seven days at the gameweek limit, computed by the code that does it today, including
 the `OFFSET (used - limit)` helper in `nextFreeAt`.
 
@@ -91,7 +98,10 @@ already-tested path is what makes it trustworthy, and the alternative — a fixe
 reset instant — would leave a blocked user with no `Retry-After` at all.)
 
 Not fail-open: a broken capture must not uncap spend. Not fail-closed: one missing capture must not
-block every user. The response says the window is a fallback, because the UI must not name a
+block every user — which is why the read catches `RuntimeException` and not only
+`DataAccessException`: `ScheduleSource.instantOf` throws `IllegalStateException` by design, and
+this runs inside every chat turn's claim, so one malformed timestamp would otherwise 500 every
+message. The response says the window is a fallback, because the UI must not name a
 deadline it cannot see.
 
 ## Limits
@@ -125,16 +135,16 @@ public record QuotaWindow(Kind kind, Instant from, Instant until, int limit,
 }
 ```
 
-`from`/`until` are nullable and mean unbounded. `gameweek` is `next`'s id — the round the window is
-the run-up to — and is present for `GAMEWEEK` only. A `FALLBACK` window carries neither end nor a
-gameweek nor a season: its bounds live in the rolling-window SQL it delegates to, and duplicating
-them here would invite someone to read them instead.
+`from` is always set on a real window; `until` is null for an off-season whose next season has not
+been captured. `gameweek` is `next`'s id — the round the window is the run-up to — and is present
+for `GAMEWEEK` only. A `FALLBACK` window carries neither end nor a gameweek nor a season: its
+bounds live in the rolling-window SQL it delegates to, and duplicating them here would invite
+someone to read them instead.
 
 A `QuotaWindows` component resolves it: reads the deadline list, derives the window for a given
-`asOf`. The deadline list is cached app-wide for five minutes; the **window is always computed per
-call** from a fresh `asOf`, so a deadline passing is never hidden by the cache. The read is 38–76
-rows, but it runs inside the advisory-locked transaction in `claimChatTurn`, which is reason enough
-not to repeat it per request.
+`asOf`. Read every time rather than cached — two indexed reads of under a hundred rows are not
+worth a cache that a deadline passing, or a capture landing, would have to be told about, and a
+cache shared across a Spring context would show a test the previous test's schedule.
 
 ### `ScheduleSource` (extended)
 

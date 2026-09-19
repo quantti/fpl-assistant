@@ -4866,6 +4866,15 @@ before an August request is the previous season's GW38, so the gap between two s
 off-season window of its own, 100 messages for the whole break. The newest season alone would leave
 a preseason request with no lower bound and count the entire previous season against a user.
 
+A window always knows when it began. Where every captured deadline is still ahead — the only
+captured season being one that has not started — nothing records the start, so that case is the
+fallback rather than an unbounded window; counting from the beginning of time would charge an
+account for every message it had ever sent. Review of PR #115 caught this, along with a suspended
+account being shown the window's reset (it is now told nothing, the same silence the 429 keeps) and
+`QuotaWindows` catching only `DataAccessException` while `ScheduleSource.instantOf` throws
+`IllegalStateException` by design — which would have turned one malformed timestamp into a 500 on
+every chat turn, the exact fail-closed outage the fallback exists to prevent.
+
 Two rules are deliberate and would look like bugs to a later reader. **Freshness is not checked**,
 unlike `HorizonFixtures`: the schedule sync legitimately refuses to write all summer, so requiring
 a fresh capture would mean the off-season window could never occur — every off-season request would
