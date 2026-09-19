@@ -256,6 +256,23 @@ class PlannerRuntimeRepositoryIntegrationTest {
         assertThat(tracking.bodyPairQueries()).isEqualTo(2);
 
         assertThat(current.findInLatestValidPublicPayloadPairs(season.code(), 20,
+                pair -> {
+                    visited.incrementAndGet();
+                    try {
+                        CatalogueScheduleParser.parse(season,
+                                new SourceDocument(pair.bootstrap().body(), new ReadInterval(
+                                        pair.bootstrap().read().startedAt(), pair.bootstrap().read().finishedAt())),
+                                new SourceDocument(pair.fixtures().body(), new ReadInterval(
+                                        pair.fixtures().read().startedAt(), pair.fixtures().read().finishedAt())));
+                        return Optional.of(pair.runGeneration());
+                    } catch (IllegalArgumentException invalid) {
+                        return Optional.empty();
+                    }
+                })).contains(expected);
+        assertThat(visited).hasValue(4);
+        assertThat(tracking.bodyPairQueries()).isEqualTo(2);
+
+        assertThat(current.findInLatestValidPublicPayloadPairs(season.code(), 20,
                 incompleteAt.plusSeconds(1), pair -> {
                     throw new AssertionError("Stale bodies must not reach the visitor");
                 })).isEmpty();
@@ -269,12 +286,43 @@ class PlannerRuntimeRepositoryIntegrationTest {
         var store = new OwnedSyncStore(tracking, tx, Clock.fixed(FIRST, ZoneOffset.UTC), TABLES, fence);
         long older = stagePair(store, "2026-27", "older", FIRST, new byte[]{1}, new byte[]{2}, true);
         long newer = stagePair(store, "2026-27", "newer", FIRST, new byte[]{3}, new byte[]{4}, true);
+
+        assertThat(store.findInLatestValidPublicPayloadPairs("2026-27", 20, FIRST,
+                pair -> Optional.of(pair.runGeneration()))).contains(newer);
+        assertThat(tracking.bodyPairQueries()).isOne();
         tracking.afterCandidateQuery = () -> jdbc.update("UPDATE " + TABLES.payload()
                 + " SET validation_state='INVALID' WHERE run_generation=?", newer);
 
         assertThat(store.findInLatestValidPublicPayloadPairs("2026-27", 20, FIRST,
                 pair -> Optional.of(pair.runGeneration()))).contains(older);
         assertThat(tracking.bodyPairQueries()).isEqualTo(2);
+    }
+
+    @Test
+    void concurrentCanonicalPairSelectionsShareOneBodyLoadAndDefendBytes() throws Exception {
+        var fence = repository(FIRST).activate("2026-27", OwnedSyncMode.STAGING);
+        TrackingJdbcTemplate tracking = new TrackingJdbcTemplate(dataSource);
+        var store = new OwnedSyncStore(tracking, tx, Clock.fixed(FIRST, ZoneOffset.UTC), TABLES, fence);
+        stagePair(store, "2026-27", "shared", FIRST, new byte[]{1}, new byte[]{2}, true);
+        CountDownLatch start = new CountDownLatch(1);
+
+        try (var executor = Executors.newFixedThreadPool(3)) {
+            List<Future<byte[]>> selections = java.util.stream.IntStream.range(0, 3)
+                    .mapToObj(index -> executor.submit(() -> {
+                        start.await();
+                        return store.findInLatestValidPublicPayloadPairs("2026-27", 20,
+                                pair -> Optional.of(pair.bootstrap().body())).orElseThrow();
+                    })).toList();
+            start.countDown();
+            byte[] first = selections.getFirst().get();
+            first[0] = 99;
+            assertThat(selections.get(1).get()).containsExactly((byte) 1);
+            assertThat(selections.get(2).get()).containsExactly((byte) 1);
+        }
+        assertThat(tracking.bodyPairQueries()).isOne();
+        assertThat(store.findInLatestValidPublicPayloadPairs("2026-27", 20,
+                pair -> Optional.of(pair.bootstrap().body())).orElseThrow()).containsExactly((byte) 1);
+        assertThat(tracking.bodyPairQueries()).isOne();
     }
 
     @Test
