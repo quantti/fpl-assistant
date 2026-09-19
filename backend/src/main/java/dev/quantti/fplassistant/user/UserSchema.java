@@ -38,7 +38,7 @@ import org.springframework.stereotype.Component;
  * column carries all of it:
  *
  * <ul>
- *   <li>{@code NULL} — no override; the configured default ({@code fpl.quota.free-messages-per-week})
+ *   <li>{@code NULL} — no override; the configured default ({@code fpl.quota.free-messages-per-gameweek})
  *       applies. This is what almost every row holds.</li>
  *   <li>{@code -1} — unlimited. A sentinel rather than a second column, and enforced by a CHECK
  *       so a typo cannot invent a third meaning.</li>
