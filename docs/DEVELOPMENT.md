@@ -182,8 +182,12 @@ tests. Only `consistent-type-imports` was autofixed.
 
 ## The free tier and sign-up
 
-Every account is on the free tier: **20 messages per rolling seven days**
-(`fpl.quota.free-messages-per-week`, env `QUOTA_FREE_MESSAGES_PER_WEEK`). There is no `plan`
+Every account is on the free tier: **20 messages per gameweek**, counted from one FPL deadline to
+the next (`fpl.quota.free-messages-per-gameweek`, env `QUOTA_FREE_MESSAGES_PER_GAMEWEEK`), and
+**100 for the whole off-season** — the gap between two seasons, as one window
+(`fpl.quota.free-messages-off-season`, env `QUOTA_FREE_MESSAGES_OFF_SEASON`). With no usable
+schedule capture the count falls back to the rolling seven days at the gameweek number. There is
+no `plan`
 column — the tier is derived on every request, and Phase 5b adds the branch that asks whether a
 subscription entitles an account to more.
 
@@ -253,9 +257,11 @@ UPDATE fpl_invite_code c
 
 ## Per-user message limits
 
-The weekly quota is per person, held in `fpl_user_profile.weekly_message_limit`: `NULL` means the
-configured default (`fpl.quota.free-messages-per-week`), `-1` means unlimited, `0` suspends the
-account, and any other number is that many messages per rolling seven days. There is no admin
+The quota is per person, held in `fpl_user_profile.weekly_message_limit`: `NULL` means the
+window's own allowance, `-1` means unlimited, `0` suspends the account, and any other number is
+that many messages per window — whichever window is in force, since an override is a statement
+about the account rather than about the period. The column keeps its name because renaming it
+would buy a migration and nothing else. There is no admin
 screen; a limit is one statement, run with the `backend/.env.supabase` credentials:
 
 ```sql
