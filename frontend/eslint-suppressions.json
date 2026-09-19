@@ -186,12 +186,6 @@
     },
     "unicorn/no-global-object-property-assignment": {
       "count": 1
-    },
-    "unicorn/prefer-array-from-map": {
-      "count": 1
-    },
-    "unicorn/prefer-spread": {
-      "count": 2
     }
   },
   "src/components/AppMenu/AppMenu.tsx": {

@@ -46,23 +46,23 @@ afterEach(() => {
   vi.mocked(navigate).mockReset();
 });
 
-function mount(admin: boolean): HTMLDivElement {
+function mount(admin: boolean, route: '/app' | '/settings' = '/app'): HTMLDivElement {
   const host = document.createElement('div');
   document.body.append(host);
   root = createRoot(host);
-  act(() => root!.render(React.createElement(AppMenu, { route: '/', admin })));
+  act(() => root!.render(React.createElement(AppMenu, { route, admin })));
   return host;
 }
 
 function labels(host: HTMLElement): string[] {
-  return Array.from(host.querySelectorAll('button')).map((button) => button.textContent ?? '');
+  return [...host.querySelectorAll('button')].map((button) => button.textContent ?? '');
 }
 
 it('offers Admin only to an admin, and it opens /admin', () => {
   const host = mount(true);
   expect(labels(host)).toContain('Admin');
 
-  const admin = Array.from(host.querySelectorAll('button')).find((b) => b.textContent === 'Admin')!;
+  const admin = [...host.querySelectorAll('button')].find((b) => b.textContent === 'Admin')!;
   act(() => admin.click());
   expect(vi.mocked(navigate).mock.calls).toEqual([['/admin']]);
 });
@@ -70,4 +70,15 @@ it('offers Admin only to an admin, and it opens /admin', () => {
 it('has no Admin item for everyone else', () => {
   const host = mount(false);
   expect(labels(host)).not.toContain('Admin');
+});
+
+it('returns application pages to chat at /app', () => {
+  const host = mount(false, '/settings');
+  const back = [...host.querySelectorAll('button')].find(
+    (button) => button.textContent === 'Back to chat',
+  )!;
+
+  act(() => back.click());
+
+  expect(vi.mocked(navigate).mock.calls).toEqual([['/app']]);
 });
