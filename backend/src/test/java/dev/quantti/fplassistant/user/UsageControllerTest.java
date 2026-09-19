@@ -1,10 +1,14 @@
 package dev.quantti.fplassistant.user;
 
+import java.sql.Timestamp;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.UUID;
 
 import dev.quantti.fplassistant.testsupport.LocalSigningKey;
 import dev.quantti.fplassistant.testsupport.TestJwks;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -40,10 +44,64 @@ class UsageControllerTest {
     @Value("${fpl.user.profile-table-name}")
     String profileTable;
 
+    @Value("${fpl.schedule.gameweek-table-name}")
+    String gameweekTable;
+
+    /** Cleared around every test: these rows decide which window the response describes. */
+    @BeforeEach
     @AfterEach
     void clear() {
         jdbc.update("DELETE FROM " + usageTable + " WHERE user_id = ?", UUID.fromString(USER));
         jdbc.update("DELETE FROM " + profileTable + " WHERE user_id = ?", UUID.fromString(USER));
+        jdbc.update("DELETE FROM " + gameweekTable);
+    }
+
+    /** A whole season of weekly deadlines, GW1 two days ago: the window is the run-up to GW2. */
+    private void seedSeasonUnderway() {
+        Instant first = Instant.now().minus(Duration.ofDays(2));
+        Instant captured = Instant.now();
+        for (int index = 0; index < 38; index++) {
+            jdbc.update("INSERT INTO " + gameweekTable
+                    + " (season, id, name, deadline_time, captured_at) VALUES (?, ?, ?, ?, ?)",
+                    "2097/98", index + 1, "Gameweek " + (index + 1),
+                    Timestamp.from(first.plus(Duration.ofDays(7L * index))),
+                    Timestamp.from(captured));
+        }
+    }
+
+    /**
+     * The window travels with the numbers. Without it the page would have to guess what period
+     * "12 of 20" describes, and it would guess "this week" — which is what this ticket removed.
+     */
+    @Test
+    void aGameweekWindowNamesItsRoundAndItsReset() throws Exception {
+        seedSeasonUnderway();
+        setLimit(10);
+        seedChatEvents(3);
+
+        mockMvc.perform(get("/api/usage")
+                .header("Authorization", "Bearer " + TestJwks.validTokenFor(USER)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.window.kind").value("GAMEWEEK"))
+                .andExpect(jsonPath("$.window.gameweek").value(2))
+                .andExpect(jsonPath("$.window.season").value("2097/98"))
+                .andExpect(jsonPath("$.resetsAt").isNotEmpty())
+                .andExpect(jsonPath("$.used").value(3))
+                // Nothing to wait for while messages remain; the reset is the forward-looking fact.
+                .andExpect(jsonPath("$.nextFreeAt").doesNotExist());
+    }
+
+    /** No usable capture: the rolling week, and no reset instant to claim, because there is none. */
+    @Test
+    void theFallbackSaysSoAndOffersNoReset() throws Exception {
+        setLimit(10);
+        seedChatEvents(3);
+
+        mockMvc.perform(get("/api/usage")
+                .header("Authorization", "Bearer " + TestJwks.validTokenFor(USER)))
+                .andExpect(jsonPath("$.window.kind").value("FALLBACK"))
+                .andExpect(jsonPath("$.window.gameweek").doesNotExist())
+                .andExpect(jsonPath("$.resetsAt").doesNotExist());
     }
 
     @Test
