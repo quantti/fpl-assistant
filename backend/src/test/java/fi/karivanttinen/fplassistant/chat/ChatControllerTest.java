@@ -1,5 +1,8 @@
 package fi.karivanttinen.fplassistant.chat;
 
+import java.sql.Timestamp;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -98,6 +101,9 @@ class ChatControllerTest {
     @Value("${fpl.user.profile-table-name}")
     String profileTable;
 
+    @Value("${fpl.schedule.gameweek-table-name}")
+    String gameweekTable;
+
     WebTestClient client;
 
     @BeforeEach
@@ -110,6 +116,7 @@ class ChatControllerTest {
      * leaves them behind eventually spends the account's weekly quota and fails a later run with
      * a 429 that has nothing to do with the code.
      */
+    @BeforeEach
     @AfterEach
     void clear() {
         for (String user : new String[] {USER_A, USER_B}) {
@@ -117,6 +124,22 @@ class ChatControllerTest {
             jdbc.update("DELETE FROM " + conversationTable + " WHERE user_id = ?", id);
             jdbc.update("DELETE FROM " + usageTable + " WHERE user_id = ?", id);
             jdbc.update("DELETE FROM " + profileTable + " WHERE user_id = ?", id);
+        }
+        // The rows here decide which window a refusal names, so a capture left by another suite
+        // would rewrite this one's expected message.
+        jdbc.update("DELETE FROM " + gameweekTable);
+    }
+
+    /** A whole season of weekly deadlines, GW1 two days ago: the window is the run-up to GW2. */
+    private void seedSeasonUnderway() {
+        Instant first = Instant.now().minus(Duration.ofDays(2));
+        Instant captured = Instant.now();
+        for (int index = 0; index < 38; index++) {
+            jdbc.update("INSERT INTO " + gameweekTable
+                    + " (season, id, name, deadline_time, captured_at) VALUES (?, ?, ?, ?, ?)",
+                    "2097/98", index + 1, "Gameweek " + (index + 1),
+                    Timestamp.from(first.plus(Duration.ofDays(7L * index))),
+                    Timestamp.from(captured));
         }
     }
 
@@ -144,6 +167,33 @@ class ChatControllerTest {
                 .as("a turn nobody was allowed to take leaves no conversation")
                 .isEmpty();
         org.mockito.Mockito.verifyNoInteractions(chatService);
+    }
+
+    /**
+     * The refusal names the round the messages belonged to, and sends the caller back at that
+     * round's deadline rather than at some per-message anniversary.
+     */
+    @Test
+    void aSpentGameweekQuotaNamesTheRoundAndRetriesAtItsDeadline() {
+        seedSeasonUnderway();
+        jdbc.update("INSERT INTO " + profileTable + " (user_id, weekly_message_limit) VALUES (?, 1)",
+                UUID.fromString(USER_A));
+        jdbc.update("INSERT INTO " + usageTable + " (user_id, event_type, created_at)"
+                + " VALUES (?, 'chat', now() - interval '1 hour')", UUID.fromString(USER_A));
+
+        client.post().uri("/api/chat")
+                .header("Authorization", "Bearer " + TestJwks.validTokenFor(USER_A))
+                .contentType(MediaType.APPLICATION_JSON)
+                .bodyValue("{\"message\":\"one too many\"}")
+                .exchange()
+                .expectStatus().isEqualTo(429)
+                .expectHeader().value("Retry-After", retryAfter ->
+                        assertThat(Long.parseLong(retryAfter))
+                                .as("the GW2 deadline is five days out")
+                                .isBetween(Duration.ofDays(4).toSeconds(),
+                                        Duration.ofDays(5).toSeconds()))
+                .expectBody(String.class)
+                .isEqualTo("You have used all 1 of your messages for gameweek 2.");
     }
 
     /**
