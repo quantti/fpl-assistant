@@ -1,8 +1,8 @@
 /** The three scroll metrics of the thread element; a plain object so the decision is testable. */
 export interface ScrollMetrics {
-  scrollHeight: number
-  scrollTop: number
-  clientHeight: number
+  scrollHeight: number;
+  scrollTop: number;
+  clientHeight: number;
 }
 
 /**
@@ -10,7 +10,7 @@ export interface ScrollMetrics {
  * that the tail of a smooth scroll does not read as the reader having left; narrow enough
  * that one scrolled-up line does.
  */
-export const FOLLOW_TOLERANCE = 40
+export const FOLLOW_TOLERANCE = 40;
 
 /**
  * Whether the thread should keep following its bottom as content arrives.
@@ -21,5 +21,5 @@ export const FOLLOW_TOLERANCE = 40
  * be read until it has finished, which is the report behind KAR-46.
  */
 export function followsBottom(el: ScrollMetrics): boolean {
-  return el.scrollHeight - el.scrollTop - el.clientHeight < FOLLOW_TOLERANCE
+  return el.scrollHeight - el.scrollTop - el.clientHeight < FOLLOW_TOLERANCE;
 }

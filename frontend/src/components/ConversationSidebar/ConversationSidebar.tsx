@@ -1,16 +1,16 @@
-import { Conversation } from '../../types'
-import classes from './ConversationSidebar.module.css'
+import { type Conversation } from '../../types';
+import classes from './ConversationSidebar.module.css';
 
 interface Props {
-  conversations: Conversation[]
-  currentId: string | null
-  onSelect: (id: string) => void
-  onNew: () => void
+  conversations: Conversation[];
+  currentId: string | null;
+  onSelect: (id: string) => void;
+  onNew: () => void;
   /** Below the 640px breakpoint the sidebar is an overlay; above it this does nothing. */
-  open: boolean
+  open: boolean;
   /** The list could not be read — say so instead of showing an empty column. */
-  failed: boolean
-  onRetry: () => void
+  failed: boolean;
+  onRetry: () => void;
 }
 
 /**
@@ -20,7 +20,13 @@ interface Props {
  * because a row the user cannot see is a conversation they cannot get back to.
  */
 export default function ConversationSidebar({
-  conversations, currentId, onSelect, onNew, open, failed, onRetry,
+  conversations,
+  currentId,
+  onSelect,
+  onNew,
+  open,
+  failed,
+  onRetry,
 }: Props) {
   return (
     <nav className={`${classes.sidebar} ${open ? classes.open : ''}`} aria-label="Conversations">
@@ -30,12 +36,14 @@ export default function ConversationSidebar({
       {failed && (
         <p className={classes.failed}>
           Conversations could not be loaded.{' '}
-          <button type="button" className={classes.retry} onClick={onRetry}>Try again</button>
+          <button type="button" className={classes.retry} onClick={onRetry}>
+            Try again
+          </button>
         </p>
       )}
       <div className={classes.heading}>Conversations</div>
       <ul className={classes.list}>
-        {conversations.map(conversation => (
+        {conversations.map((conversation) => (
           <li key={conversation.id}>
             <button
               type="button"
@@ -49,5 +57,5 @@ export default function ConversationSidebar({
         ))}
       </ul>
     </nav>
-  )
+  );
 }

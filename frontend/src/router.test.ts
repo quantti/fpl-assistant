@@ -1,16 +1,16 @@
-import { describe, expect, it } from 'vitest'
-import { routeFromPath } from './router'
+import { describe, expect, it } from 'vitest';
+import { routeFromPath } from './router';
 
 describe('client routes', () => {
   it('recognizes the shortlist deep link', () => {
-    expect(routeFromPath('/shortlist')).toBe('/shortlist')
-  })
+    expect(routeFromPath('/shortlist')).toBe('/shortlist');
+  });
 
   it('keeps unknown paths on chat', () => {
-    expect(routeFromPath('/not-a-page')).toBe('/')
-  })
+    expect(routeFromPath('/not-a-page')).toBe('/');
+  });
 
   it('recognizes the admin deep link', () => {
-    expect(routeFromPath('/admin')).toBe('/admin')
-  })
-})
+    expect(routeFromPath('/admin')).toBe('/admin');
+  });
+});

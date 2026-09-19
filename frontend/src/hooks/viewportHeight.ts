@@ -1,15 +1,15 @@
 /** The subset of VisualViewport the decision needs; a plain object so it can be tested. */
 export interface ViewportMetrics {
-  height: number
-  offsetTop: number
-  scale: number
+  height: number;
+  offsetTop: number;
+  scale: number;
 }
 
 /**
  * Smallest gap between the window and the visual viewport that is read as a keyboard. The
  * collapsing URL bar is under 100px on every iPhone; the smallest keyboard is over 250.
  */
-export const KEYBOARD_MIN_INSET = 100
+export const KEYBOARD_MIN_INSET = 100;
 
 /**
  * The height the app shell should take, in CSS px, or null when CSS's own `100dvh` is the
@@ -22,8 +22,8 @@ export const KEYBOARD_MIN_INSET = 100
  * on every desktop browser.
  */
 export function keyboardAwareHeight(vv: ViewportMetrics, innerHeight: number): number | null {
-  if (vv.scale > 1.01) return null
-  const inset = innerHeight - vv.height
-  if (inset < KEYBOARD_MIN_INSET) return null
-  return vv.height
+  if (vv.scale > 1.01) return null;
+  const inset = innerHeight - vv.height;
+  if (inset < KEYBOARD_MIN_INSET) return null;
+  return vv.height;
 }

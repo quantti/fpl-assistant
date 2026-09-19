@@ -1,10 +1,10 @@
-import { Loader } from '@mantine/core'
-import type { CataloguePlayer, PlayerCatalogue } from '../../types'
-import { ShortlistPlayer, useShortlist } from '../../shortlist/ShortlistContext'
-import classes from './ShortlistPage.module.css'
+import { Loader } from '@mantine/core';
+import type { CataloguePlayer, PlayerCatalogue } from '../../types';
+import { type ShortlistPlayer, useShortlist } from '../../shortlist/ShortlistContext';
+import classes from './ShortlistPage.module.css';
 
 export default function ShortlistPage() {
-  const shortlist = useShortlist()
+  const shortlist = useShortlist();
 
   return (
     <main className={classes.page}>
@@ -22,27 +22,31 @@ export default function ShortlistPage() {
           </button>
         </div>
       ) : shortlist.players.length === 0 ? (
-        <p className={classes.state}>Your shortlist is empty. Add players from assistant answers.</p>
+        <p className={classes.state}>
+          Your shortlist is empty. Add players from assistant answers.
+        </p>
       ) : (
         <ul className={classes.list}>
-          {shortlist.players.map(player => (
+          {shortlist.players.map((player) => (
             <ShortlistRow key={`${player.season}:${player.elementId}`} player={player} />
           ))}
         </ul>
       )}
     </main>
-  )
+  );
 }
 
 function ShortlistRow({ player }: { player: ShortlistPlayer }) {
-  const shortlist = useShortlist()
-  const pending = shortlist.isPending(player.season, player.elementId)
+  const shortlist = useShortlist();
+  const pending = shortlist.isPending(player.season, player.elementId);
 
   return (
     <li className={classes.player}>
       <div className={classes.identity}>
         <strong>{player.fullName}</strong>
-        <span>{player.teamName} · {positionName(player.elementType)} · {seasonName(player.season)}</span>
+        <span>
+          {player.teamName} · {positionName(player.elementType)} · {seasonName(player.season)}
+        </span>
       </div>
       <button
         type="button"
@@ -53,11 +57,11 @@ function ShortlistRow({ player }: { player: ShortlistPlayer }) {
         {pending ? 'Removing…' : 'Remove'}
       </button>
     </li>
-  )
+  );
 }
 
 function catalogueFor(player: ShortlistPlayer): PlayerCatalogue {
-  return { catalogueId: player.catalogueId, season: player.season, players: [] }
+  return { catalogueId: player.catalogueId, season: player.season, players: [] };
 }
 
 function cataloguePlayerFor(player: ShortlistPlayer): CataloguePlayer {
@@ -69,13 +73,13 @@ function cataloguePlayerFor(player: ShortlistPlayer): CataloguePlayer {
     teamName: player.teamName,
     elementType: player.elementType,
     aliases: [],
-  }
+  };
 }
 
 export function positionName(elementType: number): string {
-  return ['Goalkeeper', 'Defender', 'Midfielder', 'Forward'][elementType - 1] ?? 'Unknown position'
+  return ['Goalkeeper', 'Defender', 'Midfielder', 'Forward'][elementType - 1] ?? 'Unknown position';
 }
 
 export function seasonName(season: string): string {
-  return `${season.replace('-', '/')} season`
+  return `${season.replace('-', '/')} season`;
 }
