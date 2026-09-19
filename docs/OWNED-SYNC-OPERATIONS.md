@@ -1,23 +1,19 @@
-# Owned sync operations (pre-cutover)
+# Owned sync operations
 
-This is an implementation reference, not authorization to activate the owned writer. No production
-mode, webhook destination, monitor, repository variable, URL, or secret is configured by this change.
-Do not use a manual Fly deploy.
+Production cut over to the assistant-owned writer on 2026-09-16. Tapas runs through its restricted
+`tapas_runtime` login with `FPL_CORE_WRITES_ENABLED=false`; do not restore a second writer without
+the documented rollback fence. Deploy through the reviewed GitHub workflow, not manual Fly deploy.
 
-Latest supervised outcome (2026-09-15, after PR #103): **OFF epoch 43**, application UP,
-Tapas still the writer and Kuma 18 paused.
+Latest containment (2026-09-19): Supabase reported 88.78 GB egress, and a live measurement tied
+about 105 MiB/minute during backlog work to repeated reads of the same canonical payload bodies.
+The normal transition to **OFF epoch 61** is verified, the application is UP and Kuma 18 is paused.
+Because Tapas core writes remain disabled, there is temporarily no core writer. A two-entry,
+metadata-revalidated canonical body cache is under review; after deployment, return directly to
+ACTIVE with the existing playing-season/cutover confirmation and verify the body-query call delta,
+heartbeats, queue progress, receipts and memory. Full evidence is in `docs/STATUS.md`.
 
-In attended epoch 42, all 78 canonical runs, 40 verification jobs and 659 history runs completed
-with no failures. Memory stayed at or below 545.5 MiB sampled RSS, with at least 260 MiB guest
-memory available. The batched watchdog opened 702 incidents in its first check and recovered all
-699 due-work ones.
-
-No fixture reached `VERIFIED` (40 `VERIFYING`), because the second observation batch was not
-reached. `FIXTURE_VERIFICATION_12H` and `MISSED_DAILY_CAPTURE` stayed open. Kuma DOWN mail
-delivery is verified; recovery mail is not. See [the memory report](OWNED-SYNC-MEMORY-REPORT.md).
-
-Resolve the Java PID by identity. Give each new activation its own bounded startup-heartbeat grace
-period.
+Before containment the current-season backlog held 40 `VERIFIED` fixtures. Resolve the Java PID by
+identity and give each new activation its own bounded startup-heartbeat grace period.
 
 ## Safe defaults and required configuration
 

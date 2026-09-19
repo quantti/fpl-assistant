@@ -6,7 +6,9 @@ import java.sql.Timestamp;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
@@ -34,12 +36,21 @@ public final class OwnedSyncStore {
             OwnedSyncSchema.MAX_RETAINED_PAYLOAD_BYTES_PER_RUN;
     public static final int MAX_ERROR_CHARS = 1_000;
     private static final Duration MAX_LEASE = Duration.ofHours(1);
+    private static final int PUBLIC_PAIR_CACHE_ENTRIES = 2;
 
     private final JdbcTemplate jdbc;
     private final TransactionTemplate tx;
     private final Clock clock;
     private final OwnedSyncTables tables;
     private final RuntimeFence runtimeFence;
+    private final Map<PublicPayloadPairCacheKey, PublicPayloadPair> publicPairCache =
+            new LinkedHashMap<>(PUBLIC_PAIR_CACHE_ENTRIES, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<PublicPayloadPairCacheKey,
+                        PublicPayloadPair> eldest) {
+                    return size() > PUBLIC_PAIR_CACHE_ENTRIES;
+                }
+            };
 
     /** Unfenced constructor retained for isolated store tooling; the owned runtime always supplies a fence. */
     public OwnedSyncStore(JdbcTemplate jdbc, TransactionTemplate tx, Clock clock, OwnedSyncTables tables) {
@@ -377,13 +388,48 @@ public final class OwnedSyncStore {
         for (PublicPayloadPairMetadata candidate : candidates) {
             if (minimumReadStart != null && (candidate.bootstrapStartedAt().isBefore(minimumReadStart)
                     || candidate.fixturesStartedAt().isBefore(minimumReadStart))) continue;
-            Optional<PublicPayloadPair> pair = loadPublicPayloadPair(validSeason, candidate);
+            Optional<PublicPayloadPair> pair = cachedOrLoadPublicPayloadPair(validSeason, candidate);
             if (pair.isEmpty()) continue;
             Optional<T> mapped = Objects.requireNonNull(visitor.apply(pair.get()),
                     "public payload pair visitor result");
             if (mapped.isPresent()) return mapped;
         }
         return Optional.empty();
+    }
+
+    private Optional<PublicPayloadPair> cachedOrLoadPublicPayloadPair(
+            String season, PublicPayloadPairMetadata candidate) {
+        PublicPayloadPairCacheKey key = new PublicPayloadPairCacheKey(season,
+                candidate.runGeneration(), candidate.bootstrapId(), candidate.fixturesId(),
+                runtimeFence != null, runtimeMode(), runtimeEpoch());
+        synchronized (publicPairCache) {
+            PublicPayloadPair cached = publicPairCache.get(key);
+            if (cached != null) {
+                if (publicPayloadPairStillValid(key)) return Optional.of(cached);
+                publicPairCache.remove(key);
+                return Optional.empty();
+            }
+            Optional<PublicPayloadPair> loaded = loadPublicPayloadPair(season, candidate);
+            loaded.ifPresent(pair -> publicPairCache.put(key, pair));
+            return loaded;
+        }
+    }
+
+    private boolean publicPayloadPairStillValid(PublicPayloadPairCacheKey key) {
+        Boolean valid = jdbc.queryForObject("""
+                SELECT EXISTS (
+                    SELECT 1 FROM %s r
+                    JOIN %s b ON b.run_generation=r.generation AND b.id=?
+                      AND b.endpoint_kind='BOOTSTRAP_STATIC' AND b.validation_state='VALID'
+                    JOIN %s f ON f.run_generation=r.generation AND f.id=?
+                      AND f.endpoint_kind='FIXTURES' AND f.validation_state='VALID'
+                    WHERE r.generation=? AND r.kind='CATALOGUE_SCHEDULE' AND r.season=?
+                      AND (? = FALSE OR (r.runtime_mode=? AND r.runtime_epoch=?))
+                )
+                """.formatted(tables.run(), tables.payload(), tables.payload()), Boolean.class,
+                key.bootstrapId(), key.fixturesId(), key.runGeneration(), key.season(),
+                key.fenced(), key.runtimeMode(), key.runtimeEpoch());
+        return Boolean.TRUE.equals(valid);
     }
 
     private Optional<PublicPayloadPair> loadPublicPayloadPair(
@@ -431,6 +477,7 @@ public final class OwnedSyncStore {
                 throw new IllegalArgumentException("Payload ids must belong to the leased run");
             }
         });
+        evictPublicPairs(payloadIds);
     }
 
     /** Read-only chronology evidence used to avoid replaying obsolete staged source data. */
@@ -599,11 +646,24 @@ public final class OwnedSyncStore {
             throw new IllegalArgumentException("retention must be positive");
         }
         Instant cutoff = now().minus(retention);
-        return jdbc.update("""
+        int deleted = jdbc.update("""
                 DELETE FROM %s p USING %s r
                 WHERE p.run_generation = r.generation
                   AND r.state IN ('COMPLETED', 'FAILED') AND p.staged_at < ?
                 """.formatted(tables.payload(), tables.run()), timestamp(cutoff));
+        if (deleted > 0) {
+            synchronized (publicPairCache) {
+                publicPairCache.clear();
+            }
+        }
+        return deleted;
+    }
+
+    private void evictPublicPairs(List<Long> payloadIds) {
+        synchronized (publicPairCache) {
+            publicPairCache.keySet().removeIf(key -> payloadIds.contains(key.bootstrapId())
+                    || payloadIds.contains(key.fixturesId()));
+        }
     }
 
     private LockedRun lockAndValidate(Lease lease) {
@@ -846,6 +906,9 @@ public final class OwnedSyncStore {
 
     private record PublicPayloadPairMetadata(long runGeneration, long bootstrapId, long fixturesId,
                                              Instant bootstrapStartedAt, Instant fixturesStartedAt) { }
+    private record PublicPayloadPairCacheKey(String season, long runGeneration, long bootstrapId,
+                                             long fixturesId, boolean fenced,
+                                             String runtimeMode, long runtimeEpoch) { }
 
     private record LockedRun(long generation, SyncKind kind, String season, String coalescingKey,
                              String publicationKey, String state, String owner, UUID token,

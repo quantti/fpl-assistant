@@ -1,6 +1,6 @@
 # Assistant-owned FPL sync and post-match verification
 
-**PROGRESS:** Tasks 1–10 implemented; production cut over to ACTIVE on 2026-09-16 evening (Tapas core writes disabled, least-privilege `tapas_runtime` login, assistant the sole core writer). A self-inflicted pooler read-only outage and unbounded payload storage were fixed the same night (PR #107); the 40-fixture backlog verified on 2026-09-17 morning. Remaining: Kuma recovery verification, first real matchday observation (GW5), staged-payload retention deployed.
+**PROGRESS:** Tasks 1–10 implemented; production cut over on 2026-09-16 and the 40-fixture backlog verified. On 2026-09-19 repeated canonical body reads were identified as the main contributor to 88.78 GB Supabase egress; normal containment is OFF epoch 61 while a bounded metadata-revalidated body cache is reviewed. Tapas core writes remain disabled, so restore ACTIVE promptly after the hotfix and verify the query-rate drop. Remaining: Kuma recovery verification and the first complete real-matchday observation.
 
 Owner decision: this service, **not Tapas**, will perform the FPL data updates. This supersedes
 Task 5's ownership assumption in `2026-09-13-wildcard-data-coverage.md`. That plan's comparison
