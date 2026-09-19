@@ -4,6 +4,7 @@ import classes from './ConversationSidebar.module.css';
 interface Props {
   conversations: Conversation[];
   currentId: string | null;
+  pendingId: string | null;
   onSelect: (id: string) => void;
   onNew: () => void;
   /** Below the 640px breakpoint the sidebar is an overlay; above it this does nothing. */
@@ -22,6 +23,7 @@ interface Props {
 export default function ConversationSidebar({
   conversations,
   currentId,
+  pendingId,
   onSelect,
   onNew,
   open,
@@ -49,9 +51,11 @@ export default function ConversationSidebar({
               type="button"
               className={`${classes.item} ${conversation.id === currentId ? classes.current : ''}`}
               aria-current={conversation.id === currentId ? 'true' : undefined}
+              aria-busy={conversation.id === pendingId ? 'true' : undefined}
               onClick={() => onSelect(conversation.id)}
             >
-              {conversation.title ?? 'Untitled'}
+              <span className={classes.title}>{conversation.title ?? 'Untitled'}</span>
+              {conversation.id === pendingId && <span className={classes.loading}>Loading…</span>}
             </button>
           </li>
         ))}

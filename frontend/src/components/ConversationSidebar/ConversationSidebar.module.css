@@ -66,6 +66,9 @@
 }
 
 .item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
   width: 100%;
   padding: var(--space-8) var(--space-12);
   border: none;
@@ -75,11 +78,20 @@
   font-size: var(--text-sm);
   text-align: left;
   cursor: pointer;
-  /* One line each: the title is already truncated server-side, and a list that reflows as
-     titles vary is harder to scan than one that does not. */
+}
+
+.title {
+  flex: 1;
+  min-width: 0;
+  /* Truncate only the title so the loading marker always remains visible. */
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.loading {
+  flex: 0 0 auto;
+  font-size: var(--text-xs);
 }
 
 .item:hover {
