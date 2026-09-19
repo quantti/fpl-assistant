@@ -114,9 +114,9 @@ fpl:
 ```
 
 `fpl.quota.free-messages-per-week` / `QUOTA_FREE_MESSAGES_PER_WEEK` are renamed, not kept as
-aliases: the old name would be a lie about the window. If `QUOTA_FREE_MESSAGES_PER_WEEK` is set as
-a Fly secret it must be re-set under the new name during the cutover — otherwise the limit silently
-reverts to the property's default. Check with `fly secrets list` before deploying.
+aliases: the old name would be a lie about the window. `QUOTA_FREE_MESSAGES_PER_WEEK` is not set as
+a Fly secret (checked 2026-09-19), so the rename needs no deployment step; had it been, it would
+have had to be re-set under the new name or the limit would have reverted to the default silently.
 
 `fpl_user_profile.weekly_message_limit` keeps its name. It is a per-user override that applies to
 whichever window is in force, and renaming it buys a migration and nothing else. The existing

@@ -4893,9 +4893,10 @@ rewrite made stale was pruned from the ESLint baseline.
 
 `fpl.quota.free-messages-per-week` is now `free-messages-per-gameweek`
 (`QUOTA_FREE_MESSAGES_PER_GAMEWEEK`), with `free-messages-off-season`
-(`QUOTA_FREE_MESSAGES_OFF_SEASON`, 100) beside it. **If `QUOTA_FREE_MESSAGES_PER_WEEK` is set as a
-Fly secret it must be re-set under the new name at deploy**, or the limit silently reverts to the
-property default — check `fly secrets list` first. `fpl_user_profile.weekly_message_limit` keeps its
+(`QUOTA_FREE_MESSAGES_OFF_SEASON`, 100) beside it. `QUOTA_FREE_MESSAGES_PER_WEEK` was **not** set as a Fly
+secret — verified against `fly secrets list` on 2026-09-19, so the limit has always come from the
+property default and the rename carries no deployment step. `QUOTA_FREE_MESSAGES_OFF_SEASON` is
+unset too, so the off-season allowance is the default 100. `fpl_user_profile.weekly_message_limit` keeps its
 name: it is a per-user override that applies to whichever window is in force, and renaming it buys
 a migration and nothing else. No data migration; on deploy the count restarts from the last
 deadline, so most users' usage drops and nobody is charged for anything they were not charged for
