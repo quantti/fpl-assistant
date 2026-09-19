@@ -1,8 +1,8 @@
-import { navigate, Route } from '../../router'
-import classes from './HeaderNavigation.module.css'
+import { navigate, type Route } from '../../router';
+import classes from './HeaderNavigation.module.css';
 
 interface Props {
-  route: Route
+  route: Route;
 }
 
 /**
@@ -30,5 +30,5 @@ export default function HeaderNavigation({ route }: Props) {
         Shortlist
       </button>
     </nav>
-  )
+  );
 }

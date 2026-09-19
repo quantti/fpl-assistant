@@ -1,4 +1,4 @@
-import { createClient } from '@supabase/supabase-js'
+import { createClient } from '@supabase/supabase-js';
 
 // The project URL and the publishable key are public by design: they ship inside this bundle,
 // and anyone who opens devtools can read them. What keeps the database safe is row level
@@ -16,8 +16,8 @@ import { createClient } from '@supabase/supabase-js'
 // once already (see docs/STATUS.md, 2026-08-19).
 // `||` rather than `??`, as in vite.config.ts: an empty VITE_SUPABASE_URL is not a project URL,
 // and createClient throws on it at module load — a blank page and a console message.
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || 'https://example-project.supabase.co'
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || 'https://example-project.supabase.co';
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 // Auth only. This client must never be used to query the database directly: authorization lives
 // in the backend's SQL, which filters on the token's `sub`, and a direct query would route around
@@ -34,10 +34,10 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     // leave people who confirmed their address staring at the sign-in form.
     detectSessionInUrl: true,
   },
-})
+});
 
 /** The current access token, or null when signed out. Refreshed by the client as needed. */
 export async function accessToken(): Promise<string | null> {
-  const { data } = await supabase.auth.getSession()
-  return data.session?.access_token ?? null
+  const { data } = await supabase.auth.getSession();
+  return data.session?.access_token ?? null;
 }

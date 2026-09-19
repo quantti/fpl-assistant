@@ -117,7 +117,22 @@ if [[ "${1:-}" == rev-parse && "${2:-}" == --show-toplevel ]]; then
     printf '%s\n' "$FIXTURE_ROOT"
     exit 0
 fi
+if [[ "${1:-}" == merge-base ]]; then
+    printf '2222222222222222222222222222222222222222\n'
+    exit 0
+fi
+if [[ "${1:-}" == diff ]]; then
+    printf '%s' "${GIT_CHANGED_FRONTEND:-}"
+    exit 0
+fi
 exit 2
+STUB
+
+    cat > "$FIXTURE/bin/npm" <<'STUB'
+#!/usr/bin/env bash
+printf 'npm %s\n' "$*" >> "$CALL_LOG"
+[[ "$*" == *" ${NPM_FAIL:-none}" ]] && exit 1
+exit 0
 STUB
 
     cat > "$FIXTURE/bin/docker" <<'STUB'
@@ -180,7 +195,7 @@ esac
 exit 0
 STUB
 
-    chmod +x "$FIXTURE/bin/git" "$FIXTURE/bin/docker"
+    chmod +x "$FIXTURE/bin/git" "$FIXTURE/bin/docker" "$FIXTURE/bin/npm"
 }
 
 run_hook() {
@@ -209,6 +224,64 @@ check_feature_push_is_light() {
         pass "$name"
     else
         fail "$name" "the hook failed or started lifecycle work"
+    fi
+}
+
+install_frontend_tools() {
+    mkdir -p "$FIXTURE/frontend/node_modules/.bin"
+    : > "$FIXTURE/frontend/node_modules/.bin/eslint"
+    chmod +x "$FIXTURE/frontend/node_modules/.bin/eslint"
+}
+
+check_frontend_push_is_linted() {
+    local name="a push touching frontend/ runs lint and format:check"
+    new_fixture frontend-lint
+    install_frontend_tools
+    run_hook refs/heads/feature 1111111111111111111111111111111111111111 \
+        GIT_CHANGED_FRONTEND=frontend/src/App.tsx
+    if [[ "$STATUS" -eq 0 ]] && grep -q '^npm .* lint$' "$LOG" \
+        && grep -q '^npm .* format:check$' "$LOG" && no_docker_or_gradle; then
+        pass "$name"
+    else
+        fail "$name" "the static checks did not both run"
+    fi
+}
+
+check_frontend_failure_refuses() {
+    local check all_refused=true
+    for check in lint format:check; do
+        new_fixture "frontend-fail-${check%%:*}"
+        install_frontend_tools
+        run_hook refs/heads/feature 1111111111111111111111111111111111111111 \
+            GIT_CHANGED_FRONTEND=frontend/src/App.tsx NPM_FAIL="$check"
+        [[ "$STATUS" -ne 0 ]] || all_refused=false
+    done
+    local name="a failing lint or format check refuses the push"
+    if [[ "$all_refused" == true ]]; then pass "$name"; else fail "$name" "a red check let the push through"; fi
+}
+
+check_backend_push_skips_lint() {
+    local name="a push that leaves frontend/ alone runs no npm"
+    new_fixture backend-only
+    install_frontend_tools
+    run_hook refs/heads/feature 1111111111111111111111111111111111111111
+    if [[ "$STATUS" -eq 0 ]] && ! grep -q '^npm ' "$LOG"; then
+        pass "$name"
+    else
+        fail "$name" "npm ran for a push with no frontend change"
+    fi
+}
+
+check_missing_tools_defer_to_ci() {
+    local name="a frontend push without node_modules passes and says CI will check"
+    new_fixture frontend-no-tools
+    run_hook refs/heads/feature 1111111111111111111111111111111111111111 \
+        GIT_CHANGED_FRONTEND=frontend/src/App.tsx
+    if [[ "$STATUS" -eq 0 ]] && ! grep -q '^npm ' "$LOG" \
+        && grep -q "left to the pull request's GitHub run" "$OUTPUT"; then
+        pass "$name"
+    else
+        fail "$name" "missing tools blocked the push or ran npm"
     fi
 }
 
@@ -422,6 +495,10 @@ STUB
 }
 
 check_feature_push_is_light
+check_frontend_push_is_linted
+check_frontend_failure_refuses
+check_backend_push_skips_lint
+check_missing_tools_defer_to_ci
 check_reset_failure reset-run-failure "container creation failure fails the reset" DOCKER_FAIL_RUN
 check_reset_failure schema-load-failure "schema-load failure fails the reset" DOCKER_FAIL_SCHEMA
 check_reset_port
