@@ -1,10 +1,12 @@
 package fi.karivanttinen.fplassistant.user;
 
+import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -42,11 +44,51 @@ class UsageServiceTest {
     @Value("${fpl.quota.free-messages-per-gameweek}")
     int freeLimit;
 
+    @Value("${fpl.quota.free-messages-off-season}")
+    int offSeasonLimit;
+
+    @Value("${fpl.schedule.gameweek-table-name}")
+    String gameweekTable;
+
+    /**
+     * The gameweek table is cleared around every test, not only after: which window a count falls
+     * in is decided by the rows in it, so a capture left behind by another suite would silently
+     * move this one's boundaries.
+     */
+    @BeforeEach
     @AfterEach
     void clear() {
         jdbc.update("DELETE FROM " + usageTable + " WHERE user_id = ?", USER);
         jdbc.update("DELETE FROM " + conversationTable + " WHERE user_id = ?", USER);
         jdbc.update("DELETE FROM " + profileTable + " WHERE user_id = ?", USER);
+        jdbc.update("DELETE FROM " + gameweekTable);
+    }
+
+    /**
+     * A whole season: 38 weekly deadlines from the one given. Whole, because a window is only cut
+     * from a season whose events are a clean 1..38 — and weekly rather than named individually so
+     * that a season seeded far enough in the past is entirely in the past, which is what makes
+     * the off-season gap reachable.
+     */
+    private void seedSeason(String season, Instant firstDeadline) {
+        Instant captured = Instant.now();
+        for (int index = 0; index < 38; index++) {
+            jdbc.update("INSERT INTO " + gameweekTable
+                    + " (season, id, name, deadline_time, captured_at) VALUES (?, ?, ?, ?, ?)",
+                    season, index + 1, "Gameweek " + (index + 1),
+                    Timestamp.from(firstDeadline.plus(Duration.ofDays(7L * index))),
+                    Timestamp.from(captured));
+        }
+    }
+
+    /** GW1 two days ago, GW2 in five days: the window under test is the run-up to GW2. */
+    private void seedSeasonUnderway() {
+        seedSeason("2097/98", Instant.now().minus(Duration.ofDays(2)));
+    }
+
+    /** Every deadline in the past, so there is no round left to allow messages for. */
+    private void seedFinishedSeason() {
+        seedSeason("2096/97", Instant.now().minus(Duration.ofDays(300)));
     }
 
     private void seedEvents(int count, Duration age, String eventType) {
@@ -188,6 +230,98 @@ class UsageServiceTest {
         // frees in three days — not the one day the oldest event alone would suggest.
         assertThat(quota.nextFreeAt()).isBetween(
                 Instant.now().plus(Duration.ofHours(68)), Instant.now().plus(Duration.ofHours(76)));
+    }
+
+    /**
+     * The window opened at the last deadline, so what a user spent planning the previous round is
+     * not charged against this one. This is the whole point of the change: a rolling week never
+     * starts over.
+     */
+    @Test
+    void messagesSentBeforeTheWindowOpenedAreNotCounted() {
+        seedSeasonUnderway();
+        seedEvents(3, Duration.ofDays(3), UsageService.CHAT_EVENT);
+        seedEvents(2, Duration.ofHours(6), UsageService.CHAT_EVENT);
+
+        UsageService.Quota quota = usage.quotaOf(USER);
+
+        assertThat(quota.window().kind()).isEqualTo(QuotaWindow.Kind.GAMEWEEK);
+        assertThat(quota.window().gameweek()).isEqualTo(2);
+        assertThat(quota.used()).isEqualTo(2);
+        assertThat(quota.limit()).isEqualTo(freeLimit);
+        assertThat(quota.resetsAt()).isEqualTo(quota.window().until());
+    }
+
+    /** A fixed window has one reset instant, which is also when a blocked caller may return. */
+    @Test
+    void anExhaustedGameweekWindowPointsAtItsOwnDeadline() {
+        seedSeasonUnderway();
+        setLimit(1);
+        seedEvents(1, Duration.ofHours(6), UsageService.CHAT_EVENT);
+
+        UsageService.Quota quota = usage.quotaOf(USER);
+
+        assertThat(quota.exceeded()).isTrue();
+        assertThat(quota.nextFreeAt()).isEqualTo(quota.window().until());
+        assertThat(quota.retryAfterSeconds()).hasValueSatisfying(seconds ->
+                assertThat(seconds).isBetween(Duration.ofDays(4).toSeconds(),
+                        Duration.ofDays(5).toSeconds()));
+    }
+
+    /**
+     * Between two seasons there is no round to allow messages for, so the gap is one window of
+     * its own — and here it has no upper bound at all, because the new season is not captured.
+     */
+    @Test
+    void theOffSeasonGapCarriesItsOwnLimit() {
+        seedFinishedSeason();
+        seedEvents(1, Duration.ofDays(3), UsageService.CHAT_EVENT);
+
+        UsageService.Quota quota = usage.quotaOf(USER);
+
+        assertThat(quota.window().kind()).isEqualTo(QuotaWindow.Kind.OFF_SEASON);
+        assertThat(quota.limit()).isEqualTo(offSeasonLimit);
+        assertThat(quota.used()).isEqualTo(1);
+        assertThat(quota.resetsAt()).as("nothing captured ends this window yet").isNull();
+    }
+
+    @Test
+    void aPerUserOverrideReplacesTheWindowsOwnLimit() {
+        seedFinishedSeason();
+        setLimit(5);
+
+        UsageService.Quota quota = usage.quotaOf(USER);
+
+        assertThat(quota.window().kind()).isEqualTo(QuotaWindow.Kind.OFF_SEASON);
+        assertThat(quota.limit())
+                .as("an override replaces the window's number, whichever window it is")
+                .isEqualTo(5);
+    }
+
+    /**
+     * Without a usable capture the count is the rolling seven days it always was — not fail-open,
+     * which a broken capture would turn into uncapped spend, and not fail-closed, which one
+     * missing capture would turn into an outage.
+     */
+    @Test
+    void withNoCaptureTheRollingWindowStillApplies() {
+        seedEvents(freeLimit, Duration.ofDays(1), UsageService.CHAT_EVENT);
+
+        UsageService.Quota quota = usage.quotaOf(USER);
+
+        assertThat(quota.window().kind()).isEqualTo(QuotaWindow.Kind.FALLBACK);
+        assertThat(quota.exceeded()).isTrue();
+        assertThat(quota.resetsAt()).as("a rolling window never resets").isNull();
+        assertThat(quota.nextFreeAt()).isNotNull();
+    }
+
+    /** A half-written season would put a boundary in the wrong place, so it is not used at all. */
+    @Test
+    void anIncompleteSeasonFallsBackRatherThanGuessing() {
+        seedSeasonUnderway();
+        jdbc.update("DELETE FROM " + gameweekTable + " WHERE season = ? AND id = ?", "2097/98", 30);
+
+        assertThat(usage.quotaOf(USER).window().kind()).isEqualTo(QuotaWindow.Kind.FALLBACK);
     }
 
     @Test
