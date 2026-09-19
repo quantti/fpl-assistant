@@ -1,0 +1,44 @@
+.notice {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-16);
+  width: 100%;
+  padding: var(--space-12) var(--space-16) max(var(--space-12), env(safe-area-inset-bottom));
+  border: 1px solid var(--rule-section);
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: var(--text-xs);
+}
+
+.notice p {
+  max-width: 42rem;
+  margin: 0;
+  line-height: 1.45;
+}
+
+.notice a {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.notice button {
+  flex: 0 0 auto;
+  min-height: var(--space-32);
+  padding: var(--space-4) var(--space-12);
+  border: 1px solid var(--pitch);
+  background: var(--pitch);
+  color: var(--pitch-contrast);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+@media (max-width: 36rem) {
+  .notice {
+    align-items: flex-end;
+    padding-inline: var(--space-8);
+  }
+}

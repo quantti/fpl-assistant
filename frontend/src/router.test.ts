@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { routeFromPath } from './router';
 
 describe('client routes', () => {
-  it.each(['/login', '/register', '/app', '/shortlist', '/admin'] as const)(
+  it.each(['/login', '/register', '/privacy', '/app', '/shortlist', '/admin'] as const)(
     'recognizes the %s deep link',
     (path) => {
       expect(routeFromPath(path)).toBe(path);

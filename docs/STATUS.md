@@ -1,5 +1,20 @@
 # Status — Phase 1
 
+## Privacy disclosure publication blockers
+
+The public notice deliberately makes no GDPR-compliance claim. Before publishing stronger vendor
+assurances, operations must verify the active AI provider's processing region, retention/training
+terms and any international-transfer arrangements. The current notice says these points are
+unverified and that processing may occur outside the EEA; it does not invent EU-only processing,
+no-training terms or safeguards that have not been checked. The notice distinguishes 14-day chat
+traces from ordinary operational logs, whose retention follows the relevant service configuration,
+and discloses IP-address processing for request rate limiting.
+
+The browser-storage notice is informational, not a consent banner: Supabase auth tokens/session
+and Mantine's theme preference use `localStorage`, while the “Got it” acknowledgement uses only
+`sessionStorage` under `fpl-storage-notice-seen`. If storage is blocked it dismisses in memory and
+returns after reload. There are no optional analytics or advertising trackers to accept or reject.
+
 ## Public landing page and app entry
 
 `/` is now a public marketing page with “Now free”, an explicit testing/invite-code

@@ -35,6 +35,12 @@ vi.mock('./components/LandingPage/LandingPage', () => ({
       'data-session-loading': String(sessionLoading),
     }),
 }));
+vi.mock('./components/PrivacyPage/PrivacyPage', () => ({
+  default: () => React.createElement('span', { 'data-view': 'privacy' }),
+}));
+vi.mock('./components/StorageNotice/StorageNotice', () => ({
+  default: () => React.createElement('span', { 'data-view': 'storage-notice' }),
+}));
 vi.mock('./components/SignIn/SignIn', () => ({
   default: ({ initialMode }: { initialMode: string }) =>
     React.createElement('span', { 'data-view': 'auth', 'data-mode': initialMode }),
@@ -94,6 +100,16 @@ describe('public and protected routing', () => {
     expect(navigate).not.toHaveBeenCalled();
   });
 
+  it('shows privacy without waiting for authentication', () => {
+    route = '/privacy';
+    sessionMock.mockReturnValue({ session: null, loading: true });
+
+    const host = renderApp();
+
+    expect(host.querySelector('[data-view="privacy"]')).not.toBeNull();
+    expect(host.querySelector('[data-view="auth"]')).toBeNull();
+  });
+
   it.each([
     ['/login', 'signIn'],
     ['/register', 'signUp'],
@@ -103,6 +119,25 @@ describe('public and protected routing', () => {
     const auth = renderApp().querySelector('[data-view="auth"]');
 
     expect((auth as HTMLElement | null)?.dataset.mode).toBe(mode);
+  });
+
+  it.each([
+    { path: '/register' as const, auth: null },
+    { path: '/app' as const, auth: session('user-a') },
+  ])('shows the storage notice at $path', ({ path, auth }) => {
+    route = path;
+    sessionMock.mockReturnValue({ session: auth, loading: false });
+
+    expect(renderApp().querySelector('[data-view="storage-notice"]')).not.toBeNull();
+  });
+
+  it('places the notice after the current page in one layout frame', () => {
+    const host = renderApp();
+    const page = host.querySelector('[data-view="landing"]')!.parentElement!;
+    const notice = host.querySelector('[data-view="storage-notice"]')!;
+
+    expect(page.parentElement).toBe(notice.parentElement);
+    expect(page.nextElementSibling).toBe(notice);
   });
 
   it('opens a protected deep link after authentication without replacing it', () => {

@@ -39,6 +39,7 @@ export default function AppMenu({ route, admin }: Props) {
             {item.label}
           </Menu.Item>
         ))}
+        <Menu.Item onClick={() => navigate('/privacy')}>Privacy</Menu.Item>
         {/* A convenience, not a gate: the API answers 403 to a non-admin whatever this shows,
             and the page says so. Kept out of APP_MENU_LINKS, which is the fixed list. */}
         {admin && <Menu.Item onClick={() => navigate('/admin')}>Admin</Menu.Item>}
