@@ -3,13 +3,22 @@ import { useEffect, useState } from 'react';
 /**
  * A few pages, one history entry each — a router, not a routing library.
  *
- * The application has six top-level views and no route parameters: which conversation is
- * open is state, not an address, because a conversation is chosen from the list beside it. A
- * dependency that solves nested routes, loaders and lazy segments would be answering questions
- * nobody here is asking. Spring's SpaForwardingController already makes a deep link to /usage
- * load the application.
+ * The application has a small fixed set of top-level views and no route parameters: which
+ * conversation is open is state, not an address, because a conversation is chosen from the list
+ * beside it. A dependency that solves nested routes, loaders and lazy segments would be answering
+ * questions nobody here is asking. Spring's SpaForwardingController makes these deep links load
+ * the application.
  */
-export type Route = '/' | '/my-team' | '/shortlist' | '/usage' | '/settings' | '/admin';
+export type Route =
+  | '/'
+  | '/login'
+  | '/register'
+  | '/app'
+  | '/my-team'
+  | '/shortlist'
+  | '/usage'
+  | '/settings'
+  | '/admin';
 
 export function navigate(route: Route) {
   if (window.location.pathname !== route) {
@@ -32,7 +41,10 @@ export function useRoute(): Route {
 }
 
 export function routeFromPath(path: string): Route {
-  return path === '/my-team' ||
+  return path === '/login' ||
+    path === '/register' ||
+    path === '/app' ||
+    path === '/my-team' ||
     path === '/shortlist' ||
     path === '/usage' ||
     path === '/settings' ||

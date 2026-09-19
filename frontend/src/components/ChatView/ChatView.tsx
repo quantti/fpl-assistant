@@ -66,7 +66,7 @@ export default function ChatView({ route }: Props) {
     setSidebarOpen(false);
     // The sidebar is visible on every page, so opening a conversation from Settings has to take
     // the user to where the conversation is.
-    navigate('/');
+    navigate('/app');
     const stored = await conversations.select(id);
     if (selection !== selectionRef.current) return;
     if (stored) {
@@ -87,7 +87,7 @@ export default function ChatView({ route }: Props) {
     conversations.startNew();
     replaceMessages([]);
     setSidebarOpen(false);
-    navigate('/');
+    navigate('/app');
   }
 
   return (
@@ -147,7 +147,7 @@ export default function ChatView({ route }: Props) {
           ) : (
             <MessageThread messages={messages} streamingContent={streamingContent} />
           )}
-          {route === '/' && <MessageInput onSubmit={sendMessage} disabled={isStreaming} />}
+          {route === '/app' && <MessageInput onSubmit={sendMessage} disabled={isStreaming} />}
         </div>
       </div>
     </div>
