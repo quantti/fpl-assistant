@@ -63,15 +63,14 @@ export default function ChatView({ route }: Props) {
     // Two clicks in a row race, and the slower answer must not win. Only the newest selection
     // may write to the thread.
     const selection = ++selectionRef.current;
+    replaceMessages([]);
     setSidebarOpen(false);
     // The sidebar is visible on every page, so opening a conversation from Settings has to take
     // the user to where the conversation is.
     navigate('/app');
     const stored = await conversations.select(id);
     if (selection !== selectionRef.current) return;
-    if (stored) {
-      replaceMessages(stored);
-    } else {
+    if (stored === null) {
       replaceMessages([
         {
           role: 'assistant',
@@ -79,6 +78,8 @@ export default function ChatView({ route }: Props) {
           isError: true,
         },
       ]);
+    } else {
+      replaceMessages(stored);
     }
   }
 
@@ -89,6 +90,15 @@ export default function ChatView({ route }: Props) {
     setSidebarOpen(false);
     navigate('/app');
   }
+
+  const isSelecting = conversations.pendingId !== null;
+  const threadContent = isSelecting ? (
+    <div className={classes.empty} role="status">
+      Loading conversation…
+    </div>
+  ) : (
+    <MessageThread messages={messages} streamingContent={streamingContent} />
+  );
 
   return (
     <div className={classes.shell}>
@@ -122,6 +132,7 @@ export default function ChatView({ route }: Props) {
         <ConversationSidebar
           conversations={conversations.conversations}
           currentId={conversations.currentId}
+          pendingId={conversations.pendingId}
           onSelect={openConversation}
           onNew={newConversation}
           open={sidebarOpen}
@@ -139,7 +150,7 @@ export default function ChatView({ route }: Props) {
             <SettingsPage />
           ) : route === '/admin' ? (
             <AdminPage />
-          ) : messages.length === 0 && streamingContent === null ? (
+          ) : !isSelecting && messages.length === 0 && streamingContent === null ? (
             <div className={classes.empty}>
               <p>
                 Ask me anything about Fantasy Premier League — players, fixtures, strategy, chips,
@@ -152,9 +163,11 @@ export default function ChatView({ route }: Props) {
               </p>
             </div>
           ) : (
-            <MessageThread messages={messages} streamingContent={streamingContent} />
+            threadContent
           )}
-          {route === '/app' && <MessageInput onSubmit={sendMessage} disabled={isStreaming} />}
+          {route === '/app' && (
+            <MessageInput onSubmit={sendMessage} disabled={isStreaming || isSelecting} />
+          )}
         </div>
       </div>
     </div>
