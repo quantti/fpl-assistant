@@ -1,6 +1,6 @@
 # Gameweek quota window implementation plan (KAR-61)
 
-**PROGRESS:** Task 0/7 done
+**PROGRESS:** Task 7/7 done
 
 **Goal:** Replace the rolling seven-day message quota with a window bounded by FPL deadlines: 20
 messages between two deadlines of one season, 100 for the off-season gap, and today's rolling
@@ -129,7 +129,9 @@ private static Completeness eventIds(List<EventRow> events) {
                     .boxed().collect(java.util.stream.Collectors.toUnmodifiableSet()))) {
         return incomplete(CompletenessReason.INVALID_EVENT_SET);
     }
-    return new Completeness(true, null);
+    // Completeness' compact constructor requires the reason and the flag to agree: a complete
+    // result carries COMPLETE, never null.
+    return new Completeness(true, CompletenessReason.COMPLETE);
 }
 
 /**

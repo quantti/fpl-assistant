@@ -74,6 +74,24 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
     No staleness threshold: an unknown refresh is a disclosure, not an eligibility rule, and an old
     completed-season archive is not a stalled sync. `team.updated_at` dates nothing. No age line on
     daily-capture, schedule-capture, RAG or historical replies — their own schemes above stand.
+- **The message quota is counted in one gameweek window, `QuotaWindows`.** The window runs from
+  the last deadline at or before now to the first deadline strictly after it — strict, like
+  `HorizonFixtures.derive`, because at the deadline instant the round is already locked. It is cut
+  from **every captured season's** deadlines read as one timeline: the newest season alone cannot
+  see the changeover, and a preseason request would then count the whole previous season against a
+  user. Both ends present and naming the same season is a gameweek window at the gameweek
+  allowance; anything else — the gap between two seasons, or either edge of the timeline — is one
+  off-season window at its own larger allowance, a single window for the whole break that does not
+  reset inside itself. **The capture's freshness is deliberately not checked**, unlike
+  `HorizonFixtures`: the schedule sync refuses to write all summer, so requiring it would abolish
+  the off-season window, and a deadline that moved late shifts a quota boundary by hours where a
+  moved fixture makes a horizon meaningless. Only the newest season's events must be a clean 1..38
+  from one capture (`ScheduleSource.assessEvents`). Without a usable capture the count falls back
+  to the rolling seven days on the untouched old path — not fail-open, which a broken capture would
+  turn into uncapped spend, and not fail-closed, which one missing capture would turn into an
+  outage. A per-user `fpl_user_profile.weekly_message_limit` override replaces the window's own
+  number whatever the window is. Nothing user-facing says "this gameweek": the round being played
+  during a window is the one before it, so the refusal and the page name the deadline.
 - Do NOT alter existing tapas tables. Only add new tables. **One deliberate exception, granted by
   the owner on 2026-08-26: `player_fixture_stats` carries four columns this project adds and
   fills — `defensive_contribution`, `clearances_blocks_interceptions`, `recoveries`, `tackles`.**

@@ -4852,3 +4852,45 @@ which Vite 8's default browser target (Chrome/Edge 111, Firefox 114, Safari 16.4
 The hook lints only when a push touches `frontend/` and Node is present; `deploy.yml` runs
 `lint` and `format:check` on every pull request and is the enforcement. Java is out of scope by
 owner decision.
+
+## The quota window is a gameweek (KAR-61, 2026-09-19)
+
+Free-tier messages were counted over a rolling seven days, so nothing ever reset: each message
+freed up individually, seven days after it was sent, and "12 of 20 messages used this week" named
+a period with no beginning and no end. The allowance now belongs to a round of the game — the
+window runs from one FPL deadline to the next, 20 messages, resetting at every deadline.
+
+`QuotaWindows` cuts it from every captured season's deadlines read as one timeline, not from the
+newest season alone. That is what makes the changeover fall out of the same rule: the last deadline
+before an August request is the previous season's GW38, so the gap between two seasons is one
+off-season window of its own, 100 messages for the whole break. The newest season alone would leave
+a preseason request with no lower bound and count the entire previous season against a user.
+
+Two rules are deliberate and would look like bugs to a later reader. **Freshness is not checked**,
+unlike `HorizonFixtures`: the schedule sync legitimately refuses to write all summer, so requiring
+a fresh capture would mean the off-season window could never occur — every off-season request would
+fall back to the rolling week instead. Only the newest season's events must be a clean 1..38 from
+one capture, which `ScheduleSource.assessEvents` now answers without the fixture half of `assess`.
+And **the fallback is the old code path untouched**, `OFFSET (used - limit)` and all: a fixed window
+has one reset instant, a rolling one has none, so a blocked user in the fallback would otherwise get
+no `Retry-After` at all. `Quota` therefore carries two timestamps — `resetsAt`, when the count
+returns to zero, and `nextFreeAt`, when the caller may send again.
+
+Nothing user-facing says "this gameweek". During the window `[GW12 deadline, GW13 deadline)` the
+matches being played are GW12's, which `GameweekTools` calls the current round, while the window is
+the run-up to GW13; the refusal and the usage page name the deadline instead. `UsagePage` gained
+its first test along with the three wordings, and the one `unicorn/prefer-ternary` suppression its
+rewrite made stale was pruned from the ESLint baseline.
+
+`fpl.quota.free-messages-per-week` is now `free-messages-per-gameweek`
+(`QUOTA_FREE_MESSAGES_PER_GAMEWEEK`), with `free-messages-off-season`
+(`QUOTA_FREE_MESSAGES_OFF_SEASON`, 100) beside it. **If `QUOTA_FREE_MESSAGES_PER_WEEK` is set as a
+Fly secret it must be re-set under the new name at deploy**, or the limit silently reverts to the
+property default — check `fly secrets list` first. `fpl_user_profile.weekly_message_limit` keeps its
+name: it is a per-user override that applies to whichever window is in force, and renaming it buys
+a migration and nothing else. No data migration; on deploy the count restarts from the last
+deadline, so most users' usage drops and nobody is charged for anything they were not charged for
+before.
+
+Spec: `docs/superpowers/specs/2026-09-19-quota-gameweek-window-design.md`.
+Plan: `docs/superpowers/plans/2026-09-19-quota-gameweek-window.md`.
