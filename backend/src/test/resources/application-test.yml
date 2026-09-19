@@ -38,6 +38,8 @@ fpl:
     mode: "OFF"
     fixture-table-name: fpl_fixture_sync_test
     evidence-table-name: fpl_player_fixture_evidence_test
+  trace:
+    table-name: fpl_chat_trace_test
   historical:
     table-name: pl_match_result_test
     startup-sync: false

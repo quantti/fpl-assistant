@@ -1,5 +1,29 @@
 # Status — Phase 1
 
+## Test-use chat traces — 14-day retention
+
+Chat turns now persist diagnostics in `fpl_chat_trace`: effective system/history prompts
+for each model round, tool arguments/results and timings, reported model/token usage,
+and the final answer or partial output with a sanitized error. Credential-shaped values
+are redacted. Persistence is asynchronous and fail-open; a trace-store failure must not
+fail a chat. A process crash can leave an unfinished trace. Client disconnects retain the
+existing detached-generation behavior, not a cancelled model outcome.
+
+Only explicitly exposed reasoning summaries are collected. Raw provider thinking,
+reasoning content, signatures and redacted-thinking payloads are not collected; current
+provider adapters may supply no summary at all. Visible Gemini output is not suppressed
+merely because it carries a thought signature.
+
+Admin-only, no-store APIs: `GET /api/admin/chat-traces?limit=50&before=<instant>`
+(metadata list, maximum 100) and `GET /api/admin/chat-traces/{id}` (detail).
+The table has deny-all RLS. Startup and hourly cleanup delete traces older than 14 days;
+conversation history and quota accounting retain their separate lifecycle.
+
+Verification: 64 focused chat/instrumentation/lifecycle/persistence tests passed before
+review; the instrumentation tests passed again after review fixes for replayed thinking,
+credential redaction and Gemini signatures. Full-suite verification belongs to PR CI.
+
+
 **Progress:** Task 14/14 done — Phase 1 code complete, reviewed at two checkpoints (after
 Task 10 and after Task 14), fixes applied both times. **Deployed 2026-08-15** — see Deployment
 below.
