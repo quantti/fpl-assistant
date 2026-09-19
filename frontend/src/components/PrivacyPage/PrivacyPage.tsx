@@ -56,35 +56,66 @@ export default function PrivacyPage() {
           <h2>Chats and AI providers</h2>
           <p>
             A chat request can include your recent or saved conversation context and relevant tool
-            results. That material is sent to the AI provider configured for the service so it can
-            produce an answer. Production is documented as using OpenAI for chat. The application
-            can also be configured for other chat providers, so contact the controller if you need
-            the current provider confirmed.
+            results. That material is sent to Google Gemini through the Gemini Developer API so it
+            can produce an answer. This is an API-key integration, not Vertex AI.
           </p>
           <p>
-            Strategy-document search queries are sent to OpenAI to create embeddings even when a
-            different chat provider is configured. OpenAI’s published{' '}
+            The Gemini project has Cloud Billing linked. Google’s published{' '}
+            <a href="https://ai.google.dev/gemini-api/terms">Gemini API terms</a> say paid-service
+            prompts and responses are not used to improve its products and are processed under its
+            Data Processing Addendum. Developer Generate Content logging is disabled and the project
+            currently has no logging datasets. These controls do not disable Google’s separate{' '}
+            <a href="https://ai.google.dev/gemini-api/docs/usage-policies">abuse-monitoring logs</a>
+            , which Google says retain prompts, context and outputs for 55 days for policy
+            enforcement and certain legal or regulatory disclosures. We do not make a retrospective
+            promise about earlier feedback sharing.
+          </p>
+          <p>
+            OpenAI is used only to create embeddings for strategy-document searches; it does not
+            generate the chat answer. OpenAI’s published{' '}
             <a href="https://platform.openai.com/docs/guides/your-data">API data policy</a> says API
-            data is not used to train or improve its models unless the customer opts in. It also
-            says default abuse-monitoring logs may contain prompts and responses and are retained
-            for up to 30 days, with legal and safety exceptions. We have not inspected this
-            project’s OpenAI opt-in, retention-control or region settings, so those public defaults
-            are not a guarantee about the account. This notice does not promise EU-only processing,
-            zero retention or that an optional retention control is enabled.
+            data is not used to train or improve its models unless the customer opts in. The owner
+            disabled sharing for the FPL use case after the dashboard had shown all three sharing
+            categories enabled, but did not record whether the change was organisation-wide or a
+            project exclusion. API call logging is disabled and the project uses Global residency.
+            OpenAI says default abuse-monitoring logs may contain submitted data and are retained
+            for up to 30 days, with legal and safety exceptions. Neither provider is described here
+            as zero-retention or EU-only.
           </p>
         </section>
 
         <section>
-          <h2>Where data is handled</h2>
+          <h2>Other providers and locations</h2>
           <p>
-            Supabase provides authentication and database storage. The application is configured to
-            run on Fly.io in Paris. This does not mean that every supplier or every processing
-            operation remains in the EU. Supabase publishes a{' '}
-            <a href="https://supabase.com/legal/dpa">data processing addendum</a>, and Fly.io makes
-            its DPA available to signed-in customers through its{' '}
-            <a href="https://fly.io/documents">compliance documents page</a>. These public documents
-            do not establish which agreement, region or transfer setting applies to this project;
-            contact the controller for the arrangements applying to your request.
+            Supabase provides authentication and database storage on its Free plan. The project’s
+            selected region is Ireland (eu-west-1). The application runs on Fly.io in Paris. Resend
+            Free delivers account confirmation emails, primarily processing that data in the United
+            States. These locations do not mean that every supplier, support operation or
+            subprocessor remains in the EU.
+          </p>
+          <p>
+            Google’s paid Gemini terms and the public{' '}
+            <a href="https://supabase.com/legal/dpa">Supabase</a> and{' '}
+            <a href="https://resend.com/legal/dpa">Resend</a> service terms incorporate their
+            published data-processing terms and international-transfer safeguards. This describes
+            those public contracts; it is not a blanket guarantee about every provider account or
+            proof of overall compliance. Fly.io provides its DPA through its{' '}
+            <a href="https://fly.io/documents">compliance documents page</a>; correction of this
+            project’s customer fields is still pending.
+          </p>
+          <p>
+            If you connect an FPL entry, the service also reads public data from the official
+            Fantasy Premier League API, including squad, league and opponent-team information. That
+            source is separate from the account and AI providers above.
+          </p>
+        </section>
+
+        <section>
+          <h2>Email delivery</h2>
+          <p>
+            Resend documents 30-day retention for email content and metadata, delivery events, logs
+            and metrics on its Free plan. Open and click tracking are disabled for the sending
+            domain. This provider period is separate from our application-log policy.
           </p>
         </section>
 
@@ -96,21 +127,33 @@ export default function PrivacyPage() {
               removed after 14 days by startup and hourly cleanup.
             </li>
             <li>
-              Hosting and application infrastructure also create ordinary operational logs. These
-              may include IP addresses, request details, timestamps and errors. Their retention
-              follows the relevant service configuration; the 14-day period above applies only to
-              diagnostic chat traces.
+              The approved maximum for ordinary application logs is 14 days. Fly.io publicly
+              documents about seven days of searchable application logs, and we use no external
+              error-monitoring or log-export service. Supplier security, abuse and email-delivery
+              records have their own periods described in this notice.
             </li>
             <li>
-              Conversation history, account and profile records, invite records and usage records
-              currently have no automatic expiry configured.
+              Conversations are currently not deleted automatically. The approved policy is to keep
+              them for the account’s lifetime, with no 365-day or 90-day expiry, and delete them on
+              account erasure. Account-erasure tooling is not implemented yet.
             </li>
-            <li>You can remove shortlist entries in the application.</li>
+            <li>
+              Usage records currently have no automatic expiry. The approved but unimplemented
+              policy is 90 days, extended whenever needed to protect the quota window that is still
+              active.
+            </li>
+            <li>
+              There is no automatic deletion of inactive accounts during testing. You can remove
+              shortlist entries and your saved FPL entry ID in the application.
+            </li>
           </ul>
           <p>
             Removing your FPL entry ID from Settings does not delete earlier conversations or
             diagnostic traces in which FPL data was already used. There is currently no self-service
-            account deletion or data export.
+            account deletion, data export or safe automated erasure process. Supabase Free does not
+            provide the documented paid-plan daily backup entitlement, and we currently operate no
+            separate database backup; an encrypted daily backup with seven-day retention is an
+            approved target, not an active feature.
           </p>
         </section>
 
@@ -129,10 +172,16 @@ export default function PrivacyPage() {
           <p>
             Depending on the law and circumstances, you may ask for access, correction, erasure,
             restriction or portability, or object to processing based on legitimate interests. Email
-            the controller above. We may ask for the minimum information needed to verify your
-            identity. We normally respond within one month, but the law allows that period to be
-            extended in some cases. A request is not a promise of deletion where data must be
-            retained or an exception applies.
+            the controller above. We ask only for the minimum information needed to verify your
+            identity and normally respond within one month; the law permits extensions in some
+            cases. Export and erasure tooling is still being built, so this request route must not
+            be confused with an instant or self-service deletion feature.
+          </p>
+          <p>
+            The approved erasure policy removes the account identity from its invite redemption but
+            retains a non-reusable consumed-place record so deleting an account cannot reopen a
+            limited invitation. Provider security, abuse or delivery records may also remain for
+            their stated periods or where another legal exception applies.
           </p>
           <p>
             You may complain to the Finnish Data Protection Ombudsman at{' '}

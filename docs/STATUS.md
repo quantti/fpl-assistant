@@ -2,24 +2,54 @@
 
 ## Privacy vendor and retention research (2026-09-19)
 
-`docs/PRIVACY-OPERATIONS.md` records official OpenAI, Supabase and Fly sources, separates their
-public terms from unverified project-account settings, inventories personal-data stores, and
-proposes—but does not activate—bounded retention and a manual DSAR workflow. The public notice now
-states OpenAI's no-training-unless-opt-in and default up-to-30-day abuse-log policy with explicit
-account-setting qualifications, and links the official Supabase and Fly DPA routes. Owner decisions
-remain on retention periods, account inactivity, invite tombstones, DPAs/transfers, regions,
-backups/logs and the current SMTP provider.
+[`docs/PRIVACY-OPERATIONS.md`](PRIVACY-OPERATIONS.md) is the canonical current record of the owner
+walkthrough and the official Google Gemini, OpenAI, Supabase, Resend and Fly sources. Approved but
+unimplemented rules are: chats for the account lifetime with no 365/90-day age expiry; usage events
+for 90 days while always protecting the active quota window; ordinary application logs at most 14
+days; no inactivity deletion during testing; and invite erasure that removes identity without
+restoring the consumed place. Existing diagnostic traces already have 14-day cleanup. Email DSAR
+handling with proportionate minimum verification and the ordinary one-month response period is
+approved, but safe export/erasure tooling is not implemented. No overall GDPR-compliance claim is
+made.
 
-## Privacy disclosure publication blockers
+The DPA review distinguishes incorporation from execution. Google's paid Gemini terms incorporate
+its processor DPA and its service list names Gemini API Paid Services; Supabase and Resend likewise
+incorporate their DPAs through their service agreements. Those public contract routes do not prove
+blanket account compliance or separate signatures. OpenAI's own FAQ directs API customers to its DPA
+execution form, so a customer-specific copy remains blocked on the form's company-only fields. Fly's
+downloaded DPA has an invalid company-name field and misaligned annex entries and cannot yet be
+relied upon.
 
-The public notice deliberately makes no GDPR-compliance claim. It now reports OpenAI's public API
-policy—no model training unless the customer opts in and default abuse-monitoring retention up to
-30 days with exceptions—but explicitly says the project's opt-in, retention-control and region
-settings were not inspected. Before publishing account-specific assurances, operations must verify
-the active provider, region, controls, DPA and international-transfer arrangements. The notice does
-not invent EU-only processing, zero retention or contractual safeguards. It distinguishes 14-day
-chat traces from ordinary operational logs, whose retention follows the relevant service
-configuration, and discloses IP-address processing for request rate limiting.
+## Current privacy disclosure and blockers
+
+The public privacy page now states the known current facts without presenting approved targets as
+active features. Production chat uses the billed, API-key Gemini Developer API; developer logging is
+off and datasets are empty, while Google's separate 55-day abuse monitoring remains. OpenAI is used
+only for embeddings. Its API logging is off with Global residency, and sharing was disabled for or
+excluded from the FPL use case after all three categories had been enabled, but the resulting
+organisation/project scope was not recorded and earlier sharing is not undone. The page makes no
+retrospective no-training promise.
+
+Supabase is Free in eu-west-1 (Ireland), with no owner-managed backups and no documented Free-plan
+daily-backup entitlement. Resend Free's accepted provider retention is 30 days and open/click
+tracking is off. Ordinary app-log policy is separate: 14 days maximum, with no external log or error
+service. Kari Vänttinen is the sole human administrator and reports Google MFA for Supabase and Fly.
+The approved incident procedure is in `PRIVACY-OPERATIONS.md`.
+
+Pending work remains explicit:
+
+- [KAR-62](https://linear.app/quantti/issue/KAR-62) — **High / Todo:** encrypted daily backup,
+  seven-day retention, restore test and post-restore re-deletion.
+- [KAR-63](https://linear.app/quantti/issue/KAR-63) — **Normal / Todo:** correct the Fly individual
+  contracting field and annex misalignment before relying on its DPA.
+- [KAR-64](https://linear.app/quantti/issue/KAR-64) — **High / Todo:** provision and verify the new
+  privacy mailbox. Do not publish it yet; `kvanttinen@gmail.com` remains the working public contact.
+- [KAR-65](https://linear.app/quantti/issue/KAR-65) — **Normal / Todo:** resolve OpenAI's
+  company-field-only DPA route without inventing a company or placeholder data.
+
+Also pending are the OpenAI sharing-scope evidence, contracting-customer records, an owner-approved
+short DSAR case-record period, and implementation/testing of deletion, quota-safe usage cleanup,
+backup and DSAR tooling. Approved targets must not be described as active behavior.
 
 The browser-storage notice is informational, not a consent banner: Supabase auth tokens/session
 and Mantine's theme preference use `localStorage`, while the “Got it” acknowledgement uses only

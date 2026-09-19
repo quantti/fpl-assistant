@@ -1,36 +1,175 @@
-# Privacy operations and retention proposals
+# Privacy operations and retention decisions
 
-Status: research and proposed operating procedure only. Nothing in this document activates deletion,
-changes a supplier setting, accepts a contract, or proves GDPR compliance. Owner approval and the
-account evidence listed below are required before the proposals become policy or code.
+Status: research, approved decisions and proposed operating procedure only. Nothing in this document
+activates deletion, changes a supplier setting, accepts a contract, or proves GDPR compliance.
+Approved retention decisions remain implementation work unless this document says they already exist.
 
 Last checked: 2026-09-19. Sources are the suppliers' public documents, not the project's private
 account dashboards.
 
+## Owner decisions (implementation pending)
+
+These decisions supersede the corresponding proposals below; unimplemented lifecycle rules are not active yet.
+
+- Conversations/messages: retain while the account exists and delete on account deletion.
+  No age-based expiry (the owner withdrew the 365-day limit).
+- Usage events: retain for 90 days after the event, and longer where required to preserve the
+  active quota window. Never expire rows still counted toward that window.
+- Ordinary application logs: maximum 14 days; shorter platform retention is acceptable and
+  need not be extended. The owner confirms there is no external error-monitoring or log-export service;
+  supplier-controlled security, abuse and delivery records have their separately stated periods.
+- Inactive accounts: no automatic inactivity deletion during testing. Review continued need
+  at the end of the test period; handle account-erasure requests separately.
+- Invite redemption on account erasure: remove the user association and retain only a
+  consumed-place record without email, FPL entry ID or user UUID. Account deletion must not
+  release the invite place or reset usage counters. Implementation needs an explicit
+  non-releasable state distinct from the existing releasable failed reservation.
+- Gemini: owner confirms Cloud Billing is linked to the Gemini API project. This is
+  owner-provided configuration evidence, not an independent dashboard inspection. The public
+  contractual applicability and transfer terms are recorded below; customer identity still needs
+  to be retained as account evidence.
+- Gemini developer logging: owner checked AI Studio and reports no logs, Generate Content
+  logging disabled and an empty Datasets view. No current datasets are available to share;
+  historical feedback sharing has not been verified. This does not disable Google's separate
+  abuse-monitoring logs.
+- OpenAI: owner reports completing the sharing opt-out for the FPL use case after the
+  dashboard showed all three sharing categories enabled for all projects. Whether the change
+  disabled sharing organization-wide or excluded only the FPL project was not specified.
+  Earlier sharing is not undone and its actual scope remains unverified.
+- OpenAI API call logging: owner reports setting it to Disabled and saving, following the
+  screenshot showing Enabled per call. This is separate from abuse-monitoring retention;
+  no Zero Data Retention approval is established. The shown project has Global residency.
+- Supabase: owner confirms Free plan and project region eu-west-1 (Ireland). This confirms
+  the primary project region, not EU-only processing by every supplier or subprocessor. The owner
+  confirms no self-managed backup; Supabase documents no Free-plan daily-backup entitlement.
+- Backups: owner confirms no self-managed backups currently and approves a separate
+  implementation task: daily encrypted backups stored separately from the live database,
+  seven-day retention, a restore test, explicit scope for the database shared with Tapas,
+  and reapplication of completed personal-data deletions after restore. Not activated.
+  Tracked as [KAR-62](https://linear.app/quantti/issue/KAR-62), priority High, status Todo.
+- Fly DPA correction deferred by owner: [KAR-63](https://linear.app/quantti/issue/KAR-63),
+  Todo, normal priority. Downloaded signed DPA.pdf was inspected. Company
+  Legal Name is a dash and the two customer fields were populated under the wrong headings
+  (frequency text under sensitive data; processing description under transfer frequency).
+  Follow up with finance@fly.io to confirm individual contracting identity, correct the fields,
+  re-sign and confirm delivery/acceptance under the document's execution instructions.
+  Do not mark the DPA verification complete. Keep the signed document outside git.
+- Confirmation email: owner confirms Resend Free is the current SMTP provider. Resend's
+  public documentation states 30-day email content/metadata, delivery-event, log and metric
+  retention across Free/Pro/Scale:
+  https://resend.com/docs/knowledge-base/account-quotas-and-limits#data-retention .
+  Owner accepts this 30-day email-service retention as a separately disclosed period,
+  distinct from our approved 14-day application-log maximum. Owner confirms Open tracking
+  and Click tracking are disabled on the sending domain. DPA/transfer findings are recorded below.
+- Data-subject requests: owner approves an email-based process with proportionate identity
+  checks and the ordinary one-month response period. Safe admin export/erasure tooling still
+  needs implementation; no self-service UI is required for the initial process.
+- Privacy contact migration planned: [KAR-64](https://linear.app/quantti/issue/KAR-64), Todo,
+  High priority, will provision/verify admin@fpl-sidekick.com before changing public contact
+  references. Until then kvanttinen@gmail.com remains the published working contact; preserve
+  the old channel during transition. Related inbound-mail issue: KAR-43.
+- Administrative access: owner confirms no other people have access to production Supabase,
+  Fly.io or application administration, including through the shared Tapas project. This
+  records human access only; service credentials and automated integrations require separate
+  protection and are not implied to be absent.
+- Administrator authentication: owner reports both Supabase and Fly.io are accessed through
+  Google sign-in and that MFA is enabled on the Google account. Other provider accounts,
+  recovery methods, API keys and existing sessions were not independently audited.
+- Personal-data incidents: owner approves Kari Vänttinen as responsible person and the
+  lightweight response procedure below. This is an operating procedure, not an assertion
+  that an incident has occurred or that every outage is reportable.
+- External observability: owner confirms no additional error-monitoring or log-export
+  services (such as Sentry, Grafana Cloud or Better Stack). This does not establish the
+  retention of each hosting/authentication provider's own operational logs.
+- OpenAI DPA execution deferred: [KAR-65](https://linear.app/quantti/issue/KAR-65), Todo,
+  normal priority. The form requires company legal name/address with no visible individual
+  option. Confirm with OpenAI support whether Kari Vänttinen may contract using personal legal
+  name/address, then review/execute and retain evidence privately. Do not invent a company,
+  submit placeholders or mark contract verification complete while this is pending.
+- These confirmations do not activate the pending retention, deletion, backup or DSAR tooling.
+
 ## Processing inventory
 
-| Data | Purpose and location | Current lifecycle | Proposed lifecycle (not active) |
+| Data | Purpose and location | Current lifecycle | Approved/target lifecycle (not active unless stated) |
 |---|---|---|---|
-| Supabase Auth account (email, password verifier, session/security metadata) | Authentication in Supabase | No project-defined expiry; current SMTP delivery configuration is not visible in the repository | Keep while the account is active. Owner must decide an inactivity period before one is published. Delete with an approved account-erasure request, subject to documented exceptions and backup expiry. |
+| Supabase Auth account (email, password verifier, session/security metadata) | Authentication in Supabase | No project-defined expiry | Keep while the account exists and delete on an approved account-erasure request, subject to documented exceptions and backup expiry. Do not auto-delete inactive accounts during testing; review this at the end of testing. |
 | `fpl_user_profile` (user UUID, optional FPL entry ID, quota override) | Account preferences and service operation in Supabase Postgres | FPL entry ID can be removed in Settings; otherwise no automatic expiry | Keep until removed or the account is erased. |
-| `fpl_conversation` and `fpl_message` | Saved chat history in Supabase Postgres; relevant context and tool output are sent to the configured AI provider | No automatic expiry | Delete a conversation and its messages 90 days after that conversation's last activity (`updated_at`). This is a proposal, not an implemented promise. |
+| `fpl_conversation` and `fpl_message` | Saved chat history in Supabase Postgres; relevant context and tool output are sent to Google Gemini for chat | No automatic expiry | Owner approved: retain while the account exists and delete on account deletion, with no age-based expiry. Account deletion is not implemented yet. |
 | `fpl_chat_trace` | Administrator-only test diagnostics: prompts, tool arguments/results, timings, usage and output | Startup and hourly cleanup after 14 days | Keep the existing 14-day rule. Verify cleanup monitoring and backup effects before presenting it as end-to-end erasure. |
 | `fpl_usage_event` | Quota enforcement and token/cost audit; deliberately survives conversation deletion | No automatic expiry | Keep every row through the quota window in which it can be counted, then until the later of that window's end and 90 days after the event. The off-season window can exceed 90 days. Never replace this with a simple “older than 30/90 days” delete: it could refill an active off-season allowance. |
 | `fpl_player_shortlist` | Account-owned shortlist | User can remove entries; no account-wide expiry | Keep until the user removes an entry or the account is erased. |
 | `fpl_invite_redemption` and `fpl_invite_code` | Enforce the global/per-code account caps and retain the benefit attached to signup | No automatic expiry; codes are disabled, not deleted | Keep a redemption while its account exists. On account erasure, remove the link to the user but preserve a non-releasable consumed-place tombstone and the code's `uses` invariant. The current nullable row also means “burnt place” and the admin release action deletes it, so this proposal needs an explicit schema/state design before use. Never simply delete redemption rows or decrement `uses`: that would make invite places reusable and break the global cap. Keep code rows disabled rather than deleting them. |
-| IP address and request/error data | In-memory request rate limiting and ordinary application/hosting logs | Limiter counters use time windows, but IP keys can remain until reuse, map clearing or process restart; platform log retention has not been verified in the account | Target no more than 14 days for ordinary logs. Fly publicly documents about 7 days of searchable app logs, already inside that target, but verify the active account and that no log shipper or other sink exists. Do not log chat bodies or credentials. |
+| IP address and request/error data | In-memory request rate limiting and ordinary application/hosting logs | Limiter counters use time windows, but IP keys can remain until reuse, map clearing or process restart; platform log retention has not been verified in the account | Approved maximum 14 days for ordinary application logs. Fly publicly documents about 7 days of searchable app logs, already inside that maximum. The owner confirms no external log sink. Do not log chat bodies or credentials. |
 | Optional FPL team/squad data | Public FPL API data used for team-aware answers | FPL entry ID persists in profile; squad/league caches are in process for minutes, bootstrap data for six hours; relevant results can remain in chats/traces | Keep only under the lifecycles of the profile, chat and trace that contain it. Removing the profile ID does not retroactively erase those copies. |
 | Player/statistics/schedule/strategy data | Product reference data, generally not account-owned | Source-specific sync retention | Outside an account DSAR unless a user placed personal data into free text or a record is otherwise linkable to them. |
-| Confirmation-email delivery data | Supabase Auth plus the SMTP provider configured in the Supabase dashboard | Repository history records Resend setup, but this task did not inspect the current dashboard, provider logs or retention | Treat provider, region, DPA and retention as unknown until dashboard and provider-account evidence are saved. Do not state a period publicly yet. |
+| Confirmation-email delivery data | Supabase Auth plus Resend Free | Owner confirms 30-day Resend email content/metadata, delivery-event, log and metric retention; open/click tracking is disabled | Owner accepts Resend's 30-day provider retention as distinct from the 14-day application-log maximum. Account deletion/DSAR handling and any provider exceptions still need an implemented runbook. |
 
-The 90-day periods are proposed balances: they allow a user to continue recent chats and allow a
-bounded operational/cost investigation, while avoiding indefinite retention. They are not derived
-from a supplier default and are not active. The owner must approve or replace them and approve the
-inactivity rule for accounts.
+The approved conversation, usage-event, inactivity and ordinary-log rules above are not active merely
+because they are documented. Supplier-controlled abuse, security and delivery retention is separate
+from the project's own retention and must not be described as if the project could shorten it.
 
 ## Supplier findings: public terms versus this project
 
-### OpenAI API
+### Google Gemini Developer API (chat)
+
+Public facts:
+
+- The current Gemini API Additional Terms distinguish paid and unpaid services:
+  <https://ai.google.dev/gemini-api/terms>. For paid services, Google says prompts and responses
+  are not used to improve its products and are processed under the linked Data Processing
+  Addendum. It may transiently store or cache them in countries where Google or its agents have
+  facilities.
+- The same terms say an API client made available to users in the EEA, Switzerland or UK may use
+  only paid services. They also say that, when the developer is in one of those jurisdictions,
+  the paid-services data-use terms apply even to AI Studio and unpaid Gemini API quota. This means
+  a blanket statement that all unpaid Gemini traffic is used for product improvement would be
+  wrong. Outside that regional exception, the unpaid-services terms allow submitted content and
+  responses to be used to provide, improve and develop products and machine-learning technologies,
+  with possible human review.
+- Google's abuse-monitoring page says prompts, contextual information and outputs are retained for
+  55 days for policy enforcement and required legal or regulatory disclosures; flagged content
+  can be reviewed by authorised employees:
+  <https://ai.google.dev/gemini-api/docs/usage-policies>. It says those logs are not used to train
+  or fine-tune models other than models specifically used for policy enforcement.
+- Billing-enabled projects can separately opt in to developer-owned API logging. Those logs
+  default to a maximum 55-day retention, configurable to 7, 14, 28 or 55 days, while datasets can
+  retain selected logs without a set period. Sharing datasets or feedback with Google is optional
+  and can permit product improvement and model training:
+  <https://ai.google.dev/gemini-api/docs/logs-policy>.
+- Google's Gemini Developer API zero-retention page says ordinary paid use still has limited abuse
+  logging and directs workloads requiring guaranteed zero retention or enterprise data-processing
+  arrangements to Vertex AI: <https://ai.google.dev/gemini-api/docs/zdr>.
+- DPA applicability is incorporated rather than a separate signature claim. The paid-service clause
+  in the Additional Terms says paid prompts/responses are processed under the Google DPA. DPA section
+  4.1 applies it where the service agreement incorporates it by reference, and Google's official
+  service list expressly names “Gemini API Paid Services”:
+  <https://business.safety.google/processorterms/> and
+  <https://business.safety.google/services/>. The DPA's Terms Effective Date can arise when the
+  customer clicks to accept it or otherwise agrees; this evidence does not prove a handwritten or
+  separately executed DPA.
+- DPA Appendix 3A section 7 makes the transfer basis conditional: no extra mechanism for an Adequate
+  Country; Google's adopted transfer solution (including the EU-US DPF for a certified US Google
+  entity) for a restricted transfer; applicable SCCs if no such solution is available. It does not
+  promise EU-only processing, and the paid terms expressly permit transient storage/cache wherever
+  Google or its agents maintain facilities.
+
+Project facts and gaps:
+
+- The owner confirms that current production chat uses Google Gemini. The checked-in Spring AI
+  `google-genai` configuration supplies `GEMINI_API_KEY` and does not configure Vertex AI's
+  `project-id`, `location` or `vertex-ai` switch. Spring AI 2.0.0 therefore builds the Google GenAI
+  client with an API key, which is the Gemini Developer API path, not Vertex AI. This conclusion
+  inspects configuration and the installed SDK/autoconfiguration only, not the secret value.
+- The owner confirms active Cloud Billing for the project, developer Generate Content logging off,
+  no logs and empty datasets. On that evidence the Gemini API calls are Paid Services and the DPA is
+  incorporated through the terms above; no separate Google DPA signature is required by those public
+  clauses. Record the contracting customer/address as account evidence, but do not confuse a logging
+  toggle or empty dataset with contractual acceptance.
+- The optional logging/dataset controls do not disable Google's separate abuse-monitoring retention.
+  Historical feedback sharing was not established. Do not promise zero retention, EU-only processing
+  or a data-region commitment.
+
+### OpenAI API (strategy-search embeddings)
 
 Public facts:
 
@@ -40,36 +179,45 @@ Public facts:
   metadata and are retained for up to 30 days, except where longer retention is required by law or
   reasonably necessary to protect OpenAI's services or a third party. Zero Data Retention and
   Modified Abuse Monitoring require eligibility, approval and additional requirements; they are
-  not ordinary unchecked defaults.
-- For `/v1/chat/completions`, the public endpoint table says no application-state retention apart
-  from listed exceptions; abuse-monitoring retention is 30 days. Embeddings likewise show no
-  application state and 30-day abuse-monitoring retention. Prompt caching can retain encrypted
-  tensors in GPU-local storage for up to 24 hours.
+  not ordinary unchecked defaults. Its endpoint table says embeddings have no application-state
+  retention and are subject to the abuse-monitoring retention.
 - OpenAI's current public DPA describes OpenAI as processor, assistance with data-subject requests,
-  deletion/return after termination, subprocessors, and SCCs or an adequacy decision for relevant
-  EEA/Swiss transfers: <https://openai.com/policies/data-processing-addendum>. Public text is not
-  evidence that the correct customer accepted it or that a particular project has EU residency or
-  a retention control enabled.
+  deletion/return after termination and subprocessors. Section 4.1 uses SCCs or an adequacy decision
+  for relevant EEA/Swiss onward transfers, while section 4.2 incorporates SCCs plus the UK Addendum
+  for UK data: <https://openai.com/policies/data-processing-addendum>. It does not state an EU-US DPF
+  basis, so none should be inferred.
+- The DPA page says it supplements and is incorporated into the Services Agreement and that clicking
+  “I agree,” accepting an order form, or using the services agrees to the agreement. OpenAI's own
+  enterprise-privacy FAQ nevertheless instructs API customers to complete its DPA form “to execute a
+  DPA”: <https://openai.com/api-data-privacy>. Because the public routes are not phrased consistently,
+  retain an executed customer-specific copy through that official form rather than claiming a
+  signature or relying only on an account setting.
 
 Project facts and gaps:
 
-- `application.yml` currently selects OpenAI chat only when `SPRING_AI_PROVIDER=openai`; OpenAI
-  embeddings are configured independently for strategy search. Production has previously been
-  documented as OpenAI chat, but the live provider must be confirmed from deployment settings.
-- The account's training opt-in, retention-control approval, project-level override, API endpoint,
-  project geography and DPA/customer identity were not inspected. Therefore the project must not
-  promise “no training”, Zero Data Retention, EU-only processing or signed transfer terms as an
-  account guarantee. The public no-training-unless-opt-in rule is accurately stated only with this
-  qualification.
+- OpenAI embeddings are configured independently of the chat provider. Strategy-search query text
+  is sent to OpenAI for embedding; chat generation is not currently sent to OpenAI.
+- The owner reports opting the FPL use case out after all three sharing categories had appeared
+  enabled, but whether that changed the organization or only one project is unclear. Earlier sharing
+  is not reversed. Confirm the resulting scope in the account; until then do not make an
+  account-specific no-sharing claim beyond OpenAI's default no-training rule.
+- The owner reports API call logging disabled and Global residency. This is not Zero Data Retention
+  approval, does not override default abuse monitoring, and is not EU residency. DPA execution and
+  the contracting customer remain to be evidenced; do not invent a signature.
 
 ### Supabase
 
 Public facts:
 
-- The Supabase DPA forms part of its agreement, identifies Supabase as processor, permits processing
-  where it or subprocessors have facilities subject to transfer terms, incorporates SCCs where
-  applicable, and describes return/deletion after termination:
+- The Supabase DPA expressly supplements and forms part of its Terms of Service and is effective on
+  the agreement's effective date; it is not presented as a separately signed addendum. It identifies
+  Supabase as processor and describes return/deletion after termination:
   <https://supabase.com/legal/dpa>.
+- DPA sections 6.1 and 12 permit processing where Supabase or subprocessors maintain facilities,
+  while storing and primarily processing region-directed data in that region. SCCs apply only to the
+  transfers described in section 12.1; section 12.2 says accepting the agreement has the same effect
+  as signing those SCCs. The DPA names Supabase Pte. Ltd in Singapore as importer. This is a
+  conditional SCC safeguard, not EU-only processing and not evidence of a separate signature or DPF.
 - The current subprocessor source and update subscription are at
   <https://supabase.com/legal/customer-resources/subprocessor-list>.
 - Backup availability depends on plan. Supabase documents daily backups for Pro (7 days), Team
@@ -83,9 +231,35 @@ Project facts and gaps:
 
 - Supabase supplies Auth and the shared PostgreSQL database. The database contains this project's
   user data and unrelated Tapas tables, so a broad database deletion is unsafe.
-- This task did not inspect the project's plan, database/Auth region, backup/PITR panel, log drains,
-  support exports, DPA acceptance/customer identity, current subprocessors or SMTP settings.
-  Public plan descriptions do not establish which periods or transfer mechanism apply here.
+- The owner confirms Free plan and eu-west-1 (Ireland). That establishes the selected storage/primary
+  processing region, not that every Supabase/support/subprocessor operation remains in the EEA.
+  There are no owner-managed backups yet; the approved seven-day separate encrypted backup is pending
+  KAR-62. Record the contracting customer and retain the applicable terms as evidence, but no separate
+  Supabase DPA execution is indicated by the public clause.
+
+### Resend (confirmation email)
+
+Public facts:
+
+- Resend's DPA is attached to and incorporated into its Terms of Service and says it becomes legally
+  binding when the customer enters the agreement or executes the DPA. Section 12 says signature
+  blocks are for reference and an executed version is available in the dashboard; ordinary ToS
+  acceptance therefore does not require a new signature:
+  <https://resend.com/legal/dpa>.
+- Primary processing is in the United States. Sections 6.1–6.5 incorporate EU SCCs/UK Addendum for
+  transfers not governed by an adequacy decision and section 6.6 adds supplementary measures.
+  Section 11 states that Resend is certified under the EU-US DPF and UK Extension. DPF applies only
+  where the transfer actually relies on that certification; SCCs remain the documented fallback,
+  not a claim that every transfer uses both mechanisms simultaneously.
+- The provider documents 30-day retention of email content/metadata, delivery events, logs and
+  metrics for Free, Pro and Scale:
+  <https://resend.com/docs/knowledge-base/account-quotas-and-limits#data-retention>.
+
+Project facts and gaps:
+
+- The owner confirms Resend Free, accepts that separate 30-day provider period, and confirms open and
+  click tracking are off. Save the dashboard's executed DPA copy and contracting customer as evidence;
+  downloading it records the incorporated agreement and does not constitute accepting a new one.
 
 ### Fly.io
 
@@ -109,9 +283,11 @@ Public facts:
   <https://fly.io/docs/volumes/overview>. The current app configuration declares no Fly volume;
   this does not establish retention of platform backups or logs.
 
-Project gaps: confirm the live Machine region, whether a DPA has been signed by the correct party,
-whether a log shipper/sink exists, searchable-log behavior, support access and any snapshots. Do
-not infer all-EU processing from `primary_region = 'cdg'`.
+Project facts and gaps: production is documented in `cdg`; the owner confirms no external log sink
+or additional human administrator. The downloaded DPA has invalid/misaligned customer fields, so
+KAR-63 must resolve the contracting party and execution before it can be relied upon. Support access
+and supplier-controlled logs remain distinct from app-log retention. Do not infer all-EU processing
+from `primary_region = 'cdg'`.
 
 ## Backup and deletion rule
 
@@ -131,7 +307,28 @@ should be:
 5. Verify Auth, database backups/PITR, logs, downloaded exports and support attachments separately.
    Deleting a Postgres row does not prove deletion from any of them.
 
-No backup period should be published until the active plan and settings have been captured.
+The owner-approved target is a separately stored encrypted daily backup with seven-day retention,
+restore testing and post-restore re-deletion. KAR-62 tracks implementation. Until that exists, describe
+it only as a target: Supabase Free does not supply the documented Pro daily-backup entitlement, and
+there is currently no owner-managed backup to which the seven-day period could apply.
+
+## Personal-data incident response
+
+Responsible person: Kari Vänttinen.
+
+1. Contain the incident: block compromised access, revoke/rotate affected credentials and
+   preserve necessary evidence securely without unnecessarily copying personal data.
+2. Record when the incident became known, what happened, affected systems/data/people,
+   likely consequences and containment/remediation actions. Assess risks to individuals.
+3. Notify the competent supervisory authority without undue delay and, where feasible,
+   within 72 hours of becoming aware of a personal-data breach, unless it is unlikely to
+   result in a risk to individuals' rights and freedoms. Explain any delay; provide
+   information in phases where necessary rather than waiting for a complete investigation.
+4. Where the breach is likely to result in a high risk, inform affected individuals without
+   undue delay, subject to the applicable legal exceptions. Explain practical protective steps.
+5. Document the incident and notification decision even if notification is not required;
+   correct the cause and review recovery. An outage or failed login alone does not establish
+   a reportable personal-data breach. Restrict access to the incident record.
 
 ## Manual data-subject request workflow
 
@@ -173,28 +370,28 @@ This is a practical workflow, not legal advice or an automated feature.
     rights, and any backup/vendor limitation. Store only the minimal case evidence for the approved
     audit period.
 
-## Owner decisions and account evidence required
+## Remaining owner actions and implementation dependencies
 
-Before implementing or strengthening the public notice, the owner must:
+Approved decisions above do not need to be asked again. The genuinely remaining owner/account actions
+are:
 
-1. Approve or replace: 90 days since last activity for conversations; the usage rule (quota window
-   plus a 90-day event tail); 14 days maximum for ordinary logs; and an account inactivity period.
-2. Decide the invite-erasure tombstone design and audit period. It must distinguish consumed
-   account places from releasable burnt reservations and preserve `fpl_invite_code.uses` plus the
-   global cap.
-3. Decide whether to request OpenAI retention controls/data residency and confirm the training
-   opt-in is off; save organization/project screenshots or exports, endpoint and date checked.
-4. Confirm the contracting customer and DPA applicability for OpenAI and Supabase; sign/download
-   Fly's DPA if required; record the transfer mechanism and current subprocessor lists.
-5. Capture Supabase project region, plan, daily-backup/PITR retention, log retention/drains and Auth
-   log behavior. Confirm whether database backups cover Auth and how deletion after restore is
-   operationalized.
-6. Capture Fly live region, searchable-log window, external log sinks, snapshots/volumes and support
-   settings. A repository region is not account evidence.
-7. Confirm the current Supabase SMTP provider, account/region, delivery-log retention, DPA and
-   transfer terms. Repository history mentioning Resend is not current dashboard evidence.
-8. Approve an access-controlled DSAR case register, response channel and restore/re-deletion
-   procedure; then test them on synthetic data before handling a real request.
+1. **OpenAI:** use OpenAI's official DPA form at <https://openai.com/api-data-privacy> and retain the
+   resulting customer-specific executed copy outside git. In the dashboard, capture whether the
+   sharing opt-out applies organization-wide or only to the FPL project. Do not change residency or
+   request Zero Data Retention merely to gather evidence.
+2. **Contract evidence:** record the contracting customer/name and address shown for Google,
+   Supabase, OpenAI and Resend; download Resend's already-incorporated executed DPA from its dashboard.
+   These are evidence actions, not instructions to accept or sign new terms. Google's paid Gemini DPA,
+   Supabase's DPA and Resend's DPA are incorporated as described above.
+3. **Fly:** resolve the invalid/misaligned DPA fields through KAR-63 before relying on it. Do not
+   re-sign or claim delivery/acceptance until Fly confirms the correct individual contracting form.
+4. **Contact and backup:** complete KAR-64 before publishing the new DSAR address, and KAR-62 before
+   promising seven-day backup retention or tested restores. Keep the current email request route in
+   the meantime.
+5. **Implementation policy input:** approve the short retention period for the minimal DSAR/deletion
+   case register before that register is built. The conversation, usage, inactivity, ordinary-log and
+   invite consumed-place decisions themselves are settled.
 
-Until those decisions are made, the existing notice should continue to describe unimplemented
-retention as unconfigured and supplier account controls as unverified.
+Engineering still needs to implement and test account erasure, the non-releasable invite tombstone,
+usage cleanup that protects the active quota window, backup/re-deletion handling, and safe DSAR
+export/erasure. Until then, public wording must distinguish approved targets from active behavior.

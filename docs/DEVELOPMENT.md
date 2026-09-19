@@ -578,10 +578,13 @@ Season 2026/27 starts 2026-08-21; tapas creates the season row well before synci
 ## LLM provider
 
 `SPRING_AI_PROVIDER` selects the provider (`anthropic`, `openai` or `google-genai`) and is
-currently set to `anthropic` in `.env.test`. `application.yml` maps it to `spring.ai.model.chat`,
-which activates only that provider's autoconfiguration — without it, the unused provider's blank
-API key fails context startup. `google-genai` runs Gemini through the Developer API
-(`GEMINI_API_KEY`); thinking depth is `GEMINI_THINKING_LEVEL` (`LOW` default).
+currently set to `anthropic` in `.env.test`; production currently uses `google-genai` with the
+billed, API-key Gemini Developer API, not Vertex AI. `application.yml` maps the setting to
+`spring.ai.model.chat`, which activates only that provider's autoconfiguration — without it, the
+unused provider's blank API key fails context startup. `google-genai` uses `GEMINI_API_KEY`;
+thinking depth is `GEMINI_THINKING_LEVEL` (`LOW` default). Current provider privacy controls,
+retention decisions and unresolved contract evidence are recorded in
+[`PRIVACY-OPERATIONS.md`](PRIVACY-OPERATIONS.md); do not infer them from local environment defaults.
 
 **`OPENAI_API_KEY` is mandatory regardless of `SPRING_AI_PROVIDER`, from Phase 2 onward.** RAG
 embeddings always go through OpenAI (`text-embedding-3-small`) because Anthropic has no embeddings
