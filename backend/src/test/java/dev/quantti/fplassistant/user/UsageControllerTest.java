@@ -180,6 +180,24 @@ class UsageControllerTest {
                 .andExpect(jsonPath("$.limit").doesNotExist());
     }
 
+    /**
+     * The same silence, in a window that does have a reset instant. "Resets at the gameweek 13
+     * deadline" under a 0% bar sends a suspended account to wait for a window that will not open
+     * for it — the one thing every other branch here is careful not to say.
+     */
+    @Test
+    void aSuspendedAccountIsNotShownTheWindowsReset() throws Exception {
+        seedSeasonUnderway();
+        setLimit(0);
+        seedChatEvents(1);
+
+        mockMvc.perform(get("/api/usage")
+                .header("Authorization", "Bearer " + TestJwks.validTokenFor(USER)))
+                .andExpect(jsonPath("$.window.kind").value("GAMEWEEK"))
+                .andExpect(jsonPath("$.resetsAt").doesNotExist())
+                .andExpect(jsonPath("$.nextFreeAt").doesNotExist());
+    }
+
     private void setLimit(int limit) {
         jdbc.update("INSERT INTO " + profileTable + " (user_id, weekly_message_limit) VALUES (?, ?)"
                 + " ON CONFLICT (user_id) DO UPDATE SET weekly_message_limit = EXCLUDED.weekly_message_limit",

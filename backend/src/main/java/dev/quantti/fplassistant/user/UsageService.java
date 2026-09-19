@@ -23,6 +23,13 @@ import org.springframework.transaction.annotation.Transactional;
  *
  * <p>Usage is recorded when a call starts, never when it finishes. The cost is incurred at the
  * start; recording on completion would make an aborted stream free to repeat.
+ *
+ * <p>The fallback counts entirely in the database, against {@code now()}, and so cannot drift from
+ * the timestamps it counts. A fixed window cannot: which window an instant falls in is decided
+ * here, from this process's clock, against deadlines the database supplied. The bounds themselves
+ * are database values, so the count inside a window is exact; only the choice of window can be
+ * off, and only by the app-to-database clock skew, for a message sent within that skew of a
+ * deadline. Bounded by NTP and not worth a second round trip inside the claim's advisory lock.
  */
 @Service
 public class UsageService {
@@ -52,10 +59,12 @@ public class UsageService {
      * @param plan       the tier the limit was resolved against. Carried rather than looked up
      *                   again, so the response and the 429 cannot disagree about it
      * @param limit      messages allowed per window, or {@code null} for unlimited
-     * @param nextFreeAt when the caller may send again, or {@code null} while messages remain —
-     *                   or when waiting cannot help, which is what a suspended account (limit 0)
-     *                   means. In a fixed window this is the window's end; in the fallback it is
-     *                   when the message that has to age out does so
+     * @param nextFreeAt when the caller may send again, or {@code null} when waiting cannot help,
+     *                   which is what a suspended account (limit 0) means. In a fixed window it is
+     *                   the window's end and is set only once the allowance is spent — before that
+     *                   there is nothing to wait for. In the fallback it is when the message that
+     *                   has to age out does so, and is set whenever anything is counted at all:
+     *                   a rolling window is always in the middle of freeing something
      * @param resetsAt   when the count returns to zero. {@code null} in the fallback, where
      *                   nothing resets, and in an off-season window whose end is not yet captured
      * @param window     the period the numbers describe, so the reply and the page can name it
@@ -113,15 +122,15 @@ public class UsageService {
                 Integer.class, userId, CHAT_EVENT);
     }
 
-    /** Half-open; either bound may be absent, which is what an unbounded off-season window is. */
+    /**
+     * Half-open. {@code from} is always known — a window with no lower bound is the fallback, not
+     * a window — while {@code until} is absent once the season being played has run out of
+     * captured deadlines and the next one has not been published.
+     */
     private int countBetween(UUID userId, Instant from, Instant until) {
         StringBuilder sql = new StringBuilder("SELECT count(*) FROM " + usageTable
-                + " WHERE user_id = ? AND event_type = ?");
-        List<Object> args = new ArrayList<>(List.of(userId, CHAT_EVENT));
-        if (from != null) {
-            sql.append(" AND created_at >= ?");
-            args.add(Timestamp.from(from));
-        }
+                + " WHERE user_id = ? AND event_type = ? AND created_at >= ?");
+        List<Object> args = new ArrayList<>(List.of(userId, CHAT_EVENT, Timestamp.from(from)));
         if (until != null) {
             sql.append(" AND created_at < ?");
             args.add(Timestamp.from(until));
