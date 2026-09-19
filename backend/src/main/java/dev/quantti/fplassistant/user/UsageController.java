@@ -11,8 +11,8 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * What the caller has spent this week. Exists for the frontend's usage indicator: a limit the
- * user meets only as a 429 is a limit they had no way to see coming.
+ * What the caller has spent in the window they are in. Exists for the frontend's usage indicator:
+ * a limit the user meets only as a 429 is a limit they had no way to see coming.
  */
 @RestController
 @RequestMapping("/api/usage")
@@ -43,16 +43,28 @@ public class UsageController {
      *                         indicator
      * @param unlimited        true when the account has no limit; {@code remainingPercent} is
      *                         then meaningless and set to 100
-     * @param nextFreeAt       when the window next frees a message, or null when nothing is
-     *                         counted or waiting cannot help. It names no count, and without it
-     *                         someone out of messages has no idea when they can continue
-     * @param used             messages spent this week, on the free plan only
-     * @param limit            messages the week allows, on the free plan only. An unlimited
+     * @param nextFreeAt       when the caller may send again, or null while messages remain or
+     *                         when waiting cannot help. It names no count, and without it someone
+     *                         out of messages has no idea when they can continue
+     * @param used             messages spent in this window, on the free plan only
+     * @param limit            messages the window allows, on the free plan only. An unlimited
      *                         account carries neither: there is no count worth displaying
+     * @param window           which period the numbers describe. The page needs it to choose its
+     *                         wording: a rolling fallback has no deadline to name, and naming one
+     *                         anyway would be the page inventing a fact
+     * @param resetsAt         when the count returns to zero, absent on a fallback — where
+     *                         nothing resets — and on an off-season window whose end is not yet
+     *                         captured. Sent whether or not the caller is blocked: a reset you
+     *                         can see coming is the point of counting in windows at all
      */
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record UsageResponse(Plan plan, int remainingPercent, boolean unlimited,
-                                Instant nextFreeAt, Integer used, Integer limit) {}
+                                Instant nextFreeAt, Integer used, Integer limit,
+                                WindowResponse window, Instant resetsAt) {}
+
+    /** The window without its bounds: the page names a round and a reset, never a range. */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record WindowResponse(QuotaWindow.Kind kind, Integer gameweek, String season) {}
 
     @GetMapping
     public UsageResponse usage(@AuthenticationPrincipal Jwt jwt) {
@@ -60,11 +72,18 @@ public class UsageController {
         // A suspended account (limit 0) is told neither count nor limit — the same silence the
         // 429 keeps: no number is the reason it cannot send, and "3 of 0 messages used" would
         // be a sentence about nothing. Unlimited falls out the same way: limit is null.
-        boolean statesTheNumbers = quota.plan() == Plan.FREE && quota.limit() != null && quota.limit() > 0;
+        boolean suspended = quota.limit() != null && quota.limit() == 0;
+        boolean statesTheNumbers = quota.plan() == Plan.FREE && !suspended && quota.limit() != null;
+        QuotaWindow window = quota.window();
         return new UsageResponse(quota.plan(), remainingPercent(quota), quota.limit() == null,
                 quota.retryAfterSeconds().isEmpty() ? null : quota.nextFreeAt(),
                 statesTheNumbers ? quota.used() : null,
-                statesTheNumbers ? quota.limit() : null);
+                statesTheNumbers ? quota.limit() : null,
+                new WindowResponse(window.kind(), window.gameweek(), window.season()),
+                // A suspended account is not shown the reset either. It is the same silence the
+                // 429 keeps: the window does reopen, but not for this account, and pointing at
+                // the deadline would send it to wait for something that will not happen.
+                suspended ? null : quota.resetsAt());
     }
 
     private static int remainingPercent(UsageService.Quota quota) {
