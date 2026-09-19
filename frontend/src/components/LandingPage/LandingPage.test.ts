@@ -57,6 +57,7 @@ it('presents the product honestly with registration and login paths', () => {
   expect(links.get('Register free')).toBe('/register');
   expect(links.get('Register')).toBe('/register');
   expect(links.get('Log in')).toBe('/login');
+  expect(links.get('Privacy')).toBe('/privacy');
 });
 
 it('offers the app instead of sign-up actions to a signed-in visitor', () => {

@@ -18,6 +18,7 @@ vi.mock('./auth/useSession', () => ({
 vi.mock('./hooks/useKeyboardAwareViewport', () => ({ useKeyboardAwareViewport: vi.fn() }));
 vi.mock('./router', () => ({ navigate: vi.fn(), useRoute: () => route }));
 vi.mock('./components/SignIn/SignIn', () => ({ default: () => null }));
+vi.mock('./components/StorageNotice/StorageNotice', () => ({ default: () => null }));
 vi.mock('./shortlist/ShortlistContext', () => ({
   ShortlistProvider: ({ children }: { children: React.ReactNode }) => children,
 }));
