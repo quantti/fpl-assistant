@@ -33,6 +33,14 @@ public class ScheduleSource {
     public record EventRow(int id, Instant deadline, Instant capturedAt) {
     }
 
+    /**
+     * One deadline on the cross-season timeline the message quota's window is cut from. Carries
+     * its season, which {@link EventRow} does not: the season changeover is a boundary between
+     * two seasons' rows and is invisible from either one alone.
+     */
+    public record Deadline(String season, int gameweek, Instant deadline) {
+    }
+
     public record FixtureRow(int id, Integer gameweek, int homeTeamId, int awayTeamId,
                              Instant kickoff, boolean started, boolean finished,
                              Integer homeDifficulty, Integer awayDifficulty, Instant capturedAt) {
@@ -106,6 +114,21 @@ public class ScheduleSource {
     }
 
     /**
+     * Every captured season's deadlines in time order.
+     *
+     * <p>Unlike {@link #readView()} this is not scoped to the newest season. The quota window it
+     * serves has to see across a changeover, and the last deadline before an August request is
+     * the previous season's GW38.
+     */
+    public List<Deadline> deadlines() {
+        return jdbc.query("""
+                SELECT season, id, deadline_time FROM %s ORDER BY deadline_time
+                """.formatted(gameweekTable), (rs, rowNum) -> new Deadline(
+                        rs.getString("season"), rs.getInt("id"),
+                        instantOf(rs.getObject("deadline_time"))));
+    }
+
+    /**
      * A bounded, immutable view of the newest captured season. Structural completeness is
      * deliberately independent of freshness: fixture-listing tools may still display an old or
      * partial capture, while ranking consumers decide whether it can support current-role claims.
@@ -146,6 +169,43 @@ public class ScheduleSource {
      * Owned-sync catalogue mapping composes this same check before publication so ranking and
      * ingestion cannot drift on what constitutes a complete schedule.
      */
+    /**
+     * Duplicate ids, then the 1..38 set. Shared with {@link #assessEvents} so "a clean event set"
+     * has one definition rather than two that drift.
+     */
+    private static Completeness eventIds(List<EventRow> events) {
+        Set<Integer> ids = new HashSet<>();
+        for (EventRow event : events) {
+            if (!ids.add(event.id())) {
+                return incomplete(CompletenessReason.DUPLICATE_EVENT_ID);
+            }
+        }
+        if (ids.size() != 38
+                || !ids.equals(java.util.stream.IntStream.rangeClosed(1, 38)
+                        .boxed().collect(java.util.stream.Collectors.toUnmodifiableSet()))) {
+            return incomplete(CompletenessReason.INVALID_EVENT_SET);
+        }
+        return new Completeness(true, CompletenessReason.COMPLETE);
+    }
+
+    /**
+     * The event half of {@link #assess}, for a caller with no interest in fixtures.
+     *
+     * <p>The message quota's window needs the deadlines to be a coherent 1..38 from one capture
+     * and needs nothing at all from the fixture list: a half-written season would put a window
+     * boundary in the wrong place, while a fixture is not part of the question.
+     */
+    public static Completeness assessEvents(Optional<Snapshot> snapshot, List<EventRow> events) {
+        if (snapshot.isEmpty()) {
+            return incomplete(CompletenessReason.NO_CAPTURE);
+        }
+        Instant capturedAt = snapshot.get().capturedAt();
+        if (events.stream().anyMatch(row -> !capturedAt.equals(row.capturedAt()))) {
+            return incomplete(CompletenessReason.MIXED_CAPTURE_TIMESTAMPS);
+        }
+        return eventIds(events);
+    }
+
     public static Completeness assess(Optional<Snapshot> snapshot, List<EventRow> events,
                                       List<FixtureRow> fixtures) {
         if (snapshot.isEmpty()) {
@@ -157,17 +217,12 @@ public class ScheduleSource {
             return incomplete(CompletenessReason.MIXED_CAPTURE_TIMESTAMPS);
         }
 
-        Set<Integer> eventIds = new HashSet<>();
-        for (EventRow event : events) {
-            if (!eventIds.add(event.id())) {
-                return incomplete(CompletenessReason.DUPLICATE_EVENT_ID);
-            }
+        Completeness eventIdCheck = eventIds(events);
+        if (!eventIdCheck.complete()) {
+            return eventIdCheck;
         }
-        if (eventIds.size() != 38
-                || !eventIds.equals(java.util.stream.IntStream.rangeClosed(1, 38)
-                        .boxed().collect(java.util.stream.Collectors.toUnmodifiableSet()))) {
-            return incomplete(CompletenessReason.INVALID_EVENT_SET);
-        }
+        Set<Integer> eventIds = events.stream().map(EventRow::id)
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
 
         Set<Integer> fixtureIds = new HashSet<>();
         for (FixtureRow fixture : fixtures) {
