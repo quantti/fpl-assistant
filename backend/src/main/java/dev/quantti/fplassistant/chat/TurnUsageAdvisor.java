@@ -12,6 +12,8 @@ import reactor.core.publisher.Flux;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 /**
@@ -22,6 +24,7 @@ final class TurnUsageAdvisor implements StreamAdvisor {
 
     private final boolean cachedCountedInsideInput;
     private final Consumer<TokenUsage> onUsage;
+    private final ChatTraceSession trace;
     private final List<Slot> slots = new ArrayList<>();
     private final Object stateLock = new Object();
     private final Object publicationLock = new Object();
@@ -29,8 +32,14 @@ final class TurnUsageAdvisor implements StreamAdvisor {
     private long publishedVersion;
 
     TurnUsageAdvisor(boolean cachedCountedInsideInput, Consumer<TokenUsage> onUsage) {
+        this(cachedCountedInsideInput, onUsage, null);
+    }
+
+    TurnUsageAdvisor(boolean cachedCountedInsideInput, Consumer<TokenUsage> onUsage,
+                     ChatTraceSession trace) {
         this.cachedCountedInsideInput = cachedCountedInsideInput;
         this.onUsage = onUsage;
+        this.trace = trace;
     }
 
     @Override
@@ -40,13 +49,43 @@ final class TurnUsageAdvisor implements StreamAdvisor {
             synchronized (stateLock) {
                 slots.add(slot);
             }
-            return chain.nextStream(request).doOnNext(response -> capture(slot, response));
+            ChatTraceCollector.RoundHandle round = trace == null ? null
+                    : trace.collector().startRound(request);
+            if (trace != null) {
+                trace.start();
+            }
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            AtomicBoolean finished = new AtomicBoolean();
+            Runnable finish = () -> {
+                if (round != null && finished.compareAndSet(false, true)) {
+                    trace.collector().finishRound(round, failure.get());
+                }
+            };
+            Flux<ChatClientResponse> downstream;
+            try {
+                downstream = chain.nextStream(request);
+            } catch (RuntimeException | Error error) {
+                failure.set(error);
+                finish.run();
+                return Flux.error(error);
+            }
+            return downstream.doOnNext(response -> capture(slot, response, round))
+                    .doOnError(error -> {
+                        failure.set(error);
+                        finish.run();
+                    })
+                    .doOnComplete(finish)
+                    .doFinally(signal -> finish.run());
         });
     }
 
-    private void capture(Slot slot, ChatClientResponse clientResponse) {
+    private void capture(Slot slot, ChatClientResponse clientResponse,
+                         ChatTraceCollector.RoundHandle round) {
         if (clientResponse == null || clientResponse.chatResponse() == null) {
             return;
+        }
+        if (round != null) {
+            trace.collector().capture(round, clientResponse, null);
         }
         ChatResponseMetadata metadata = clientResponse.chatResponse().getMetadata();
         if (metadata == null) {
@@ -80,6 +119,9 @@ final class TurnUsageAdvisor implements StreamAdvisor {
         synchronized (stateLock) {
             slot.usage = richer(slot.usage, candidate);
             publication = new Publication(++version, sum());
+        }
+        if (round != null) {
+            trace.collector().capture(round, clientResponse, slot.usage);
         }
         publish(publication);
     }
