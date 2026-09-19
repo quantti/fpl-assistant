@@ -4836,4 +4836,19 @@ Tests: the ones you wrote or touched while developing; the whole suite on GitHub
 request and on the merge, where `needs: test` still blocks a red deploy. What is given up: a red
 suite is now discovered on the PR rather than before the push. `scripts/tests/pre-push-test.sh`
 lost the hook's database-preflight contracts with the code they tested and keeps the master
-guard, the deletion no-op and the `test-db.sh reset` contracts (13, run in CI).
+guard, the deletion no-op and the `test-db.sh reset` contracts (run in CI).
+
+## Frontend lint and format (KAR-60, 2026-09-19)
+
+What replaced the suite in the pre-push hook. ESLint and Biome arrive with `kurssit-pro`'s
+configuration (type-checked `typescript-eslint` + `unicorn` + `sonarjs`; Biome as formatter only),
+pinned to the same versions. One mechanical commit: Biome reformatted 63 frontend files and
+`consistent-type-imports` was autofixed; `tsc`, the 126 Vitest tests and the production build pass
+on the result. The other 363 violations are baselined in `frontend/eslint-suppressions.json`
+rather than fixed — a blanket `eslint --fix` was tried first and broke `tsc` (ES2021+ APIs against
+an ES2020 `lib`) and four tests, so the burn-down is by hand, file by file, as files are touched.
+That exposed the stale compiler setting: `tsconfig.json` went from ES2020 to ES2022 `target`/`lib`,
+which Vite 8's default browser target (Chrome/Edge 111, Firefox 114, Safari 16.4) supports in full.
+The hook lints only when a push touches `frontend/` and Node is present; `deploy.yml` runs
+`lint` and `format:check` on every pull request and is the enforcement. Java is out of scope by
+owner decision.

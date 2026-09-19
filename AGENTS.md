@@ -354,7 +354,11 @@ requests run the tests only. `workflow_dispatch` re-deploys without a push. A ma
 `fly deploy` is for emergencies, and is the one path that can ship a red suite.
 
 Install the pre-push hook once per clone, on every host: `git config core.hooksPath scripts/hooks`.
-It needs only bash and git, so the VPS gets the master guard too.
+It needs only bash and git, so the VPS gets the master guard too. When a push touches `frontend/`
+and Node is installed it also runs `npm run lint` (ESLint) and `npm run format:check` (Biome);
+CI runs both on every pull request regardless. Existing violations are baselined in
+`frontend/eslint-suppressions.json` — fix new ones, never add to the baseline, and never run a
+blanket `eslint --fix` (it broke the build once; see `docs/DEVELOPMENT.md`).
 
 A manual `fly deploy` always prompts first: `.claude/settings.json` routes any Bash command
 that runs one through `scripts/hooks/ask-before-deploy.sh`, whatever path or wrapper it is

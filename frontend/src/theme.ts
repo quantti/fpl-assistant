@@ -4,7 +4,7 @@ import {
   type CSSVariablesResolver,
   type MantineColorsTuple,
   type VariantColorsResolver,
-} from '@mantine/core'
+} from '@mantine/core';
 
 /**
  * Mantine v9 theme, wired to the same custom properties defined in
@@ -30,9 +30,9 @@ import {
  */
 
 const asTuple = (varName: string): MantineColorsTuple => {
-  const value = `var(${varName})`
-  return [value, value, value, value, value, value, value, value, value, value]
-}
+  const value = `var(${varName})`;
+  return [value, value, value, value, value, value, value, value, value, value];
+};
 
 /**
  * Every Mantine colour whose value flips with the colour scheme must resolve
@@ -62,13 +62,13 @@ const surfaces = {
   '--mantine-color-default-border': 'var(--rule-section)',
   '--mantine-color-disabled': 'var(--disabled-surface)',
   '--mantine-color-disabled-color': 'var(--disabled-ink)',
-}
+};
 
 export const cssVariablesResolver: CSSVariablesResolver = () => ({
   variables: {},
   light: surfaces,
   dark: surfaces,
-})
+});
 
 /**
  * Filled controls get their label colour from `--pitch-contrast` instead of
@@ -93,13 +93,13 @@ export const cssVariablesResolver: CSSVariablesResolver = () => ({
  * painting the right thing.
  */
 export const variantColorResolver: VariantColorsResolver = (input) => {
-  const base = defaultVariantColorsResolver(input)
-  const colorName = input.color ?? input.theme.primaryColor
+  const base = defaultVariantColorsResolver(input);
+  const colorName = input.color ?? input.theme.primaryColor;
   if (input.variant === 'filled' && colorName === 'pitch') {
-    return { ...base, color: 'var(--pitch-contrast)' }
+    return { ...base, color: 'var(--pitch-contrast)' };
   }
-  return base
-}
+  return base;
+};
 
 export const theme = createTheme({
   primaryColor: 'pitch',
@@ -117,4 +117,4 @@ export const theme = createTheme({
     fontFamily: 'var(--font-ui)',
   },
   variantColorResolver,
-})
+});

@@ -155,6 +155,31 @@ with a file-level Vitest environment directive; it uses React's real root and do
 browser harness. The remaining tests cover pure UI decisions such as `viewportHeight` and
 `MessageThread/follow`. No hook runs the frontend suite; run it before pushing frontend work.
 
+### Lint and format (KAR-60)
+
+```bash
+cd frontend
+npm run lint            # ESLint, --max-warnings 0
+npm run format          # Biome, rewrites files
+npm run format:check    # Biome, check only — what the hook and CI run
+```
+
+The configuration is `kurssit-pro`'s, adapted: `eslint.config.js` is `typescript-eslint`
+recommendedTypeChecked + `unicorn` + `sonarjs` with the same house-rule overrides, and Biome is
+the **formatter only** (`biome.json`, linter off: 2 spaces, width 100, single quotes, semicolons).
+Versions are pinned exactly, as they are there. Frontend only — Java has no formatter, on
+purpose: Spotless would reformat hundreds of files and put Gradle back into the hook.
+
+`eslint-suppressions.json` is the baseline: the 363 violations the code had on the day the rules
+arrived, per file and rule. They do not fail the lint; **a new violation does.** Burn the baseline
+down when touching a file — fix, then `npx eslint . --prune-suppressions` — and never grow it
+with `--suppress-all` to get a push through. **Do not run a blanket `eslint --fix`:** the first
+attempt broke `tsc` and four tests. The `tsc` half was unicorn rewriting to `replaceAll`/`.at()`
+against what was then an ES2020 `lib`; `tsconfig.json` is ES2022 since (the ceiling Vite 8's
+default browser target supports in full — ES2023's `toSorted` needs a newer Firefox), but the
+four test failures were behavioural and would come back. Autofix one rule at a time and run the
+tests. Only `consistent-type-imports` was autofixed.
+
 ## The free tier and sign-up
 
 Every account is on the free tier: **20 messages per rolling seven days**
@@ -325,6 +350,12 @@ on the merge to `master`, where `needs: test` blocks a red deploy. A full local 
 available by hand — see the memory-scoped command above — but nothing requires it.
 `scripts/tests/pre-push-test.sh` keeps the stub-only contracts for the master guard and for
 `scripts/test-db.sh reset`; CI runs it.
+
+**After the guard it runs the frontend's static checks** — `npm run lint` and
+`npm run format:check`, a few seconds — when the push changes something under `frontend/` and
+`npm` plus `frontend/node_modules` exist. A red check refuses the push. On a host without Node
+(the VPS) it prints one notice and lets the push through; the pull request's GitHub run executes
+the same two commands, so CI is the enforcement and the hook is the early warning.
 
 `git push --no-verify` skips the hook entirely. That is git's escape hatch for a human who knows
 what they are skipping; treat it as bypassing branch protection, because that is what it is.

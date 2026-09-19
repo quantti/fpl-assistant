@@ -1,6 +1,6 @@
-import { supabase, accessToken } from './supabaseClient'
+import { supabase, accessToken } from './supabaseClient';
 
-let sessionEnded = false
+let sessionEnded = false;
 
 /**
  * True once after a `401` ended the session, and false afterwards. The sign-in screen reads it
@@ -9,9 +9,9 @@ let sessionEnded = false
  * UI: sign in, ask, get bounced, repeat.
  */
 export function consumeSessionEnded(): boolean {
-  const ended = sessionEnded
-  sessionEnded = false
-  return ended
+  const ended = sessionEnded;
+  sessionEnded = false;
+  return ended;
 }
 
 /**
@@ -29,33 +29,33 @@ export function consumeSessionEnded(): boolean {
  * moment they cannot sign back in.
  */
 export async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
-  const response = await send(path, init)
+  const response = await send(path, init);
   if (response.status !== 401) {
-    return response
+    return response;
   }
 
   // Retrying is safe because every caller passes a string body; a stream body could not be sent
   // twice.
-  const { data, error } = await supabase.auth.refreshSession()
+  const { data, error } = await supabase.auth.refreshSession();
   if (!error && data.session) {
-    const retried = await send(path, init)
+    const retried = await send(path, init);
     if (retried.status !== 401) {
-      return retried
+      return retried;
     }
   }
 
-  sessionEnded = true
+  sessionEnded = true;
   // Local scope: this browser. The default is 'global', which revokes every refresh token the
   // user holds — a spurious 401 in one tab would sign them out on their phone as well.
-  await supabase.auth.signOut({ scope: 'local' })
-  return response
+  await supabase.auth.signOut({ scope: 'local' });
+  return response;
 }
 
 async function send(path: string, init: RequestInit): Promise<Response> {
-  const token = await accessToken()
-  const headers = new Headers(init.headers)
+  const token = await accessToken();
+  const headers = new Headers(init.headers);
   if (token) {
-    headers.set('Authorization', `Bearer ${token}`)
+    headers.set('Authorization', `Bearer ${token}`);
   }
-  return fetch(path, { ...init, headers })
+  return fetch(path, { ...init, headers });
 }

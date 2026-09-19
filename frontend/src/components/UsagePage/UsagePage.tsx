@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react'
-import { Loader } from '@mantine/core'
-import { apiFetch } from '../../auth/apiFetch'
-import { Usage } from '../../types'
-import classes from './UsagePage.module.css'
+import { useEffect, useState } from 'react';
+import { Loader } from '@mantine/core';
+import { apiFetch } from '../../auth/apiFetch';
+import { type Usage } from '../../types';
+import classes from './UsagePage.module.css';
 
 /**
  * How much of this week is left.
@@ -12,23 +12,31 @@ import classes from './UsagePage.module.css'
  * renders exactly what arrives rather than deciding for itself.
  */
 export default function UsagePage() {
-  const [usage, setUsage] = useState<Usage | null>(null)
-  const [failed, setFailed] = useState(false)
+  const [usage, setUsage] = useState<Usage | null>(null);
+  const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     apiFetch('/api/usage')
-      .then(async response => {
-        if (!response.ok) throw new Error(String(response.status))
-        setUsage(await response.json())
+      .then(async (response) => {
+        if (!response.ok) throw new Error(String(response.status));
+        setUsage(await response.json());
       })
-      .catch(() => setFailed(true))
-  }, [])
+      .catch(() => setFailed(true));
+  }, []);
 
   if (failed) {
-    return <div className={classes.page}><p className={classes.error}>Usage could not be loaded.</p></div>
+    return (
+      <div className={classes.page}>
+        <p className={classes.error}>Usage could not be loaded.</p>
+      </div>
+    );
   }
   if (!usage) {
-    return <div className={classes.page}><Loader /></div>
+    return (
+      <div className={classes.page}>
+        <Loader />
+      </div>
+    );
   }
 
   return (
@@ -70,5 +78,5 @@ export default function UsagePage() {
         </>
       )}
     </div>
-  )
+  );
 }
