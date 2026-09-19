@@ -49,6 +49,28 @@ class SpaForwardingTest {
     }
 
     @Test
+    void thePublicLandingAndAuthRoutesLoadTheApplication() throws Exception {
+        // The built index is copied in only for the production image. In this backend-only test,
+        // reaching the static resource handler (404) proves the public route was permitted.
+        mockMvc.perform(get("/"))
+                .andExpect(status().isNotFound())
+                .andExpect(forwardedUrl(null));
+        mockMvc.perform(get("/login"))
+                .andExpect(status().isOk())
+                .andExpect(forwardedUrl("/index.html"));
+        mockMvc.perform(get("/register"))
+                .andExpect(status().isOk())
+                .andExpect(forwardedUrl("/index.html"));
+    }
+
+    @Test
+    void theCanonicalAppDeepLinkLoadsTheApplication() throws Exception {
+        mockMvc.perform(get("/app"))
+                .andExpect(status().isOk())
+                .andExpect(forwardedUrl("/index.html"));
+    }
+
+    @Test
     void theMyTeamDeepLinkLoadsTheApplication() throws Exception {
         mockMvc.perform(get("/my-team"))
                 .andExpect(status().isOk())

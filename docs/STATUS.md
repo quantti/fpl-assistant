@@ -1,5 +1,21 @@
 # Status — Phase 1
 
+## Public landing page and app entry
+
+`/` is now a public marketing page with “Now free”, an explicit testing/invite-code
+notice, feature summaries and registration/login links. Signed-in visitors get an app
+link rather than an automatic redirect. The chat entry is `/app`; existing `/my-team`,
+`/shortlist`, `/usage`, `/settings` and `/admin` deep links remain unchanged.
+`/login` and `/register` select the corresponding auth form and take authenticated
+visitors to `/app`. Protected deep links retain their destination through sign-in;
+Supabase confirmation callbacks on `/` still restore the session there.
+
+Verification: focused routing/auth/navigation tests (17), landing render/link tests (3),
+`SpaForwardingTest`, frontend lint/format and production build passed. Static review
+found no blockers. Real-browser mobile rendering and live email callbacks were not
+exercised; full-suite verification belongs to PR CI.
+
+
 ## Test-use chat traces — 14-day retention
 
 Chat turns now persist diagnostics in `fpl_chat_trace`: effective system/history prompts
