@@ -1,9 +1,11 @@
+import { useEffect } from 'react';
 import { Loader } from '@mantine/core';
 import ChatView from './components/ChatView/ChatView';
-import SignIn from './components/SignIn/SignIn';
+import LandingPage from './components/LandingPage/LandingPage';
+import SignIn, { type AuthMode } from './components/SignIn/SignIn';
 import { useSession } from './auth/useSession';
 import { useKeyboardAwareViewport } from './hooks/useKeyboardAwareViewport';
-import { useRoute } from './router';
+import { navigate, useRoute } from './router';
 import { ShortlistProvider } from './shortlist/ShortlistContext';
 
 export default function App() {
@@ -13,9 +15,25 @@ export default function App() {
   const { session, loading } = useSession();
   const route = useRoute();
 
-  // Nothing rendered until the stored session has been read: showing the sign-in screen first
-  // and replacing it a moment later reads as being signed out on every reload.
-  if (loading) {
+  // /login and /register are entry points, not application pages. A completed sign-in (or an
+  // already-restored session) goes to chat; a protected deep link stays untouched and opens as
+  // soon as its session is available.
+  useEffect(() => {
+    if (!loading && session && (route === '/login' || route === '/register')) {
+      navigate('/app');
+    }
+  }, [loading, route, session]);
+
+  // The homepage is public even while auth-js is reading storage, and remains the homepage for a
+  // signed-in visitor. This also lets Supabase consume a verification callback on / without the
+  // page disappearing behind the application shell; once detected, the app link appears.
+  if (route === '/') {
+    return <LandingPage signedIn={session !== null} sessionLoading={loading} />;
+  }
+
+  // Protected routes wait until the stored session has been read: showing the sign-in screen
+  // first and replacing it a moment later reads as being signed out on every reload.
+  if (loading || (session && (route === '/login' || route === '/register'))) {
     return (
       <div
         style={{
@@ -41,6 +59,14 @@ export default function App() {
       <ChatView route={route} />
     </ShortlistProvider>
   ) : (
-    <SignIn />
+    <SignIn
+      key={route === '/register' ? 'signUp' : 'signIn'}
+      initialMode={route === '/register' ? 'signUp' : 'signIn'}
+      onModeChange={
+        route === '/login' || route === '/register'
+          ? (mode: AuthMode) => navigate(mode === 'signUp' ? '/register' : '/login')
+          : undefined
+      }
+    />
   );
 }

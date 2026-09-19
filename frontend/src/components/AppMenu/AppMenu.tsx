@@ -33,7 +33,7 @@ export default function AppMenu({ route, admin }: Props) {
         <Burger opened={open} size="sm" aria-label="Menu" />
       </Menu.Target>
       <Menu.Dropdown>
-        {route !== '/' && <Menu.Item onClick={() => navigate('/')}>Back to chat</Menu.Item>}
+        {route !== '/app' && <Menu.Item onClick={() => navigate('/app')}>Back to chat</Menu.Item>}
         {APP_MENU_LINKS.map((item) => (
           <Menu.Item key={item.route} onClick={() => navigate(item.route)}>
             {item.label}
