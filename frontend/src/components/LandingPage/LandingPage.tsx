@@ -114,6 +114,7 @@ export default function LandingPage({ signedIn, sessionLoading }: Readonly<Landi
 
       <footer className={classes.footer}>
         <span>FPL Sidekick</span>
+        <a href="/privacy">Privacy</a>
         <span>Not affiliated with or endorsed by the Premier League.</span>
       </footer>
     </div>

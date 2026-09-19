@@ -72,6 +72,17 @@ it('has no Admin item for everyone else', () => {
   expect(labels(host)).not.toContain('Admin');
 });
 
+it('opens the public privacy notice', () => {
+  const host = mount(false);
+  const privacy = [...host.querySelectorAll('button')].find(
+    (button) => button.textContent === 'Privacy',
+  )!;
+
+  act(() => privacy.click());
+
+  expect(vi.mocked(navigate).mock.calls).toEqual([['/privacy']]);
+});
+
 it('returns application pages to chat at /app', () => {
   const host = mount(false, '/settings');
   const back = [...host.querySelectorAll('button')].find(

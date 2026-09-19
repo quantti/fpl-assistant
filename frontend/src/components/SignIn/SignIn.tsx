@@ -149,6 +149,9 @@ export default function SignIn({ initialMode = 'signIn', onModeChange }: Readonl
           >
             Back to sign in
           </Button>
+          <p className={classes.note}>
+            Read the <a href="/privacy">privacy notice</a>.
+          </p>
         </div>
       </div>
     );
@@ -217,6 +220,10 @@ export default function SignIn({ initialMode = 'signIn', onModeChange }: Readonl
             {signingUp ? 'Sign in' : 'Create an account'}
           </Anchor>
           .{signingUp ? '' : ' The free plan is 20 messages a week.'}
+        </p>
+        <p className={classes.note}>
+          Account and chat data are handled as described in the{' '}
+          <a href="/privacy">privacy notice</a>.
         </p>
       </form>
     </div>

@@ -141,8 +141,15 @@ export default function ChatView({ route }: Props) {
             <AdminPage />
           ) : messages.length === 0 && streamingContent === null ? (
             <div className={classes.empty}>
-              Ask me anything about Fantasy Premier League — players, fixtures, strategy, chips,
-              transfers.
+              <p>
+                Ask me anything about Fantasy Premier League — players, fixtures, strategy, chips,
+                transfers.
+              </p>
+              <p className={classes.chatDisclosure}>
+                Chats are sent to the configured AI provider. Saved history is separate from
+                diagnostic traces of chats and tool results, which are kept for 14 days.{' '}
+                <a href="/privacy">Privacy details</a>
+              </p>
             </div>
           ) : (
             <MessageThread messages={messages} streamingContent={streamingContent} />

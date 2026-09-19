@@ -1,12 +1,16 @@
 import { useEffect } from 'react';
 import { Loader } from '@mantine/core';
+import type { Session } from '@supabase/supabase-js';
 import ChatView from './components/ChatView/ChatView';
 import LandingPage from './components/LandingPage/LandingPage';
+import PrivacyPage from './components/PrivacyPage/PrivacyPage';
 import SignIn, { type AuthMode } from './components/SignIn/SignIn';
+import StorageNotice from './components/StorageNotice/StorageNotice';
 import { useSession } from './auth/useSession';
 import { useKeyboardAwareViewport } from './hooks/useKeyboardAwareViewport';
-import { navigate, useRoute } from './router';
+import { navigate, type Route, useRoute } from './router';
 import { ShortlistProvider } from './shortlist/ShortlistContext';
+import classes from './App.module.css';
 
 export default function App() {
   // Above both ChatView and SignIn: the sign-in form has the same iOS keyboard over its
@@ -24,11 +28,31 @@ export default function App() {
     }
   }, [loading, route, session]);
 
-  // The homepage is public even while auth-js is reading storage, and remains the homepage for a
-  // signed-in visitor. This also lets Supabase consume a verification callback on / without the
-  // page disappearing behind the application shell; once detected, the app link appears.
+  return (
+    <div className={classes.app}>
+      <div className={classes.page}>
+        <CurrentPage route={route} session={session} loading={loading} />
+      </div>
+      <StorageNotice />
+    </div>
+  );
+}
+
+interface CurrentPageProps {
+  route: Route;
+  session: Session | null;
+  loading: boolean;
+}
+
+function CurrentPage({ route, session, loading }: Readonly<CurrentPageProps>) {
+  // The homepage and privacy notice are public even while auth-js is reading storage. Keeping the
+  // homepage visible also lets Supabase consume a verification callback there before showing the
+  // signed-in app link.
   if (route === '/') {
     return <LandingPage signedIn={session !== null} sessionLoading={loading} />;
+  }
+  if (route === '/privacy') {
+    return <PrivacyPage />;
   }
 
   // Protected routes wait until the stored session has been read: showing the sign-in screen
@@ -39,7 +63,7 @@ export default function App() {
         style={{
           display: 'grid',
           placeItems: 'center',
-          minHeight: '100dvh',
+          minHeight: '100%',
           // Every other surface paints these. Left off, a dark-mode reload flashes a white
           // viewport before ChatView mounts — the "reads as broken on reload" this gate exists
           // to prevent.

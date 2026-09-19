@@ -1,5 +1,5 @@
 .page {
-  min-height: 100dvh;
+  min-height: 100%;
   padding: 0 var(--space-24);
   background: var(--paper);
   color: var(--ink);
@@ -215,6 +215,10 @@
   border-top: 1px solid var(--rule-row);
   color: var(--muted);
   font-size: var(--text-xs);
+}
+
+.footer a {
+  color: inherit;
 }
 
 @media (max-width: 54rem) {
