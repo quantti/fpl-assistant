@@ -165,6 +165,33 @@ class ChatTraceInstrumentationTest {
     }
 
     @Test
+    void redactsQuotedCredentialsEmbeddedInPersistedProse() {
+        ChatTraceCollector collector = new ChatTraceCollector();
+        ChatTraceCollector.RoundHandle round = collector.startRound(new ChatClientRequest(
+                new Prompt(List.of(new UserMessage(
+                        "Before {\"password\":\"hunter2\"} after; \"password\" is ordinary text."))),
+                Map.of()));
+        collector.capture(round, new ChatClientResponse(response("visible", List.of(), Map.of(
+                "reasoningSummary", "Summary { \"api_key\" : \" spaced value \" } remains."),
+                1, 1), Map.of()), null);
+        collector.finishRound(round, new IllegalStateException(
+                "Failure {\"secret\":\"escaped \\\"quote\\\" value\"} follows."));
+        collector.complete("Answer {\"access_token\":\"two words\"} done.");
+
+        JsonNode payload = collector.snapshot();
+        assertThat(payload.path("modelRounds").get(0).path("messages").get(0).path("content").asText())
+                .isEqualTo("Before {\"password\":\"[REDACTED]\"} after; \"password\" is ordinary text.");
+        assertThat(payload.path("modelRounds").get(0).path("reasoningSummaries").get(0).asText())
+                .isEqualTo("Summary { \"api_key\" : \"[REDACTED]\" } remains.");
+        assertThat(payload.path("modelRounds").get(0).path("error").path("message").asText())
+                .isEqualTo("Failure {\"secret\":\"[REDACTED]\"} follows.");
+        assertThat(payload.path("finalAnswer").asText())
+                .isEqualTo("Answer {\"access_token\":\"[REDACTED]\"} done.");
+        assertThat(payload.toString()).doesNotContain(
+                "hunter2", "spaced value", "escaped", "quote", "two words");
+    }
+
+    @Test
     void visibleGeminiAnswerIsNotDroppedWhenThoughtSignatureIsPresent() {
         ChatModel model = new SingleResponseModel(response("visible Gemini answer", List.of(),
                 Map.of("isThought", false, "thoughtSignatures", List.of(new byte[] {1, 2, 3})),

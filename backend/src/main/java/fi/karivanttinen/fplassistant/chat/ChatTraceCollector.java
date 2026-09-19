@@ -6,6 +6,8 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -23,6 +25,8 @@ final class ChatTraceCollector {
 
     private static final int MAX_ERROR_CHARS = 1000;
     private static final List<String> SUMMARY_KEYS = List.of("reasoningSummary", "reasoning_summary");
+    private static final Pattern QUOTED_PAIR = Pattern.compile(
+            "\"((?:\\\\.|[^\"\\\\])*)\"(\\s*:\\s*)\"(?:\\\\.|[^\"\\\\])*\"");
 
     private final ObjectMapper json = new ObjectMapper();
     private final Instant acceptedAt = Instant.now();
@@ -291,7 +295,16 @@ final class ChatTraceCollector {
         if (value == null) {
             return null;
         }
-        return value
+        Matcher quoted = QUOTED_PAIR.matcher(value);
+        StringBuilder sanitized = new StringBuilder();
+        while (quoted.find()) {
+            String replacement = sensitive(quoted.group(1))
+                    ? "\"" + quoted.group(1) + "\"" + quoted.group(2) + "\"[REDACTED]\""
+                    : quoted.group();
+            quoted.appendReplacement(sanitized, Matcher.quoteReplacement(replacement));
+        }
+        quoted.appendTail(sanitized);
+        return sanitized.toString()
                 .replaceAll("(?i)bearer\\s+[a-z0-9._~+/=-]+", "Bearer [REDACTED]")
                 .replaceAll("(?i)(api[-_ ]?key|authorization|password|secret|jwt|token)\\s*[:=]\\s*[^\\s,;]+",
                         "$1=[REDACTED]")
