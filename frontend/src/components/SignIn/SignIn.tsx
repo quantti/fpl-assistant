@@ -10,11 +10,18 @@ import classes from './SignIn.module.css';
  *
  * The code is checked by our backend, never here: `supabase.auth.signUp` is a client call anyone
  * can make without this form, so a check in the browser would be decoration. `POST /api/auth/signup`
- * creates the account with the service-role key, and this form then signs in with it — landing
- * the user in the app rather than back at a form they just filled in.
+ * creates an unconfirmed account with the service-role key; Supabase establishes the session only
+ * after the person follows the verification link and signs in.
  */
-export default function SignIn() {
-  const [mode, setMode] = useState<'signIn' | 'signUp'>('signIn');
+export type AuthMode = 'signIn' | 'signUp';
+
+interface Props {
+  initialMode?: AuthMode;
+  onModeChange?: (mode: AuthMode) => void;
+}
+
+export default function SignIn({ initialMode = 'signIn', onModeChange }: Readonly<Props>) {
+  const [mode, setMode] = useState<AuthMode>(initialMode);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [inviteCode, setInviteCode] = useState('');
@@ -136,6 +143,7 @@ export default function SignIn() {
             onClick={() => {
               setAwaitingVerification(false);
               setMode('signIn');
+              onModeChange?.('signIn');
               setPassword('');
             }}
           >
@@ -200,7 +208,9 @@ export default function SignIn() {
             type="button"
             inherit
             onClick={() => {
-              setMode(signingUp ? 'signIn' : 'signUp');
+              const nextMode = signingUp ? 'signIn' : 'signUp';
+              setMode(nextMode);
+              onModeChange?.(nextMode);
               setError(null);
             }}
           >

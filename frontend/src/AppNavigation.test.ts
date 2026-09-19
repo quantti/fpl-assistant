@@ -5,7 +5,7 @@ import { createRoot } from 'react-dom/client';
 import { afterEach, beforeAll, expect, it, vi } from 'vitest';
 import type { Route } from './router';
 
-let route: Route = '/';
+let route: Route = '/app';
 let mounts = 0;
 let unmounts = 0;
 
@@ -16,7 +16,7 @@ vi.mock('./auth/useSession', () => ({
   }),
 }));
 vi.mock('./hooks/useKeyboardAwareViewport', () => ({ useKeyboardAwareViewport: vi.fn() }));
-vi.mock('./router', () => ({ useRoute: () => route }));
+vi.mock('./router', () => ({ navigate: vi.fn(), useRoute: () => route }));
 vi.mock('./components/SignIn/SignIn', () => ({ default: () => null }));
 vi.mock('./shortlist/ShortlistContext', () => ({
   ShortlistProvider: ({ children }: { children: React.ReactNode }) => children,
@@ -46,7 +46,7 @@ afterEach(() => {
   if (root) act(() => root!.unmount());
   root = undefined;
   document.body.replaceChildren();
-  route = '/';
+  route = '/app';
   mounts = 0;
   unmounts = 0;
 });
