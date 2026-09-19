@@ -294,7 +294,10 @@ Gradle, Node or Docker and therefore cannot build or test locally at all — fro
 is the GitHub Actions run on the pull request. Neither host's setup notes may be deleted in favour
 of the other's; see `docs/DEVELOPMENT.md`.
 
-Run one bounded agent/build/test unit at a time; never overlap full suites with subagents.
+**Always run only one subagent at a time: resources are limited.** No parallel agent calls,
+concurrent agent tasks or nested delegation. Wait for the current subagent to finish before
+starting another. Run one bounded agent/build/test unit at a time; never overlap builds or test
+suites with subagent work.
 Keep the checked-in Gradle heap/worker/context-cache limits. On memory-constrained WSL, use the
 cgroup-v2 scope and host-memory stop threshold in `docs/DEVELOPMENT.md`; do not assume this Docker
 supports hard memory limits. Stop only this project's idle daemons or test scopes, never another
