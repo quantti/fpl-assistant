@@ -12,6 +12,7 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import fi.karivanttinen.fplassistant.chat.ChatService;
+import fi.karivanttinen.fplassistant.chat.ChatServiceTestStub;
 import fi.karivanttinen.fplassistant.myteam.MyTeamService;
 import fi.karivanttinen.fplassistant.testsupport.LocalSigningKey;
 import fi.karivanttinen.fplassistant.testsupport.TestJwks;
@@ -239,7 +240,7 @@ class SecurityHeadersTest {
 
     @Test
     void theChatStreamIsServerSentEvents() throws Exception {
-        when(chatService.stream(any(), any(), any())).thenAnswer(invocation -> Flux.just("hi"));
+        ChatServiceTestStub.replyWith(chatService, Flux.just("hi"));
         String body = "{\"message\":\"hello\"}";
 
         MvcResult started = mockMvc.perform(authenticated(post("/api/chat"), USER)
