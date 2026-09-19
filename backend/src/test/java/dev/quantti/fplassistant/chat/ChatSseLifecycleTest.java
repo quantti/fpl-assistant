@@ -145,7 +145,7 @@ class ChatSseLifecycleTest {
                 transport == Transport.SERVLET && ordering == Ordering.TERMINAL_DURING_DISPATCH);
         Sinks.Many<String> model = Sinks.many().unicast().onBackpressureBuffer();
         AtomicBoolean streamed = new AtomicBoolean();
-        when(chatService.stream(any(), any(), any())).thenAnswer(invocation -> {
+        when(chatService.stream(any(), any(), any(), any())).thenAnswer(invocation -> {
             if (scenario == Scenario.READ_CEILING_TRUNCATED) {
                 // Measured usage, so the completion path always ends in recordTokens: the
                 // detached work then has one observable last write to await.
@@ -220,7 +220,7 @@ class ChatSseLifecycleTest {
         Sinks.Many<String> model = Sinks.many().unicast().onBackpressureBuffer();
         AtomicReference<Consumer<TokenUsage>> usage = new AtomicReference<>();
         AtomicBoolean streamed = new AtomicBoolean();
-        when(chatService.stream(any(), any(), any())).thenAnswer(invocation -> {
+        when(chatService.stream(any(), any(), any(), any())).thenAnswer(invocation -> {
             usage.set(invocation.getArgument(2));
             streamed.set(true);
             return model.asFlux();
