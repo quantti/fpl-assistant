@@ -90,7 +90,7 @@ class ChatCatalogueMetadataTest {
 
         Sinks.Many<String> model = Sinks.many().unicast().onBackpressureBuffer();
         AtomicInteger subscriptions = new AtomicInteger();
-        when(chatService.stream(any(), any(), any()))
+        when(chatService.stream(any(), any(), any(), any()))
                 .thenReturn(model.asFlux().doOnSubscribe(ignored -> subscriptions.incrementAndGet()));
         Jwt jwt = Jwt.withTokenValue("test").header("alg", "none").subject(USER.toString()).build();
         Flux<ServerSentEvent<String>> response = controller.chat(new ChatRequest(null, "question"), jwt);
@@ -146,7 +146,7 @@ class ChatCatalogueMetadataTest {
     @Test
     void catalogueFailureDegradesToPlainChatAndPlainHistory() {
         doThrow(new IllegalStateException("catalogue unavailable")).when(catalogues).latest();
-        when(chatService.stream(any(), any(), any())).thenReturn(Flux.just("plain answer"));
+        when(chatService.stream(any(), any(), any(), any())).thenReturn(Flux.just("plain answer"));
 
         List<ServerSentEvent<String>> events = post("plain question");
         UUID conversation = UUID.fromString(events.getFirst().data().replace("\"", ""));
@@ -162,13 +162,13 @@ class ChatCatalogueMetadataTest {
         UUID conversation = conversations.create(USER, "legacy");
         conversations.append(conversation, ChatTurn.USER, "legacy question");
         conversations.append(conversation, ChatTurn.ASSISTANT, "legacy Saka answer");
-        when(chatService.stream(any(), any(), any())).thenReturn(Flux.just("new answer"));
+        when(chatService.stream(any(), any(), any(), any())).thenReturn(Flux.just("new answer"));
 
         post(conversation, "next question");
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<ChatTurn>> history = ArgumentCaptor.forClass(List.class);
-        verify(chatService).stream(history.capture(), any(), any());
+        verify(chatService).stream(history.capture(), any(), any(), any());
         assertThat(history.getValue()).extracting(ChatTurn::content).containsExactly(
                 "legacy question", "legacy Saka answer", "next question");
         assertThat(conversations.messages(conversation).get(1).catalogueId()).isNull();
