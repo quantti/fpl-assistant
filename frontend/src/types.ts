@@ -66,6 +66,23 @@ export interface Conversation {
  * needs. `used` and `limit` are therefore absent rather than null when they are not shown, which
  * is why they are optional here.
  */
+export type QuotaWindowKind = 'GAMEWEEK' | 'OFF_SEASON' | 'FALLBACK';
+
+/**
+ * Which period the usage numbers describe.
+ *
+ * A gameweek window runs from one FPL deadline to the next and carries the round it is the run-up
+ * to; the off-season is the gap between two seasons; the fallback is the rolling seven days the
+ * server counts when it cannot read a schedule. The page picks its wording from this rather than
+ * assuming a week — and it names the deadline, never "this gameweek", because the matches played
+ * during a window belong to the round before it.
+ */
+export interface QuotaWindow {
+  kind: QuotaWindowKind;
+  gameweek?: number;
+  season?: string;
+}
+
 export interface Usage {
   plan: 'FREE';
   remainingPercent: number;
@@ -73,6 +90,9 @@ export interface Usage {
   nextFreeAt: string | null;
   used?: number;
   limit?: number;
+  window: QuotaWindow;
+  /** When the count returns to zero. Absent on a fallback, where nothing resets. */
+  resetsAt?: string;
 }
 
 /**
