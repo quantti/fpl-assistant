@@ -3,6 +3,7 @@ package dev.quantti.fplassistant.user;
 import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
@@ -12,12 +13,13 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * What a user has spent this week, and whether they may spend more.
+ * What a user has spent in the window they are in, and whether they may spend more.
  *
- * <p>The window is a rolling seven days counted in the database, not in this process: a count
- * against {@code now()} needs no clock of its own and cannot drift from the timestamps it is
- * counting. Only {@code chat} events count — title generation or a background call would
- * otherwise silently consume someone's quota.
+ * <p>The window is a gameweek: from one FPL deadline to the next of the same season, with the gap
+ * between two seasons as one off-season window of its own. {@link QuotaWindows} resolves it. When
+ * no schedule can be read the count falls back to the rolling seven days it used to be, which is
+ * the only thing {@link #WINDOW} is still for. Only {@code chat} events count — title generation
+ * or a background call would otherwise silently consume someone's quota.
  *
  * <p>Usage is recorded when a call starts, never when it finishes. The cost is incurred at the
  * start; recording on completion would make an aborted stream free to repeat.
@@ -25,36 +27,41 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class UsageService {
 
-    /** The rolling window. Seven days, stated once. */
+    /** The fallback's rolling window. Seven days, stated once. */
     static final Duration WINDOW = Duration.ofDays(7);
 
     /** Marks a chat turn among whatever else may record usage later. */
     static final String CHAT_EVENT = "chat";
 
     private final JdbcTemplate jdbc;
+    private final QuotaWindows windows;
     private final String usageTable;
     private final String profileTable;
-    private final int freeLimit;
 
     public UsageService(JdbcTemplate jdbc,
+                        QuotaWindows windows,
                         @Value("${fpl.user.usage-table-name}") String usageTable,
-                        @Value("${fpl.user.profile-table-name}") String profileTable,
-                        @Value("${fpl.quota.free-messages-per-gameweek}") int freeLimit) {
+                        @Value("${fpl.user.profile-table-name}") String profileTable) {
         this.jdbc = jdbc;
+        this.windows = windows;
         this.usageTable = usageTable;
         this.profileTable = profileTable;
-        this.freeLimit = freeLimit;
     }
 
     /**
      * @param plan       the tier the limit was resolved against. Carried rather than looked up
      *                   again, so the response and the 429 cannot disagree about it
      * @param limit      messages allowed per window, or {@code null} for unlimited
-     * @param nextFreeAt when the oldest counted message leaves the window, or {@code null} when
-     *                   nothing is counted — or when waiting cannot help, which is what a
-     *                   suspended account (limit 0) means
+     * @param nextFreeAt when the caller may send again, or {@code null} while messages remain —
+     *                   or when waiting cannot help, which is what a suspended account (limit 0)
+     *                   means. In a fixed window this is the window's end; in the fallback it is
+     *                   when the message that has to age out does so
+     * @param resetsAt   when the count returns to zero. {@code null} in the fallback, where
+     *                   nothing resets, and in an off-season window whose end is not yet captured
+     * @param window     the period the numbers describe, so the reply and the page can name it
      */
-    public record Quota(Plan plan, int used, Integer limit, Instant nextFreeAt) {
+    public record Quota(Plan plan, int used, Integer limit, Instant nextFreeAt, Instant resetsAt,
+                        QuotaWindow window) {
 
         public boolean exceeded() {
             return limit != null && used >= limit;
@@ -78,23 +85,52 @@ public class UsageService {
 
     public Quota quotaOf(UUID userId) {
         Plan plan = planOf(userId);
-        Integer limit = resolveLimit(userId, plan);
+        QuotaWindow window = windows.current(Instant.now());
+        Integer limit = resolveLimit(userId, window);
         if (limit == null) {
             // Unlimited: the count is the one query worth skipping, since it is the reason this
             // check exists at all.
-            return new Quota(plan, 0, null, null);
+            return new Quota(plan, 0, null, null, null, window);
         }
 
-        Integer used = jdbc.queryForObject("""
+        if (window.fallback()) {
+            int used = countRollingWindow(userId);
+            return new Quota(plan, used, limit, nextFreeAt(userId, used, limit), null, window);
+        }
+
+        int used = countBetween(userId, window.from(), window.until());
+        // A fixed window has one reset instant, so "when does the count start over" and "when may
+        // I send again" are the same answer — unlike the fallback, where nothing starts over.
+        return new Quota(plan, used, limit, used >= limit ? window.until() : null,
+                window.until(), window);
+    }
+
+    private int countRollingWindow(UUID userId) {
+        return jdbc.queryForObject("""
                 SELECT count(*) FROM %s
                 WHERE user_id = ? AND event_type = ? AND created_at > now() - interval '%d days'
                 """.formatted(usageTable, WINDOW.toDays()),
                 Integer.class, userId, CHAT_EVENT);
-        return new Quota(plan, used, limit, nextFreeAt(userId, used, limit));
+    }
+
+    /** Half-open; either bound may be absent, which is what an unbounded off-season window is. */
+    private int countBetween(UUID userId, Instant from, Instant until) {
+        StringBuilder sql = new StringBuilder("SELECT count(*) FROM " + usageTable
+                + " WHERE user_id = ? AND event_type = ?");
+        List<Object> args = new ArrayList<>(List.of(userId, CHAT_EVENT));
+        if (from != null) {
+            sql.append(" AND created_at >= ?");
+            args.add(Timestamp.from(from));
+        }
+        if (until != null) {
+            sql.append(" AND created_at < ?");
+            args.add(Timestamp.from(until));
+        }
+        return jdbc.queryForObject(sql.toString(), Integer.class, args.toArray());
     }
 
     /**
-     * When the window next frees a slot.
+     * When the rolling fallback window next frees a slot.
      *
      * <p>Not simply the oldest event: an account over its limit has to wait for the
      * {@code (used - limit + 1)}-th oldest to age out, which is what the offset is. They differ
@@ -123,18 +159,13 @@ public class UsageService {
         return Plan.FREE;
     }
 
-    /** The tier's own allowance, before any per-user override. */
-    private int limitFor(Plan plan) {
-        return switch (plan) {
-            case FREE -> freeLimit;
-        };
-    }
-
     /**
      * {@code null} means unlimited. A missing profile row and a {@code NULL} column are the same
-     * case — the plan's own limit — which is what almost every account is.
+     * case — the window's own allowance — which is what almost every account is. An override
+     * replaces that number whatever kind of window is in force: it is a statement about the
+     * account, not about the period.
      */
-    private Integer resolveLimit(UUID userId, Plan plan) {
+    private Integer resolveLimit(UUID userId, QuotaWindow window) {
         List<Integer> stored = jdbc.queryForList(
                 "SELECT weekly_message_limit FROM " + profileTable + " WHERE user_id = ?",
                 Integer.class, userId);
@@ -142,7 +173,7 @@ public class UsageService {
         // The sentinel applies to the configured default too. It is documented beside the
         // property, so someone will set QUOTA_FREE_MESSAGES_PER_GAMEWEEK=-1 to open the gates — and
         // reading it literally would refuse every account with "all -1 messages used".
-        int limit = override == null ? limitFor(plan) : override;
+        int limit = override == null ? window.limit() : override;
         return limit < 0 ? null : limit;
     }
 
