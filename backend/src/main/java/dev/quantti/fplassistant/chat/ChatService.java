@@ -9,6 +9,8 @@ import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.support.ToolCallbacks;
+import org.springframework.ai.tool.ToolCallback;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
@@ -56,6 +58,11 @@ public class ChatService {
      * burned before failing were spent all the same.
      */
     public Flux<String> stream(List<ChatTurn> turns, UUID userId, Consumer<TokenUsage> onUsage) {
+        return stream(turns, userId, onUsage, null);
+    }
+
+    Flux<String> stream(List<ChatTurn> turns, UUID userId, Consumer<TokenUsage> onUsage,
+                        ChatTraceSession trace) {
         List<ChatTurn> window = turns;
         // The Anthropic API rejects a history that opens on an assistant turn, and dropping the
         // oldest turns can leave one there.
@@ -70,11 +77,18 @@ public class ChatService {
                 .toList();
 
         return Flux.defer(() -> {
-            TurnUsageAdvisor usageAdvisor = new TurnUsageAdvisor(cachedCountedInsideInput, onUsage);
+            TurnUsageAdvisor usageAdvisor = new TurnUsageAdvisor(
+                    cachedCountedInsideInput, onUsage, trace);
             FplBudget budget = new FplBudget(fplAllowance);
+            ToolCallback[] callbacks = ToolCallbacks.from(tools.toArray());
+            if (trace != null) {
+                for (int i = 0; i < callbacks.length; i++) {
+                    callbacks[i] = new TracingToolCallback(callbacks[i], trace.collector());
+                }
+            }
             return chatClient.prompt()
                     .messages(history)
-                    .tools(tools.toArray())
+                    .toolCallbacks(java.util.Arrays.asList(callbacks))
                     // Whose account is asking, and how many calls to FPL this turn may make. Both
                     // belong here rather than in a tool parameter: the model fills parameters from
                     // the user's own text, and a user id it can write is one an attacker can ask it
@@ -85,6 +99,9 @@ public class ChatService {
                     // Keep response chunks for text extraction; the inner advisor accounts for
                     // usage before ToolCallingAdvisor filters tool-call rounds from this stream.
                     .chatResponse()
+                    // Anthropic thinking blocks and Gemini thought parts are provider-internal
+                    // reasoning, not answer tokens. Their signatures/redacted blobs are neither.
+                    .filter(response -> !ChatTraceCollector.isHiddenReasoning(response))
                     .map(ChatService::textOf)
                     .filter(text -> !text.isEmpty());
         });

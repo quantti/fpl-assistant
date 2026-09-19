@@ -122,6 +122,10 @@ fpl:
       token: ${OWNED_SYNC_MONITOR_TOKEN:}
   ai:
     provider: ${SPRING_AI_PROVIDER:anthropic}
+  trace:
+    # One flexible JSON document per chat turn. The next unit wires chat execution into this
+    # persistence boundary; until then the table and admin API remain empty.
+    table-name: fpl_chat_trace
   historical:
     table-name: pl_match_result
     # Runs StartupSyncRunner on ApplicationReadyEvent. Off under the test profile so background
