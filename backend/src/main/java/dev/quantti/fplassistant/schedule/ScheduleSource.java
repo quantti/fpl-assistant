@@ -165,11 +165,6 @@ public class ScheduleSource {
     }
 
     /**
-     * Assesses the structural whole-league invariant independently of database loading.
-     * Owned-sync catalogue mapping composes this same check before publication so ranking and
-     * ingestion cannot drift on what constitutes a complete schedule.
-     */
-    /**
      * Duplicate ids, then the 1..38 set. Shared with {@link #assessEvents} so "a clean event set"
      * has one definition rather than two that drift.
      */
@@ -206,6 +201,11 @@ public class ScheduleSource {
         return eventIds(events);
     }
 
+    /**
+     * Assesses the structural whole-league invariant independently of database loading.
+     * Owned-sync catalogue mapping composes this same check before publication so ranking and
+     * ingestion cannot drift on what constitutes a complete schedule.
+     */
     public static Completeness assess(Optional<Snapshot> snapshot, List<EventRow> events,
                                       List<FixtureRow> fixtures) {
         if (snapshot.isEmpty()) {
