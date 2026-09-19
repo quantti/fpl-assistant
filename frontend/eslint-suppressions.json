@@ -485,9 +485,6 @@
     },
     "unicorn/prefer-await": {
       "count": 2
-    },
-    "unicorn/prefer-ternary": {
-      "count": 1
     }
   },
   "src/hooks/chatTransport.test.ts": {
