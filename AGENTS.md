@@ -17,7 +17,7 @@ schema is shared: `fpl_embeddings`, `pl_match_result`, `fpl_player_price`, `fpl_
 `fpl_user_profile`, `fpl_conversation`, `fpl_message`, `fpl_usage_event`,
 `fpl_invite_redemption`, `fpl_gameweek`, `fpl_fixture`. Never take a generic
 name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own it first.
-- **LLM provider:** swappable via `SPRING_AI_PROVIDER` env var (`anthropic` default, `openai` or `google-genai`). `OPENAI_API_KEY` is required regardless of this setting from Phase 2 onward — RAG embeddings always use OpenAI (Anthropic has no embeddings API), and that autoconfiguration activates independently of the chat provider.
+- **LLM provider:** swappable via `SPRING_AI_PROVIDER` env var (`anthropic` application default, `openai` or `google-genai`); production currently uses the billed, API-key Gemini Developer API (`google-genai`), while OpenAI is used only for RAG embeddings. `OPENAI_API_KEY` is therefore required regardless of the chat setting from Phase 2 onward, and its embedding autoconfiguration activates independently of the chat provider. Current privacy/account evidence lives in `docs/PRIVACY-OPERATIONS.md`; do not infer it from provider defaults.
 - **Chat transport:** `POST /api/chat` returns `text/event-stream` (SSE). Frontend reads via `fetch` + `ReadableStream`.
 
 ## Key references

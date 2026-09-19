@@ -3,6 +3,14 @@
 > **Issue tracking moved to Linear (team `Kari`, identifiers `KAR-n`) on 2026-08-28.** That is
 > where the current state of every open item lives. This file is kept for the history and
 > reasoning it carries, and is no longer the working backlog — do not add items here.
+>
+> Current privacy decisions and operating guidance are in
+> [`PRIVACY-OPERATIONS.md`](PRIVACY-OPERATIONS.md). Its pending Linear work is
+> [KAR-62](https://linear.app/quantti/issue/KAR-62) (**High / Todo**, seven-day encrypted backup),
+> [KAR-63](https://linear.app/quantti/issue/KAR-63) (**Normal / Todo**, Fly individual DPA fields),
+> [KAR-64](https://linear.app/quantti/issue/KAR-64) (**High / Todo**, provision the unpublished new
+> privacy mailbox), and [KAR-65](https://linear.app/quantti/issue/KAR-65) (**Normal / Todo**, resolve
+> OpenAI's company-field-only DPA route). This is navigation to Linear, not a second backlog.
 
 Consolidated list of code and documentation items that were decided but not built, or explicitly
 deferred. Detailed history and reasoning live in `docs/STATUS.md`. Status column: `open` = not started, `in progress` = being worked on, `deferred` = pushed
