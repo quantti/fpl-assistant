@@ -48,8 +48,8 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
     banner sits between two other **source** lines, three in all since KAR-35: above it the daily
     capture's `DailyPriceSource.provenance()` for the pool — identity, club, price, ownership,
     availability, `fpl_daily_price` since KAR-32 — and below it the schedule capture's
-    `ScheduleSource.provenance()` for the fixture population every horizon Score is totalled
-    over. The metrics are `player_fixture_stats`, so the three lines describe three sources, not
+    `ScheduleSource.provenance()` for the fixture population every horizon expected-points total
+    is summed over. The metrics are `player_fixture_stats`, so the three lines describe three sources, not
     three seasons: historical metrics stay labelled historical even when today's price and next
     month's fixtures are the season being played. When the capture season and the metric season
     differ, one clarification sentence says the price line *and* the schedule line describe the
@@ -156,40 +156,35 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
   a labelled neutral 3. `PickTools` clamps its request to 1–5 gameweeks, `buildSquad` takes its
   own and both truncate at the season's end and disclose it. There is no bypass, for a pin, a
   budget or a relaxation.
-- **Primary role eligibility is one hard current-season observed-history rule, `MinutesModel`.**
-  Call it **consistent observed 60+ history**. The selected daily capture must be fresh and say
-  `status = 'a'`, with a valid position and club; identity/current club must be coherent across the
-  same-season sources. The latest up-to-ten completed fixtures for that current-club spell must be
-  complete: at least 180 current-season minutes and 60+ in every expected fixture. Known zero-minute
-  rows stay in the denominator. Previous-season minutes and blended exposure never certify the
-  current role; missing/stale/pending/invalid data means abstention. A sub-60 fixture blocks primary
-  selection until ten later completed club fixtures in that spell move it out; an injury return,
-  new manager or convenient recent-form boundary does not reset the window. Only a verified
+- **Primary selection uses availability and complete current evidence, `MinutesModel`.** The
+  selected daily capture must be fresh and say `status = 'a'`, with a valid position and club;
+  identity/current club must be coherent across the same-season sources. The latest up-to-ten
+  completed fixtures for that current-club spell must be complete; known zero-minute rows stay in
+  the denominator. Missing/stale/pending/invalid data means abstention. Only a verified
   different-club observation fences a new spell. Without one, enumerate from season start: a first
   PFS/daily appearance is not a registration date, and a newcomer may need ten complete fixtures.
-  A short complete window may qualify after clearing the same floor, but its `N/N` support is
-  labelled and remains a small sample. This is conservative history, not a
-  calibrated probability or a future-start guarantee; never add a bypass or fill a list with
-  ineligible names.
-- **Expected ranking points are per fixture, not a whole score multiplied by mean minutes.**
-  `SeasonBlend.Exposure` is an indivisible bundle of appearance, 60+, short-appearance,
-  expected-minutes and realised-points rates. `ExpectedPoints.perFixture` uses `P(play)+P(60+)`,
-  scales attack by expected minutes, takes the
-  clean sheet **per fixture** as `exp(-xGA)` on the concession `ClubRates.projectedGoalsAgainst`
-  projects for that club against that opponent at that venue (KAR-30) — conditional on 60+, `null`
-  and labelled partial when no club projection exists, never the player's season-average xGC — and
-  gives DefCon separate short/long exposure. Club rates are read inside the same `RankingMetrics`
-  snapshot: team xG is `SUM` over the club's players per side, team xGC is `MAX` (FPL stamps the
-  team figure on every player), an unpopulated side (`xGC = 0`) is excluded, clubs bridge across
-  seasons by unique `short_name` the way players bridge by `web_name`, and the league mean and
-  home/away factors pool both seasons without a ramp. Known zero DefCon is evidence; unavailable components print
-  partial/n/a rather than zero. Pick lists blend expected and realised per fixture and then
-  **total that per-fixture composite over the club's fixtures in the horizon** — that horizon
-  Score is what they rank on, and average FDR stays a tie-break, never a multiplier.
-  `HorizonScorer` scores the squad over the same fixture population with the same expected
-  components, expected only — no realised blend, no outer minutes multiplier — and FDR scales the
-  attacking term only: the clean sheet already carries the opponent, so an FDR multiplier on it
-  would count the fixture twice. Appearance and DefCon are not fixture-scaled. Shared population, distinct objectives; do not merge them.
+  **Minutes never exclude a player, alter eligibility, break a tie or alter a recommendation
+  score**, including for GKs and DEFs. If any of the last five complete observations is below 60,
+  `PickTools` may print a neutral fact with the opponent and minutes; it is not a risk label or
+  forecast. This evidence is not a calibrated probability or a future-start guarantee; no pin,
+  budget or relaxation bypasses the non-minute evidence requirements.
+- **Expected ranking points are full-fixture expected FPL points.**
+  `ExpectedPoints.expectedPerFixture` uses a fixed two appearance points, xG/xA ability,
+  fixture-specific clean-sheet probability and DefCon action-rate evidence. It does **not** use
+  observed minutes, 60+ rates, expected minutes or realised points. The clean sheet is
+  `exp(-xGA)` on the concession `ClubRates.projectedGoalsAgainst` projects for that club against
+  that opponent at that venue (KAR-30), `null` and labelled partial when no club projection
+  exists, never the player's season-average xGC. `SeasonBlend` blends ability on the player's own
+  completed current-season fixture count (1:10%, 2:30%, 3:60%, 4:80%, 5–7:90%, 8+:100%), never on
+  minutes. Club rates are read inside the same `RankingMetrics` snapshot: team xG is `SUM` over
+  the club's players per side, team xGC is `MAX` (FPL stamps the team figure on every player), an
+  unpopulated side (`xGC = 0`) is excluded, clubs bridge across seasons by unique `short_name` the
+  way players bridge by `web_name`, and the league mean and home/away factors pool both seasons
+  without a ramp. Known zero DefCon is evidence; unavailable components print partial/n/a rather
+  than zero. Pick lists and `HorizonScorer` total the same expected per-fixture value over the
+  club's fixtures in the horizon. Average FDR is a tie-break for picks and scales only the squad's
+  attacking term; the clean sheet already carries the opponent, so an FDR multiplier on it would
+  count the fixture twice.
 - **A named player's DefCon lives on `getPlayerExpectedStats`, as an observed record (KAR-58).**
   Each match row prints the raw count as `DefCon actions N` and the reply ends with one
   `Defensive contribution, season …` line **per season** in the window: that season's position
@@ -259,17 +254,15 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
   player's `x_i` to zero in every entry path, and so does the playable-club set — a club with no
   known fixture in the horizon supplies bench cover only. This XI rule is never on the relaxation ladder: only
   template and premium defaults may give way. Unknown projections have zero optimiser weight but
-  must display `n/a`/unscored, and infeasibility must name the minutes rule plus the interacting
-  constraints, never imply that budget alone fixes it.
-- **Cross-season weighting is one ramp in one place, `SeasonBlend`.** Ability and usable exposure
-  rates blend the season being played with the previous one on a weight driven by the player's own
-  qualifying matches this season (60+ minutes): 1 → 10%, 2 → 30%, 3 → 60%, 4 → 80%, 5-7 → 90%,
-  8+ → 100%. Exposure rates travel as one bundle; never blend each term independently or divide
-  added cross-season minutes by added fixture counts. Evidence counts used by ability/DefCon floors
-  may add, but raw current-role eligibility above never does. Unknown current exposure cannot be
-  borrowed from a previous season. A player with no previous-season record is ranked on this
-  season alone once its floor is cleared and the reply says so. Do not reintroduce a single-season
-  switch, and do not write the ramp a second time in SQL.
+  must display `n/a`/unscored, and infeasibility must name the current-evidence rule plus the
+  interacting constraints, never imply that budget alone fixes it.
+- **Cross-season weighting is one ramp in one place, `SeasonBlend`.** Ability rates blend the
+  season being played with the previous one on a weight driven by the player's own completed
+  current-season fixtures: 1 → 10%, 2 → 30%, 3 → 60%, 4 → 80%, 5-7 → 90%, 8+ → 100%.
+  Evidence counts used by ability/DefCon floors may add, but raw current-evidence eligibility
+  above never does. A player with no previous-season record is ranked on this season alone when it
+  has the xG/xA ability needed for a projection, and the reply says so. Do not reintroduce a
+  single-season switch, minute-derived exposure, or a second SQL implementation of the ramp.
   Club attack/defence rates (`ClubRates`) ride the same table, keyed on the club's own completed
   current-season fixtures; league constants are pooled, not ramped.
 - **Tests seed the data they assert on and never depend on production content.** The suite runs
@@ -289,10 +282,10 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
 
 ### Resource safety
 
-Two hosts: a **WSL2 machine** with the full toolchain, and a **Hetzner VPS** that has no JDK,
-Gradle, Node or Docker and therefore cannot build or test locally at all — from there, verification
-is the GitHub Actions run on the pull request. Neither host's setup notes may be deleted in favour
-of the other's; see `docs/DEVELOPMENT.md`.
+Two hosts: a **WSL2 machine** with the full toolchain, and a **Hetzner VPS** with Ubuntu
+OpenJDK 25 and Docker for focused backend feature/bug tests. The VPS has no frontend toolchain;
+never run the full suite there — GitHub Actions remains its full-suite verification gate. Neither
+host's setup notes may be deleted in favour of the other's; see `docs/DEVELOPMENT.md`.
 
 **Always run only one subagent at a time: resources are limited.** No parallel agent calls,
 concurrent agent tasks or nested delegation. Wait for the current subagent to finish before

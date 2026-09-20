@@ -326,7 +326,7 @@ class IngestionServiceTest {
     }
 
     @Test
-    void minutesStrategyKeepsRulesAndReliabilityCaveatsInSelfContainedChunks() throws Exception {
+    void minutesStrategyKeepsRulesAndFactualNotePolicyInSelfContainedChunks() throws Exception {
         String file = "strategy-minutes-and-rotation.md";
         String markdown = new ClassPathResource("docs/" + file)
                 .getContentAsString(StandardCharsets.UTF_8);
@@ -336,28 +336,21 @@ class IngestionServiceTest {
         assertThat(chunks).isNotEmpty().allSatisfy(chunk -> {
             assertThat(chunk.getMetadata()).containsEntry("title", fm.title())
                     .containsEntry("kind", "reference")
-                    .containsEntry("valid_from", "2026-09-09")
+                    .containsEntry("valid_from", "2026-09-20")
                     .doesNotContainKey("valid_until");
             assertThat(chunk.getText()).startsWith(fm.title())
                     .doesNotContain("valid_from:");
         });
-        assertThat(chunks).filteredOn(c -> "Why 60 minutes changes a defender's value"
+        assertThat(chunks).filteredOn(c -> "What the official 60-minute boundary means"
                         .equals(c.getMetadata().get("section")))
                 .singleElement().satisfies(chunk -> assertThat(chunk.getText())
-                        .contains("Appearance points", "1–59", "60+",
-                                "sent off", "a later team goal removes the clean sheet",
-                                "Defensive contribution has no 60-minute eligibility rule"));
-        assertThat(chunks).filteredOn(c -> "Choosing reliable defenders before attacking upside"
+                        .contains("Appearance points", "1–59", "60+", "sent off",
+                                "Defensive contribution is separate"));
+        assertThat(chunks).filteredOn(c -> "The ranking-tools policy"
                         .equals(c.getMetadata().get("section")))
                 .singleElement().satisfies(chunk -> assertThat(chunk.getText())
-                        .contains("reliable first choice", "instead of filling the list",
-                                "no universal probability cutoff"));
-        assertThat(chunks).filteredOn(c -> "The primary-list rule used by the ranking tools"
-                        .equals(c.getMetadata().get("section")))
-                .singleElement().satisfies(chunk -> assertThat(chunk.getText())
-                        .contains("latest up to ten completed fixtures", "at least 180",
-                                "reached 60 in every", "ten later completed club fixtures",
-                                "never satisfy this current-role gate", "not a calibrated"));
+                        .contains("fresh availability", "latest five complete observed fixtures",
+                                "neutral fact", "minutes risk", "projection adjustment"));
     }
 
     @Test

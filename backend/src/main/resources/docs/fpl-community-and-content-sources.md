@@ -11,7 +11,7 @@ Reference document mapping where FPL consensus and content live: subreddits, X/T
 ## Why the community matters
 
 - FPL is a social game: ownership, the template and price movements are driven by where millions of managers get their information. Knowing the sources tells you what the crowd is thinking and where consensus could move next.
-- Content quality varies wildly. The discipline is triangulation: minutes and roles beat goals, and one source's opinion is not evidence.
+- Content quality varies wildly. The discipline is triangulation: availability, confirmed roles and underlying numbers beat one scoreline, and one source's opinion is not evidence.
 
 ## Reddit — r/FantasyPL
 
@@ -46,7 +46,7 @@ Reference document mapping where FPL consensus and content live: subreddits, X/T
 
 ## How to weigh sources
 
-- Minutes and roles outrank goals: prefer minutes trackers and line-up posts over friendly scorelines when judging pre-season readiness.
+- Availability and confirmed roles outrank friendly scorelines: prefer reliable team-news and line-up reports, but do not turn historical minutes into a ranking penalty.
 - Ownership is a signal of consensus, not proof of quality: high ownership means rank protection; low ownership is only a reason to pick someone if their expected points are competitive.
 - Check set-piece and penalty takers before trusting "on pens" claims — pre-season misses rarely change the taker.
 - Weigh timely content by age: pre-season consensus expires at the GW1 deadline; in-season, recent form and fixtures outweigh pre-season expectations.

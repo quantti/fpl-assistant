@@ -2,6 +2,12 @@
 
 **PROGRESS:** Implementation Task 7/7 done.
 
+> **Superseded policy (2026-09-20):** This is the historical KAR-31 plan and outcome.
+> Current availability and complete evidence still apply, but no minute count affects primary
+> selection, a squad XI, a score or a tie-break. Rankings use full-fixture expected FPL points
+> only, without realised points or minute-derived terms. A below-60 result in the latest five
+> complete observations may appear only as a neutral fact naming the opponent and minutes.
+
 Issue: [KAR-31](https://linear.app/quantti/issue/KAR-31).
 Implement this first, then [KAR-35](2026-09-09-kar-35-gameweek-horizon.md). KAR-30's fixture-specific
 clean-sheet model is not a dependency and is out of scope.

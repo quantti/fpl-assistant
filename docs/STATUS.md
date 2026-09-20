@@ -1,5 +1,25 @@
 # Status — Phase 1
 
+## Expected-points-only ranking and factual minute notes (2026-09-20)
+
+Primary picks, captain candidates and squad XI places require fresh available status, coherent
+identity and complete observed current-club evidence. They have no minute-based admission gate.
+Observed minutes, 60+ rates, expected minutes and realised points do not alter a recommendation
+score, tie-break, eligibility result or XI place, including for goalkeepers and defenders.
+
+`PickTools` and `HorizonScorer` now rank only on full-fixture expected FPL points: fixed
+appearance points, xG/xA ability, fixture-specific clean-sheet probability and DefCon action-rate
+evidence. The ability blend ramp is driven by completed current-season fixtures, not 60+ matches.
+If any of the latest five complete observations is below 60 minutes, a pick row may state the
+opponent and minutes as a neutral fact only. Fresh availability, identity/club coherence and
+missing-evidence guards remain unchanged.
+
+The system prompt and checked-in strategy corpus source now use the same rule; production embeddings
+remain unchanged until an explicit post-review corpus re-ingest. The 20 directly affected test
+classes (251 tests) passed locally against the disposable database, and full
+[PR CI run 35527211627](https://github.com/quantti/fpl-assistant/actions/runs/35527211627) passed.
+No corpus reload, production write or deployment was attempted.
+
 ## Owned sync — remove redundant parent work (2026-09-20)
 
 The first bounded follow-up to the attended egress test removes fixture verification's
@@ -3863,6 +3883,9 @@ remain at implementation Task 0; no production scoring, database or embedding ch
 closure, push or deployment occurred.
 
 ## Minutes-aware ranking implementation outcome (KAR-31, 2026-09-09)
+
+> **Historical and superseded 2026-09-20:** The rule described below was the original KAR-31
+> implementation. The current expected-points-only policy is recorded at the top of this file.
 
 Implementation Tasks 1–7 are complete in the current worktree, superseding the planning-state
 notes above. Ranking reads now share one repeatable-read daily/metric/schedule snapshot; primary

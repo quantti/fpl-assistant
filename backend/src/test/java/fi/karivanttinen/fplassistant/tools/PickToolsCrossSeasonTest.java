@@ -27,7 +27,7 @@ class PickToolsCrossSeasonTest {
     private static final Instant FIRST_DEADLINE = Instant.parse("2026-08-14T17:30:00Z");
 
     @Test
-    void historicalOnlyRegularIsExcludedEvenAtMaximumRealisedWeight() {
+    void historicalOnlyRegularCannotCertifyCurrentEvidence() {
         SeasonContext current = new SeasonContext(9027, CURRENT, true, CURRENT,
                 LocalDate.of(2026, 8, 14));
         SeasonContext previous = new SeasonContext(9026, PREVIOUS, false, CURRENT,
@@ -38,18 +38,14 @@ class PickToolsCrossSeasonTest {
         RankingMetrics.CapturePlayer player = new RankingMetrics.CapturePlayer(
                 50, "OldRegular", "Old Regular", 9701, "OLD", "Old Town", 3,
                 70, 5.0, "a", null, Instant.parse("2026-09-09T10:00:00Z"), 1);
-        SeasonBlend.Exposure oldExposure = new SeasonBlend.Exposure(
-                10, 10, 10, 900, 1, 1, 0, 90, 6);
         RankingMetrics.MinutesWindow oldWindow = new RankingMetrics.MinutesWindow(
                 true, RankingMetrics.WindowReason.COMPLETE, 9601,
                 Instant.parse("2025-08-01T12:00:00Z"),
-                Instant.parse("2025-10-01T12:00:00Z"), 10, 10, 900, 10, 10, List.of());
+                Instant.parse("2025-10-01T12:00:00Z"), 10, 10, List.of());
         RankingMetrics.SeasonMetrics oldRecord = new RankingMetrics.SeasonMetrics(
-                previous, 500, 3, Map.of("mins", 900.0, "xg90", 0.8),
-                oldWindow, oldExposure);
+                previous, 500, 3, Map.of("mins", 900.0, "xg90", 0.8), oldWindow);
         SeasonBlend.Blended historicalAbility = new SeasonBlend.Blended(
-                Map.of("mins", 900.0, "xg90", 0.8, "element_type", 3),
-                0, 0, true, null, true);
+                Map.of("mins", 900.0, "xg90", 0.8, "element_type", 3), 0, 0, true);
         RankingMetrics.Candidate candidate = new RankingMetrics.Candidate(
                 player, null, oldRecord, historicalAbility,
                 MinutesModel.Eligibility.UNKNOWN_CURRENT_EVIDENCE);
@@ -84,8 +80,8 @@ class PickToolsCrossSeasonTest {
      * The changeover reply, where the daily capture and the schedule capture are the season being
      * played while the resolved metric season is still a completed one. Both clarification clauses
      * have to be there: the metric-season banner describes neither the prices nor the fixtures.
-     * Under the observed 60+ history rule nobody can be primary-eligible while the current metric
-     * season is a completed one, so the reply carrying the sentence is the one that ranks nobody.
+     * Without a current metric season there is no complete current-club evidence window, so the
+     * reply carrying the sentence ranks nobody.
      */
     @Test
     void aChangeoverReplySaysTheMetricSeasonDescribesNeitherThePricesNorTheFixtures() {
@@ -146,5 +142,56 @@ class PickToolsCrossSeasonTest {
         assertThat(result)
                 .contains("No differentials qualify in " + CURRENT)
                 .doesNotContain(" OldRegular (");
+    }
+
+    @Test
+    void changeoverMinutesNoteNamesTheHistoricalOpponent() {
+        SeasonContext resolved = new SeasonContext(9026, PREVIOUS, false, CURRENT,
+                LocalDate.of(2026, 8, 14));
+        SeasonContext older = new SeasonContext(9025, OLDER, false, CURRENT,
+                LocalDate.of(2026, 8, 14));
+        MetricSeasons seasons = new MetricSeasons(resolved, Optional.of(older), 38, 38);
+        DailyPriceSource.Capture capture = new DailyPriceSource.Capture(CURRENT, DATE);
+        int club = RankingSeed.team(1);
+        RankingMetrics.CapturePlayer player = new RankingMetrics.CapturePlayer(
+                50, "OldRegular", "Old Regular", club, "OLD", "Old Town", 3,
+                70, 5.0, "a", null, Instant.parse("2026-09-09T10:00:00Z"), 1);
+        RankingMetrics.MinutesWindow historicalWindow = new RankingMetrics.MinutesWindow(
+                true, RankingMetrics.WindowReason.COMPLETE, 9601,
+                Instant.parse("2025-08-01T12:00:00Z"),
+                Instant.parse("2025-10-01T12:00:00Z"), 10, 10,
+                List.of(new RankingMetrics.FixtureOutcome(999_999,
+                        Instant.parse("2025-10-01T12:00:00Z"), 30, "Historic Opponent")));
+        RankingMetrics.SeasonMetrics historical = new RankingMetrics.SeasonMetrics(resolved, 500,
+                3, Map.of("mins", 900.0, "fixtures", 10, "xg90", 0.8, "xa90", 0.2),
+                historicalWindow);
+        SeasonBlend.Blended ability = new SeasonBlend.Blended(
+                Map.of("mins", 900.0, "xg90", 0.8, "xa90", 0.2,
+                        "blend_weight", 1.0, "blend_matches", 10, "blend_has_previous", false),
+                1.0, 10, false);
+        RankingMetrics.Candidate candidate = new RankingMetrics.Candidate(player, historical,
+                null, ability, MinutesModel.Eligibility.ELIGIBLE);
+        ScheduleSource.View schedule = new ScheduleSource.View(
+                Optional.of(new ScheduleSource.Snapshot(CURRENT, SCHEDULE_CAPTURED)),
+                RankingSeed.events(SCHEDULE_CAPTURED, FIRST_DEADLINE),
+                RankingSeed.fixtures(SCHEDULE_CAPTURED, FIRST_DEADLINE),
+                new ScheduleSource.Completeness(true,
+                        ScheduleSource.CompletenessReason.COMPLETE));
+        RankingMetrics.Snapshot snapshot = new RankingMetrics.Snapshot(AS_OF, capture, seasons,
+                schedule, List.of(candidate), ClubRates.NONE);
+
+        SeasonResolver resolver = Mockito.mock(SeasonResolver.class);
+        Mockito.when(resolver.resolve()).thenReturn(resolved);
+        Mockito.when(resolver.metricSeasons(resolved)).thenReturn(seasons);
+        DailyPriceSource daily = Mockito.mock(DailyPriceSource.class);
+        Mockito.when(daily.latestCapture()).thenReturn(Optional.of(capture));
+        RankingMetrics metrics = Mockito.mock(RankingMetrics.class);
+        Mockito.when(metrics.load(capture, seasons)).thenReturn(snapshot);
+
+        String result = new PickTools(resolver, daily, metrics).getCaptainCandidates(1);
+
+        assertThat(result).contains(" OldRegular (")
+                .contains("minutes note: 30 minutes vs Historic Opponent on 2025-10-01")
+                .doesNotContain("minutes note: 30 minutes vs fixture 999999");
     }
 }

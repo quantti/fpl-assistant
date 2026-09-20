@@ -1,14 +1,13 @@
 # Development setup
 
-Everything needed to build, test and run this project from a clean shell. Written for the
-**WSL2 / Ubuntu host with zsh**, which is the environment it was set up in and the only one that
-carries the full toolchain.
+Everything needed to build, test and run this project from a clean shell. Written primarily for
+the **WSL2 / Ubuntu host with zsh**, which carries the full toolchain.
 
 This project is also developed from a **Hetzner VPS** (KVM, Ubuntu 26.04, 2 vCPU, 3.7 GiB RAM).
-That host is for editing, review and git work only: it has no JDK, Gradle, Node or Docker, so
-nothing below that builds or runs the suite applies there. **Tests are run in GitHub Actions**
-— push the branch, open the pull request, and let `.github/workflows/deploy.yml` test it. Where a
-section's behaviour differs between the two, it says so; everything else is WSL2.
+It has Ubuntu OpenJDK 25 and Docker for focused backend feature/bug tests against the disposable
+local database. Use the Gradle wrapper there, not SDKMAN; the frontend toolchain is not installed.
+Do not run the full suite on the VPS: GitHub Actions remains its full-suite verification gate.
+Where a section's behaviour differs between the two, it says so; everything else is WSL2.
 
 ## Toolchain
 
@@ -38,6 +37,21 @@ read. Any scripted build needs the init script sourced first, or `java: command 
 ```bash
 source "$HOME/.sdkman/bin/sdkman-init.sh"
 ```
+
+### Hetzner VPS focused backend tests
+
+Install only the backend test prerequisites, then start a new login shell so the Docker-group
+membership takes effect:
+
+```bash
+sudo apt-get install -y openjdk-25-jdk docker.io
+sudo systemctl enable --now docker
+sudo usermod -aG docker "$USER"
+```
+
+The Gradle wrapper downloads its declared version on first use. Start `scripts/test-db.sh up`, load
+`backend/.env.test`, and run only the affected `./gradlew test --tests '…'` classes. Do not run the
+full suite on this 3.7 GiB host.
 
 ## Secrets
 
@@ -71,6 +85,7 @@ set -a; source .env.test; set +a
 Run from `backend/`:
 
 ```bash
+# WSL2 only; the VPS uses its system-installed Java.
 source "$HOME/.sdkman/bin/sdkman-init.sh"
 set -a; source .env.test; set +a
 
@@ -119,7 +134,8 @@ Gradle daemons and parallel work, limits build heap to 256 MiB and workers to on
 The disposable Postgres starts with 32 MiB shared/maintenance buffers, 2 MiB work memory and at most
 60 connections. These database settings are not a hard process-memory ceiling.
 
-This section is WSL2-only — the VPS has no Docker and no Gradle, and verifies in CI instead.
+The VPS uses the same bounded Gradle and test-Postgres settings for focused backend tests only;
+its full-suite verification remains CI. The cgroup guidance below is WSL2-specific.
 
 On this WSL host, Docker reports no cgroup-v1 memory/CPU limit support; do not claim Docker flags
 are enforcing limits or reconfigure the shared daemon during another project's work. User-systemd
