@@ -15,10 +15,10 @@ opponent and minutes as a neutral fact only. Fresh availability, identity/club c
 missing-evidence guards remain unchanged.
 
 The system prompt and checked-in strategy corpus source now use the same rule; production embeddings
-remain unchanged until an explicit post-review corpus re-ingest. Focused Gradle verification could
-not run on this checkout host: it has neither Java nor `backend/.env.test`. No test database,
-corpus reload, production write or deployment was attempted; PR CI is the focused and full-suite
-verification gate.
+remain unchanged until an explicit post-review corpus re-ingest. Local Gradle verification could
+not run on this checkout host because it has neither Java nor `backend/.env.test`; the full
+[PR CI run 35526675477](https://github.com/quantti/fpl-assistant/actions/runs/35526675477) passed.
+No local test database, corpus reload, production write or deployment was attempted.
 
 ## Owned sync — remove redundant parent work (2026-09-20)
 
