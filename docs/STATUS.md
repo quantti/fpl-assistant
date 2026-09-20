@@ -120,9 +120,11 @@ user's own question, is enough to trigger the old defect.
 
 PR #123 at `06453dd` passed CI `35498149340`: 1,255 backend tests with zero failures/errors/skips,
 including all 12 trace instrumentation tests, plus frontend build/lint/format. Independent review
-found no blockers and confirmed the pre-SSE failure path. The follow-up only clarifies the code
-comment and records the evidence. Authenticated production chat must still be checked after the
-owner merges and the normal deployment runs; no production change was made during this task.
+found no blockers and confirmed the pre-SSE failure path. The owner merged PR #123 as `e123272`;
+workflow `35498621880` passed tests, deployment and the external health smoke on 2026-09-20.
+A separate health read at 08:15 UTC returned 200 / UP. Authenticated production chat still needs
+the owner's check. This follow-up only clarifies the code comment and records the evidence;
+no manual deploy, restart or database change was made.
 
 
 **Progress:** Task 14/14 done — Phase 1 code complete, reviewed at two checkpoints (after

@@ -65,6 +65,9 @@ Outcome: independent review of published `06453dd` found no blockers and confirm
 semantics and the short-user-message path. Its wording suggestion clarified that the system
 prompt is always included even for short user messages; no behavior changed after review.
 CI `35498149340` reports 1,255 backend tests, zero failures/errors/skips, including all 12 trace
-instrumentation tests. Frontend build/lint/format also passed. Linear is In Review; PR #123's
-latest check remains the merge gate. No merge, deployment or authenticated production check was
-performed by this task.
+instrumentation tests. Frontend build/lint/format also passed. The owner merged PR #123 at
+`e123272` while the comment/documentation clarification was being published, so that clarification
+is a separate follow-up with no behavioral change. Workflow `35498621880` passed tests,
+deployment and the external health smoke; a further health read at 08:15 UTC returned 200 / UP.
+The owner still needs to confirm authenticated chat. No manual deployment, restart or database
+change was performed.
