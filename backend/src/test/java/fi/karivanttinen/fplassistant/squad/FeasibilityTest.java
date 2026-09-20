@@ -358,7 +358,7 @@ class FeasibilityTest {
         assertThat(refusal).hasValueSatisfying(message -> assertThat(message)
                 .contains("cannot supply a gameweek horizon (schedule incomplete)")
                 .contains("unknown rather than zero")
-                .contains("complete recent minutes evidence").contains("higher budget supplies neither")
+                .contains("complete current evidence").contains("higher budget supplies neither")
                 .doesNotContain("only 0"));
     }
 

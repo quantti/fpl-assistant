@@ -237,7 +237,7 @@ class SquadToolsCrossSeasonTest {
         String output = tools.buildSquad("", "", "", 100.0, 5, "");
 
         assertThat(output).doesNotContain("Starting XI");
-        assertThat(output).contains("complete recent minutes evidence").containsIgnoringCase("budget")
+        assertThat(output).contains("complete current evidence").containsIgnoringCase("budget")
                 .as("an infeasible-XI refusal still rests on PFS metrics")
                 .contains(DataAge.RANKING_METRIC_REFRESH);
         assertThat(output).doesNotContain("Data source: season " + TapasSeed.CURRENT_SEASON_CODE

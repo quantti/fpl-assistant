@@ -507,7 +507,7 @@ class SquadToolsIntegrationTest {
 
         assertThat(output).doesNotContain("Starting XI")
                 .contains("No editable gameweek remains in the captured schedule")
-                .contains("unknown rather than zero").contains("complete recent minutes evidence")
+                .contains("unknown rather than zero").contains("complete current evidence")
                 .containsSubsequence(DataAge.RANKING_METRIC_REFRESH, "No editable gameweek remains");
     }
 
