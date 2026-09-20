@@ -1,14 +1,12 @@
 package dev.quantti.fplassistant.tools;
 
-/** The single observed-history admission rule shared by primary picks and squad XIs. */
+/** Shared availability and complete-current-evidence rule for picks and squad XIs. */
 public final class MinutesModel {
 
     public enum Eligibility {
-        ELIGIBLE("consistent observed 60+ history"),
+        ELIGIBLE("fresh availability and complete current evidence"),
         AVAILABILITY_RISK("the fresh FPL capture does not mark the player available"),
-        MINUTES_RISK("at least one fixture in the observed current-club window was under 60 minutes"),
-        INSUFFICIENT_CURRENT_EVIDENCE("the complete current-club window has under 180 minutes"),
-        UNKNOWN_CURRENT_EVIDENCE("current-season minutes evidence is missing, stale or incoherent");
+        UNKNOWN_CURRENT_EVIDENCE("current-season evidence is missing, stale or incoherent");
 
         private final String reason;
 
@@ -33,12 +31,6 @@ public final class MinutesModel {
         if (!currentSeasonEvidence || !player.hasValidIdentity()
                 || window == null || !window.complete()) {
             return Eligibility.UNKNOWN_CURRENT_EVIDENCE;
-        }
-        if (window.sixtyPlus() < window.expected()) {
-            return Eligibility.MINUTES_RISK;
-        }
-        if (window.totalMinutes() < ExpectedPoints.MIN_WINDOW_MINUTES) {
-            return Eligibility.INSUFFICIENT_CURRENT_EVIDENCE;
         }
         return Eligibility.ELIGIBLE;
     }

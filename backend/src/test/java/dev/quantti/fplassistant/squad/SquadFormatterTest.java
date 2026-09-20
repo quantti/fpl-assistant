@@ -141,11 +141,12 @@ class SquadFormatterTest {
     }
 
     @Test
-    void printsObservedDateRangeAndLabelsAShortWindow() {
+    void doesNotPresentMinuteHistoryAsASelectionReason() {
         String output = format(solved(), constraints());
 
-        assertThat(output).contains("2026-08-01 to 2026-08-03")
-                .contains("short window: 3 fixtures");
+        assertThat(output).doesNotContain("observed current-club")
+                .doesNotContain("short window:")
+                .doesNotContain("expected mins/fixture");
     }
 
     @Test
@@ -312,10 +313,7 @@ class SquadFormatterTest {
     }
 
     @Test
-    void printsExpectedPointsPerPlayerAndBenchExpectedMinutes() {
-        // I6: the output must carry expected points per player and expected minutes on bench
-        // rows, so the model has something to quote when asked "why this squad?" instead of
-        // reaching elsewhere or inventing a reason.
+    void printsExpectedPointsPerPlayerWithoutMinuteBasedSelectionEvidence() {
         Map<Integer, HorizonScorer.Projection> projections = Map.of(
                 1, new HorizonScorer.Projection(4.5, true, false, 2, 0, null),
                 2, new HorizonScorer.Projection(1.2, true, false, 1, 0, null));
@@ -328,7 +326,7 @@ class SquadFormatterTest {
         assertThat(output).contains("4.50 xPts over 2 fixtures");
         // Name2 (element id 2) is on the bench.
         assertThat(output).contains("1.20 xPts over 1 fixture");
-        assertThat(output).contains("90 expected mins/fixture");
+        assertThat(output).doesNotContain("expected mins/fixture");
     }
 
     @Test

@@ -109,7 +109,6 @@ class CandidatePoolChangeoverTest {
         assertThat(okafor.ownership()).isEqualTo(7.25);
         assertThat(okafor.status()).isEqualTo("a");
         assertThat(okafor.tier()).isEqualTo(SquadCandidate.Tier.RANKABLE);
-        assertThat(okafor.minutesWindow().totalMinutes()).isEqualTo(270);
         assertThat(okafor.minutesWindow().expected()).isEqualTo(3);
         assertThat(ExpectedPoints.numeric(okafor.metrics().get("xg90")))
                 .isCloseTo(1.25 * 90 / 270, within(1e-9));
@@ -125,7 +124,6 @@ class CandidatePoolChangeoverTest {
         assertThat(bramley.status()).isEqualTo("d");
         assertThat(bramley.news()).isEqualTo("75% chance of playing");
         assertThat(bramley.tier()).isEqualTo(SquadCandidate.Tier.RANKABLE);
-        assertThat(bramley.minutesWindow().totalMinutes()).isEqualTo(180);
         assertThat(bramley.minutesWindow().expected()).isEqualTo(2);
         assertThat(ExpectedPoints.numeric(bramley.metrics().get("xg90")))
                 .isCloseTo(0.75 * 90 / 180, within(1e-9));
@@ -146,7 +144,6 @@ class CandidatePoolChangeoverTest {
         assertThat(newcomer.tier()).isEqualTo(SquadCandidate.Tier.BODY);
         assertThat(newcomer.metrics()).isEmpty();
         assertThat(newcomer.minutesWindow()).isNull();
-        assertThat(newcomer.exposure()).isNull();
     }
 
     @Test
@@ -220,13 +217,11 @@ class CandidatePoolChangeoverTest {
         SquadCandidate renamed = candidate(candidates, OKAFOR_OLD_ID);
         assertThat(renamed.webName()).isEqualTo("Summername");
         assertThat(renamed.tier()).isEqualTo(SquadCandidate.Tier.RANKABLE);
-        assertThat(renamed.minutesWindow().totalMinutes()).isEqualTo(270);
         assertThat(ExpectedPoints.numeric(renamed.metrics().get("xg90")))
                 .isCloseTo(1.25 * 90 / 270, within(1e-9));
 
         SquadCandidate missingWeekly = candidate(candidates, NO_WEEKLY_PLAYER);
         assertThat(missingWeekly.tier()).isEqualTo(SquadCandidate.Tier.RANKABLE);
-        assertThat(missingWeekly.minutesWindow().totalMinutes()).isEqualTo(180);
         assertThat(missingWeekly.minutesWindow().expected()).isEqualTo(3);
         assertThat(ExpectedPoints.numeric(missingWeekly.metrics().get("xg90")))
                 .isCloseTo(0.30, within(1e-9));

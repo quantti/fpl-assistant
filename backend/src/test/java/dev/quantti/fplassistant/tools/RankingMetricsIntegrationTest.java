@@ -107,10 +107,40 @@ class RankingMetricsIntegrationTest {
         assertThat(reliable.current().window().complete()).isTrue();
         assertThat(reliable.current().window().expected()).isEqualTo(2);
         assertThat(reliable.current().window().observed()).isEqualTo(2);
-        assertThat(reliable.current().window().totalMinutes()).isEqualTo(180);
-        assertThat(reliable.current().window().sixtyPlus()).isEqualTo(2);
         assertThat(reliable.current().playerId()).isEqualTo(PLAYER);
         assertThat(reliable.current().ability()).containsEntry("mins", 180);
+    }
+
+    @Test
+    void recentLowMinuteOutcomesRemainFactualEvidenceWithoutExclusion() {
+        int club = RankingSeed.team(1);
+        seedDaily(PLAYER, "BenchRole", club, 3, "a", CAPTURE_DATE, CAPTURED_AT);
+        List<Integer> fixtures = finishFixtures(club, 3);
+        int opponent = jdbc.queryForObject("SELECT CASE WHEN team_h = ? THEN team_a ELSE team_h END"
+                        + " FROM " + fixtureTable + " WHERE season = ? AND id = ?", Integer.class,
+                club, SEASON, fixtures.get(0));
+        jdbc.update("""
+                INSERT INTO team (id, season_id, code, name, short_name, strength)
+                VALUES (?, ?, ?, 'Named Opponent', 'NMD', 3)
+                """, opponent, SEASON_ID, opponent);
+        fixtures.forEach(fixture -> seedPfs(PLAYER, fixture, 30, club, club, null));
+
+        RankingMetrics.Candidate benchRole = candidate(load(CAPTURE_DATE), PLAYER);
+
+        assertThat(benchRole.current().window().recentFixtures())
+                .extracting(RankingMetrics.FixtureOutcome::minutes)
+                .containsExactly(30, 30, 30);
+        assertThat(benchRole.current().window().recentFixtures())
+                .extracting(RankingMetrics.FixtureOutcome::opponentShort)
+                .contains("NMD");
+        assertThat(benchRole.eligibility()).isEqualTo(MinutesModel.Eligibility.ELIGIBLE);
+
+        jdbc.update("UPDATE player_fixture_stats SET minutes = 90 WHERE season_id = ?"
+                        + " AND player_id = ? AND fixture_id = ?",
+                SEASON_ID, PLAYER, fixtures.get(0));
+
+        assertThat(candidate(load(CAPTURE_DATE), PLAYER).eligibility())
+                .isEqualTo(MinutesModel.Eligibility.ELIGIBLE);
     }
 
     @Test
@@ -130,7 +160,11 @@ class RankingMetricsIntegrationTest {
         assertThat(window.reason()).isEqualTo(RankingMetrics.WindowReason.MISSING_OBSERVATION);
         assertThat(window.expected()).isEqualTo(10);
         assertThat(window.observed()).isEqualTo(2);
-        assertThat(window.latestTwo()).allSatisfy(outcome -> assertThat(outcome.minutes()).isEqualTo(90));
+        assertThat(window.recentFixtures()).hasSize(5);
+        assertThat(window.recentFixtures()).filteredOn(outcome -> outcome.minutes() != null)
+                .allSatisfy(outcome -> assertThat(outcome.minutes()).isEqualTo(90));
+        assertThat(window.recentFixtures()).filteredOn(outcome -> outcome.minutes() == null)
+                .hasSize(3);
     }
 
     @Test
@@ -150,8 +184,8 @@ class RankingMetricsIntegrationTest {
         assertThat(window.expected()).isEqualTo(2);
         assertThat(window.observed()).isEqualTo(1);
         assertThat(window.reason()).isEqualTo(RankingMetrics.WindowReason.MISSING_OBSERVATION);
-        assertThat(window.latestTwo().getFirst().fixtureId()).isEqualTo(fixtures.get(1));
-        assertThat(window.latestTwo().getFirst().minutes()).isNull();
+        assertThat(window.recentFixtures().getFirst().fixtureId()).isEqualTo(fixtures.get(1));
+        assertThat(window.recentFixtures().getFirst().minutes()).isNull();
     }
 
     @Test
@@ -174,8 +208,8 @@ class RankingMetricsIntegrationTest {
         RankingMetrics.MinutesWindow window = candidate(load(CAPTURE_DATE), PLAYER)
                 .current().window();
 
-        assertThat(window.latestTwo()).extracting(RankingMetrics.FixtureOutcome::fixtureId)
-                .containsExactly(fixtures.get(0), fixtures.get(2));
+        assertThat(window.recentFixtures()).extracting(RankingMetrics.FixtureOutcome::fixtureId)
+                .containsExactly(fixtures.get(0), fixtures.get(2), fixtures.get(1));
     }
 
     @Test
@@ -248,7 +282,6 @@ class RankingMetricsIntegrationTest {
 
         assertThat(window.complete()).isTrue();
         assertThat(window.expected()).isEqualTo(3);
-        assertThat(window.totalMinutes()).isEqualTo(180);
     }
 
     @Test
@@ -386,7 +419,7 @@ class RankingMetricsIntegrationTest {
     }
 
     @Test
-    void bothPrimaryListsRejectCameosDoubtfulPlayersAndKnownZerosBeforeRanking() {
+    void primaryListsKeepUnderSixtyAndKnownZeroPlayersWhenOtherEvidenceIsComplete() {
         int reliable = PLAYER;
         int cameo = PLAYER + 1;
         int doubtful = PLAYER + 2;
@@ -403,12 +436,15 @@ class RankingMetricsIntegrationTest {
 
         List<Integer> reliableFixtures = finishFixturesAvoiding(reliableClub, 3, candidateClubs, 0);
         reliableFixtures.forEach(id -> seedPfsStats(reliable, id, 60, reliableClub, 4, 0.3));
-        List<Integer> cameoFixtures = finishFixturesAvoiding(cameoClub, 9, candidateClubs, 20);
+        List<Integer> cameoFixtures = finishFixturesAvoiding(cameoClub, 3, candidateClubs, 20);
         cameoFixtures.forEach(id -> seedPfsStats(cameo, id, 20, cameoClub, 20, 2.0));
         List<Integer> doubtfulFixtures = finishFixturesAvoiding(doubtfulClub, 3, candidateClubs, 40);
         doubtfulFixtures.forEach(id -> seedPfsStats(doubtful, id, 90, doubtfulClub, 20, 2.0));
         List<Integer> zeroFixtures = finishFixturesAvoiding(zeroClub, 3, candidateClubs, 60);
-        zeroFixtures.forEach(id -> seedPfsStats(zero, id, 0, zeroClub, 20, 2.0));
+        for (int index = 0; index < zeroFixtures.size(); index++) {
+            seedPfsStats(zero, zeroFixtures.get(index), index == 0 ? 0 : 90,
+                    zeroClub, 20, 2.0);
+        }
         seedPreviousRegular(zero, "LostRole", 3);
 
         SeasonContext context = context();
@@ -429,15 +465,14 @@ class RankingMetricsIntegrationTest {
 
         for (String result : List.of(differentials, captains)) {
             assertThat(result).contains(" Reliable (")
-                    .contains("Score/fixture")
-                    .contains("observed current-club 60+ 3/3, 180 mins")
-                    .contains("short window: 3 fixtures")
+                    .contains(" Cameo (")
+                    .contains("expected points/fixture")
+                    .contains("minutes note: 20 minutes vs")
+                    .contains(" LostRole (")
+                    .contains("minutes note: 0 minutes vs")
                     .contains("complete FPL schedule capture at " + CAPTURED_AT)
                     .contains("availability risk 1")
-                    .contains("observed minutes risk 2")
-                    .doesNotContain(" Cameo (")
                     .doesNotContain(" Doubtful (")
-                    .doesNotContain(" LostRole (")
                     .doesNotContain("Pts/90")
                     .doesNotContainIgnoringCase("guaranteed starter");
         }
@@ -507,13 +542,12 @@ class RankingMetricsIntegrationTest {
         for (int id : List.of(PLAYER, PLAYER + 1)) {
             RankingMetrics.Candidate candidate = candidate(snapshot, id);
             assertThat(candidate.blended().metrics())
-                    .containsEntry("defcon_long_matches", 0.0)
                     .containsEntry("defcon_matches", 0.0)
-                    .doesNotContainKeys("defcon_long_avg", "defcon_avg");
+                    .doesNotContainKey("defcon_avg");
             Map<String, Object> row = new java.util.HashMap<>(candidate.blended().metrics());
             row.put("element_type", 2);
-            assertThat(ExpectedPoints.perFixture(row, candidate.blended().exposure(),
-                    OptionalDouble.empty()).orElseThrow().partialDefcon()).isTrue();
+            assertThat(ExpectedPoints.expectedPerFixture(row, OptionalDouble.empty())
+                    .orElseThrow().partialDefcon()).isTrue();
         }
     }
 
@@ -532,9 +566,6 @@ class RankingMetricsIntegrationTest {
         assertThat(window.reason()).isEqualTo(RankingMetrics.WindowReason.INVALID_MINUTES);
         assertThat(window.expected()).isEqualTo(3);
         assertThat(window.observed()).isEqualTo(3);
-        assertThat(window.totalMinutes()).isEqualTo(90);
-        assertThat(window.appearances()).isEqualTo(1);
-        assertThat(window.sixtyPlus()).isEqualTo(1);
     }
 
     /** Ghost element ids for one row per club side; never captured, so never candidates. */
