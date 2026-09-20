@@ -14,7 +14,7 @@ corpus re-ingest. The completed KAR-31 plan is explicitly marked historical.
 
 Focused Gradle verification could not run on this checkout host: it has neither Java nor
 `backend/.env.test`. No test database, corpus reload, production write or deployment was attempted;
-PR CI must run the focused and full suites.
+PR CI is the focused and full-suite verification gate.
 
 ## Owned sync — remove redundant parent work (2026-09-20)
 
