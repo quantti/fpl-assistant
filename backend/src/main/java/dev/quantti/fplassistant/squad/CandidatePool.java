@@ -14,7 +14,7 @@ import org.springframework.stereotype.Component;
 
 /**
  * Applies the squad purchase policy to the same coherent ranking snapshot used by pick tools.
- * Identity comes from the whole daily capture; metrics and minutes membership come from
+ * Identity comes from the whole daily capture; metrics and current-evidence membership come from
  * {@link RankingMetrics}, so the two consumers cannot disagree about gaps or club history.
  */
 @Component
@@ -78,10 +78,7 @@ public class CandidatePool {
                 player.teamShort(), player.position() == null ? 0 : player.position(),
                 player.nowCost(), player.ownership() == null ? 0 : player.ownership(),
                 player.status(), player.news(), player.teamId() == null ? 0 : player.teamId(),
-                rankable && row.blended().exposure() != null
-                        ? row.blended().exposure().expectedMinutes() : 0,
                 metrics, rankable ? SquadCandidate.Tier.RANKABLE : SquadCandidate.Tier.BODY,
-                row.current() == null ? null : row.current().window(),
-                rankable ? row.blended().exposure() : null, row.eligibility());
+                row.current() == null ? null : row.current().window(), row.eligibility());
     }
 }

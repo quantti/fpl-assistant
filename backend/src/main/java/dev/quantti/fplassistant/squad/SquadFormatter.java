@@ -1,6 +1,5 @@
 package dev.quantti.fplassistant.squad;
 
-import java.time.LocalDate;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -9,7 +8,6 @@ import java.util.Objects;
 import dev.quantti.fplassistant.schedule.HorizonFixtures;
 import dev.quantti.fplassistant.tools.DataAge;
 import dev.quantti.fplassistant.tools.ExpectedPoints;
-import dev.quantti.fplassistant.tools.UkTime;
 
 /**
  * Renders a solved squad.
@@ -139,8 +137,7 @@ public final class SquadFormatter {
         int order = 1;
         for (SquadCandidate player : solved.bench()) {
             String prefix = player.elementType() == 1 ? "  " : "  " + order++ + ". ";
-            out.append(prefix).append(line(player, projections, horizon))
-                    .append(benchMinutesNote(player)).append('\n');
+            out.append(prefix).append(line(player, projections, horizon)).append('\n');
         }
 
         out.append("\nCaptain: ").append(solved.captain().webName())
@@ -161,14 +158,13 @@ public final class SquadFormatter {
 
         if (excludedForNoRecord > 0) {
             out.append("\n").append(excludedForNoRecord)
-                    .append(" players were left out of the ranking because they have too little"
-                            + " playing history to judge — new signings, and players back from"
-                            + " long injuries. A named fit player may be carried on the bench, but"
-                            + " a pin does not make them eligible for the XI.\n");
+                    .append(" players were left out because their current-season evidence is"
+                            + " incomplete or incoherent. A named fit player may be carried on the"
+                            + " bench, but a pin does not make them eligible for the XI.\n");
         }
 
         out.append("\nSave points and penalty saves are not in these numbers, so goalkeepers are"
-                + " understated. Defensive contribution is included where its appearance-class"
+                + " understated. Defensive contribution is included where its action-rate"
                 + " evidence is available; partial expected-point rows are labelled.\n");
 
         return out.toString();
@@ -233,29 +229,6 @@ public final class SquadFormatter {
         if (!player.mayStart()) {
             line.append(" — bench only: ").append(player.eligibility().reason());
         }
-        if (player.minutesWindow() != null) {
-            line.append(" — observed current-club 60+ ")
-                    .append(player.minutesWindow().sixtyPlus()).append('/')
-                    .append(player.minutesWindow().expected()).append(", ")
-                    .append(player.minutesWindow().totalMinutes()).append(" mins");
-            if (player.minutesWindow().firstKickoff() != null
-                    && player.minutesWindow().lastKickoff() != null) {
-                LocalDate first = LocalDate.ofInstant(
-                        player.minutesWindow().firstKickoff(), UkTime.zone());
-                LocalDate last = LocalDate.ofInstant(
-                        player.minutesWindow().lastKickoff(), UkTime.zone());
-                line.append(", ").append(first);
-                if (!first.equals(last)) {
-                    line.append(" to ").append(last);
-                }
-            }
-            if (!player.minutesWindow().complete()) {
-                line.append(" (").append(player.minutesWindow().reason()).append(')');
-            } else if (player.minutesWindow().expected() < ExpectedPoints.WINDOW_MATCHES) {
-                line.append(" (short window: ").append(player.minutesWindow().expected())
-                        .append(" fixtures)");
-            }
-        }
         if (player.isDoubtful()) {
             line.append(" — DOUBTFUL: ").append(player.news());
         }
@@ -297,15 +270,4 @@ public final class SquadFormatter {
         return points.toString();
     }
 
-    /**
-     * Blended expected minutes per club fixture, printed on bench rows only. Raw current-club
-     * evidence is printed separately on every row and alone controls XI eligibility.
-     */
-    private static String benchMinutesNote(SquadCandidate player) {
-        if (player.exposure() == null) {
-            return ", expected mins/fixture n/a";
-        }
-        return String.format(Locale.ROOT, ", %.0f expected mins/fixture",
-                player.expectedMinutes());
-    }
 }

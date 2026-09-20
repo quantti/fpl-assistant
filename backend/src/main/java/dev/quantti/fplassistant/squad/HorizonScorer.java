@@ -9,9 +9,8 @@ import dev.quantti.fplassistant.tools.ExpectedPoints;
 
 /**
  * Turns the shared per-fixture expectation into what a player is worth over the fixtures his club
- * actually plays in the editable gameweek window. Current XI admission is a separate hard
- * observed-history rule; expected minutes shape the point components but never grant permission to
- * start.
+ * actually plays in the editable gameweek window. Availability and complete evidence decide
+ * whether a player can start; minutes do not alter the projection or admission.
  *
  * <p>The window itself is {@link HorizonFixtures}' — the same derivation the pick tools rank on,
  * over the same captured schedule that supplied the current-role evidence. This class used to
@@ -55,11 +54,6 @@ public final class HorizonScorer {
     private HorizonScorer() {
     }
 
-    /** The blended per-season rate, never a ratio of added cross-season evidence counts. */
-    public static double expectedMinutes(SquadCandidate candidate) {
-        return candidate.exposure() == null ? 0 : candidate.exposure().expectedMinutes();
-    }
-
     public static double fdrAdjust(int fdr) {
         return 1 + (NEUTRAL_FDR - fdr) * FDR_SWING;
     }
@@ -76,13 +70,12 @@ public final class HorizonScorer {
     public static Projection projection(SquadCandidate candidate,
                                         HorizonFixtures.ClubWindow window,
                                         ClubRates.Rates rates) {
-        if (candidate.tier() == SquadCandidate.Tier.BODY || candidate.exposure() == null) {
+        if (candidate.tier() == SquadCandidate.Tier.BODY) {
             return UNSCOREABLE;
         }
         if (!window.known()) {
-            return ExpectedPoints.perFixture(candidate.metrics(), candidate.exposure(),
-                    OptionalDouble.empty()).isEmpty()
-                    ? UNSCOREABLE
+            return ExpectedPoints.expectedPerFixture(candidate.metrics(),
+                    OptionalDouble.empty()).isEmpty() ? UNSCOREABLE
                     : new Projection(0, false, false, 0, 0, window.unknownReason());
         }
         double total = 0;
@@ -91,8 +84,8 @@ public final class HorizonScorer {
         for (HorizonFixtures.Fixture fixture : window.fixtures()) {
             OptionalDouble goalsAgainst = ClubRates.projectedGoalsAgainst(rates,
                     candidate.teamId(), fixture.opponentTeamId(), fixture.home());
-            Optional<ExpectedPoints.PerFixture> perFixture = ExpectedPoints.perFixture(
-                    candidate.metrics(), candidate.exposure(), goalsAgainst);
+            Optional<ExpectedPoints.PerFixture> perFixture = ExpectedPoints.expectedPerFixture(
+                    candidate.metrics(), goalsAgainst);
             if (perFixture.isEmpty()) {
                 return UNSCOREABLE;
             }

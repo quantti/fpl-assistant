@@ -153,7 +153,6 @@ class CandidatePoolCrossSeasonTest {
         assertThat(okafor.tier()).isEqualTo(SquadCandidate.Tier.RANKABLE);
         assertThat(okafor.minutesWindow().reason())
                 .isEqualTo(RankingMetrics.WindowReason.PRICE_CAPTURE_STALE);
-        assertThat(okafor.exposure()).isNull();
         assertThat(((Number) okafor.metrics().get("xg90")).doubleValue()).isGreaterThan(0);
     }
 
@@ -208,7 +207,7 @@ class CandidatePoolCrossSeasonTest {
      * here, so the blend is 0.3 x 0.25 + 0.7 x 0.4167.
      */
     @Test
-    void aMissingCurrentScheduleCannotTurnCurrentRowsIntoExposureEvidence() {
+    void aMissingCurrentScheduleCannotCertifyCurrentEvidence() {
         jdbc.execute("""
                 INSERT INTO player_fixture_stats (fixture_id, player_id, season_id, gameweek,
                         player_team_id, opponent_team_id, was_home, kickoff_time, minutes,
@@ -227,7 +226,6 @@ class CandidatePoolCrossSeasonTest {
         assertThat(okafor.metrics().get("blend_weight")).isEqualTo(0.0);
         assertThat(ExpectedPoints.numeric(okafor.metrics().get("xg90")))
                 .isCloseTo(1.25 * 90 / 270, within(1e-9));
-        assertThat(okafor.exposure()).isNull();
         assertThat(okafor.eligibility())
                 .isEqualTo(MinutesModel.Eligibility.UNKNOWN_CURRENT_EVIDENCE);
     }

@@ -209,7 +209,7 @@ class SquadToolsIntegrationTest {
         String output = tools.buildSquad("", "", "", 100.0, 5, "");
 
         assertThat(output).contains("Starting XI").contains("Bench").contains("Captain")
-                .contains("observed current-club 60+ 3/3")
+                .doesNotContain("observed current-club 60+")
                 .contains("Schedule evidence: complete FPL capture")
                 .contains("Comparison coverage: all clubs")
                 .contains("Player comparison receipt: 97 eligible of 97");
@@ -431,7 +431,7 @@ class SquadToolsIntegrationTest {
     }
 
     @Test
-    void anIneligiblePinCanOnlyBeCarriedOnTheBench() {
+    void anUnderSixtyPinCanStartWhenItsExpectedPointsAreStrong() {
         int id = 12_414;
         insert(id, "CameoPin", "Cameo Pin", 0, 3, 40, 1.0, 2.0);
         jdbc.update("UPDATE player_fixture_stats SET minutes = 20 WHERE season_id = ?"
@@ -439,9 +439,26 @@ class SquadToolsIntegrationTest {
 
         String output = tools.buildSquad("CameoPin", "", "", 100.0, 5, "");
 
-        assertThat(output).contains("CameoPin: included ✓")
-                .contains("CameoPin").contains("bench only");
-        assertThat(startingXi(output)).doesNotContain("CameoPin");
+        assertThat(output).contains("CameoPin: included ✓");
+        assertThat(startingXi(output)).contains("CameoPin");
+    }
+
+    @Test
+    void aMixedMinutePinCanStartWhenItsProjectionIsStrong() {
+        int id = 12_415;
+        insert(id, "MixedPin", "Mixed Pin", 0, 3, 40, 1.0, 2.0);
+        int fixture = jdbc.queryForObject("SELECT fixture_id FROM player_fixture_stats"
+                        + " WHERE season_id = ? AND player_id = ?"
+                        + " ORDER BY kickoff_time DESC, fixture_id DESC LIMIT 1", Integer.class,
+                SEASON_ID, id);
+        jdbc.update("UPDATE player_fixture_stats SET minutes = 30, starts = 0"
+                + " WHERE season_id = ? AND player_id = ? AND fixture_id = ?",
+                SEASON_ID, id, fixture);
+
+        String output = tools.buildSquad("MixedPin", "", "", 100.0, 5, "");
+
+        assertThat(output).contains("MixedPin: included ✓");
+        assertThat(startingXi(output)).contains("MixedPin");
     }
 
     /**
@@ -489,7 +506,7 @@ class SquadToolsIntegrationTest {
 
         assertThat(output).doesNotContain("Starting XI")
                 .contains("No editable gameweek remains in the captured schedule")
-                .contains("unknown rather than zero").contains("60+")
+                .contains("unknown rather than zero").contains("complete current evidence")
                 .containsSubsequence(DataAge.RANKING_METRIC_REFRESH, "No editable gameweek remains");
     }
 

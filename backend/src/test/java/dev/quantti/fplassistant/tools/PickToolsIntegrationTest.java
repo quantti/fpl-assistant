@@ -59,6 +59,7 @@ class PickToolsIntegrationTest {
     private static final int DOUBLE_MID = 13_010;
     private static final int NEAR_MID = 13_011;
     private static final int FAR_MID = 13_012;
+    private static final int MIXED_MID = 13_013;
 
     /** A midweek second leg, after every gameweek-6 kickoff the seeded schedule lays down. */
     private static final Instant SECOND_LEG_KICKOFF = Instant.parse("2026-09-29T18:00:00Z");
@@ -107,6 +108,14 @@ class PickToolsIntegrationTest {
         seedPlayer(ZERO, "LostRole", 7, 3, 50, 1.0, "a", 0, 2.0, 1.0, 1.0, null);
         seedPlayer(NO_RECORD, "Newcomer", 8, 3, 50, 1.0, "a", null, 0, 0, 1.0, null);
         seedPlayer(UNAVAILABLE, "Injured", 9, 4, 70, 1.0, "i", 90, 2.0, 1.0, 1.0, 12);
+        seedPlayer(MIXED_MID, "Mixed", 10, 3, 55, 1.0, "a", 90, 0.55, 0.25, 1.0, 12);
+        int mixedFixture = RankingSeed.fixtures(CAPTURED_AT, FIRST_DEADLINE).stream()
+                .filter(row -> row.gameweek() == 1 && (row.homeTeamId() == RankingSeed.team(10)
+                        || row.awayTeamId() == RankingSeed.team(10)))
+                .findFirst().orElseThrow().id();
+        jdbc.update("UPDATE player_fixture_stats SET minutes = 30, starts = 0"
+                        + " WHERE season_id = ? AND player_id = ? AND fixture_id = ?",
+                SEASON_ID, MIXED_MID, mixedFixture);
         seedAverageLeague(1.20, 1.20);
     }
 
@@ -260,20 +269,21 @@ class PickToolsIntegrationTest {
     }
 
     @Test
-    void returnsOnlyEligibleDifferentialsWithPerFixtureEvidence() {
+    void returnsExpectedPointsRankingsAndFactualRecentMinuteNotes() {
         String result = tools.getDifferentialPicks("any", 10, 5);
 
         assertThat(result).contains("Differential picks")
-                .contains("Reliable", "Defender", "Keeper")
-                .contains("Score/fixture", "expected/fixture", "realised points/fixture")
-                .contains("observed current-club 60+ 3/3")
-                .contains("short window: 3 fixtures")
+                .contains("Reliable", "Mixed", "Defender", "Keeper", "Cameo")
+                .contains("expected points/fixture", "horizon expected points")
                 .contains("complete FPL schedule capture at " + CAPTURED_AT)
                 .contains("Avg FDR")
-                .contains("projected per fixture")
-                .doesNotContain(" Cameo (").doesNotContain(" Doubtful (")
-                .doesNotContain(" LostRole (").doesNotContain(" Newcomer (")
-                .doesNotContain(" Injured (").doesNotContain("Pts/90");
+                .contains("minutes note: 20 minutes vs")
+                .contains("minutes note: 30 minutes vs")
+                .doesNotContain(" Doubtful (").doesNotContain(" LostRole (")
+                .doesNotContain(" Newcomer (").doesNotContain(" Injured (")
+                .doesNotContain("realised points/fixture").doesNotContain("Pts/90");
+        assertThat(tools.getCaptainCandidates(5)).contains(" Mixed (", " Cameo (")
+                .doesNotContain(" LostRole (");
     }
 
     /**
@@ -307,7 +317,7 @@ class PickToolsIntegrationTest {
             assertThat(result.indexOf(DataAge.RANKING_METRIC_REFRESH))
                     .as("before the schedule evidence and every numeric row")
                     .isLessThan(result.indexOf("Schedule evidence:"))
-                    .isLessThan(result.indexOf("horizon Score"));
+                    .isLessThan(result.indexOf("horizon expected points"));
         }
     }
 
@@ -353,8 +363,10 @@ class PickToolsIntegrationTest {
 
         assertThat(tools.getDifferentialPicks("any", 100, 5)).isEqualTo(differentials);
         assertThat(tools.getCaptainCandidates(5)).isEqualTo(captains);
-        assertThat(differentials).contains(" Reliable (", "horizon Score", DataAge.RANKING_METRIC_REFRESH);
-        assertThat(captains).contains(" Striker (", "horizon Score", DataAge.RANKING_METRIC_REFRESH);
+        assertThat(differentials).contains(" Reliable (", "horizon expected points",
+                DataAge.RANKING_METRIC_REFRESH);
+        assertThat(captains).contains(" Striker (", "horizon expected points",
+                DataAge.RANKING_METRIC_REFRESH);
     }
 
     @Test
@@ -392,7 +404,7 @@ class PickToolsIntegrationTest {
      * The Score and the printed {@code CS} total are two independent summations over the same
      * horizon — one inside {@code expected_per_fixture}, one in the printed leg list. This pins
      * both against the legs themselves: the total is the model's own {@code 4 × exp(-xGA)} per
-     * fixture (the Defender plays 90 minutes in every seeded fixture, so P(60+) is 1), and the
+     * fixture, and the
      * per-fixture expectation is the fixture-independent components plus that total over the
      * window. Tolerance 0.011 because every printed figure is rounded to two decimals.
      */
@@ -405,13 +417,13 @@ class PickToolsIntegrationTest {
         double appearance = number(defender, "appearance (\\d+\\.\\d\\d)");
         double attack = number(defender, "attack (\\d+\\.\\d\\d)");
         double defcon = number(defender, "DC (\\d+\\.\\d\\d)");
-        double perFixture = number(defender, "expected/fixture (\\d+\\.\\d\\d)");
+        double perFixture = number(defender, "expected points/fixture (\\d+\\.\\d\\d)");
 
         assertThat(goalsAgainst).hasSize(2);
         assertThat(total).as("the printed CS total is 4 x exp(-xGA) summed over the legs: " + defender)
                 .isCloseTo(4 * (Math.exp(-goalsAgainst.get(0)) + Math.exp(-goalsAgainst.get(1))),
                         within(0.011));
-        assertThat(perFixture).as("expected/fixture averages the same summation: " + defender)
+        assertThat(perFixture).as("expected points/fixture averages the same summation: " + defender)
                 .isCloseTo(appearance + attack + defcon + total / 2, within(0.011));
     }
 
@@ -451,8 +463,8 @@ class PickToolsIntegrationTest {
 
     private static double horizonScore(String line) {
         java.util.regex.Matcher m = java.util.regex.Pattern
-                .compile("horizon Score (\\d+\\.\\d\\d)").matcher(line);
-        assertThat(m.find()).as("horizon Score in: " + line).isTrue();
+                .compile("horizon expected points (\\d+\\.\\d\\d)").matcher(line);
+        assertThat(m.find()).as("horizon expected points in: " + line).isTrue();
         return Double.parseDouble(m.group(1));
     }
 
@@ -475,12 +487,12 @@ class PickToolsIntegrationTest {
     }
 
     @Test
-    void exclusionCountsDistinguishAvailabilityMinutesAndUnknownEvidence() {
+    void exclusionCountsDistinguishAvailabilityAndUnknownEvidence() {
         String result = tools.getDifferentialPicks("any", 100, 5);
 
         assertThat(result).contains("availability risk 2")
-                .contains("observed minutes risk 2")
-                .contains("unknown current evidence 1");
+                .contains("unknown current evidence 2")
+                .doesNotContain("consistently under-60");
     }
 
     /**
@@ -530,8 +542,8 @@ class PickToolsIntegrationTest {
     }
 
     /**
-     * Two different reasons a club cannot contribute a fixture, counted apart from the minutes
-     * rule and from each other: one club is blanked out of a one-gameweek window, the other has
+     * Two different reasons a club cannot contribute a fixture, counted apart from each other:
+     * one club is blanked out of a one-gameweek window, the other has
      * an outstanding fixture FPL has not assigned to a gameweek at all. Neither is a forecast of
      * zero points, so neither name may appear in the list.
      */
@@ -573,11 +585,11 @@ class PickToolsIntegrationTest {
 
         assertThat(result).contains("No differentials qualify")
                 .contains("No editable gameweek remains")
-                .contains("unknown horizon 4")
+                .contains("unknown horizon 7")
                 .contains("Data source: FPL's own gameweek and fixture list for season " + SEASON)
                 .contains("No editable window (no editable gameweek)")
                 .contains(DataAge.RANKING_METRIC_REFRESH)
-                .doesNotContain(" Reliable (").doesNotContain("horizon Score");
+                .doesNotContain(" Reliable (").doesNotContain("horizon expected points");
     }
 
     /** SharedStats {@code fixture} rows for the seeded schedule's finished fixtures, written at a known time. */
