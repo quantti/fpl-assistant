@@ -116,6 +116,13 @@ class RankingMetricsIntegrationTest {
         int club = RankingSeed.team(1);
         seedDaily(PLAYER, "BenchRole", club, 3, "a", CAPTURE_DATE, CAPTURED_AT);
         List<Integer> fixtures = finishFixtures(club, 3);
+        int opponent = jdbc.queryForObject("SELECT CASE WHEN team_h = ? THEN team_a ELSE team_h END"
+                        + " FROM " + fixtureTable + " WHERE season = ? AND id = ?", Integer.class,
+                club, SEASON, fixtures.get(0));
+        jdbc.update("""
+                INSERT INTO team (id, season_id, code, name, short_name, strength)
+                VALUES (?, ?, ?, 'Named Opponent', 'NMD', 3)
+                """, opponent, SEASON_ID, opponent);
         fixtures.forEach(fixture -> seedPfs(PLAYER, fixture, 30, club, club, null));
 
         RankingMetrics.Candidate benchRole = candidate(load(CAPTURE_DATE), PLAYER);
@@ -123,6 +130,9 @@ class RankingMetricsIntegrationTest {
         assertThat(benchRole.current().window().recentFixtures())
                 .extracting(RankingMetrics.FixtureOutcome::minutes)
                 .containsExactly(30, 30, 30);
+        assertThat(benchRole.current().window().recentFixtures())
+                .extracting(RankingMetrics.FixtureOutcome::opponentShort)
+                .contains("NMD");
         assertThat(benchRole.eligibility()).isEqualTo(MinutesModel.Eligibility.ELIGIBLE);
 
         jdbc.update("UPDATE player_fixture_stats SET minutes = 90 WHERE season_id = ?"

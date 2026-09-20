@@ -671,13 +671,16 @@ public class PickTools implements FplTool {
             if (outcome.minutes() == null || outcome.minutes() >= 60) {
                 continue;
             }
-            ScheduleSource.FixtureRow fixture = fixtures.get(outcome.fixtureId());
-            String opponent = "fixture " + outcome.fixtureId();
-            if (fixture != null) {
-                int team = ((Number) row.get("team_id")).intValue();
-                int opponentId = fixture.homeTeamId() == team
-                        ? fixture.awayTeamId() : fixture.homeTeamId();
-                opponent = clubNames.getOrDefault(opponentId, "team " + opponentId);
+            String opponent = outcome.opponentShort();
+            if (opponent == null || opponent.isBlank()) {
+                ScheduleSource.FixtureRow fixture = fixtures.get(outcome.fixtureId());
+                opponent = "fixture " + outcome.fixtureId();
+                if (fixture != null) {
+                    int team = ((Number) row.get("team_id")).intValue();
+                    int opponentId = fixture.homeTeamId() == team
+                            ? fixture.awayTeamId() : fixture.homeTeamId();
+                    opponent = clubNames.getOrDefault(opponentId, "team " + opponentId);
+                }
             }
             LocalDate date = LocalDate.ofInstant(outcome.kickoff(), UkTime.zone());
             notices.add(outcome.minutes() + " minutes vs " + opponent + " on " + date);
