@@ -179,13 +179,26 @@ afterEach(() => {
 });
 
 it('immediately hides the old thread, marks the target and disables the real composer until success', async () => {
+  const status = host.querySelector('[role="status"]')!;
+  expect(status).not.toBeNull();
+  expect(status.textContent).toBe('');
+  expect(status.closest('[hidden], [aria-hidden="true"]')).toBeNull();
+  expect(getComputedStyle(status).display).not.toBe('none');
+
   await loadPrevious();
+  expect(host.querySelector('[role="status"]')).toBe(status);
+  expect(status.textContent).toBe('');
   typeMessage('Unsent question');
   expect(sendButton().disabled).toBe(false);
 
   const request = select('a');
 
-  expect(host.querySelector('[role="status"]')?.textContent).toBe('Loading conversation…');
+  expect(host.querySelectorAll('[role="status"]')).toHaveLength(1);
+  expect(host.querySelector('[role="status"]')).toBe(status);
+  expect(status.textContent).toBe('Loading conversation…');
+  const visualLoading = status.parentElement!.querySelector('[aria-hidden="true"]');
+  expect(visualLoading?.textContent).toBe('Loading conversation…');
+  expect(visualLoading?.getAttribute('role')).toBeNull();
   expect(host.querySelector('[data-thread]')).toBeNull();
   expect(host.textContent).not.toContain('Previous saved answer');
   expect(host.textContent).not.toContain(emptyCopy);
@@ -206,7 +219,9 @@ it('immediately hides the old thread, marks the target and disables the real com
 
   await flush(() => request.resolve(history('Selected saved answer')));
 
-  expect(host.querySelector('[role="status"]')).toBeNull();
+  expect(host.querySelector('[role="status"]')).toBe(status);
+  expect(status.textContent).toBe('');
+  expect(visualLoading?.isConnected).toBe(false);
   expect(host.querySelector('[aria-busy="true"]')).toBeNull();
   expect(row('a').textContent).not.toContain('Loading…');
   expect(row('old').getAttribute('aria-current')).toBeNull();
@@ -224,7 +239,7 @@ it('accepts empty history as success rather than a failed selection', async () =
 
   await flush(() => request.resolve(Response.json([])));
 
-  expect(host.querySelector('[role="status"]')).toBeNull();
+  expect(host.querySelector('[role="status"]')?.textContent).toBe('');
   expect(host.querySelector('[aria-busy="true"]')).toBeNull();
   expect(host.textContent).toContain(emptyCopy);
   expect(host.textContent).not.toContain(failureCopy);
@@ -246,7 +261,7 @@ it.each(['HTTP', 'network'])(
       else request.reject(new Error('Offline'));
     });
 
-    expect(host.querySelector('[role="status"]')).toBeNull();
+    expect(host.querySelector('[role="status"]')?.textContent).toBe('');
     expect(host.querySelector('[aria-busy="true"]')).toBeNull();
     expect(host.querySelector('[data-thread]')?.textContent).toBe(`Error${failureCopy}`);
     expect(row('old').getAttribute('aria-current')).toBe('true');
@@ -279,7 +294,7 @@ it.each(['older first', 'newer first'])(
       await flush(() => older.resolve(history('Stale answer')));
     }
 
-    expect(host.querySelector('[role="status"]')).toBeNull();
+    expect(host.querySelector('[role="status"]')?.textContent).toBe('');
     expect(host.querySelector('[aria-busy="true"]')).toBeNull();
     expect(row('b').getAttribute('aria-current')).toBe('true');
     expect(host.querySelector('[data-thread]')?.textContent).toContain('Newest saved answer');
@@ -297,7 +312,7 @@ it('New conversation clears pending selection and late history cannot restore it
 
   act(() => newButton().click());
 
-  expect(host.querySelector('[role="status"]')).toBeNull();
+  expect(host.querySelector('[role="status"]')?.textContent).toBe('');
   expect(host.querySelector('[aria-busy="true"]')).toBeNull();
   expect(host.querySelector('[aria-current="true"]')).toBeNull();
   expect(host.textContent).toContain(emptyCopy);
