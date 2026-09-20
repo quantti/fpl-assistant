@@ -58,7 +58,11 @@ public class RankingMetrics {
         INVALID_MINUTES
     }
 
-    public record FixtureOutcome(int fixtureId, Instant kickoff, Integer minutes) {
+    public record FixtureOutcome(int fixtureId, Instant kickoff, Integer minutes,
+                                 String opponentShort) {
+        public FixtureOutcome(int fixtureId, Instant kickoff, Integer minutes) {
+            this(fixtureId, kickoff, minutes, null);
+        }
     }
 
     public record MinutesWindow(boolean complete, WindowReason reason, Integer clubId,
@@ -900,20 +904,25 @@ public class RankingMetrics {
         if (targets.isEmpty()) {
             return Map.of();
         }
-        List<Object> args = new ArrayList<>(targets.size() * 3 + 1);
+        List<Object> args = new ArrayList<>(targets.size() * 3 + 2);
         String values = targetValues(targets, args, true);
+        args.add(seasonId);
         args.add(seasonId);
         Map<Integer, List<FixtureOutcome>> outcomes = new HashMap<>();
         for (Map<String, Object> row : jdbc.queryForList("""
                 WITH %s, expected(player_id, fixture_id, kickoff) AS (VALUES %s)
-                SELECT e.player_id, e.fixture_id, e.kickoff, p.minutes
+                SELECT e.player_id, e.fixture_id, e.kickoff, p.minutes,
+                       opponent.short_name AS opponent_short
                 FROM expected e LEFT JOIN pfs_read p
                   ON p.season_id = ? AND p.player_id = e.player_id AND p.fixture_id = e.fixture_id
+                LEFT JOIN team opponent ON opponent.id = p.opponent_team_id
+                  AND opponent.season_id = ?
                 ORDER BY e.player_id, e.kickoff DESC, e.fixture_id DESC
                 """.formatted(pfs.cte(), values), args.toArray())) {
             outcomes.computeIfAbsent(integer(row.get("player_id")), ignored -> new ArrayList<>())
                     .add(new FixtureOutcome(integer(row.get("fixture_id")),
-                            instant(row.get("kickoff")), nullableInteger(row.get("minutes"))));
+                            instant(row.get("kickoff")), nullableInteger(row.get("minutes")),
+                            (String) row.get("opponent_short")));
         }
         return outcomes;
     }

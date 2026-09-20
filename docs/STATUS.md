@@ -16,7 +16,7 @@ missing-evidence guards remain unchanged.
 
 The system prompt and checked-in strategy corpus source now use the same rule; production embeddings
 remain unchanged until an explicit post-review corpus re-ingest. The 20 directly affected test
-classes (250 tests) passed locally against the disposable database, and full
+classes (251 tests) passed locally against the disposable database, and full
 [PR CI run 35527211627](https://github.com/quantti/fpl-assistant/actions/runs/35527211627) passed.
 No corpus reload, production write or deployment was attempted.
 
