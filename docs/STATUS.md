@@ -72,6 +72,18 @@ found no blockers. Real-browser mobile rendering and live email callbacks were n
 exercised; full-suite verification belongs to PR CI.
 
 
+## Exception-only availability wording (KAR-67, 2026-09-20)
+
+The chat prompt now tells routine player summaries and recommendations to omit normal
+availability lines such as “Saatavilla: ei FPL-lippua”. Only concerns are reported, using plain
+language for doubts, injuries, suspensions and other absence reasons. Availability checks before
+transfer/captain advice still run; missing or outdated required evidence stays explicit, with its
+capture-date qualification. Direct availability questions still get an answer, without promising
+fitness, a starting place or minutes. Tool data, eligibility rules and UI rendering are unchanged.
+
+Three deterministic prompt-contract tests cover these instructions; no live-provider generation
+test is used.
+
 ## Test-use chat traces — 14-day retention
 
 Chat turns now persist diagnostics in `fpl_chat_trace`: effective system/history prompts
