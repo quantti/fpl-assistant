@@ -5038,3 +5038,35 @@ before.
 
 Spec: `docs/superpowers/specs/2026-09-19-quota-gameweek-window-design.md`.
 Plan: `docs/superpowers/plans/2026-09-19-quota-gameweek-window.md`.
+
+## Conversation selection loading (KAR-53, 2026-09-20)
+
+Plan: `docs/superpowers/plans/2026-09-20-kar-53-conversation-loading.md`.
+
+Selecting a saved conversation now immediately replaces the old transcript with a loading
+status and disables the composer. The clicked sidebar row says `Loading…`; the current marker
+stays on the last successfully loaded conversation until the new one lands. Other rows and
+New conversation remain available. HTTP, network and malformed-history failures release loading
+and show the existing could-not-be-opened error, retaining the previous conversation id as before.
+
+The existing ChatView selection counter protected displayed messages but not `currentId`, which
+`useConversations.select` used to change unconditionally. The hook now guards identity and pending
+cleanup by request generation too. A newer click or New conversation invalidates old responses.
+Selection also immediately detaches any outgoing browser chat stream with `replaceMessages([])`;
+late conversation metadata cannot steal the pending selection or its successor. This does not
+promise that server-side generation stops. A 404 still refreshes the sidebar, without holding
+selection loading open for that second request.
+
+Owner execution rule recorded in `AGENTS.md`: always one subagent at a time because resources are
+limited; no parallel/nested delegation or overlapping builds/test suites. Planning, hook work and
+UI work were separate sequential units.
+
+Verified locally: tests-first failures, then 27 hook-selection tests and 8 mounted ChatView tests
+with real hooks/sidebar/thread/composer. Full frontend suite: 189 tests in 22 files, one worker;
+lint, format check, TypeScript and contrast checks passed. PR #121's first CI run passed the
+backend suite and production frontend build (no local JDK or frontend public-key configuration).
+PR review found no functional blocker; its accessibility follow-up keeps an empty live status
+region mounted and updates its text rather than mounting it already populated. The same 189
+tests and static checks passed after that fix, followed by a clean independent re-review and
+successful CI run `35496208578` at `7ca33f1`. Linear is In Review; the owner merges PR #121.
+Real-browser layout, screen-reader announcements and production behavior have not been checked.
