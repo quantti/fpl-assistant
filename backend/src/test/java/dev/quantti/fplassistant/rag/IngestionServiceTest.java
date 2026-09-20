@@ -349,8 +349,8 @@ class IngestionServiceTest {
         assertThat(chunks).filteredOn(c -> "The ranking-tools policy"
                         .equals(c.getMetadata().get("section")))
                 .singleElement().satisfies(chunk -> assertThat(chunk.getText())
-                        .contains("fresh availability", "latest **five complete observed fixtures**",
-                                "neutral fact", "not a risk label", "not a forecast adjustment"));
+                        .contains("fresh availability", "latest five complete observed fixtures",
+                                "neutral fact", "minutes risk", "projection adjustment"));
     }
 
     @Test

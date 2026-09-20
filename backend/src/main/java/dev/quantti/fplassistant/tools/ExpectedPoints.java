@@ -121,11 +121,15 @@ public final class ExpectedPoints {
         int position = ((Number) row.get("element_type")).intValue();
         double appearance = APPEARANCE_POINTS;
         double attack = goalPoints(position) * xg.doubleValue() + ASSIST_POINTS * xa.doubleValue();
-        Double cleanSheet = cleanSheetPoints(position) == 0 ? 0.0
-                : projectedGoalsAgainst.isPresent()
-                        ? cleanSheetPoints(position)
-                                * cleanSheetProbability(projectedGoalsAgainst.getAsDouble())
-                        : null;
+        Double cleanSheet;
+        if (cleanSheetPoints(position) == 0) {
+            cleanSheet = 0.0;
+        } else if (projectedGoalsAgainst.isPresent()) {
+            cleanSheet = cleanSheetPoints(position)
+                    * cleanSheetProbability(projectedGoalsAgainst.getAsDouble());
+        } else {
+            cleanSheet = null;
+        }
         boolean partialDefcon = defconThreshold(position) > 0 && !hasDefconSignal(row, position);
         double defensiveContribution = defconExpectedPoints(row, position);
         double points = appearance + attack + (cleanSheet == null ? 0 : cleanSheet)

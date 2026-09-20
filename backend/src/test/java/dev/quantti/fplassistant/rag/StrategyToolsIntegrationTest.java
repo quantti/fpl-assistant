@@ -83,7 +83,7 @@ class StrategyToolsIntegrationTest {
 
         assertThat(result).contains("FPL Minutes Facts and the 60-Minute Rule")
                 .contains("The ranking-tools policy")
-                .contains("latest **five complete observed fixtures**")
+                .contains("latest five complete observed fixtures")
                 .contains("neutral fact");
     }
 
