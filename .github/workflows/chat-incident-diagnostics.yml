@@ -22,3 +22,47 @@ jobs:
           date -u
           flyctl status -a fpl-assistant
           flyctl logs -a fpl-assistant --no-tail
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: Reproduce trace regex with the checked-in prompt and synthetic text
+        run: |
+          cat > /tmp/TraceRegexProbe.java <<'JAVA'
+          import java.nio.file.Files;
+          import java.nio.file.Path;
+          import java.util.regex.Pattern;
+
+          class TraceRegexProbe {
+              // Exact expression in ChatTraceCollector on the deployed revision.
+              static final Pattern CURRENT = Pattern.compile(
+                      "\"((?:\\\\.|[^\"\\\\])*)\"(\\s*:\\s*)\"(?:\\\\.|[^\"\\\\])*\"");
+              static final Pattern POSSESSIVE = Pattern.compile(
+                      "\"((?:\\\\.|[^\"\\\\])*+)\"(\\s*:\\s*)\"(?:\\\\.|[^\"\\\\])*+\"");
+
+              static void probe(String label, Pattern pattern, String text) {
+                  try {
+                      var matcher = pattern.matcher(text);
+                      int count = 0;
+                      while (matcher.find()) count++;
+                      System.out.println(label + ": OK, chars=" + text.length() + ", matches=" + count);
+                  } catch (StackOverflowError failure) {
+                      System.out.println(label + ": STACK_OVERFLOW, chars=" + text.length());
+                  }
+              }
+
+              public static void main(String[] args) throws Exception {
+                  String prompt = Files.readString(Path.of(
+                          "backend/src/main/resources/prompts/system-prompt.st"));
+                  String longValue = "{\"note\":\"" + "x".repeat(32000) + "\"}";
+                  for (var entry : java.util.Map.of("system prompt", prompt,
+                          "synthetic long quoted value", longValue).entrySet()) {
+                      probe("current / " + entry.getKey(), CURRENT, entry.getValue());
+                      probe("possessive / " + entry.getKey(), POSSESSIVE, entry.getValue());
+                  }
+              }
+          }
+          JAVA
+          java -version
+          java -Xmx64m /tmp/TraceRegexProbe.java
