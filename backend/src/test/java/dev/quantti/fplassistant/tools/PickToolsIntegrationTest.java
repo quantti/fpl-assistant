@@ -585,7 +585,7 @@ class PickToolsIntegrationTest {
 
         assertThat(result).contains("No differentials qualify")
                 .contains("No editable gameweek remains")
-                .contains("unknown horizon 4")
+                .contains("unknown horizon 5")
                 .contains("Data source: FPL's own gameweek and fixture list for season " + SEASON)
                 .contains("No editable window (no editable gameweek)")
                 .contains(DataAge.RANKING_METRIC_REFRESH)
