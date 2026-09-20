@@ -1,5 +1,21 @@
 # Status — Phase 1
 
+## Recent-under-60 primary selection (2026-09-20)
+
+Primary picks, captain candidates and squad XI places no longer require 180 current-season
+minutes or 60+ in every current-club fixture. Fresh available status, coherent identity and a
+complete observed current-club window remain mandatory. Minutes continue to affect appearance,
+attacking and clean-sheet projections at their observed rates; the only minutes exclusion is three
+latest complete observed fixtures all below 60 minutes, including known zero-minute absences.
+Short or mixed windows stay rankable (subject to the separate combined ability-sample floor), with
+their small sample disclosed. The tool descriptions, system prompt and checked-in strategy corpus
+source now use the same rule; production embeddings remain unchanged until an explicit post-review
+corpus re-ingest. The completed KAR-31 plan is explicitly marked historical.
+
+Focused Gradle verification could not run on this checkout host: it has neither Java nor
+`backend/.env.test`. No test database, corpus reload, production write or deployment was attempted;
+PR CI must run the focused and full suites.
+
 ## Owned sync — remove redundant parent work (2026-09-20)
 
 The first bounded follow-up to the attended egress test removes fixture verification's
@@ -3863,6 +3879,9 @@ remain at implementation Task 0; no production scoring, database or embedding ch
 closure, push or deployment occurred.
 
 ## Minutes-aware ranking implementation outcome (KAR-31, 2026-09-09)
+
+> **Historical and superseded 2026-09-20:** The rule described below was the original KAR-31
+> implementation. The current recent-under-60 policy is recorded at the top of this file.
 
 Implementation Tasks 1–7 are complete in the current worktree, superseding the planning-state
 notes above. Ranking reads now share one repeatable-read daily/metric/schedule snapshot; primary

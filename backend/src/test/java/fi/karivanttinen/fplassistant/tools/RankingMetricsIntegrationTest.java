@@ -114,6 +114,29 @@ class RankingMetricsIntegrationTest {
     }
 
     @Test
+    void threeLatestCompleteUnderSixtyOutcomesExcludeButOneShortAppearanceDoesNot() {
+        int club = RankingSeed.team(1);
+        seedDaily(PLAYER, "BenchRole", club, 3, "a", CAPTURE_DATE, CAPTURED_AT);
+        List<Integer> fixtures = finishFixtures(club, 3);
+        fixtures.forEach(fixture -> seedPfs(PLAYER, fixture, 30, club, club, null));
+
+        RankingMetrics.Candidate benchRole = candidate(load(CAPTURE_DATE), PLAYER);
+
+        assertThat(benchRole.current().window().latestThree())
+                .extracting(RankingMetrics.FixtureOutcome::minutes)
+                .containsExactly(30, 30, 30);
+        assertThat(benchRole.eligibility())
+                .isEqualTo(MinutesModel.Eligibility.CONSISTENTLY_UNDER_60);
+
+        jdbc.update("UPDATE player_fixture_stats SET minutes = 90 WHERE season_id = ?"
+                        + " AND player_id = ? AND fixture_id = ?",
+                SEASON_ID, PLAYER, fixtures.get(0));
+
+        assertThat(candidate(load(CAPTURE_DATE), PLAYER).eligibility())
+                .isEqualTo(MinutesModel.Eligibility.ELIGIBLE);
+    }
+
+    @Test
     void twoRowsCannotShrinkATenFixtureWindowAndSameClubDailyHistoryIsNotAFence() {
         int club = RankingSeed.team(1);
         seedDaily(PLAYER, "Gap", club, 2, "a", CAPTURE_DATE.minusDays(20),
@@ -130,7 +153,11 @@ class RankingMetricsIntegrationTest {
         assertThat(window.reason()).isEqualTo(RankingMetrics.WindowReason.MISSING_OBSERVATION);
         assertThat(window.expected()).isEqualTo(10);
         assertThat(window.observed()).isEqualTo(2);
-        assertThat(window.latestTwo()).allSatisfy(outcome -> assertThat(outcome.minutes()).isEqualTo(90));
+        assertThat(window.latestThree()).hasSize(3);
+        assertThat(window.latestThree()).filteredOn(outcome -> outcome.minutes() != null)
+                .allSatisfy(outcome -> assertThat(outcome.minutes()).isEqualTo(90));
+        assertThat(window.latestThree()).filteredOn(outcome -> outcome.minutes() == null)
+                .hasSize(1);
     }
 
     @Test
@@ -150,8 +177,8 @@ class RankingMetricsIntegrationTest {
         assertThat(window.expected()).isEqualTo(2);
         assertThat(window.observed()).isEqualTo(1);
         assertThat(window.reason()).isEqualTo(RankingMetrics.WindowReason.MISSING_OBSERVATION);
-        assertThat(window.latestTwo().getFirst().fixtureId()).isEqualTo(fixtures.get(1));
-        assertThat(window.latestTwo().getFirst().minutes()).isNull();
+        assertThat(window.latestThree().getFirst().fixtureId()).isEqualTo(fixtures.get(1));
+        assertThat(window.latestThree().getFirst().minutes()).isNull();
     }
 
     @Test
@@ -174,8 +201,8 @@ class RankingMetricsIntegrationTest {
         RankingMetrics.MinutesWindow window = candidate(load(CAPTURE_DATE), PLAYER)
                 .current().window();
 
-        assertThat(window.latestTwo()).extracting(RankingMetrics.FixtureOutcome::fixtureId)
-                .containsExactly(fixtures.get(0), fixtures.get(2));
+        assertThat(window.latestThree()).extracting(RankingMetrics.FixtureOutcome::fixtureId)
+                .containsExactly(fixtures.get(0), fixtures.get(2), fixtures.get(1));
     }
 
     @Test
@@ -386,7 +413,7 @@ class RankingMetricsIntegrationTest {
     }
 
     @Test
-    void bothPrimaryListsRejectCameosDoubtfulPlayersAndKnownZerosBeforeRanking() {
+    void bothPrimaryListsRejectConsistentlyUnderSixtyDoubtfulPlayersAndKnownZerosBeforeRanking() {
         int reliable = PLAYER;
         int cameo = PLAYER + 1;
         int doubtful = PLAYER + 2;
@@ -434,7 +461,7 @@ class RankingMetricsIntegrationTest {
                     .contains("short window: 3 fixtures")
                     .contains("complete FPL schedule capture at " + CAPTURED_AT)
                     .contains("availability risk 1")
-                    .contains("observed minutes risk 2")
+                    .contains("consistently under-60 minutes 2")
                     .doesNotContain(" Cameo (")
                     .doesNotContain(" Doubtful (")
                     .doesNotContain(" LostRole (")

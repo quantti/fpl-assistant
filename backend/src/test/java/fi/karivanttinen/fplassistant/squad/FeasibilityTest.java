@@ -259,14 +259,14 @@ class FeasibilityTest {
         for (int index = 0; index < pool.size(); index++) {
             if (pool.get(index).elementType() == 1) {
                 pool.set(index, SquadCandidateTestData.ineligible(pool.get(index),
-                        fi.karivanttinen.fplassistant.tools.MinutesModel.Eligibility.MINUTES_RISK));
+                        fi.karivanttinen.fplassistant.tools.MinutesModel.Eligibility.CONSISTENTLY_UNDER_60));
             }
         }
 
         Optional<String> refusal = check(pool, constraints(List.of(), 1000), List.of());
 
         assertThat(refusal).hasValueSatisfying(message -> assertThat(message)
-                .contains("goalkeeper").contains("60+").contains("budget"));
+                .contains("goalkeeper").contains("recent three-fixture under-60").contains("budget"));
     }
 
     @Test
@@ -276,7 +276,7 @@ class FeasibilityTest {
         for (int index = 0; index < pool.size(); index++) {
             if (pool.get(index).elementType() == 4 && leftEligible++ >= 1) {
                 pool.set(index, SquadCandidateTestData.ineligible(pool.get(index),
-                        fi.karivanttinen.fplassistant.tools.MinutesModel.Eligibility.MINUTES_RISK));
+                        fi.karivanttinen.fplassistant.tools.MinutesModel.Eligibility.CONSISTENTLY_UNDER_60));
             }
         }
 
@@ -312,7 +312,7 @@ class FeasibilityTest {
 
         assertThat(refusal).hasValueSatisfying(message -> assertThat(message)
                 .contains("3-4-3").contains("4 midfielders").contains("only 3")
-                .contains("GW4–8").contains("60+")
+                .contains("GW4–8").contains("recent three-fixture under-60")
                 .contains("neither a pin nor a higher budget can waive it"));
     }
 
@@ -326,7 +326,7 @@ class FeasibilityTest {
                         SquadCandidateTestData.clubsOf(pool)));
 
         assertThat(refusal).hasValueSatisfying(message -> assertThat(message)
-                .contains("goalkeeper").contains("GW4–8").contains("60+")
+                .contains("goalkeeper").contains("GW4–8").contains("recent three-fixture under-60")
                 .contains("higher budget"));
     }
 
@@ -358,7 +358,7 @@ class FeasibilityTest {
         assertThat(refusal).hasValueSatisfying(message -> assertThat(message)
                 .contains("cannot supply a gameweek horizon (schedule incomplete)")
                 .contains("unknown rather than zero")
-                .contains("60+").contains("higher budget supplies neither")
+                .contains("complete recent minutes evidence").contains("higher budget supplies neither")
                 .doesNotContain("only 0"));
     }
 

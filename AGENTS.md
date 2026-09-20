@@ -156,21 +156,20 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
   a labelled neutral 3. `PickTools` clamps its request to 1–5 gameweeks, `buildSquad` takes its
   own and both truncate at the season's end and disclose it. There is no bypass, for a pin, a
   budget or a relaxation.
-- **Primary role eligibility is one hard current-season observed-history rule, `MinutesModel`.**
-  Call it **consistent observed 60+ history**. The selected daily capture must be fresh and say
-  `status = 'a'`, with a valid position and club; identity/current club must be coherent across the
-  same-season sources. The latest up-to-ten completed fixtures for that current-club spell must be
-  complete: at least 180 current-season minutes and 60+ in every expected fixture. Known zero-minute
-  rows stay in the denominator. Previous-season minutes and blended exposure never certify the
-  current role; missing/stale/pending/invalid data means abstention. A sub-60 fixture blocks primary
-  selection until ten later completed club fixtures in that spell move it out; an injury return,
-  new manager or convenient recent-form boundary does not reset the window. Only a verified
-  different-club observation fences a new spell. Without one, enumerate from season start: a first
-  PFS/daily appearance is not a registration date, and a newcomer may need ten complete fixtures.
-  A short complete window may qualify after clearing the same floor, but its `N/N` support is
-  labelled and remains a small sample. This is conservative history, not a
-  calibrated probability or a future-start guarantee; never add a bypass or fill a list with
-  ineligible names.
+- **Primary selection uses current evidence with one narrow minutes exclusion, `MinutesModel`.**
+  The selected daily capture must be fresh and say `status = 'a'`, with a valid position and club;
+  identity/current club must be coherent across the same-season sources. The latest up-to-ten
+  completed fixtures for that current-club spell must be complete; known zero-minute rows stay in
+  the denominator. Previous-season minutes and blended exposure never certify current evidence;
+  missing/stale/pending/invalid data means abstention. There is no 60+ or current-total-minutes
+  admission gate: minutes shape the projection. Exclude a primary pick or XI player only when the
+  three latest complete observed fixtures are all under 60 minutes, including zero-minute absences.
+  A shorter or mixed complete window remains rankable at its observed minute rate and is labelled a
+  small sample. Only a verified different-club observation fences a new spell. Without one,
+  enumerate from season start: a first PFS/daily appearance is not a registration date, and a
+  newcomer may need ten complete fixtures. The separate combined-minutes ability floor is for a
+  rate-based projection, not role eligibility. This evidence is not a calibrated probability or a
+  future-start guarantee; no pin, budget or relaxation bypasses the exclusion.
 - **Expected ranking points are per fixture, not a whole score multiplied by mean minutes.**
   `SeasonBlend.Exposure` is an indivisible bundle of appearance, 60+, short-appearance,
   expected-minutes and realised-points rates. `ExpectedPoints.perFixture` uses `P(play)+P(60+)`,

@@ -350,14 +350,15 @@ class IngestionServiceTest {
         assertThat(chunks).filteredOn(c -> "Choosing reliable defenders before attacking upside"
                         .equals(c.getMetadata().get("section")))
                 .singleElement().satisfies(chunk -> assertThat(chunk.getText())
-                        .contains("reliable first choice", "instead of filling the list",
+                        .contains("reliable first choice", "minutes-aware projection",
                                 "no universal probability cutoff"));
-        assertThat(chunks).filteredOn(c -> "The primary-list rule used by the ranking tools"
+        assertThat(chunks).filteredOn(c -> "The recent under-60 exclusion used by the ranking tools"
                         .equals(c.getMetadata().get("section")))
                 .singleElement().satisfies(chunk -> assertThat(chunk.getText())
-                        .contains("latest up to ten completed fixtures", "at least 180",
-                                "reached 60 in every", "ten later completed club fixtures",
-                                "never satisfy this current-role gate", "not a calibrated"));
+                        .contains("Every expected fixture remains in the denominator",
+                                "no 60+ or current-total-minutes admission gate",
+                                "three latest complete observed fixtures",
+                                "never establish current availability", "not a calibrated"));
     }
 
     @Test

@@ -2,6 +2,12 @@
 
 **PROGRESS:** Implementation Task 7/7 done.
 
+> **Superseded policy (2026-09-20):** This is the historical KAR-31 plan and outcome.
+> Primary selection no longer requires 180 current-season minutes or 60+ in every observed
+> fixture. Current availability and complete evidence still apply; minutes shape the projection,
+> and only three latest complete observed fixtures all below 60 minutes exclude a primary pick or
+> XI place. The combined ability-sample floor remains separate from role eligibility.
+
 Issue: [KAR-31](https://linear.app/quantti/issue/KAR-31).
 Implement this first, then [KAR-35](2026-09-09-kar-35-gameweek-horizon.md). KAR-30's fixture-specific
 clean-sheet model is not a dependency and is out of scope.

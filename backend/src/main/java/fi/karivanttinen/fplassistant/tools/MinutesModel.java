@@ -1,13 +1,15 @@
 package fi.karivanttinen.fplassistant.tools;
 
-/** The single observed-history admission rule shared by primary picks and squad XIs. */
+/** Shared current-evidence and recurring-low-minutes rule for picks and squad XIs. */
 public final class MinutesModel {
 
+    /** Latest complete observed fixtures that must all be below 60 before excluding a player. */
+    public static final int CONSISTENTLY_UNDER_60_FIXTURES = 3;
+
     public enum Eligibility {
-        ELIGIBLE("consistent observed 60+ history"),
+        ELIGIBLE("no recent consistent under-60-minute pattern"),
         AVAILABILITY_RISK("the fresh FPL capture does not mark the player available"),
-        MINUTES_RISK("at least one fixture in the observed current-club window was under 60 minutes"),
-        INSUFFICIENT_CURRENT_EVIDENCE("the complete current-club window has under 180 minutes"),
+        CONSISTENTLY_UNDER_60("the three latest complete observed fixtures were all under 60 minutes"),
         UNKNOWN_CURRENT_EVIDENCE("current-season minutes evidence is missing, stale or incoherent");
 
         private final String reason;
@@ -34,12 +36,15 @@ public final class MinutesModel {
                 || window == null || !window.complete()) {
             return Eligibility.UNKNOWN_CURRENT_EVIDENCE;
         }
-        if (window.sixtyPlus() < window.expected()) {
-            return Eligibility.MINUTES_RISK;
-        }
-        if (window.totalMinutes() < ExpectedPoints.MIN_WINDOW_MINUTES) {
-            return Eligibility.INSUFFICIENT_CURRENT_EVIDENCE;
+        if (consistentlyUnderSixty(window)) {
+            return Eligibility.CONSISTENTLY_UNDER_60;
         }
         return Eligibility.ELIGIBLE;
+    }
+
+    private static boolean consistentlyUnderSixty(RankingMetrics.MinutesWindow window) {
+        return window.latestThree().size() == CONSISTENTLY_UNDER_60_FIXTURES
+                && window.latestThree().stream()
+                        .allMatch(outcome -> outcome.minutes() != null && outcome.minutes() < 60);
     }
 }
