@@ -426,12 +426,15 @@ class RankingMetricsIntegrationTest {
 
         List<Integer> reliableFixtures = finishFixturesAvoiding(reliableClub, 3, candidateClubs, 0);
         reliableFixtures.forEach(id -> seedPfsStats(reliable, id, 60, reliableClub, 4, 0.3));
-        List<Integer> cameoFixtures = finishFixturesAvoiding(cameoClub, 9, candidateClubs, 20);
+        List<Integer> cameoFixtures = finishFixturesAvoiding(cameoClub, 3, candidateClubs, 20);
         cameoFixtures.forEach(id -> seedPfsStats(cameo, id, 20, cameoClub, 20, 2.0));
         List<Integer> doubtfulFixtures = finishFixturesAvoiding(doubtfulClub, 3, candidateClubs, 40);
         doubtfulFixtures.forEach(id -> seedPfsStats(doubtful, id, 90, doubtfulClub, 20, 2.0));
         List<Integer> zeroFixtures = finishFixturesAvoiding(zeroClub, 3, candidateClubs, 60);
-        zeroFixtures.forEach(id -> seedPfsStats(zero, id, 0, zeroClub, 20, 2.0));
+        for (int index = 0; index < zeroFixtures.size(); index++) {
+            seedPfsStats(zero, zeroFixtures.get(index), index == 0 ? 0 : 90,
+                    zeroClub, 20, 2.0);
+        }
         seedPreviousRegular(zero, "LostRole", 3);
 
         SeasonContext context = context();

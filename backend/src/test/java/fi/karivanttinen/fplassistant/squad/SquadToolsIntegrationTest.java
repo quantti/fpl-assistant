@@ -431,7 +431,7 @@ class SquadToolsIntegrationTest {
     }
 
     @Test
-    void anIneligiblePinCanOnlyBeCarriedOnTheBench() {
+    void anUnderSixtyPinCanStartWhenItsExpectedPointsAreStrong() {
         int id = 12_414;
         insert(id, "CameoPin", "Cameo Pin", 0, 3, 40, 1.0, 2.0);
         jdbc.update("UPDATE player_fixture_stats SET minutes = 20 WHERE season_id = ?"
@@ -439,9 +439,8 @@ class SquadToolsIntegrationTest {
 
         String output = tools.buildSquad("CameoPin", "", "", 100.0, 5, "");
 
-        assertThat(output).contains("CameoPin: included ✓")
-                .contains("CameoPin").contains("bench only");
-        assertThat(startingXi(output)).doesNotContain("CameoPin");
+        assertThat(output).contains("CameoPin: included ✓");
+        assertThat(startingXi(output)).contains("CameoPin");
     }
 
     @Test
