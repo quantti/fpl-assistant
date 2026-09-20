@@ -29,15 +29,15 @@ jobs:
         run: |
           flyctl ssh console -a fpl-assistant -C 'sh -s' <<'SH'
           set -eu
-          command -v curl >/dev/null
-          curl --fail-with-body --silent --show-error --max-time 15 --get \
-            -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY:?service key unavailable}" \
-            -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
-            --data-urlencode 'select=created_at,completed_at,status:payload->>status,error:payload->error,round1_started:payload->modelRounds->0->>startedAt,round1_duration_ms:payload->modelRounds->0->>durationMs,round1_model:payload->modelRounds->0->>model' \
-            --data-urlencode 'created_at=gte.2026-09-20T08:14:00Z' \
-            --data-urlencode 'payload->>modelRounds=ilike.*Gross?*' \
-            --data-urlencode 'order=created_at.desc' \
-            --data-urlencode 'limit=5' \
-            "${SUPABASE_URL%/}/rest/v1/fpl_chat_trace"
-          printf '\n'
+          command -v openssl >/dev/null
+          host='itmykooxrbrdbgqwsesb.supabase.co'
+          path='/rest/v1/fpl_chat_trace?select=created_at%2Ccompleted_at%2Cstatus%3Apayload-%3E%3Estatus%2Cerror%3Apayload-%3Eerror%2Cround1_started%3Apayload-%3EmodelRounds-%3E0-%3E%3EstartedAt%2Cround1_duration_ms%3Apayload-%3EmodelRounds-%3E0-%3E%3EdurationMs%2Cround1_model%3Apayload-%3EmodelRounds-%3E0-%3E%3Emodel%2Cround1_error%3Apayload-%3EmodelRounds-%3E0-%3Eerror%2Cround2_duration_ms%3Apayload-%3EmodelRounds-%3E1-%3E%3EdurationMs%2Cround2_error%3Apayload-%3EmodelRounds-%3E1-%3Eerror%2Ctool1_name%3Apayload-%3Etools-%3E0-%3E%3Ename%2Ctool1_duration_ms%3Apayload-%3Etools-%3E0-%3E%3EdurationMs%2Ctool1_error%3Apayload-%3Etools-%3E0-%3Eerror&created_at=gte.2026-09-20T08%3A14%3A00Z&payload-%3E%3EmodelRounds=ilike.%2AGross%3F%2A&order=created_at.desc&limit=5'
+          {
+            printf 'GET %s HTTP/1.1\r\n' "$path"
+            printf 'Host: %s\r\n' "$host"
+            printf 'apikey: %s\r\n' "${SUPABASE_SERVICE_ROLE_KEY:?service key unavailable}"
+            printf 'Authorization: Bearer %s\r\n' "$SUPABASE_SERVICE_ROLE_KEY"
+            printf 'Accept: application/json\r\nConnection: close\r\n\r\n'
+          } | timeout 20 openssl s_client -quiet -verify_return_error \
+            -verify_hostname "$host" -servername "$host" -connect "$host:443"
           SH
