@@ -56,9 +56,10 @@ public final class OwnedMatchdayRuntime implements SmartLifecycle {
         deliveryExecutor = Executors.newSingleThreadScheduledExecutor(
                 Thread.ofPlatform().name("owned-sync-alert-delivery").daemon(true).factory());
         // A tick parses a full league snapshot and persists its transitions. Workers retain their
-        // one-second cadence; materializing due slots does not need the same allocation/DB rate.
+        // one-second cadence. A minute between ticks bounds idle metadata traffic, at the cost of
+        // up to a minute of planning delay (plus tick duration); source slots remain unchanged.
         plannerExecutor.scheduleWithFixedDelay(() -> guarded("planner", coordinator::tick),
-                0, 5, TimeUnit.SECONDS);
+                0, 1, TimeUnit.MINUTES);
         for (int worker = 0; worker < 2; worker++) {
             String id = Integer.toString(worker + 1);
             workerExecutor.scheduleWithFixedDelay(
