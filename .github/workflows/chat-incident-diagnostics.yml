@@ -21,4 +21,23 @@ jobs:
         run: |
           date -u
           flyctl status -a fpl-assistant
+          flyctl machine status 8151d9a97e7538 -a fpl-assistant
           flyctl logs -a fpl-assistant --no-tail
+      - name: Read only timing and error metadata for the reported Gross turn
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          flyctl ssh console -a fpl-assistant -C 'sh -s' <<'SH'
+          set -eu
+          command -v curl >/dev/null
+          curl --fail-with-body --silent --show-error --max-time 15 --get \
+            -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY:?service key unavailable}" \
+            -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
+            --data-urlencode 'select=created_at,completed_at,status:payload->>status,error:payload->error,round1_started:payload->modelRounds->0->>startedAt,round1_duration_ms:payload->modelRounds->0->>durationMs,round1_model:payload->modelRounds->0->>model' \
+            --data-urlencode 'created_at=gte.2026-09-20T08:14:00Z' \
+            --data-urlencode 'payload->>modelRounds=ilike.*Gross?*' \
+            --data-urlencode 'order=created_at.desc' \
+            --data-urlencode 'limit=5' \
+            "${SUPABASE_URL%/}/rest/v1/fpl_chat_trace"
+          printf '\n'
+          SH
