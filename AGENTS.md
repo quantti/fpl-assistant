@@ -282,10 +282,10 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
 
 ### Resource safety
 
-Two hosts: a **WSL2 machine** with the full toolchain, and a **Hetzner VPS** that has no JDK,
-Gradle, Node or Docker and therefore cannot build or test locally at all — from there, verification
-is the GitHub Actions run on the pull request. Neither host's setup notes may be deleted in favour
-of the other's; see `docs/DEVELOPMENT.md`.
+Two hosts: a **WSL2 machine** with the full toolchain, and a **Hetzner VPS** with Ubuntu
+OpenJDK 25 and Docker for focused backend feature/bug tests. The VPS has no frontend toolchain;
+never run the full suite there — GitHub Actions remains its full-suite verification gate. Neither
+host's setup notes may be deleted in favour of the other's; see `docs/DEVELOPMENT.md`.
 
 **Always run only one subagent at a time: resources are limited.** No parallel agent calls,
 concurrent agent tasks or nested delegation. Wait for the current subagent to finish before
