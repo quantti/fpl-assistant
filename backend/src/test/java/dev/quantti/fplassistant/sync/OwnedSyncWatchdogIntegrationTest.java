@@ -6,7 +6,9 @@ import java.sql.Timestamp;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
@@ -20,6 +22,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.PreparedStatementCreator;
+import org.springframework.jdbc.core.RowMapper;
+import org.springframework.jdbc.core.SqlProvider;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -30,12 +35,13 @@ class OwnedSyncWatchdogIntegrationTest {
 
     private static final OwnedSyncTables TABLES = OwnedSyncTables.tests();
     private static final Instant NOW = Instant.parse("2024-08-17T18:00:00Z");
+    private static DataSource dataSource;
     private static JdbcTemplate jdbc;
     private static TransactionTemplate tx;
 
     @BeforeAll
     static void initialize() {
-        DataSource dataSource = new DriverManagerDataSource(required("DATABASE_URL"),
+        dataSource = new DriverManagerDataSource(required("DATABASE_URL"),
                 required("DB_USER"), required("DB_PASSWORD"));
         jdbc = new JdbcTemplate(dataSource);
         SharedStatsSeed.ensureOwnedSyncFixture(jdbc);
@@ -197,6 +203,67 @@ class OwnedSyncWatchdogIntegrationTest {
     }
 
     @Test
+    void evidenceQueriesReturnOnlyRowsForNewSignalsAndOpenIncidents() {
+        jdbc.update("INSERT INTO " + TABLES.plannerRuntime()
+                        + "(instance_id,started_at,heartbeat_at) VALUES (?,?,?)",
+                "healthy", ts(NOW), ts(NOW));
+        jdbc.update("INSERT INTO " + TABLES.receipt()
+                + "(season,publication_key) SELECT '2024-25','history:' || n FROM generate_series(1,1000) n");
+        jdbc.update("INSERT INTO " + TABLES.run()
+                + "(kind,season,coalescing_key,publication_key,priority,due_at,requested_source_after,"
+                + "runtime_mode,runtime_epoch,state,created_at,updated_at) SELECT "
+                + "'PLAYER_HISTORY','2024-25','history:' || n,'history:' || n,3,?,?,?,?,"
+                + "'PENDING',?,? FROM generate_series(1,1000) n",
+                ts(NOW.minusSeconds(600)), ts(NOW.minusSeconds(600)), "OFF", 0,
+                ts(NOW.minusSeconds(600)), ts(NOW.minusSeconds(600)));
+        jdbc.update("UPDATE " + TABLES.run() + " SET state='COMPLETED',completed_at=?,updated_at=? "
+                + "WHERE publication_key LIKE 'history:%'", ts(NOW), ts(NOW));
+        jdbc.update("INSERT INTO " + TABLES.alert()
+                + "(incident_key,occurrence,event_type,category,severity,season,payload,delivery_state,created_at) "
+                + "SELECT 'due-work:' || generation,1,'INCIDENT','DUE_WORK','WARNING','2024-25','{}',"
+                + "'DISABLED',? FROM " + TABLES.run() + " WHERE publication_key LIKE 'history:%'", ts(NOW));
+        jdbc.update("INSERT INTO " + TABLES.alert()
+                + "(incident_key,occurrence,event_type,category,severity,season,payload,delivery_state,created_at) "
+                + "SELECT 'due-work:' || generation,1,'RECOVERY','DUE_WORK','INFO','2024-25','{}',"
+                + "'DISABLED',? FROM " + TABLES.run() + " WHERE publication_key LIKE 'history:%'", ts(NOW));
+
+        long settled = run("settled", "settled", "PENDING");
+        jdbc.update("UPDATE " + TABLES.run() + " SET state='COMPLETED',completed_at=?,updated_at=? "
+                + "WHERE generation=?", ts(NOW), ts(NOW), settled);
+        insertWatchdogAlert("due-work:" + settled, 3, "INCIDENT", "DUE_WORK");
+
+        long recurring = run("recurring", "recurring", "PENDING");
+        insertWatchdogAlert("due-work:" + recurring, 6, "INCIDENT", "DUE_WORK");
+        insertWatchdogAlert("due-work:" + recurring, 6, "RECOVERY", "DUE_WORK");
+
+        TrackingJdbcTemplate tracking = new TrackingJdbcTemplate(dataSource);
+        OwnedSyncWatchdog watchdog = new OwnedSyncWatchdog(tracking, tx, Clock.fixed(NOW, ZoneOffset.UTC),
+                TABLES, new OwnedSyncWatchdog.Notification(false, false), payload -> { });
+        watchdog.check("2024-25");
+
+        assertThat(tracking.rows()).containsEntry("next-occurrences", 1).containsEntry("completed-runs", 1);
+        assertThat(tracking.rows()).doesNotContainKeys("verified-fixtures", "capture-reads");
+        assertThat(jdbc.queryForObject("SELECT max(occurrence) FROM " + TABLES.alert()
+                + " WHERE incident_key=? AND event_type='INCIDENT'", Integer.class,
+                "due-work:" + recurring)).isEqualTo(7);
+        assertThat(eventCount("due-work:" + settled, "RECOVERY")).isOne();
+    }
+
+    @Test
+    void skipsBoundedQueriesWhenNoNewOrEvidenceBearingKeysExist() {
+        OwnedSyncWatchdog first = watchdog(false, false, payload -> { });
+        first.check("2024-25");
+        jdbc.update("UPDATE " + TABLES.alert() + " SET category='OTHER'");
+
+        TrackingJdbcTemplate tracking = new TrackingJdbcTemplate(dataSource);
+        OwnedSyncWatchdog second = new OwnedSyncWatchdog(tracking, tx, Clock.fixed(NOW, ZoneOffset.UTC),
+                TABLES, new OwnedSyncWatchdog.Notification(false, false), payload -> { });
+        second.check("2024-25");
+
+        assertThat(tracking.rows()).isEmpty();
+    }
+
+    @Test
     void dueWorkOnARunFencedInASupersededEpochRecoversButACurrentFailureStaysOpen() {
         jdbc.update("INSERT INTO " + TABLES.plannerRuntime()
                         + "(instance_id,started_at,heartbeat_at) VALUES (?,?,?)",
@@ -216,6 +283,7 @@ class OwnedSyncWatchdogIntegrationTest {
         long current = jdbc.queryForObject(insert, Long.class, "current:1", "current:1",
                 ts(NOW.minusSeconds(600)), ts(NOW.minusSeconds(600)), "ACTIVE", 9,
                 ts(NOW.minusSeconds(600)), ts(NOW.minusSeconds(600)));
+        insertWatchdogAlert("due-work:not-a-generation", 1, "INCIDENT", "DUE_WORK");
         OwnedSyncWatchdog watchdog = watchdog(false, false, payload -> { });
 
         watchdog.check("2024-25");
@@ -231,6 +299,7 @@ class OwnedSyncWatchdogIntegrationTest {
         assertThat(eventCount("due-work:" + fenced, "RECOVERY")).isOne();
         // A failure inside the live activation is not evidence that anything recovered.
         assertThat(eventCount("due-work:" + current, "RECOVERY")).isZero();
+        assertThat(eventCount("due-work:not-a-generation", "RECOVERY")).isZero();
     }
 
     @Test
@@ -323,6 +392,13 @@ class OwnedSyncWatchdogIntegrationTest {
                 state.equals("PENDING") ? ts(NOW) : null, ts(NOW));
     }
 
+    private void insertWatchdogAlert(String key, int occurrence, String event, String category) {
+        jdbc.update("INSERT INTO " + TABLES.alert()
+                        + "(incident_key,occurrence,event_type,category,severity,season,payload,delivery_state,created_at) "
+                        + "VALUES (?,?,?,?,?,'2024-25','{}','DISABLED',?)",
+                key, occurrence, event, category, event.equals("INCIDENT") ? "WARNING" : "INFO", ts(NOW));
+    }
+
     private long run(String coalescing, String publication, String state) {
         jdbc.update("INSERT INTO " + TABLES.receipt() + "(season,publication_key) VALUES ('2024-25',?)",
                 publication);
@@ -346,6 +422,36 @@ class OwnedSyncWatchdogIntegrationTest {
     }
 
     private static Timestamp ts(Instant value) { return Timestamp.from(value); }
+
+    private static final class TrackingJdbcTemplate extends JdbcTemplate {
+        private final Map<String, Integer> rows = new HashMap<>();
+
+        private TrackingJdbcTemplate(DataSource dataSource) {
+            super(dataSource);
+        }
+
+        @Override
+        public <T> List<T> query(PreparedStatementCreator creator, RowMapper<T> rowMapper) {
+            List<T> result = super.query(creator, rowMapper);
+            if (creator instanceof SqlProvider provider) {
+                String name = queryName(provider.getSql());
+                if (name != null) rows.put(name, result.size());
+            }
+            return result;
+        }
+
+        private Map<String, Integer> rows() {
+            return rows;
+        }
+
+        private static String queryName(String sql) {
+            if (sql.contains("max(occurrence)+1")) return "next-occurrences";
+            if (sql.contains("r.generation=ANY")) return "completed-runs";
+            if (sql.contains("fixture_id=ANY")) return "verified-fixtures";
+            if (sql.contains("publication_key=ANY")) return "capture-reads";
+            return null;
+        }
+    }
 
     private static String required(String name) {
         String value = System.getenv(name);
