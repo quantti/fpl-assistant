@@ -14,7 +14,7 @@ import org.junit.jupiter.api.Test;
 class OwnedMatchdayRuntimeTest {
 
     @Test
-    void plannerStartsImmediatelyButDoesNotReparseEverySecond() {
+    void plannerStartsImmediatelyThenWaitsOneMinuteWhileWorkersContinue() {
         OwnedMatchdayCoordinator coordinator = mock(OwnedMatchdayCoordinator.class);
         PlannerRuntimeRepository repository = mock(PlannerRuntimeRepository.class);
         OwnedSyncHttpClient http = mock(OwnedSyncHttpClient.class);
@@ -26,8 +26,10 @@ class OwnedMatchdayRuntimeTest {
         try {
             runtime.start();
             verify(coordinator, timeout(1_000)).tick();
-            verify(coordinator, after(1_500).times(1)).tick();
-            verify(coordinator, timeout(6_000).times(2)).tick();
+            verify(coordinator, after(5_500).times(1)).tick();
+            verify(coordinator, timeout(1_000).atLeast(2)).dispatchOne("1");
+            verify(coordinator, timeout(1_000).atLeast(2)).dispatchOne("2");
+            verify(coordinator, timeout(60_000).times(2)).tick();
         } finally {
             runtime.stop();
         }
