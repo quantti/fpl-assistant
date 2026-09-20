@@ -4,9 +4,8 @@ import java.util.Map;
 
 import dev.quantti.fplassistant.tools.MinutesModel;
 import dev.quantti.fplassistant.tools.RankingMetrics;
-import dev.quantti.fplassistant.tools.SeasonBlend;
 
-/** One purchasable player, with ability and current-role evidence kept separate. */
+/** One purchasable player, with ability and current-evidence checks kept separate. */
 public record SquadCandidate(
         int elementId,
         String webName,
@@ -19,15 +18,13 @@ public record SquadCandidate(
         String status,
         String news,
         int teamId,
-        double expectedMinutes,
         Map<String, Object> metrics,
         Tier tier,
         RankingMetrics.MinutesWindow minutesWindow,
-        SeasonBlend.Exposure exposure,
         MinutesModel.Eligibility eligibility
 ) {
 
-    /** Ability controls scoring; eligibility enforces availability and the recent-minute exclusion. */
+    /** Ability controls scoring; eligibility enforces availability and complete current evidence. */
     public enum Tier { RANKABLE, BODY }
 
     public boolean isDoubtful() {

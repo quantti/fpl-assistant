@@ -35,6 +35,9 @@ import org.springframework.transaction.support.TransactionTemplate;
 @Component
 public class RankingMetrics {
 
+    /** Completed fixtures retained solely for factual low-minutes notices in replies. */
+    public static final int RECENT_FIXTURES = 5;
+
     public enum WindowReason {
         COMPLETE,
         PRICE_CAPTURE_STALE,
@@ -60,12 +63,11 @@ public class RankingMetrics {
 
     public record MinutesWindow(boolean complete, WindowReason reason, Integer clubId,
                                 Instant firstKickoff, Instant lastKickoff,
-                                int expected, int observed, int totalMinutes,
-                                int appearances, int sixtyPlus,
-                                List<FixtureOutcome> latestThree) {
+                                int expected, int observed,
+                                List<FixtureOutcome> recentFixtures) {
         public MinutesWindow {
             Objects.requireNonNull(reason);
-            latestThree = List.copyOf(latestThree);
+            recentFixtures = List.copyOf(recentFixtures);
             if (complete != (reason == WindowReason.COMPLETE)) {
                 throw new IllegalArgumentException("window completeness and reason disagree");
             }
@@ -83,10 +85,9 @@ public class RankingMetrics {
         }
     }
 
-    /** Per-season ability, exposure and the exact fixture population that supplied them. */
+    /** Per-season ability and the exact fixture population that supplied it. */
     public record SeasonMetrics(SeasonContext season, Integer playerId, Integer position,
-                                Map<String, Object> ability, MinutesWindow window,
-                                SeasonBlend.Exposure exposure) {
+                                Map<String, Object> ability, MinutesWindow window) {
         public SeasonMetrics {
             ability = Map.copyOf(ability);
         }
@@ -148,19 +149,12 @@ public class RankingMetrics {
         int invalidMinutes;
         int usableRows;
         int totalMinutes;
-        int appearances;
-        int sixtyPlus;
-        double points;
         double xg;
         int xgCount;
         double xa;
         int xaCount;
-        double xgc;
-        int xgcCount;
-        double shortDefcon;
-        int shortDefconCount;
-        double longDefcon;
-        int longDefconCount;
+        double defcon;
+        int defconCount;
 
         void add(Aggregate other) {
             expected += other.expected;
@@ -168,26 +162,18 @@ public class RankingMetrics {
             invalidMinutes += other.invalidMinutes;
             usableRows += other.usableRows;
             totalMinutes += other.totalMinutes;
-            appearances += other.appearances;
-            sixtyPlus += other.sixtyPlus;
-            points += other.points;
             xg += other.xg;
             xgCount += other.xgCount;
             xa += other.xa;
             xaCount += other.xaCount;
-            xgc += other.xgc;
-            xgcCount += other.xgcCount;
-            shortDefcon += other.shortDefcon;
-            shortDefconCount += other.shortDefconCount;
-            longDefcon += other.longDefcon;
-            longDefconCount += other.longDefconCount;
+            defcon += other.defcon;
+            defconCount += other.defconCount;
         }
     }
 
     private static final class History {
         int invalidMappings;
         int contradictions;
-        int wholeSeasonSixty;
         final Aggregate ability = new Aggregate();
         final List<ClubObservation> clubs = new ArrayList<>();
 
@@ -350,11 +336,7 @@ public class RankingMetrics {
                     && !sameDefconDefinition(player.position(), previous.position())) {
                 previousAbility = withoutDefcon(previousAbility);
             }
-            SeasonBlend.Blended blended = SeasonBlend.blend(
-                    currentAbility, previousAbility,
-                    current == null ? null : current.exposure(),
-                    previous == null ? null : previous.exposure(),
-                    metric.played().currentSeason());
+            SeasonBlend.Blended blended = SeasonBlend.blend(currentAbility, previousAbility);
             candidates.add(new Candidate(player, current, previous, blended,
                     MinutesModel.eligibility(player,
                             current == null ? null : current.window(),
@@ -418,7 +400,7 @@ public class RankingMetrics {
                 Integer id = ids.get(player.elementId());
                 if (id != null) {
                     unavailable.put(id, new SeasonMetrics(season, id, positions.get(player.elementId()),
-                            Map.of(), emptyWindow(sourceFailure, player.teamId()), null));
+                            Map.of(), emptyWindow(sourceFailure, player.teamId())));
                 }
             }
             return new CurrentBuild(unavailable, List.of(), false);
@@ -509,7 +491,7 @@ public class RankingMetrics {
 
         coverageGaps.addAll(loadCompletedSideCoverage(season, source, expected, clubs));
         Map<Integer, Aggregate> aggregates = loadTargetAggregates(season.seasonId(), expected);
-        Map<Integer, List<FixtureOutcome>> outcomes = loadLatestOutcomes(season.seasonId(), expected);
+        Map<Integer, List<FixtureOutcome>> outcomes = loadRecentOutcomes(season.seasonId(), expected);
         Map<Integer, SeasonMetrics> result = new HashMap<>();
         for (CapturePlayer player : players) {
             Integer playerId = ids.get(player.elementId());
@@ -518,11 +500,11 @@ public class RankingMetrics {
             }
             Aggregate aggregate = aggregates.getOrDefault(playerId, new Aggregate());
             History record = history.getOrDefault(playerId, new History());
-            Map<String, Object> ability = ability(aggregate, record.wholeSeasonSixty);
+            Map<String, Object> ability = ability(aggregate);
             MinutesWindow window = window(clubs.get(playerId), expected.getOrDefault(playerId, List.of()),
                     aggregate, outcomes.getOrDefault(playerId, List.of()), baseReasons.get(playerId));
             result.put(playerId, new SeasonMetrics(season, playerId,
-                    positions.get(player.elementId()), ability, window, exposure(window, aggregate)));
+                    positions.get(player.elementId()), ability, window));
         }
         return new CurrentBuild(result, List.copyOf(coverageGaps), true);
     }
@@ -653,16 +635,18 @@ public class RankingMetrics {
             }
         }
         Map<Integer, Aggregate> coverage = loadTargetAggregates(season.seasonId(), expected);
-        Map<Integer, List<FixtureOutcome>> outcomes = loadLatestOutcomes(season.seasonId(), expected);
+        Map<Integer, List<FixtureOutcome>> outcomes = loadRecentOutcomes(season.seasonId(), expected);
         Map<Integer, SeasonMetrics> result = new HashMap<>();
         for (int playerId : playerIds) {
             History history = histories.getOrDefault(playerId, new History());
             Aggregate aggregate = coverage.getOrDefault(playerId, new Aggregate());
+            // History provides the validated ability rows; the canonical window provides the
+            // completed-fixture count that drives the blend ramp.
+            history.ability.expected = aggregate.expected;
             MinutesWindow window = window(clubs.get(playerId), expected.getOrDefault(playerId, List.of()),
                     aggregate, outcomes.getOrDefault(playerId, List.of()), baseReasons.get(playerId));
             result.put(playerId, new SeasonMetrics(season, playerId, positions.get(playerId),
-                    ability(history.ability, history.wholeSeasonSixty), window,
-                    exposure(window, aggregate)));
+                    ability(history.ability), window));
         }
         return result;
     }
@@ -762,9 +746,8 @@ public class RankingMetrics {
         String cutoff = asOf == null ? "" : " AND (f.kickoff_time IS NULL OR f.kickoff_time <= ?)";
         String sql = """
                 WITH %s, mapped AS (
-                    SELECT p.player_id, p.fixture_id, p.minutes, p.total_points,
-                           p.expected_goals, p.expected_assists, p.expected_goals_conceded,
-                           p.owned_evidence,
+                    SELECT p.player_id, p.fixture_id, p.minutes,
+                           p.expected_goals, p.expected_assists, p.owned_evidence,
                            p.defensive_contribution, p.opponent_team_id, p.was_home,
                            f.id AS canonical_id, f.team_h, f.team_a, f.kickoff_time, f.finished,
                            CASE WHEN p.was_home THEN f.team_h ELSE f.team_a END AS actual_club,
@@ -791,23 +774,12 @@ public class RankingMetrics {
                                    AND opponent_team_id = actual_opponent))[1] AS latest_fixture_id,
                            count(*) FILTER (WHERE canonical_id IS NOT NULL
                                AND COALESCE(finished, false) AND kickoff_time IS NOT NULL
-                               AND opponent_team_id = actual_opponent AND minutes >= 60
-                               AND minutes <= 90) AS matches60,
-                           count(*) FILTER (WHERE canonical_id IS NOT NULL
-                               AND COALESCE(finished, false) AND kickoff_time IS NOT NULL
                                AND opponent_team_id = actual_opponent
                                AND minutes BETWEEN 0 AND 90) AS usable_rows,
                            COALESCE(sum(minutes) FILTER (WHERE canonical_id IS NOT NULL
                                AND COALESCE(finished, false) AND kickoff_time IS NOT NULL
                                AND opponent_team_id = actual_opponent
                                AND minutes BETWEEN 0 AND 90), 0) AS mins,
-                           count(*) FILTER (WHERE canonical_id IS NOT NULL
-                               AND COALESCE(finished, false) AND kickoff_time IS NOT NULL
-                               AND opponent_team_id = actual_opponent AND minutes BETWEEN 1 AND 90) AS appearances,
-                           COALESCE(sum(total_points) FILTER (WHERE canonical_id IS NOT NULL
-                               AND COALESCE(finished, false) AND kickoff_time IS NOT NULL
-                               AND opponent_team_id = actual_opponent
-                               AND minutes BETWEEN 0 AND 90), 0) AS points,
                            COALESCE(sum(expected_goals) FILTER (WHERE canonical_id IS NOT NULL
                                AND COALESCE(finished, false) AND kickoff_time IS NOT NULL
                                AND opponent_team_id = actual_opponent
@@ -824,28 +796,14 @@ public class RankingMetrics {
                                AND COALESCE(finished, false) AND kickoff_time IS NOT NULL
                                AND opponent_team_id = actual_opponent AND minutes BETWEEN 0 AND 90
                                AND (expected_assists IS NOT NULL OR NOT owned_evidence)) AS xa_count,
-                           COALESCE(sum(expected_goals_conceded) FILTER (WHERE canonical_id IS NOT NULL
-                               AND COALESCE(finished, false) AND kickoff_time IS NOT NULL
-                               AND opponent_team_id = actual_opponent AND minutes BETWEEN 60 AND 90), 0) AS xgc,
-                           count(*) FILTER (WHERE canonical_id IS NOT NULL
-                               AND COALESCE(finished, false) AND kickoff_time IS NOT NULL
-                               AND opponent_team_id = actual_opponent AND minutes BETWEEN 60 AND 90) AS xgc_count,
                            COALESCE(sum(defensive_contribution) FILTER (WHERE canonical_id IS NOT NULL
                                AND COALESCE(finished, false) AND kickoff_time IS NOT NULL
-                               AND opponent_team_id = actual_opponent AND minutes BETWEEN 1 AND 59
-                               AND defensive_contribution IS NOT NULL), 0) AS short_dc,
+                               AND opponent_team_id = actual_opponent AND minutes BETWEEN 0 AND 90
+                               AND defensive_contribution IS NOT NULL), 0) AS defcon,
                            count(*) FILTER (WHERE canonical_id IS NOT NULL
                                AND COALESCE(finished, false) AND kickoff_time IS NOT NULL
-                               AND opponent_team_id = actual_opponent AND minutes BETWEEN 1 AND 59
-                               AND defensive_contribution IS NOT NULL) AS short_dc_count,
-                           COALESCE(sum(defensive_contribution) FILTER (WHERE canonical_id IS NOT NULL
-                               AND COALESCE(finished, false) AND kickoff_time IS NOT NULL
-                               AND opponent_team_id = actual_opponent AND minutes BETWEEN 60 AND 90
-                               AND defensive_contribution IS NOT NULL), 0) AS long_dc,
-                           count(*) FILTER (WHERE canonical_id IS NOT NULL
-                               AND COALESCE(finished, false) AND kickoff_time IS NOT NULL
-                               AND opponent_team_id = actual_opponent AND minutes BETWEEN 60 AND 90
-                               AND defensive_contribution IS NOT NULL) AS long_dc_count
+                               AND opponent_team_id = actual_opponent AND minutes BETWEEN 0 AND 90
+                               AND defensive_contribution IS NOT NULL) AS defcon_count
                     FROM mapped GROUP BY player_id, actual_club
                 ) SELECT * FROM grouped
                 """.formatted(pfs.cte(), source.table(), source.seasonColumn(), ids, cutoff);
@@ -862,7 +820,6 @@ public class RankingMetrics {
             History history = histories.computeIfAbsent(playerId, ignored -> new History());
             history.invalidMappings += integer(row.get("invalid_mapping"));
             history.contradictions += integer(row.get("contradictions"));
-            history.wholeSeasonSixty += integer(row.get("matches60"));
             int validRows = integer(row.get("valid_rows"));
             Integer club = nullableInteger(row.get("actual_club"));
             Instant latest = nullableInstant(row.get("latest_kickoff"));
@@ -916,29 +873,17 @@ public class RankingMetrics {
                            AND (p.minutes < 0 OR p.minutes > 90)) AS invalid_minutes,
                        count(*) FILTER (WHERE p.minutes BETWEEN 0 AND 90) AS usable_rows,
                        COALESCE(sum(p.minutes) FILTER (WHERE p.minutes BETWEEN 0 AND 90), 0) AS mins,
-                       count(*) FILTER (WHERE p.minutes BETWEEN 1 AND 90) AS appearances,
-                       count(*) FILTER (WHERE p.minutes BETWEEN 60 AND 90) AS matches60,
-                       COALESCE(sum(p.total_points) FILTER (WHERE p.minutes BETWEEN 0 AND 90), 0) AS points,
                        COALESCE(sum(p.expected_goals) FILTER (WHERE p.minutes BETWEEN 0 AND 90), 0) AS xg,
                        count(*) FILTER (WHERE p.minutes BETWEEN 0 AND 90
                            AND (p.expected_goals IS NOT NULL OR NOT p.owned_evidence)) AS xg_count,
                        COALESCE(sum(p.expected_assists) FILTER (WHERE p.minutes BETWEEN 0 AND 90), 0) AS xa,
                        count(*) FILTER (WHERE p.minutes BETWEEN 0 AND 90
                            AND (p.expected_assists IS NOT NULL OR NOT p.owned_evidence)) AS xa_count,
-                       COALESCE(sum(p.expected_goals_conceded)
-                           FILTER (WHERE p.minutes BETWEEN 60 AND 90), 0) AS xgc,
-                       count(*) FILTER (WHERE p.minutes BETWEEN 60 AND 90
-                           AND (p.expected_goals_conceded IS NOT NULL OR NOT p.owned_evidence)) AS xgc_count,
                        COALESCE(sum(p.defensive_contribution)
-                           FILTER (WHERE p.minutes BETWEEN 1 AND 59
-                               AND p.defensive_contribution IS NOT NULL), 0) AS short_dc,
-                       count(*) FILTER (WHERE p.minutes BETWEEN 1 AND 59
-                           AND p.defensive_contribution IS NOT NULL) AS short_dc_count,
-                       COALESCE(sum(p.defensive_contribution)
-                           FILTER (WHERE p.minutes BETWEEN 60 AND 90
-                               AND p.defensive_contribution IS NOT NULL), 0) AS long_dc,
-                       count(*) FILTER (WHERE p.minutes BETWEEN 60 AND 90
-                           AND p.defensive_contribution IS NOT NULL) AS long_dc_count
+                           FILTER (WHERE p.minutes BETWEEN 0 AND 90
+                               AND p.defensive_contribution IS NOT NULL), 0) AS defcon,
+                       count(*) FILTER (WHERE p.minutes BETWEEN 0 AND 90
+                           AND p.defensive_contribution IS NOT NULL) AS defcon_count
                 FROM expected e LEFT JOIN pfs_read p
                   ON p.season_id = ? AND p.player_id = e.player_id AND p.fixture_id = e.fixture_id
                 GROUP BY e.player_id
@@ -949,7 +894,7 @@ public class RankingMetrics {
         return aggregates;
     }
 
-    private Map<Integer, List<FixtureOutcome>> loadLatestOutcomes(
+    private Map<Integer, List<FixtureOutcome>> loadRecentOutcomes(
             int seasonId, Map<Integer, List<CanonicalFixture>> expected) {
         List<Target> targets = flatten(expected, true);
         if (targets.isEmpty()) {
@@ -974,12 +919,11 @@ public class RankingMetrics {
     }
 
     private static List<Target> flatten(Map<Integer, List<CanonicalFixture>> expected,
-                                        boolean latestThreeOnly) {
+                                        boolean recentOnly) {
         List<Target> targets = new ArrayList<>();
         expected.forEach((playerId, fixtures) -> {
             List<CanonicalFixture> selected = fixtures.stream().sorted(NEWEST_FIXTURE)
-                    .limit(latestThreeOnly ? MinutesModel.CONSISTENTLY_UNDER_60_FIXTURES
-                            : Long.MAX_VALUE).toList();
+                    .limit(recentOnly ? RECENT_FIXTURES : Long.MAX_VALUE).toList();
             selected.forEach(fixture -> targets.add(new Target(playerId, fixture)));
         });
         return targets;
@@ -1005,30 +949,22 @@ public class RankingMetrics {
         aggregate.invalidMinutes = integer(row.get("invalid_minutes"));
         aggregate.usableRows = integer(row.get("usable_rows"));
         aggregate.totalMinutes = integer(row.get("mins"));
-        aggregate.appearances = integer(row.get("appearances"));
-        aggregate.sixtyPlus = integer(row.get("matches60"));
-        aggregate.points = number(row.get("points"));
         aggregate.xg = number(row.get("xg"));
         aggregate.xgCount = integer(row.get("xg_count"));
         aggregate.xa = number(row.get("xa"));
         aggregate.xaCount = integer(row.get("xa_count"));
-        aggregate.xgc = number(row.get("xgc"));
-        aggregate.xgcCount = integer(row.get("xgc_count"));
-        aggregate.shortDefcon = number(row.get("short_dc"));
-        aggregate.shortDefconCount = integer(row.get("short_dc_count"));
-        aggregate.longDefcon = number(row.get("long_dc"));
-        aggregate.longDefconCount = integer(row.get("long_dc_count"));
+        aggregate.defcon = number(row.get("defcon"));
+        aggregate.defconCount = integer(row.get("defcon_count"));
         return aggregate;
     }
 
-    private static Map<String, Object> ability(Aggregate aggregate, int wholeSeasonSixty) {
+    private static Map<String, Object> ability(Aggregate aggregate) {
         if (aggregate.usableRows == 0) {
             return Map.of();
         }
         Map<String, Object> metrics = new LinkedHashMap<>();
         metrics.put("mins", aggregate.totalMinutes);
-        metrics.put("matches", aggregate.appearances);
-        metrics.put("matches60", wholeSeasonSixty);
+        metrics.put("fixtures", aggregate.expected);
         if (aggregate.totalMinutes > 0) {
             if (aggregate.xgCount == aggregate.usableRows) {
                 metrics.put("xg90", aggregate.xg * 90 / aggregate.totalMinutes);
@@ -1036,22 +972,11 @@ public class RankingMetrics {
             if (aggregate.xaCount == aggregate.usableRows) {
                 metrics.put("xa90", aggregate.xa * 90 / aggregate.totalMinutes);
             }
-            metrics.put("pts90", aggregate.points * 90 / aggregate.totalMinutes);
         }
-        if (aggregate.xgcCount > 0) {
-            metrics.put("xgc_per_match", aggregate.xgc / aggregate.xgcCount);
+        metrics.put("defcon_matches", aggregate.defconCount);
+        if (aggregate.defconCount > 0) {
+            metrics.put("defcon_avg", aggregate.defcon / aggregate.defconCount);
         }
-        metrics.put("defcon_short_matches", aggregate.shortDefconCount);
-        if (aggregate.shortDefconCount > 0) {
-            metrics.put("defcon_short_avg", aggregate.shortDefcon / aggregate.shortDefconCount);
-        }
-        metrics.put("defcon_matches", aggregate.longDefconCount);
-        if (aggregate.longDefconCount > 0) {
-            double mean = aggregate.longDefcon / aggregate.longDefconCount;
-            metrics.put("defcon_avg", mean);
-            metrics.put("defcon_long_avg", mean);
-        }
-        metrics.put("defcon_long_matches", aggregate.longDefconCount);
         return metrics;
     }
 
@@ -1073,26 +998,11 @@ public class RankingMetrics {
         Instant last = expected.stream().map(CanonicalFixture::kickoff)
                 .max(Comparator.naturalOrder()).orElse(null);
         return new MinutesWindow(reason == WindowReason.COMPLETE, reason, club, first, last,
-                expected.size(), aggregate.observed, aggregate.totalMinutes,
-                aggregate.appearances, aggregate.sixtyPlus, outcomes);
+                expected.size(), aggregate.observed, outcomes);
     }
 
     private static MinutesWindow emptyWindow(WindowReason reason, Integer club) {
-        return new MinutesWindow(false, reason, club, null, null,
-                0, 0, 0, 0, 0, List.of());
-    }
-
-    private static SeasonBlend.Exposure exposure(MinutesWindow window, Aggregate aggregate) {
-        if (!window.complete() || window.expected() == 0) {
-            return null;
-        }
-        double fixtures = window.expected();
-        double appearanceRate = window.appearances() / fixtures;
-        double sixtyRate = window.sixtyPlus() / fixtures;
-        return new SeasonBlend.Exposure(window.expected(), window.appearances(), window.sixtyPlus(),
-                window.totalMinutes(), appearanceRate, sixtyRate,
-                appearanceRate - sixtyRate, window.totalMinutes() / fixtures,
-                aggregate.points / fixtures);
+        return new MinutesWindow(false, reason, club, null, null, 0, 0, List.of());
     }
 
     private List<CanonicalFixture> loadCanonicalFixtures(CanonicalSource source) {

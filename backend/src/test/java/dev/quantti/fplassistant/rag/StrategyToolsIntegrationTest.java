@@ -73,22 +73,18 @@ class StrategyToolsIntegrationTest {
     }
 
     @Test
-    void realCorpusRetrievesMinutesGuidanceForDefendersAndCaptains() {
+    void realCorpusRetrievesTheFactualMinutesPolicy() {
         // Seed the checked-in documents into the isolated store, not the production embeddings.
         ingestionService.ingest("classpath:docs/*.md");
 
-        String defenders = strategyTools.searchStrategyDocs(
-                "What recent under-60-minute pattern excludes a primary defender pick, and how"
-                        + " does a single short appearance affect the projection?");
-        assertThat(defenders).contains("FPL Minutes Security, Rotation and the 60-Minute Rule")
-                .contains("The recent under-60 exclusion used by the ranking tools")
-                .contains("three latest complete observed fixtures");
+        String result = strategyTools.searchStrategyDocs(
+                "Does a 45-minute appearance exclude a player or change the expected points"
+                        + " ranking? What factual note should I give?");
 
-        String captains = strategyTools.searchStrategyDocs(
-                "How should minutes security and rotation risk affect captain selection"
-                        + " when a short cameo prevents the vice-captain taking over?");
-        assertThat(captains).contains("FPL Minutes Security, Rotation and the 60-Minute Rule")
-                .contains("Captaincy, differentials and bench choices");
+        assertThat(result).contains("FPL Minutes Facts and the 60-Minute Rule")
+                .contains("The ranking-tools policy")
+                .contains("latest **five complete observed fixtures**")
+                .contains("neutral fact");
     }
 
     @Test

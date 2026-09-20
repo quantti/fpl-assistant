@@ -259,14 +259,14 @@ class FeasibilityTest {
         for (int index = 0; index < pool.size(); index++) {
             if (pool.get(index).elementType() == 1) {
                 pool.set(index, SquadCandidateTestData.ineligible(pool.get(index),
-                        dev.quantti.fplassistant.tools.MinutesModel.Eligibility.CONSISTENTLY_UNDER_60));
+                        dev.quantti.fplassistant.tools.MinutesModel.Eligibility.UNKNOWN_CURRENT_EVIDENCE));
             }
         }
 
         Optional<String> refusal = check(pool, constraints(List.of(), 1000), List.of());
 
         assertThat(refusal).hasValueSatisfying(message -> assertThat(message)
-                .contains("goalkeeper").contains("recent three-fixture under-60").contains("budget"));
+                .contains("goalkeeper").contains("complete current evidence").contains("budget"));
     }
 
     @Test
@@ -276,7 +276,7 @@ class FeasibilityTest {
         for (int index = 0; index < pool.size(); index++) {
             if (pool.get(index).elementType() == 4 && leftEligible++ >= 1) {
                 pool.set(index, SquadCandidateTestData.ineligible(pool.get(index),
-                        dev.quantti.fplassistant.tools.MinutesModel.Eligibility.CONSISTENTLY_UNDER_60));
+                        dev.quantti.fplassistant.tools.MinutesModel.Eligibility.UNKNOWN_CURRENT_EVIDENCE));
             }
         }
 
@@ -298,8 +298,8 @@ class FeasibilityTest {
     }
 
     /**
-     * The starting capacity counts both gates at once. Every player here has the minutes; only
-     * one club plays, so a 3-4-3 cannot be filled and the refusal must say why in both terms.
+     * The starting capacity counts both gates at once. Only one club plays, so a 3-4-3 cannot be
+     * filled and the refusal must name the fixture condition.
      */
     @Test
     void forcedFormationRequiresEnoughEligiblePlayersAtClubsThatActuallyPlay() {
@@ -312,7 +312,7 @@ class FeasibilityTest {
 
         assertThat(refusal).hasValueSatisfying(message -> assertThat(message)
                 .contains("3-4-3").contains("4 midfielders").contains("only 3")
-                .contains("GW4–8").contains("recent three-fixture under-60")
+                .contains("GW4–8").contains("complete current evidence")
                 .contains("neither a pin nor a higher budget can waive it"));
     }
 
@@ -326,7 +326,7 @@ class FeasibilityTest {
                         SquadCandidateTestData.clubsOf(pool)));
 
         assertThat(refusal).hasValueSatisfying(message -> assertThat(message)
-                .contains("goalkeeper").contains("GW4–8").contains("recent three-fixture under-60")
+                .contains("goalkeeper").contains("GW4–8").contains("complete current evidence")
                 .contains("higher budget"));
     }
 

@@ -209,7 +209,7 @@ class SquadToolsIntegrationTest {
         String output = tools.buildSquad("", "", "", 100.0, 5, "");
 
         assertThat(output).contains("Starting XI").contains("Bench").contains("Captain")
-                .contains("observed current-club 60+ 3/3")
+                .doesNotContain("observed current-club 60+")
                 .contains("Schedule evidence: complete FPL capture")
                 .contains("Comparison coverage: all clubs")
                 .contains("Player comparison receipt: 97 eligible of 97");

@@ -68,8 +68,6 @@ public final class ComparisonCoverageFormatter {
         return "Player comparison receipt: " + coverage.eligiblePlayers() + " eligible of "
                 + coverage.capturePlayers() + "; grouped exclusions — availability risk "
                 + counts.getOrDefault(MinutesModel.Eligibility.AVAILABILITY_RISK, 0)
-                + ", consistently under-60 minutes "
-                + counts.getOrDefault(MinutesModel.Eligibility.CONSISTENTLY_UNDER_60, 0)
                 + ", unknown current evidence "
                 + counts.getOrDefault(MinutesModel.Eligibility.UNKNOWN_CURRENT_EVIDENCE, 0)
                 + "; window reasons — " + windowCounts + ".";

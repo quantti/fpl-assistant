@@ -21,12 +21,9 @@ class MinutesModelTest {
     }
 
     @Test
-    void onlyThreeLatestCompleteFixturesAllUnderSixtyExcludeAPlayer() {
-        assertThat(MinutesModel.eligibility(player("a"), window(3, 118, 0, 59, 59, 0), true))
-                .isEqualTo(MinutesModel.Eligibility.CONSISTENTLY_UNDER_60);
-        assertThat(MinutesModel.eligibility(player("a"), window(3, 90, 1, 0, 90, 0), true))
+    void lowMinutesNeverChangeEligibility() {
+        assertThat(MinutesModel.eligibility(player("a"), window(5, 118, 0, 59, 59, 0, 0, 0), true))
                 .isEqualTo(MinutesModel.Eligibility.ELIGIBLE);
-        // A short result outside the latest-three window no longer creates a ten-fixture ban.
         assertThat(MinutesModel.eligibility(player("a"), window(10, 810, 9, 90, 90, 90), true))
                 .isEqualTo(MinutesModel.Eligibility.ELIGIBLE);
         assertThat(MinutesModel.eligibility(player("a"), window(2, 40, 0, 20, 20), true))
@@ -34,7 +31,7 @@ class MinutesModelTest {
     }
 
     @Test
-    void availabilityAndUnknownCoverageTakePrecedenceOverRecentMinutePattern() {
+    void availabilityAndUnknownCoverageRemainEligibilityGuards() {
         assertThat(MinutesModel.eligibility(player("d"), window(3, 0, 0, 0, 0, 0), true))
                 .isEqualTo(MinutesModel.Eligibility.AVAILABILITY_RISK);
         assertThat(MinutesModel.eligibility(player("a"), incomplete(), true))
@@ -44,11 +41,9 @@ class MinutesModelTest {
     }
 
     @Test
-    void everyResultCarriesNonCertifyingReasonText() {
+    void eligibleReasonNamesEvidenceRatherThanAStartGuarantee() {
         assertThat(MinutesModel.Eligibility.ELIGIBLE.reason())
-                .contains("under-60").doesNotContainIgnoringCase("guarantee");
-        assertThat(MinutesModel.Eligibility.CONSISTENTLY_UNDER_60.reason())
-                .contains("three latest").contains("under 60");
+                .contains("evidence").doesNotContainIgnoringCase("guarantee");
     }
 
     private static RankingMetrics.CapturePlayer player(String status) {
@@ -67,13 +62,12 @@ class MinutesModelTest {
         }
         return new RankingMetrics.MinutesWindow(true, RankingMetrics.WindowReason.COMPLETE,
                 10, Instant.parse("2026-08-01T12:00:00Z"),
-                Instant.parse("2026-08-20T12:00:00Z"), expected, expected, minutes,
-                expected, sixty, outcomes);
+                Instant.parse("2026-08-20T12:00:00Z"), expected, expected, outcomes);
     }
 
     private static RankingMetrics.MinutesWindow incomplete() {
         return new RankingMetrics.MinutesWindow(false,
                 RankingMetrics.WindowReason.MISSING_OBSERVATION, 10, null, null,
-                3, 2, 180, 2, 2, List.of());
+                3, 2, List.of());
     }
 }

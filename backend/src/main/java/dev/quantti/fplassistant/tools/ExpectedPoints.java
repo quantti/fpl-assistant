@@ -16,8 +16,9 @@ import java.util.OptionalDouble;
  * squad building must agree about what a player is worth; two copies would not.
  *
  * <p>Not modelled: save points and penalty saves, so goalkeepers are understated and callers say
- * so. Defensive contribution is modelled from short- and long-appearance action rates in
- * {@link #perFixture}; a missing required class is labelled partial rather than read as zero.
+ * so. Defensive contribution is modelled from an action-rate estimate in
+ * {@link #expectedPerFixture}; a missing required record is labelled partial rather than read as
+ * zero.
  */
 public final class ExpectedPoints {
 
@@ -46,13 +47,6 @@ public final class ExpectedPoints {
     public static final int WHOLE_SEASON = 60;
 
     /**
-     * Minimum combined minutes for the ability floor. This keeps a rate-based projection from
-     * being invented from a negligible sample; it is separate from the recent-under-60 role
-     * exclusion and may include previous-season evidence through the season blend.
-     */
-    public static final int MIN_WINDOW_MINUTES = 180;
-
-    /**
      * Defensive actions a player must reach in a match to be awarded {@link #DEFCON_POINTS},
      * indexed by {@code element_type}: 1=GK, 2=DEF, 3=MID, 4=FWD.
      *
@@ -73,9 +67,8 @@ public final class ExpectedPoints {
     public static final double DEFCON_POINTS = 2;
 
     /**
-     * Observations in each used appearance class that a DefCon action mean must rest on.
-     * Below it that class is unavailable rather than estimated; another class may remain valid,
-     * and callers label the combined component partial.
+     * Observations a DefCon action mean must rest on. Below it the component is unavailable
+     * rather than estimated, and callers label the projection partial.
      */
     public static final int MIN_DEFCON_MATCHES = 2;
 
@@ -113,117 +106,47 @@ public final class ExpectedPoints {
     }
 
     /**
-     * Expected components over one fixture at the supplied observed exposure rates.
-     *
-     * <p>The clean-sheet term is the fixture's: {@code exp(-λ)} on the concession
-     * {@link ClubRates#projectedGoalsAgainst} projects for this club against this opponent at
-     * this venue, conditional on reaching sixty minutes. When no projection exists the term is
-     * absent — {@code null}, printed n/a and labelled partial — never the player's season
-     * average and never a certain clean sheet. Appearance, attack and DefCon do not depend on the
-     * fixture and are identical across a club's window.
+     * Expected FPL points for one assumed full fixture. The ranking deliberately does not use
+     * observed appearance, 60+ or expected-minute rates: those facts are disclosed separately,
+     * never converted into a recommendation advantage. Attack remains the player's xG/xA per-90
+     * ability, clean sheets use the fixture's projected concession and DefCon uses its action-rate
+     * estimate. A missing attack rate makes the expected-points projection unavailable rather than
+     * substituting minutes or observed points.
      */
-    public static Optional<PerFixture> perFixture(Map<String, Object> row,
-                                                   SeasonBlend.Exposure exposure,
-                                                   OptionalDouble projectedGoalsAgainst) {
-        if (exposure == null) {
+    public static Optional<PerFixture> expectedPerFixture(Map<String, Object> row,
+                                                           OptionalDouble projectedGoalsAgainst) {
+        if (!(row.get("xg90") instanceof Number xg) || !(row.get("xa90") instanceof Number xa)) {
             return Optional.empty();
         }
         int position = ((Number) row.get("element_type")).intValue();
-        double appearance = exposure.appearanceRate() + exposure.sixtyRate();
-        Double attack = exposure.expectedMinutes() == 0 ? 0.0
-                : row.get("xg90") instanceof Number xg && row.get("xa90") instanceof Number xa
-                ? (goalPoints(position) * xg.doubleValue() + ASSIST_POINTS * xa.doubleValue())
-                        * exposure.expectedMinutes() / 90
-                : null;
-
-        Double cleanSheet = 0.0;
-        if (cleanSheetPoints(position) > 0 && exposure.sixtyRate() > 0) {
-            cleanSheet = projectedGoalsAgainst.isPresent()
-                    ? cleanSheetPoints(position) * exposure.sixtyRate()
-                            * cleanSheetProbability(projectedGoalsAgainst.getAsDouble())
-                    : null;
-        }
-
-        DefconFixture defcon = defconPerFixture(row, position, exposure);
-        double points = appearance + (attack == null ? 0 : attack)
-                + (cleanSheet == null ? 0 : cleanSheet)
-                + defcon.points();
+        double appearance = APPEARANCE_POINTS;
+        double attack = goalPoints(position) * xg.doubleValue() + ASSIST_POINTS * xa.doubleValue();
+        Double cleanSheet = cleanSheetPoints(position) == 0 ? 0.0
+                : projectedGoalsAgainst.isPresent()
+                        ? cleanSheetPoints(position)
+                                * cleanSheetProbability(projectedGoalsAgainst.getAsDouble())
+                        : null;
+        boolean partialDefcon = defconThreshold(position) > 0 && !hasDefconSignal(row, position);
+        double defensiveContribution = defconExpectedPoints(row, position);
+        double points = appearance + attack + (cleanSheet == null ? 0 : cleanSheet)
+                + defensiveContribution;
         return Optional.of(new PerFixture(points, appearance, attack, cleanSheet,
-                defcon.points(), defcon.partial()));
-    }
-
-    private record DefconFixture(double points, boolean partial) {
-    }
-
-    private static DefconFixture defconPerFixture(Map<String, Object> row, int position,
-                                                   SeasonBlend.Exposure exposure) {
-        if (defconThreshold(position) == 0) {
-            return new DefconFixture(0, false);
-        }
-        double weightedTail = 0;
-        boolean partial = false;
-        if (exposure.shortRate() > 0) {
-            if (hasClassSignal(row, "defcon_short_avg", "defcon_short_matches")) {
-                weightedTail += exposure.shortRate() * thresholdProbability(
-                        numeric(row.get("defcon_short_avg")), defconThreshold(position));
-            } else {
-                partial = true;
-            }
-        }
-        if (exposure.sixtyRate() > 0) {
-            String mean = row.containsKey("defcon_long_avg") ? "defcon_long_avg" : "defcon_avg";
-            String count = row.containsKey("defcon_long_matches")
-                    ? "defcon_long_matches" : "defcon_matches";
-            if (hasClassSignal(row, mean, count)) {
-                weightedTail += exposure.sixtyRate() * thresholdProbability(
-                        numeric(row.get(mean)), defconThreshold(position));
-            } else {
-                partial = true;
-            }
-        }
-        return new DefconFixture(DEFCON_POINTS * weightedTail, partial);
-    }
-
-    private static boolean hasClassSignal(Map<String, Object> row, String meanKey, String countKey) {
-        return numeric(row.get(countKey)) >= MIN_DEFCON_MATCHES
-                && row.get(meanKey) instanceof Number && numeric(row.get(meanKey)) >= 0;
+                defensiveContribution, partialDefcon));
     }
 
     /**
-     * Legacy explanatory per-90 statistic. Rankings use {@link #perFixture} so appearance and
-     * clean-sheet boundaries are not smoothed into a mean-minutes multiplier.
+     * Expected defensive-contribution points in an assumed full fixture, estimated from the
+     * player's action mean rather than a coarse count of past threshold crossings.
      */
-    public static double perNinety(Map<String, Object> row) {
-        int position = ((Number) row.get("element_type")).intValue();
-        double points = APPEARANCE_POINTS
-                + numeric(row.get("xg90")) * goalPoints(position)
-                + numeric(row.get("xa90")) * ASSIST_POINTS;
-        Object xgc = row.get("xgc_per_match");
-        if (hasCleanSheetSignal(xgc) && cleanSheetPoints(position) > 0) {
-            points += cleanSheetProbability(numeric(xgc)) * cleanSheetPoints(position);
-        }
-        return points + defconPerNinety(row, position);
-    }
-
-    /**
-     * Legacy long-appearance defensive-contribution term for {@link #perNinety}, estimated from
-     * the player's action mean rather than a coarse count of past threshold crossings.
-     *
-     * <p>The average answers the threshold question once read through a distribution. The points land at a
-     * per-match threshold, so the question is how often the player clears it — and a defender
-     * averaging 9.8 actions clears 10 about half the time, which neither the bare average nor a
-     * tally of past crossings says on its own.
-     */
-    public static double defconPerNinety(Map<String, Object> row, int position) {
+    private static double defconExpectedPoints(Map<String, Object> row, int position) {
         return defconProbability(row, position) * DEFCON_POINTS;
     }
 
     /**
      * The chance this player reaches his position's threshold in a match, or zero when there is
-     * no readable record. Estimated from his mean actions per match through
-     * {@link #thresholdProbability}, over matches of an hour or more — the same discipline the
-     * clean sheet uses, because the actions arrive with the minutes and a cameo would otherwise
-     * read as a match he failed to contribute in.
+     * no readable record. Estimated from the recorded action mean per fixture through
+     * {@link #thresholdProbability}. The action-rate component is independent of the separate
+     * factual minutes notice.
      *
      * <p><b>Modelled, not counted.</b> An earlier version divided past crossings by matches.
      * That reads only "over or under" and throws away the action counts themselves, so a
@@ -311,13 +234,4 @@ public final class ExpectedPoints {
         return value instanceof Number number ? number.doubleValue() : 0;
     }
 
-    /**
-     * Whether a captured expected-concession figure can be believed. The column is
-     * {@code NOT NULL DEFAULT 0}, so an unpopulated season reads as 0.00 — and {@code exp(-0)} is
-     * a 100% clean sheet. No real side has an expected concession of exactly zero across a match,
-     * so zero means nobody wrote it.
-     */
-    static boolean hasCleanSheetSignal(Object xgc) {
-        return xgc != null && numeric(xgc) > 0;
-    }
 }
