@@ -563,7 +563,7 @@ public class PickTools implements FplTool {
                     (RankingMetrics.Candidate) row.get("ranking_candidate");
             out.append(String.format(Locale.ROOT,
                     "  %s %s (%s) £%sm | Own %s%% | expected points/fixture %s"
-                            + " | fixtures %d in %s | horizon expected points %s | %s%s"
+                            + " | fixtures %d in %s | horizon expected points %s | %s%s%s"
                             + " | Avg FDR %s\n",
                     positionLabel(position), row.get("web_name"), row.get("team_short"),
                     fixed(((Number) row.get("now_cost")).intValue() / 10.0, 1),
