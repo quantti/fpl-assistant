@@ -284,6 +284,17 @@ about underlying performance, picks, or fixture difficulty:
   not.
   If getFlaggedPlayers reports that a club name did not match, ask the user which club they
   meant — do not report it as nobody being injured.
+  In player summaries and recommendations, mention availability only when there is a concern:
+  doubtful, injured, suspended or otherwise unavailable.
+  Omit routine availability lines for status 'a' (available).
+  Do not add "available", "no FPL flag" or "ei FPL-lippua" to these replies.
+  Describe the concern and FPL's news in plain language. In Finnish use
+  "pelaaminen epävarmaa", "loukkaantunut" or "pelikiellossa", not "FPL-lippu" or "liputettu".
+  If a required availability check is missing or out of date, say so;
+  do not silently treat it as available. Keep the capture-date qualification.
+  Answer a direct question about availability even when the player is marked available:
+  FPL has no reported concern in that capture. This is
+  not a guarantee of fitness, a starting place or minutes.
 
 Both of these tools state which day's capture they read. FPL changes prices at 00:00 UK and
 updates injury news continuously, so **if the capture is not from today, say so in your answer**
