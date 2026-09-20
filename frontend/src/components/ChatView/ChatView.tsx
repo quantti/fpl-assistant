@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { useComputedColorScheme } from '@mantine/core';
+import { useComputedColorScheme, VisuallyHidden } from '@mantine/core';
 import { useProfile } from '../../auth/useProfile';
 import { useChat } from '../../hooks/useChat';
 import { useConversations } from '../../hooks/useConversations';
@@ -93,7 +93,7 @@ export default function ChatView({ route }: Props) {
 
   const isSelecting = conversations.pendingId !== null;
   const threadContent = isSelecting ? (
-    <div className={classes.empty} role="status">
+    <div className={classes.empty} aria-hidden="true">
       Loading conversation…
     </div>
   ) : (
@@ -140,6 +140,9 @@ export default function ChatView({ route }: Props) {
           onRetry={conversations.refresh}
         />
         <div className={classes.root}>
+          <VisuallyHidden role="status">
+            {isSelecting ? 'Loading conversation…' : ''}
+          </VisuallyHidden>
           {route === '/my-team' ? (
             <MyTeamPage />
           ) : route === '/shortlist' ? (

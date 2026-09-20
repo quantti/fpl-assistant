@@ -5022,6 +5022,9 @@ UI work were separate sequential units.
 
 Verified locally: tests-first failures, then 27 hook-selection tests and 8 mounted ChatView tests
 with real hooks/sidebar/thread/composer. Full frontend suite: 189 tests in 22 files, one worker;
-lint, format check, TypeScript and contrast checks passed. Backend suite and production frontend
-build await PR CI (no local JDK or frontend public-key configuration). Real-browser layout and
-production behavior have not been checked.
+lint, format check, TypeScript and contrast checks passed. PR #121's first CI run passed the
+backend suite and production frontend build (no local JDK or frontend public-key configuration).
+PR review found no functional blocker; its accessibility follow-up keeps an empty live status
+region mounted and updates its text rather than mounting it already populated. The same 189
+tests and static checks passed after that fix; the final PR CI remains the merge gate.
+Real-browser layout, screen-reader announcements and production behavior have not been checked.

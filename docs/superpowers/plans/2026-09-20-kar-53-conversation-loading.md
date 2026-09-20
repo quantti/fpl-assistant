@@ -96,3 +96,11 @@ Keep temporary agent profiles out of commits and remove them after final review.
 `master` with `Closes KAR-53`. Review the actual PR with one read-only subagent after publication;
 fix findings in new commits and re-review. Await CI, leave merging to the owner, and move the
 Linear issue to In Review with the PR link. No direct master push or deployment.
+
+Outcome so far: published [PR #121](https://github.com/quantti/fpl-assistant/pull/121), reviewed
+by one read-only subagent. No functional blockers. Its accessibility suggestion was implemented
+as a separate bounded unit: the status region stays mounted and its text changes; visual loading
+copy is excluded from duplicate screen-reader output. Updated regression failed before the fix,
+then all 8 ChatView tests and the full 189-test frontend suite passed, as did static checks.
+The initial PR CI run (`35477448224`) passed the backend suite and production frontend build.
+The accessibility follow-up still needs published re-review and its final CI run.
