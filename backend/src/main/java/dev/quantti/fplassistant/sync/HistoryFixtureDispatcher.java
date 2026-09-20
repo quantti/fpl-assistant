@@ -119,7 +119,7 @@ public final class HistoryFixtureDispatcher {
     private DispatchResult processHistory(Lease lease, Season season) {
         int playerId = requireHistoryLease(lease, season);
         CanonicalPair canonical = canonicalSnapshot(season).orElseGet(() -> {
-            queueParentRefresh(season);
+            queueMissingCanonicalDependencies(season);
             retry(lease, clock.instant().plus(RETRY), "Canonical schedule is not available");
             throw new Stopped(DispatchResult.retry(FailureType.MISSING_CANONICAL_SCHEDULE));
         });
@@ -175,7 +175,6 @@ public final class HistoryFixtureDispatcher {
         }
         Instant floor = store.requestedSourceAfter(lease);
         PayloadPair pair = ownCanonicalPair(lease, season, floor);
-        if (pair.fetched) queueParentRefresh(season);
         Snapshot snapshot = pair.snapshot;
         var fixture = snapshot.fixtures().stream().filter(row -> row.id() == fixtureId).findFirst().orElse(null);
         if (fixture == null) {
@@ -305,19 +304,12 @@ public final class HistoryFixtureDispatcher {
                 ? (allowValid ? usableOwn(lease, Endpoint.fixtures(), floor)
                         : uncheckedOwn(lease, Endpoint.fixtures(), floor)).orElse(null) : null;
         boolean resumed = bootstrap != null || fixtures != null;
-        boolean fetched = false;
-        if (bootstrap == null) {
-            bootstrap = fetchAndStage(lease, Endpoint.bootstrap());
-            fetched = true;
-        }
-        if (fixtures == null) {
-            fixtures = fetchAndStage(lease, Endpoint.fixtures());
-            fetched = true;
-        }
+        if (bootstrap == null) bootstrap = fetchAndStage(lease, Endpoint.bootstrap());
+        if (fixtures == null) fixtures = fetchAndStage(lease, Endpoint.fixtures());
         try {
             Snapshot parsed = CatalogueScheduleParser.parse(season, document(bootstrap), document(fixtures));
             store.validateStagedPayloads(lease, List.of(bootstrap.id(), fixtures.id()), Validation.valid());
-            return new PayloadPair(bootstrap, fixtures, parsed, fetched);
+            return new PayloadPair(bootstrap, fixtures, parsed);
         } catch (IllegalArgumentException invalid) {
             store.validateStagedPayloads(lease, List.of(bootstrap.id(), fixtures.id()),
                     Validation.invalid(bounded(invalid.getMessage())));
@@ -396,6 +388,15 @@ public final class HistoryFixtureDispatcher {
     private void queueParentRefresh(Season season) {
         queueCatalogueRefresh(season);
         queueScheduleRefresh(season);
+    }
+
+    private void queueMissingCanonicalDependencies(Season season) {
+        store.enqueuePreservingActiveDemand(SyncKind.CATALOGUE_SCHEDULE, season.code(),
+                CatalogueScheduleDispatcher.CATALOGUE_PRICE_COALESCING_KEY,
+                CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY, clock.instant());
+        store.enqueuePreservingActiveDemand(SyncKind.CATALOGUE_SCHEDULE, season.code(),
+                CatalogueScheduleDispatcher.SCHEDULE_COALESCING_KEY,
+                CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY, clock.instant());
     }
 
     private void queueCatalogueRefresh(Season season) {
@@ -563,8 +564,7 @@ public final class HistoryFixtureDispatcher {
         static DispatchResult failed(FailureType failure) { return new DispatchResult(Outcome.FAILED, failure, null); }
     }
 
-    private record PayloadPair(StagedPayload bootstrap, StagedPayload fixtures, Snapshot snapshot,
-                               boolean fetched) {
+    private record PayloadPair(StagedPayload bootstrap, StagedPayload fixtures, Snapshot snapshot) {
         SourceDocument bootstrapDocument() { return document(bootstrap); }
         SourceDocument fixturesDocument() { return document(fixtures); }
     }
