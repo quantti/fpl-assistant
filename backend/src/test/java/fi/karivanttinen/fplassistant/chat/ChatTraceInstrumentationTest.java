@@ -1,5 +1,7 @@
 package fi.karivanttinen.fplassistant.chat;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -18,6 +20,7 @@ import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.ChatClientRequest;
 import org.springframework.ai.chat.client.ChatClientResponse;
 import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.ToolResponseMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.metadata.ChatResponseMetadata;
@@ -33,6 +36,7 @@ import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.definition.ToolDefinition;
 import org.springframework.ai.tool.metadata.ToolMetadata;
+import org.springframework.core.io.ClassPathResource;
 import reactor.core.publisher.Flux;
 import reactor.test.StepVerifier;
 
@@ -189,6 +193,110 @@ class ChatTraceInstrumentationTest {
                 .isEqualTo("Answer {\"access_token\":\"[REDACTED]\"} done.");
         assertThat(payload.toString()).doesNotContain(
                 "hunter2", "spaced value", "escaped", "quote", "two words");
+    }
+
+    @Test
+    void realSystemPromptIsPreservedInRoundSnapshot() throws IOException {
+        String prompt = new ClassPathResource("prompts/system-prompt.st")
+                .getContentAsString(StandardCharsets.UTF_8);
+        ChatTraceCollector collector = new ChatTraceCollector();
+
+        collector.startRound(new ChatClientRequest(
+                new Prompt(List.of(new SystemMessage(prompt))), Map.of()));
+
+        JsonNode messages = collector.snapshot().path("modelRounds").get(0).path("messages");
+        assertThat(messages).singleElement().satisfies(message -> {
+            assertThat(message.path("role").asText()).isEqualTo("system");
+            assertThat(message.path("content").asText()).isEqualTo(prompt);
+        });
+    }
+
+    @Test
+    void longOrdinaryQuotedValueIsPreservedExactly() {
+        String text = "Before {\"note\":\"" + "ordinary".repeat(4_000) + "\"} after.";
+        ChatTraceCollector collector = new ChatTraceCollector();
+
+        collector.complete(text);
+
+        assertThat(collector.snapshot().path("finalAnswer").asText()).isEqualTo(text);
+    }
+
+    @Test
+    void longOrdinaryQuotedKeyIsPreservedExactly() {
+        String text = "Before {\"" + "ordinary".repeat(4_000) + "\":\"value\"} after.";
+        ChatTraceCollector collector = new ChatTraceCollector();
+
+        collector.complete(text);
+
+        assertThat(collector.snapshot().path("finalAnswer").asText()).isEqualTo(text);
+    }
+
+    @Test
+    void longEscapedQuotedCredentialIsRedactedWithoutChangingSurroundingText() {
+        String secret = "part\\\"quoted\\\"\\\\path".repeat(1_600);
+        String before = "Before {\"ordinary\":\"keep\", \"access_token\" : \"";
+        String after = "\", \"note\":\"after\"} after; \"password\" is ordinary text.";
+        String text = before + secret + after;
+        String expected = before + "[REDACTED]" + after;
+        ChatTraceCollector collector = new ChatTraceCollector();
+
+        collector.startRound(new ChatClientRequest(
+                new Prompt(List.of(new UserMessage(text))), Map.of()));
+        collector.complete(text);
+
+        JsonNode payload = collector.snapshot();
+        assertThat(payload.path("modelRounds").get(0).path("messages").get(0).path("content").asText())
+                .isEqualTo(expected);
+        assertThat(payload.path("finalAnswer").asText()).isEqualTo(expected);
+    }
+
+    @Test
+    void longUnmatchedOrdinaryQuotedTextIsPreservedExactly() {
+        String text = "Before {\"note\":\"" + "ordinary".repeat(4_000);
+        ChatTraceCollector collector = new ChatTraceCollector();
+
+        collector.complete(text);
+
+        assertThat(collector.snapshot().path("finalAnswer").asText()).isEqualTo(text);
+    }
+
+    @Test
+    void instrumentedTurnWithRealSystemPromptCompletesAndPreservesTrace() throws IOException {
+        String prompt = new ClassPathResource("prompts/system-prompt.st")
+                .getContentAsString(StandardCharsets.UTF_8);
+        ChatTraceStore store = mock(ChatTraceStore.class);
+        when(store.start(any(), any(), any())).thenReturn(TRACE);
+        AtomicReference<JsonNode> completed = new AtomicReference<>();
+        when(store.complete(any(), any())).thenAnswer(call -> {
+            completed.set(call.getArgument(1));
+            return true;
+        });
+        ChatTraceSession trace = new ChatTraceSession(store, USER, CONVERSATION);
+        ChatModel model = new SingleResponseModel(response("final answer", List.of(), Map.of(), 100, 5));
+        ChatService service = new ChatService(ChatClient.builder(model).defaultSystem(prompt).build(),
+                List.of(), "openai", 15);
+
+        String answer = service.stream(List.of(new ChatTurn(ChatTurn.USER, "question")), USER,
+                        ignored -> {}, trace)
+                .collectList().map(parts -> String.join("", parts)).block(Duration.ofSeconds(5));
+        assertThat(answer).isEqualTo("final answer");
+        trace.complete(answer);
+
+        await(completed);
+        JsonNode payload = completed.get();
+        assertThat(payload.path("status").asText()).isEqualTo("completed");
+        assertThat(payload.path("finalAnswer").asText()).isEqualTo("final answer");
+        assertThat(payload.path("modelRounds")).singleElement().satisfies(round -> {
+            JsonNode messages = round.path("messages");
+            assertThat(messages).hasSize(2);
+            assertThat(messages.get(0).path("role").asText()).isEqualTo("system");
+            assertThat(messages.get(0).path("content").asText()).isEqualTo(prompt);
+            assertThat(messages.get(1).path("role").asText()).isEqualTo("user");
+            assertThat(messages.get(1).path("content").asText()).isEqualTo("question");
+            assertThat(round.path("model").asText()).isEqualTo("stub-model");
+        });
+        verify(store).start(eq(USER), eq(CONVERSATION), any());
+        verify(store).complete(eq(TRACE), eq(payload));
     }
 
     @Test

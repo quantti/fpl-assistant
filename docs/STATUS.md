@@ -95,6 +95,29 @@ Verification: 64 focused chat/instrumentation/lifecycle/persistence tests passed
 review; the instrumentation tests passed again after review fixes for replayed thinking,
 credential redaction and Gemini signatures. Full-suite verification belongs to PR CI.
 
+## Trace redaction stack overflow (KAR-66, 2026-09-20)
+
+Plan: `docs/superpowers/plans/2026-09-20-kar-66-trace-redaction.md`.
+
+Chat returned HTTP 500 while the page and health endpoint remained healthy. The quote-pair regex
+added in `3259810` recursed per character across long quoted spans; trace collection runs before
+the provider call and before the controller returns its SSE stream, so `StackOverflowError`
+escaped before the normal stream-error handling. Fly's retained log tail showed recursive
+`Pattern` frames followed by the five-minute timeout; the original exception header was outside
+the buffer. A standalone Temurin 25.0.4.1 reproduction confirmed the overflow with the deployed
+regex on the actual 31,324-character system prompt and a synthetic 32,011-character quoted value.
+
+Both quoted-string interiors now use possessive repetition. Their alternatives are disjoint and
+exclude an unescaped closing quote, so no backtracking is needed and the matching/redaction
+semantics stay intact. No prompt truncation, stack-size increase, trace disabling, fatal-error
+catch or schema change. The standalone probe passed both inputs with this fix.
+
+Six regressions cover the real prompt, long ordinary quoted keys/values, escaped secret values,
+unmatched ordinary text and an instrumented stub-provider turn with the real prompt. Assertions
+check exact retained/redacted text, not just absence of an exception. The host has no JDK;
+JUnit compilation, the trace/controller tests and complete backend suite await PR CI. Authenticated
+production chat must still be checked after the owner merges and the normal deployment runs.
+
 
 **Progress:** Task 14/14 done — Phase 1 code complete, reviewed at two checkpoints (after
 Task 10 and after Task 14), fixes applied both times. **Deployed 2026-08-15** — see Deployment

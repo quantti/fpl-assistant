@@ -25,8 +25,10 @@ final class ChatTraceCollector {
 
     private static final int MAX_ERROR_CHARS = 1000;
     private static final List<String> SUMMARY_KEYS = List.of("reasoningSummary", "reasoning_summary");
+    // Disjoint alternatives cannot consume an unescaped closing quote; possessive repetition
+    // avoids per-character recursive backtracking (and stack overflow) on long prompts.
     private static final Pattern QUOTED_PAIR = Pattern.compile(
-            "\"((?:\\\\.|[^\"\\\\])*)\"(\\s*:\\s*)\"(?:\\\\.|[^\"\\\\])*\"");
+            "\"((?:\\\\.|[^\"\\\\])*+)\"(\\s*:\\s*)\"(?:\\\\.|[^\"\\\\])*+\"");
 
     private final ObjectMapper json = new ObjectMapper();
     private final Instant acceptedAt = Instant.now();
