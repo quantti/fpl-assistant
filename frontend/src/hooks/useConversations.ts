@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiFetch } from '../auth/apiFetch';
 import { type Conversation, type Message, type PlayerCatalogue } from '../types';
 
@@ -6,6 +6,8 @@ interface UseConversationsReturn {
   conversations: Conversation[];
   /** Null while a new conversation has been started but not yet sent to. */
   currentId: string | null;
+  /** The latest selection still loading; currentId stays on the last successful conversation. */
+  pendingId: string | null;
   /** True when the list could not be read. An empty sidebar otherwise means "no conversations". */
   failed: boolean;
   select: (id: string) => Promise<Message[] | null>;
@@ -25,7 +27,9 @@ interface UseConversationsReturn {
 export function useConversations(): UseConversationsReturn {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [currentId, setCurrentId] = useState<string | null>(null);
+  const [pendingId, setPendingId] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
+  const selectionRef = useRef(0);
 
   const refresh = useCallback(async () => {
     // A failed read must not look like an empty list. The fetch happens once on mount, so a
@@ -49,43 +53,61 @@ export function useConversations(): UseConversationsReturn {
     void refresh();
   }, [refresh]);
 
-  /** The conversation's messages, or null when it could not be read — the caller keeps what it has. */
+  /** The conversation's messages, or null when unreadable or superseded by a newer selection. */
   const select = useCallback(
     async (id: string): Promise<Message[] | null> => {
-      const response = await apiFetch(`/api/conversations/${id}/messages`);
-      if (!response.ok) {
-        // A conversation that is gone should not stay in the list pretending otherwise.
-        if (response.status === 404) await refresh();
-        return null;
-      }
-      type StoredMessage = {
-        role: 'user' | 'assistant';
-        content: string;
-        catalogueId?: string;
-        catalogue?: PlayerCatalogue;
-      };
-      const payload = (await response.json()) as
-        | StoredMessage[]
-        | { messages: StoredMessage[]; catalogues?: Record<string, PlayerCatalogue> };
-      const stored = Array.isArray(payload) ? payload : payload.messages;
-      const catalogues = Array.isArray(payload) ? undefined : payload.catalogues;
-      setCurrentId(id);
-      return stored.map(({ role, content, catalogueId, catalogue }) => {
-        const resolved = catalogue ?? (catalogueId ? catalogues?.[catalogueId] : undefined);
-        return {
-          role,
-          content,
-          ...(role === 'assistant' && resolved ? { catalogue: resolved } : {}),
+      const selection = ++selectionRef.current;
+      setPendingId(id);
+      try {
+        const response = await apiFetch(`/api/conversations/${id}/messages`);
+        if (!response.ok) {
+          // Refresh a removed conversation out of the list without holding selection loading open.
+          if (response.status === 404) void refresh();
+          return null;
+        }
+        type StoredMessage = {
+          role: 'user' | 'assistant';
+          content: string;
+          catalogueId?: string;
+          catalogue?: PlayerCatalogue;
         };
-      });
+        const payload = (await response.json()) as
+          | StoredMessage[]
+          | { messages: StoredMessage[]; catalogues?: Record<string, PlayerCatalogue> };
+        if (selection !== selectionRef.current) return null;
+        const stored = Array.isArray(payload) ? payload : payload.messages;
+        if (!Array.isArray(stored)) return null;
+        const catalogues = Array.isArray(payload) ? undefined : payload.catalogues;
+        const messages = stored.map(({ role, content, catalogueId, catalogue }) => {
+          if (typeof content !== 'string' || (role !== 'user' && role !== 'assistant')) {
+            throw new TypeError('Invalid conversation message');
+          }
+          const resolved = catalogue ?? (catalogueId ? catalogues?.[catalogueId] : undefined);
+          return {
+            role,
+            content,
+            ...(role === 'assistant' && resolved ? { catalogue: resolved } : {}),
+          };
+        });
+        setCurrentId(id);
+        return messages;
+      } catch {
+        return null;
+      } finally {
+        if (selection === selectionRef.current) setPendingId(null);
+      }
     },
     [refresh],
   );
 
-  const startNew = useCallback(() => setCurrentId(null), []);
+  const startNew = useCallback(() => {
+    selectionRef.current++;
+    setPendingId(null);
+    setCurrentId(null);
+  }, []);
 
   /** The id the server gave a conversation that was created by sending the first message. */
   const adopt = useCallback((id: string) => setCurrentId(id), []);
 
-  return { conversations, currentId, failed, select, startNew, refresh, adopt };
+  return { conversations, currentId, pendingId, failed, select, startNew, refresh, adopt };
 }
