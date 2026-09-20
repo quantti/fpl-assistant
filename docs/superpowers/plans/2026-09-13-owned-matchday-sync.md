@@ -1,6 +1,6 @@
 # Assistant-owned FPL sync and post-match verification
 
-**PROGRESS:** Tasks 1–10 implemented; production cut over on 2026-09-16 and the 40-fixture backlog verified. On 2026-09-19 repeated canonical body reads were identified as the main contributor to 88.78 GB Supabase egress; normal containment is OFF epoch 61 while a bounded metadata-revalidated body cache is reviewed. Tapas core writes remain disabled, so restore ACTIVE promptly after the hotfix and verify the query-rate drop. Remaining: Kuma recovery verification and the first complete real-matchday observation.
+**PROGRESS:** Tasks 1–10 implemented; production cut over on 2026-09-16 and the 40-fixture backlog verified. PR #116's canonical cache is deployed, but the attended 2026-09-20 ACTIVE epoch 62 still failed free-tier acceptance: new-parent amplification, checkpoint reads and recurring metadata remain. Normal containment is OFF epoch 63; Tapas core writes remain disabled. See `docs/OWNED-SYNC-EGRESS-REPORT.md` for evidence and bounded correction units before the next attended activation. Remaining: sustainable egress and history progress, retention recheck, Kuma recovery verification and the first complete real-matchday observation.
 
 Owner decision: this service, **not Tapas**, will perform the FPL data updates. This supersedes
 Task 5's ownership assumption in `2026-09-13-wildcard-data-coverage.md`. That plan's comparison

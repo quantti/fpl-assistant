@@ -4417,6 +4417,25 @@ Chromium screenshots at 1280px and 375px in both schemes, with the sidebar overl
 the dev server with a stubbed session and no backend. Measured `.root` height unchanged after
 inserting 3000px of content, i.e. still height-bounded. Head to Head from the mockup is not built.
 
+## Owned sync — cache deployed, attended restart still exceeds budget (2026-09-20)
+
+The owner requested restoration without upgrading Supabase. PR #116 was already deployed; an
+attended ACTIVE epoch 62 ran from 08:16:28 to 08:23:39 UTC on `e123272`. The stable-pair cache works,
+but remaining amplification failed the free-tier acceptance: 15 canonical pair downloads in a
+384-second sample (about 30 MB raw body content alone), 33 completed catalogue/schedule jobs over
+the activation and no completed histories out of 667 queued. Fixture attempts repeatedly request
+new priority-0 parents, and checkpoint reads plus recurring planner/watchdog metadata remain outside
+the cache. Whole-machine network RX includes FPL downloads and is not a Supabase billing counter.
+
+Normal rollback is verified **OFF epoch 63**, with no PENDING/LEASED epoch-62 work and application
+UP. Tapas core writes remain disabled; Kuma remains paused. There is temporarily no core writer.
+No new runtime fix is implemented and the requested sustained restoration is **not complete**.
+The startup retention delete also reported an I/O error and needs follow-up before a long run.
+
+[`OWNED-SYNC-EGRESS-REPORT.md`](OWNED-SYNC-EGRESS-REPORT.md) records the measured evidence,
+remaining causes and bounded correction/acceptance units. Restore only after reviewed fixes and a
+new attended test; do not treat PR #116 alone as sufficient or promise the existing overage is undone.
+
 ## Owned sync — Supabase egress containment (2026-09-19)
 
 Supabase reported organisation egress at **88.78 GB / 5.5 GB** and shortened the Fair Use grace

@@ -4,13 +4,15 @@ Production cut over to the assistant-owned writer on 2026-09-16. Tapas runs thro
 `tapas_runtime` login with `FPL_CORE_WRITES_ENABLED=false`; do not restore a second writer without
 the documented rollback fence. Deploy through the reviewed GitHub workflow, not manual Fly deploy.
 
-Latest containment (2026-09-19): Supabase reported 88.78 GB egress, and a live measurement tied
-about 105 MiB/minute during backlog work to repeated reads of the same canonical payload bodies.
-The normal transition to **OFF epoch 61** is verified, the application is UP and Kuma 18 is paused.
-Because Tapas core writes remain disabled, there is temporarily no core writer. A two-entry,
-metadata-revalidated canonical body cache is under review; after deployment, return directly to
-ACTIVE with the existing playing-season/cutover confirmation and verify the body-query call delta,
-heartbeats, queue progress, receipts and memory. Full evidence is in `docs/STATUS.md`.
+Latest containment (2026-09-20): the canonical cache from PR #116 is deployed, but an attended
+seven-minute ACTIVE epoch 62 still generated 33 catalogue/schedule completions with no history
+progress and substantial new-pair/checkpoint traffic. Normal rollback to **OFF epoch 63** is
+verified; the application is UP and Kuma 18 remains paused. Tapas core writes remain disabled,
+so there is temporarily no core writer. Do not restore ACTIVE on the strength of PR #116 alone:
+review the remaining amplification and recurring metadata transfers, then repeat a bounded test
+with a predeclared stop threshold. The startup retention delete also failed with an I/O error.
+See `docs/OWNED-SYNC-EGRESS-REPORT.md` for measurements and the next bounded correction units.
+The previously reported 88.78 GB overage is not undone by reducing future traffic.
 
 Before containment the current-season backlog held 40 `VERIFIED` fixtures. Resolve the Java PID by
 identity and give each new activation its own bounded startup-heartbeat grace period.
