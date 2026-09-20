@@ -4571,6 +4571,20 @@ Two further facts from the same night:
   fixtures verified at 08:09 UTC and the rest followed. No code change was needed for this: the
   rule is right for every row created from now on.
 
+## Owned sync — one-minute planner delay (2026-09-20)
+
+A third independent egress correction changes only the planner's fixed delay from five seconds
+to one minute, still with an immediate first tick. At idle this permits at most 1/12 as many
+planner ticks; it does not promise a 12-fold reduction in total database traffic. The tradeoff is
+up to a minute plus tick duration before newly due planning work is materialized. Two workers
+still drain the durable queue at their one-second cadence; source-read slots, HTTP admission,
+verification spacing and five-minute watchdog cadence are unchanged.
+
+Verification: 22 focused runtime, planner and coordinator tests passed against disposable Postgres.
+The runtime regression fails with the old five-second cadence and checks immediate startup,
+continued worker dispatch and the second one-minute tick. Full-suite verification belongs to PR CI.
+Production remains OFF; this change alone is not permission for sustained activation.
+
 ## Owned sync — backlog fixtures were parked until the daily sweep (2026-09-16)
 
 An ACTIVE rehearsal on a disposable copy of production showed why no fixture had ever reached

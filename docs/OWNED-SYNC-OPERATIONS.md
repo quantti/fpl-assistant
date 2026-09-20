@@ -214,6 +214,11 @@ on an exhausted notification that has no later delivered redrive.
 
 ## Inspection and bounded retry
 
+The planner starts immediately, then waits one minute after each completed tick to reduce idle
+metadata transfers. Newly due planning can therefore wait a minute plus tick duration; workers
+still drain queued work every second. Source-read cadences, HTTP admission and independent
+verification spacing are unchanged. Do not interpret this as an overall egress budget guarantee.
+
 The full status endpoint requires `X-FPL-Operator-Token`. Its diagnostic lists are bounded to the
 latest 50 failed runs, source/publication receipts, and failed alerts, and include the identifiers
 used by the retry operations:
