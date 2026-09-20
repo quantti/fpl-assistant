@@ -1,5 +1,32 @@
 # Status — Phase 1
 
+## Owned sync — remove redundant parent work (2026-09-20)
+
+The first bounded follow-up to the attended egress test removes fixture verification's
+unconditional parent refresh after fetching its own public pair. A fresh verification read is
+not itself a correction to the published parents. Missing canonical history parents, actual
+history contradictions, changed/absent targets and publication database mismatches still request
+parent refreshes; independently scheduled catalogue/schedule updates are unchanged.
+
+Repeated missing-canonical dependency notifications now use `enqueuePreservingActiveDemand`:
+an already active parent's source floor stays fixed, so a bootstrap checkpoint survives a later
+notification while fixtures admission is deferred. Genuine correction/refresh requests still
+advance the floor and reject older evidence. No source validation or verification guard changed.
+
+Verification: all 24 focused history/fixture and catalogue/schedule dispatcher integration tests
+passed against disposable Postgres. Regressions cover no fetch-only parent jobs, resumed fixture
+fetches, real queue acquisition of history work, repeated missing-parent notification with an
+unchecked bootstrap checkpoint, subsequent parent completion and history publication. Existing
+contradiction and genuinely newer-demand rejection tests also pass. This is not a reproduction of
+all 46 fixtures/667 histories or a free-tier egress acceptance result; full-suite verification is
+on the PR. The first rerun failed only because the local env named port 15432 while the disposable
+container used 55432; the passing run explicitly selected the container's local connection.
+
+Production remains OFF epoch 63 from the attended test; no production changes were made for this
+implementation. Remaining before sustained activation: dependency-body traffic, recurring
+planner/watchdog metadata, retention recheck and bounded rate/budget monitoring. The test evidence
+and correction sequence are recorded in documentation PR #125.
+
 ## Privacy vendor and retention research (2026-09-19)
 
 [`docs/PRIVACY-OPERATIONS.md`](PRIVACY-OPERATIONS.md) is the canonical current record of the owner
