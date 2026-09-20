@@ -175,7 +175,9 @@ class HistoryFixtureDispatcherIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
                 + " WHERE kind='PLAYER_HISTORY'", Integer.class)).isEqualTo(73);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
-                + " WHERE kind='CATALOGUE_SCHEDULE' AND state='PENDING'", Integer.class)).isEqualTo(2);
+                + " WHERE kind='CATALOGUE_SCHEDULE' AND state='PENDING'", Integer.class)).isZero();
+        Lease next = store.acquire("progress-worker", Duration.ofMinutes(5)).orElseThrow();
+        assertThat(next.kind()).isEqualTo(SyncKind.PLAYER_HISTORY);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
                 + " WHERE publication_key='player-history:999'", Integer.class)).isOne();
         int waitingPriority = jdbc.queryForObject("SELECT priority FROM " + TABLES.run()
@@ -217,6 +219,70 @@ class HistoryFixtureDispatcherIntegrationTest {
         assertThat(resumed.outcome()).isEqualTo(Outcome.WAITING_FOR_HISTORIES);
         assertThat(fetch.endpoints).containsExactly(Endpoint.bootstrap(), Endpoint.fixtures(),
                 Endpoint.fixtures(), Endpoint.eventLive(3));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
+                + " WHERE kind='CATALOGUE_SCHEDULE' AND state='PENDING'", Integer.class)).isZero();
+    }
+
+    @Test
+    void repeatedMissingCanonicalNotificationPreservesParentCheckpointAndQueueProgress() {
+        dispatcher.enqueuePlayerHistory(SEASON, 1, clock.instant());
+        DispatchResult firstMissing = dispatcher.process(store.acquire("history-1", Duration.ofMinutes(5))
+                .orElseThrow(), SEASON);
+        assertThat(firstMissing.failure()).isEqualTo(FailureType.MISSING_CANONICAL_SCHEDULE);
+
+        CatalogueScheduleDispatcher parentDispatcher = new CatalogueScheduleDispatcher(
+                store, null, (endpoint, attempt) -> fetch.get(endpoint, attempt), clock, false);
+        Instant parentFloor = null;
+        for (int parent = 0; parent < 2; parent++) {
+            Lease parentLease = store.acquire("parent-" + parent, Duration.ofMinutes(5)).orElseThrow();
+            assertThat(parentLease.kind()).isEqualTo(SyncKind.CATALOGUE_SCHEDULE);
+            if (parentFloor == null) {
+                parentFloor = jdbc.queryForObject("SELECT requested_source_after FROM " + TABLES.run()
+                        + " WHERE generation=?", java.sql.Timestamp.class,
+                        parentLease.generation()).toInstant();
+            }
+            fetch.results.add(ok(bootstrap));
+            fetch.results.add(new DeferredResult(clock.instant().plusSeconds(1),
+                    DeferredReason.MINIMUM_SPACING));
+            assertThat(parentDispatcher.process(parentLease, SEASON))
+                    .isEqualTo(CatalogueScheduleDispatcher.Outcome.RETRY_SCHEDULED);
+        }
+
+        var secondHistory = dispatcher.enqueuePlayerHistory(SEASON, 2, clock.instant());
+        Lease historyLease = store.acquire("history-2", Duration.ofMinutes(5)).orElseThrow();
+        assertThat(historyLease.generation()).isEqualTo(secondHistory.generation());
+        assertThat(dispatcher.process(historyLease, SEASON).failure())
+                .isEqualTo(FailureType.MISSING_CANONICAL_SCHEDULE);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.payload()
+                + " WHERE endpoint_kind='BOOTSTRAP_STATIC' AND validation_state='UNCHECKED'",
+                Integer.class)).isEqualTo(2);
+        assertThat(jdbc.query("SELECT requested_source_after FROM " + TABLES.run()
+                        + " WHERE kind='CATALOGUE_SCHEDULE' ORDER BY generation",
+                (rs, row) -> rs.getTimestamp(1).toInstant())).containsOnly(parentFloor);
+
+        clock.advance(Duration.ofSeconds(1));
+        fetch.results.add(ok(fixtures));
+        for (int parent = 0; parent < 2; parent++) {
+            Lease parentLease = store.acquire("resumed-parent-" + parent, Duration.ofMinutes(5))
+                    .orElseThrow();
+            assertThat(parentLease.kind()).isEqualTo(SyncKind.CATALOGUE_SCHEDULE);
+            assertThat(parentDispatcher.process(parentLease, SEASON))
+                    .isEqualTo(CatalogueScheduleDispatcher.Outcome.STAGED);
+        }
+
+        assertThat(fetch.endpoints).containsExactly(
+                Endpoint.bootstrap(), Endpoint.fixtures(), Endpoint.bootstrap(), Endpoint.fixtures(),
+                Endpoint.fixtures());
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
+                + " WHERE kind='CATALOGUE_SCHEDULE' AND state IN ('PENDING', 'LEASED')",
+                Integer.class)).isZero();
+
+        clock.advance(Duration.ofSeconds(31));
+        Lease resumedHistory = store.acquire("resumed-history", Duration.ofMinutes(5)).orElseThrow();
+        assertThat(resumedHistory.publicationKey()).isEqualTo("player-history:1");
+        fetch.results.add(ok(historyOne));
+        assertThat(dispatcher.process(resumedHistory, SEASON).outcome()).isEqualTo(Outcome.COMPLETED);
+        assertThat(store.sourceReceipt(SEASON.code(), "player-history:1")).isPresent();
     }
 
     @Test
