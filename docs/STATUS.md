@@ -5026,5 +5026,6 @@ lint, format check, TypeScript and contrast checks passed. PR #121's first CI ru
 backend suite and production frontend build (no local JDK or frontend public-key configuration).
 PR review found no functional blocker; its accessibility follow-up keeps an empty live status
 region mounted and updates its text rather than mounting it already populated. The same 189
-tests and static checks passed after that fix; the final PR CI remains the merge gate.
+tests and static checks passed after that fix, followed by a clean independent re-review and
+successful CI run `35496208578` at `7ca33f1`. Linear is In Review; the owner merges PR #121.
 Real-browser layout, screen-reader announcements and production behavior have not been checked.
