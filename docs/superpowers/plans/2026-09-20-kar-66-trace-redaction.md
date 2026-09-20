@@ -1,6 +1,6 @@
 # KAR-66 — Stack-safe trace redaction
 
-**PROGRESS:** Task 1/3 done.
+**PROGRESS:** Task 3/3 done.
 
 Ticket: https://linear.app/quantti/issue/KAR-66/fix-chat-http-500-caused-by-trace-redaction-stack-overflow
 
@@ -50,9 +50,24 @@ Verification: PR CI compiles and runs the trace/controller regressions and compl
 suite against disposable PostgreSQL, and builds/checks the frontend. Never run tests against
 Supabase or change the checked-in Gradle resource limits.
 
+Outcome: [PR #123](https://github.com/quantti/fpl-assistant/pull/123), commit `06453dd`.
+CI run `35498149340` passed the complete backend suite, frontend production build, lint and
+format checks. The runtime change is exactly two possessive quantifiers plus their explanation.
+
 ## Task 3 — Review and handoff
 
 Review the published PR using one read-only subagent. Apply any findings as new commits and
 re-review; keep secrets redacted and ordinary text intact. Require green final CI, update Linear
 to In Review and leave merging to the owner. After normal deployment, the owner must verify an
 authenticated chat response; a healthy static page alone is not proof that this incident is fixed.
+
+Outcome: independent review of published `06453dd` found no blockers and confirmed both matching
+semantics and the short-user-message path. Its wording suggestion clarified that the system
+prompt is always included even for short user messages; no behavior changed after review.
+CI `35498149340` reports 1,255 backend tests, zero failures/errors/skips, including all 12 trace
+instrumentation tests. Frontend build/lint/format also passed. The owner merged PR #123 at
+`e123272` while the comment/documentation clarification was being published, so that clarification
+is a separate follow-up with no behavioral change. Workflow `35498621880` passed tests,
+deployment and the external health smoke; a further health read at 08:15 UTC returned 200 / UP.
+The owner still needs to confirm authenticated chat. No manual deployment, restart or database
+change was performed.
