@@ -37,23 +37,23 @@ Regular 70+ appearances, preferably 80+, are a useful strategic preference, not 
 2. **Establish repeated 60+ involvement before calling the defender a reliable first choice.** Prefer a regular starter who consistently survives the hour over a rotation player with better per-90 numbers. Use match-level minutes and any explicit reliability evidence supplied by the tools. A high score or a large season minutes total alone does not establish this.
 3. **Check for a changed pattern.** Recent benchings or repeated sub-60 appearances can undermine an established role. Do not let last season's full matches erase this season's reduced involvement. Do not invent whether the cause is injury, tactics or rotation when it is unknown.
 4. **Compare routes to points among the reliable options:** team defensive strength and fixtures for clean sheets, defensive-action potential for DefCon, then goal threat and set pieces. A secure centre-back and a secure attacking full-back can both be good picks for different reasons.
-5. **Keep the conclusion honest.** Give a primary recommendation only when the evidence supports reliable 60+ involvement. Do not append non-qualifiers as a second disguised recommendation list merely to fill the tool's primary list. A named rotation option can still be discussed conditionally through its statistics and availability, or kept on a watch-list, without presenting it as equally reliable. If the available evidence establishes no reliable option, say so instead of filling the list with uncertain starters.
+5. **Keep the conclusion honest.** Let the minutes-aware projection reduce a player's score rather than treating one short appearance as a veto. The tools exclude only the explicit recent under-60 pattern below; otherwise discuss role risk beside attacking upside instead of calling the player safe. Do not append excluded names as a second disguised recommendation list merely to fill a list.
 
 Reliability is evidence-based, not a promise: a regular starter can still suffer an early injury, red card or unexpected benching. There is no universal probability cutoff in this guide for turning "likely" into "safe".
 
-## The primary-list rule used by the ranking tools
+## The recent under-60 exclusion used by the ranking tools
 
-For their primary differential and captain lists, and for every starting-XI place in a generated squad, the tools use one deliberately conservative rule: **consistent observed 60+ history**.
+For primary differential and captain lists, and for every starting-XI place in a generated squad, the tools require current availability and complete evidence, then apply one narrow minutes exclusion.
 
 - The selected daily FPL capture must be fresh, mark the player available (`a`) rather than doubtful, and contain a valid position and club.
 - That daily capture, the current metric season and the fresh, structurally complete FPL schedule must all name the season being played. Player identity and current club must be coherent across them; pending results, contradictory opponents, invalid minutes and missing observations make the evidence unknown.
 - The window is the player's latest **up to ten completed fixtures for their current club**, after any positively observed different-club transfer fence. Without such a fence, expected fixtures are counted from season start: the first statistics row or same-club daily appearance is not a registration date, so a newcomer may need ten complete fixtures before earlier gaps leave the window. Every expected fixture remains in the denominator, including a known zero-minute absence.
-- The complete window must contain at least 180 current-season, current-club minutes, and the player must have reached 60 in **every** expected fixture. A complete two- or three-fixture history can qualify but is printed as `60+ N/N` with a short-window label; it remains a small sample, not mature evidence.
-- A sub-60 result disqualifies the player until ten later completed club fixtures in that spell push it outside the latest-ten window. An injury return, new manager or convenient recent-form boundary does not reset the window. This long recovery wait is intentional: the policy favours avoiding a current-role false positive over filling a list.
+- Minutes are part of the projection: appearance and 60+ probabilities, expected attacking minutes and clean-sheet eligibility all use the observed window. There is no 60+ or current-total-minutes admission gate. A complete short or mixed window is printed with `60+ N/N` and scored at its observed minute rate; it remains a small sample, not mature evidence.
+- Exclude a player for minutes only when the **three latest complete observed fixtures** are all below 60 minutes. Known zero-minute absences count. One or two short fixtures, or any mixed three-fixture run, do not trigger exclusion; their lower minutes already reduce the projection.
 
-Previous-season starts and blended minutes never satisfy this current-role gate. Historical ability and usable exposure rates may still inform a score once current evidence qualifies, but they are a different question. A player who fails or cannot be assessed may still be a fit bench purchase in a generated squad; they cannot enter its XI, and naming or pinning them does not waive the rule.
+Previous-season starts and blended minutes never establish current availability or complete current evidence. Historical ability and usable exposure rates may still inform a score, but they are a different question. A player who is excluded or cannot be assessed may still be a fit bench purchase in a generated squad; they cannot enter its XI, and naming or pinning them does not waive the rule.
 
-An empty list or an infeasible XI is therefore a valid factual result, especially early in a season, after a transfer, or during a stale/partial sync. Do not weaken it to an average-minutes test or backfill unknown current evidence from last season. Conversely, do not call someone who passes a “guaranteed starter”: this is a historical consistency filter, not a calibrated personal probability or a promise about the next team sheet.
+An empty list or an infeasible XI is therefore a valid factual result after a transfer or during a stale/partial sync. Do not backfill unknown current evidence from last season. Conversely, do not call someone who is not excluded a “guaranteed starter”: the observed window is not a calibrated personal probability or a promise about the next team sheet.
 
 ## How playing time should affect expected points
 
@@ -65,7 +65,7 @@ Prefer minutes-aware per-fixture projections over raw per-90 rankings **when the
 
 ## Captaincy, differentials and bench choices
 
-- **Captaincy:** require consistent observed 60+ history and current availability before comparing attacking ceiling, penalties and fixtures. That history is not a probability of starting. One short cameo normally prevents the vice-captain from taking over, so a bench-risk premium is not protected in the same way as an absent one. Avoid uncertain starters or fitness doubts for Triple Captain.
+- **Captaincy:** use current availability, recent minutes and the projected score alongside attacking ceiling, penalties and fixtures. Three latest complete fixtures all below 60 exclude the player; a mixed record remains a risk to describe, not a guarantee of starting. One short cameo normally prevents the vice-captain from taking over, so a bench-risk premium is not protected in the same way as an absent one. Avoid uncertain starters or fitness doubts for Triple Captain.
 - **Differentials:** low ownership does not compensate for unreliable playing time. Prefer a low-owned regular with a clear role over a substitute whose per-90 rate looks spectacular. A returnee can be a watch-list opportunity while their workload remains uncertain.
 - **Double gameweeks:** judge involvement in both fixtures, not just the fixture count. Two fixtures do not guarantee two starts or two 60+ appearances; look for supported rotation or fitness concerns, especially during congestion.
 - **Bench:** distinguish a cheap budget-enabling substitute from a reliable starting-XI recommendation. A low-minutes player can fill a bench slot, but should not be sold as dependable cover. Bench Boost requires playing options; ordinary bench cover cannot rescue a starter who makes a short cameo.
@@ -82,7 +82,7 @@ Prefer minutes-aware per-fixture projections over raw per-90 rankings **when the
 
 For a recommended defender, state the supported reason for minutes confidence, the season/window behind it, the route to points and the main remaining risk. For example, "reached 60 in all five current-season fixtures shown, with clean-sheet and set-piece potential" is a historical observation, not "guaranteed 60+ next week". Use such numbers only when the tool actually supplies them.
 
-The ranking tools do not provide a calibrated personal reliability probability: `60+ N/N` is an observed frequency. Explain its sample and any current availability or freshness caveat. If all that is available is total minutes or per-90 rates, say that these do not establish reliable 60+ involvement; do not silently promote a risky player because they lead a ranking.
+The ranking tools do not provide a calibrated personal reliability probability: `60+ N/N` is an observed frequency. Explain its sample and any current availability or freshness caveat. If all that is available is total minutes or per-90 rates, say that the role evidence is limited; do not silently present a risky player as safe because they lead a ranking.
 
 ## Sources and related guidance
 

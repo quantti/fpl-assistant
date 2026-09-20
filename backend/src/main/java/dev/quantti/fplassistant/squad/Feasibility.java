@@ -274,8 +274,8 @@ public final class Feasibility {
     }
 
     /**
-     * How many players could actually start, counted through both XI gates at once: the observed
-     * 60+ history rule and a club with a countable fixture in the horizon. Counting one without
+     * How many players could actually start, counted through both XI gates at once: the recent
+     * under-60 exclusion and a club with a countable fixture in the horizon. Counting one without
      * the other would certify a formation the solver then refuses to fill.
      */
     private static Optional<String> eligiblePlayersCanFillTheXi(
@@ -328,8 +328,8 @@ public final class Feasibility {
             return noHorizonAtAll(horizon);
         }
         return Optional.of("The available pool cannot form a legal starting XI: after the stated"
-                + " exclusions too few players have both consistent observed 60+ history and a"
-                + " club playing at least once in " + SquadFormatter.gameweekRange(horizon)
+                + " exclusions too few players avoid the recent three-fixture under-60 pattern and"
+                + " play for a club at least once in " + SquadFormatter.gameweekRange(horizon)
                 + ". This is a minutes-evidence, fixture-schedule and formation constraint;"
                 + " changing the budget alone does not make an ineligible starter eligible.");
     }
@@ -342,8 +342,8 @@ public final class Feasibility {
         }
         return Optional.of("The " + (formation == null ? "starting XI" : formation.label())
                 + " needs " + required + " " + position + (required == 1 ? "" : "s")
-                + " with consistent observed 60+ history at a club playing at least once in "
-                + SquadFormatter.gameweekRange(horizon) + ", but only " + available
+                + " without a recent three-fixture under-60 pattern at a club playing at least"
+                + " once in " + SquadFormatter.gameweekRange(horizon) + ", but only " + available
                 + " qualify after the stated exclusions. Pins may still sit on the bench; this is"
                 + " a minutes-evidence and fixture-schedule restriction, and neither a pin nor a"
                 + " higher budget can waive it.");
@@ -360,7 +360,7 @@ public final class Feasibility {
                         + SquadFormatter.horizonReason(horizon.reason()) + ")";
         return Optional.of(named + ", so how many players could start is unknown rather than zero."
                 + " A starter needs a club with at least one fixture in that window as well as"
-                + " consistent observed 60+ history, and neither can be established from this"
+                + " complete recent minutes evidence, and neither can be established from this"
                 + " schedule. This is a schedule-evidence and minutes-evidence restriction; a"
                 + " higher budget supplies neither, and no older schedule is substituted.");
     }

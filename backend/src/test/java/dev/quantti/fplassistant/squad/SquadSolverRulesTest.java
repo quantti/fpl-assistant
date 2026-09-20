@@ -56,7 +56,7 @@ class SquadSolverRulesTest {
         return new SquadConstraints(List.of(), List.of(), List.of(), 1000, 5, null);
     }
 
-    /** Every club of the pool has a fixture in the horizon, so only the minutes gate binds. */
+    /** Every club of the pool has a fixture in the horizon, so only the minutes exclusion binds. */
     private static Set<Integer> allPlayable(List<SquadCandidate> pool) {
         return SquadCandidateTestData.clubsOf(pool);
     }
@@ -176,7 +176,7 @@ class SquadSolverRulesTest {
         Random random = new Random(17);
         List<SquadCandidate> pool = pool(random);
         SquadCandidate risky = SquadCandidateTestData.ineligible(pool.get(5),
-                dev.quantti.fplassistant.tools.MinutesModel.Eligibility.MINUTES_RISK);
+                dev.quantti.fplassistant.tools.MinutesModel.Eligibility.CONSISTENTLY_UNDER_60);
         pool.set(5, risky);
         Map<Integer, Double> scores = scores(pool, random);
         scores.put(risky.elementId(), 10_000.0);
@@ -221,7 +221,7 @@ class SquadSolverRulesTest {
         Random random = new Random(29);
         List<SquadCandidate> pool = new ArrayList<>(pool(random));
         SquadCandidate risky = SquadCandidateTestData.ineligible(pool.get(9),
-                dev.quantti.fplassistant.tools.MinutesModel.Eligibility.MINUTES_RISK);
+                dev.quantti.fplassistant.tools.MinutesModel.Eligibility.CONSISTENTLY_UNDER_60);
         pool.set(9, risky);
         Map<Integer, Double> scores = scores(pool, random);
         double best = scores.values().stream().mapToDouble(Double::doubleValue).max().orElseThrow();

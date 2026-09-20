@@ -444,6 +444,24 @@ class SquadToolsIntegrationTest {
         assertThat(startingXi(output)).doesNotContain("CameoPin");
     }
 
+    @Test
+    void aMixedMinutePinCanStartWhenItsProjectionIsStrong() {
+        int id = 12_415;
+        insert(id, "MixedPin", "Mixed Pin", 0, 3, 40, 1.0, 2.0);
+        int fixture = jdbc.queryForObject("SELECT fixture_id FROM player_fixture_stats"
+                        + " WHERE season_id = ? AND player_id = ?"
+                        + " ORDER BY kickoff_time DESC, fixture_id DESC LIMIT 1", Integer.class,
+                SEASON_ID, id);
+        jdbc.update("UPDATE player_fixture_stats SET minutes = 30, starts = 0"
+                + " WHERE season_id = ? AND player_id = ? AND fixture_id = ?",
+                SEASON_ID, id, fixture);
+
+        String output = tools.buildSquad("MixedPin", "", "", 100.0, 5, "");
+
+        assertThat(output).contains("MixedPin: included ✓");
+        assertThat(startingXi(output)).contains("MixedPin");
+    }
+
     /**
      * A club that plays nothing across the window is a finding about the schedule, so its player
      * stays purchasable for the bench and carries a real zero over the range the reply names.
@@ -489,7 +507,7 @@ class SquadToolsIntegrationTest {
 
         assertThat(output).doesNotContain("Starting XI")
                 .contains("No editable gameweek remains in the captured schedule")
-                .contains("unknown rather than zero").contains("60+")
+                .contains("unknown rather than zero").contains("complete recent minutes evidence")
                 .containsSubsequence(DataAge.RANKING_METRIC_REFRESH, "No editable gameweek remains");
     }
 

@@ -19,7 +19,7 @@ Reference document on FPL captaincy theory and the Triple Captain (TC) chip: sel
 **Player profile**
 
 - Premium player: the captain should be the team's undisputed talisman (e.g. Salah, Haaland, Isak, Palmer). Cheap players rarely have the ceiling for a haul.
-- Observed minutes consistency: rotation risk kills captaincy. Check the pattern of substantial appearances, not just total minutes or per-90 output. The primary captain ranking's **consistent observed 60+ history** gate requires fresh available status and complete same-season, current-club evidence: at least 180 minutes and 60+ in every expected fixture of the latest up-to-ten window. One sub-60 fixture blocks until ten later completed club fixtures in that spell move it out. Short complete windows can qualify but remain labelled small samples; stale or incomplete evidence means abstention. See `strategy-minutes-and-rotation.md`. This is historical evidence, never a guarantee of the next lineup.
+- Observed minutes consistency: rotation risk kills captaincy. Check the pattern of substantial appearances, not just total minutes or per-90 output. The primary captain ranking requires fresh available status and complete same-season, current-club evidence; minutes feed its projection rather than acting as a 60+ admission gate. It excludes for minutes only when the three latest complete observed fixtures are all below 60, including zero-minute absences. Short or mixed windows remain scored at their observed rate but are labelled small samples; stale or incomplete evidence means abstention. See `strategy-minutes-and-rotation.md`. This is historical evidence, never a guarantee of the next lineup.
 - Penalty duty: adds hidden upside independent of open play.
 - Attacking role: goals, assists, shots, big chances, bonus potential.
 - Underlying data: xG, xA, minutes, home/away splits, opponent's xG conceded.
@@ -97,7 +97,7 @@ Reference document on FPL captaincy theory and the Triple Captain (TC) chip: sel
 | --------------------------------- | --------------------------------------------------------------------------- |
 | TC default                        | Premium player in a DGW, ideally two easy home fixtures.                    |
 | When is a single Gameweek enough? | Elite form + very weak opponent + flawed DGW alternatives.                  |
-| Who gets the armband?             | Consistent observed 60+ history, penalties, centre of attack, high ceiling. |
+| Who gets the armband?             | Availability, minutes-aware projection, penalties, centre of attack, high ceiling. |
 | Safe or differential?             | Protecting a lead → safe; chasing → differential.                           |
 | Biggest mistake                   | Playing TC for "two fixtures" without analysing role, minutes and matchups. |
 | Always remember                   | Process > result; check team news and rotation risk before deadline.        |

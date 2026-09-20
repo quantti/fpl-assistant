@@ -93,11 +93,11 @@ import org.springframework.stereotype.Component;
  * that is not unique in either season loses the previous-season side rather than being guessed —
  * a wrong metric attached to a recommendation is the failure this class exists to prevent.
  *
- * <p>Primary lists require today's {@code a} flag and a complete same-season current-club window:
- * at least 180 observed minutes and 60+ in every expected completed fixture, up to the latest ten.
- * Doubtful, stale, partial and inconsistent evidence is excluded rather than weakened into a
- * probability claim. One short appearance remains in the latest-ten window for a deliberately
- * conservative recovery wait. Passing this historical rule never guarantees the next lineup.
+ * <p>Primary lists require today's {@code a} flag and a complete same-season current-club window.
+ * Minutes shape the projection rather than acting as a 60+ admission gate: only three latest
+ * complete observed fixtures all below 60 exclude a player. Doubtful, stale, partial and
+ * inconsistent evidence is excluded rather than weakened into a probability claim. Passing this
+ * historical check never guarantees the next lineup.
  */
 @Component
 public class PickTools implements FplTool {
@@ -140,17 +140,16 @@ public class PickTools implements FplTool {
     @Tool(description = """
             Suggest differential FPL picks at or below maxOwnership, optionally filtered by
             position (1=GK, 2=DEF, 3=MID, 4=FWD, or "any"). Returns up to 10 eligible players.
-            Eligibility is the consistent observed 60+ history rule. The selected daily capture
-            must be fresh and say available ('a'), with valid position/club; it, the current metric
-            season and the fresh complete schedule must be the same season with coherent identity.
-            The complete current-club window includes every expected completed fixture, latest ten
-            at most, with at least 180 current-season minutes and 60+ in every fixture. Known zeros
+            Eligibility requires a fresh available ('a') daily capture with valid position/club,
+            plus coherent same-season identity and a complete current-club evidence window. The
+            window includes every expected completed fixture, latest ten at most; known zeros
             count. Only a verified different-club observation fences the spell; otherwise expected
             fixtures start at season start. Doubtful, stale, missing, pending or inconsistent data
-            causes abstention; last-season history cannot certify a current role. One sub-60 fixture
-            blocks until ten later completed club fixtures in that spell move it out. A short
-            complete window can qualify after clearing the floor, but is labelled as a small
-            sample. This history does not guarantee the next start.
+            causes abstention, and last-season history cannot certify a current role. Minutes shape
+            the projection; they exclude a player only when the three latest complete observed
+            fixtures are all under 60 minutes. A shorter or mixed window remains rankable at its
+            observed minute rate and is labelled as a small sample. This history does not guarantee
+            the next start.
             Ranking uses a horizon Score: expected FPL points per fixture — appearance and 60+
             chances, attack scaled by expected minutes, 60+-conditional clean sheets projected
             per fixture from club xG/xGC rates and venue, and short/long DefCon — blended
@@ -213,18 +212,16 @@ public class PickTools implements FplTool {
     }
 
     @Tool(description = """
-            Suggest up to 10 FPL captain candidates from midfielders and forwards. Primary
-            candidates must pass the consistent observed 60+ history rule. The selected daily
-            capture must be fresh and say available ('a'), with valid position/club; it, the current
-            metric season and fresh complete schedule must be the same season with coherent
-            identity. The complete current-club window includes every expected completed fixture,
-            latest ten at most, with at least 180 current-season minutes and 60+ in every fixture.
-            Known zeros count. Only a verified different-club observation fences the spell;
-            otherwise expected fixtures start at season start. Doubtful, stale, missing, pending or
-            inconsistent data causes abstention; last-season minutes cannot certify today's role.
-            One sub-60 fixture blocks until ten later completed club fixtures in that spell move it
-            out. A short complete window can qualify after clearing the floor, but is labelled as
-            a small sample. This history does not guarantee the next lineup.
+            Suggest up to 10 FPL captain candidates from midfielders and forwards. Candidates need
+            a fresh available ('a') daily capture with valid position/club, plus coherent
+            same-season identity and a complete current-club evidence window. The window includes
+            every expected completed fixture, latest ten at most; known zeros count. Only a verified
+            different-club observation fences the spell; otherwise expected fixtures start at season
+            start. Doubtful, stale, missing, pending or inconsistent data causes abstention, and
+            last-season minutes cannot certify today's role. Minutes shape the projection; they
+            exclude a player only when the three latest complete observed fixtures are all under 60
+            minutes. A shorter or mixed window remains rankable at its observed minute rate and is
+            labelled as a small sample. This history does not guarantee the next start.
             Ranking uses a horizon Score: expected FPL points per fixture — appearance and 60+
             chances, attack scaled by expected minutes, 60+-conditional clean sheets projected
             per fixture from club xG/xGC rates and venue, and short/long DefCon — blended
@@ -512,7 +509,7 @@ public class PickTools implements FplTool {
     private static String noQualifyingPlayers(String kind, String season, Selection selection,
                                               HorizonFixtures.Result horizon) {
         String reply = "No " + kind + " qualify in " + season
-                + " under the consistent observed 60+ history rule and the editable gameweek"
+                + " under the availability and recent-minutes rule and the editable gameweek"
                 + " horizon. Checked " + selection.matchingCapturePlayers()
                 + " matching capture players. Exclusions: " + exclusionCounts(selection) + ".";
         if (horizon.status() != HorizonFixtures.Status.KNOWN) {
@@ -537,10 +534,8 @@ public class PickTools implements FplTool {
         Map<MinutesModel.Eligibility, Integer> counts = selection.exclusions();
         return "availability risk " + counts.getOrDefault(
                 MinutesModel.Eligibility.AVAILABILITY_RISK, 0)
-                + ", observed minutes risk " + counts.getOrDefault(
-                        MinutesModel.Eligibility.MINUTES_RISK, 0)
-                + ", insufficient current evidence " + counts.getOrDefault(
-                        MinutesModel.Eligibility.INSUFFICIENT_CURRENT_EVIDENCE, 0)
+                + ", consistently under-60 minutes " + counts.getOrDefault(
+                        MinutesModel.Eligibility.CONSISTENTLY_UNDER_60, 0)
                 + ", unknown current evidence " + counts.getOrDefault(
                         MinutesModel.Eligibility.UNKNOWN_CURRENT_EVIDENCE, 0)
                 + ", no fixtures in the horizon " + selection.knownZeroHorizon()
@@ -739,12 +734,13 @@ public class PickTools implements FplTool {
                     + " 5-7: 90%, 8+: 100%. Raw current-club 60+ counts printed on each row are"
                     + " observed frequencies, not blended probabilities.\n");
         }
-        out.append("Only fresh available players with a complete current-club window, at least " )
-                .append(ExpectedPoints.MIN_WINDOW_MINUTES)
-                .append(" current-season minutes and 60+ in every fixture qualify. A short")
-                .append(" complete window is labelled; this consistent observed 60+ history is")
-                .append(" not a guarantee of the next start. Missing/stale rows abstain rather")
-                .append(" than borrowing last season as current-role proof. A pick also needs a")
+        out.append("Only fresh available players with a complete current-club window qualify.")
+                .append(" Minutes shape the projection; a player is excluded only when the three")
+                .append(" latest complete observed fixtures are all under 60 minutes, with known")
+                .append(" zeros included. A short or mixed complete window is labelled and scored")
+                .append(" at its observed minute rate; neither is a guarantee of the next start.")
+                .append(" Missing/stale rows abstain rather than borrowing last season as")
+                .append(" current-role proof. A pick also needs a")
                 .append(" known horizon holding at least one fixture: a club blanked across the")
                 .append(" whole window, or one whose schedule is unresolved, is counted in the")
                 .append(" exclusions below rather than ranked at zero.\n")

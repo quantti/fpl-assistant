@@ -59,6 +59,7 @@ class PickToolsIntegrationTest {
     private static final int DOUBLE_MID = 13_010;
     private static final int NEAR_MID = 13_011;
     private static final int FAR_MID = 13_012;
+    private static final int MIXED_MID = 13_013;
 
     /** A midweek second leg, after every gameweek-6 kickoff the seeded schedule lays down. */
     private static final Instant SECOND_LEG_KICKOFF = Instant.parse("2026-09-29T18:00:00Z");
@@ -107,6 +108,14 @@ class PickToolsIntegrationTest {
         seedPlayer(ZERO, "LostRole", 7, 3, 50, 1.0, "a", 0, 2.0, 1.0, 1.0, null);
         seedPlayer(NO_RECORD, "Newcomer", 8, 3, 50, 1.0, "a", null, 0, 0, 1.0, null);
         seedPlayer(UNAVAILABLE, "Injured", 9, 4, 70, 1.0, "i", 90, 2.0, 1.0, 1.0, 12);
+        seedPlayer(MIXED_MID, "Mixed", 10, 3, 55, 1.0, "a", 90, 0.55, 0.25, 1.0, 12);
+        int mixedFixture = RankingSeed.fixtures(CAPTURED_AT, FIRST_DEADLINE).stream()
+                .filter(row -> row.gameweek() == 1 && (row.homeTeamId() == RankingSeed.team(10)
+                        || row.awayTeamId() == RankingSeed.team(10)))
+                .findFirst().orElseThrow().id();
+        jdbc.update("UPDATE player_fixture_stats SET minutes = 30, starts = 0"
+                        + " WHERE season_id = ? AND player_id = ? AND fixture_id = ?",
+                SEASON_ID, MIXED_MID, mixedFixture);
         seedAverageLeague(1.20, 1.20);
     }
 
@@ -264,16 +273,19 @@ class PickToolsIntegrationTest {
         String result = tools.getDifferentialPicks("any", 10, 5);
 
         assertThat(result).contains("Differential picks")
-                .contains("Reliable", "Defender", "Keeper")
+                .contains("Reliable", "Mixed", "Defender", "Keeper")
                 .contains("Score/fixture", "expected/fixture", "realised points/fixture")
                 .contains("observed current-club 60+ 3/3")
                 .contains("short window: 3 fixtures")
                 .contains("complete FPL schedule capture at " + CAPTURED_AT)
                 .contains("Avg FDR")
                 .contains("projected per fixture")
+                .contains("observed current-club 60+ 2/3, 210 mins")
                 .doesNotContain(" Cameo (").doesNotContain(" Doubtful (")
                 .doesNotContain(" LostRole (").doesNotContain(" Newcomer (")
                 .doesNotContain(" Injured (").doesNotContain("Pts/90");
+        assertThat(tools.getCaptainCandidates(5)).contains(" Mixed (")
+                .doesNotContain(" Cameo (").doesNotContain(" LostRole (");
     }
 
     /**
@@ -479,7 +491,7 @@ class PickToolsIntegrationTest {
         String result = tools.getDifferentialPicks("any", 100, 5);
 
         assertThat(result).contains("availability risk 2")
-                .contains("observed minutes risk 2")
+                .contains("consistently under-60 minutes 2")
                 .contains("unknown current evidence 1");
     }
 

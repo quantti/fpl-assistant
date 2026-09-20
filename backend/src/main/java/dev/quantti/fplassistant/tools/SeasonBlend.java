@@ -20,7 +20,7 @@ import java.util.Map;
  * <p><b>Ability rates blend; their evidence counts add.</b> {@code xg90} at two matches is 30%
  * this season and 70% last. The exposure rates used by per-fixture scoring travel together in one
  * {@link Exposure} bundle on the same ramp; they are never reconstructed from summed minutes and
- * fixture counts. None of this can satisfy {@link MinutesModel}'s raw current-role gate.
+ * fixture counts. None of this can replace {@link MinutesModel}'s current-evidence checks.
  *
  * <p>A player with no previous record is ranked on this season alone once the floor is cleared,
  * and {@link Blended#hasPrevious()} is false so the reply can say so. His {@link Blended#weight()}

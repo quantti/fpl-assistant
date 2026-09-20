@@ -84,8 +84,8 @@ class PickToolsCrossSeasonTest {
      * The changeover reply, where the daily capture and the schedule capture are the season being
      * played while the resolved metric season is still a completed one. Both clarification clauses
      * have to be there: the metric-season banner describes neither the prices nor the fixtures.
-     * Under the observed 60+ history rule nobody can be primary-eligible while the current metric
-     * season is a completed one, so the reply carrying the sentence is the one that ranks nobody.
+     * Without a current metric season there is no complete current-club evidence window, so the
+     * reply carrying the sentence ranks nobody.
      */
     @Test
     void aChangeoverReplySaysTheMetricSeasonDescribesNeitherThePricesNorTheFixtures() {

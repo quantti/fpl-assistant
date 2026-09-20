@@ -27,7 +27,7 @@ public record SquadCandidate(
         MinutesModel.Eligibility eligibility
 ) {
 
-    /** Ability controls scoring; only {@link MinutesModel.Eligibility#ELIGIBLE} controls the XI. */
+    /** Ability controls scoring; eligibility enforces availability and the recent-minute exclusion. */
     public enum Tier { RANKABLE, BODY }
 
     public boolean isDoubtful() {

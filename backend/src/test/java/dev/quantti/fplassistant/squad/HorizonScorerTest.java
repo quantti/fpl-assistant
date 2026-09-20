@@ -57,11 +57,10 @@ class HorizonScorerTest {
                 Instant.parse("2026-08-01T12:00:00Z"),
                 Instant.parse("2026-09-01T12:00:00Z"), fixtures, fixtures, totalMinutes,
                 fixtures, sixty, List.of());
-        MinutesModel.Eligibility eligibility = sixty == fixtures && totalMinutes >= 180
-                ? MinutesModel.Eligibility.ELIGIBLE : MinutesModel.Eligibility.MINUTES_RISK;
         return new SquadCandidate(1, "Test", "Test Player", "Ashfield Rovers", "ASH", 3, 60,
                 10.0, "a", null, CLUB, expectedMinutes, metrics,
-                SquadCandidate.Tier.RANKABLE, window, exposure, eligibility);
+                SquadCandidate.Tier.RANKABLE, window, exposure,
+                MinutesModel.Eligibility.ELIGIBLE);
     }
 
     /**

@@ -78,11 +78,11 @@ class StrategyToolsIntegrationTest {
         ingestionService.ingest("classpath:docs/*.md");
 
         String defenders = strategyTools.searchStrategyDocs(
-                "What strict latest-ten current-club 60-minute history rule should primary"
-                        + " defender picks pass, and what happens after one short appearance?");
+                "What recent under-60-minute pattern excludes a primary defender pick, and how"
+                        + " does a single short appearance affect the projection?");
         assertThat(defenders).contains("FPL Minutes Security, Rotation and the 60-Minute Rule")
-                .contains("The primary-list rule used by the ranking tools")
-                .contains("ten later completed club fixtures");
+                .contains("The recent under-60 exclusion used by the ranking tools")
+                .contains("three latest complete observed fixtures");
 
         String captains = strategyTools.searchStrategyDocs(
                 "How should minutes security and rotation risk affect captain selection"

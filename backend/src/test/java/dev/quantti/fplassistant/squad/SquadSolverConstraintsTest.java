@@ -82,7 +82,7 @@ class SquadSolverConstraintsTest {
         return new SquadConstraints(List.of(), List.of(), List.of(), 1000, 5, formation);
     }
 
-    /** Every club of the pool plays in the horizon, so only the minutes gate binds. */
+    /** Every club of the pool plays in the horizon, so only the minutes exclusion binds. */
     private static Set<Integer> allPlayable(List<SquadCandidate> pool) {
         return SquadCandidateTestData.clubsOf(pool);
     }
@@ -188,7 +188,7 @@ class SquadSolverConstraintsTest {
     void anIneligiblePlayerIsNeverInTheStartingEleven() {
         List<SquadCandidate> pool = pool();
         SquadCandidate benchwarmer = SquadCandidateTestData.ineligible(pool.get(5),
-                dev.quantti.fplassistant.tools.MinutesModel.Eligibility.MINUTES_RISK);
+                dev.quantti.fplassistant.tools.MinutesModel.Eligibility.CONSISTENTLY_UNDER_60);
         pool.set(5, benchwarmer);
         Map<Integer, Double> scores = flatScores(pool);
         scores.put(benchwarmer.elementId(), 1000.0);
@@ -205,7 +205,7 @@ class SquadSolverConstraintsTest {
         SquadCandidate pin = SquadCandidateTestData.ineligible(
                 pool.stream().filter(candidate -> candidate.elementType() == 4).findFirst()
                         .orElseThrow(),
-                dev.quantti.fplassistant.tools.MinutesModel.Eligibility.MINUTES_RISK);
+                dev.quantti.fplassistant.tools.MinutesModel.Eligibility.CONSISTENTLY_UNDER_60);
         pool.set(pool.indexOf(pool.stream()
                 .filter(candidate -> candidate.elementId() == pin.elementId()).findFirst()
                 .orElseThrow()), pin);
@@ -386,7 +386,7 @@ class SquadSolverConstraintsTest {
         for (int n = 0; n < 3; n++) {
             SquadCandidate risky = player(8000 + n, club, 4, 40, 1.0);
             pool.add(SquadCandidateTestData.ineligible(risky,
-                    dev.quantti.fplassistant.tools.MinutesModel.Eligibility.MINUTES_RISK));
+                    dev.quantti.fplassistant.tools.MinutesModel.Eligibility.CONSISTENTLY_UNDER_60));
         }
         var constraints = new SquadConstraints(List.of(), List.of(), List.of(
                 quota(club, SquadConstraints.Comparator.EXACTLY, 3)), 1000, 5,

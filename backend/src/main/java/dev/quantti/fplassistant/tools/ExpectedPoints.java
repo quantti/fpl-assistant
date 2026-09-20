@@ -46,9 +46,9 @@ public final class ExpectedPoints {
     public static final int WHOLE_SEASON = 60;
 
     /**
-     * Minimum minutes for both the ability floor and the separate current-role gate. The latter
-     * additionally requires complete current-season evidence and 60+ in every expected fixture;
-     * cross-season aggregate minutes cannot satisfy it.
+     * Minimum combined minutes for the ability floor. This keeps a rate-based projection from
+     * being invented from a negligible sample; it is separate from the recent-under-60 role
+     * exclusion and may include previous-season evidence through the season blend.
      */
     public static final int MIN_WINDOW_MINUTES = 180;
 

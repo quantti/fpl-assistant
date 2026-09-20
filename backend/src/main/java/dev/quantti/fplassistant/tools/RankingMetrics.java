@@ -62,10 +62,10 @@ public class RankingMetrics {
                                 Instant firstKickoff, Instant lastKickoff,
                                 int expected, int observed, int totalMinutes,
                                 int appearances, int sixtyPlus,
-                                List<FixtureOutcome> latestTwo) {
+                                List<FixtureOutcome> latestThree) {
         public MinutesWindow {
             Objects.requireNonNull(reason);
-            latestTwo = List.copyOf(latestTwo);
+            latestThree = List.copyOf(latestThree);
             if (complete != (reason == WindowReason.COMPLETE)) {
                 throw new IllegalArgumentException("window completeness and reason disagree");
             }
@@ -974,11 +974,12 @@ public class RankingMetrics {
     }
 
     private static List<Target> flatten(Map<Integer, List<CanonicalFixture>> expected,
-                                        boolean latestTwoOnly) {
+                                        boolean latestThreeOnly) {
         List<Target> targets = new ArrayList<>();
         expected.forEach((playerId, fixtures) -> {
             List<CanonicalFixture> selected = fixtures.stream().sorted(NEWEST_FIXTURE)
-                    .limit(latestTwoOnly ? 2 : Long.MAX_VALUE).toList();
+                    .limit(latestThreeOnly ? MinutesModel.CONSISTENTLY_UNDER_60_FIXTURES
+                            : Long.MAX_VALUE).toList();
             selected.forEach(fixture -> targets.add(new Target(playerId, fixture)));
         });
         return targets;
