@@ -27,7 +27,7 @@ class PickToolsCrossSeasonTest {
     private static final Instant FIRST_DEADLINE = Instant.parse("2026-08-14T17:30:00Z");
 
     @Test
-    void historicalOnlyRegularIsExcludedEvenAtMaximumRealisedWeight() {
+    void historicalOnlyRegularCannotCertifyCurrentEvidence() {
         SeasonContext current = new SeasonContext(9027, CURRENT, true, CURRENT,
                 LocalDate.of(2026, 8, 14));
         SeasonContext previous = new SeasonContext(9026, PREVIOUS, false, CURRENT,
@@ -38,18 +38,14 @@ class PickToolsCrossSeasonTest {
         RankingMetrics.CapturePlayer player = new RankingMetrics.CapturePlayer(
                 50, "OldRegular", "Old Regular", 9701, "OLD", "Old Town", 3,
                 70, 5.0, "a", null, Instant.parse("2026-09-09T10:00:00Z"), 1);
-        SeasonBlend.Exposure oldExposure = new SeasonBlend.Exposure(
-                10, 10, 10, 900, 1, 1, 0, 90, 6);
         RankingMetrics.MinutesWindow oldWindow = new RankingMetrics.MinutesWindow(
                 true, RankingMetrics.WindowReason.COMPLETE, 9601,
                 Instant.parse("2025-08-01T12:00:00Z"),
-                Instant.parse("2025-10-01T12:00:00Z"), 10, 10, 900, 10, 10, List.of());
+                Instant.parse("2025-10-01T12:00:00Z"), 10, 10, List.of());
         RankingMetrics.SeasonMetrics oldRecord = new RankingMetrics.SeasonMetrics(
-                previous, 500, 3, Map.of("mins", 900.0, "xg90", 0.8),
-                oldWindow, oldExposure);
+                previous, 500, 3, Map.of("mins", 900.0, "xg90", 0.8), oldWindow);
         SeasonBlend.Blended historicalAbility = new SeasonBlend.Blended(
-                Map.of("mins", 900.0, "xg90", 0.8, "element_type", 3),
-                0, 0, true, null, true);
+                Map.of("mins", 900.0, "xg90", 0.8, "element_type", 3), 0, 0, true);
         RankingMetrics.Candidate candidate = new RankingMetrics.Candidate(
                 player, null, oldRecord, historicalAbility,
                 MinutesModel.Eligibility.UNKNOWN_CURRENT_EVIDENCE);

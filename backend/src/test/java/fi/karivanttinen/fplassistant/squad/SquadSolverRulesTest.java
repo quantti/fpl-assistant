@@ -176,7 +176,7 @@ class SquadSolverRulesTest {
         Random random = new Random(17);
         List<SquadCandidate> pool = pool(random);
         SquadCandidate risky = SquadCandidateTestData.ineligible(pool.get(5),
-                fi.karivanttinen.fplassistant.tools.MinutesModel.Eligibility.CONSISTENTLY_UNDER_60);
+                fi.karivanttinen.fplassistant.tools.MinutesModel.Eligibility.UNKNOWN_CURRENT_EVIDENCE);
         pool.set(5, risky);
         Map<Integer, Double> scores = scores(pool, random);
         scores.put(risky.elementId(), 10_000.0);
@@ -213,15 +213,15 @@ class SquadSolverRulesTest {
     }
 
     /**
-     * Two fixtures are twice the opportunity, and the score says so — but the observed-history
-     * rule is not a score. A doubled projection must not buy an ineligible player a start.
+     * Two fixtures are twice the opportunity, and the score says so — but complete current
+     * evidence is not a score. A doubled projection must not buy an ineligible player a start.
      */
     @Test
-    void aDoubleGameweekNeverRescuesAMinutesIneligiblePlayerIntoTheXi() {
+    void aDoubleGameweekNeverRescuesAnEvidenceIneligiblePlayerIntoTheXi() {
         Random random = new Random(29);
         List<SquadCandidate> pool = new ArrayList<>(pool(random));
         SquadCandidate risky = SquadCandidateTestData.ineligible(pool.get(9),
-                fi.karivanttinen.fplassistant.tools.MinutesModel.Eligibility.CONSISTENTLY_UNDER_60);
+                fi.karivanttinen.fplassistant.tools.MinutesModel.Eligibility.UNKNOWN_CURRENT_EVIDENCE);
         pool.set(9, risky);
         Map<Integer, Double> scores = scores(pool, random);
         double best = scores.values().stream().mapToDouble(Double::doubleValue).max().orElseThrow();

@@ -11,7 +11,6 @@ import fi.karivanttinen.fplassistant.schedule.HorizonFixtures;
 import fi.karivanttinen.fplassistant.schedule.ScheduleSource;
 import fi.karivanttinen.fplassistant.tools.ClubRates;
 import fi.karivanttinen.fplassistant.tools.MinutesModel;
-import fi.karivanttinen.fplassistant.tools.SeasonBlend;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -87,10 +86,8 @@ class HorizonScorerIntegrationTest {
         metrics.put("defcon_avg", BigDecimal.ZERO);
         metrics.put("defcon_matches", 2);
         return new SquadCandidate(teamId, "P" + teamId, "Player " + teamId, "Club " + teamId,
-                "C" + teamId, 4, 80, 5.0, "a", null, teamId, 90, metrics,
-                SquadCandidate.Tier.RANKABLE, null,
-                new SeasonBlend.Exposure(10, 10, 10, 900, 1, 1, 0, 90, 4),
-                MinutesModel.Eligibility.ELIGIBLE);
+                "C" + teamId, 4, 80, 5.0, "a", null, teamId, metrics,
+                SquadCandidate.Tier.RANKABLE, null, MinutesModel.Eligibility.ELIGIBLE);
     }
 
     private static HorizonScorer.Projection projectionFor(int teamId, ScheduleSource.View view) {

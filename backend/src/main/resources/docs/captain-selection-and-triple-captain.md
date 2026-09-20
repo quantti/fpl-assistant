@@ -19,10 +19,10 @@ Reference document on FPL captaincy theory and the Triple Captain (TC) chip: sel
 **Player profile**
 
 - Premium player: the captain should be the team's undisputed talisman (e.g. Salah, Haaland, Isak, Palmer). Cheap players rarely have the ceiling for a haul.
-- Observed minutes consistency: rotation risk kills captaincy. Check the pattern of substantial appearances, not just total minutes or per-90 output. The primary captain ranking requires fresh available status and complete same-season, current-club evidence; minutes feed its projection rather than acting as a 60+ admission gate. It excludes for minutes only when the three latest complete observed fixtures are all below 60, including zero-minute absences. Short or mixed windows remain scored at their observed rate but are labelled small samples; stale or incomplete evidence means abstention. See `strategy-minutes-and-rotation.md`. This is historical evidence, never a guarantee of the next lineup.
+- Availability and evidence quality: the primary captain ranking requires a fresh available status and complete same-season, current-club evidence. Observed minutes do not alter its projection, eligibility or order. A sub-60 appearance in the latest five complete observations can be relayed as a neutral fact only; it is not a rotation penalty. See `strategy-minutes-and-rotation.md`. Availability is historical evidence, never a guarantee of the next lineup.
 - Penalty duty: adds hidden upside independent of open play.
 - Attacking role: goals, assists, shots, big chances, bonus potential.
-- Underlying data: xG, xA, minutes, home/away splits, opponent's xG conceded.
+- Underlying data: xG, xA, home/away splits and opponent's xG conceded.
 
 **Fixtures and matchups**
 
@@ -57,20 +57,20 @@ Reference document on FPL captaincy theory and the Triple Captain (TC) chip: sel
 - Default rule: premium player in a DGW, ideally two easy home fixtures.
 - DGW raises the floor and keeps the ceiling high; two chances at goals, assists, appearance points and bonus.
 - DGWs historically cluster in GW25–37 (largest GW34–37), caused by FA Cup, Carabao Cup and European rescheduling.
-- A single-Gameweek play is justified when: player in unstoppable form (eye test + data); opponent vulnerable (big chances, set pieces, transitions); player has huge ceiling; DGW alternatives flawed (rotation, poor fixtures, low upside).
+- A single-Gameweek play is justified when: player in unstoppable form (eye test + data); opponent vulnerable (big chances, set pieces, transitions); player has huge ceiling; DGW alternatives have availability concerns, poor fixtures or low upside.
 - Famous single-Gameweek case: Salah TC vs Watford 2021/22 (72 points from a 24-point haul).
 
 **Who to pick**
 
-- Never: uncertain starters, rotation risks, players carrying knocks.
-- Avoid: picks justified only by "two fixtures" without role, minutes, team quality and matchup support.
-- Pre-activation checks: injury news, manager interviews, secure minutes in both DGW matches, penalty duty, team attacking output.
+- Never: players carrying an availability concern or an injury flag.
+- Avoid: picks justified only by "two fixtures" without expected-points, team-quality and matchup support.
+- Pre-activation checks: availability news, manager interviews, penalty duty and team attacking output.
 
 **Pre-activation checklist**
 
 - Does the captain have a DGW? Will he play both matches?
 - Will a better opportunity arise later (2 × easy DGW beats 1 × easy DGW)?
-- Does his observed history support substantial minutes, and is he fully fit and on penalties?
+- Is he marked available, fully fit and on penalties?
 - Are the fixtures actually good, or merely "two games"?
 - Can the rank situation afford the risk (safe vs differential)?
 - Confirm team news and deadline.
@@ -85,11 +85,10 @@ Reference document on FPL captaincy theory and the Triple Captain (TC) chip: sel
 
 **Why TC flops (common causes)**
 
-1. Rotation: starts only one DGW match or benched unexpectedly.
-2. Fitness risk: reduced minutes from a minor injury.
-3. Overrating the DGW: two average fixtures are not automatically better than one elite fixture.
-4. Ignoring context: tough opponents, fixture congestion, tactical changes.
-5. Randomness: missed penalty, early sub, red card, goalkeeper's outstanding display.
+1. Availability: an injury or late fitness issue changes the choice.
+2. Overrating the DGW: two average fixtures are not automatically better than one elite fixture.
+3. Ignoring context: tough opponents, fixture congestion or tactical changes.
+4. Randomness: missed penalty, red card or an outstanding goalkeeper display.
 
 ## Decision framework (summary)
 
@@ -97,7 +96,7 @@ Reference document on FPL captaincy theory and the Triple Captain (TC) chip: sel
 | --------------------------------- | --------------------------------------------------------------------------- |
 | TC default                        | Premium player in a DGW, ideally two easy home fixtures.                    |
 | When is a single Gameweek enough? | Elite form + very weak opponent + flawed DGW alternatives.                  |
-| Who gets the armband?             | Availability, minutes-aware projection, penalties, centre of attack, high ceiling. |
+| Who gets the armband?             | Availability, expected points, penalties, centre of attack, high ceiling. |
 | Safe or differential?             | Protecting a lead → safe; chasing → differential.                           |
-| Biggest mistake                   | Playing TC for "two fixtures" without analysing role, minutes and matchups. |
-| Always remember                   | Process > result; check team news and rotation risk before deadline.        |
+| Biggest mistake                   | Playing TC for "two fixtures" without analysing expected points and matchups. |
+| Always remember                   | Process > result; check availability news before deadline.                  |

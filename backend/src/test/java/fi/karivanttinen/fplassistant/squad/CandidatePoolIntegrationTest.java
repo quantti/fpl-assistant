@@ -224,7 +224,6 @@ class CandidatePoolIntegrationTest {
         SquadCandidate okafor = candidate(OKAFOR);
 
         assertThat(okafor.tier()).isEqualTo(SquadCandidate.Tier.RANKABLE);
-        assertThat(okafor.minutesWindow().totalMinutes()).isEqualTo(270);
         assertThat(((Number) okafor.metrics().get("xg90")).doubleValue()).isGreaterThan(0);
     }
 
@@ -237,7 +236,6 @@ class CandidatePoolIntegrationTest {
         SquadCandidate kaminski = candidate(KAMINSKI);
 
         assertThat(kaminski.tier()).isEqualTo(SquadCandidate.Tier.RANKABLE);
-        assertThat(kaminski.minutesWindow().totalMinutes()).isEqualTo(180);
         assertThat(kaminski.minutesWindow().expected()).isEqualTo(3);
     }
 

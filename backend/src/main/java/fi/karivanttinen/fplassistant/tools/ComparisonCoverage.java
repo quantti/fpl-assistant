@@ -75,7 +75,7 @@ public record ComparisonCoverage(List<AffectedClub> affectedClubs,
                 clubCandidateCounts.merge(player.teamId(), 1, Integer::sum);
             }
             if (candidate.eligibility() == MinutesModel.Eligibility.ELIGIBLE
-                    && candidate.blended() != null && candidate.blended().exposure() != null) {
+                    && candidate.blended() != null) {
                 eligible++;
                 continue;
             }

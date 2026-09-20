@@ -70,34 +70,31 @@ public class SquadTools implements FplTool {
             comma-separated. budget is millions, default 100.0; for a wildcard use squad value
             plus bank from getMyTeam. nextN defaults to 5. formation may force "3-4-3".
             Every XI player needs a fresh available ('a') daily capture with valid position/club,
-            coherent same-season identity and a complete current-club evidence window. Minutes
-            shape the projection; a player is bench-only for minutes only when the three latest
-            complete observed fixtures are all under 60 minutes, with known zeros included. A
-            shorter or mixed window remains scoreable at its observed minute rate and is labelled
-            as a small sample. Only a verified different-club observation fences the spell;
-            otherwise expected fixtures start at season start. Doubtful, stale, missing, pending
-            or inconsistent data causes abstention, and last-season history cannot certify the
-            current role. Every starter must also play for a club with at least one fixture in the
-            editable window of the next nextN calendar gameweeks, counted from the next deadline
-            in the captured schedule. A club blanked across that window, or one whose schedule is
-            unresolved, can be bought for the bench only; its rows print a real zero and an n/a
-            respectively, never each other. A general squad is refused as
-            COMPARISON_DATA_INCOMPLETE when a relevant elapsed unfinished fixture or a completed
-            club side without usable verified core rows removes a whole club from comparison.
-            Filters, pins and constraints cannot hide or waive that refusal. An ineligible
-            mustInclude may be bought only on the bench. This history is not a future-start
-            guarantee, and a pin, budget or relaxed template/premium default cannot waive it.
-            Ranking uses shared expected points per fixture: appearance and 60+ exposure, attack
-            scaled by expected minutes, 60+-conditional clean sheets projected per fixture from
-            club xG/xGC rates and venue, short/long DefCon, and coarse captured-schedule FDR on
-            the attacking term only, summed over the club's fixtures in that same window — a
-            double gameweek adds one, a blank removes one. A fixture with no published FDR is
-            scored at a neutral 3 and labelled. Unknown projections have zero optimiser weight but
-            are printed n/a/unscored, never as a zero forecast. NOT ranked on form. The reply
-            attributes three sources — the daily price capture, the metric season and the FPL
-            schedule capture — and adds observed-window evidence; the metric season line covers
-            the metrics only, while price and fixtures come from the other two. Relay a refusal as
-            written.
+            coherent same-season identity and a complete current-club evidence window. Minutes do
+            not affect a player's score or XI eligibility; an under-60 appearance in the latest
+            five complete observations is a factual pick-list note only. Only a verified
+            different-club observation fences the spell; otherwise expected fixtures start at
+            season start. Doubtful, stale, missing, pending or inconsistent data causes abstention,
+            and last-season history cannot certify the current role. Every starter must also play
+            for a club with at least one fixture in the editable window of the next nextN calendar
+            gameweeks, counted from the next deadline in the captured schedule. A club blanked
+            across that window, or one whose schedule is unresolved, can be bought for the bench
+            only; its rows print a real zero and an n/a respectively, never each other. A general
+            squad is refused as COMPARISON_DATA_INCOMPLETE when a relevant elapsed unfinished
+            fixture or a completed club side without usable verified core rows removes a whole
+            club from comparison. Filters, pins and constraints cannot hide or waive that refusal.
+            An ineligible mustInclude may be bought only on the bench. This history is not a
+            future-start guarantee, and a pin, budget or relaxed template/premium default cannot
+            waive it. Ranking uses full-fixture expected points: xG/xA ability, fixture-specific
+            clean-sheet probability, DefCon and coarse captured-schedule FDR on the attacking term
+            only, summed over the club's fixtures in that same window — a double gameweek adds one,
+            a blank removes one. It does not use realised points, observed minutes, 60+ rates or
+            expected minutes. A fixture with no published FDR is scored at a neutral 3 and labelled.
+            Unknown projections have zero optimiser weight but are printed n/a/unscored, never as
+            a zero forecast. NOT ranked on form. The reply attributes three sources — the daily
+            price capture, the metric season and the FPL schedule capture — and adds the factual
+            evidence note where applicable; the metric season line covers the metrics only, while
+            price and fixtures come from the other two. Relay a refusal as written.
             """)
     public String buildSquad(String mustInclude, String mustExclude, String clubQuota,
                              double budget, int nextN, String formation) {
@@ -212,10 +209,9 @@ public class SquadTools implements FplTool {
                     candidates, scores, constraints, pinned, excludedPlayers, playableClubs);
             if (solved.isEmpty()) {
                 return evidenceHeader + "\nThose constraints cannot all be met while every starter"
-                        + " also avoids the recent three-fixture under-60 exclusion and plays"
-                        + " for a club with at least one fixture in the horizon. Pins can"
-                        + " occupy the bench but cannot waive either XI rule; review the"
-                        + " formation, exclusions, club quotas and budget together.";
+                        + " plays for a club with at least one fixture in the horizon. Pins can"
+                        + " occupy the bench but cannot waive that XI rule; review the formation,"
+                        + " exclusions, club quotas and budget together.";
             }
 
             int excludedForNoRecord = (int) candidates.stream()
@@ -226,19 +222,16 @@ public class SquadTools implements FplTool {
             // banner would claim every number below it is last season's, and under blending none
             // purely is.
             String blendNote = metric.blending()
-                    ? "Underlying ability and usable exposure rates blend "
-                            + metric.played().code() + " with " + metric.previousCode()
-                            + " per player on the shared 1:10%, 2:30%, 3:60%, 4:80%,"
-                            + " 5-7:90%, 8+:100% ramp. Raw current-club minutes remain separate:"
-                            + " only three latest complete fixtures all below 60 bar an XI place."
-                    : "Raw current-club minutes are separate from ability: only three latest"
-                            + " complete fixtures all below 60 bar an XI place.";
+                    ? "Underlying ability blends " + metric.played().code() + " with "
+                            + metric.previousCode() + " per player on the shared 1:10%,"
+                            + " 2:30%, 3:60%, 4:80%, 5-7:90%, 8+:100% fixture-evidence ramp."
+                    : "Underlying ability uses the current metric season only.";
             blendNote += " " + scheduleNote;
             blendNote += " " + ComparisonCoverageFormatter.success(
                     loaded.snapshot().comparisonCoverage());
             blendNote += " Clean sheets are projected per fixture from club expected-goal rates:"
                     + " the club's expected concession times the opponent's expected scoring"
-                    + " rate over the league mean, adjusted for venue, conditional on P(60+)."
+                    + " rate over the league mean, adjusted for venue."
                     + (metric.blending()
                             ? " Club rates blend " + metric.played().code() + " with "
                                     + metric.previousCode() + " on the same ramp keyed on the"

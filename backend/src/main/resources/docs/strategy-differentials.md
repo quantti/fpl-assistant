@@ -38,10 +38,10 @@ Lower ownership = higher rank impact on a haul, and bigger rank loss on a blank.
 Pass all five → real differential. Pass four → watch-list. Pass three or fewer → a punt (and punts tank seasons).
 
 1. **Strong underlying numbers**: xG, xA, shots on target, big chances above what ownership implies; look for the gap between doing and scoring.
-2. **Minutes reliability**: 70+ minutes most games, ideally 80+; a starter who only plays every other week is not a differential. These are strategic preferences, not forecast probabilities. The primary ranking requires fresh available status and complete same-season, current-club evidence; minutes feed its projection rather than acting as a 60+ admission gate. It excludes for minutes only when the three latest complete observed fixtures are all below 60, including zero-minute absences. Short or mixed windows remain scored at their observed rate but are labelled small samples; stale or incomplete evidence means abstention, and no record guarantees the next start. See `strategy-minutes-and-rotation.md`.
+2. **Availability and evidence quality**: use a fresh available status and coherent complete current-season, current-club evidence. The ranking does not use observed or expected minutes as a score, exclusion or tie-break. A sub-60 appearance in the latest five complete observations is a factual note only. Stale or incomplete evidence means abstention, and no record guarantees the next start. See `strategy-minutes-and-rotation.md`.
 3. **Favourable upcoming fixtures**: a 4-Gameweek run rated ~2 or better defensively; rollercoaster fixtures = coin flip.
 4. **Clear role**: set-piece taker, penalty taker, primary creator, goal-scoring forward — a defined route to points, not "might pop up with a goal".
-5. **A reason for low ownership**: small team nobody watches (green light) vs benched twice last month (red flag). Missing this step is the most common error.
+5. **A reason for low ownership**: small team nobody watches (green light) versus a current availability concern or no clear route to points (red flag). Missing this step is the most common error.
 
 ## When they are worth it
 
@@ -52,7 +52,7 @@ Pass all five → real differential. Pass four → watch-list. Pass three or few
 ## Common mistakes
 
 - Confusing "low owned" with "differential": a bad player with low ownership is just a bad player.
-- Differentials without the five-point checklist: no route to points, no minutes, no fixture basis.
+- Differentials without the five-point checklist: no route to points, no availability evidence, no fixture basis.
 - Running too many at once; compounding small bets across the squad.
 - Differential-captaining without a fixture/ceiling justification.
-- Ignoring the "why is he low-owned" question (red-flag reasons: rotation, injury, lost role).
+- Ignoring the "why is he low-owned" question (red-flag reasons: injury, availability concern, no route to points).

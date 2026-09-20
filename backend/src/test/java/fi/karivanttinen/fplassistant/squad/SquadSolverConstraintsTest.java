@@ -188,7 +188,7 @@ class SquadSolverConstraintsTest {
     void anIneligiblePlayerIsNeverInTheStartingEleven() {
         List<SquadCandidate> pool = pool();
         SquadCandidate benchwarmer = SquadCandidateTestData.ineligible(pool.get(5),
-                fi.karivanttinen.fplassistant.tools.MinutesModel.Eligibility.CONSISTENTLY_UNDER_60);
+                fi.karivanttinen.fplassistant.tools.MinutesModel.Eligibility.UNKNOWN_CURRENT_EVIDENCE);
         pool.set(5, benchwarmer);
         Map<Integer, Double> scores = flatScores(pool);
         scores.put(benchwarmer.elementId(), 1000.0);
@@ -205,7 +205,7 @@ class SquadSolverConstraintsTest {
         SquadCandidate pin = SquadCandidateTestData.ineligible(
                 pool.stream().filter(candidate -> candidate.elementType() == 4).findFirst()
                         .orElseThrow(),
-                fi.karivanttinen.fplassistant.tools.MinutesModel.Eligibility.CONSISTENTLY_UNDER_60);
+                fi.karivanttinen.fplassistant.tools.MinutesModel.Eligibility.UNKNOWN_CURRENT_EVIDENCE);
         pool.set(pool.indexOf(pool.stream()
                 .filter(candidate -> candidate.elementId() == pin.elementId()).findFirst()
                 .orElseThrow()), pin);
@@ -386,7 +386,7 @@ class SquadSolverConstraintsTest {
         for (int n = 0; n < 3; n++) {
             SquadCandidate risky = player(8000 + n, club, 4, 40, 1.0);
             pool.add(SquadCandidateTestData.ineligible(risky,
-                    fi.karivanttinen.fplassistant.tools.MinutesModel.Eligibility.CONSISTENTLY_UNDER_60));
+                    fi.karivanttinen.fplassistant.tools.MinutesModel.Eligibility.UNKNOWN_CURRENT_EVIDENCE));
         }
         var constraints = new SquadConstraints(List.of(), List.of(), List.of(
                 quota(club, SquadConstraints.Comparator.EXACTLY, 3)), 1000, 5,

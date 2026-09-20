@@ -1,20 +1,24 @@
 # Status — Phase 1
 
-## Recent-under-60 primary selection (2026-09-20)
+## Expected-points-only ranking and factual minute notes (2026-09-20)
 
-Primary picks, captain candidates and squad XI places no longer require 180 current-season
-minutes or 60+ in every current-club fixture. Fresh available status, coherent identity and a
-complete observed current-club window remain mandatory. Minutes continue to affect appearance,
-attacking and clean-sheet projections at their observed rates; the only minutes exclusion is three
-latest complete observed fixtures all below 60 minutes, including known zero-minute absences.
-Short or mixed windows stay rankable (subject to the separate combined ability-sample floor), with
-their small sample disclosed. The tool descriptions, system prompt and checked-in strategy corpus
-source now use the same rule; production embeddings remain unchanged until an explicit post-review
-corpus re-ingest. The completed KAR-31 plan is explicitly marked historical.
+Primary picks, captain candidates and squad XI places require fresh available status, coherent
+identity and complete observed current-club evidence. They have no minute-based admission gate.
+Observed minutes, 60+ rates, expected minutes and realised points do not alter a recommendation
+score, tie-break, eligibility result or XI place, including for goalkeepers and defenders.
 
-Focused Gradle verification could not run on this checkout host: it has neither Java nor
-`backend/.env.test`. No test database, corpus reload, production write or deployment was attempted;
-PR CI is the focused and full-suite verification gate.
+`PickTools` and `HorizonScorer` now rank only on full-fixture expected FPL points: fixed
+appearance points, xG/xA ability, fixture-specific clean-sheet probability and DefCon action-rate
+evidence. The ability blend ramp is driven by completed current-season fixtures, not 60+ matches.
+If any of the latest five complete observations is below 60 minutes, a pick row may state the
+opponent and minutes as a neutral fact only. Fresh availability, identity/club coherence and
+missing-evidence guards remain unchanged.
+
+The system prompt and checked-in strategy corpus source now use the same rule; production embeddings
+remain unchanged until an explicit post-review corpus re-ingest. Focused Gradle verification could
+not run on this checkout host: it has neither Java nor `backend/.env.test`. No test database,
+corpus reload, production write or deployment was attempted; PR CI is the focused and full-suite
+verification gate.
 
 ## Owned sync — remove redundant parent work (2026-09-20)
 
@@ -3881,7 +3885,7 @@ closure, push or deployment occurred.
 ## Minutes-aware ranking implementation outcome (KAR-31, 2026-09-09)
 
 > **Historical and superseded 2026-09-20:** The rule described below was the original KAR-31
-> implementation. The current recent-under-60 policy is recorded at the top of this file.
+> implementation. The current expected-points-only policy is recorded at the top of this file.
 
 Implementation Tasks 1–7 are complete in the current worktree, superseding the planning-state
 notes above. Ranking reads now share one repeatable-read daily/metric/schedule snapshot; primary

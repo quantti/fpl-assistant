@@ -1,92 +1,77 @@
 ---
-title: FPL Minutes Security, Rotation and the 60-Minute Rule
+title: FPL Minutes Facts and the 60-Minute Rule
 kind: reference
-valid_from: 2026-09-09
+valid_from: 2026-09-20
 ---
 
-# FPL Minutes Security, Rotation and the 60-Minute Rule
+# FPL Minutes Facts and the 60-Minute Rule
 
-Reference guide to choosing reliable defenders, captains and differentials for 2026/27. Playing time is part of a player's route to points, not a final tie-break after their per-90 attacking numbers. Prefer evidence of regular 60+ appearances; no historical record guarantees the next lineup or protects against an early injury or red card.
+Reference for explaining FPL's scoring boundary without turning observed playing time into a
+recommendation rule. The ranking tools order players only by full-fixture expected FPL points.
+They do not reduce a score, break a tie, exclude a player or restrict a generated XI because of
+minutes.
 
-## Why 60 minutes changes a defender's value
+## What the official 60-minute boundary means
 
-The official FPL boundary is **at least 60 minutes**, not more than 60; stoppage time does not count towards it.
+The official FPL boundary is **at least 60 minutes**, excluding stoppage time.
 
 | Minutes in one fixture | Appearance points | GK/DEF clean-sheet eligibility |
 | --- | --- | --- |
 | 0 | 0 | No |
 | 1–59 | 1 | No |
-| 60+ | 2 | Yes, if no goal was conceded while on the pitch, subject to the red-card exception below |
+| 60+ | 2 | Yes, if no goal was conceded while on the pitch, subject to the red-card exception |
 
-- Reaching 60 earns **one additional appearance point**, taking the total to two, and unlocks four possible clean-sheet points for a defender or goalkeeper. Midfielders can earn one clean-sheet point; forwards receive none.
-- A defender substituted after reaching 60 keeps an earned clean sheet even if the team subsequently concedes. Finishing 90 minutes is not required. A 65-minute regular can therefore be a better clean-sheet pick than a player alternating between full matches and short cameos.
-- A player **sent off** remains affected by later goals their team concedes: a later team goal removes the clean sheet even after 60 minutes. A red card is not a substitution that locks in a clean sheet.
-- **Defensive contribution has no 60-minute eligibility rule.** A defender earns two points by reaching 10 clearances, blocks, interceptions and tackles; midfielders/forwards need 12 including recoveries. These points can be earned before 60. More minutes offer more opportunities for actions, but DefCon and clean sheets are separate scoring routes.
+- Reaching 60 earns the second appearance point and can unlock clean-sheet points: four for a
+  goalkeeper or defender and one for a midfielder. A forward receives none.
+- A player substituted after reaching 60 keeps an earned clean sheet if the team later concedes.
+  A player sent off remains affected by later team concessions.
+- Defensive contribution is separate: defenders need 10 CBIT actions and midfielders/forwards 12
+  CBIRT actions for two points. It has no 60-minute eligibility rule.
 
-## Minutes security is not average minutes
+These are scoring facts, not a request to calculate a personal appearance probability from a
+small historical sample.
 
-Two players can average 60 minutes with different clean-sheet prospects: one plays 60 every fixture, another alternates between 90 and 30. The first always reaches the eligibility boundary in that example; the second reaches it only half the time. Mean minutes alone cannot distinguish them.
+## The ranking-tools policy
 
-Look separately at **whether the player starts, whether they appear at all, and whether they reach 60**. Starting is not sufficient when a player is repeatedly withdrawn before the hour. Likewise, averaging 80 minutes in appearances hides rotation if missed matches were excluded from the denominator.
+Primary pick lists and generated-squad XIs require fresh availability and complete current-season,
+current-club evidence. That protects against stale captures, mismatched identity or club,
+pending/missing records and contradictory data. It is not a minutes threshold.
 
-Regular 70+ appearances, preferably 80+, are a useful strategic preference, not an automatic pass or a scoring rule. Examine the pattern and its sample size. An 80-minute expectation is not an 80% chance of reaching 60; a 10/10 historical record is not a guaranteed next appearance.
+When the latest **five complete observed fixtures** contain an appearance below 60 minutes, a pick
+row may carry a neutral fact such as: “Tielemans recorded 45 minutes vs Everton on 20 September.”
 
-## Choosing reliable defenders before attacking upside
+- The note may include every under-60 observation in those five fixtures, including a known
+  zero-minute appearance.
+- It must not be described as a minutes risk, rotation penalty, eligibility failure, projection
+  adjustment or a reason one player outranks another.
+- Do not infer why the player had fewer minutes. The evidence does not distinguish tactics,
+  fitness, a red card or a tactical substitution.
+- Do not invent an expected-minutes value, a start probability or a 60-minute probability.
 
-1. **Check current availability and the source date.** Do not make an injured or suspended defender a transfer-in recommendation. A doubtful flag, managed return or reported fitness test prevents a claim of secure minutes even when the historical record is strong. Being marked fit does not prove the player starts.
-2. **Establish repeated 60+ involvement before calling the defender a reliable first choice.** Prefer a regular starter who consistently survives the hour over a rotation player with better per-90 numbers. Use match-level minutes and any explicit reliability evidence supplied by the tools. A high score or a large season minutes total alone does not establish this.
-3. **Check for a changed pattern.** Recent benchings or repeated sub-60 appearances can undermine an established role. Do not let last season's full matches erase this season's reduced involvement. Do not invent whether the cause is injury, tactics or rotation when it is unknown.
-4. **Compare routes to points among the reliable options:** team defensive strength and fixtures for clean sheets, defensive-action potential for DefCon, then goal threat and set pieces. A secure centre-back and a secure attacking full-back can both be good picks for different reasons.
-5. **Keep the conclusion honest.** Let the minutes-aware projection reduce a player's score rather than treating one short appearance as a veto. The tools exclude only the explicit recent under-60 pattern below; otherwise discuss role risk beside attacking upside instead of calling the player safe. Do not append excluded names as a second disguised recommendation list merely to fill a list.
+## How to explain a recommendation
 
-Reliability is evidence-based, not a promise: a regular starter can still suffer an early injury, red card or unexpected benching. There is no universal probability cutoff in this guide for turning "likely" into "safe".
+Explain a recommendation with the displayed expected FPL-points components: xG/xA ability,
+fixture-specific clean-sheet probability, defensive contribution, the club's editable fixture
+population and FDR only where the tool uses it. Realised points and observed minutes do not alter
+the order.
 
-## The recent under-60 exclusion used by the ranking tools
+Availability news remains relevant: do not recommend a player marked doubtful, injured, suspended
+or otherwise unavailable as though they were fit. A fit status still does not guarantee a start.
+If a low-minutes fact is shown, relay it plainly beside the expected-points case rather than
+rewriting the rank or claiming certainty about the next lineup.
 
-For primary differential and captain lists, and for every starting-XI place in a generated squad, the tools require current availability and complete evidence, then apply one narrow minutes exclusion.
+## Season changes and incomplete data
 
-- The selected daily FPL capture must be fresh, mark the player available (`a`) rather than doubtful, and contain a valid position and club.
-- That daily capture, the current metric season and the fresh, structurally complete FPL schedule must all name the season being played. Player identity and current club must be coherent across them; pending results, contradictory opponents, invalid minutes and missing observations make the evidence unknown.
-- The window is the player's latest **up to ten completed fixtures for their current club**, after any positively observed different-club transfer fence. Without such a fence, expected fixtures are counted from season start: the first statistics row or same-club daily appearance is not a registration date, so a newcomer may need ten complete fixtures before earlier gaps leave the window. Every expected fixture remains in the denominator, including a known zero-minute absence.
-- Minutes are part of the projection: appearance and 60+ probabilities, expected attacking minutes and clean-sheet eligibility all use the observed window. There is no 60+ or current-total-minutes admission gate. A complete short or mixed window is printed with `60+ N/N` and scored at its observed minute rate; it remains a small sample, not mature evidence.
-- Exclude a player for minutes only when the **three latest complete observed fixtures** are all below 60 minutes. Known zero-minute absences count. One or two short fixtures, or any mixed three-fixture run, do not trigger exclusion; their lower minutes already reduce the projection.
-
-Previous-season starts and blended minutes never establish current availability or complete current evidence. Historical ability and usable exposure rates may still inform a score, but they are a different question. A player who is excluded or cannot be assessed may still be a fit bench purchase in a generated squad; they cannot enter its XI, and naming or pinning them does not waive the rule.
-
-An empty list or an infeasible XI is therefore a valid factual result after a transfer or during a stale/partial sync. Do not backfill unknown current evidence from last season. Conversely, do not call someone who is not excluded a “guaranteed starter”: the observed window is not a calibrated personal probability or a promise about the next team sheet.
-
-## How playing time should affect expected points
-
-For one fixture, appearance points have expectation **P(any appearance) + P(at least 60 minutes)**. A clean-sheet estimate must also account for the chance of reaching 60 without a goal that counts against the player's clean sheet: concessions while on the pitch count, and after a sending-off later team concessions still count. Goals and assists instead depend on the player's scoring/creating rate and the minutes available to accumulate chances.
-
-This is why multiplying an entire 90-minute score by average minutes / 90 is not enough: appearance and clean-sheet points change at a boundary rather than growing smoothly. For a hypothetical defender with a 40% conditional clean-sheet chance, reaching 60 rather than 59 adds 2.6 expected points from appearance and clean-sheet eligibility alone: one plus four times 0.40. That is an illustration, not a prediction for any named player.
-
-Prefer minutes-aware per-fixture projections over raw per-90 rankings **when the tools provide them**. A high per-90 return from substitute appearances does not establish full-match potential. Do not invent appearance or 60+ probabilities, manufacture a corrected score, or apply an extra minutes penalty to a projection that already includes playing time. When the relevant estimate is unavailable, explain the limitation and keep the selection conditional.
-
-## Captaincy, differentials and bench choices
-
-- **Captaincy:** use current availability, recent minutes and the projected score alongside attacking ceiling, penalties and fixtures. Three latest complete fixtures all below 60 exclude the player; a mixed record remains a risk to describe, not a guarantee of starting. One short cameo normally prevents the vice-captain from taking over, so a bench-risk premium is not protected in the same way as an absent one. Avoid uncertain starters or fitness doubts for Triple Captain.
-- **Differentials:** low ownership does not compensate for unreliable playing time. Prefer a low-owned regular with a clear role over a substitute whose per-90 rate looks spectacular. A returnee can be a watch-list opportunity while their workload remains uncertain.
-- **Double gameweeks:** judge involvement in both fixtures, not just the fixture count. Two fixtures do not guarantee two starts or two 60+ appearances; look for supported rotation or fitness concerns, especially during congestion.
-- **Bench:** distinguish a cheap budget-enabling substitute from a reliable starting-XI recommendation. A low-minutes player can fill a bench slot, but should not be sold as dependable cover. Bench Boost requires playing options; ordinary bench cover cannot rescue a starter who makes a short cameo.
-
-## Incomplete history, season changes and role changes
-
-- Name the season and window behind minutes evidence. A completed season shows an old role, not present lineup security. When a table combines seasons, assess the current-season pattern separately rather than treating the combined appearances as recent matches.
-- Count known missed fixtures when assessing rotation. "60+ in every appearance" is weaker than "60+ in every club fixture". A double gameweek has two separate opportunities, not one.
-- Missing rows are not proof of benching: a delayed statistics sync, a transfer or a player not yet registered can leave an incomplete window. Describe only the observed record unless the tool establishes a complete fixture denominator. Do not turn a displayed subset into a season-wide rate or forecast probability.
-- A new signing, injury returnee or promoted player can have insufficient comparable evidence without being a bad player. Keep them unjudged or conditional rather than declaring them safe or unsuitable from missing data.
-- Recent sourced team news can explain why an old minutes pattern no longer applies. Use only news actually available in the conversation or tool output; do not claim to have checked a press conference or lineup that was not supplied. A daily availability snapshot can miss later news.
-
-## Explaining the final selection
-
-For a recommended defender, state the supported reason for minutes confidence, the season/window behind it, the route to points and the main remaining risk. For example, "reached 60 in all five current-season fixtures shown, with clean-sheet and set-piece potential" is a historical observation, not "guaranteed 60+ next week". Use such numbers only when the tool actually supplies them.
-
-The ranking tools do not provide a calibrated personal reliability probability: `60+ N/N` is an observed frequency. Explain its sample and any current availability or freshness caveat. If all that is available is total minutes or per-90 rates, say that the role evidence is limited; do not silently present a risky player as safe because they lead a ranking.
+Previous-season ability can inform a blended expected-points estimate, but it cannot certify a
+current role. A missing or incoherent current-season record is unjudged rather than evidence of
+poor football. Do not fill a list with an unavailable or unjudged player merely because an old
+season was strong.
 
 ## Sources and related guidance
 
-- [Official FPL rules](https://fantasy.premierleague.com/en/help/rules), checked 9 September 2026: appearance points, 60-minute clean-sheet eligibility, substitutions and defensive contributions.
-- [FPL Review: Editing xMins](https://docs.fplreview.com/the-model/planner-interface/editing-xmins), checked 9 September 2026: expected minutes is an average over possible outcomes; starts, substitutions, congestion and news affect it. Its practical minutes bands are not probability cutoffs.
-- [The Scout: festive-fixture tips](https://www.premierleague.com/en/news/4509983/the-scouts-top-tips-for-success-during-festive-fixtures-in-fantasy), 2025/26: prioritise regular starters whose minutes are not being managed. Historical player examples are not current team news.
-- Related corpus guidance: `strategy-defence-and-clean-sheets.md`, `strategy-differentials.md`, `captain-selection-and-triple-captain.md`, `strategy-deadline-and-team-news.md` and `strategy-blank-and-double-gameweeks.md`.
+- [Official FPL rules](https://fantasy.premierleague.com/en/help/rules), checked 20 September
+  2026: appearance points, 60-minute clean-sheet eligibility, substitutions and defensive
+  contributions.
+- Related corpus guidance: `strategy-defence-and-clean-sheets.md`,
+  `strategy-differentials.md`, `captain-selection-and-triple-captain.md` and
+  `strategy-deadline-and-team-news.md`.
