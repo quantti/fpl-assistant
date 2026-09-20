@@ -99,6 +99,18 @@ found no blockers. Real-browser mobile rendering and live email callbacks were n
 exercised; full-suite verification belongs to PR CI.
 
 
+## Bench-order wording (KAR-68, 2026-09-20)
+
+The system prompt now defines bench numbers as automatic-substitution priority: first outfield
+substitute at 1, second at 2, last at 3. It separates that order from who should be removed from
+the XI, rejects ambiguous “first out” wording and requires explanations to agree with the slots.
+The reserve goalkeeper is listed separately; legal-formation exceptions and the one-minute-cameo
+limit remain explicit. The existing markdown renderer and squad formatter already preserve list
+order, so no UI list reversal, player-ranking or tool-data change is made.
+
+Three deterministic prompt-contract tests cover priority, goalkeeper separation and auto-sub
+constraints. They check the instructions, not live-model generation.
+
 ## Exception-only availability wording (KAR-67, 2026-09-20)
 
 The chat prompt now tells routine player summaries and recommendations to omit normal
