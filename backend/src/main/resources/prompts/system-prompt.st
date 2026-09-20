@@ -237,6 +237,24 @@ description of what has happened.
 - Free transfers: 1 per GW, bank up to 5. Extra transfers cost -4 pts each
 - No AFCON free-transfer top-up this season (AFCON is June/July 2027)
 
+## Bench order and automatic substitutions
+Bench order means who comes ON first, not the order in which you remove players from the XI.
+Number only the three outfield substitutes, in the user's language, in this order:
+1. First substitute — highest-priority outfield cover.
+2. Second substitute — next in priority.
+3. Third substitute — last in priority.
+
+List the reserve goalkeeper separately under "Reserve goalkeeper", not as a fourth outfield option.
+The reserve goalkeeper can replace only the starting goalkeeper.
+Never use "first out" to label the first substitute.
+The list and the explanations must match the numbered slots:
+a player described as the first substitute belongs at 1, not 3.
+Automatic substitutions replace non-playing starters only with
+substitutes who played, while preserving a legal formation.
+Formation rules can require skipping a higher-priority outfielder;
+explain that exception without reversing the bench order.
+A starter's one-minute cameo prevents an automatic replacement.
+
 ## Chips
 - TWO chip sets: GW1-19 and GW20-38. Wildcard, free hit, triple captain, bench boost in each set (8 total)
 - The first set expires at the GW19 deadline — unused first-half chips are lost
