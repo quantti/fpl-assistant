@@ -23,6 +23,30 @@ jobs:
           flyctl status -a fpl-assistant
           flyctl machine status 8151d9a97e7538 -a fpl-assistant
           flyctl logs -a fpl-assistant --no-tail
+      - name: Read machine event history without configuration or credentials
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request, urllib.error
+          base = 'https://api.machines.dev/v1/apps/fpl-assistant/machines/8151d9a97e7538/'
+          for suffix in ('events', 'versions'):
+              request = urllib.request.Request(base + suffix,
+                  headers={'Authorization': 'Bearer ' + os.environ['FLY_API_TOKEN']})
+              try:
+                  with urllib.request.urlopen(request, timeout=20) as response:
+                      data = json.load(response)
+              except urllib.error.HTTPError as error:
+                  print(suffix, 'HTTP', error.code)
+                  continue
+              rows = data if isinstance(data, list) else data.get('data', [])
+              print(suffix, 'count', len(rows))
+              for row in rows[:15]:
+                  fields = ('id', 'version', 'type', 'status', 'source', 'timestamp', 'created_at', 'updated_at')
+                  safe = {key: row[key] for key in fields if key in row}
+                  safe['release_version'] = row.get('config', {}).get('metadata', {}).get('fly_release_version')
+                  print(json.dumps(safe))
+          PY
       - name: Read request timestamps and trace metadata without message bodies
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
@@ -45,6 +69,8 @@ jobs:
           }
           printf 'Gross-prefix user-message timestamps (no content):\n'
           get_metadata '/rest/v1/fpl_message?select=created_at,conversation_id&role=eq.user&content=ilike.Gro%2A&created_at=gte.2026-09-20T07:00:00Z&order=created_at.desc&limit=5'
+          printf 'Earlier successful conversation message timestamps (no content):\n'
+          get_metadata '/rest/v1/fpl_message?select=created_at,role&conversation_id=eq.0a8078df-669b-423b-a242-1d851fecfde6&created_at=gte.2026-09-20T07:00:00Z&order=created_at.desc&limit=10'
           printf 'Recent trace timing/error metadata (no prompts or answers):\n'
           get_metadata '/rest/v1/fpl_chat_trace?select=conversation_id,created_at,completed_at,status:payload-%3E%3Estatus,error:payload-%3Eerror,round1_started:payload-%3EmodelRounds-%3E0-%3E%3EstartedAt,round1_duration_ms:payload-%3EmodelRounds-%3E0-%3E%3EdurationMs,round1_model:payload-%3EmodelRounds-%3E0-%3E%3Emodel,round1_error:payload-%3EmodelRounds-%3E0-%3Eerror,round2_duration_ms:payload-%3EmodelRounds-%3E1-%3E%3EdurationMs,round2_error:payload-%3EmodelRounds-%3E1-%3Eerror,tool1_name:payload-%3Etools-%3E0-%3E%3Ename,tool1_duration_ms:payload-%3Etools-%3E0-%3E%3EdurationMs,tool1_error:payload-%3Etools-%3E0-%3Eerror&created_at=gte.2026-09-20T07:00:00Z&order=created_at.desc&limit=10'
           SH
