@@ -14,11 +14,17 @@ If any of the latest five complete observations is below 60 minutes, a pick row 
 opponent and minutes as a neutral fact only. Fresh availability, identity/club coherence and
 missing-evidence guards remain unchanged.
 
-The system prompt and checked-in strategy corpus source now use the same rule; production embeddings
-remain unchanged until an explicit post-review corpus re-ingest. The 20 directly affected test
-classes (251 tests) passed locally against the disposable database, and full
+The system prompt and checked-in strategy corpus source now use the same rule. The 20 directly
+affected test classes (251 tests) passed locally against the disposable database, and full
 [PR CI run 35527211627](https://github.com/quantti/fpl-assistant/actions/runs/35527211627) passed.
-No corpus reload, production write or deployment was attempted.
+
+PR #131 merged as `43c58a4`; its master
+[deploy workflow 35536515170](https://github.com/quantti/fpl-assistant/actions/runs/35536515170)
+passed on 2026-09-20, including the external health smoke. The corpus had already been reloaded
+from another host. An owner-authorized repeat from the VPS, using `backend/.env.supabase` and
+`./gradlew bootRun --args="--ingest"`, then completed in 37 seconds: 23 documents and 198 chunks
+were loaded into `fpl_embeddings`. This confirms the documented one-shot route works from the VPS;
+no Fly-console operation was used. Production health was UP afterwards.
 
 ## Owned sync — remove redundant parent work (2026-09-20)
 
