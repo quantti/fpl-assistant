@@ -4800,6 +4800,23 @@ DOWN/recovery, old-writer drain and denied core writes. Then reconcile and obser
 Details and the distinction between desired rollout-file STAGING and actual production OFF are in
 `docs/OWNED-SYNC-OPERATIONS.md`.
 
+## Owned sync — bound watchdog evidence transfers (2026-09-20)
+
+The second independent egress correction scopes occurrence-number lookups to new current signals
+and recovery evidence to open incidents no longer represented by a current signal. Completed/fenced
+run ids, verified fixtures and capture receipts are fetched only for those incident keys, using
+batched typed arrays; empty key sets issue no evidence query. It no longer downloads every settled
+historical run and every historical incident key on each five-minute check. Advisory locking,
+occurrence numbering, exact recovery matching and live-epoch failure semantics are unchanged.
+
+Verification: 12 focused watchdog integration tests passed on disposable Postgres. A test-only JDBC
+observer measures one occurrence row and one settled-run row despite 1,000 irrelevant historical
+runs and recovered incidents. Tests also cover empty queries, recurrence numbering, malformed run
+keys, current failures versus superseded epochs and 700 simultaneous incident recoveries. This
+bounds transferred evidence by relevant incidents, not all retained history; it does not establish
+an overall egress budget or change planner cadence. Full-suite verification belongs to the PR.
+Production was not changed and remains OFF pending the remaining egress work and attended acceptance.
+
 ## Owned sync — Uptime Kuma rollout preparation (2026-09-14)
 
 The owner selected the existing home-server Uptime Kuma and authorized the operational handover.

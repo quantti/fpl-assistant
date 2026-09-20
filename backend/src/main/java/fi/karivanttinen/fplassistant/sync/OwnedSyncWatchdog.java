@@ -8,6 +8,7 @@ import java.nio.charset.StandardCharsets;
 import java.sql.Array;
 import java.sql.SQLException;
 import java.sql.Timestamp;
+import java.sql.Types;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -15,6 +16,7 @@ import java.time.LocalTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -25,8 +27,10 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.PreparedStatementCreatorFactory;
 import org.springframework.jdbc.core.ResultSetExtractor;
 import org.springframework.jdbc.core.RowCallbackHandler;
+import org.springframework.jdbc.support.SqlArrayValue;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /** Durable five-minute sync watchdog and separately drainable notification outbox. */
@@ -75,18 +79,21 @@ public final class OwnedSyncWatchdog {
             jdbc.query("SELECT pg_advisory_xact_lock(hashtext(?))",
                     (ResultSetExtractor<Void>) rs -> null, "fpl-sync-watchdog:" + season);
             Map<String, OpenIncident> open = openIncidents(season);
-            Map<String, Integer> nextOccurrences = nextOccurrences(season);
+            List<Signal> newSignals = current.values().stream()
+                    .filter(signal -> !open.containsKey(signal.key())).toList();
+            Map<String, Integer> nextOccurrences = nextOccurrences(season,
+                    newSignals.stream().map(Signal::key).collect(java.util.stream.Collectors.toSet()));
             List<AlertEvent> events = new ArrayList<>();
-            for (Signal signal : current.values()) {
-                if (!open.containsKey(signal.key())) {
-                    events.add(new AlertEvent(signal,
-                            nextOccurrences.getOrDefault(signal.key(), 1), "INCIDENT"));
-                }
+            for (Signal signal : newSignals) {
+                events.add(new AlertEvent(signal,
+                        nextOccurrences.getOrDefault(signal.key(), 1), "INCIDENT"));
             }
             int incidents = events.size();
-            RecoveryEvidence recoveryEvidence = recoveryEvidence(season);
-            for (OpenIncident incident : open.values()) {
-                if (!current.containsKey(incident.key()) && verifiedRecovery(incident, recoveryEvidence)) {
+            List<OpenIncident> recoveryCandidates = open.values().stream()
+                    .filter(incident -> !current.containsKey(incident.key())).toList();
+            RecoveryEvidence recoveryEvidence = recoveryEvidence(season, recoveryCandidates);
+            for (OpenIncident incident : recoveryCandidates) {
+                if (verifiedRecovery(incident, recoveryEvidence)) {
                     Signal recovery = new Signal(incident.key(), incident.category(), "INFO",
                             incident.season(), incident.fixtureId(), Map.of(
                             "incidentCreatedAt", incident.createdAt().toString(),
@@ -273,26 +280,48 @@ public final class OwnedSyncWatchdog {
         return result;
     }
 
-    private RecoveryEvidence recoveryEvidence(String season) {
+    private RecoveryEvidence recoveryEvidence(String season, Iterable<OpenIncident> incidents) {
+        Set<Long> runKeys = new LinkedHashSet<>();
+        Set<Integer> fixtureKeys = new LinkedHashSet<>();
+        Set<String> captureKeys = new LinkedHashSet<>();
+        for (OpenIncident incident : incidents) {
+            if (incident.category().startsWith("FIXTURE_VERIFICATION") && incident.fixtureId() != null) {
+                fixtureKeys.add(incident.fixtureId());
+            } else if (incident.category().equals("MISSED_DAILY_CAPTURE")) {
+                captureKeys.add(incident.key().substring(incident.key().lastIndexOf(':') + 1));
+            } else if (incident.category().equals("DUE_WORK") || incident.category().equals("EXPIRED_LEASE")) {
+                try {
+                    runKeys.add(Long.parseLong(incident.key().substring(incident.key().lastIndexOf(':') + 1)));
+                } catch (RuntimeException invalidKey) {
+                    // Malformed persisted keys cannot provide recovery evidence.
+                }
+            }
+        }
+
         // A run fenced FAILED when its activation ended is settled too: that epoch is over and the
         // work was planned again under the next one, so it can never complete and must not hold a
         // due-work incident (and external health) open for ever. A failure inside the live
         // activation is different and stays open.
-        Set<Long> completedRuns = Set.copyOf(jdbc.queryForList("SELECT r.generation FROM " + tables.run()
-                + " r WHERE r.season=? AND (r.state='COMPLETED' OR (r.state='FAILED' AND NOT EXISTS ("
-                + "SELECT 1 FROM " + tables.plannerRuntime() + " m WHERE m.instance_id=?"
-                + " AND m.runtime_mode=r.runtime_mode AND m.runtime_epoch=r.runtime_epoch)))",
-                Long.class, season, "mode:" + season));
-        Set<Integer> verifiedFixtures = Set.copyOf(jdbc.queryForList("SELECT fixture_id FROM "
-                + tables.fixtureSync() + " WHERE season_code=? AND state='VERIFIED' "
-                + "AND current_verified_generation IS NOT NULL", Integer.class, season));
+        Set<Long> completedRuns = Set.copyOf(queryWithArray(
+                "SELECT r.generation FROM " + tables.run()
+                        + " r WHERE r.season=? AND r.generation=ANY(?) AND (r.state='COMPLETED' OR "
+                        + "(r.state='FAILED' AND NOT EXISTS (SELECT 1 FROM " + tables.plannerRuntime()
+                        + " m WHERE m.instance_id='mode:' || r.season AND m.runtime_mode=r.runtime_mode "
+                        + "AND m.runtime_epoch=r.runtime_epoch)))",
+                season, "int8", runKeys.toArray(), (rs, row) -> rs.getLong(1)));
+        Set<Integer> verifiedFixtures = Set.copyOf(queryWithArray(
+                "SELECT fixture_id FROM " + tables.fixtureSync()
+                        + " WHERE season_code=? AND fixture_id=ANY(?) AND state='VERIFIED' "
+                        + "AND current_verified_generation IS NOT NULL",
+                season, "int4", fixtureKeys.toArray(), (rs, row) -> rs.getInt(1)));
         Map<String, Instant> captureReads = new LinkedHashMap<>();
-        jdbc.query("SELECT publication_key,max(source_read_finished_at) source_read_finished_at FROM "
-                        + tables.receipt() + " WHERE season=? GROUP BY publication_key",
-                (RowCallbackHandler) rs -> {
-                    Timestamp read = rs.getTimestamp(2);
-                    if (read != null) captureReads.put(rs.getString(1), read.toInstant());
-                }, season);
+        for (CaptureRead row : queryWithArray(
+                "SELECT publication_key,max(source_read_finished_at) FROM " + tables.receipt()
+                        + " WHERE season=? AND publication_key=ANY(?) GROUP BY publication_key",
+                season, "text", captureKeys.toArray(), (rs, ignored) -> new CaptureRead(
+                        rs.getString(1), rs.getTimestamp(2) == null ? null : rs.getTimestamp(2).toInstant()))) {
+            if (row.read() != null) captureReads.put(row.key(), row.read());
+        }
         return new RecoveryEvidence(completedRuns, verifiedFixtures, captureReads,
                 clock.instant().atZone(UK).toLocalDate().atStartOfDay(UK).toInstant());
     }
@@ -318,12 +347,25 @@ public final class OwnedSyncWatchdog {
         return true;
     }
 
-    private Map<String, Integer> nextOccurrences(String season) {
+    private Map<String, Integer> nextOccurrences(String season, Set<String> keys) {
         Map<String, Integer> result = new LinkedHashMap<>();
-        jdbc.query("SELECT incident_key,max(occurrence)+1 FROM " + tables.alert()
-                        + " WHERE season=? OR season IS NULL GROUP BY incident_key",
-                (RowCallbackHandler) rs -> result.put(rs.getString(1), rs.getInt(2)), season);
+        for (Occurrence row : queryWithArray(
+                "SELECT incident_key,max(occurrence)+1 FROM " + tables.alert()
+                        + " WHERE (season=? OR season IS NULL) AND incident_key=ANY(?) GROUP BY incident_key",
+                season, "text", keys.toArray(),
+                (rs, ignored) -> new Occurrence(rs.getString(1), rs.getInt(2)))) {
+            result.put(row.key(), row.next());
+        }
         return result;
+    }
+
+    private <T> List<T> queryWithArray(String sql, String season, String elementType,
+                                       Object[] values, org.springframework.jdbc.core.RowMapper<T> mapper) {
+        if (values.length == 0) return List.of();
+        var factory = new PreparedStatementCreatorFactory(sql, Types.VARCHAR, Types.ARRAY);
+        var creator = factory.newPreparedStatementCreator(
+                List.of(season, new SqlArrayValue(elementType, values)));
+        return jdbc.query(creator, mapper);
     }
 
     private void insert(List<AlertEvent> events, Instant now) {
@@ -505,5 +547,7 @@ public final class OwnedSyncWatchdog {
     private record AlertEvent(Signal signal, int occurrence, String event) { }
     private record RecoveryEvidence(Set<Long> completedRuns, Set<Integer> verifiedFixtures,
                                     Map<String, Instant> captureReads, Instant dayStart) { }
+    private record CaptureRead(String key, Instant read) { }
+    private record Occurrence(String key, int next) { }
     private record Claimed(long id, String payload, int attempt, UUID token) { }
 }
