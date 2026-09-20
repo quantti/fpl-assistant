@@ -1,0 +1,24 @@
+name: Read-only chat incident diagnostics
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths: ['.github/workflows/chat-incident-diagnostics.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  logs:
+    if: github.head_ref == 'investigate/chat-http-500'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - name: Read production status and recent logs
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          date -u
+          flyctl status -a fpl-assistant
+          flyctl logs -a fpl-assistant --no-tail
