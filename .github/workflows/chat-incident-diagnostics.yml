@@ -41,10 +41,15 @@ jobs:
                   continue
               rows = data if isinstance(data, list) else data.get('data', [])
               print(suffix, 'count', len(rows))
-              for row in rows[:15]:
+              if suffix == 'versions':
+                  rows = sorted(rows, key=lambda row: row.get('version', ''), reverse=True)
+              for row in rows[:6]:
                   fields = ('id', 'version', 'type', 'status', 'source', 'timestamp', 'created_at', 'updated_at')
                   safe = {key: row[key] for key in fields if key in row}
-                  safe['release_version'] = row.get('config', {}).get('metadata', {}).get('fly_release_version')
+                  config = row.get('user_config') or row.get('config') or {}
+                  safe['fields'] = list(row)
+                  safe['release_version'] = config.get('metadata', {}).get('fly_release_version')
+                  safe['image'] = config.get('image')
                   print(json.dumps(safe))
           PY
       - name: Read request timestamps and trace metadata without message bodies
