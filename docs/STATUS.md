@@ -1,5 +1,19 @@
 # Status — Phase 1
 
+## Temporary Supabase maintenance (2026-09-23)
+
+Until `2026-09-25T21:00:00Z` (26.9.2026 at 00:00 in Finland), the executable starts a
+DB-free `MaintenanceApplication` instead of the normal application. It serves a Finnish
+maintenance page for `/`, `/login` and `/index.html`, refuses every `/api/**` request with 503,
+and keeps `/actuator/health` UP for Fly. It neither component-scans the normal application nor
+starts database, JWT, sync or model components, so a Fly deployment can boot while Supabase is
+closed. At the cutoff the process closes that small context and starts the normal application
+without a deploy.
+
+Verification: seven focused maintenance tests passed. The packaged jar also started with a
+purposefully unreachable JDBC URL; `/actuator/health` returned UP, `/login` returned the
+maintenance page and `POST /api/chat` returned 503. No production deployment has been made.
+
 ## Expected-points-only ranking and factual minute notes (2026-09-20)
 
 Primary picks, captain candidates and squad XI places require fresh available status, coherent
