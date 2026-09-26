@@ -346,6 +346,160 @@ public final class OwnedSyncStore {
                 runtimeMode(), runtimeEpoch()).stream().findFirst();
     }
 
+    /** Selects one exact staged payload without transferring its body. */
+    Optional<StagedPayloadMetadata> latestStagedPayloadMetadata(Lease lease, Endpoint endpoint) {
+        Objects.requireNonNull(endpoint);
+        validateEndpoint(endpoint);
+        return tx.execute(status -> {
+            lockAndValidate(lease);
+            return jdbc.query("""
+                    SELECT id, run_generation, endpoint_kind, event_id, player_id,
+                           read_started_at, read_finished_at, validation_state
+                    FROM %s WHERE run_generation = ? AND endpoint_kind = ?
+                      AND event_id IS NOT DISTINCT FROM ? AND player_id IS NOT DISTINCT FROM ?
+                    ORDER BY id DESC LIMIT 1
+                    """.formatted(tables.payload()), this::stagedPayloadMetadata, lease.generation(),
+                    endpoint.kind().name(), endpoint.eventId(), endpoint.playerId()).stream().findFirst();
+        });
+    }
+
+    /** Selects one exact staged payload in one validation state without transferring its body. */
+    Optional<StagedPayloadMetadata> latestStagedPayloadMetadata(Lease lease, Endpoint endpoint,
+                                                                 ValidationState state) {
+        Objects.requireNonNull(endpoint);
+        Objects.requireNonNull(state);
+        validateEndpoint(endpoint);
+        return tx.execute(status -> {
+            lockAndValidate(lease);
+            return jdbc.query("""
+                    SELECT id, run_generation, endpoint_kind, event_id, player_id,
+                           read_started_at, read_finished_at, validation_state
+                    FROM %s WHERE run_generation = ? AND endpoint_kind = ?
+                      AND event_id IS NOT DISTINCT FROM ? AND player_id IS NOT DISTINCT FROM ?
+                      AND validation_state = ? ORDER BY id DESC LIMIT 1
+                    """.formatted(tables.payload()), this::stagedPayloadMetadata, lease.generation(),
+                    endpoint.kind().name(), endpoint.eventId(), endpoint.playerId(), state.name())
+                    .stream().findFirst();
+        });
+    }
+
+    /** Selects the earliest valid exact payload after a floor without transferring its body. */
+    Optional<StagedPayloadMetadata> earliestValidStagedPayloadMetadata(Lease lease, Endpoint endpoint,
+                                                                        Instant floor) {
+        Objects.requireNonNull(endpoint);
+        Objects.requireNonNull(floor);
+        validateEndpoint(endpoint);
+        return tx.execute(status -> {
+            lockAndValidate(lease);
+            return jdbc.query("""
+                    SELECT id, run_generation, endpoint_kind, event_id, player_id,
+                           read_started_at, read_finished_at, validation_state
+                    FROM %s WHERE run_generation = ? AND endpoint_kind = ?
+                      AND event_id IS NOT DISTINCT FROM ? AND player_id IS NOT DISTINCT FROM ?
+                      AND validation_state = 'VALID' AND read_started_at >= ?
+                    ORDER BY read_started_at ASC, id ASC LIMIT 1
+                    """.formatted(tables.payload()), this::stagedPayloadMetadata, lease.generation(),
+                    endpoint.kind().name(), endpoint.eventId(), endpoint.playerId(),
+                    timestamp(floor)).stream().findFirst();
+        });
+    }
+
+    /** Selects the latest reusable valid payload without transferring its body. */
+    Optional<StagedPayloadMetadata> latestValidPayloadMetadata(String season, Endpoint endpoint,
+                                                                Instant requestedSourceAfter) {
+        String validSeason = bounded("season", season, 10);
+        Objects.requireNonNull(endpoint);
+        Objects.requireNonNull(requestedSourceAfter);
+        validateEndpoint(endpoint);
+        return jdbc.query("""
+                SELECT p.id, p.run_generation, p.endpoint_kind, p.event_id, p.player_id,
+                       p.read_started_at, p.read_finished_at, p.validation_state
+                FROM %s p JOIN %s r ON r.generation=p.run_generation
+                WHERE r.season=? AND p.endpoint_kind=?
+                  AND p.event_id IS NOT DISTINCT FROM ? AND p.player_id IS NOT DISTINCT FROM ?
+                  AND p.validation_state='VALID' AND p.read_started_at >= ?
+                  AND (? = FALSE OR (r.runtime_mode=? AND r.runtime_epoch=?))
+                ORDER BY p.read_finished_at DESC, p.id DESC LIMIT 1
+                """.formatted(tables.payload(), tables.run()), this::stagedPayloadMetadata, validSeason,
+                endpoint.kind().name(), endpoint.eventId(), endpoint.playerId(),
+                timestamp(requestedSourceAfter), runtimeFence != null,
+                runtimeMode(), runtimeEpoch()).stream().findFirst();
+    }
+
+    /**
+     * Loads one same-run checkpoint after rechecking its exact endpoint, validation state,
+     * source floor, season and activation fence.
+     */
+    Optional<StagedPayload> hydrateStagedPayload(Lease lease, Endpoint endpoint,
+                                                  StagedPayloadMetadata candidate, Instant floor) {
+        Objects.requireNonNull(lease);
+        Objects.requireNonNull(endpoint);
+        Objects.requireNonNull(candidate);
+        Objects.requireNonNull(floor);
+        validateEndpoint(endpoint);
+        if (!endpoint.equals(candidate.endpoint())) {
+            throw new IllegalArgumentException("Payload metadata endpoint mismatch");
+        }
+        return tx.execute(status -> {
+            lockAndValidate(lease);
+            Instant effectiveFloor = effectiveSourceFloor(lease, floor);
+            if (candidate.runGeneration() != lease.generation()
+                    || candidate.validationState() == ValidationState.INVALID) {
+                return Optional.empty();
+            }
+            return jdbc.query("""
+                    SELECT p.id, p.run_generation, p.endpoint_kind, p.read_started_at,
+                           p.read_finished_at, p.validation_state, p.validation_error, p.body
+                    FROM %s p JOIN %s r ON r.generation=p.run_generation
+                    WHERE p.id = ? AND p.run_generation = ? AND p.endpoint_kind = ?
+                      AND p.event_id IS NOT DISTINCT FROM ? AND p.player_id IS NOT DISTINCT FROM ?
+                      AND p.validation_state = ? AND p.read_started_at >= ?
+                      AND r.season = ?
+                      AND (? = FALSE OR (r.runtime_mode=? AND r.runtime_epoch=?))
+                    """.formatted(tables.payload(), tables.run()), this::stagedPayload, candidate.id(),
+                    candidate.runGeneration(), endpoint.kind().name(), endpoint.eventId(), endpoint.playerId(),
+                    candidate.validationState().name(), timestamp(effectiveFloor), lease.season(),
+                    runtimeFence != null, runtimeMode(), runtimeEpoch()).stream().findFirst();
+        });
+    }
+
+    /**
+     * Loads one cross-run history only after rechecking its exact endpoint, validation state,
+     * source floor, season and both the caller's and source run's activation fences.
+     */
+    Optional<StagedPayload> hydrateLatestValidPayload(Lease lease, String season, Endpoint endpoint,
+                                                       StagedPayloadMetadata candidate,
+                                                       Instant requestedSourceAfter) {
+        Objects.requireNonNull(lease);
+        String validSeason = bounded("season", season, 10);
+        Objects.requireNonNull(endpoint);
+        Objects.requireNonNull(candidate);
+        Objects.requireNonNull(requestedSourceAfter);
+        validateEndpoint(endpoint);
+        if (!lease.season().equals(validSeason)) throw new IllegalArgumentException("Lease season mismatch");
+        if (!endpoint.equals(candidate.endpoint())) {
+            throw new IllegalArgumentException("Payload metadata endpoint mismatch");
+        }
+        return tx.execute(status -> {
+            lockAndValidate(lease);
+            Instant effectiveFloor = effectiveSourceFloor(lease, requestedSourceAfter);
+            if (candidate.validationState() != ValidationState.VALID) return Optional.empty();
+            return jdbc.query("""
+                    SELECT p.id, p.run_generation, p.endpoint_kind, p.read_started_at,
+                           p.read_finished_at, p.validation_state, p.validation_error, p.body
+                    FROM %s p JOIN %s r ON r.generation=p.run_generation
+                    WHERE p.id = ? AND p.run_generation = ? AND r.season = ?
+                      AND p.endpoint_kind = ?
+                      AND p.event_id IS NOT DISTINCT FROM ? AND p.player_id IS NOT DISTINCT FROM ?
+                      AND p.validation_state = 'VALID' AND p.read_started_at >= ?
+                      AND (? = FALSE OR (r.runtime_mode=? AND r.runtime_epoch=?))
+                    """.formatted(tables.payload(), tables.run()), this::stagedPayload, candidate.id(),
+                    candidate.runGeneration(), validSeason, endpoint.kind().name(), endpoint.eventId(),
+                    endpoint.playerId(), timestamp(effectiveFloor), runtimeFence != null,
+                    runtimeMode(), runtimeEpoch()).stream().findFirst();
+        });
+    }
+
     /**
      * Visits a bounded newest-first set of complete, validated bootstrap/fixtures batches.
      * Candidate metadata is fetched first; bodies are loaded only for the pair currently being
@@ -666,6 +820,12 @@ public final class OwnedSyncStore {
         }
     }
 
+    private Instant effectiveSourceFloor(Lease lease, Instant callerFloor) {
+        Instant durableFloor = jdbc.queryForObject("SELECT requested_source_after FROM %s WHERE generation = ?"
+                .formatted(tables.run()), Timestamp.class, lease.generation()).toInstant();
+        return callerFloor.isAfter(durableFloor) ? callerFloor : durableFloor;
+    }
+
     private LockedRun lockAndValidate(Lease lease) {
         Objects.requireNonNull(lease);
         assertRuntimeFence(lease.season());
@@ -739,6 +899,14 @@ public final class OwnedSyncStore {
                 new SourceRead(instant(rs, "read_started_at"), instant(rs, "read_finished_at")),
                 ValidationState.valueOf(rs.getString("validation_state")),
                 rs.getString("validation_error"), rs.getBytes("body"));
+    }
+
+    private StagedPayloadMetadata stagedPayloadMetadata(ResultSet rs, int row) throws SQLException {
+        Endpoint endpoint = new Endpoint(EndpointKind.valueOf(rs.getString("endpoint_kind")),
+                (Integer) rs.getObject("event_id"), (Integer) rs.getObject("player_id"));
+        return new StagedPayloadMetadata(rs.getLong("id"), rs.getLong("run_generation"), endpoint,
+                new SourceRead(instant(rs, "read_started_at"), instant(rs, "read_finished_at")),
+                ValidationState.valueOf(rs.getString("validation_state")));
     }
 
     private static StagedPayload stagedPayload(ResultSet rs, String prefix, EndpointKind kind) throws SQLException {
@@ -877,6 +1045,17 @@ public final class OwnedSyncStore {
     public record Lease(long generation, SyncKind kind, String season, String coalescingKey,
                         String publicationKey, String owner, UUID token, long fence,
                         Instant expiresAt, int attemptCount) { }
+
+    record StagedPayloadMetadata(long id, long runGeneration, Endpoint endpoint,
+                                 SourceRead read, ValidationState validationState) {
+        StagedPayloadMetadata {
+            if (id <= 0 || runGeneration <= 0) throw new IllegalArgumentException("invalid payload metadata id");
+            Objects.requireNonNull(endpoint);
+            Objects.requireNonNull(read);
+            Objects.requireNonNull(validationState);
+            validateEndpoint(endpoint);
+        }
+    }
 
     public record StagedPayload(long id, long runGeneration, EndpointKind endpointKind,
                                 SourceRead read, ValidationState validationState,
