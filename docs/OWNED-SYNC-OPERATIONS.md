@@ -4,15 +4,21 @@ Production cut over to the assistant-owned writer on 2026-09-16. Tapas runs thro
 `tapas_runtime` login with `FPL_CORE_WRITES_ENABLED=false`; do not restore a second writer without
 the documented rollback fence. Deploy through the reviewed GitHub workflow, not manual Fly deploy.
 
-Latest containment (2026-09-20): the canonical cache from PR #116 is deployed, but an attended
-seven-minute ACTIVE epoch 62 still generated 33 catalogue/schedule completions with no history
-progress and substantial new-pair/checkpoint traffic. Normal rollback to **OFF epoch 63** is
-verified; the application is UP and Kuma 18 remains paused. Tapas core writes remain disabled,
-so there is temporarily no core writer. Do not restore ACTIVE on the strength of PR #116 alone:
-review the remaining amplification and recurring metadata transfers, then repeat a bounded test
-with a predeclared stop threshold. The startup retention delete also failed with an I/O error.
-See `docs/OWNED-SYNC-EGRESS-REPORT.md` for measurements and the next bounded correction units.
-The previously reported 88.78 GB overage is not undone by reducing future traffic.
+Latest containment (2026-09-26): the owner-authorized STAGING epoch 64 ran on deployed `bc5ced7`,
+including the canonical cache and parent-refresh, watchdog and planner-cadence follow-ups. Its
+conservative 20 MB whole-machine RX threshold stopped the observation about 105 seconds after the
+request, including startup. The socket observer had recorded 15.16 MB of DB TCP payload before
+shutdown; it is not a Supabase billing total. Two catalogue/schedule jobs completed, but no history
+or fixture verification did. Normal rollback is verified **OFF epoch 65**, zero active queue,
+application UP and the publication baseline unchanged. Normal retention removed all 2,767 old
+payloads successfully in this execution. Tapas settings and Kuma were not changed by this test.
+
+Do not restore sustained STAGING or ACTIVE yet: checkpoint/dependency body hydration and actual
+budgeted history/verification progress remain unresolved. A cold-start stop does not establish a
+monthly rate. Tapas core writes remain disabled under the existing cutover; this test enabled no
+core writer. See `docs/OWNED-SYNC-EGRESS-REPORT.md` for evidence, measurement limits and the next
+bounded correction. The 20 September ACTIVE test and its OFF epoch 63 are historical evidence,
+not the current mode marker. Reducing future traffic does not undo the previous period's overage.
 
 Before containment the current-season backlog held 40 `VERIFIED` fixtures. Resolve the Java PID by
 identity and give each new activation its own bounded startup-heartbeat grace period.
