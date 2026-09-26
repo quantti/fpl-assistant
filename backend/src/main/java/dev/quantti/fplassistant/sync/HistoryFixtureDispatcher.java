@@ -26,6 +26,7 @@ import dev.quantti.fplassistant.sync.OwnedSyncStore.PayloadRetentionLimitExcepti
 import dev.quantti.fplassistant.sync.OwnedSyncStore.Run;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.SourceRead;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.StagedPayload;
+import dev.quantti.fplassistant.sync.OwnedSyncStore.StagedPayloadMetadata;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.SyncKind;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.Validation;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.ValidationState;
@@ -125,11 +126,13 @@ public final class HistoryFixtureDispatcher {
         });
         Instant floor = store.requestedSourceAfter(lease);
         Endpoint endpoint = Endpoint.elementSummary(playerId);
-        StagedPayload payload = store.latestStagedPayload(lease, endpoint)
+        StagedPayloadMetadata checkpoint = store.latestStagedPayloadMetadata(lease, endpoint)
                 .filter(row -> row.validationState() != ValidationState.INVALID)
                 .filter(row -> !row.read().startedAt().isBefore(floor))
                 .orElse(null);
-        if (payload == null) payload = fetchAndStage(lease, endpoint);
+        StagedPayload payload = checkpoint == null ? fetchAndStage(lease, endpoint)
+                : store.hydrateStagedPayload(lease, endpoint, checkpoint, floor)
+                        .orElseGet(() -> fetchAndStage(lease, endpoint));
         SourceDocument history = document(payload);
         HistoryParser.HistoryBatch batch;
         try {
@@ -192,8 +195,10 @@ public final class HistoryFixtureDispatcher {
 
         Endpoint liveEndpoint = Endpoint.eventLive(fixture.gameweek());
         Instant liveFloor = later(floor, pair.fixtures.read().finishedAt().plusMillis(1));
-        StagedPayload livePayload = usableOwn(lease, liveEndpoint, liveFloor).orElse(null);
-        if (livePayload == null) livePayload = fetchAndStage(lease, liveEndpoint);
+        StagedPayloadMetadata liveCheckpoint = usableOwn(lease, liveEndpoint, liveFloor).orElse(null);
+        StagedPayload livePayload = liveCheckpoint == null ? fetchAndStage(lease, liveEndpoint)
+                : store.hydrateStagedPayload(lease, liveEndpoint, liveCheckpoint, liveFloor)
+                        .orElseGet(() -> fetchAndStage(lease, liveEndpoint));
         SourceDocument live = document(livePayload);
 
         Set<Integer> players = new LinkedHashSet<>();
@@ -215,20 +220,29 @@ public final class HistoryFixtureDispatcher {
         store.validateStagedPayloads(lease, List.of(livePayload.id()), Validation.valid());
 
         Instant historyFloor = pair.fixtures.read().finishedAt().plusMillis(1);
-        Map<Integer, SourceDocument> histories = new LinkedHashMap<>();
+        Map<Integer, StagedPayloadMetadata> historyCheckpoints = new LinkedHashMap<>();
         for (int playerId : players) {
-            Optional<StagedPayload> evidence = store.latestValidPayload(season.code(),
+            Optional<StagedPayloadMetadata> evidence = store.latestValidPayloadMetadata(season.code(),
                     Endpoint.elementSummary(playerId), historyFloor);
             if (evidence.isEmpty()) {
                 enqueuePlayerHistory(season, playerId, historyFloor);
             } else {
-                histories.put(playerId, document(evidence.get()));
+                historyCheckpoints.put(playerId, evidence.get());
             }
         }
+        if (historyCheckpoints.size() != players.size()) waitForHistories(lease);
+
+        Map<Integer, SourceDocument> histories = new LinkedHashMap<>();
+        for (Map.Entry<Integer, StagedPayloadMetadata> checkpoint : historyCheckpoints.entrySet()) {
+            int playerId = checkpoint.getKey();
+            store.hydrateLatestValidPayload(lease, season.code(), Endpoint.elementSummary(playerId),
+                    checkpoint.getValue(), historyFloor)
+                    .ifPresent(payload -> histories.put(playerId, document(payload)));
+        }
         if (histories.size() != players.size()) {
-            retryForDependency(lease, clock.instant().plus(Duration.ofMinutes(2)),
-                    "Waiting for fresh player histories");
-            throw new Stopped(DispatchResult.waiting());
+            players.stream().filter(playerId -> !histories.containsKey(playerId))
+                    .forEach(playerId -> enqueuePlayerHistory(season, playerId, historyFloor));
+            waitForHistories(lease);
         }
 
         // Re-read both public endpoints after the slow fan-out. Successful endpoint reads are
@@ -297,15 +311,23 @@ public final class HistoryFixtureDispatcher {
 
     private PayloadPair obtainOwnPair(Lease lease, Season season, Instant floor,
                                       boolean allowValid, boolean allowCheckpoint) {
-        StagedPayload bootstrap = allowCheckpoint
+        StagedPayloadMetadata bootstrapCheckpoint = allowCheckpoint
                 ? (allowValid ? usableOwn(lease, Endpoint.bootstrap(), floor)
                         : uncheckedOwn(lease, Endpoint.bootstrap(), floor)).orElse(null) : null;
-        StagedPayload fixtures = allowCheckpoint
+        StagedPayloadMetadata fixturesCheckpoint = allowCheckpoint
                 ? (allowValid ? usableOwn(lease, Endpoint.fixtures(), floor)
                         : uncheckedOwn(lease, Endpoint.fixtures(), floor)).orElse(null) : null;
-        boolean resumed = bootstrap != null || fixtures != null;
-        if (bootstrap == null) bootstrap = fetchAndStage(lease, Endpoint.bootstrap());
-        if (fixtures == null) fixtures = fetchAndStage(lease, Endpoint.fixtures());
+        boolean resumed = bootstrapCheckpoint != null || fixturesCheckpoint != null;
+        StagedPayload bootstrap = bootstrapCheckpoint == null ? fetchAndStage(lease, Endpoint.bootstrap()) : null;
+        StagedPayload fixtures = fixturesCheckpoint == null ? fetchAndStage(lease, Endpoint.fixtures()) : null;
+        if (bootstrap == null) {
+            bootstrap = store.hydrateStagedPayload(lease, Endpoint.bootstrap(), bootstrapCheckpoint, floor)
+                    .orElseGet(() -> fetchAndStage(lease, Endpoint.bootstrap()));
+        }
+        if (fixtures == null) {
+            fixtures = store.hydrateStagedPayload(lease, Endpoint.fixtures(), fixturesCheckpoint, floor)
+                    .orElseGet(() -> fetchAndStage(lease, Endpoint.fixtures()));
+        }
         try {
             Snapshot parsed = CatalogueScheduleParser.parse(season, document(bootstrap), document(fixtures));
             store.validateStagedPayloads(lease, List.of(bootstrap.id(), fixtures.id()), Validation.valid());
@@ -318,13 +340,13 @@ public final class HistoryFixtureDispatcher {
         }
     }
 
-    private Optional<StagedPayload> usableOwn(Lease lease, Endpoint endpoint, Instant floor) {
-        Optional<StagedPayload> valid = store.earliestValidStagedPayload(lease, endpoint, floor);
+    private Optional<StagedPayloadMetadata> usableOwn(Lease lease, Endpoint endpoint, Instant floor) {
+        Optional<StagedPayloadMetadata> valid = store.earliestValidStagedPayloadMetadata(lease, endpoint, floor);
         return valid.isPresent() ? valid : uncheckedOwn(lease, endpoint, floor);
     }
 
-    private Optional<StagedPayload> uncheckedOwn(Lease lease, Endpoint endpoint, Instant floor) {
-        return store.latestStagedPayload(lease, endpoint, ValidationState.UNCHECKED)
+    private Optional<StagedPayloadMetadata> uncheckedOwn(Lease lease, Endpoint endpoint, Instant floor) {
+        return store.latestStagedPayloadMetadata(lease, endpoint, ValidationState.UNCHECKED)
                 .filter(payload -> !payload.read().startedAt().isBefore(floor));
     }
 
@@ -428,6 +450,12 @@ public final class HistoryFixtureDispatcher {
                     () -> publisher.recordDependencyWait(lease.season(), fixtureId, selected, error));
         }
         store.retryForDependency(lease, selected, bounded(error));
+    }
+
+    private void waitForHistories(Lease lease) {
+        retryForDependency(lease, clock.instant().plus(Duration.ofMinutes(2)),
+                "Waiting for fresh player histories");
+        throw new Stopped(DispatchResult.waiting());
     }
 
     private Instant recordRetryDue(Lease lease, Instant dueAt, String error) {
