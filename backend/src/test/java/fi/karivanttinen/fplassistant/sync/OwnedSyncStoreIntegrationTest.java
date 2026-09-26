@@ -428,12 +428,13 @@ class OwnedSyncStoreIntegrationTest {
                 "fixture:metadata", clock.instant());
         Lease lease = tracked.acquire("metadata-worker", Duration.ofMinutes(5)).orElseThrow();
         assertThat(lease.generation()).isEqualTo(run.generation());
+        clock.advance(Duration.ofSeconds(3));
         SourceRead eligible = read();
         tracked.stage(lease, Endpoint.elementSummary(7), eligible, Validation.valid(), bytes("history"));
         tracked.stage(lease, Endpoint.eventLive(7), eligible, Validation.valid(), bytes("live"));
         tracked.stage(lease, Endpoint.elementSummary(8), eligible, Validation.invalid("bad"), bytes("bad"));
 
-        tracking.resetBodyQueries();
+        tracking.resetHydratedBodies();
         assertThat(tracked.earliestValidStagedPayloadMetadata(lease, Endpoint.elementSummary(8),
                 eligible.startedAt())).isEmpty();
         assertThat(tracked.earliestValidStagedPayloadMetadata(lease, Endpoint.elementSummary(7),
@@ -442,10 +443,10 @@ class OwnedSyncStoreIntegrationTest {
                 eligible.startedAt()).orElseThrow();
 
         assertThat(selected.endpoint()).isEqualTo(Endpoint.elementSummary(7));
-        assertThat(tracking.bodyQueries()).isZero();
+        assertThat(tracking.hydratedBodies()).isZero();
         assertThat(tracked.hydrateStagedPayload(lease, Endpoint.elementSummary(7), selected,
                 eligible.startedAt()).orElseThrow().body()).isEqualTo(bytes("history"));
-        assertThat(tracking.bodyQueries()).isOne();
+        assertThat(tracking.hydratedBodies()).isOne();
     }
 
     @Test
@@ -456,19 +457,20 @@ class OwnedSyncStoreIntegrationTest {
                 "fixture:metadata-invalid", clock.instant());
         Lease lease = tracked.acquire("metadata-invalid-worker", Duration.ofMinutes(5)).orElseThrow();
         Endpoint endpoint = Endpoint.elementSummary(7);
+        clock.advance(Duration.ofSeconds(3));
         SourceRead sourceRead = read();
         tracked.stage(lease, endpoint, sourceRead, Validation.valid(), bytes("history"));
         var selected = tracked.earliestValidStagedPayloadMetadata(lease, endpoint,
                 sourceRead.startedAt()).orElseThrow();
-        assertThat(tracking.bodyQueries()).isZero();
+        assertThat(tracking.hydratedBodies()).isZero();
 
         jdbc.update("UPDATE " + TABLES.payload()
                 + " SET validation_state='INVALID', validation_error='changed after selection' WHERE id=?",
                 selected.id());
-        tracking.resetBodyQueries();
+        tracking.resetHydratedBodies();
 
         assertThat(tracked.hydrateStagedPayload(lease, endpoint, selected, sourceRead.startedAt())).isEmpty();
-        assertThat(tracking.bodyQueries()).isZero();
+        assertThat(tracking.hydratedBodies()).isZero();
     }
 
     @Test
@@ -480,27 +482,33 @@ class OwnedSyncStoreIntegrationTest {
         Lease lease = tracked.acquire("staged-floor-worker", Duration.ofMinutes(5)).orElseThrow();
         assertThat(lease.generation()).isEqualTo(run.generation());
         Endpoint endpoint = Endpoint.elementSummary(7);
+        clock.advance(Duration.ofSeconds(3));
         SourceRead sourceRead = read();
         tracked.stage(lease, endpoint, sourceRead, Validation.valid(), bytes("history"));
         var selected = tracked.earliestValidStagedPayloadMetadata(lease, endpoint,
                 sourceRead.startedAt()).orElseThrow();
-        assertThat(tracking.bodyQueries()).isZero();
+        assertThat(tracking.hydratedBodies()).isZero();
 
         clock.advance(Duration.ofSeconds(1));
         Run coalesced = tracked.enqueue(SyncKind.FIXTURE_VERIFICATION, "2097-98", "staged-floor",
                 "fixture:staged-floor", clock.instant());
         assertThat(coalesced.generation()).isEqualTo(lease.generation());
         assertThat(tracked.requestedSourceAfter(lease)).isAfter(sourceRead.startedAt());
-        tracking.resetBodyQueries();
+        tracking.resetHydratedBodies();
 
         assertThat(tracked.hydrateStagedPayload(lease, endpoint, selected, sourceRead.startedAt())).isEmpty();
-        assertThat(tracking.bodyQueries()).isZero();
+        assertThat(tracking.hydratedBodies()).isZero();
     }
 
     @Test
     void crossRunHydrationDoesNotLoadBodyAfterDurableSourceFloorAdvances() {
         TrackingJdbcTemplate tracking = new TrackingJdbcTemplate(jdbc.getDataSource());
         OwnedSyncStore tracked = new OwnedSyncStore(tracking, tx, clock, TABLES);
+        Run consumer = tracked.enqueue(SyncKind.FIXTURE_VERIFICATION, "2097-98", "fixture:floor",
+                "fixture:floor", clock.instant());
+        Lease consumerLease = tracked.acquire("history-consumer", Duration.ofMinutes(5)).orElseThrow();
+        assertThat(consumerLease.generation()).isEqualTo(consumer.generation());
+        clock.advance(Duration.ofSeconds(3));
         Run source = tracked.enqueue(SyncKind.PLAYER_HISTORY, "2097-98", "player-history:7",
                 "player-history:7", clock.instant());
         Lease sourceLease = tracked.acquire("history-source", Duration.ofMinutes(5)).orElseThrow();
@@ -509,31 +517,32 @@ class OwnedSyncStoreIntegrationTest {
         tracked.stage(sourceLease, Endpoint.elementSummary(7), sourceRead, Validation.valid(), bytes("history"));
         tracked.publish(sourceLease, sourceRead, () -> null);
 
-        Run consumer = tracked.enqueue(SyncKind.FIXTURE_VERIFICATION, "2097-98", "fixture:floor",
-                "fixture:floor", clock.instant());
-        Lease consumerLease = tracked.acquire("history-consumer", Duration.ofMinutes(5)).orElseThrow();
-        assertThat(consumerLease.generation()).isEqualTo(consumer.generation());
         Endpoint endpoint = Endpoint.elementSummary(7);
         var selected = tracked.latestValidPayloadMetadata("2097-98", endpoint,
                 sourceRead.startedAt()).orElseThrow();
-        assertThat(tracking.bodyQueries()).isZero();
+        assertThat(tracking.hydratedBodies()).isZero();
 
         clock.advance(Duration.ofSeconds(1));
         Run coalesced = tracked.enqueue(SyncKind.FIXTURE_VERIFICATION, "2097-98", "fixture:floor",
                 "fixture:floor", clock.instant());
         assertThat(coalesced.generation()).isEqualTo(consumerLease.generation());
         assertThat(tracked.requestedSourceAfter(consumerLease)).isAfter(sourceRead.startedAt());
-        tracking.resetBodyQueries();
+        tracking.resetHydratedBodies();
 
         assertThat(tracked.hydrateLatestValidPayload(consumerLease, "2097-98", endpoint, selected,
                 sourceRead.startedAt())).isEmpty();
-        assertThat(tracking.bodyQueries()).isZero();
+        assertThat(tracking.hydratedBodies()).isZero();
     }
 
     @Test
     void crossRunMetadataHydratesASelectedValidHistory() {
         TrackingJdbcTemplate tracking = new TrackingJdbcTemplate(jdbc.getDataSource());
         OwnedSyncStore tracked = new OwnedSyncStore(tracking, tx, clock, TABLES);
+        Run consumer = tracked.enqueue(SyncKind.FIXTURE_VERIFICATION, "2097-98", "fixture:metadata",
+                "fixture:metadata", clock.instant());
+        Lease consumerLease = tracked.acquire("history-consumer", Duration.ofMinutes(5)).orElseThrow();
+        assertThat(consumerLease.generation()).isEqualTo(consumer.generation());
+        clock.advance(Duration.ofSeconds(3));
         Run source = tracked.enqueue(SyncKind.PLAYER_HISTORY, "2097-98", "player-history:7",
                 "player-history:7", clock.instant());
         Lease sourceLease = tracked.acquire("history-source", Duration.ofMinutes(5)).orElseThrow();
@@ -542,18 +551,14 @@ class OwnedSyncStoreIntegrationTest {
         tracked.stage(sourceLease, Endpoint.elementSummary(7), sourceRead, Validation.valid(), bytes("history"));
         tracked.publish(sourceLease, sourceRead, () -> null);
 
-        Run consumer = tracked.enqueue(SyncKind.FIXTURE_VERIFICATION, "2097-98", "fixture:metadata",
-                "fixture:metadata", clock.instant());
-        Lease consumerLease = tracked.acquire("history-consumer", Duration.ofMinutes(5)).orElseThrow();
-        assertThat(consumerLease.generation()).isEqualTo(consumer.generation());
-        tracking.resetBodyQueries();
+        tracking.resetHydratedBodies();
         var selected = tracked.latestValidPayloadMetadata("2097-98", Endpoint.elementSummary(7),
                 sourceRead.startedAt()).orElseThrow();
 
-        assertThat(tracking.bodyQueries()).isZero();
+        assertThat(tracking.hydratedBodies()).isZero();
         assertThat(tracked.hydrateLatestValidPayload(consumerLease, "2097-98", Endpoint.elementSummary(7),
                 selected, sourceRead.startedAt()).orElseThrow().body()).isEqualTo(bytes("history"));
-        assertThat(tracking.bodyQueries()).isOne();
+        assertThat(tracking.hydratedBodies()).isOne();
     }
 
     @Test
@@ -787,7 +792,7 @@ class OwnedSyncStoreIntegrationTest {
     }
 
     private static final class TrackingJdbcTemplate extends JdbcTemplate {
-        private final AtomicInteger bodyQueries = new AtomicInteger();
+        private final AtomicInteger hydratedBodies = new AtomicInteger();
 
         private TrackingJdbcTemplate(DataSource dataSource) {
             super(dataSource);
@@ -795,16 +800,17 @@ class OwnedSyncStoreIntegrationTest {
 
         @Override
         public <T> List<T> query(String sql, RowMapper<T> rowMapper, Object... args) {
-            if (sql.contains("SELECT") && sql.contains("body")) bodyQueries.incrementAndGet();
-            return super.query(sql, rowMapper, args);
+            List<T> rows = super.query(sql, rowMapper, args);
+            if (sql.contains("p.body")) hydratedBodies.addAndGet(rows.size());
+            return rows;
         }
 
-        private int bodyQueries() {
-            return bodyQueries.get();
+        private int hydratedBodies() {
+            return hydratedBodies.get();
         }
 
-        private void resetBodyQueries() {
-            bodyQueries.set(0);
+        private void resetHydratedBodies() {
+            hydratedBodies.set(0);
         }
     }
 
