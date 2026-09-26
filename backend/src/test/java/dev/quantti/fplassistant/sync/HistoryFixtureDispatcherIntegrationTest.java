@@ -10,6 +10,8 @@ import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.ArrayDeque;
 import java.util.Deque;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -31,6 +33,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.RowMapper;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -286,6 +289,71 @@ class HistoryFixtureDispatcherIntegrationTest {
     }
 
     @Test
+    void incompleteOwnCheckpointDefersBeforeItsBodyIsHydrated() {
+        TrackingJdbcTemplate tracking = new TrackingJdbcTemplate(jdbc.getDataSource());
+        OwnedSyncStore trackedStore = new OwnedSyncStore(tracking, tx, clock, TABLES);
+        HistoryFixtureDispatcher staged = new HistoryFixtureDispatcher(trackedStore, null, fetch, clock, false);
+        var run = staged.enqueueFixtureVerification(SEASON, 21, clock.instant());
+        Lease first = trackedStore.acquire("checkpoint-worker", Duration.ofMinutes(5)).orElseThrow();
+        assertThat(first.generation()).isEqualTo(run.generation());
+        trackedStore.stage(first, Endpoint.bootstrap(), readNow(), Validation.valid(), bootstrap);
+
+        tracking.resetBodyQueries();
+        fetch.results.add(new DeferredResult(clock.instant().plusSeconds(1),
+                DeferredReason.MINIMUM_SPACING));
+        DispatchResult deferred = staged.process(first, SEASON);
+
+        assertThat(deferred.failure()).isEqualTo(FailureType.HTTP_DEFERRED);
+        assertThat(fetch.endpoints).containsExactly(Endpoint.fixtures());
+        assertThat(tracking.bodyQueries()).isZero();
+
+        clock.advance(Duration.ofSeconds(1));
+        tracking.resetBodyQueries();
+        fetch.results.add(ok(fixtures));
+        fetch.results.add(ok(liveThree));
+        DispatchResult resumed = staged.process(trackedStore.acquire("checkpoint-resume", Duration.ofMinutes(5))
+                .orElseThrow(), SEASON);
+
+        assertThat(resumed.outcome()).isEqualTo(Outcome.WAITING_FOR_HISTORIES);
+        assertThat(fetch.endpoints).containsExactly(Endpoint.fixtures(), Endpoint.fixtures(),
+                Endpoint.eventLive(3));
+        assertThat(tracking.bodyQueries()).isOne();
+    }
+
+    @Test
+    void missingHistoryDependencyPreventsAllHistoryBodyHydration() {
+        TrackingJdbcTemplate tracking = new TrackingJdbcTemplate(jdbc.getDataSource());
+        OwnedSyncStore trackedStore = new OwnedSyncStore(tracking, tx, clock, TABLES);
+        HistoryFixtureDispatcher staged = new HistoryFixtureDispatcher(trackedStore, null, fetch, clock, false);
+        var fixtureRun = staged.enqueueFixtureVerification(SEASON, 21, clock.instant());
+        Lease fixtureLease = trackedStore.acquire("fixture-worker", Duration.ofMinutes(5)).orElseThrow();
+        assertThat(fixtureLease.generation()).isEqualTo(fixtureRun.generation());
+        SourceRead pairRead = readNow();
+        trackedStore.stage(fixtureLease, Endpoint.bootstrap(), pairRead, Validation.valid(), bootstrap);
+        trackedStore.stage(fixtureLease, Endpoint.fixtures(), pairRead, Validation.valid(), fixtures);
+
+        clock.advance(Duration.ofSeconds(1));
+        SourceRead evidenceRead = readNow();
+        trackedStore.stage(fixtureLease, Endpoint.eventLive(3), evidenceRead, Validation.valid(), liveThree);
+        var historyRun = trackedStore.enqueue(SyncKind.PLAYER_HISTORY, SEASON.code(), "player-history:259",
+                "player-history:259", clock.instant());
+        Lease historyLease = trackedStore.acquire("history-worker", Duration.ofMinutes(5)).orElseThrow();
+        assertThat(historyLease.generation()).isEqualTo(historyRun.generation());
+        trackedStore.stage(historyLease, Endpoint.elementSummary(259), evidenceRead,
+                Validation.valid(), historyOne);
+        trackedStore.publish(historyLease, evidenceRead, () -> null);
+
+        tracking.resetBodyQueries();
+        DispatchResult result = staged.process(fixtureLease, SEASON);
+
+        assertThat(result.outcome()).isEqualTo(Outcome.WAITING_FOR_HISTORIES);
+        assertThat(fetch.endpoints).isEmpty();
+        assertThat(tracking.bodyQueries()).isEqualTo(3);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
+                + " WHERE kind='PLAYER_HISTORY' AND state='PENDING'", Integer.class)).isEqualTo(71);
+    }
+
+    @Test
     void rateLimitedFirstEndpointUsesAuthoritativeDueAndRetainsItsRawResponse() {
         Instant due = clock.instant().plus(Duration.ofHours(2));
         var run = dispatcher.enqueueFixtureVerification(SEASON, 21, clock.instant());
@@ -445,6 +513,28 @@ class HistoryFixtureDispatcherIntegrationTest {
             endpoints.add(endpoint);
             if (results.isEmpty()) throw new AssertionError("Unexpected fetch " + endpoint);
             return results.removeFirst();
+        }
+    }
+
+    private static final class TrackingJdbcTemplate extends JdbcTemplate {
+        private final AtomicInteger bodyQueries = new AtomicInteger();
+
+        private TrackingJdbcTemplate(javax.sql.DataSource dataSource) {
+            super(dataSource);
+        }
+
+        @Override
+        public <T> List<T> query(String sql, RowMapper<T> rowMapper, Object... args) {
+            if (sql.contains("SELECT") && sql.contains("body")) bodyQueries.incrementAndGet();
+            return super.query(sql, rowMapper, args);
+        }
+
+        private int bodyQueries() {
+            return bodyQueries.get();
+        }
+
+        private void resetBodyQueries() {
+            bodyQueries.set(0);
         }
     }
 
