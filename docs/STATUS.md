@@ -1,5 +1,27 @@
 # Status — Phase 1
 
+## Owned sync — bounded STAGING egress observation (2026-09-26)
+
+The owner-authorized ten-minute / 20 MB experiment ran on deployed `bc5ced7`, including all three
+20 September follow-ups. A conservative whole-machine RX guard stopped it at 20.81 MB about
+105 seconds after the request, including startup. A separate socket-level measurement had already
+observed **15.16 MB of PostgreSQL TCP payload**; that is neither all FPL traffic nor an exact
+Supabase billing total. The checkpoint-body query family made 222 calls and returned four body
+rows. No canonical-pair or cross-run history body reads occurred in the sampled interval.
+
+STAGING epoch 64 completed two catalogue/schedule jobs and no histories or fixture verifications.
+The normal retention job deleted 2,767 old payloads successfully. Normal rollback is verified
+**OFF epoch 65**, zero active queue, public health UP, with the published-receipt fingerprint,
+706 published receipts, a count of 6,523 player-evidence rows and 40 VERIFIED fixtures unchanged.
+Fifty fixture jobs were fenced FAILED by shutdown, not fifty independent source errors. No ACTIVE
+mode, core publication, application deployment or Tapas configuration change was performed; the
+diagnostic queries issued no session SET.
+
+Sustainable egress remains **unverified**. The bounded cold-start run did not reach backlog
+completion, idle behavior or the first watchdog tick. Checkpoint/dependency body hydration remains
+the next correction; this result is not a monthly cost extrapolation or permission to reactivate.
+Measurements, limitations and UTC timeline: [`OWNED-SYNC-EGRESS-REPORT.md`](OWNED-SYNC-EGRESS-REPORT.md).
+
 ## Temporary Supabase maintenance (2026-09-23)
 
 Until `2026-09-25T21:00:00Z` (26.9.2026 at 00:00 in Finland), the executable starts a
