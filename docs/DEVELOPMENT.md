@@ -384,9 +384,13 @@ what they are skipping; treat it as bypassing branch protection, because that is
 
 ## The test database
 
-Tests run against a disposable Postgres container using the same image as CI. Ordinary `up` is
-for iterative development: it reuses a running container and retains its schema and data. Use
-`reset` when the starting state must be fresh; CI always starts from an empty container.
+Tests run against a disposable Postgres container using the same image as CI. The container
+binds `127.0.0.1:55432` only: its documented test password must never be exposed to a network.
+If an older container was created with an all-interface port binding, run `scripts/test-db.sh
+reset` while no test is using it; `up` reuses existing containers and cannot change their port
+binding. Ordinary `up` is for iterative development: it reuses a running container and retains
+its schema and data. Use `reset` when the starting state must be fresh; CI always starts from an
+empty container.
 
 **A full suite is not re-runnable on the same container.** The second `./gradlew test` fails
 `RowLevelSecurityTest` and `CatalogueScheduleDispatcherIntegrationTest` on what the first run left
