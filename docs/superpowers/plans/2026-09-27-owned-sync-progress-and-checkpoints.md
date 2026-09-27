@@ -1,6 +1,6 @@
 # Owned sync — bounded history progress and canonical checkpoint reads
 
-**PROGRESS:** KAR-72 baseline reproduced; policy/deadline checkpoint blocked pending design approval. Implementation 0/2 units. No production activation.
+**PROGRESS:** KAR-72 baseline reproduced; expanded DB-failure checkpoint awaits owner decision on concurrency and fail-closed recovery. Implementation 0/2 units. No production activation.
 
 Follow-up to KAR-71. Evidence: [STAGING retest PR #137](https://github.com/quantti/fpl-assistant/pull/137)
 and [`OWNED-SYNC-EGRESS-REPORT.md`](../../OWNED-SYNC-EGRESS-REPORT.md). The latest verified safe
@@ -140,6 +140,38 @@ persistence/deadline design. Then select/test a numerical deadline inclusive of 
 socket, cancellation and settlement; define lease/epoch/source-floor checks at the dispatcher
 handoff; compare the two scheduling policies against all §1c targets using the same driver.
 Do not weaken the acceptance bounds or enable STAGING/ACTIVE to bypass this checkpoint.
+
+**DB-failure scope review (owner approved investigation, 2026-09-27):** An expiry-only
+unsettled-attempt guard is unsafe. An admitted request can receive `429 Retry-After: 7200`, fail
+to commit its result, and crash; if the database recovers before the two-minute permit expiry,
+a second caller can see no cooldown and issue an early GET. The database cannot distinguish
+this row from an ordinarily in-flight request. Current retention also deletes expired incomplete
+attempts after 24 hours, so even an expiry guard would forget a lost, arbitrarily long
+Retry-After. Completion/cooldown must remain atomic; an ambiguous commit cannot be treated as a
+refund. Waiting out the TTL does not reconstruct a lost header.
+
+The smallest fail-closed design, without a schema change, refuses new admission while **any**
+attempt lacks a confirmed completion, retains those rows beyond 24 hours and requires explicit
+operator reconciliation for an unknown result. That keeps the two-live-permit *ceiling* but
+serializes normal overlapping requests and can stop sync indefinitely on a crash or database
+failure. Already-admitted but not-yet-sent requests also need a final gate. Unacknowledged
+cancellation can still receive headers after the current completion snapshot; such an exchange
+cannot be marked safely settled merely by holding a completed permit for two minutes. The
+interruption path must attempt settlement before restoring the interrupt flag. A stronger
+multi-permit protocol would need a separately reviewed, process/epoch-aware request lifecycle,
+not just a queue-order change. Neither design can promise a successful database commit by a
+finite deadline during an arbitrary outage: the defensible endpoint is **confirmed settlement
+or an explicit uncertain outcome with durable fail-closed containment**. No numerical
+method-entry bound is approved yet; the actual work-pool contention, cancellation and cleanup
+behavior must be measured before choosing one.
+
+Owner decision needed before runtime code: may KAR-72 keep the two-permit safety cap but give up
+*simultaneous* unfinished requests and pause indefinitely for manual reconciliation after an
+unknown outcome? If not, revise the plan for the larger lifecycle protocol and review its
+failure/restart semantics before implementing FIFO or scheduler selection. The original §1c
+safety and progress checks remain targets; changes to the existing crash-expiry and
+unacknowledged-cancellation tests would require explaining the newly stronger safety contract.
+No schema/SQL change, production activation or external request was made in this review.
 
 ### 1b. Proposed minimal mechanism
 

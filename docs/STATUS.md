@@ -58,9 +58,11 @@ as expected in both arrival orders (zero history GETs/completions in 60 virtual 
 admitted GETs and 37–38 peak new partial pairs in the latest run). Its cold-parent probe
 fetches both prerequisites across a bounded retry.
 The checkpoint is **blocked** before production scheduling: the test is deliberately red, and
-neither a policy nor a numerical method-entry-to-durable-settlement deadline is approved. Current
-work-pool/transaction timeouts do not guarantee synchronous permit settlement after an interrupt
-or DB failure; the plan records the evidence and decision needed. KAR-73 remains separate.
+neither a policy nor a numerical end-to-end deadline is approved. After the owner approved
+expanding the DB-failure investigation, review found an incompatibility: an unknown 429 could
+be forgotten if the database recovers before permit expiry, while blocking every unknown result
+would serialize overlapping requests and might pause sync indefinitely pending manual review.
+The plan records that tradeoff for owner approval. KAR-73 remains separate.
 KAR-70's unavailable provider API is not a dependency. No production scheduling or setting
 changed. Latest verified containment is OFF epoch 67; the retest evidence is in PR #137.
 
