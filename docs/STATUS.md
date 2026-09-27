@@ -62,7 +62,14 @@ neither a policy nor a numerical end-to-end deadline is approved. After the owne
 expanding the DB-failure investigation, review found an incompatibility: an unknown 429 could
 be forgotten if the database recovers before permit expiry, while blocking every unknown result
 would serialize overlapping requests and might pause sync indefinitely pending manual review.
-The plan records that tradeoff for owner approval. KAR-73 remains separate.
+The owner approved serializing unfinished HTTP requests and pausing indefinitely for manual
+reconciliation when an outcome is unknown. The budget guard now retains unresolved attempts and
+blocks admission across expiry/restart; its 11 focused tests passed on the disposable DB. This
+is a prerequisite, not a completed transport/scheduling fix: the baseline still fails, and the
+method-entry deadline and caller fence remain at the checkpoint. Independent review found the
+existing JDBC timeouts cannot bound commit/cleanup, so a fixed-capacity supervised DB-operation
+path needs separate approval before implementing transport waiting or scheduling. KAR-73 remains
+separate.
 KAR-70's unavailable provider API is not a dependency. No production scheduling or setting
 changed. Latest verified containment is OFF epoch 67; the retest evidence is in PR #137.
 

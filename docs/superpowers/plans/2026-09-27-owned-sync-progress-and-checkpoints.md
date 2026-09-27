@@ -1,6 +1,6 @@
 # Owned sync — bounded history progress and canonical checkpoint reads
 
-**PROGRESS:** KAR-72 baseline reproduced; expanded DB-failure checkpoint awaits owner decision on concurrency and fail-closed recovery. Implementation 0/2 units. No production activation.
+**PROGRESS:** KAR-72 fail-closed budget prerequisite tested; bounded DB-operation design awaits review/approval before transport or scheduling. Implementation 0/2 units. No production activation.
 
 Follow-up to KAR-71. Evidence: [STAGING retest PR #137](https://github.com/quantti/fpl-assistant/pull/137)
 and [`OWNED-SYNC-EGRESS-REPORT.md`](../../OWNED-SYNC-EGRESS-REPORT.md). The latest verified safe
@@ -53,7 +53,7 @@ state, requested-source floor and genuine newer-demand checks. Keep same-run pai
 post-history public rechecks, correction revocation and optional-component masking. Do not bridge
 fixture-owned observations through the canonical cache to make request counts smaller.
 
-Do not change the one-second HTTP spacing, two live permits, 5,000 attempts per rolling day,
+Keep the one-second HTTP spacing, the two-live-permit safety ceiling, 5,000 attempts per rolling day,
 Retry-After/cooldown handling, payload caps, planner/source schedules or two-worker count. Do not
 count scheduling/admission/dependency waits as failed source fetches. Keep source-read intervals
 separate from scheduling time. Keep the two independent verification batches whose second start
@@ -165,13 +165,38 @@ or an explicit uncertain outcome with durable fail-closed containment**. No nume
 method-entry bound is approved yet; the actual work-pool contention, cancellation and cleanup
 behavior must be measured before choosing one.
 
-Owner decision needed before runtime code: may KAR-72 keep the two-permit safety cap but give up
-*simultaneous* unfinished requests and pause indefinitely for manual reconciliation after an
-unknown outcome? If not, revise the plan for the larger lifecycle protocol and review its
-failure/restart semantics before implementing FIFO or scheduler selection. The original §1c
-safety and progress checks remain targets; changes to the existing crash-expiry and
-unacknowledged-cancellation tests would require explaining the newly stronger safety contract.
-No schema/SQL change, production activation or external request was made in this review.
+**Owner decision 2026-09-27:** approved the smallest fail-closed design: retain the two-permit
+*ceiling*, serialize unfinished requests, and pause indefinitely pending manual reconciliation
+of an unknown outcome. A 30-second recheck is a wakeup, not permission to send a GET. Do not
+claim a successful database commit can be guaranteed during an outage: the deadline contract
+must distinguish confirmed settlement from an uncertain result whose original attempt remains
+durably blocking. The original §1c safety and progress targets remain; if serialization makes
+the healthy-source targets impossible, stop and revisit the policy rather than restoring unsafe
+overlap. The budget prerequisite is implemented in a separate bounded step and its 11 focused tests
+passed against the disposable database. They prove unresolved rows block before/after TTL and
+after 24 hours, not that an actual database outage or lost commit acknowledgement is handled.
+The HTTP-client settlement, FIFO and scheduling changes are not approved until the monotonic
+deadline and caller-fence handoff are specified and reviewed. Changes to
+crash-expiry and unacknowledged-cancellation tests must explain this stronger safety contract.
+No schema change or production activation is authorized.
+
+**Deadline follow-up:** independent review of the approved budget prerequisite found that the
+current work pool's two-second connection-acquisition, three-second connection/lock, ten-second
+socket/query and 30-second transaction settings do **not** bound the entire synchronous JDBC
+operation, commit, rollback, or cleanup. Merely choosing 60 seconds or subtracting a queue wait
+from the 30-second HTTP timeout would be a false guarantee. A bounded return requires a
+separately supervised, fixed-capacity DB-operation path that can stop the caller waiting while
+never sending a late GET; timed-out admission may later commit only an unresolved row and timed-out
+settlement may later atomically commit completion plus cooldown. Until those outcomes are known,
+the durable unresolved row must block fresh admission. The operation path must quarantine
+nonterminating work so timeout retries cannot accumulate unbounded threads/connections, and must
+be tested under pool/lock/socket and ambiguous-commit faults before selecting a numerical
+method-entry bound. A hard successful commit during an arbitrary outage is impossible. This is a
+broader DB lifecycle change than the approved serialization rule; return for owner approval
+before implementation, or revise the hard deadline requirement explicitly. Also repair the
+unacknowledged-cancellation path: a completed-but-TTL-held attempt does not block new admission
+and cannot protect a late Retry-After; leave it unresolved instead. Caller fencing and eliminating
+the extra out-of-deadline `nextAdmissionHint()` query belong in that transport unit.
 
 ### 1b. Proposed minimal mechanism
 

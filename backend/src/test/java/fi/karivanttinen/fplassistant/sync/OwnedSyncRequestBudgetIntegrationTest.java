@@ -61,6 +61,7 @@ class OwnedSyncRequestBudgetIntegrationTest {
     @Test
     void oneSecondBoundaryIsGlobalAcrossInstancesAndLocked() throws Exception {
         Permit first = allowed(budget.admit());
+        budget.complete(first, Completion.success());
         OwnedSyncRequestBudget reopened = new OwnedSyncRequestBudget(jdbc, tx, clock, TABLES);
         Deferred early = deferred(reopened.admit());
         assertThat(early.reason()).isEqualTo(DeferredReason.MINIMUM_SPACING);
@@ -76,23 +77,67 @@ class OwnedSyncRequestBudgetIntegrationTest {
             Object b = right.get();
             assertThat((a instanceof Allowed ? 1 : 0) + (b instanceof Allowed ? 1 : 0)).isEqualTo(1);
             assertThat((a instanceof Deferred ? 1 : 0) + (b instanceof Deferred ? 1 : 0)).isEqualTo(1);
+            Object denied = a instanceof Deferred ? a : b;
+            assertThat(((Deferred) denied).reason()).isEqualTo(DeferredReason.UNSETTLED);
         }
     }
 
     @Test
-    void allowsOnlyTwoLivePermitsAndCrashExpiryRecoversCapacity() {
+    void databaseRecoveryBeforePermitTtlRemainsUnsettledAcrossRestart() {
+        Limits limits = limits(20, Duration.ofHours(24), Duration.ofSeconds(10));
+        budget = new OwnedSyncRequestBudget(jdbc, tx, clock, TABLES, limits);
+        Permit admitted = allowed(budget.admit());
+        clock.advance(Duration.ofSeconds(2));
+
+        OwnedSyncRequestBudget reopened = new OwnedSyncRequestBudget(jdbc, tx, clock, TABLES, limits);
+        Deferred unsettled = deferred(reopened.admit());
+        assertThat(admitted.expiresAt()).isAfter(clock.instant());
+        assertThat(unsettled.reason()).isEqualTo(DeferredReason.UNSETTLED);
+        assertThat(unsettled.nextDue()).isEqualTo(clock.instant().plusSeconds(30));
+        assertThat(unresolvedAttempts()).isEqualTo(1);
+    }
+
+    @Test
+    void databaseRecoveryAfterPermitTtlDoesNotClearUnknownAttempt() {
         Limits limits = limits(20, Duration.ofHours(24), Duration.ofSeconds(3));
         budget = new OwnedSyncRequestBudget(jdbc, tx, clock, TABLES, limits);
+        Permit admitted = allowed(budget.admit());
+        clock.advance(Duration.between(clock.instant(), admitted.expiresAt().plusSeconds(1)));
+
+        OwnedSyncRequestBudget reopened = new OwnedSyncRequestBudget(jdbc, tx, clock, TABLES, limits);
+        Deferred unsettled = deferred(reopened.admit());
+        assertThat(unsettled.reason()).isEqualTo(DeferredReason.UNSETTLED);
+        assertThat(unsettled.nextDue()).isEqualTo(clock.instant().plusSeconds(30));
+        assertThat(unresolvedAttempts()).isEqualTo(1);
+    }
+
+    @Test
+    void unresolvedAttemptOlderThanRetentionRemainsAndStillBlocksAdmission() {
+        Instant old = clock.instant().minus(Duration.ofHours(25));
+        insertAttempt(UUID.randomUUID(), old, old.plusSeconds(3), null);
+
+        Deferred unsettled = deferred(budget.admit());
+        assertThat(unsettled.reason()).isEqualTo(DeferredReason.UNSETTLED);
+        assertThat(unsettled.nextDue()).isEqualTo(clock.instant().plusSeconds(30));
+        assertThat(unresolvedAttempts()).isEqualTo(1);
+    }
+
+    @Test
+    void twoCompletedButHeldPermitsStillCountTowardLiveCap() {
+        Limits limits = limits(20, Duration.ofHours(24), Duration.ofSeconds(20));
+        budget = new OwnedSyncRequestBudget(jdbc, tx, clock, TABLES, limits);
         Permit first = allowed(budget.admit());
+        budget.complete(first, Completion.success().holdingPermitUntilExpiry());
         clock.advance(Duration.ofSeconds(1));
-        allowed(budget.admit());
+        Permit second = allowed(budget.admit());
+        budget.complete(second, Completion.success().holdingPermitUntilExpiry());
         clock.advance(Duration.ofSeconds(1));
 
         Deferred full = deferred(budget.admit());
         assertThat(full.reason()).isEqualTo(DeferredReason.LIVE_PERMITS);
         assertThat(full.nextDue()).isEqualTo(first.expiresAt());
 
-        clock.advance(Duration.ofSeconds(1));
+        clock.advance(Duration.between(clock.instant(), first.expiresAt()));
         assertThat(budget.admit()).isInstanceOf(Allowed.class);
     }
 
@@ -170,9 +215,13 @@ class OwnedSyncRequestBudgetIntegrationTest {
     }
 
     @Test
-    void timeoutBackoffIsBoundedAndOlderCompletionCannotLowerCooldown() {
+    void timeoutBackoffIsBoundedAndLateCompletionCannotLowerCooldown() {
         Permit old = allowed(budget.admit());
-        clock.advance(Duration.ofSeconds(1));
+        budget.complete(old, Completion.timeout(1));
+        Instant shortCooldown = deferred(budget.admit()).nextDue();
+        assertThat(shortCooldown).isBetween(clock.instant().plusSeconds(2), clock.instant().plusMillis(2_500));
+
+        clock.advance(Duration.between(clock.instant(), shortCooldown));
         Permit newer = allowed(budget.admit());
         budget.complete(newer, Completion.timeout(30));
         Instant longCooldown = deferred(budget.admit()).nextDue();
@@ -183,38 +232,41 @@ class OwnedSyncRequestBudgetIntegrationTest {
     }
 
     @Test
-    void lateAndRepeatedCompletionCannotReleaseAnotherPermit() {
+    void lateAndRepeatedCompletionCannotAffectLaterPermits() {
         Limits limits = limits(20, Duration.ofHours(24), Duration.ofSeconds(5));
         budget = new OwnedSyncRequestBudget(jdbc, tx, clock, TABLES, limits);
-        Permit expired = allowed(budget.admit());
+        Permit earlier = allowed(budget.admit());
+        budget.complete(earlier, Completion.success());
         clock.advance(Duration.ofSeconds(5));
         Permit current = allowed(budget.admit());
 
-        budget.complete(expired, Completion.success());
-        budget.complete(expired, Completion.timeout(1));
+        budget.complete(earlier, Completion.success());
+        budget.complete(earlier, Completion.timeout(1));
+        budget.complete(current, Completion.success());
         clock.advance(Duration.ofSeconds(1));
-        Permit secondCurrent = allowed(budget.admit());
-        clock.advance(Duration.ofSeconds(1));
-        Deferred full = deferred(budget.admit());
-        assertThat(full.reason()).isEqualTo(DeferredReason.LIVE_PERMITS);
-        assertThat(current.id()).isNotEqualTo(secondCurrent.id());
+        Permit later = allowed(budget.admit());
+        assertThat(current.id()).isNotEqualTo(later.id());
     }
 
     @Test
-    void purgeKeepsWindowRecordsAndOldLivePermitsButRemovesOldTerminalAttempts() {
+    void purgeRemovesOnlyOldCompletedAttempts() {
         Instant old = clock.instant().minus(Duration.ofHours(25));
-        insertAttempt(UUID.randomUUID(), old, clock.instant().plusSeconds(30), null);
         insertAttempt(UUID.randomUUID(), old, old.plusSeconds(10), old.plusSeconds(5));
         Instant recent = clock.instant().minus(Duration.ofHours(23));
         insertAttempt(UUID.randomUUID(), recent, recent.plusSeconds(10), recent.plusSeconds(5));
 
-        budget.admit();
+        assertThat(budget.admit()).isInstanceOf(Allowed.class);
 
         assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.requestAttempt(), Integer.class))
-                .isEqualTo(3); // old live + recent completed + newly admitted
+                .isEqualTo(2); // recent completed + newly admitted
         assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.requestAttempt()
                 + " WHERE admitted_at < ?", Integer.class, Timestamp.from(clock.instant().minus(Duration.ofHours(24)))))
-                .isEqualTo(1);
+                .isZero();
+    }
+
+    private int unresolvedAttempts() {
+        return jdbc.queryForObject("SELECT count(*) FROM " + TABLES.requestAttempt()
+                + " WHERE completed_at IS NULL", Integer.class);
     }
 
     private void insertAttempt(UUID id, Instant admitted, Instant expires, Instant completed) {

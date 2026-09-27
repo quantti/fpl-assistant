@@ -25,6 +25,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 public final class OwnedSyncRequestBudget {
 
     private static final Duration RETENTION = Duration.ofHours(24);
+    private static final Duration UNSETTLED_RECHECK = Duration.ofSeconds(30);
     private static final Duration DEFAULT_PERMIT_TTL = Duration.ofMinutes(2);
     private static final Duration DEFAULT_MAXIMUM_BACKOFF = Duration.ofMinutes(30);
     // PostgreSQL timestamptz accepts 4713 BC through 294276 AD. Keep the upper edge
@@ -66,8 +67,13 @@ public final class OwnedSyncRequestBudget {
             Instant retentionCutoff = now.minus(RETENTION);
             jdbc.update("DELETE FROM %s WHERE admitted_at < ? AND completed_at IS NOT NULL"
                             .formatted(tables.requestAttempt()), timestamp(retentionCutoff));
-            jdbc.update("DELETE FROM %s WHERE admitted_at < ? AND completed_at IS NULL AND permit_expires_at <= ?"
-                            .formatted(tables.requestAttempt()), timestamp(retentionCutoff), timestamp(now));
+            Boolean unsettled = jdbc.queryForObject("SELECT EXISTS (SELECT 1 FROM %s WHERE completed_at IS NULL)"
+                    .formatted(tables.requestAttempt()), Boolean.class);
+            if (Boolean.TRUE.equals(unsettled)) {
+                // This is only a bounded recheck hint. An unknown attempt stays blocking until
+                // its completion is durably recorded or an operator reconciles it.
+                return new Deferred(now.plus(UNSETTLED_RECHECK), DeferredReason.UNSETTLED);
+            }
 
             Deferral deferral = null;
             if (state.cooldownUntil != null && state.cooldownUntil.isAfter(now)) {
@@ -224,7 +230,8 @@ public final class OwnedSyncRequestBudget {
         }
     }
 
-    public enum DeferredReason { MINIMUM_SPACING, LIVE_PERMITS, ATTEMPT_LIMIT, COOLDOWN }
+    /** UNSETTLED's nextDue is only a bounded recheck hint, not a promise of future eligibility. */
+    public enum DeferredReason { MINIMUM_SPACING, LIVE_PERMITS, ATTEMPT_LIMIT, COOLDOWN, UNSETTLED }
 
     public record Permit(UUID id, Instant admittedAt, Instant expiresAt) {
         public Permit {
