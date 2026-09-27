@@ -1,0 +1,278 @@
+# Owned sync — bounded history progress and canonical checkpoint reads
+
+**PROGRESS:** Plan reviewed; implementation 0/2 units. Ready for KAR-72's bounded reproduction only; the scheduling policy/deadline checkpoint still precedes runtime implementation. No production activation.
+
+Follow-up to KAR-71. Evidence: [STAGING retest PR #137](https://github.com/quantti/fpl-assistant/pull/137)
+and [`OWNED-SYNC-EGRESS-REPORT.md`](../../OWNED-SYNC-EGRESS-REPORT.md). The latest verified safe
+state is OFF epoch 67, zero active work, 40 verified fixtures and no GW5 PFS rows. The report in
+PR #137 supersedes the 26 September observation on `bc5ced7`; the retest used `80dba18`, including
+KAR-71. Delivery tickets: [KAR-72](https://linear.app/quantti/issue/KAR-72) (Unit 1) and
+[KAR-73](https://linear.app/quantti/issue/KAR-73) (Unit 2).
+
+## Outcome and limits
+
+Make real player-history requests and completed history jobs progress under a fixture backlog,
+without starving fixture continuation/verification. Separately, stop the canonical writer from
+reading checkpoint bodies it can reject from metadata or cannot yet use. These are two reviewed
+implementation units, delivered sequentially on separate branches/PRs, then measured together.
+Neither is a claim that the shared Free-tier allowance will suffice.
+
+KAR-70's unavailable provider-API integration is **not a dependency**. This plan adds no persistent
+meter, alerts service, general-purpose scheduler, new cache or production budget defaults. It
+neither authorizes another STAGING run nor restores ACTIVE or Tapas. A future attended experiment
+requires its own explicit limits, rollback guard and owner authorization.
+
+Assumptions: one current owned-runtime epoch with two workers sharing one HTTP client; durable
+season/epoch/lease fencing remains authoritative if an old process survives. Application-local
+fairness must not be described as fairness across independent machines/processes.
+
+## What the evidence establishes
+
+- The retest stopped about 66 seconds after the mode request (including startup), not after ten
+  minutes of useful work. It measured about 15.22 MB DB TCP payload before shutdown, not exact
+  provider billing. No steady-state or perpetual-starvation conclusion follows from that window.
+- Fifty fixture runs and 68 history runs remained at shutdown. All 68 histories had zero attempts;
+  49 fixtures retained priority 1, while one dependency-waiting fixture had priority 4. Histories
+  are priority 3. `OwnedSyncStore.acquire` sorts by priority, due time and generation.
+- Ten fixture runs held unchecked 1.78 MB bootstraps. A fixture can fetch its bootstrap, lose the
+  next minimum-spacing admission, and retry at priority 1 before reaching dependency discovery.
+  Another untouched fixture can then fetch another bootstrap. Uploads are DB ingress, not DB RX.
+- The old-shaped checkpoint body SELECT returned three rows and the canonical pair SELECT one
+  pair. `CatalogueScheduleDispatcher.usableOwn` still loads a body before its date/source-floor
+  checks; KAR-71 changed the history/fixture path only. The counters do not reveal whether those
+  three particular bodies were ineligible or which payload ids/bytes crossed the wire.
+- `OwnedMatchdayWarmStartPressureIntegrationTest` drains serially and its fake always returns 200
+  after advancing its clock one second. `prerequisitesAndDependenciesCannotBeStarvedByWaitingFixtureFanout`
+  seeds fixtures already in dependency wait. Neither reproduces early HTTP deferral with two
+  competing workers. Merely acquiring a history lease is not proof that its HTTP request is admitted.
+
+## Invariants for both units
+
+Keep the configured playing season, runtime epoch, lease/token, exact endpoint identity, validation
+state, requested-source floor and genuine newer-demand checks. Keep same-run pairs, strict parsing,
+post-history public rechecks, correction revocation and optional-component masking. Do not bridge
+fixture-owned observations through the canonical cache to make request counts smaller.
+
+Do not change the one-second HTTP spacing, two live permits, 5,000 attempts per rolling day,
+Retry-After/cooldown handling, payload caps, planner/source schedules or two-worker count. Do not
+count scheduling/admission/dependency waits as failed source fetches. Keep source-read intervals
+separate from scheduling time. Keep the two independent verification batches whose second start
+is at least ten minutes after the first end; STAGING completion is not VERIFIED publication.
+
+No Tapas table/schema changes, production SQL writes or session SETs through the transaction
+pooler. Tests use disposable Postgres, TapasSeed, owned `_test` tables and loopback FPL only.
+
+## Unit 1 — bounded admission and history progress (KAR-72)
+
+### 1a. Establish the failing case and review the scheduling decision
+
+Create `OwnedMatchdayAdmissionProgressIntegrationTest` under
+`backend/src/test/java/fi/karivanttinen/fplassistant/sync/`. Use real store/coordinator/dispatchers,
+the real `OwnedSyncRequestBudget` and `OwnedSyncHttpClient` with its loopback-only seam. Add only
+package-private clock/wait seams needed for deterministic transport tests; the source host stays
+fixed in production. One clock authority drives budget, dispatch and source intervals. Advance
+virtual time in the driver at explicit boundaries, not implicitly on every successful response.
+
+Seed a valid canonical pair, 50 relevant fixture runs (one dependency-waiting and 49 higher-priority
+runs, ten with usable partial checkpoints) and 68 due histories. Also run the smaller cold-parent
+case so history preference cannot suppress the canonical prerequisite jobs. Pin full fixture and
+participant data; the exact synthetic player count need not impersonate a production roster.
+
+Drive two controlled workers with 100 ms simulated response durations and both arrival orders.
+Preserve production's one-second fixed delay **after each dispatch completes**, not a new dispatch
+every second regardless of duration. Barrier-control request start/response, budget contention
+and dispatch completion; advance to the next scheduled event only when worker state is known.
+Use the identical event schedule before and after the change. The initial case is bounded to
+60 virtual seconds / 150 dispatches and 120 seconds wall time. A separate wall watchdog must
+release barriers, interrupt/join workers and close the client in finally; assert cleanup, so a
+fake-clock deadlock cannot hang the test JVM.
+
+Track separately: claims, deferrals, admitted attempts, server-observed GETs by endpoint, valid
+completed histories, STAGED fixtures, body rows/raw lengths returned and new partial bootstrap
+checkpoints. No production logs, payloads or credentials are test fixtures. A spy returning
+canned deferrals alone is insufficient: the actual limiter must be responsible for admission.
+
+**Checkpoint:** capture the baseline failure and review the proposed mechanism below before
+changing production scheduling. Compare it with bounded due-class rotation using the same fair
+admission primitive; choose the smallest mechanism that meets all §1c targets. Record the selected
+policy, a numerical end-to-end invocation/cleanup budget and the resulting timing tradeoff here.
+The proposed two-second wait is not approved merely by writing it into this plan. If a durable
+scheduling protocol or broader deadline/pool redesign is needed, stop and revise the plan before
+implementation. Do not raise test bounds to hide failure.
+
+### 1b. Proposed minimal mechanism
+
+A global priority reversal merely trades history delay for fixture delay. Alternating claims alone
+can still let one worker lose every HTTP slot. Evaluate these complementary changes first:
+
+1. Give one of the existing workers history preference and the other fixture preference, while
+   keeping due canonical prerequisites first. Borrow work when the preferred class has no
+   claimable job (future-dated or exclusively leased work is not claimable). Give due fixture
+   continuations, including matured dependency retries, bounded preference, not an unlimited
+   override of untouched fixtures; §1c bounds both selections. Use bounded existing run metadata,
+   not payload bodies, for selection; retain every season/epoch/expiry/SKIP LOCKED condition.
+2. In the shared HTTP client, use an interruptible FIFO **admission-only** turn for short
+   `MINIMUM_SPACING` waits. A denied caller retains its place, waits to the returned instant and
+   asks the durable budget again. Proposed maximum queue-plus-spacing wait: two seconds per
+   invocation. Hold no JDBC connection/transaction while sleeping or queuing. `budget.admit()`
+   necessarily uses its short transaction during admission; release the turn before network I/O.
+   Do not pre-consume a permit when claiming a job. Other budget denials remain immediate with
+   their authoritative hints; no waiting out a cooldown, day ceiling or held permit.
+
+This is a proposal to review against the reproduction, not permission for an unlimited sleep or
+an extra HTTP retry. At most one GET follows one allowed permit. The current 30-second timeout
+starts **after** JDBC admission and does not bound the method: cancellation acknowledgement and
+synchronous `budget.complete()` can add time. Do not describe it as an existing end-to-end limit.
+Before approving FIFO, define one monotonic deadline starting at method entry, including queueing,
+admission/fence SQL, network wait, cancellation and durable permit settlement. The checkpoint must
+choose/test its numerical budget with realistic bounded pool/lock/socket contention, not simply
+subtract two seconds from the transport timeout. Do not mutate shared JdbcTemplate/transaction
+limits per caller. If bounded settlement cannot fit safely, return for design approval; do not
+silently add asynchronous persistence or forget an admitted permit.
+
+Recheck lease/epoch after waiting and after permit acquisition before submission; specify the
+caller-fence handoff in both dispatchers. No GET may start after cancellation, expiry or observed
+fence loss. Preserve held-permit behavior when an already submitted exchange cannot acknowledge
+cancellation. Waiting interruption/timeout/shutdown must produce a no-fetch outcome and no
+fabricated source evidence; do not count it as a server failure or shorten a true Retry-After.
+Test FIFO re-entry/barging, both lock contenders, expiry and unacknowledged cancellation. Failure
+to prove these semantics is a design blocker, not an excuse to omit them.
+
+Candidate production files (all under `backend/src/main/java/fi/karivanttinen/fplassistant/sync/`):
+`OwnedSyncStore`, `OwnedMatchdayCoordinator`, `OwnedMatchdayRuntime`, `OwnedSyncHttpClient` and,
+only for caller-fence integration, the two dispatchers. Any change to the durable budget's timeout
+API must be explicitly selected at the checkpoint. No schema change is assumed. Keep the
+existing unfenced store seam's scope explicit; test the actual fenced runtime path as well.
+
+### 1c. Acceptance and review
+
+Under the pinned fast-successful source, stable demand, usable canonical parents and available
+budget, require the following **test targets, not production SLAs**:
+
+| Scenario | Required evidence |
+|---|---|
+| Original mixed backlog | First valid history completes within 15 virtual seconds; at least ten distinct histories complete within 60 seconds. |
+| Competing requests | Once both callers are waiting for admission, each gets a server-observed GET within the next two admissions; exercise either worker arriving first. |
+| Ready fixture selection | A due oldest ready continuation is selected within four completed dispatch opportunities and ten virtual seconds of becoming claimable, even with histories continuously due; its two final recheck GETs occur within four subsequent admissions and it reaches STAGED within 20 virtual seconds of becoming claimable. |
+| Other claimable work | In the ready-continuation pressure case, an untouched due fixture is selected within eight completed dispatch opportunities and 20 virtual seconds. A newly due canonical prerequisite is selected within the next two claim opportunities after already leased work yields. |
+| Nonclaimable/blocked preference | Future-dated/source-floor work and exclusively leased preferred jobs cannot idle the other worker; matured-but-still-blocked dependency retries must yield to a ready continuation within the same fixture-selection bound. |
+| Partial pairs | In the controlled healthy-spacing case, no more than two newly outstanding partial initial pairs; usable checkpoints resume without bootstrap refetch. Distinguish pre-seeded partial pairs. |
+| True limits/failure | One-second spacing, two live permits and rolling ceiling hold; a two-hour Retry-After, permit hold or exhausted budget causes no early GET. Invalid histories stay invalid. |
+| Lifecycle | Restart store/client/workers without clearing durable budget or checkpoints; cover lease expiry, epoch replacement, interruption and shutdown while waiting; stale work cannot stage/publish. |
+| Evidence | Genuine newer demands still reject earlier evidence; isolated ACTIVE tests retain ten-minute batch separation, corrections and receipts. |
+
+Do not certify fixture progress solely from a lease or `WAITING_FOR_HISTORIES`, or verification from
+a STAGING result. The ready-continuation case seeds an already-due retry with complete source-valid
+dependencies. Separately advance the clock past a real two-minute dependency retry and repeat the
+selection/completion assertions; the 60-second case alone cannot cover this path. A claimed job
+whose source floor is still future must defer without a GET and yield, never lower its floor.
+
+Add a finite-drain case over the 50 seeded fixtures plus all histories their pinned manifests
+require (68 initially due is not necessarily the entire dependency population). Stop at the first
+of 2 virtual hours, 5,000 admissions, 6,000 dispatches or 300 seconds wall time; assert all fixture
+jobs STAGED and all required history jobs completed, with no failed/abandoned job counted as a
+successful drain. These are test ceilings, not a production SLA or permission to spend 5,000 live
+requests. Count required unique players, repeat history fetches and fixture retries in the result.
+If it cannot drain under the unchanged daily ceiling, return to design instead of resetting the
+budget/clock or removing rows. Independently verify that continuous source changes, unavailable
+parents or exhausted quota defer honestly; they are exceptions to the healthy-source target,
+not opportunities to bypass evidence.
+
+Run only the new/changed focused tests locally, including relevant store, coordinator, runtime,
+HTTP-client, budget and history/fixture dispatcher cases. Preserve the existing pressure test as
+a memory/serial-drain test with its limitation explicit; it is not the new admission oracle.
+Commit/push a dedicated branch, open a PR to master, require full PR CI and an independent review.
+Return to the orchestrator before Unit 2. Deployment remains OFF.
+
+## Unit 2 — metadata-first canonical checkpoint selection (KAR-73)
+
+Keep this separate from scheduling so its body-read reduction is independently measurable.
+Change `CatalogueScheduleDispatcher.obtainPair` / `usableOwn` to reuse KAR-71's bounded metadata
+selection and guarded `hydrateStagedPayload`, rather than `latestStagedPublicPayload` before filtering.
+
+1. Use `latestStagedPayloadMetadata(lease, endpoint)` for both same-run checkpoints, then filter:
+   the canonical path currently selects the **latest** row and rejects it when unusable. Do not
+   copy the fixture path's earliest-valid selection or revive an older valid row beneath a newer
+   invalid one. Reject known invalid, wrong-day, wrong-endpoint/run/epoch or below-floor candidates
+   before issuing a body SELECT.
+2. Fetch/stage any missing public endpoint **before** hydrating an existing partner. If admission
+   defers, return with its true hint and no body read for the incomplete candidate pair. Preserve
+   each successfully staged response for restart. Do not refetch a still-valid partner needlessly.
+3. Before hydrating an available pair, including after fetching its missing partner, reject any
+   known pair-window or endpoint-specific receipt regression from read-interval metadata. Preserve
+   `ChronoUnit.MINUTES.between(start, end) <= 10` exactly, including its floor-to-whole-minutes
+   boundary; do not silently replace it with a strict 600-second cutoff. An old but internally
+   coherent same-UK-day pre-cutover pair remains reusable. Recheck dates if the wait crossed UK
+   midnight. Keep metadata-only rejection's validation/retry outcome consistent with the old path.
+4. Recheck exact ids, endpoint, validation, season, lease/epoch and the effective durable source
+   floor during hydration. If selection became stale or a payload was pruned/invalidated, use
+   the bounded refresh/retry route. Preserve own-pair parse failure as terminal; malformed reusable
+   canonical pairs may try another candidate. Do not import the fixture dispatcher's refetch
+   fallback into the own-pair parser. A rejected candidate must not become a publication.
+5. Keep complete canonical-pair reuse and its bounded cache intact. Strict parse and
+   publication-time chronology/source-floor/receipt checks remain final authorities, including
+   races. This ticket makes own-checkpoint admission metadata-first; it does not rewrite the
+   reusable-pair API/cache or introduce in-memory checkpoint ownership.
+
+Focused regressions in `CatalogueScheduleDispatcherIntegrationTest` and relevant
+`OwnedSyncStoreIntegrationTest` cases must prove zero checkpoint-body SELECTs/returned bodies for
+metadata-ineligible candidates, already-known pair-window/receipt regressions and a partial pair
+whose missing partner is admission-deferred. Pre-rejected candidates issue no body SELECT; a
+hydration race may issue a guarded SELECT but must return no rejected body. Once its partner is
+fetched, exactly the needed eligible checkpoint body is hydrated. Count canonical-pair reuse
+separately rather than setting an impossible zero-total-read assertion.
+
+Retain restart/pre-cutover publication, previous-day rejection, source-window rejection,
+malformed-pair fallback, demand advancement between selection and hydration, receipt race,
+validation invalidation, pruning, lease/epoch loss and SQL rollback cases. Add newer-invalid over
+older-valid checkpoints, own-pair versus reusable-pair parse failure, UK-midnight boundaries and
+an old-but-coherent pre-cutover pair explicitly. If earlier metadata
+rejection intentionally avoids a now-unnecessary fetch, update only that test's fetch count and
+explain why its safety outcome remains identical. Measure returned raw body lengths in synthetic
+tests; do not call them TCP or provider-billed bytes.
+
+Run the focused dispatcher/store tests, then independent review and full PR CI on its separate
+branch. No code change to fixture readiness, historical readers or core writer activation.
+
+## Combined acceptance and operational handoff
+
+After both reviewed changes, rerun the same seeded admission workload and report old/new values
+for first history completion, distinct histories completed, fixture progress, allowed/denied HTTP,
+new partial pairs and each body-read family. Greater progress naturally reads more necessary
+bodies: zero body reads is not the goal. Do not claim these two changes explain or eliminate all
+15 MB from the retest. If a fixed healthy case still has unbounded dependency replay/body growth,
+stop and investigate locally; do not enlarge the production test to paper over it.
+
+Local commands use `backend/.env.test`, the disposable container and checked-in resource limits;
+never load `.env.supabase` for tests. Run a single bounded class/group at a time, no full suite on
+this VPS. GitHub owns the full-suite gate. Planning itself needs only document/link/diff review.
+
+A later production experiment is separately authorized and attended. Before it, verify the actual
+image contains both fixes, fresh OFF/drain/health, the current provider-dashboard allowance and
+unchanged single-writer ownership. Rehearse the observer and independent stop supervisor on the
+actual image. Define time/traffic/memory/health/telemetry stop conditions before activation; budget
+polling, SQL and shutdown latency so the observed trigger is not falsely called a hard cap.
+Keep diagnostic counters running through stop as far as possible and disclose missing tails.
+Preserve postflight OFF epoch/drain/health and published receipt/evidence baselines. No observer
+reads payload bodies, captures SQL parameters, resets shared statistics or issues pooler SETs.
+
+A short STAGING sample can prove bounded traffic/progress only for what it actually exercises.
+It does not publish GW5, invoke ACTIVE's fixture verification/publication path or establish
+monthly cost. Any ACTIVE backfill needs separate permission after reviewed evidence, retains both
+independent batches and correction checks, and must verify all ten GW5 fixtures and visible PFS
+rows. Sustained operation additionally needs backlog, idle, daily-sweep and matchday measurements;
+no unavailable provider API is substituted for those measurements or made a prerequisite here.
+
+## Review/outcome record
+
+Independent review identified five gaps: the existing timeout is not end-to-end; fixture
+selection/drain lacked bounds; the reproduction lacked the runtime cadence and a wall-time stop;
+pair-level metadata rejection was underspecified; and canonical latest-row/parse-fallback semantics
+could be confused with the fixture dispatcher. All five are addressed above. A second independent
+review found no remaining blocker to the bounded local reproduction.
+
+The two-second FIFO wait and worker preferences remain candidate designs, not approved runtime
+behavior. Unit 1's reproducer must establish the failure, then its policy/deadline checkpoint
+selects and reviews a feasible mechanism before production scheduling code changes. No test was
+run against Supabase, no runtime implementation was made, and no production setting changed during
+planning/review. KAR-70 is not a dependency; operational acceptance remains a separate permission.

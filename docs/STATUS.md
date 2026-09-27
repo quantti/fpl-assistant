@@ -22,6 +22,17 @@ completion, idle behavior or the first watchdog tick. Checkpoint/dependency body
 the next correction; this result is not a monthly cost extrapolation or permission to reactivate.
 Measurements, limitations and UTC timeline: [`OWNED-SYNC-EGRESS-REPORT.md`](OWNED-SYNC-EGRESS-REPORT.md).
 
+## Owned sync — reviewed progress/checkpoint plan (2026-09-27)
+
+Plan: [`2026-09-27-owned-sync-progress-and-checkpoints.md`](superpowers/plans/2026-09-27-owned-sync-progress-and-checkpoints.md).
+Implementation is 0/2 units: KAR-72 first reproduces real two-worker HTTP admission and bounded
+history/fixture progress; KAR-73 then makes canonical own-checkpoint selection metadata-first.
+The scheduling mechanism and a numerical end-to-end deadline remain a mandatory design checkpoint
+after the failing reproduction, not decisions already validated by the plan. Two review passes
+resolved timing, queue-progress, test-cadence and checkpoint-semantics gaps. KAR-70's unavailable
+provider API is not a dependency. No runtime code or production setting changed. Latest verified
+containment is OFF epoch 67; the retest evidence is in PR #137.
+
 ## Temporary Supabase maintenance (2026-09-23)
 
 Until `2026-09-25T21:00:00Z` (26.9.2026 at 00:00 in Finland), the executable starts a
