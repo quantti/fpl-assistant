@@ -364,6 +364,27 @@ class HistoryFixtureDispatcherIntegrationTest {
                         java.sql.Timestamp.class, run.generation()).toInstant().plusMillis(1));
         assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
                 + " WHERE kind='PLAYER_HISTORY'", Integer.class)).isEqualTo(73);
+        Long bootstrapPayloadId = jdbc.queryForObject("SELECT id FROM " + TABLES.payload()
+                + " WHERE run_generation=? AND endpoint_kind='BOOTSTRAP_STATIC'", Long.class, run.generation());
+        Long fixturesPayloadId = jdbc.queryForObject("SELECT id FROM " + TABLES.payload()
+                + " WHERE run_generation=? AND endpoint_kind='FIXTURES'", Long.class, run.generation());
+        Long livePayloadId = jdbc.queryForObject("SELECT id FROM " + TABLES.payload()
+                + " WHERE run_generation=? AND endpoint_kind='EVENT_LIVE' AND event_id=3",
+                Long.class, run.generation());
+        assertThat(jdbc.query("SELECT bootstrap_payload_id, fixtures_payload_id, live_payload_id FROM "
+                        + TABLES.fixtureDependencyManifest() + " WHERE run_generation=?",
+                (rs, row) -> List.of(rs.getLong(1), rs.getLong(2), rs.getLong(3)), run.generation()))
+                .containsExactly(List.of(bootstrapPayloadId, fixturesPayloadId, livePayloadId));
+        Integer[] requiredPlayerIds = jdbc.queryForObject("SELECT required_player_ids FROM "
+                        + TABLES.fixtureDependencyManifest() + " WHERE run_generation=?",
+                (rs, row) -> (Integer[]) rs.getArray(1).getArray(), run.generation());
+        assertThat(requiredPlayerIds).hasSize(73).contains(999);
+        assertThat(jdbc.queryForObject("SELECT fpl_sync_required_ids_valid(required_player_ids) FROM "
+                        + TABLES.fixtureDependencyManifest() + " WHERE run_generation=?",
+                Boolean.class, run.generation())).isTrue();
+        assertThat(jdbc.queryForObject("SELECT source_floor FROM " + TABLES.fixtureDependencyManifest()
+                + " WHERE run_generation=?", java.sql.Timestamp.class, run.generation()).toInstant())
+                .isEqualTo(requestedFloor);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
                 + " WHERE kind='CATALOGUE_SCHEDULE' AND state='PENDING'", Integer.class)).isZero();
         Lease next = store.acquire("progress-worker", Duration.ofMinutes(5)).orElseThrow();
@@ -403,6 +424,7 @@ class HistoryFixtureDispatcherIntegrationTest {
 
         clock.advance(Duration.ofSeconds(1));
         fetch.results.add(ok(fixtures));
+        clock.advance(Duration.ofMillis(1));
         fetch.results.add(ok(liveThree));
         DispatchResult resumed = dispatcher.process(acquire(run.generation()), SEASON);
 
@@ -497,6 +519,7 @@ class HistoryFixtureDispatcherIntegrationTest {
         clock.advance(Duration.ofSeconds(1));
         tracking.resetBodyQueries();
         fetch.results.add(ok(fixtures));
+        clock.advance(Duration.ofMillis(1));
         fetch.results.add(ok(liveThree));
         DispatchResult resumed = staged.process(trackedStore.acquire("checkpoint-resume", Duration.ofMinutes(5))
                 .orElseThrow(), SEASON);
@@ -538,6 +561,52 @@ class HistoryFixtureDispatcherIntegrationTest {
         assertThat(tracking.bodyQueries()).isEqualTo(3);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
                 + " WHERE kind='PLAYER_HISTORY' AND state='PENDING'", Integer.class)).isEqualTo(71);
+    }
+
+    @Test
+    void missingHistoryHydrationWritesManifestWhenAllHistoryMetadataExists() throws Exception {
+        TrackingJdbcTemplate tracking = new TrackingJdbcTemplate(jdbc.getDataSource());
+        OwnedSyncStore trackedStore = new OwnedSyncStore(tracking, tx, clock, TABLES);
+        HistoryFixtureDispatcher staged = new HistoryFixtureDispatcher(trackedStore, null, fetch, clock, false);
+        var fixtureRun = staged.enqueueFixtureVerification(SEASON, 21, clock.instant());
+        Lease fixtureLease = trackedStore.acquire("fixture-worker", Duration.ofMinutes(5)).orElseThrow();
+        SourceRead pairRead = readNow();
+        long bootstrapId = trackedStore.stage(fixtureLease, Endpoint.bootstrap(), pairRead,
+                Validation.valid(), bootstrap);
+        long fixturesId = trackedStore.stage(fixtureLease, Endpoint.fixtures(), pairRead,
+                Validation.valid(), fixtures);
+        clock.advance(Duration.ofMillis(1));
+        SourceRead liveRead = readNow();
+        long liveId = trackedStore.stage(fixtureLease, Endpoint.eventLive(3), liveRead,
+                Validation.valid(), liveThree);
+
+        Set<Integer> playerIds = fixturePlayerIds(pairRead);
+        SourceRead historyRead = readNow();
+        for (int playerId : playerIds) {
+            var historyRun = trackedStore.enqueue(SyncKind.PLAYER_HISTORY, SEASON.code(),
+                    "player-history:" + playerId, "player-history:" + playerId, historyRead.startedAt());
+            Lease historyLease = trackedStore.acquire("history-worker", Duration.ofMinutes(5)).orElseThrow();
+            assertThat(historyLease.generation()).isEqualTo(historyRun.generation());
+            trackedStore.stage(historyLease, Endpoint.elementSummary(playerId), historyRead,
+                    Validation.valid(), historyOne);
+            trackedStore.completeStaged(historyLease, historyRead, List.of(historyRead));
+        }
+
+        tracking.resetBodyQueries();
+        tracking.missNextHistoryBodyQuery();
+        DispatchResult result = staged.process(fixtureLease, SEASON);
+
+        assertThat(result.outcome()).isEqualTo(Outcome.WAITING_FOR_HISTORIES);
+        assertThat(tracking.missedHistoryBodyQueries()).isOne();
+        assertThat(tracking.bodyQueries()).isEqualTo(playerIds.size() + 3);
+        assertThat(jdbc.query("SELECT bootstrap_payload_id, fixtures_payload_id, live_payload_id FROM "
+                        + TABLES.fixtureDependencyManifest() + " WHERE run_generation=?",
+                (rs, row) -> List.of(rs.getLong(1), rs.getLong(2), rs.getLong(3)), fixtureRun.generation()))
+                .containsExactly(List.of(bootstrapId, fixturesId, liveId));
+        Integer[] requiredPlayerIds = jdbc.queryForObject("SELECT required_player_ids FROM "
+                        + TABLES.fixtureDependencyManifest() + " WHERE run_generation=?",
+                (rs, row) -> (Integer[]) rs.getArray(1).getArray(), fixtureRun.generation());
+        assertThat(requiredPlayerIds).containsExactlyElementsOf(playerIds.stream().sorted().toList());
     }
 
     @Test
@@ -636,6 +705,21 @@ class HistoryFixtureDispatcherIntegrationTest {
     private void stagedPair(Lease lease, SourceRead read) {
         store.stage(lease, Endpoint.bootstrap(), read, Validation.valid(), bootstrap);
         store.stage(lease, Endpoint.fixtures(), read, Validation.valid(), fixtures);
+    }
+
+    private Set<Integer> fixturePlayerIds(SourceRead read) throws Exception {
+        var interval = new CatalogueScheduleParser.ReadInterval(read.startedAt(), read.finishedAt());
+        var sourceInterval = new CatalogueScheduleParser.SourceDocument(bootstrap, interval);
+        var scheduleInterval = new CatalogueScheduleParser.SourceDocument(fixtures, interval);
+        var snapshot = CatalogueScheduleParser.parse(SEASON, sourceInterval, scheduleInterval);
+        var fixture = snapshot.fixtures().stream().filter(row -> row.id() == 21).findFirst().orElseThrow();
+        Set<Integer> playerIds = new LinkedHashSet<>();
+        snapshot.players().stream().filter(player -> player.teamId() == fixture.homeTeamId()
+                        || player.teamId() == fixture.awayTeamId())
+                .map(CatalogueScheduleParser.PlayerRow::id).forEach(playerIds::add);
+        playerIds.addAll(FixtureVerification.participantIds(fixture,
+                new CatalogueScheduleParser.SourceDocument(liveThree, interval)));
+        return playerIds;
     }
 
     private void seedCanonicalPair() {
@@ -826,6 +910,8 @@ class HistoryFixtureDispatcherIntegrationTest {
 
     private static final class TrackingJdbcTemplate extends JdbcTemplate {
         private final AtomicInteger bodyQueries = new AtomicInteger();
+        private final AtomicInteger missedHistoryBodyQueries = new AtomicInteger();
+        private boolean missNextHistoryBodyQuery;
 
         private TrackingJdbcTemplate(javax.sql.DataSource dataSource) {
             super(dataSource);
@@ -833,7 +919,14 @@ class HistoryFixtureDispatcherIntegrationTest {
 
         @Override
         public <T> List<T> query(String sql, RowMapper<T> rowMapper, Object... args) {
-            if (sql.contains("SELECT") && sql.contains("body")) bodyQueries.incrementAndGet();
+            if (sql.contains("SELECT") && sql.contains("body")) {
+                bodyQueries.incrementAndGet();
+                if (missNextHistoryBodyQuery && args.length > 2 && SEASON.code().equals(args[2])) {
+                    missNextHistoryBodyQuery = false;
+                    missedHistoryBodyQueries.incrementAndGet();
+                    return List.of();
+                }
+            }
             return super.query(sql, rowMapper, args);
         }
 
@@ -841,8 +934,17 @@ class HistoryFixtureDispatcherIntegrationTest {
             return bodyQueries.get();
         }
 
+        private int missedHistoryBodyQueries() {
+            return missedHistoryBodyQueries.get();
+        }
+
         private void resetBodyQueries() {
             bodyQueries.set(0);
+            missedHistoryBodyQueries.set(0);
+        }
+
+        private void missNextHistoryBodyQuery() {
+            missNextHistoryBodyQuery = true;
         }
     }
 

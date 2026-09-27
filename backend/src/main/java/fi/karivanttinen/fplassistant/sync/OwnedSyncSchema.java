@@ -140,6 +140,47 @@ public final class OwnedSyncSchema {
                 """.formatted(tables.payload(), tables.payload()));
         jdbc.execute("CREATE INDEX IF NOT EXISTS idx_%s_run ON %s(run_generation)"
                 .formatted(tables.payload(), tables.payload()));
+        jdbc.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_%s_id_run ON %s(id, run_generation)"
+                .formatted(tables.payload(), tables.payload()));
+        jdbc.execute("""
+                CREATE OR REPLACE FUNCTION fpl_sync_required_ids_valid(ids INTEGER[])
+                RETURNS BOOLEAN
+                LANGUAGE SQL IMMUTABLE PARALLEL SAFE STRICT
+                AS $$
+                    SELECT cardinality(ids) BETWEEN 1 AND 80
+                       AND array_ndims(ids) = 1
+                       AND array_lower(ids, 1) = 1
+                       AND NOT EXISTS (
+                           SELECT 1 FROM generate_subscripts(ids, 1) AS i
+                           WHERE ids[i] IS NULL OR ids[i] <= 0
+                              OR (i > 1 AND ids[i] <= ids[i - 1])
+                       )
+                $$
+                """);
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS %s (
+                    run_generation BIGINT PRIMARY KEY,
+                    bootstrap_payload_id BIGINT NOT NULL,
+                    fixtures_payload_id BIGINT NOT NULL,
+                    live_payload_id BIGINT NOT NULL,
+                    required_player_ids INTEGER[] NOT NULL,
+                    source_floor TIMESTAMPTZ NOT NULL,
+                    CONSTRAINT fk_%s_run FOREIGN KEY (run_generation)
+                        REFERENCES %s(generation) ON DELETE CASCADE,
+                    CONSTRAINT fk_%s_bootstrap FOREIGN KEY (bootstrap_payload_id, run_generation)
+                        REFERENCES %s(id, run_generation) ON DELETE CASCADE,
+                    CONSTRAINT fk_%s_fixtures FOREIGN KEY (fixtures_payload_id, run_generation)
+                        REFERENCES %s(id, run_generation) ON DELETE CASCADE,
+                    CONSTRAINT fk_%s_live FOREIGN KEY (live_payload_id, run_generation)
+                        REFERENCES %s(id, run_generation) ON DELETE CASCADE,
+                    CONSTRAINT ck_%s_required_players CHECK (
+                        fpl_sync_required_ids_valid(required_player_ids))
+                )
+                """.formatted(tables.fixtureDependencyManifest(), tables.fixtureDependencyManifest(),
+                tables.run(), tables.fixtureDependencyManifest(), tables.payload(),
+                tables.fixtureDependencyManifest(), tables.payload(),
+                tables.fixtureDependencyManifest(), tables.payload(),
+                tables.fixtureDependencyManifest()));
 
         jdbc.execute("""
                 CREATE TABLE IF NOT EXISTS %s (
@@ -404,6 +445,7 @@ public final class OwnedSyncSchema {
         jdbc.execute("ALTER TABLE %s ENABLE ROW LEVEL SECURITY".formatted(tables.requestState()));
         jdbc.execute("ALTER TABLE %s ENABLE ROW LEVEL SECURITY".formatted(tables.requestAttempt()));
         jdbc.execute("ALTER TABLE %s ENABLE ROW LEVEL SECURITY".formatted(tables.fixtureSync()));
+        jdbc.execute("ALTER TABLE %s ENABLE ROW LEVEL SECURITY".formatted(tables.fixtureDependencyManifest()));
         jdbc.execute("ALTER TABLE %s ENABLE ROW LEVEL SECURITY".formatted(tables.historyFingerprint()));
         jdbc.execute("ALTER TABLE %s ENABLE ROW LEVEL SECURITY".formatted(tables.playerFixtureEvidence()));
         jdbc.execute("ALTER TABLE %s ENABLE ROW LEVEL SECURITY".formatted(tables.plannerSlot()));

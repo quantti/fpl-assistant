@@ -22,13 +22,16 @@ import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.FutureFloor;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.Lease;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.LeaseLostException;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.PayloadRetentionLimitException;
+import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.PublicPayloadPair;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.Ready;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.RuntimeFenceLostException;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.Run;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.SourceRead;
+import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.StagedPayload;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.StaleGenerationException;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.SyncKind;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.Validation;
+import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.ValidationState;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -117,6 +120,193 @@ class OwnedSyncStoreIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT requested_source_after FROM " + TABLES.run()
                 + " WHERE generation=?", java.sql.Timestamp.class, lease.generation()).toInstant())
                 .isEqualTo(floor);
+    }
+
+    @Test
+    void fixtureDependencySchemaIsOwnedConstrainedAndIdempotent() {
+        new OwnedSyncSchema(jdbc, TABLES).initialize();
+
+        assertThat(OwnedSyncTables.defaults().fixtureDependencyManifest())
+                .isEqualTo("fpl_fixture_dependency_manifest");
+        assertThat(TABLES.fixtureDependencyManifest()).endsWith("_test");
+        assertThat(jdbc.queryForObject("SELECT relrowsecurity FROM pg_class WHERE oid=?::regclass",
+                Boolean.class, TABLES.fixtureDependencyManifest())).isTrue();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM pg_constraint WHERE conrelid=?::regclass "
+                + "AND contype='f' AND confdeltype='c'", Integer.class,
+                TABLES.fixtureDependencyManifest())).isEqualTo(4);
+        assertThat(jdbc.queryForObject("SELECT fpl_sync_required_ids_valid(ARRAY[2,7,11])",
+                Boolean.class)).isTrue();
+        assertThat(jdbc.queryForObject("SELECT fpl_sync_required_ids_valid(ARRAY[7,2])",
+                Boolean.class)).isFalse();
+        assertThat(jdbc.queryForObject("SELECT fpl_sync_required_ids_valid(ARRAY[2,2])",
+                Boolean.class)).isFalse();
+        assertThat(jdbc.queryForObject("SELECT fpl_sync_required_ids_valid(ARRAY[0,2])",
+                Boolean.class)).isFalse();
+        assertThat(jdbc.queryForObject("SELECT fpl_sync_required_ids_valid(ARRAY("
+                + "SELECT generate_series(1,81)))", Boolean.class)).isFalse();
+    }
+
+    @Test
+    void dependencyManifestWriteSurvivesStoreRestartAndUpsertsOneCanonicalRow() {
+        Run run = enqueueFixtureVerification(store, 61);
+        Lease lease = store.acquire("fixture-worker", Duration.ofMinutes(5)).orElseThrow();
+        ManifestAnchors anchors = stageManifestAnchors(lease, Validation.valid(), true);
+        Instant dueAt = clock.instant().plus(Duration.ofMinutes(2));
+
+        store.retryForDependency(lease, dueAt, "waiting for fresh histories", 61, 3,
+                anchors.pair(), anchors.live(), List.of(17, 2, 9));
+
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.fixtureDependencyManifest()
+                + " WHERE run_generation=?", Integer.class, run.generation())).isOne();
+        Integer[] storedPlayerIds = jdbc.queryForObject("SELECT required_player_ids FROM "
+                + TABLES.fixtureDependencyManifest() + " WHERE run_generation=?",
+                (rs, row) -> (Integer[]) rs.getArray(1).getArray(), run.generation());
+        assertThat(storedPlayerIds).containsExactly(2, 9, 17);
+        assertThat(jdbc.queryForObject("SELECT source_floor FROM " + TABLES.fixtureDependencyManifest()
+                + " WHERE run_generation=?", java.sql.Timestamp.class, run.generation()).toInstant())
+                .isEqualTo(jdbc.queryForObject("SELECT requested_source_after FROM " + TABLES.run()
+                        + " WHERE generation=?", java.sql.Timestamp.class, run.generation()).toInstant());
+        assertThat(jdbc.queryForObject("SELECT priority FROM " + TABLES.run()
+                + " WHERE generation=?", Integer.class, run.generation()))
+                .isEqualTo(4);
+        assertThat(jdbc.queryForObject("SELECT state || ':' || (lease_token IS NULL)::text FROM "
+                + TABLES.run() + " WHERE generation=?", String.class, run.generation()))
+                .isEqualTo("PENDING:true");
+        assertThatThrownBy(() -> jdbc.update("UPDATE " + TABLES.fixtureDependencyManifest()
+                + " SET required_player_ids=ARRAY[17,2] WHERE run_generation=?", run.generation()))
+                .isInstanceOf(DataIntegrityViolationException.class);
+
+        OwnedSyncStore restarted = new OwnedSyncStore(jdbc, tx, clock, TABLES);
+        clock.advance(Duration.ofMinutes(2));
+        Lease resumed = restarted.acquire("restarted-worker", Duration.ofMinutes(5)).orElseThrow();
+        assertThat(resumed.generation()).isEqualTo(run.generation());
+        restarted.retryForDependency(resumed, clock.instant().plus(Duration.ofMinutes(1)),
+                "updated dependency set", 61, 3, anchors.pair(), anchors.live(), List.of(4, 3));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.fixtureDependencyManifest()
+                + " WHERE run_generation=?", Integer.class, run.generation())).isOne();
+        Integer[] updatedPlayerIds = jdbc.queryForObject("SELECT required_player_ids FROM "
+                + TABLES.fixtureDependencyManifest() + " WHERE run_generation=?",
+                (rs, row) -> (Integer[]) rs.getArray(1).getArray(), run.generation());
+        assertThat(updatedPlayerIds).containsExactly(3, 4);
+    }
+
+    @Test
+    void dependencyManifestAcceptsPostgresRoundedReadTimestamps() {
+        Run run = enqueueFixtureVerification(store, 67);
+        Lease lease = store.acquire("fixture-worker", Duration.ofMinutes(5)).orElseThrow();
+        Instant sourceFloor = store.requestedSourceAfter(lease);
+        clock.advance(Duration.ofSeconds(2));
+
+        Instant pairStarted = sourceFloor.plusNanos(123_456_789);
+        Instant pairFinished = pairStarted.plusMillis(100).plusNanos(789);
+        SourceRead pairRead = new SourceRead(pairStarted, pairFinished);
+        long bootstrapId = store.stage(lease, Endpoint.bootstrap(), pairRead, Validation.valid(), bytes("bootstrap"));
+        long fixturesId = store.stage(lease, Endpoint.fixtures(), pairRead, Validation.valid(), bytes("fixtures"));
+        Instant liveStarted = pairFinished.plusMillis(1).plusNanos(789);
+        SourceRead liveRead = new SourceRead(liveStarted, liveStarted.plusMillis(10).plusNanos(876_543));
+        long liveId = store.stage(lease, Endpoint.eventLive(3), liveRead, Validation.valid(), bytes("live"));
+        StagedPayload bootstrap = new StagedPayload(bootstrapId, lease.generation(), EndpointKind.BOOTSTRAP_STATIC,
+                pairRead, ValidationState.VALID, null, bytes("bootstrap"));
+        StagedPayload fixtures = new StagedPayload(fixturesId, lease.generation(), EndpointKind.FIXTURES,
+                pairRead, ValidationState.VALID, null, bytes("fixtures"));
+        StagedPayload live = new StagedPayload(liveId, lease.generation(), EndpointKind.EVENT_LIVE,
+                liveRead, ValidationState.VALID, null, bytes("live"));
+
+        store.retryForDependency(lease, clock.instant().plusSeconds(30), "waiting", 67, 3,
+                new PublicPayloadPair(lease.generation(), bootstrap, fixtures), live, List.of(1));
+
+        assertThat(jdbc.queryForObject("SELECT read_started_at FROM " + TABLES.payload()
+                + " WHERE id=?", java.sql.Timestamp.class, bootstrapId).toInstant())
+                .isEqualTo(pairStarted.plusNanos(211));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.fixtureDependencyManifest()
+                + " WHERE run_generation=?", Integer.class, run.generation())).isOne();
+    }
+
+    @Test
+    void dependencyManifestRejectsReadMetadataChangedBeyondPostgresPrecision() {
+        Run run = enqueueFixtureVerification(store, 68);
+        Lease lease = store.acquire("fixture-worker", Duration.ofMinutes(5)).orElseThrow();
+        ManifestAnchors anchors = stageManifestAnchors(lease, Validation.valid(), true);
+        StagedPayload original = anchors.pair().bootstrap();
+        SourceRead changedRead = new SourceRead(original.read().startedAt(),
+                original.read().finishedAt().plusNanos(1_000));
+        StagedPayload changed = new StagedPayload(original.id(), original.runGeneration(), original.endpointKind(),
+                changedRead, original.validationState(), original.validationError(), original.body());
+
+        assertThatThrownBy(() -> store.retryForDependency(lease, clock.instant().plusSeconds(30), "waiting",
+                68, 3, new PublicPayloadPair(lease.generation(), changed, anchors.pair().fixtures()),
+                anchors.live(), List.of(1)))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("metadata changed");
+        assertManifestNotWrittenAndLeaseRetained(run.generation());
+    }
+
+    @Test
+    void invalidAnchorsAndAdvancedDemandNeverWriteOrReleaseManifestRun() {
+        Run invalidRun = enqueueFixtureVerification(store, 62);
+        Lease invalidLease = store.acquire("fixture-worker", Duration.ofMinutes(5)).orElseThrow();
+        ManifestAnchors unchecked = stageManifestAnchors(invalidLease, Validation.unchecked(), true);
+
+        assertThatThrownBy(() -> store.retryForDependency(invalidLease, clock.instant().plusSeconds(30),
+                "waiting", 62, 3, unchecked.pair(), unchecked.live(), List.of(1)))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("valid own endpoint");
+        assertManifestNotWrittenAndLeaseRetained(invalidRun.generation());
+
+        setUp();
+        Run wrongEventRun = enqueueFixtureVerification(store, 63);
+        Lease wrongEventLease = store.acquire("fixture-worker", Duration.ofMinutes(5)).orElseThrow();
+        ManifestAnchors wrongEvent = stageManifestAnchors(wrongEventLease, Validation.valid(), true);
+        assertThatThrownBy(() -> store.retryForDependency(wrongEventLease,
+                clock.instant().plusSeconds(30), "waiting", 63, 4,
+                wrongEvent.pair(), wrongEvent.live(), List.of(1)))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("endpoint");
+        assertManifestNotWrittenAndLeaseRetained(wrongEventRun.generation());
+
+        setUp();
+        Run staleLiveRun = enqueueFixtureVerification(store, 66);
+        Lease staleLiveLease = store.acquire("fixture-worker", Duration.ofMinutes(5)).orElseThrow();
+        ManifestAnchors staleLive = stageManifestAnchors(staleLiveLease, Validation.valid(), false);
+        assertThatThrownBy(() -> store.retryForDependency(staleLiveLease,
+                clock.instant().plusSeconds(30), "waiting", 66, 3,
+                staleLive.pair(), staleLive.live(), List.of(1)))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("predates");
+        assertManifestNotWrittenAndLeaseRetained(staleLiveRun.generation());
+
+        setUp();
+        Run advancedRun = enqueueFixtureVerification(store, 64);
+        Lease advancedLease = store.acquire("fixture-worker", Duration.ofMinutes(5)).orElseThrow();
+        ManifestAnchors oldReads = stageManifestAnchors(advancedLease, Validation.valid(), true);
+        clock.advance(Duration.ofSeconds(1));
+        store.enqueue(SyncKind.FIXTURE_VERIFICATION, "2097-98", "fixture:64", "fixture:64",
+                clock.instant().plus(Duration.ofMinutes(1)));
+
+        assertThatThrownBy(() -> store.retryForDependency(advancedLease,
+                clock.instant().plusSeconds(30), "waiting", 64, 3,
+                oldReads.pair(), oldReads.live(), List.of(1)))
+                .isInstanceOf(OwnedSyncStore.SourceDemandAdvancedException.class);
+        assertManifestNotWrittenAndLeaseRetained(advancedRun.generation());
+    }
+
+    @Test
+    void dependencyManifestAndLeaseReleaseRollBackTogether() {
+        Run run = enqueueFixtureVerification(store, 65);
+        Lease lease = store.acquire("fixture-worker", Duration.ofMinutes(5)).orElseThrow();
+        ManifestAnchors anchors = stageManifestAnchors(lease, Validation.valid(), true);
+        jdbc.execute("CREATE OR REPLACE FUNCTION fpl_fixture_manifest_rollback_test() RETURNS trigger "
+                + "LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'forced manifest rollback'; "
+                + "RETURN NEW; END $$");
+        jdbc.execute("CREATE TRIGGER fpl_fixture_manifest_rollback_test BEFORE UPDATE OF priority ON "
+                + TABLES.run() + " FOR EACH ROW EXECUTE FUNCTION fpl_fixture_manifest_rollback_test()");
+        try {
+            assertThatThrownBy(() -> store.retryForDependency(lease,
+                    clock.instant().plusSeconds(30), "waiting", 65, 3,
+                    anchors.pair(), anchors.live(), List.of(1)))
+                    .isInstanceOf(org.springframework.dao.DataAccessException.class);
+        } finally {
+            jdbc.execute("DROP TRIGGER IF EXISTS fpl_fixture_manifest_rollback_test ON " + TABLES.run());
+            jdbc.execute("DROP FUNCTION IF EXISTS fpl_fixture_manifest_rollback_test()");
+        }
+
+        assertManifestNotWrittenAndLeaseRetained(run.generation());
     }
 
     @Test
@@ -868,7 +1058,35 @@ class OwnedSyncStoreIntegrationTest {
         assertThat(TABLES.run()).endsWith("_test");
         assertThatThrownBy(() -> new OwnedSyncTables("fpl_sync_run; drop table season", "ok", "ok"))
                 .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new OwnedSyncTables("a".repeat(40), "payload", "receipt",
+                "request_state", "request_attempt", "fixture_sync", "player_fixture_evidence",
+                "planner_slot", "planner_runtime"))
+                .isInstanceOf(IllegalArgumentException.class);
     }
+
+    private ManifestAnchors stageManifestAnchors(Lease lease, Validation bootstrapValidation,
+                                                 boolean liveAfterFixtureRead) {
+        SourceRead pairRead = new SourceRead(clock.instant(), clock.instant());
+        store.stage(lease, Endpoint.bootstrap(), pairRead, bootstrapValidation, bytes("bootstrap"));
+        store.stage(lease, Endpoint.fixtures(), pairRead, Validation.valid(), bytes("fixtures"));
+        StagedPayload bootstrap = store.latestStagedPayload(lease, Endpoint.bootstrap()).orElseThrow();
+        StagedPayload fixtures = store.latestStagedPayload(lease, Endpoint.fixtures()).orElseThrow();
+        if (liveAfterFixtureRead) clock.advance(Duration.ofMillis(1));
+        SourceRead liveRead = liveAfterFixtureRead ? new SourceRead(clock.instant(), clock.instant()) : pairRead;
+        store.stage(lease, Endpoint.eventLive(3), liveRead, Validation.valid(), bytes("live"));
+        StagedPayload live = store.latestStagedPayload(lease, Endpoint.eventLive(3)).orElseThrow();
+        return new ManifestAnchors(new PublicPayloadPair(lease.generation(), bootstrap, fixtures), live);
+    }
+
+    private void assertManifestNotWrittenAndLeaseRetained(long generation) {
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.fixtureDependencyManifest()
+                + " WHERE run_generation=?", Integer.class, generation)).isZero();
+        assertThat(jdbc.queryForObject("SELECT state || ':' || (lease_token IS NOT NULL)::text || ':' || priority "
+                + "FROM " + TABLES.run() + " WHERE generation=?", String.class, generation))
+                .isEqualTo("LEASED:true:1");
+    }
+
+    private record ManifestAnchors(PublicPayloadPair pair, StagedPayload live) { }
 
     private void enqueue(String coalescingKey, String publicationKey) {
         store.enqueue(SyncKind.FIXTURE_VERIFICATION, "2097-98", coalescingKey, publicationKey, clock.instant());

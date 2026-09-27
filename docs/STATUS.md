@@ -56,7 +56,7 @@ The VPS test container was found listening on all interfaces with the documented
 password. Its role refused login and its logs showed a failed suspicious command; this is not
 proof of successful execution, nor a finding about the production database. The container was
 stopped, recreated from the checked-in schema and verified listening only on
-`127.0.0.1:55432`. [PR #139](https://github.com/quantti/fpl-assistant/pull/139) changes both
+`127.0.0.1:55432`. Merged [PR #139](https://github.com/quantti/fpl-assistant/pull/139) changes both
 creation paths and the stub contract test. Existing containers elsewhere still require an idle
 reset to acquire the new binding. No unrelated Docker container was touched.
 
@@ -80,9 +80,10 @@ owner approved fixed-capacity DB supervision; a candidate bounded-return transpo
 settlement, conservative response pacing and both dispatchers' HTTP fences now have focused
 local tests, but work-pool/commit fault evidence remains incomplete. Scheduling still cannot
 meet the ready-continuation bound from current run metadata: older blocked retries are
-indistinguishable from a newly ready one without a durable dependency manifest. The plan
-records a choice between that narrow owned-schema addition and a weaker backlog-dependent
-selection target. No policy or production activation is approved. KAR-73 remains separate.
+indistinguishable from a newly ready one without a durable dependency manifest. The owner
+approved the narrow new owned table. Manifest persistence and both wait paths now have focused
+integration coverage; read-side readiness, admission fairness and failure-path/progress targets
+remain open. Production remains OFF. KAR-73 remains separate.
 KAR-70's unavailable provider API is not a dependency. No production scheduling or setting
 changed. Latest verified containment is OFF epoch 67; the retest evidence is in PR #137.
 

@@ -786,6 +786,91 @@ public final class OwnedSyncStore {
         finishAttempt(lease, dueAt, error, false, false, true);
     }
 
+    /** Writes the fixture's validated history dependency manifest and releases its lease atomically. */
+    public void retryForDependency(Lease lease, Instant dueAt, String error, int fixtureId, int eventId,
+                                   PublicPayloadPair pair, StagedPayload live,
+                                   List<Integer> requiredPlayerIds) {
+        Objects.requireNonNull(lease);
+        Objects.requireNonNull(dueAt);
+        Objects.requireNonNull(pair);
+        Objects.requireNonNull(live);
+        List<Integer> sortedPlayerIds = sortedRequiredPlayerIds(requiredPlayerIds);
+        if (fixtureId <= 0 || eventId <= 0) {
+            throw new IllegalArgumentException("fixture and event ids must be positive");
+        }
+
+        tx.executeWithoutResult(status -> {
+            LockedRun run = lockAndValidate(lease);
+            if (!lease.season().equals(run.season) || lease.kind() != run.kind
+                    || !lease.coalescingKey().equals(run.coalescingKey)
+                    || !lease.publicationKey().equals(run.publicationKey)) {
+                throw new LeaseLostException("Lease identity no longer matches generation " + lease.generation());
+            }
+            if (run.kind != SyncKind.FIXTURE_VERIFICATION
+                    || !canonicalNumericRunKey(run, "fixture:")
+                    || numericRunKeyId(run, "fixture:") != fixtureId) {
+                throw new IllegalArgumentException("Dependency manifest does not match fixture run identity");
+            }
+            if (pair.runGeneration() != run.generation || live.runGeneration() != run.generation) {
+                throw new IllegalArgumentException("Dependency payloads must belong to the leased fixture run");
+            }
+
+            DependencyPayload bootstrap = dependencyPayload(lease, pair.bootstrap(),
+                    EndpointKind.BOOTSTRAP_STATIC, null);
+            DependencyPayload fixtures = dependencyPayload(lease, pair.fixtures(),
+                    EndpointKind.FIXTURES, null);
+            DependencyPayload livePayload = dependencyPayload(lease, live,
+                    EndpointKind.EVENT_LIVE, eventId);
+
+            Instant sourceFloor = jdbc.queryForObject("SELECT requested_source_after FROM %s WHERE generation = ?"
+                    .formatted(tables.run()), Timestamp.class, run.generation).toInstant();
+            if (bootstrap.read().startedAt().isBefore(sourceFloor)
+                    || fixtures.read().startedAt().isBefore(sourceFloor)
+                    || livePayload.read().startedAt().isBefore(sourceFloor)) {
+                throw new SourceDemandAdvancedException(run.generation, sourceFloor);
+            }
+            if (livePayload.read().startedAt().isBefore(fixtures.read().finishedAt().plusMillis(1))) {
+                throw new IllegalArgumentException("Live dependency payload predates the fixture response floor");
+            }
+
+            Instant recordedAt = now();
+            requireNotExpired(run, recordedAt);
+            jdbc.update(connection -> {
+                var statement = connection.prepareStatement("""
+                        INSERT INTO %s(run_generation, bootstrap_payload_id, fixtures_payload_id,
+                                       live_payload_id, required_player_ids, source_floor)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        ON CONFLICT (run_generation) DO UPDATE SET
+                            bootstrap_payload_id = EXCLUDED.bootstrap_payload_id,
+                            fixtures_payload_id = EXCLUDED.fixtures_payload_id,
+                            live_payload_id = EXCLUDED.live_payload_id,
+                            required_player_ids = EXCLUDED.required_player_ids,
+                            source_floor = EXCLUDED.source_floor
+                        """.formatted(tables.fixtureDependencyManifest()));
+                statement.setLong(1, run.generation);
+                statement.setLong(2, bootstrap.id());
+                statement.setLong(3, fixtures.id());
+                statement.setLong(4, livePayload.id());
+                statement.setArray(5, connection.createArrayOf("integer",
+                        sortedPlayerIds.toArray(Integer[]::new)));
+                statement.setTimestamp(6, timestamp(sourceFloor));
+                return statement;
+            });
+            int released = jdbc.update("""
+                    UPDATE %s SET state = 'PENDING', priority = ?, due_at = ?, last_error = ?,
+                        failed_at = NULL, lease_owner = NULL, lease_token = NULL,
+                        lease_expires_at = NULL, updated_at = ?
+                    WHERE generation = ? AND state = 'LEASED' AND lease_owner = ?
+                      AND lease_token = ? AND lease_fence = ?
+                    """.formatted(tables.run()), SyncKind.DEPENDENCY_WAITING_PRIORITY,
+                    timestamp(dueAt), boundedNullable(error, MAX_ERROR_CHARS), timestamp(recordedAt),
+                    run.generation, lease.owner(), lease.token(), lease.fence());
+            if (released != 1) {
+                throw new LeaseLostException("Lease is stale for generation " + run.generation);
+            }
+        });
+    }
+
     /** Requeues a real source failure and durably advances its consecutive-failure count. */
     public void retryFetchFailure(Lease lease, Instant dueAt, String error) {
         finishAttempt(lease, dueAt, error, false, true, false);
@@ -899,6 +984,68 @@ public final class OwnedSyncStore {
 
     private static int numericRunKeyId(LockedRun run, String prefix) {
         return Integer.parseInt(run.publicationKey.substring(prefix.length()));
+    }
+
+    private DependencyPayload dependencyPayload(Lease lease, StagedPayload supplied,
+                                               EndpointKind endpointKind, Integer eventId) {
+        if (supplied.id() <= 0 || supplied.runGeneration() != lease.generation()
+                || supplied.endpointKind() != endpointKind) {
+            throw new IllegalArgumentException("Dependency payload is not a valid own endpoint anchor"
+                    + "; expected " + endpointKind + ", got kind=" + supplied.endpointKind()
+                    + ", generation=" + supplied.runGeneration());
+        }
+        List<DependencyPayload> rows = jdbc.query("""
+                SELECT id, run_generation, endpoint_kind, event_id, player_id,
+                       read_started_at, read_finished_at, validation_state
+                FROM %s
+                WHERE id = ? AND run_generation = ? AND endpoint_kind = ?
+                  AND event_id IS NOT DISTINCT FROM ? AND player_id IS NULL
+                  AND validation_state = 'VALID'
+                """.formatted(tables.payload()), (rs, row) -> new DependencyPayload(
+                rs.getLong("id"), rs.getLong("run_generation"),
+                EndpointKind.valueOf(rs.getString("endpoint_kind")),
+                (Integer) rs.getObject("event_id"), (Integer) rs.getObject("player_id"),
+                new SourceRead(instant(rs, "read_started_at"), instant(rs, "read_finished_at")),
+                ValidationState.valueOf(rs.getString("validation_state"))), supplied.id(),
+                lease.generation(), endpointKind.name(), eventId);
+        if (rows.size() != 1) {
+            throw new IllegalArgumentException("Dependency payload is not a valid own endpoint anchor"
+                    + " for " + endpointKind);
+        }
+        DependencyPayload payload = rows.getFirst();
+        if (payload.id() != supplied.id() || payload.runGeneration() != supplied.runGeneration()
+                || payload.endpointKind() != supplied.endpointKind()
+                || !Objects.equals(payload.eventId(), eventId) || payload.playerId() != null
+                || !payload.read().equals(postgresTimestampPrecision(supplied.read()))
+                || payload.validationState() != ValidationState.VALID) {
+            throw new IllegalArgumentException("Dependency payload metadata changed before manifest write");
+        }
+        return payload;
+    }
+
+    private static SourceRead postgresTimestampPrecision(SourceRead read) {
+        return new SourceRead(postgresTimestampPrecision(read.startedAt()),
+                postgresTimestampPrecision(read.finishedAt()));
+    }
+
+    private static Instant postgresTimestampPrecision(Instant value) {
+        // PostgreSQL rounds timestamptz to microseconds, carrying into the next second when needed.
+        long roundedMicros = (value.getNano() + 500L) / 1_000L;
+        return Instant.ofEpochSecond(value.getEpochSecond(), roundedMicros * 1_000L);
+    }
+
+    private static List<Integer> sortedRequiredPlayerIds(List<Integer> playerIds) {
+        if (playerIds == null || playerIds.isEmpty() || playerIds.size() > HistoryFixtureDispatcher.MAX_FIXTURE_PLAYERS
+                || playerIds.stream().anyMatch(Objects::isNull)) {
+            throw new IllegalArgumentException("Dependency manifest requires 1 to 80 player ids");
+        }
+        List<Integer> sorted = playerIds.stream().sorted().toList();
+        for (int index = 0; index < sorted.size(); index++) {
+            if (sorted.get(index) <= 0 || (index > 0 && sorted.get(index).equals(sorted.get(index - 1)))) {
+                throw new IllegalArgumentException("Dependency player ids must be positive and unique");
+            }
+        }
+        return sorted;
     }
 
     private LockedRun lockAndValidate(Lease lease) {
@@ -1181,6 +1328,10 @@ public final class OwnedSyncStore {
                              String publicationKey, String state, String owner, UUID token,
                              long fence, Instant expiresAt, int attemptCount,
                              String runtimeMode, long runtimeEpoch) { }
+
+    private record DependencyPayload(long id, long runGeneration, EndpointKind endpointKind,
+                                     Integer eventId, Integer playerId, SourceRead read,
+                                     ValidationState validationState) { }
 
     public static class LeaseLostException extends IllegalStateException {
         public LeaseLostException(String message) { super(message); }

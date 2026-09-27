@@ -23,6 +23,7 @@ import fi.karivanttinen.fplassistant.sync.OwnedSyncHttpClient.Response;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.Endpoint;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.Lease;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.PayloadRetentionLimitException;
+import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.PublicPayloadPair;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.Run;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.SourceRead;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.StagedPayload;
@@ -254,7 +255,9 @@ public final class HistoryFixtureDispatcher {
                 historyCheckpoints.put(playerId, evidence.get());
             }
         }
-        if (historyCheckpoints.size() != players.size()) waitForHistories(lease);
+        if (historyCheckpoints.size() != players.size()) {
+            waitForHistories(lease, pair, fixture, livePayload, players);
+        }
 
         Map<Integer, SourceDocument> histories = new LinkedHashMap<>();
         for (Map.Entry<Integer, StagedPayloadMetadata> checkpoint : historyCheckpoints.entrySet()) {
@@ -266,7 +269,7 @@ public final class HistoryFixtureDispatcher {
         if (histories.size() != players.size()) {
             players.stream().filter(playerId -> !histories.containsKey(playerId))
                     .forEach(playerId -> enqueuePlayerHistory(season, playerId, historyFloor));
-            waitForHistories(lease);
+            waitForHistories(lease, pair, fixture, livePayload, players);
         }
 
         // Re-read both public endpoints after the slow fan-out. Successful endpoint reads are
@@ -490,19 +493,26 @@ public final class HistoryFixtureDispatcher {
         store.retry(lease, recordRetryDue(lease, dueAt, error), bounded(error));
     }
 
-    private void retryForDependency(Lease lease, Instant dueAt, String error) {
+    private void retryForDependency(Lease lease, Instant dueAt, String error, PayloadPair pair,
+                                     CatalogueScheduleParser.FixtureRow fixture, StagedPayload live,
+                                     Set<Integer> playerIds) {
         Instant selected = dueAt.isAfter(clock.instant()) ? dueAt : clock.instant().plusSeconds(1);
         if (publicationEnabled && lease.kind() == SyncKind.FIXTURE_VERIFICATION) {
             int fixtureId = fixtureId(lease.publicationKey());
             store.withinRuntimeFence(
                     () -> publisher.recordDependencyWait(lease.season(), fixtureId, selected, error));
         }
-        store.retryForDependency(lease, selected, bounded(error));
+        PublicPayloadPair publicPair = new PublicPayloadPair(pair.bootstrap.runGeneration(),
+                pair.bootstrap, pair.fixtures);
+        store.retryForDependency(lease, selected, bounded(error), fixture.id(), fixture.gameweek(),
+                publicPair, live, List.copyOf(playerIds));
     }
 
-    private void waitForHistories(Lease lease) {
+    private void waitForHistories(Lease lease, PayloadPair pair,
+                                  CatalogueScheduleParser.FixtureRow fixture, StagedPayload live,
+                                  Set<Integer> playerIds) {
         retryForDependency(lease, clock.instant().plus(Duration.ofMinutes(2)),
-                "Waiting for fresh player histories");
+                "Waiting for fresh player histories", pair, fixture, live, playerIds);
         throw new Stopped(DispatchResult.waiting());
     }
 
