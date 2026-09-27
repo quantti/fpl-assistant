@@ -13,13 +13,21 @@ final class OwnedSyncDeadline {
     }
 
     static OwnedSyncDeadline after(Duration duration) {
+        return after(duration, System.nanoTime());
+    }
+
+    static OwnedSyncDeadline after(Duration duration, long startedAtNanos) {
         Objects.requireNonNull(duration);
         if (duration.isNegative()) throw new IllegalArgumentException("duration must not be negative");
-        return new OwnedSyncDeadline(System.nanoTime() + duration.toNanos());
+        return new OwnedSyncDeadline(startedAtNanos + duration.toNanos());
     }
 
     long remainingNanos() {
-        return Math.max(0, deadlineNanos - System.nanoTime());
+        return remainingNanos(System.nanoTime());
+    }
+
+    long remainingNanos(long nowNanos) {
+        return Math.max(0, deadlineNanos - nowNanos);
     }
 
     OwnedSyncDeadline cappedBy(Duration maximum) {
@@ -29,6 +37,14 @@ final class OwnedSyncDeadline {
         long remaining = deadlineNanos - now;
         long cap = maximum.toNanos();
         return new OwnedSyncDeadline(now + Math.min(Math.max(0, remaining), cap));
+    }
+
+    OwnedSyncDeadline cappedBy(Duration maximum, long startedAtNanos) {
+        Objects.requireNonNull(maximum);
+        if (maximum.isNegative()) throw new IllegalArgumentException("maximum must not be negative");
+        long remaining = deadlineNanos - startedAtNanos;
+        long cap = maximum.toNanos();
+        return new OwnedSyncDeadline(startedAtNanos + Math.min(Math.max(0, remaining), cap));
     }
 
     OwnedSyncDeadline minus(Duration reserve) {

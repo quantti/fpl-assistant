@@ -21,6 +21,7 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
 import fi.karivanttinen.fplassistant.sync.OwnedSyncDbOperations.Outcome;
@@ -87,6 +88,7 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
     private final Duration requestTimeout;
     private final Duration methodTimeout;
     private final Clock clock;
+    private final LongSupplier turnNanoTime;
     private final boolean closeDbOperations;
     private final boolean loopbackTest;
     private final Object sendGate = new Object();
@@ -137,11 +139,28 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
                 requestTimeout, clock, dbOperations, methodTimeout, true, false);
     }
 
+    /** Package-private monotonic-clock seam for deterministic FIFO deadline tests. */
+    OwnedSyncHttpClient(OwnedSyncRequestBudget budget, URI loopbackBase, Duration requestTimeout,
+                        Clock clock, OwnedSyncDbOperations dbOperations, Duration methodTimeout,
+                        LongSupplier turnNanoTime) {
+        this(budget, testClient(loopbackBase), newExchangeExecutor(), newCancellationExecutor(), loopbackBase,
+                requestTimeout, clock, dbOperations, methodTimeout, true, false, turnNanoTime);
+    }
+
     OwnedSyncHttpClient(OwnedSyncRequestBudget budget, CloseableHttpClient client,
                         ExecutorService exchanges, ExecutorService cancellations,
                         URI baseUri, Duration requestTimeout,
                         Clock clock, OwnedSyncDbOperations dbOperations, Duration methodTimeout,
                         boolean testBase, boolean closeDbOperations) {
+        this(budget, client, exchanges, cancellations, baseUri, requestTimeout, clock, dbOperations,
+                methodTimeout, testBase, closeDbOperations, System::nanoTime);
+    }
+
+    OwnedSyncHttpClient(OwnedSyncRequestBudget budget, CloseableHttpClient client,
+                        ExecutorService exchanges, ExecutorService cancellations,
+                        URI baseUri, Duration requestTimeout,
+                        Clock clock, OwnedSyncDbOperations dbOperations, Duration methodTimeout,
+                        boolean testBase, boolean closeDbOperations, LongSupplier turnNanoTime) {
         this.budget = Objects.requireNonNull(budget);
         this.dbOperations = Objects.requireNonNull(dbOperations);
         this.client = Objects.requireNonNull(client);
@@ -151,6 +170,7 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
         this.requestTimeout = positive(requestTimeout);
         this.methodTimeout = boundedMethodTimeout(methodTimeout);
         this.clock = Objects.requireNonNull(clock);
+        this.turnNanoTime = Objects.requireNonNull(turnNanoTime);
         this.closeDbOperations = closeDbOperations;
         this.loopbackTest = testBase;
     }
@@ -172,9 +192,10 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
     }
 
     private Result getInternal(Endpoint endpoint, int failureAttempt, Supplier<HttpFenceResult> fence) {
-        OwnedSyncDeadline methodDeadline = OwnedSyncDeadline.after(methodTimeout);
-        OwnedSyncDeadline preparationDeadline = methodDeadline.cappedBy(PREPARATION_DEADLINE);
-        OwnedSyncDeadline graceDeadline = methodDeadline.cappedBy(TURN_GRACE);
+        long methodEntryNanos = System.nanoTime();
+        OwnedSyncDeadline methodDeadline = OwnedSyncDeadline.after(methodTimeout, methodEntryNanos);
+        OwnedSyncDeadline preparationDeadline = methodDeadline.cappedBy(PREPARATION_DEADLINE, methodEntryNanos);
+        OwnedSyncDeadline graceDeadline = methodDeadline.cappedBy(TURN_GRACE, methodEntryNanos);
         TurnJoin joined = joinTurn(graceDeadline);
         if (joined.failure != null) return turnJoinFailure(joined.failure);
 
@@ -628,11 +649,17 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
                     result = new TurnJoin(null, TurnJoinFailure.CLOSED);
                     break;
                 }
+                long remaining = graceDeadline.remainingNanos(turnNanoTime.getAsLong());
+                if (ticket.waited && remaining == 0) {
+                    turns.remove(ticket);
+                    turnGate.notifyAll();
+                    result = new TurnJoin(null, TurnJoinFailure.TIMED_OUT);
+                    break;
+                }
                 if (turns.peekFirst() == ticket) {
                     ticket.poisoned = unsafeTurnChain;
                     return new TurnJoin(ticket, null);
                 }
-                long remaining = graceDeadline.remainingNanos();
                 if (remaining == 0) {
                     turns.remove(ticket);
                     turnGate.notifyAll();
