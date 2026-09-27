@@ -53,6 +53,28 @@ observed, but no history job was attempted either, so this run cannot establish 
 reduced that path's transfer under load. It did not produce history progress before the DB stop.
 It cannot be declared a sustainable egress fix from this test.
 
+SELECT-only follow-up measured epoch 66's payload lengths on the server without returning bodies: ten
+`UNCHECKED` fixture-run bootstrap responses of 1,778,630 raw bytes each. One other fixture
+bootstrap, a fixture-list response and an event-live response were validated; the two completed
+catalogue/schedule runs staged two bootstraps and one fixture-list response. These 16 rows totalled
+24,021,780 bytes of raw source bodies, which are database *ingress* on staging, not the observed DB RX.
+The store's acquisition order is priority then due time: one fixture reached dependency-waiting
+priority 4 and queued 68 priority-3 histories, while 49 other fixtures remained priority 1.
+Forty-nine fixture runs had twelve attempts between them (37 never attempted), and none of the
+68 histories was attempted before rollback. `HistoryFixtureDispatcher.obtainOwnPair` fetches and
+stages each fixture run's own bootstrap before fetching its fixture list; HTTP minimum-spacing
+can defer that second request, so the next priority-1 fixture starts another bootstrap. This is
+a concrete admission/scheduling path for both repeated staging and history starvation in the
+short window, not proof of a full-month transfer rate.
+
+The remaining old-shaped body SELECT is reachable from `CatalogueScheduleDispatcher.usableOwn`,
+which loads a same-run payload body before testing its UK date and source-read floor; KAR-71
+changed the analogous history/fixture selection, not this canonical writer. That and the one
+fully hydrated canonical pair are consistent with the measured DB RX, but statement counters
+cannot identify the returned body ids or assign exact bytes to each query. A focused follow-up
+should preserve strict source and runtime fences while avoiding ineligible body reads and
+ensuring queued histories can make bounded progress ahead of new incomplete fixture pairs.
+
 Postflight SELECTs confirmed OFF epoch 67, zero PENDING/LEASED runs, public health UP, the same
 published-receipt fingerprint and 706 rows, 6,523 evidence rows and 40 VERIFIED fixtures. GW5
 has zero physical PFS rows and ten `VERIFYING` fixture receipts. Tapas core writes stayed disabled,
@@ -60,8 +82,9 @@ STAGING published no core rows, and no ACTIVE mode was requested. The guest diag
 did not survive the OFF replacement; private raw logs are held in a mode-0700 local temporary
 directory and are not a persistent monitoring service. Do not use this brief cold-start interval
 as a monthly forecast, repeat it without a reviewed cause/stop budget, or move to ACTIVE to
-manufacture progress. Next: isolate which still-eligible checkpoint/pair bodies account for the
-traffic and why fixture work made no history attempts within the bound.
+manufacture progress. Next: test a narrowly scoped canonical checkpoint-read correction and a
+bounded admission/fairness fix against a seeded 50-fixture/history backlog before another attended
+observation.
 
 ## 2026-09-26 — STAGING stopped at the traffic threshold
 

@@ -21,8 +21,11 @@ counters. This is not evidence of sustainable throughput or a GW5 backfill.
 Normal rollback is verified **OFF epoch 67**, zero active queue, public health UP, unchanged
 publication fingerprint (706 published receipts), 6,523 player-evidence rows and 40 VERIFIED
 fixtures. GW5 still has zero physical `player_fixture_stats` rows and ten `VERIFYING` fixtures.
-Tapas core writes remain disabled; no ACTIVE mode or core publication occurred. The next step is
-an investigation of the remaining body transfers and fixture/history admission, not another
+Tapas core writes remain disabled; no ACTIVE mode or core publication occurred. A SELECT-only
+follow-up found ten unchecked 1.78 MB fixture-run bootstraps; one fixture job queued 68 histories,
+but 49 other priority-1 fixtures outranked their priority-3 jobs. The canonical writer also has a
+pre-KAR-71 same-run body read before its date/source-floor check. The next step is a focused
+checkpoint-read and admission/fairness correction with a seeded backlog test, not another
 unbounded activation. Evidence and measurement limits: [`OWNED-SYNC-EGRESS-REPORT.md`](OWNED-SYNC-EGRESS-REPORT.md).
 
 ## Owned sync — bounded STAGING egress observation (2026-09-26)
