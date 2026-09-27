@@ -34,8 +34,9 @@ Both traffic thresholds were stop *triggers*, not provider-enforced hard quotas.
 At the stop request the observer reported **15,211,025 bytes DB TCP RX** and **17,194,620 bytes
 whole-machine RX**. The last sampled STAGING socket state before replacement was 15,222,242
 DB bytes and 17,205,471 machine bytes, with zero observed DB socket closures and a lowest sampled
-guest available memory above 440 MiB. These counters include startup but not every byte during
-shutdown; DB socket RX includes TCP/TLS/protocol overhead and can miss connections born and closed
+guest available memory of 441,936 KiB (about 432 MiB). These counters include startup but not every
+byte during shutdown; DB TCP payload RX includes TLS/PostgreSQL framing, not TCP/IP headers, and can
+miss connections born and closed
 between samples. Neither number is exact Supabase billing or an organisation-wide rate. The machine
 counter includes FPL traffic and diagnostics. The provider dashboard has not yet reported the
 post-test billing amount.
@@ -64,8 +65,8 @@ Forty-nine fixture runs had twelve attempts between them (37 never attempted), a
 68 histories was attempted before rollback. `HistoryFixtureDispatcher.obtainOwnPair` fetches and
 stages each fixture run's own bootstrap before fetching its fixture list; HTTP minimum-spacing
 can defer that second request, so the next priority-1 fixture starts another bootstrap. This is
-a concrete admission/scheduling path for both repeated staging and history starvation in the
-short window, not proof of a full-month transfer rate.
+a concrete admission/scheduling path for both repeated staging and delayed history progress in
+the short window, not proof of indefinite starvation or a full-month transfer rate.
 
 The remaining old-shaped body SELECT is reachable from `CatalogueScheduleDispatcher.usableOwn`,
 which loads a same-run payload body before testing its UK date and source-read floor; KAR-71
