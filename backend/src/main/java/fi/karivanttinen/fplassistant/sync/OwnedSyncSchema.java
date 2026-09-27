@@ -106,6 +106,10 @@ public final class OwnedSyncSchema {
         jdbc.execute(("CREATE INDEX IF NOT EXISTS idx_%s_due "
                 + "ON %s(priority, due_at, generation) WHERE state IN ('PENDING', 'LEASED')")
                 .formatted(tables.run(), tables.run()));
+        jdbc.execute(("CREATE INDEX IF NOT EXISTS idx_%s_epoch_attempts "
+                + "ON %s(season, runtime_mode, runtime_epoch) "
+                + "INCLUDE (attempt_count, kind, coalescing_key)")
+                .formatted(tables.run(), tables.run()));
         jdbc.execute("""
                 CREATE TABLE IF NOT EXISTS %s (
                     id BIGSERIAL PRIMARY KEY,

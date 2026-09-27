@@ -6,6 +6,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
@@ -434,6 +435,165 @@ class OwnedSyncStoreIntegrationTest {
         new PlannerRuntimeRepository(jdbc, tx, clock, TABLES).activate("2097-98", OwnedSyncMode.STAGING);
         assertThatThrownBy(() -> restarted.readyFixtureGenerations("2097-98", 100))
                 .isInstanceOf(RuntimeFenceLostException.class);
+    }
+
+    @Test
+    void fairClaimsSelectReadyFixtureAndUntouchedFixtureWithinTheirTurnBounds() {
+        OwnedSyncStore fair = fencedStore();
+        List<Long> blocked = new ArrayList<>();
+        for (int fixtureId = 1; fixtureId <= 11; fixtureId++) {
+            blocked.add(seedPartialFixture(fair, fixtureId, clock.instant().minusSeconds(12 - fixtureId)).generation());
+        }
+
+        ReadinessFixture ready = seedReadinessFixture(fair, 12, 9_012);
+        seedReadinessHistory(fair, 9_012, true);
+        for (int playerId = 10_000; playerId < 10_020; playerId++) {
+            fair.enqueue(SyncKind.PLAYER_HISTORY, "2097-98", "player-history:" + playerId,
+                    "player-history:" + playerId, clock.instant());
+        }
+        Run untouched = enqueueFixtureVerification(fair, 13);
+        resetAttemptsForCurrentEpoch();
+
+        List<Lease> claims = new ArrayList<>();
+        for (int claim = 0; claim < 8; claim++) {
+            claims.add(fair.acquireFairForSeason("2097-98", "fair-worker-" + claim,
+                    Duration.ofMinutes(5)).orElseThrow());
+        }
+
+        assertThat(claims.get(0).kind()).isEqualTo(SyncKind.PLAYER_HISTORY);
+        assertThat(claims.get(1).generation()).as("ready fixture despite eleven older blocked fixtures")
+                .isEqualTo(ready.generation());
+        assertThat(claims.get(1).generation()).isNotIn(blocked);
+        assertThat(claims.get(3).generation()).isIn(blocked);
+        assertThat(claims.get(7).generation()).as("untouched fixture by claim eight")
+                .isEqualTo(untouched.generation());
+        assertThat(claims).allSatisfy(lease -> assertThat(lease.attemptCount()).isEqualTo(1));
+    }
+
+    @Test
+    void canonicalClaimsPreemptRotationIncludingAnExpiredExclusiveLease() {
+        OwnedSyncStore fair = fencedStore();
+        ReadinessFixture ready = seedReadinessFixture(fair, 14, 9_014);
+        seedReadinessHistory(fair, 9_014, true);
+        Run history = fair.enqueue(SyncKind.PLAYER_HISTORY, "2097-98", "player-history:10014",
+                "player-history:10014", clock.instant());
+        resetAttemptsForCurrentEpoch();
+
+        fair.enqueue(SyncKind.CATALOGUE_SCHEDULE, "2097-98",
+                CatalogueScheduleDispatcher.CATALOGUE_PRICE_COALESCING_KEY,
+                CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY, clock.instant());
+        fair.enqueue(SyncKind.CATALOGUE_SCHEDULE, "2097-98",
+                CatalogueScheduleDispatcher.SCHEDULE_COALESCING_KEY,
+                CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY, clock.instant());
+        Lease original = fair.acquireForSeason("2097-98", "catalogue-exclusive", Duration.ofMinutes(5))
+                .orElseThrow();
+        jdbc.update("UPDATE " + TABLES.run() + " SET lease_expires_at=? WHERE generation=?",
+                java.sql.Timestamp.from(clock.instant().minusMillis(1)), original.generation());
+
+        Lease first = fair.acquireFairForSeason("2097-98", "canonical-one", Duration.ofMinutes(5))
+                .orElseThrow();
+        Lease second = fair.acquireFairForSeason("2097-98", "canonical-two", Duration.ofMinutes(5))
+                .orElseThrow();
+        Lease third = fair.acquireFairForSeason("2097-98", "noncanonical-three", Duration.ofMinutes(5))
+                .orElseThrow();
+
+        assertThat(first.kind()).isEqualTo(SyncKind.CATALOGUE_SCHEDULE);
+        assertThat(second.kind()).isEqualTo(SyncKind.CATALOGUE_SCHEDULE);
+        assertThat(Set.of(first.coalescingKey(), second.coalescingKey())).containsExactlyInAnyOrder(
+                CatalogueScheduleDispatcher.CATALOGUE_PRICE_COALESCING_KEY,
+                CatalogueScheduleDispatcher.SCHEDULE_COALESCING_KEY);
+        assertThat(first.generation()).isEqualTo(original.generation());
+        assertThat(first.token()).isNotEqualTo(original.token());
+        assertThat(first.fence()).isGreaterThan(original.fence());
+        assertThat(third.generation()).isEqualTo(history.generation());
+        assertThat(third.generation()).isNotEqualTo(ready.generation());
+    }
+
+    @Test
+    void futureFloorPreferredWorkYieldsAndExpiredPreferredLeaseCanBeTakenOver() {
+        OwnedSyncStore fair = fencedStore();
+        ReadinessFixture ready = seedReadinessFixture(fair, 15, 9_015);
+        seedReadinessHistory(fair, 9_015, true);
+        Run futureHistory = fair.enqueue(SyncKind.PLAYER_HISTORY, "2097-98", "player-history:10015",
+                "player-history:10015", clock.instant());
+        jdbc.update("UPDATE " + TABLES.run() + " SET requested_source_after=? WHERE generation=?",
+                java.sql.Timestamp.from(clock.instant().plusSeconds(30)), futureHistory.generation());
+        resetAttemptsForCurrentEpoch();
+
+        Lease borrowed = fair.acquireFairForSeason("2097-98", "borrow-ready", Duration.ofMinutes(5))
+                .orElseThrow();
+        assertThat(borrowed.generation()).isEqualTo(ready.generation());
+        assertThat(jdbc.queryForObject("SELECT attempt_count FROM " + TABLES.run()
+                + " WHERE generation=?", Integer.class, futureHistory.generation())).isZero();
+
+        setUp();
+        OwnedSyncStore expiredFair = fencedStore();
+        Run history = expiredFair.enqueue(SyncKind.PLAYER_HISTORY, "2097-98", "player-history:10016",
+                "player-history:10016", clock.instant());
+        Lease beforeExpiry = expiredFair.acquireForSeason("2097-98", "expired-old", Duration.ofMinutes(5))
+                .orElseThrow();
+        jdbc.update("UPDATE " + TABLES.run() + " SET lease_expires_at=?,attempt_count=0 WHERE generation=?",
+                java.sql.Timestamp.from(clock.instant().minusMillis(1)), history.generation());
+
+        Lease recovered = expiredFair.acquireFairForSeason("2097-98", "expired-new", Duration.ofMinutes(5))
+                .orElseThrow();
+        assertThat(recovered.generation()).isEqualTo(history.generation());
+        assertThat(recovered.owner()).isEqualTo("expired-new");
+        assertThat(recovered.token()).isNotEqualTo(beforeExpiry.token());
+        assertThat(recovered.fence()).isGreaterThan(beforeExpiry.fence());
+    }
+
+    @Test
+    void rotationIsSharedAcrossStoresSurvivesRestartAndResetsAtEpochChange() throws Exception {
+        var firstFence = new PlannerRuntimeRepository(jdbc, tx, clock, TABLES)
+                .activate("2097-98", OwnedSyncMode.STAGING);
+        OwnedSyncStore firstStore = new OwnedSyncStore(jdbc, tx, clock, TABLES, firstFence);
+        ReadinessFixture firstReady = seedReadinessFixture(firstStore, 16, 9_016);
+        seedReadinessHistory(firstStore, 9_016, true);
+        for (int playerId = 10_100; playerId < 10_110; playerId++) {
+            firstStore.enqueue(SyncKind.PLAYER_HISTORY, "2097-98", "player-history:" + playerId,
+                    "player-history:" + playerId, clock.instant());
+        }
+        resetAttemptsForCurrentEpoch();
+        OwnedSyncStore competingStore = new OwnedSyncStore(jdbc, tx, clock, TABLES, firstFence);
+        CountDownLatch start = new CountDownLatch(1);
+
+        try (var executor = Executors.newFixedThreadPool(2)) {
+            Future<Lease> left = executor.submit(() -> {
+                start.await();
+                return firstStore.acquireFairForSeason("2097-98", "left", Duration.ofMinutes(5)).orElseThrow();
+            });
+            Future<Lease> right = executor.submit(() -> {
+                start.await();
+                return competingStore.acquireFairForSeason("2097-98", "right", Duration.ofMinutes(5))
+                        .orElseThrow();
+            });
+            start.countDown();
+            List<Lease> claims = List.of(left.get(), right.get());
+            assertThat(claims).extracting(Lease::kind)
+                    .containsExactlyInAnyOrder(SyncKind.PLAYER_HISTORY, SyncKind.FIXTURE_VERIFICATION);
+            assertThat(claims).extracting(Lease::generation).contains(firstReady.generation());
+        }
+
+        OwnedSyncStore restarted = new OwnedSyncStore(jdbc, tx, clock, TABLES, firstFence);
+        assertThat(restarted.acquireFairForSeason("2097-98", "after-restart", Duration.ofMinutes(5))
+                .orElseThrow().kind()).isEqualTo(SyncKind.PLAYER_HISTORY);
+
+        var nextFence = new PlannerRuntimeRepository(jdbc, tx, clock, TABLES)
+                .activate("2097-98", OwnedSyncMode.STAGING);
+        OwnedSyncStore nextEpoch = new OwnedSyncStore(jdbc, tx, clock, TABLES, nextFence);
+        ReadinessFixture nextReady = seedReadinessFixture(nextEpoch, 17, 9_017);
+        seedReadinessHistory(nextEpoch, 9_017, true);
+        Run nextBlocked = seedPartialFixture(nextEpoch, 18, clock.instant());
+        Run nextHistory = nextEpoch.enqueue(SyncKind.PLAYER_HISTORY, "2097-98", "player-history:10118",
+                "player-history:10118", clock.instant());
+        resetAttemptsForCurrentEpoch();
+
+        Lease firstNextEpoch = nextEpoch.acquireFairForSeason("2097-98", "new-epoch", Duration.ofMinutes(5))
+                .orElseThrow();
+        assertThat(firstNextEpoch.generation()).isEqualTo(nextHistory.generation());
+        assertThat(firstNextEpoch.generation()).isNotEqualTo(nextReady.generation());
+        assertThat(firstNextEpoch.generation()).isNotEqualTo(nextBlocked.generation());
     }
 
     @Test
@@ -1308,6 +1468,27 @@ class OwnedSyncStoreIntegrationTest {
                 "request_state", "request_attempt", "fixture_sync", "player_fixture_evidence",
                 "planner_slot", "planner_runtime"))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    private Run seedPartialFixture(OwnedSyncStore target, int fixtureId, Instant dueAt) {
+        String key = FixtureSyncPublisher.publicationKey(fixtureId);
+        Run run = target.enqueue(SyncKind.FIXTURE_VERIFICATION, "2097-98", key, key, clock.instant());
+        Lease lease = target.acquireForSeason("2097-98", "partial-fixture-" + fixtureId,
+                Duration.ofMinutes(5)).orElseThrow();
+        assertThat(lease.generation()).isEqualTo(run.generation());
+        SourceRead sourceRead = new SourceRead(clock.instant(), clock.instant());
+        target.stage(lease, Endpoint.bootstrap(), sourceRead, Validation.unchecked(), bytes("partial"));
+        target.retry(lease, dueAt, "fixture has a partial checkpoint");
+        jdbc.update("UPDATE " + TABLES.run() + " SET priority=5 WHERE generation=?", run.generation());
+        return run;
+    }
+
+    private void resetAttemptsForCurrentEpoch() {
+        jdbc.update("""
+                UPDATE %s SET attempt_count=0
+                WHERE season=? AND runtime_mode='STAGING' AND runtime_epoch=(
+                    SELECT runtime_epoch FROM %s WHERE instance_id=? AND runtime_mode='STAGING')
+                """.formatted(TABLES.run(), TABLES.plannerRuntime()), "2097-98", "mode:2097-98");
     }
 
     private ReadinessFixture seedReadinessFixture(OwnedSyncStore target, int fixtureId, int playerId) {

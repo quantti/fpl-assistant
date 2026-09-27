@@ -63,36 +63,42 @@ reset to acquire the new binding. No unrelated Docker container was touched.
 ## Owned sync — reviewed progress/checkpoint plan (2026-09-27)
 
 Plan: [`2026-09-27-owned-sync-progress-and-checkpoints.md`](superpowers/plans/2026-09-27-owned-sync-progress-and-checkpoints.md).
-Implementation is 0/2 units: KAR-72's disposable-DB/loopback two-worker reproduction now fails
-as expected in both arrival orders (zero history GETs/completions in 60 virtual seconds, 56
-admitted GETs and 37–38 peak new partial pairs in the latest run). Its cold-parent probe
-fetches both prerequisites across a bounded retry.
-The checkpoint is **blocked** before production scheduling: the test is deliberately red, and
-neither a policy nor a numerical end-to-end deadline is approved. After the owner approved
-expanding the DB-failure investigation, review found an incompatibility: an unknown 429 could
-be forgotten if the database recovers before permit expiry, while blocking every unknown result
+Implementation remains 0/2 complete units. Before the fair selector, KAR-72's disposable-DB/
+loopback two-worker baseline failed in both arrival orders (zero history GETs/completions in 60
+virtual seconds, 56 admitted GETs and 37–38 peak new partial pairs). Its cold-parent probe fetched
+both prerequisites across a bounded retry. The bounded claim-selection follow-up is now locally
+implemented and focused-tested; it does not complete Unit 1's broader HTTP/admission criteria.
+The broader checkpoint remains **blocked** before production activation: the original
+pre-selector test was deliberately red, no numerical end-to-end deadline is approved, and the
+implemented claim-selection policy does not complete the remaining admission/progress criteria.
+After the owner approved expanding the DB-failure investigation, review found that an unknown
+429 could be forgotten if the database recovers before permit expiry, while blocking every unknown result
 would serialize overlapping requests and might pause sync indefinitely pending manual review.
 The owner approved serializing unfinished HTTP requests and pausing indefinitely for manual
 reconciliation when an outcome is unknown. The budget guard now retains unresolved attempts and
 blocks admission across expiry/restart; its 11 focused tests passed on the disposable DB. This
-is a prerequisite, not a completed transport/scheduling fix: the baseline still fails. The
-owner approved fixed-capacity DB supervision; a candidate bounded-return transport, atomic
-settlement, conservative response pacing and both dispatchers' HTTP fences have focused local
+is a prerequisite, not a completed transport/admission fix. The owner approved fixed-capacity DB
+supervision; a candidate bounded-return transport, atomic settlement, conservative response pacing
+and both dispatchers' HTTP fences have focused local
 tests. KAR-72 now additionally covers post-COMMIT admission/settlement acknowledgement loss,
 blocked connection acquisition on two zero-queue DB workers, and an unacknowledged exchange that
 later observes a loopback 429. These controlled cases do not establish the candidate 180-second
 return bound; rollback/connection-cleanup faults and the numeric end-to-end envelope remain
-unverified. Scheduling still cannot
-meet the ready-continuation bound from current run metadata: older blocked retries are
-indistinguishable from a newly ready one without a durable dependency manifest. The owner
-approved the narrow new owned table. Manifest persistence and both wait paths now have focused
-integration coverage. Fixture-only history notifications now preserve an unchanged source
+unverified. The earlier ready-continuation metadata blocker was resolved by the owner-approved
+manifest and metadata-only readiness predicate; claim selection is now covered by the focused
+policy tests below. Fixture-only history notifications now preserve an unchanged source
 floor instead of advancing it to notification time; focused store/dispatcher tests pass.
-Metadata-only readiness now distinguishes older blocked retries from a valid ready fixture
-without loading bodies, but claim selection has not changed. Admission fairness and
-failure-path/progress targets remain open. Production remains OFF. KAR-73 remains separate.
-KAR-70's unavailable provider API is not a dependency. No production scheduling or setting
-changed. Latest verified containment is OFF epoch 67; the retest evidence is in PR #137.
+Metadata-only readiness distinguishes older blocked retries from a valid ready fixture without
+loading bodies. The fair selector now gives due canonical work priority, then rotates durable
+current-epoch non-canonical attempts through history, ready fixture, blocked fixture and untouched
+fixture classes. Focused disposable-DB tests cover the four-claim/eight-claim selection bounds,
+expired/future-floor work, canonical takeover, competing stores, restart and epoch reset. The
+unchanged two-worker reproduction now completes its first history in 1.2 virtual seconds and 25/33
+histories within 60 seconds, but stages no fixture and peaks at 3/5 new partial pairs in the two
+arrival orders; broader fixture-progress/admission criteria remain open. The fair selector is
+inert while the owned runtime remains OFF; HTTP/FIFO behavior is unchanged. Production remains OFF. KAR-73 remains separate. KAR-70's
+unavailable provider API is not a dependency. Latest verified containment is OFF epoch 67; the
+retest evidence is in PR #137.
 
 ## Temporary Supabase maintenance (2026-09-23)
 

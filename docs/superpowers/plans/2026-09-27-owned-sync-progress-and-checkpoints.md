@@ -1,6 +1,6 @@
 # Owned sync — bounded history progress and canonical checkpoint reads
 
-**PROGRESS:** KAR-72 durable readiness classification tested; claim policy, admission fairness and remaining faults pending. Implementation 0/2 units. No production activation.
+**PROGRESS:** KAR-72 durable readiness and bounded fair claim selection are implemented and focused-tested; HTTP admission/progress and remaining faults pending. Implementation 0/2 complete units. No production activation.
 
 Follow-up to KAR-71. Evidence: [STAGING retest PR #137](https://github.com/quantti/fpl-assistant/pull/137)
 and [`OWNED-SYNC-EGRESS-REPORT.md`](../../OWNED-SYNC-EGRESS-REPORT.md). The latest verified safe
@@ -260,6 +260,25 @@ blocked retries ahead of ready fixtures). Claim selection still uses the old pri
 compare policies on the unchanged two-worker driver. Fair HTTP admission and remaining DB fault
 tests are independent blockers. Neither claim selection nor production rollout follows from
 passing manifest/readiness tests alone.
+
+**KAR-72 bounded claim-selection follow-up (2026-09-27):** `OwnedSyncStore.acquireFairForSeason`
+now runs only through `OwnedMatchdayCoordinator.dispatchOne`; legacy `acquireForSeason` is unchanged.
+Under the runtime-mode row lock it gives due canonical catalogue/schedule keys priority, then uses
+the current season/mode/epoch's durable non-canonical `SUM(attempt_count)` for the
+H,R,H,D,H,R,H,N cycle. Readiness is evaluated before row limiting with the existing metadata-only
+predicate; D/N use manifest/payload existence only. Candidate queries preserve season/mode/epoch,
+due/source-floor, pending/expired-lease and `FOR UPDATE OF r SKIP LOCKED` fences. The unique active
+work index and the two exact canonical keys cap due canonical candidates at two; an epoch-scoped
+covering index bounds the durable aggregate to that epoch's rows.
+
+Four focused disposable-DB selector tests and the seven coordinator tests pass, covering eleven
+older blocked fixtures, ready/untouched bounds with continuously due histories, canonical takeover,
+future floors, expired leases, competing store instances, restart and epoch reset. The unchanged
+two-worker reproduction also now passes its first-history/ten-history targets: first history
+completed at 1.2 virtual seconds and 25/33 histories completed within 60 seconds. It staged no
+fixture and observed 3/5 newly outstanding partial bootstrap pairs in the two arrival orders, so
+those broader fixture/partial-pair targets remain open. This unit makes no HTTP/FIFO change and is
+not a complete Unit 1 result or production SLA.
 
 Serialized unfinished requests also make a simple admission-only FIFO insufficient. A second
 caller first sees `UNSETTLED` even for a healthy 100 ms predecessor; its 30-second recheck hint

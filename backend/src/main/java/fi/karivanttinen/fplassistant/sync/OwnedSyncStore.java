@@ -6,7 +6,9 @@ import java.sql.Timestamp;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -37,6 +39,11 @@ public final class OwnedSyncStore {
     public static final int MAX_ERROR_CHARS = 1_000;
     private static final Duration MAX_LEASE = Duration.ofHours(1);
     private static final int PUBLIC_PAIR_CACHE_ENTRIES = 2;
+    private static final List<ClaimClass> FAIR_CYCLE = List.of(
+            ClaimClass.HISTORY, ClaimClass.READY_FIXTURE,
+            ClaimClass.HISTORY, ClaimClass.BLOCKED_FIXTURE,
+            ClaimClass.HISTORY, ClaimClass.READY_FIXTURE,
+            ClaimClass.HISTORY, ClaimClass.UNTOUCHED_FIXTURE);
 
     private final JdbcTemplate jdbc;
     private final TransactionTemplate tx;
@@ -198,6 +205,91 @@ public final class OwnedSyncStore {
     /** Claims one due run for an explicitly configured season without consuming archived backlog. */
     public Optional<Lease> acquireForSeason(String season, String owner, Duration duration) {
         return acquire(owner, duration, bounded("season", season, 10));
+    }
+
+    /**
+     * Claims one run using a durable, cross-instance rotation for the owned matchday dispatcher.
+     * Canonical catalogue/schedule work preempts the rotation; non-canonical turns are derived
+     * from all retained attempts in this season's current runtime epoch.
+     */
+    public Optional<Lease> acquireFairForSeason(String season, String owner, Duration duration) {
+        if (runtimeFence == null) {
+            throw new IllegalStateException("Fair acquisition requires an activated runtime fence");
+        }
+        String validSeason = bounded("season", season, 10);
+        String validOwner = bounded("owner", owner, 128);
+        Duration validDuration = leaseDuration(duration);
+        return tx.execute(status -> {
+            // This existing mode-row lock serializes the aggregate and claim across all store instances.
+            assertRuntimeFence(validSeason);
+            Instant checkedAt = now();
+            // The two exact canonical keys plus uq_active_work prove at most two active candidates.
+            Long generation = fairCandidate(validSeason, checkedAt, "r.kind='CATALOGUE_SCHEDULE' AND "
+                    + "((r.coalescing_key=? AND r.publication_key=?) OR "
+                    + "(r.coalescing_key=? AND r.publication_key=?))",
+                    CatalogueScheduleDispatcher.CATALOGUE_PRICE_COALESCING_KEY,
+                    CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY,
+                    CatalogueScheduleDispatcher.SCHEDULE_COALESCING_KEY,
+                    CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY);
+
+            if (generation == null) {
+                long attempts = jdbc.queryForObject("""
+                        SELECT COALESCE(SUM(attempt_count), 0)
+                        FROM %s
+                        WHERE season=? AND runtime_mode=? AND runtime_epoch=?
+                          AND kind IN ('PLAYER_HISTORY', 'FIXTURE_VERIFICATION')
+                        """.formatted(tables.run()), Long.class, validSeason, runtimeMode(), runtimeEpoch());
+                int firstTurn = (int) (attempts % FAIR_CYCLE.size());
+                LinkedHashSet<ClaimClass> borrowingOrder = new LinkedHashSet<>();
+                for (int offset = 0; offset < FAIR_CYCLE.size(); offset++) {
+                    borrowingOrder.add(FAIR_CYCLE.get((firstTurn + offset) % FAIR_CYCLE.size()));
+                }
+                for (ClaimClass claimClass : borrowingOrder) {
+                    generation = fairCandidate(validSeason, checkedAt, claimClass.predicate(this));
+                    if (generation != null) break;
+                }
+                // Preserve the coordinator's existing failure handling for unsupported work.
+                if (generation == null) {
+                    generation = fairCandidate(validSeason, checkedAt, "r.kind='SOURCE_STATUS'");
+                }
+            }
+            if (generation == null) return Optional.empty();
+            return Optional.of(leaseGeneration(generation, validOwner, validDuration, checkedAt));
+        });
+    }
+
+    private Long fairCandidate(String season, Instant checkedAt, String predicate, Object... predicateValues) {
+        String sql = """
+                SELECT r.generation
+                FROM %s r
+                WHERE r.season=? AND r.runtime_mode=? AND r.runtime_epoch=?
+                  AND r.due_at<=? AND r.requested_source_after<=?
+                  AND (r.state='PENDING' OR (r.state='LEASED' AND r.lease_expires_at<=?))
+                  AND (%s)
+                ORDER BY r.priority, r.due_at, r.generation
+                LIMIT 1 FOR UPDATE OF r SKIP LOCKED
+                """.formatted(tables.run(), predicate);
+        List<Object> parameters = new ArrayList<>(List.of(season, runtimeMode(), runtimeEpoch(),
+                timestamp(checkedAt), timestamp(checkedAt), timestamp(checkedAt)));
+        parameters.addAll(List.of(predicateValues));
+        return jdbc.queryForList(sql, Long.class, parameters.toArray()).stream().findFirst().orElse(null);
+    }
+
+    private Lease leaseGeneration(long generation, String owner, Duration duration, Instant claimedAt) {
+        UUID token = UUID.randomUUID();
+        Instant expiresAt = claimedAt.plus(duration);
+        jdbc.update("""
+                UPDATE %s SET state='LEASED', attempt_count=attempt_count + 1,
+                    last_attempt_at=?, lease_owner=?, lease_token=?, lease_fence=lease_fence + 1,
+                    lease_expires_at=?, updated_at=?
+                WHERE generation=?
+                """.formatted(tables.run()), timestamp(claimedAt), owner, token,
+                timestamp(expiresAt), timestamp(claimedAt), generation);
+        return jdbc.queryForObject("""
+                SELECT generation, kind, season, coalescing_key, publication_key,
+                       lease_owner, lease_token, lease_fence, lease_expires_at, attempt_count
+                FROM %s WHERE generation=?
+                """.formatted(tables.run()), this::lease, generation);
     }
 
     private Optional<Lease> acquire(String owner, Duration duration, String season) {
@@ -1323,6 +1415,42 @@ public final class OwnedSyncStore {
             case ELEMENT_SUMMARY -> endpoint.eventId == null && endpoint.playerId != null && endpoint.playerId > 0;
         };
         if (!valid) throw new IllegalArgumentException("Endpoint identifiers do not match " + endpoint.kind);
+    }
+
+    private enum ClaimClass {
+        HISTORY {
+            @Override String predicate(OwnedSyncStore store) {
+                return "r.kind='PLAYER_HISTORY'";
+            }
+        },
+        READY_FIXTURE {
+            @Override String predicate(OwnedSyncStore store) {
+                return "r.kind='FIXTURE_VERIFICATION' AND " + store.fixtureReadinessPredicate();
+            }
+        },
+        BLOCKED_FIXTURE {
+            @Override String predicate(OwnedSyncStore store) {
+                return fixturePredicate(store, true);
+            }
+        },
+        UNTOUCHED_FIXTURE {
+            @Override String predicate(OwnedSyncStore store) {
+                return fixturePredicate(store, false);
+            }
+        };
+
+        abstract String predicate(OwnedSyncStore store);
+
+        private static String fixturePredicate(OwnedSyncStore store, boolean hasEvidence) {
+            String manifest = "EXISTS (SELECT 1 FROM " + store.tables.fixtureDependencyManifest()
+                    + " m2 WHERE m2.run_generation=r.generation)";
+            String payload = "EXISTS (SELECT 1 FROM " + store.tables.payload()
+                    + " p2 WHERE p2.run_generation=r.generation)";
+            String evidence = hasEvidence ? "(" + manifest + " OR " + payload + ")"
+                    : "NOT (" + manifest + " OR " + payload + ")";
+            return "r.kind='FIXTURE_VERIFICATION' AND NOT (" + store.fixtureReadinessPredicate()
+                    + ") AND " + evidence;
+        }
     }
 
     public enum SyncKind {
