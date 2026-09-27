@@ -68,6 +68,8 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
     private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(10);
     private static final Duration DEFAULT_REQUEST_TIMEOUT = Duration.ofSeconds(30);
     private static final Duration METHOD_DEADLINE = Duration.ofSeconds(180);
+    private static final Duration PREPARATION_DEADLINE = Duration.ofSeconds(73);
+    private static final Duration TURN_GRACE = Duration.ofSeconds(3);
     private static final Duration DB_REJECTION_RECHECK = Duration.ofSeconds(1);
     private static final Duration DB_ADMISSION_UNCERTAIN_RECHECK = Duration.ofSeconds(30);
     private static final Duration UNSETTLED_RECHECK = Duration.ofSeconds(30);
@@ -88,7 +90,11 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
     private final boolean closeDbOperations;
     private final boolean loopbackTest;
     private final Object sendGate = new Object();
+    private final Object turnGate = new Object();
+    private final java.util.ArrayDeque<TurnTicket> turns = new java.util.ArrayDeque<>();
     private boolean closing;
+    private boolean turnClosed;
+    private boolean unsafeTurnChain;
 
     /** Production construction deliberately fixes the source host and transport limits. */
     public OwnedSyncHttpClient(OwnedSyncRequestBudget budget) {
@@ -167,39 +173,84 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
 
     private Result getInternal(Endpoint endpoint, int failureAttempt, Supplier<HttpFenceResult> fence) {
         OwnedSyncDeadline methodDeadline = OwnedSyncDeadline.after(methodTimeout);
-        String path = path(endpoint); // Validate all model-derived identifiers before admission.
-        if (failureAttempt < 1) throw new IllegalArgumentException("failureAttempt must be positive");
+        OwnedSyncDeadline preparationDeadline = methodDeadline.cappedBy(PREPARATION_DEADLINE);
+        OwnedSyncDeadline graceDeadline = methodDeadline.cappedBy(TURN_GRACE);
+        TurnJoin joined = joinTurn(graceDeadline);
+        if (joined.failure != null) return turnJoinFailure(joined.failure);
+
+        TurnTicket ticket = joined.ticket;
+        boolean safeToHandover = false;
+        try {
+            if (isClosing()) return locallyClosed();
+            if (ticket.poisoned) return unresolved(DeferredReason.UNSETTLED);
+            String path;
+            try {
+                path = path(endpoint); // Validate only after joining the FIFO turn.
+                if (failureAttempt < 1) throw new IllegalArgumentException("failureAttempt must be positive");
+            } catch (IllegalArgumentException | NullPointerException invalidRequest) {
+                safeToHandover = true;
+                throw invalidRequest;
+            }
+            Result result = getWithTurnHeld(path, failureAttempt, fence, methodDeadline,
+                    preparationDeadline, graceDeadline, ticket.waited);
+            safeToHandover = safeForHandover(result);
+            return result;
+        } finally {
+            releaseTurn(ticket, safeToHandover);
+        }
+    }
+
+    private Result getWithTurnHeld(String path, int failureAttempt,
+                                   Supplier<HttpFenceResult> fence, OwnedSyncDeadline methodDeadline,
+                                   OwnedSyncDeadline preparationDeadline, OwnedSyncDeadline graceDeadline,
+                                   boolean waitedForTurn) {
         if (isClosing()) return locallyClosed();
 
-        if (fence != null) {
-            Outcome<HttpFenceResult> beforeAdmission = checkFence(fence, methodDeadline);
-            if (!(beforeAdmission instanceof Success<?> success)) return fenceFailure(beforeAdmission);
-            Object checked = success.value();
-            if (checked instanceof FutureFloor futureFloor) {
-                return new DeferredResult(futureFloor.nextDue(), DeferredReason.HTTP_NOT_SUBMITTED);
+        Admission admission = null;
+        for (int admissionTry = 0; admissionTry < 2; admissionTry++) {
+            if (fence != null) {
+                Outcome<HttpFenceResult> beforeAdmission = checkFence(fence, preparationDeadline);
+                if (!(beforeAdmission instanceof Success<?> success)) return fenceFailure(beforeAdmission);
+                Object checked = success.value();
+                if (checked instanceof FutureFloor futureFloor) {
+                    return new DeferredResult(futureFloor.nextDue(), DeferredReason.HTTP_NOT_SUBMITTED);
+                }
+                if (!(checked instanceof Ready)) return uncertainAdmission(Uncertainty.OPERATION_FAILED);
             }
-            if (!(checked instanceof Ready)) return uncertainAdmission(Uncertainty.OPERATION_FAILED);
+
+            UUID attemptId = UUID.randomUUID();
+            Outcome<Admission> admissionOutcome = dbOperations.call(
+                    () -> budget.admit(attemptId), preparationDeadline);
+            if (admissionOutcome instanceof Rejected<?> rejected) {
+                return rejectedAdmission(rejected.reason());
+            }
+            if (admissionOutcome instanceof Uncertain<?> uncertain) {
+                return uncertainAdmission(uncertain.reason());
+            }
+
+            admission = (Admission) ((Success<?>) admissionOutcome).value();
+            if (admission instanceof Deferred deferred) {
+                if (admissionTry == 0 && waitedForTurn
+                        && deferred.reason() == DeferredReason.MINIMUM_SPACING) {
+                    SpacingWait wait = waitForSpacing(deferred.nextDue(), graceDeadline);
+                    if (wait == SpacingWait.READY) continue;
+                    if (wait == SpacingWait.CLOSED) return locallyClosed();
+                    if (wait == SpacingWait.INTERRUPTED) {
+                        return databaseDeferral(DeferredReason.HTTP_NOT_SUBMITTED);
+                    }
+                }
+                return new DeferredResult(deferred.nextDue(), deferred.reason());
+            }
+            break;
         }
 
-        UUID attemptId = UUID.randomUUID();
-        Outcome<Admission> admissionOutcome = dbOperations.call(
-                () -> budget.admit(attemptId), methodDeadline);
-        if (admissionOutcome instanceof Rejected<?> rejected) {
-            return rejectedAdmission(rejected.reason());
+        if (!(admission instanceof Allowed allowed)) {
+            throw new IllegalStateException("Admission retry ended without a result");
         }
-        if (admissionOutcome instanceof Uncertain<?> uncertain) {
-            return uncertainAdmission(uncertain.reason());
-        }
-
-        Admission admission = (Admission) ((Success<?>) admissionOutcome).value();
-        if (admission instanceof Deferred deferred) {
-            return new DeferredResult(deferred.nextDue(), deferred.reason());
-        }
-
-        Permit permit = ((Allowed) admission).permit();
+        Permit permit = allowed.permit();
         Ready postFence = null;
         if (fence != null) {
-            Outcome<HttpFenceResult> afterAdmission = checkFence(fence, methodDeadline);
+            Outcome<HttpFenceResult> afterAdmission = checkFence(fence, preparationDeadline);
             if (afterAdmission instanceof Success<?> success) {
                 Object checked = success.value();
                 if (checked instanceof FutureFloor futureFloor) {
@@ -561,6 +612,122 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
         }
     }
 
+    private TurnJoin joinTurn(OwnedSyncDeadline graceDeadline) {
+        boolean restoreInterrupt = false;
+        TurnJoin result;
+        synchronized (turnGate) {
+            if (turnClosed) return new TurnJoin(null, TurnJoinFailure.CLOSED);
+            if (turns.size() >= 2) return new TurnJoin(null, TurnJoinFailure.FULL);
+
+            TurnTicket ticket = new TurnTicket(!turns.isEmpty());
+            turns.addLast(ticket);
+            while (true) {
+                if (turnClosed) {
+                    turns.remove(ticket);
+                    turnGate.notifyAll();
+                    result = new TurnJoin(null, TurnJoinFailure.CLOSED);
+                    break;
+                }
+                if (turns.peekFirst() == ticket) {
+                    ticket.poisoned = unsafeTurnChain;
+                    return new TurnJoin(ticket, null);
+                }
+                long remaining = graceDeadline.remainingNanos();
+                if (remaining == 0) {
+                    turns.remove(ticket);
+                    turnGate.notifyAll();
+                    result = new TurnJoin(null, TurnJoinFailure.TIMED_OUT);
+                    break;
+                }
+                try {
+                    waitOn(turnGate, remaining);
+                } catch (InterruptedException interrupted) {
+                    turns.remove(ticket);
+                    turnGate.notifyAll();
+                    restoreInterrupt = true;
+                    result = new TurnJoin(null, TurnJoinFailure.INTERRUPTED);
+                    break;
+                }
+            }
+        }
+        if (restoreInterrupt) Thread.currentThread().interrupt();
+        return result;
+    }
+
+    private Result turnJoinFailure(TurnJoinFailure failure) {
+        return switch (failure) {
+            case CLOSED -> locallyClosed();
+            case INTERRUPTED -> databaseDeferral(DeferredReason.DB_INTERRUPTED);
+            case TIMED_OUT -> databaseDeferral(DeferredReason.HTTP_NOT_SUBMITTED);
+            case FULL -> databaseDeferral(DeferredReason.HTTP_TURN_QUEUE_FULL);
+        };
+    }
+
+    private SpacingWait waitForSpacing(Instant nextDue, OwnedSyncDeadline graceDeadline) {
+        Duration delay = Duration.between(clock.instant(), nextDue);
+        OwnedSyncDeadline dueDeadline = OwnedSyncDeadline.after(delay.isNegative() ? Duration.ZERO : delay);
+        boolean restoreInterrupt = false;
+        SpacingWait result;
+        synchronized (turnGate) {
+            while (true) {
+                if (turnClosed) {
+                    result = SpacingWait.CLOSED;
+                    break;
+                }
+                if (Thread.currentThread().isInterrupted()) {
+                    result = SpacingWait.INTERRUPTED;
+                    break;
+                }
+                long graceRemaining = graceDeadline.remainingNanos();
+                if (graceRemaining == 0) {
+                    result = SpacingWait.EXPIRED;
+                    break;
+                }
+                long dueRemaining = dueDeadline.remainingNanos();
+                if (dueRemaining == 0) {
+                    result = SpacingWait.READY;
+                    break;
+                }
+                try {
+                    waitOn(turnGate, Math.min(graceRemaining, dueRemaining));
+                } catch (InterruptedException interrupted) {
+                    restoreInterrupt = true;
+                    result = SpacingWait.INTERRUPTED;
+                    break;
+                }
+            }
+        }
+        if (restoreInterrupt) Thread.currentThread().interrupt();
+        return result;
+    }
+
+    private void releaseTurn(TurnTicket ticket, boolean safeToHandover) {
+        synchronized (turnGate) {
+            if (turns.peekFirst() != ticket) {
+                throw new IllegalStateException("Owned-sync FIFO turn released out of order");
+            }
+            turns.removeFirst();
+            if (!safeToHandover) unsafeTurnChain = true;
+            if (turns.isEmpty()) unsafeTurnChain = false;
+            turnGate.notifyAll();
+        }
+    }
+
+    private static boolean safeForHandover(Result result) {
+        if (!(result instanceof DeferredResult deferred)) return true;
+        return switch (deferred.reason()) {
+            case UNSETTLED, DB_INTERRUPTED, DB_ADMISSION_UNCERTAIN, NO_FETCH_UNCERTAIN,
+                    HTTP_EXCHANGE_UNCERTAIN, SETTLEMENT_UNCERTAIN -> false;
+            default -> true;
+        };
+    }
+
+    private static void waitOn(Object monitor, long nanos) throws InterruptedException {
+        long millis = TimeUnit.NANOSECONDS.toMillis(nanos);
+        int extraNanos = (int) (nanos - TimeUnit.MILLISECONDS.toNanos(millis));
+        monitor.wait(millis, extraNanos);
+    }
+
     private boolean tryStart(ExchangeGate gate, OwnedSyncDeadline methodDeadline,
                              OwnedSyncDeadline permitDeadline, OwnedSyncDeadline exchangeDeadline,
                              Ready fence) {
@@ -574,6 +741,10 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
     void stopSending() {
         synchronized (sendGate) {
             closing = true;
+        }
+        synchronized (turnGate) {
+            turnClosed = true;
+            turnGate.notifyAll();
         }
     }
 
@@ -842,6 +1013,19 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
     private record Headers(int statusCode, String retryAfter) {}
     private record WireResponse(int statusCode, byte[] body, String retryAfter) {}
     private record ExitAcknowledgement(boolean acknowledged, boolean interrupted) {}
+    private record TurnJoin(TurnTicket ticket, TurnJoinFailure failure) {}
+
+    private static final class TurnTicket {
+        private final boolean waited;
+        private boolean poisoned;
+
+        private TurnTicket(boolean waited) {
+            this.waited = waited;
+        }
+    }
+
+    private enum TurnJoinFailure { CLOSED, FULL, INTERRUPTED, TIMED_OUT }
+    private enum SpacingWait { READY, CLOSED, INTERRUPTED, EXPIRED }
 
     private static final class ExchangeGate {
         private boolean started;

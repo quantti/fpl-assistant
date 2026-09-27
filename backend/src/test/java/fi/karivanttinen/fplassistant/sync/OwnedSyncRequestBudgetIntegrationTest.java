@@ -294,6 +294,15 @@ class OwnedSyncRequestBudgetIntegrationTest {
     }
 
     @Test
+    void fiveThousandAttemptLimitBoundaryRemainsUnchanged() {
+        assertThat(Limits.defaults().maxAttempts()).isEqualTo(5_000);
+        assertThat(limits(5_000, Duration.ofHours(24), Duration.ofSeconds(5)).maxAttempts()).isEqualTo(5_000);
+        assertThatThrownBy(() -> limits(5_001, Duration.ofHours(24), Duration.ofSeconds(5)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("between 1 and 5000");
+    }
+
+    @Test
     void rollingAttemptLimitExpiresAtExactWindowWithoutRestartReset() {
         Limits limits = limits(2, Duration.ofHours(24), Duration.ofSeconds(5));
         budget = new OwnedSyncRequestBudget(jdbc, tx, clock, TABLES, limits);

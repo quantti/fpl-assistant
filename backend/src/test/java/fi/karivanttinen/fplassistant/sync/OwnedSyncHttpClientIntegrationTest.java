@@ -24,6 +24,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -454,6 +455,213 @@ class OwnedSyncHttpClientIntegrationTest {
         assertThat(observations).hasSize(2);
         assertThat(observations.get(1).monotonicNanos() - observations.get(0).monotonicNanos())
                 .isGreaterThanOrEqualTo(Duration.ofSeconds(1).toNanos());
+    }
+
+    @Test
+    @Timeout(value = 15, unit = TimeUnit.SECONDS)
+    void queuedFollowersAreFifoInBothArrivalOrdersAndSpaceFromSettlement() throws Exception {
+        Clock realClock = Clock.systemUTC();
+        budget = new OwnedSyncRequestBudget(jdbc, tx, realClock, TABLES);
+
+        for (int order = 0; order < 2; order++) {
+            if (order > 0) {
+                jdbc.update("DELETE FROM " + TABLES.requestAttempt());
+                jdbc.update("UPDATE " + TABLES.requestState()
+                        + " SET last_admitted_at = NULL, cooldown_until = NULL");
+                budget = new OwnedSyncRequestBudget(jdbc, tx, realClock, TABLES);
+            }
+            Endpoint firstEndpoint = order == 0 ? Endpoint.fixtures() : Endpoint.bootstrap();
+            Endpoint secondEndpoint = order == 0 ? Endpoint.bootstrap() : Endpoint.fixtures();
+            List<ServerObservation> observations = new CopyOnWriteArrayList<>();
+            List<String> paths = new CopyOnWriteArrayList<>();
+            CountDownLatch firstRequest = new CountDownLatch(1);
+            CountDownLatch releaseFirst = new CountDownLatch(1);
+            AtomicInteger requestCount = new AtomicInteger();
+            HttpServer server = server(exchange -> {
+                observations.add(new ServerObservation(Instant.now(), System.nanoTime()));
+                paths.add(exchange.getRequestURI().getPath());
+                if (requestCount.getAndIncrement() == 0) {
+                    firstRequest.countDown();
+                    awaitIgnoringInterrupts(releaseFirst);
+                }
+                respond(exchange, 200, new byte[0]);
+            });
+            OwnedSyncHttpClient transport = transport(server, Duration.ofSeconds(5));
+            AtomicReference<OwnedSyncHttpClient.Result> firstResult = new AtomicReference<>();
+            AtomicReference<OwnedSyncHttpClient.Result> secondResult = new AtomicReference<>();
+            Thread firstCaller = Thread.ofPlatform().start(() -> firstResult.set(transport.get(firstEndpoint, 1)));
+            assertThat(firstRequest.await(2, TimeUnit.SECONDS)).isTrue();
+            AtomicLong secondEntry = new AtomicLong();
+            Thread secondCaller = Thread.ofPlatform().start(() -> {
+                secondEntry.set(System.nanoTime());
+                secondResult.set(transport.get(secondEndpoint, 1));
+            });
+            assertThat(awaitTurnQueueWait(secondCaller, Duration.ofSeconds(2))).isTrue();
+
+            releaseFirst.countDown();
+            firstCaller.join(5_000);
+            secondCaller.join(5_000);
+            assertThat(firstCaller.isAlive()).isFalse();
+            assertThat(secondCaller.isAlive()).isFalse();
+            assertThat(firstResult.get()).isInstanceOf(Response.class);
+            assertThat(secondResult.get()).isInstanceOf(Response.class);
+            assertThat(observations).hasSize(2);
+            assertThat(paths).containsExactly(order == 0 ? "/api/fixtures/" : "/api/bootstrap-static/",
+                    order == 0 ? "/api/bootstrap-static/" : "/api/fixtures/");
+
+            List<java.sql.Timestamp> completions = jdbc.query("SELECT completed_at FROM "
+                            + TABLES.requestAttempt() + " ORDER BY admitted_at",
+                    (rs, row) -> rs.getTimestamp(1));
+            assertThat(completions).hasSize(2);
+            Duration completionToNextGet = Duration.between(completions.getFirst().toInstant(),
+                    observations.get(1).observedAt());
+            assertThat(completionToNextGet).isGreaterThanOrEqualTo(Duration.ofSeconds(1));
+            assertThat(observations.get(1).monotonicNanos() - secondEntry.get())
+                    .isLessThanOrEqualTo(Duration.ofSeconds(3).toNanos());
+        }
+    }
+
+    @Test
+    @Timeout(value = 15, unit = TimeUnit.SECONDS)
+    void immediateReentryCannotBargeAheadOfQueuedFollowerAndThirdTicketDefers() throws Exception {
+        budget = new OwnedSyncRequestBudget(jdbc, tx, Clock.systemUTC(), TABLES);
+        List<String> paths = new CopyOnWriteArrayList<>();
+        CountDownLatch firstRequest = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        CountDownLatch secondRequest = new CountDownLatch(1);
+        CountDownLatch releaseSecond = new CountDownLatch(1);
+        HttpServer server = server(exchange -> {
+            String path = exchange.getRequestURI().getPath();
+            paths.add(path);
+            if (path.equals("/api/fixtures/")) {
+                if (firstRequest.getCount() != 0) {
+                    firstRequest.countDown();
+                    awaitIgnoringInterrupts(releaseFirst);
+                }
+            } else if (path.equals("/api/bootstrap-static/")) {
+                secondRequest.countDown();
+                awaitIgnoringInterrupts(releaseSecond);
+            }
+            respond(exchange, 200, new byte[0]);
+        });
+        OwnedSyncHttpClient transport = transport(server, Duration.ofSeconds(5));
+        AtomicReference<OwnedSyncHttpClient.Result> firstResult = new AtomicReference<>();
+        AtomicReference<OwnedSyncHttpClient.Result> reentryResult = new AtomicReference<>();
+        AtomicReference<OwnedSyncHttpClient.Result> followerResult = new AtomicReference<>();
+        CountDownLatch reentryCalled = new CountDownLatch(1);
+        Thread firstCaller = Thread.ofPlatform().start(() -> {
+            firstResult.set(transport.get(Endpoint.fixtures(), 1));
+            reentryCalled.countDown();
+            reentryResult.set(transport.get(Endpoint.eventLive(3), 1));
+        });
+        assertThat(firstRequest.await(2, TimeUnit.SECONDS)).isTrue();
+        Thread follower = Thread.ofPlatform().start(() -> followerResult.set(transport.get(Endpoint.bootstrap(), 1)));
+        assertThat(awaitTurnQueueWait(follower, Duration.ofSeconds(2))).isTrue();
+
+        DeferredResult overflow = (DeferredResult) transport.get(Endpoint.elementSummary(557), 1);
+        assertThat(overflow.reason()).isEqualTo(DeferredReason.HTTP_TURN_QUEUE_FULL);
+        assertThat(paths).containsExactly("/api/fixtures/");
+
+        releaseFirst.countDown();
+        assertThat(secondRequest.await(3, TimeUnit.SECONDS)).isTrue();
+        assertThat(reentryCalled.await(2, TimeUnit.SECONDS)).isTrue();
+        assertThat(awaitTurnQueueWait(firstCaller, Duration.ofSeconds(2))).isTrue();
+        releaseSecond.countDown();
+        firstCaller.join(5_000);
+        follower.join(5_000);
+        assertThat(firstCaller.isAlive()).isFalse();
+        assertThat(follower.isAlive()).isFalse();
+
+        assertThat(firstResult.get()).isInstanceOf(Response.class);
+        assertThat(followerResult.get()).isInstanceOf(Response.class);
+        assertThat(reentryResult.get()).isInstanceOf(Response.class);
+        assertThat(paths).containsExactly("/api/fixtures/", "/api/bootstrap-static/", "/api/event/3/live/");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.requestAttempt(), Integer.class)).isEqualTo(3);
+    }
+
+    @Test
+    @Timeout(value = 15, unit = TimeUnit.SECONDS)
+    void interruptedAndShutdownWaitersDoNotFetchAndInterruptionIsRestored() throws Exception {
+        budget = new OwnedSyncRequestBudget(jdbc, tx, Clock.systemUTC(), TABLES);
+        AtomicInteger requests = new AtomicInteger();
+        CountDownLatch firstRequest = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        HttpServer server = server(exchange -> {
+            requests.incrementAndGet();
+            firstRequest.countDown();
+            awaitIgnoringInterrupts(releaseFirst);
+            respond(exchange, 200, new byte[0]);
+        });
+        OwnedSyncHttpClient transport = transport(server, Duration.ofSeconds(5));
+        AtomicReference<OwnedSyncHttpClient.Result> ownerResult = new AtomicReference<>();
+        Thread owner = Thread.ofPlatform().start(() -> ownerResult.set(transport.get(Endpoint.fixtures(), 1)));
+        assertThat(firstRequest.await(2, TimeUnit.SECONDS)).isTrue();
+
+        AtomicReference<OwnedSyncHttpClient.Result> interruptedResult = new AtomicReference<>();
+        AtomicBoolean interruptRestored = new AtomicBoolean();
+        Thread interruptedWaiter = Thread.ofPlatform().start(() -> {
+            interruptedResult.set(transport.get(Endpoint.bootstrap(), 1));
+            interruptRestored.set(Thread.currentThread().isInterrupted());
+        });
+        assertThat(awaitTurnQueueWait(interruptedWaiter, Duration.ofSeconds(2))).isTrue();
+        interruptedWaiter.interrupt();
+        interruptedWaiter.join(2_000);
+        assertThat(interruptedWaiter.isAlive()).isFalse();
+        assertThat(interruptedResult.get()).isInstanceOfSatisfying(DeferredResult.class,
+                deferred -> assertThat(deferred.reason()).isEqualTo(DeferredReason.DB_INTERRUPTED));
+        assertThat(interruptRestored).isTrue();
+
+        AtomicReference<OwnedSyncHttpClient.Result> shutdownWaiterResult = new AtomicReference<>();
+        Thread shutdownWaiter = Thread.ofPlatform().start(
+                () -> shutdownWaiterResult.set(transport.get(Endpoint.eventLive(3), 1)));
+        assertThat(awaitTurnQueueWait(shutdownWaiter, Duration.ofSeconds(2))).isTrue();
+        transport.close();
+        shutdownWaiter.join(2_000);
+        assertThat(shutdownWaiter.isAlive()).isFalse();
+        assertThat(shutdownWaiterResult.get()).isInstanceOfSatisfying(DeferredResult.class,
+                deferred -> assertThat(deferred.reason()).isEqualTo(DeferredReason.HTTP_CLIENT_CLOSED));
+
+        releaseFirst.countDown();
+        owner.join(5_000);
+        assertThat(owner.isAlive()).isFalse();
+        assertThat(ownerResult.get()).isNotNull();
+        assertThat(requests).hasValue(1);
+    }
+
+    @Test
+    @Timeout(value = 10, unit = TimeUnit.SECONDS)
+    void queuedFollowerAfterUnknownAttemptDoesNotProbeOrSend() throws Exception {
+        budget = new OwnedSyncRequestBudget(jdbc, tx, Clock.systemUTC(), TABLES);
+        AtomicInteger requests = new AtomicInteger();
+        CountDownLatch firstRequest = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        HttpServer server = server(exchange -> {
+            requests.incrementAndGet();
+            firstRequest.countDown();
+            awaitIgnoringInterrupts(releaseFirst);
+            exchange.close();
+        });
+        OwnedSyncHttpClient transport = transport(server, Duration.ofSeconds(2));
+        AtomicReference<OwnedSyncHttpClient.Result> unknownResult = new AtomicReference<>();
+        AtomicReference<OwnedSyncHttpClient.Result> followerResult = new AtomicReference<>();
+        Thread owner = Thread.ofPlatform().start(() -> unknownResult.set(transport.get(Endpoint.fixtures(), 1)));
+        assertThat(firstRequest.await(2, TimeUnit.SECONDS)).isTrue();
+        Thread follower = Thread.ofPlatform().start(() -> followerResult.set(transport.get(Endpoint.bootstrap(), 1)));
+        assertThat(awaitTurnQueueWait(follower, Duration.ofSeconds(2))).isTrue();
+
+        releaseFirst.countDown();
+        owner.join(4_000);
+        follower.join(2_000);
+        assertThat(owner.isAlive()).isFalse();
+        assertThat(follower.isAlive()).isFalse();
+        assertThat(unknownResult.get()).isInstanceOfSatisfying(DeferredResult.class,
+                deferred -> assertThat(deferred.reason()).isEqualTo(DeferredReason.HTTP_EXCHANGE_UNCERTAIN));
+        assertThat(followerResult.get()).isInstanceOfSatisfying(DeferredResult.class,
+                deferred -> assertThat(deferred.reason()).isEqualTo(DeferredReason.UNSETTLED));
+        assertThat(requests).hasValue(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.requestAttempt(), Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.requestAttempt()
+                + " WHERE completed_at IS NULL", Integer.class)).isEqualTo(1);
     }
 
     @Test
@@ -894,17 +1102,20 @@ class OwnedSyncHttpClientIntegrationTest {
         });
         MutableClock workerClock = new MutableClock(budgetClock.instant());
         DelayedExecutor delayed = new DelayedExecutor();
-        OwnedSyncHttpClient transport = new OwnedSyncHttpClient(budget,
-                URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/api/"),
+        URI base = URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/api/");
+        OwnedSyncHttpClient transport = new OwnedSyncHttpClient(budget, base,
                 Duration.ofSeconds(3), workerClock, delayed);
         transports.add(transport);
+        OwnedSyncHttpClient independent = new OwnedSyncHttpClient(budget, base,
+                Duration.ofSeconds(3), workerClock);
+        transports.add(independent);
         var result = new java.util.concurrent.atomic.AtomicReference<OwnedSyncHttpClient.Result>();
         Thread caller = Thread.ofPlatform().start(() -> result.set(transport.get(Endpoint.fixtures(), 1)));
 
         assertThat(delayed.awaitSubmitted()).isTrue();
         java.time.Instant admittedAt = jdbc.queryForObject("SELECT admitted_at FROM "
                 + TABLES.requestAttempt(), java.sql.Timestamp.class).toInstant();
-        assertThat(((DeferredResult) transport.get(Endpoint.fixtures(), 1)).reason())
+        assertThat(((DeferredResult) independent.get(Endpoint.fixtures(), 1)).reason())
                 .isEqualTo(DeferredReason.UNSETTLED);
         assertThat(calls).hasValue(0);
 
@@ -1149,7 +1360,9 @@ class OwnedSyncHttpClientIntegrationTest {
             getCalls.incrementAndGet();
             respond(exchange, 200, new byte[0]);
         });
-        OwnedSyncHttpClient transport = transport(blockedBudget, server, Duration.ofSeconds(2),
+        OwnedSyncHttpClient firstTransport = transport(blockedBudget, server, Duration.ofSeconds(2),
+                operations, Duration.ofSeconds(3));
+        OwnedSyncHttpClient secondTransport = transport(blockedBudget, server, Duration.ofSeconds(2),
                 operations, Duration.ofSeconds(3));
         CountDownLatch callersFinished = new CountDownLatch(2);
         AtomicReference<OwnedSyncHttpClient.Result> firstResult = new AtomicReference<>();
@@ -1158,13 +1371,13 @@ class OwnedSyncHttpClientIntegrationTest {
         AtomicLong secondElapsed = new AtomicLong();
         Thread firstCaller = Thread.ofPlatform().start(() -> {
             long callStarted = System.nanoTime();
-            firstResult.set(transport.get(Endpoint.fixtures(), 1));
+            firstResult.set(firstTransport.get(Endpoint.fixtures(), 1));
             firstElapsed.set(System.nanoTime() - callStarted);
             callersFinished.countDown();
         });
         Thread secondCaller = Thread.ofPlatform().start(() -> {
             long callStarted = System.nanoTime();
-            secondResult.set(transport.get(Endpoint.fixtures(), 1));
+            secondResult.set(secondTransport.get(Endpoint.fixtures(), 1));
             secondElapsed.set(System.nanoTime() - callStarted);
             callersFinished.countDown();
         });
@@ -1185,7 +1398,7 @@ class OwnedSyncHttpClientIntegrationTest {
             assertThat(blockedDataSource.maximumConcurrentAcquisitions()).isEqualTo(2);
 
             long saturationStarted = System.nanoTime();
-            DeferredResult saturated = (DeferredResult) transport.get(Endpoint.fixtures(), 1);
+            DeferredResult saturated = (DeferredResult) secondTransport.get(Endpoint.fixtures(), 1);
             assertThat(System.nanoTime() - saturationStarted).isLessThan(Duration.ofMillis(300).toNanos());
             assertThat(saturated.reason()).isEqualTo(DeferredReason.DB_OPERATIONS_SATURATED);
             assertThat(getCalls).hasValue(0);
@@ -1197,7 +1410,10 @@ class OwnedSyncHttpClientIntegrationTest {
             assertThat(secondCaller.isAlive()).isFalse();
             assertThat(awaitDbWorkersIdle(operations, Duration.ofSeconds(2))).isTrue();
             assertThat(getCalls).hasValue(0);
-            closeTransportAndAssertDbWorkers(transport, operations);
+            firstTransport.close();
+            secondTransport.close();
+            operations.close();
+            assertThat(supervisedDbWorkers(operations).awaitTermination(1, TimeUnit.SECONDS)).isTrue();
         }
     }
 
@@ -1520,6 +1736,18 @@ class OwnedSyncHttpClientIntegrationTest {
         transport.close();
         operations.close();
         assertThat(supervisedDbWorkers(operations).awaitTermination(1, TimeUnit.SECONDS)).isTrue();
+    }
+
+    private static boolean awaitTurnQueueWait(Thread thread, Duration timeout) {
+        long deadline = System.nanoTime() + timeout.toNanos();
+        while (System.nanoTime() < deadline) {
+            boolean inQueue = thread.getState() == Thread.State.TIMED_WAITING
+                    && java.util.Arrays.stream(thread.getStackTrace())
+                    .anyMatch(frame -> frame.getMethodName().equals("joinTurn"));
+            if (inQueue) return true;
+            LockSupport.parkNanos(Duration.ofMillis(2).toNanos());
+        }
+        return false;
     }
 
     private static boolean awaitExecutorIdle(ThreadPoolExecutor executor, Duration timeout) {
