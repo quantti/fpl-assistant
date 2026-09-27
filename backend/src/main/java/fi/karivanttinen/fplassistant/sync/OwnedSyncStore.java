@@ -71,6 +71,42 @@ public final class OwnedSyncStore {
         return enqueue(kind, season, coalescingKey, publicationKey, dueAt, true);
     }
 
+    /** Ensures a fixture dependency has history at least as new as its canonical fixture read. */
+    public Run ensurePlayerHistoryAtLeast(String season, int playerId, Instant historyFloor) {
+        String validSeason = bounded("season", season, 10);
+        String key = HistoryFixtureDispatcher.playerHistoryPublicationKey(playerId);
+        Objects.requireNonNull(historyFloor);
+        return tx.execute(status -> {
+            assertRuntimeFence(validSeason);
+            Instant enqueuedAt = now();
+            jdbc.update("INSERT INTO %s(season, publication_key) VALUES (?, ?) ON CONFLICT DO NOTHING"
+                    .formatted(tables.receipt()), validSeason, key);
+            try {
+                return jdbc.queryForObject("""
+                    INSERT INTO %s(kind, season, coalescing_key, publication_key, priority,
+                                   due_at, requested_source_after, runtime_mode, runtime_epoch,
+                                   created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT (kind, season, coalescing_key)
+                        WHERE state IN ('PENDING', 'LEASED')
+                    DO UPDATE SET due_at = LEAST(%s.due_at, EXCLUDED.due_at),
+                                  requested_source_after = GREATEST(
+                                      %s.requested_source_after, EXCLUDED.requested_source_after),
+                                  updated_at = EXCLUDED.updated_at
+                    WHERE %s.publication_key = EXCLUDED.publication_key
+                    RETURNING generation, kind, season, coalescing_key, publication_key,
+                              due_at, state, attempt_count
+                    """.formatted(tables.run(), tables.run(), tables.run(), tables.run()), this::run,
+                        SyncKind.PLAYER_HISTORY.name(), validSeason, key, key,
+                        SyncKind.PLAYER_HISTORY.priority, timestamp(historyFloor), timestamp(historyFloor),
+                        runtimeMode(), runtimeEpoch(), timestamp(enqueuedAt), timestamp(enqueuedAt));
+            } catch (EmptyResultDataAccessException e) {
+                throw new IllegalArgumentException(
+                        "Active coalescing key is already bound to a different publicationKey");
+            }
+        });
+    }
+
     /** Keeps checkpoint source floors intact when merely reflecting an already durable retry. */
     public Run enqueuePreservingActiveDemand(SyncKind kind, String season, String coalescingKey,
                                              String publicationKey, Instant dueAt) {

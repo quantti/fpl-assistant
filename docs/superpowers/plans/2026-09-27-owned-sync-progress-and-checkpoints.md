@@ -1,6 +1,6 @@
 # Owned sync — bounded history progress and canonical checkpoint reads
 
-**PROGRESS:** KAR-72 transport fault-evidence cases added and passed; ready-selection/progress remains pending. Implementation 0/2 units. No production activation.
+**PROGRESS:** KAR-72 manifest, source-floor and transport fault tests pass; readiness/selection progress remains pending. Implementation 0/2 units. No production activation.
 
 Follow-up to KAR-71. Evidence: [STAGING retest PR #137](https://github.com/quantti/fpl-assistant/pull/137)
 and [`OWNED-SYNC-EGRESS-REPORT.md`](../../OWNED-SYNC-EGRESS-REPORT.md). The latest verified safe
@@ -248,9 +248,13 @@ write is now implemented with the exact same-run VALID bootstrap/fixtures/live p
 source floor and 1–80 sorted unique required players, inside the leased run's retry transaction.
 It does not make claims ready by itself. Focused store and dispatcher integration tests (59 total)
 pass against disposable Postgres, including stale demand, rollback and a lost history hydration.
-Next prove metadata-only readiness matches the dispatcher's hydration rules, then compare
-selection policies on the unchanged two-worker driver; fair HTTP admission and DB fault tests
-remain independent blockers. Neither claim-selection nor a production rollout is approved by
+Fixture-only history notifications now ensure each history job's requested source floor is at
+least the fixture response floor, without promoting an unchanged requirement to the current
+notification time. A genuinely newer requirement still advances the floor; direct/planner demand
+keeps its old semantics. Focused store/dispatcher tests pass (including repeated notices and
+leased jobs). Next prove metadata-only readiness matches the dispatcher's hydration rules, then
+compare selection policies on the unchanged two-worker driver; fair HTTP admission and remaining
+DB fault tests remain independent blockers. Neither claim-selection nor a production rollout is approved by
 these passing manifest tests alone.
 
 Serialized unfinished requests also make a simple admission-only FIFO insufficient. A second

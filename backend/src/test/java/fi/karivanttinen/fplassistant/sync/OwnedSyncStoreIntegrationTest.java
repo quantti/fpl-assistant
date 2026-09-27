@@ -123,6 +123,106 @@ class OwnedSyncStoreIntegrationTest {
     }
 
     @Test
+    void ensurePlayerHistoryAtLeastKeepsExactFloorAndPreservesAnActiveLease() {
+        Instant firstFloor = clock.instant().minusSeconds(60);
+        Run first = store.ensurePlayerHistoryAtLeast("2097-98", 71, firstFloor);
+        Lease lease = store.acquire("history-worker", Duration.ofMinutes(20)).orElseThrow();
+        assertThat(lease.generation()).isEqualTo(first.generation());
+        Instant firstDue = jdbc.queryForObject("SELECT due_at FROM " + TABLES.run()
+                + " WHERE generation=?", java.sql.Timestamp.class, first.generation()).toInstant();
+
+        clock.advance(Duration.ofMinutes(10));
+        Run repeated = store.ensurePlayerHistoryAtLeast("2097-98", 71, firstFloor);
+
+        assertThat(repeated.generation()).isEqualTo(first.generation());
+        assertThat(store.requestedSourceAfter(lease)).isEqualTo(firstFloor);
+        assertThat(jdbc.queryForObject("SELECT due_at FROM " + TABLES.run()
+                + " WHERE generation=?", java.sql.Timestamp.class, first.generation()).toInstant())
+                .isEqualTo(firstDue);
+
+        Instant newerFixtureFloor = firstFloor.plusSeconds(30);
+        store.ensurePlayerHistoryAtLeast("2097-98", 71, newerFixtureFloor);
+        assertThat(store.requestedSourceAfter(lease)).isEqualTo(newerFixtureFloor);
+        assertThat(jdbc.queryForObject("SELECT due_at <= requested_source_after FROM " + TABLES.run()
+                + " WHERE generation=?", Boolean.class, first.generation())).isTrue();
+        assertThat(jdbc.queryForObject("SELECT due_at FROM " + TABLES.run()
+                + " WHERE generation=?", java.sql.Timestamp.class, first.generation()).toInstant())
+                .isEqualTo(firstDue);
+        assertThat(jdbc.queryForObject("SELECT state || ':' || lease_owner || ':' || lease_token::text || ':' || lease_fence "
+                + "FROM " + TABLES.run() + " WHERE generation=?", String.class, first.generation()))
+                .isEqualTo("LEASED:history-worker:" + lease.token() + ":" + lease.fence());
+
+        store.ensurePlayerHistoryAtLeast("2097-98", 71, firstFloor.minusSeconds(30));
+        assertThat(store.requestedSourceAfter(lease)).isEqualTo(newerFixtureFloor);
+    }
+
+    @Test
+    void concurrentHistoryNotificationsKeepTheMaximumFloorOnOneLeasedRun() throws Exception {
+        Instant initialFloor = clock.instant().minusSeconds(60);
+        Run run = store.ensurePlayerHistoryAtLeast("2097-98", 72, initialFloor);
+        Lease lease = store.acquire("history-worker", Duration.ofMinutes(5)).orElseThrow();
+        assertThat(lease.generation()).isEqualTo(run.generation());
+        Instant firstFloor = initialFloor.plusSeconds(10);
+        Instant secondFloor = initialFloor.plusSeconds(20);
+        CountDownLatch start = new CountDownLatch(1);
+
+        try (var executor = Executors.newFixedThreadPool(2)) {
+            Future<Run> first = executor.submit(() -> {
+                start.await();
+                return store.ensurePlayerHistoryAtLeast("2097-98", 72, firstFloor);
+            });
+            Future<Run> second = executor.submit(() -> {
+                start.await();
+                return store.ensurePlayerHistoryAtLeast("2097-98", 72, secondFloor);
+            });
+            start.countDown();
+
+            assertThat(first.get().generation()).isEqualTo(run.generation());
+            assertThat(second.get().generation()).isEqualTo(run.generation());
+        }
+
+        assertThat(store.requestedSourceAfter(lease)).isEqualTo(secondFloor);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
+                + " WHERE kind='PLAYER_HISTORY' AND season='2097-98' AND coalescing_key='player-history:72' "
+                + "AND state IN ('PENDING', 'LEASED')", Integer.class)).isOne();
+    }
+
+    @Test
+    void ensurePlayerHistoryAtLeastCreatesANewGenerationAfterCompletion() {
+        Instant floor = clock.instant().minusSeconds(60);
+        Run completed = store.ensurePlayerHistoryAtLeast("2097-98", 73, floor);
+        Lease lease = store.acquire("history-worker", Duration.ofMinutes(5)).orElseThrow();
+        SourceRead read = read();
+        store.completeStaged(lease, read, List.of(read));
+
+        Instant requiredFloor = floor.plusSeconds(10);
+        Run next = store.ensurePlayerHistoryAtLeast("2097-98", 73, requiredFloor);
+
+        assertThat(next.generation()).isGreaterThan(completed.generation());
+        assertThat(next.state()).isEqualTo(OwnedSyncStore.RunState.PENDING);
+        assertThat(jdbc.queryForObject("SELECT requested_source_after FROM " + TABLES.run()
+                + " WHERE generation=?", java.sql.Timestamp.class, next.generation()).toInstant())
+                .isEqualTo(requiredFloor);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.receipt()
+                + " WHERE season='2097-98' AND publication_key='player-history:73'", Integer.class)).isOne();
+    }
+
+    @Test
+    void ensurePlayerHistoryAtLeastRejectsAReplacedRuntimeEpoch() {
+        OwnedSyncStore fenced = fencedStore();
+        Instant floor = clock.instant().minusSeconds(30);
+        fenced.ensurePlayerHistoryAtLeast("2097-98", 74, floor);
+        new PlannerRuntimeRepository(jdbc, tx, clock, TABLES).activate("2097-98", OwnedSyncMode.STAGING);
+
+        assertThatThrownBy(() -> fenced.ensurePlayerHistoryAtLeast("2097-98", 75, floor))
+                .isInstanceOf(RuntimeFenceLostException.class);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.receipt()
+                + " WHERE season='2097-98' AND publication_key='player-history:75'", Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
+                + " WHERE season='2097-98' AND coalescing_key='player-history:75'", Integer.class)).isZero();
+    }
+
+    @Test
     void fixtureDependencySchemaIsOwnedConstrainedAndIdempotent() {
         new OwnedSyncSchema(jdbc, TABLES).initialize();
 

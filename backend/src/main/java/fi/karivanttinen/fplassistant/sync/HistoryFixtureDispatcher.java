@@ -250,7 +250,7 @@ public final class HistoryFixtureDispatcher {
             Optional<StagedPayloadMetadata> evidence = store.latestValidPayloadMetadata(season.code(),
                     Endpoint.elementSummary(playerId), historyFloor);
             if (evidence.isEmpty()) {
-                enqueuePlayerHistory(season, playerId, historyFloor);
+                store.ensurePlayerHistoryAtLeast(season.code(), playerId, historyFloor);
             } else {
                 historyCheckpoints.put(playerId, evidence.get());
             }
@@ -268,7 +268,7 @@ public final class HistoryFixtureDispatcher {
         }
         if (histories.size() != players.size()) {
             players.stream().filter(playerId -> !histories.containsKey(playerId))
-                    .forEach(playerId -> enqueuePlayerHistory(season, playerId, historyFloor));
+                    .forEach(playerId -> store.ensurePlayerHistoryAtLeast(season.code(), playerId, historyFloor));
             waitForHistories(lease, pair, fixture, livePayload, players);
         }
 

@@ -86,8 +86,9 @@ unverified. Scheduling still cannot
 meet the ready-continuation bound from current run metadata: older blocked retries are
 indistinguishable from a newly ready one without a durable dependency manifest. The owner
 approved the narrow new owned table. Manifest persistence and both wait paths now have focused
-integration coverage; read-side readiness, admission fairness and failure-path/progress targets
-remain open. Production remains OFF. KAR-73 remains separate.
+integration coverage. Fixture-only history notifications now preserve an unchanged source
+floor instead of advancing it to notification time; focused store/dispatcher tests pass. Read-side
+readiness, admission fairness and failure-path/progress targets remain open. Production remains OFF. KAR-73 remains separate.
 KAR-70's unavailable provider API is not a dependency. No production scheduling or setting
 changed. Latest verified containment is OFF epoch 67; the retest evidence is in PR #137.
 

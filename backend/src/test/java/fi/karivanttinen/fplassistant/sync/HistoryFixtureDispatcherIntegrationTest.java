@@ -401,6 +401,93 @@ class HistoryFixtureDispatcherIntegrationTest {
     }
 
     @Test
+    void repeatedMissingHistoryNotificationsDoNotAdvanceTheFixtureSourceFloor() {
+        HistoryFixtureDispatcher staged = new HistoryFixtureDispatcher(store, null, fetch, clock, false);
+        var run = staged.enqueueFixtureVerification(SEASON, 21, clock.instant());
+        Lease fixtureLease = acquire(run.generation());
+        fetch.results.add(ok(bootstrap));
+        fetch.results.add(ok(fixtures));
+        clock.advance(Duration.ofMillis(1));
+        fetch.results.add(ok(liveThree));
+
+        assertThat(staged.process(fixtureLease, SEASON).outcome()).isEqualTo(Outcome.WAITING_FOR_HISTORIES);
+        Instant historyFloor = jdbc.queryForObject("SELECT read_finished_at FROM " + TABLES.payload()
+                + " WHERE run_generation=? AND endpoint_kind='FIXTURES'", java.sql.Timestamp.class,
+                run.generation()).toInstant().plusMillis(1);
+        List<HistoryJob> jobs = historyJobs();
+        assertThat(jobs).isNotEmpty();
+        assertThat(jdbc.query("SELECT requested_source_after FROM " + TABLES.run()
+                        + " WHERE kind='PLAYER_HISTORY' ORDER BY generation",
+                (rs, row) -> rs.getTimestamp(1).toInstant())).containsOnly(historyFloor);
+        HistoryJob leasedJob = jobs.getFirst();
+
+        clock.advance(Duration.ofMinutes(2));
+        Lease resumedFixture = acquire(run.generation());
+        assertThat(resumedFixture.generation()).isEqualTo(run.generation());
+        String leaseIdentity = jdbc.queryForObject("SELECT lease_owner || ':' || lease_token::text || ':' || lease_fence "
+                + "FROM " + TABLES.run() + " WHERE generation=?", String.class, leasedJob.generation());
+        assertThat(leaseIdentity).isNotBlank();
+        int historyRuns = jobs.size();
+
+        assertThat(staged.process(resumedFixture, SEASON).outcome()).isEqualTo(Outcome.WAITING_FOR_HISTORIES);
+
+        assertThat(historyJobs()).containsExactlyElementsOf(jobs);
+        assertThat(jdbc.query("SELECT requested_source_after FROM " + TABLES.run()
+                        + " WHERE kind='PLAYER_HISTORY' ORDER BY generation",
+                (rs, row) -> rs.getTimestamp(1).toInstant())).containsOnly(historyFloor);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
+                + " WHERE kind='PLAYER_HISTORY'", Integer.class)).isEqualTo(historyRuns);
+        assertThat(jdbc.queryForObject("SELECT lease_owner || ':' || lease_token::text || ':' || lease_fence "
+                + "FROM " + TABLES.run() + " WHERE generation=?", String.class, leasedJob.generation()))
+                .isEqualTo(leaseIdentity);
+        assertThat(fetch.endpoints).containsExactly(Endpoint.bootstrap(), Endpoint.fixtures(), Endpoint.eventLive(3));
+    }
+
+    @Test
+    void unchangedHistoryFloorWithValidEvidenceDoesNotCreateAnotherHistoryRequest() {
+        HistoryFixtureDispatcher staged = new HistoryFixtureDispatcher(store, null, fetch, clock, false);
+        var run = staged.enqueueFixtureVerification(SEASON, 21, clock.instant());
+        Lease fixtureLease = acquire(run.generation());
+        fetch.results.add(ok(bootstrap));
+        fetch.results.add(ok(fixtures));
+        clock.advance(Duration.ofMillis(1));
+        fetch.results.add(ok(liveThree));
+
+        assertThat(staged.process(fixtureLease, SEASON).outcome()).isEqualTo(Outcome.WAITING_FOR_HISTORIES);
+        Instant historyFloor = jdbc.queryForObject("SELECT read_finished_at FROM " + TABLES.payload()
+                + " WHERE run_generation=? AND endpoint_kind='FIXTURES'", java.sql.Timestamp.class,
+                run.generation()).toInstant().plusMillis(1);
+        List<HistoryJob> jobs = historyJobs();
+        int initialHistoryRuns = jobs.size();
+
+        for (HistoryJob job : jobs) {
+            Lease historyLease = acquire(job.generation());
+            SourceRead historyRead = readNow();
+            store.stage(historyLease, Endpoint.elementSummary(job.playerId()), historyRead,
+                    Validation.valid(), historyOne);
+            store.publish(historyLease, historyRead, () -> null);
+        }
+        assertThat(jdbc.query("SELECT requested_source_after FROM " + TABLES.run()
+                        + " WHERE kind='PLAYER_HISTORY' ORDER BY generation",
+                (rs, row) -> rs.getTimestamp(1).toInstant())).containsOnly(historyFloor);
+
+        clock.advance(Duration.ofMinutes(2));
+        Lease resumedFixture = acquire(run.generation());
+        fetch.results.add(ok(bootstrap));
+        fetch.results.add(ok(fixtures));
+
+        assertThat(staged.process(resumedFixture, SEASON).outcome()).isEqualTo(Outcome.STAGED);
+
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
+                + " WHERE kind='PLAYER_HISTORY'", Integer.class)).isEqualTo(initialHistoryRuns);
+        assertThat(jdbc.query("SELECT state FROM " + TABLES.run()
+                        + " WHERE kind='PLAYER_HISTORY' ORDER BY generation",
+                (rs, row) -> rs.getString(1))).containsOnly("COMPLETED");
+        assertThat(fetch.endpoints).containsExactly(Endpoint.bootstrap(), Endpoint.fixtures(), Endpoint.eventLive(3),
+                Endpoint.bootstrap(), Endpoint.fixtures());
+    }
+
+    @Test
     void budgetDeferralKeepsCheckpointAndRetriesAtBudgetDueWithoutFailedVerificationLadder() {
         jdbc.update("INSERT INTO " + TABLES.fixtureSync()
                         + "(season_id, season_code, fixture_id, state, updated_at)"
@@ -830,6 +917,7 @@ class HistoryFixtureDispatcherIntegrationTest {
     }
 
     private record HttpFetchRequest(Lease lease, Endpoint endpoint, Instant sourceFloor) { }
+    private record HistoryJob(long generation, int playerId) { }
 
     private final class Loopback implements AutoCloseable {
         private final HttpServer server;
@@ -860,6 +948,13 @@ class HistoryFixtureDispatcherIntegrationTest {
 
     private int payloadCount() {
         return jdbc.queryForObject("SELECT count(*) FROM " + TABLES.payload(), Integer.class);
+    }
+
+    private List<HistoryJob> historyJobs() {
+        return jdbc.query("SELECT generation, publication_key FROM " + TABLES.run()
+                        + " WHERE kind='PLAYER_HISTORY' ORDER BY generation",
+                (rs, row) -> new HistoryJob(rs.getLong("generation"), Integer.parseInt(
+                        rs.getString("publication_key").substring("player-history:".length()))));
     }
 
     private static byte[] departedZeroMinuteLive() throws Exception {
