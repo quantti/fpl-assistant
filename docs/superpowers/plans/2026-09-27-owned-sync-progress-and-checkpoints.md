@@ -1,6 +1,6 @@
 # Owned sync — bounded history progress and canonical checkpoint reads
 
-**PROGRESS:** KAR-72 manifest persistence tested; transport fault tests and ready-selection/progress still pending. Implementation 0/2 units. No production activation.
+**PROGRESS:** KAR-72 transport fault-evidence cases added and passed; ready-selection/progress remains pending. Implementation 0/2 units. No production activation.
 
 Follow-up to KAR-71. Evidence: [STAGING retest PR #137](https://github.com/quantti/fpl-assistant/pull/137)
 and [`OWNED-SYNC-EGRESS-REPORT.md`](../../OWNED-SYNC-EGRESS-REPORT.md). The latest verified safe
@@ -207,9 +207,21 @@ unacknowledged-cancellation path: a completed-but-TTL-held attempt does not bloc
 and cannot protect a late Retry-After; leave it unresolved instead. Caller fencing and eliminating
 the extra out-of-deadline `nextAdmissionHint()` query belong in that transport unit. The owner
 approved fixed-capacity DB supervision; a candidate 180-second bounded-return transport and both
-dispatcher fences have focused local coverage, but fault-injected commit/rollback/connection-close,
-work-pool saturation and already-started late-429 cases still need proof. Neither a 180-second
-production guarantee nor a scheduling policy is accepted yet.
+dispatcher fences have focused local coverage; commit-ack ambiguity, two-worker saturation and
+already-started late-429 cases now have focused evidence, while rollback/connection-close faults
+remain untested. Neither a 180-second production guarantee nor a scheduling policy is accepted yet.
+
+**Transport fault-evidence follow-up (2026-09-27):** `OwnedSyncHttpClientIntegrationTest` adds
+four disposable-Postgres/loopback cases: a post-COMMIT admission acknowledgement loss that times
+out, sends no late GET and remains blocking beyond permit TTL; a post-COMMIT settlement
+acknowledgement loss after `429 Retry-After: 7200`, where cooldown persists but the caller receives
+`SETTLEMENT_UNCERTAIN`; blocked connection acquisition exhausting both zero-queue DB workers while
+callers return and no late GET follows release; and a started/cancelled exchange that later consumes
+a loopback 429 while its permit remains unresolved. The final focused run passed all 37 class tests
+(0 failures, 71.73 seconds wall; JUnit class time 26.953 seconds). The four added test-case times
+were 0.398, 0.470, 0.364 and 4.452 seconds respectively. The injected DB caller waits were 150–200
+ms; asserted caller-return ceilings were 2–2.5 seconds, with saturation rejected within 300 ms.
+These are controlled fault observations, not a 180-second end-to-end guarantee. Real rollback / connection-close stalls, a genuinely exhausted production-style pool, JVM scheduling pressure and the full method-entry envelope remain untested; no production, scheduling or manifest code changed.
 
 **Scheduling checkpoint — further owner decision needed:** current run/payload *metadata* cannot
 say whether a matured two-minute fixture retry has all its particular histories. That required

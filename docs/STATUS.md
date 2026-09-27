@@ -77,8 +77,12 @@ reconciliation when an outcome is unknown. The budget guard now retains unresolv
 blocks admission across expiry/restart; its 11 focused tests passed on the disposable DB. This
 is a prerequisite, not a completed transport/scheduling fix: the baseline still fails. The
 owner approved fixed-capacity DB supervision; a candidate bounded-return transport, atomic
-settlement, conservative response pacing and both dispatchers' HTTP fences now have focused
-local tests, but work-pool/commit fault evidence remains incomplete. Scheduling still cannot
+settlement, conservative response pacing and both dispatchers' HTTP fences have focused local
+tests. KAR-72 now additionally covers post-COMMIT admission/settlement acknowledgement loss,
+blocked connection acquisition on two zero-queue DB workers, and an unacknowledged exchange that
+later observes a loopback 429. These controlled cases do not establish the candidate 180-second
+return bound; rollback/connection-cleanup faults and the numeric end-to-end envelope remain
+unverified. Scheduling still cannot
 meet the ready-continuation bound from current run metadata: older blocked retries are
 indistinguishable from a newly ready one without a durable dependency manifest. The owner
 approved the narrow new owned table. Manifest persistence and both wait paths now have focused
