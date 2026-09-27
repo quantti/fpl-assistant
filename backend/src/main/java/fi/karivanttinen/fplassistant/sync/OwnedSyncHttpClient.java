@@ -72,6 +72,13 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
                 requestTimeout, Clock.systemUTC(), true);
     }
 
+    /** Package-private clock seam for deterministic loopback transport tests. */
+    OwnedSyncHttpClient(OwnedSyncRequestBudget budget, URI loopbackBase, Duration requestTimeout,
+                        Clock clock) {
+        this(budget, testClient(loopbackBase), newExchangeExecutor(), loopbackBase,
+                requestTimeout, clock, true);
+    }
+
     /** Package-private cancellation seam for a worker that does not acknowledge abort. */
     OwnedSyncHttpClient(OwnedSyncRequestBudget budget, URI loopbackBase, Duration requestTimeout,
                         ExecutorService exchanges) {

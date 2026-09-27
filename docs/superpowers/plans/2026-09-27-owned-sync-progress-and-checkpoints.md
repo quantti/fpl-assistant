@@ -1,6 +1,6 @@
 # Owned sync — bounded history progress and canonical checkpoint reads
 
-**PROGRESS:** Plan reviewed; implementation 0/2 units. Ready for KAR-72's bounded reproduction only; the scheduling policy/deadline checkpoint still precedes runtime implementation. No production activation.
+**PROGRESS:** KAR-72 baseline reproduced; policy/deadline checkpoint blocked pending design approval. Implementation 0/2 units. No production activation.
 
 Follow-up to KAR-71. Evidence: [STAGING retest PR #137](https://github.com/quantti/fpl-assistant/pull/137)
 and [`OWNED-SYNC-EGRESS-REPORT.md`](../../OWNED-SYNC-EGRESS-REPORT.md). The latest verified safe
@@ -99,6 +99,47 @@ policy, a numerical end-to-end invocation/cleanup budget and the resulting timin
 The proposed two-second wait is not approved merely by writing it into this plan. If a durable
 scheduling protocol or broader deadline/pool redesign is needed, stop and revise the plan before
 implementation. Do not raise test bounds to hide failure.
+
+### KAR-72 checkpoint — reproduction complete; production policy not approved (2026-09-27)
+
+`OwnedMatchdayAdmissionProgressIntegrationTest` uses fenced store/coordinator/dispatchers,
+real budget and loopback HTTP, a driver-controlled clock, two completion-relative workers,
+100 ms responses and a separate wall watchdog. It seeds a valid canonical pair, 49 priority-1
+fixtures, one dependency-waiting fixture, ten partial bootstrap checkpoints and 68 histories.
+With unchanged runtime selection/admission, both arrival orders failed the first-history target
+at 60 virtual seconds. In the latest focused run the first order made 112 dispatches,
+56 admitted/server-observed GETs, 108 deferrals, zero history GETs/completions and reached
+37 **new** partial pairs at peak. The reverse order made 112 dispatches, 56 GETs, 109
+deferrals, zero history GETs/completions and peaked at 38 new partial pairs. The cold-parent case fetched bootstrap, then fixtures on the same parent's
+bounded retry after spacing. These are synthetic local observations, not traffic or source
+billing estimates. The baseline driver advances virtual time only at observed response
+releases or worker completion-plus-one-second boundaries; it does **not yet** drive a future
+FIFO spacing wait. Before comparing policies, add an explicit wait-state acknowledgement and
+use the same event schedule before/after. Do not advance the clock on a quiet-period guess.
+This deliberately failing test is **not** a green implementation or a production SLA.
+
+**Design blocker:** neither worker preference nor due-class rotation is selected yet. Rotation
+(history → ready continuation → history → untouched fixture, with due canonical work first) is
+worth comparing with worker preference, but classifying a *ready* continuation over older
+blocked dependency retries without body reads remains unproven. More importantly, no numerical
+method-entry-to-**durable-settlement** deadline can be justified from the present transport and
+work-pool settings. A 30-second transaction timeout is not a preemptive wall deadline for pool
+acquisition, commit, rollback and connection cleanup. Even an illustrative envelope of 2 seconds
+queueing + four DB operations of 2 seconds pool / 30 seconds transaction + 30 seconds HTTP +
+1 second cancellation is 161 seconds before terminal I/O allowance; a spacing retry or further
+fence checks enlarge it. This is **not** an approved bound: a timeout/interrupt can make synchronous
+`budget.complete()` fail, leaving a permit live until its durable two-minute expiry. Permit
+expiry does **not** reconstruct a lost Retry-After cooldown. Presently interruption is restored
+before `complete()`, increasing that risk under pool contention. A bounded *attempt* to settle
+is not the same as a guaranteed settled permit. `nextAdmissionHint()`
+in the dispatcher is another out-of-deadline DB call.
+
+Per §1a, stop before production scheduling changes. Design approval must decide whether an
+unsettled permit with expiry/containment is acceptable on DB failure, or require a stronger
+persistence/deadline design. Then select/test a numerical deadline inclusive of pool, lock,
+socket, cancellation and settlement; define lease/epoch/source-floor checks at the dispatcher
+handoff; compare the two scheduling policies against all §1c targets using the same driver.
+Do not weaken the acceptance bounds or enable STAGING/ACTIVE to bypass this checkpoint.
 
 ### 1b. Proposed minimal mechanism
 

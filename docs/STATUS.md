@@ -53,13 +53,16 @@ Measurements, limitations and UTC timeline: [`OWNED-SYNC-EGRESS-REPORT.md`](OWNE
 ## Owned sync — reviewed progress/checkpoint plan (2026-09-27)
 
 Plan: [`2026-09-27-owned-sync-progress-and-checkpoints.md`](superpowers/plans/2026-09-27-owned-sync-progress-and-checkpoints.md).
-Implementation is 0/2 units: KAR-72 first reproduces real two-worker HTTP admission and bounded
-history/fixture progress; KAR-73 then makes canonical own-checkpoint selection metadata-first.
-The scheduling mechanism and a numerical end-to-end deadline remain a mandatory design checkpoint
-after the failing reproduction, not decisions already validated by the plan. Two review passes
-resolved timing, queue-progress, test-cadence and checkpoint-semantics gaps. KAR-70's unavailable
-provider API is not a dependency. No runtime code or production setting changed. Latest verified
-containment is OFF epoch 67; the retest evidence is in PR #137.
+Implementation is 0/2 units: KAR-72's disposable-DB/loopback two-worker reproduction now fails
+as expected in both arrival orders (zero history GETs/completions in 60 virtual seconds, 56
+admitted GETs and 37–38 peak new partial pairs in the latest run). Its cold-parent probe
+fetches both prerequisites across a bounded retry.
+The checkpoint is **blocked** before production scheduling: the test is deliberately red, and
+neither a policy nor a numerical method-entry-to-durable-settlement deadline is approved. Current
+work-pool/transaction timeouts do not guarantee synchronous permit settlement after an interrupt
+or DB failure; the plan records the evidence and decision needed. KAR-73 remains separate.
+KAR-70's unavailable provider API is not a dependency. No production scheduling or setting
+changed. Latest verified containment is OFF epoch 67; the retest evidence is in PR #137.
 
 ## Temporary Supabase maintenance (2026-09-23)
 
