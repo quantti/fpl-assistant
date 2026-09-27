@@ -26,12 +26,16 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Future;
+import java.util.concurrent.FutureTask;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import com.fasterxml.jackson.databind.JsonNode;
@@ -55,6 +59,9 @@ import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.Lease;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.RuntimeFence;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.SourceRead;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.SyncKind;
+import fi.karivanttinen.fplassistant.sync.OwnedSyncHttpClient.WaitKind;
+import fi.karivanttinen.fplassistant.sync.OwnedSyncHttpClient.WaitObservation;
+import fi.karivanttinen.fplassistant.sync.OwnedSyncHttpClient.WaitPhase;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.Validation;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.ValidationState;
 import fi.karivanttinen.fplassistant.testsupport.TapasSeed;
@@ -124,19 +131,27 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                         + "firstHistoryCompleteSeconds=%s distinctCompletedPlayers=%s historiesWithin60=%d "
                         + "stagedFixtures=%d claims=%d deferrals=%d admitted=%d gets=%s "
                         + "payloadRows=%d stagedRawBytes=%d returnedGets=%d returnedRawBytes=%d "
-                        + "newPartialBootstraps=%d peakNewPartialPairs=%d dispatches=%d virtualSeconds=%.3f%n",
+                        + "newPartialBootstraps=%d peakNewPartialPairs=%d dispatches=%d predecessorWaits=%d "
+                        + "spacingWaits=%d virtualSeconds=%.3f%n",
                 metrics.firstWorker(), metrics.firstAdmissionWorker(), offset(metrics.firstHistoryGet()),
                 offset(metrics.firstHistoryCompleted()), metrics.completedPlayerIds(),
                 metrics.historiesWithin60(), metrics.stagedFixtures(), metrics.claims(),
                 metrics.deferrals(), metrics.admittedAttempts(),
                 metrics.getsByEndpoint(), metrics.payloadRows(), metrics.stagedRawBytes(),
                 metrics.returnedGets(), metrics.returnedRawBytes(), metrics.newPartialBootstraps(),
-                metrics.peakNewPartialPairs(), metrics.dispatches(), metrics.virtualSeconds()));
+                metrics.peakNewPartialPairs(), metrics.dispatches(), metrics.predecessorWaits(),
+                metrics.spacingWaits(), metrics.virtualSeconds()));
 
         assertThat(baselines).hasSize(2).allSatisfy(metrics -> {
             assertThat(metrics.firstAdmissionWorker()).isEqualTo(metrics.firstWorker());
             assertThat(metrics.virtualSeconds()).isLessThanOrEqualTo(VIRTUAL_LIMIT.toNanos() / 1e9);
             assertThat(metrics.dispatches()).isLessThanOrEqualTo(DISPATCH_LIMIT);
+            assertThat(metrics.predecessorWaits())
+                    .as("the mixed backlog must observe a real queued FIFO wait")
+                    .isGreaterThan(0);
+            assertThat(metrics.spacingWaits())
+                    .as("the mixed backlog must observe a real minimum-spacing wait")
+                    .isGreaterThan(0);
             assertThat(metrics.firstHistoryCompleted())
                     .as("a valid history must complete within 15 virtual seconds")
                     .isNotNull()
@@ -240,7 +255,8 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                            int admittedAttempts,
                            Map<EndpointKind, Integer> getsByEndpoint, int payloadRows, long stagedRawBytes,
                            int returnedGets, long returnedRawBytes, int newPartialBootstraps,
-                           int peakNewPartialPairs, int dispatches, double virtualSeconds) { }
+                           int peakNewPartialPairs, int dispatches, int predecessorWaits,
+                           int spacingWaits, double virtualSeconds) { }
 
     private record ColdParentEvidence(int historyClaims, int parentClaims,
                                       Map<EndpointKind, Integer> getsByEndpoint,
@@ -268,6 +284,8 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
         private final PlannerRuntimeRepository activation;
         private final OwnedSyncStore store;
         private final OwnedSyncRequestBudget budget;
+        private final OwnedSyncDbOperations dbOperations;
+        private final AtomicLong turnNanoTime = new AtomicLong(System.nanoTime());
         private final RequestServer server;
         private final OwnedSyncHttpClient http;
         private final OwnedMatchdayCoordinator coordinator;
@@ -289,8 +307,10 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
             fence = activation.activate(SEASON.code(), OwnedSyncMode.STAGING);
             store = new OwnedSyncStore(jdbc, tx, clock, TABLES, fence);
             budget = new OwnedSyncRequestBudget(jdbc, tx, clock, TABLES);
+            dbOperations = new OwnedSyncDbOperations();
             server = new RequestServer(source, clock);
-            http = new OwnedSyncHttpClient(budget, server.baseUri(), Duration.ofSeconds(30), clock);
+            http = new OwnedSyncHttpClient(budget, server.baseUri(), Duration.ofSeconds(30), clock,
+                    dbOperations, Duration.ofSeconds(180), turnNanoTime::get);
             var catalogue = CatalogueScheduleDispatcher.staging(store, http, clock);
             var histories = HistoryFixtureDispatcher.staging(store, http, clock);
             PlannerRuntimeRepository runtime = new PlannerRuntimeRepository(jdbc, tx, clock, TABLES, fence);
@@ -369,6 +389,7 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
 
         Metrics driveMixedBacklog() throws Exception {
             ManualDriver driver = new ManualDriver(this);
+            http.setWaitObserverForTests(driver::observeWait);
             driver.run();
             return metrics(driver);
         }
@@ -410,6 +431,7 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                     jdbc.queryForObject("SELECT count(*) FROM " + TABLES.requestAttempt(), Integer.class),
                     server.getsByEndpoint(), payloadRows, stagedBytes, server.returnedGets(),
                     server.returnedRawBytes(), partials, driver.peakNewPartialPairs, driver.dispatches,
+                    driver.predecessorWaits.get(), driver.spacingWaits.get(),
                     Duration.between(START, end).toNanos() / 1e9);
         }
 
@@ -479,7 +501,10 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
         }
 
         private void closeClient() {
-            if (clientClosed.compareAndSet(false, true)) http.close();
+            if (clientClosed.compareAndSet(false, true)) {
+                http.close();
+                dbOperations.close();
+            }
         }
 
         void stopDispatchWorkers() throws InterruptedException {
@@ -531,8 +556,15 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
         private final Harness harness;
         private final Instant stopAt = START.plus(VIRTUAL_LIMIT);
         private final Instant[] nextAt = { START, START };
-        private final Map<Integer, PendingDispatch> active = new LinkedHashMap<>();
-        private final List<ScheduledResponse> responses = new ArrayList<>();
+        private final Map<Integer, DispatchState> active = new LinkedHashMap<>();
+        private final Map<Thread, DispatchState> dispatchByThread = new ConcurrentHashMap<>();
+        private final List<ControlledResponse> responses = new ArrayList<>();
+        private final List<RequestArrival> unassignedArrivals = new ArrayList<>();
+        private final AtomicReference<String> observerFailure = new AtomicReference<>();
+        private final AtomicInteger predecessorWaits = new AtomicInteger();
+        private final AtomicInteger predecessorResumes = new AtomicInteger();
+        private final AtomicInteger spacingWaits = new AtomicInteger();
+        private final AtomicInteger spacingResumes = new AtomicInteger();
         private int nextTieWorker;
         private int dispatches;
         private int claims;
@@ -547,31 +579,40 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
 
         void run() throws Exception {
             setToScheduledStart(harness.firstWorker);
-            PendingDispatch first = start(harness.firstWorker);
-            active.put(first.worker(), first);
-            RequestArrival firstArrival = awaitFirstArrival(first);
-            schedule(firstArrival);
-            observeAdmission(harness.firstWorker);
+            DispatchState first = start(harness.firstWorker);
+            unassignedArrivals.add(awaitFirstArrival(first));
 
             int secondWorker = 3 - harness.firstWorker;
             if (dispatches < DISPATCH_LIMIT && !nextAt[secondWorker - 1].isAfter(harness.clock.instant())) {
-                PendingDispatch second = start(secondWorker);
-                active.put(second.worker(), second);
+                start(secondWorker);
                 nextTieWorker = harness.firstWorker;
             }
 
             while (true) {
                 harness.remainingWallNanos();
+                if (observerFailure.get() != null) {
+                    throw new IllegalStateException(observerFailure.get());
+                }
                 drainArrivals();
+                assignPendingResponses();
                 releaseDueResponses();
                 collectCompleted();
+                assignPendingResponses();
                 samplePartialPairs();
                 harness.captureDeferrals(this);
                 if (harness.clock.instant().isBefore(stopAt)) startReadyWorkers();
 
                 if (active.isEmpty() && (!hasActiveRuns() || dispatches >= DISPATCH_LIMIT)) break;
-                if (!harness.clock.instant().isBefore(stopAt) && active.isEmpty()) break;
+                if (!harness.clock.instant().isBefore(stopAt)) {
+                    if (active.isEmpty()) break;
+                    quiesceAtCutoff();
+                    break;
+                }
 
+                if (!activeStatesAcknowledged()) {
+                    waitForEvent();
+                    continue;
+                }
                 Event next = nextEvent();
                 if (next == null) {
                     waitForEvent();
@@ -579,60 +620,94 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                 }
                 if (next.at().isAfter(stopAt)) {
                     if (active.isEmpty()) {
-                        harness.clock.set(stopAt);
-                    } else {
-                        quiesceAtCutoff();
-                        break;
+                        advanceTo(stopAt);
+                        continue;
                     }
-                    continue;
+                    quiesceAtCutoff();
+                    break;
                 }
-                if (!active.isEmpty() && next.kind() != EventKind.RESPONSE) {
-                    throw new IllegalStateException("driver cannot yet verify FIFO: active worker "
-                            + "has no observed response release");
-                }
-                if (next.at().isAfter(harness.clock.instant())) harness.clock.set(next.at());
+                if (next.at().isAfter(harness.clock.instant())) advanceTo(next.at());
             }
             samplePartialPairs();
             if (!active.isEmpty()) {
                 throw new IllegalStateException("driver cannot yet verify FIFO: workers remain active at snapshot");
             }
+            assertWaitObservationsBalanced();
         }
 
-        private RequestArrival awaitFirstArrival(PendingDispatch dispatch) throws Exception {
+        private RequestArrival awaitFirstArrival(DispatchState dispatch) throws Exception {
             while (true) {
                 RequestArrival arrival = harness.server.pollArrival(
                         Math.min(POLL_NANOS, harness.remainingWallNanos()), TimeUnit.NANOSECONDS);
                 if (arrival != null) return arrival;
-                if (dispatch.future().isDone()) {
-                    dispatch.future().get();
+                if (dispatch.future.isDone()) {
+                    dispatch.future.get();
                     throw new AssertionError("first worker completed without a server-observed GET");
                 }
             }
         }
 
-        private void drainArrivals() throws Exception {
-            RequestArrival arrival;
-            while ((arrival = harness.server.pollArrival(0, TimeUnit.MILLISECONDS)) != null) schedule(arrival);
+        private void observeWait(WaitObservation observation) {
+            DispatchState dispatch = dispatchByThread.get(observation.thread());
+            if (dispatch == null || dispatch.thread != observation.thread()) {
+                observerFailure.compareAndSet(null, "wait observer thread is not linked to an active dispatch");
+                return;
+            }
+            dispatch.observe(observation, observerFailure);
+            if (observation.phase() == WaitPhase.START && observerFailure.get() == null) {
+                if (observation.kind() == WaitKind.PREDECESSOR) predecessorWaits.incrementAndGet();
+                else spacingWaits.incrementAndGet();
+            } else if (observation.phase() == WaitPhase.RESUME && observerFailure.get() == null) {
+                if (observation.kind() == WaitKind.PREDECESSOR) predecessorResumes.incrementAndGet();
+                else spacingResumes.incrementAndGet();
+            }
         }
 
-        private void schedule(RequestArrival arrival) {
-            responses.add(new ScheduledResponse(arrival, arrival.at().plus(RESPONSE_TIME)));
+        private void drainArrivals() throws Exception {
+            RequestArrival arrival;
+            while ((arrival = harness.server.pollArrival(0, TimeUnit.MILLISECONDS)) != null) {
+                unassignedArrivals.add(arrival);
+            }
+        }
+
+        private void assignPendingResponses() {
+            for (RequestArrival arrival : List.copyOf(unassignedArrivals)) {
+                List<DispatchState> candidates = active.values().stream()
+                        .filter(dispatch -> !dispatch.future.isDone())
+                        .filter(dispatch -> dispatch.acknowledgedWait == null && dispatch.pendingResponse == null)
+                        .toList();
+                if (candidates.size() != 1) continue;
+                DispatchState owner = candidates.getFirst();
+                ControlledResponse response = new ControlledResponse(owner, arrival,
+                        arrival.at().plus(RESPONSE_TIME));
+                owner.pendingResponse = response;
+                responses.add(response);
+                unassignedArrivals.remove(arrival);
+                if (firstAdmissionWorker == 0) firstAdmissionWorker = owner.worker;
+            }
         }
 
         private void releaseDueResponses() {
             Instant now = harness.clock.instant();
-            for (ScheduledResponse response : List.copyOf(responses)) {
-                if (!response.releaseAt().isAfter(now)) {
-                    response.arrival().release().countDown();
+            for (ControlledResponse response : List.copyOf(responses)) {
+                if (!response.releaseAt.isAfter(now)) {
+                    response.owner.pendingResponse = null;
+                    response.arrival.release().countDown();
                     responses.remove(response);
                 }
             }
         }
 
         private void collectCompleted() throws Exception {
-            for (PendingDispatch dispatch : List.copyOf(active.values())) {
-                if (!dispatch.future().isDone()) continue;
-                DispatchCompletion result = dispatch.future().get();
+            for (DispatchState dispatch : List.copyOf(active.values())) {
+                if (!dispatch.future.isDone()) continue;
+                DispatchCompletion result = dispatch.future.get();
+                if (dispatch.pendingResponse != null) {
+                    throw new IllegalStateException("dispatch completed before its controlled response release: worker="
+                            + dispatch.worker + " endpoint=" + dispatch.pendingResponse.arrival.kind()
+                            + " releaseAt=" + dispatch.pendingResponse.releaseAt
+                            + " now=" + harness.clock.instant());
+                }
                 if (result.claimed()) claims++;
                 nextAt[result.worker() - 1] = result.completedAt().plus(WORKER_DELAY);
                 active.remove(result.worker());
@@ -643,8 +718,7 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
             while (dispatches < DISPATCH_LIMIT && hasActiveRuns()) {
                 int worker = readyWorker();
                 if (worker == 0) return;
-                PendingDispatch dispatch = start(worker);
-                active.put(worker, dispatch);
+                start(worker);
                 nextTieWorker = 3 - worker;
             }
         }
@@ -661,15 +735,33 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
             return ready.contains(nextTieWorker) ? nextTieWorker : ready.getFirst();
         }
 
+        private boolean activeStatesAcknowledged() {
+            if (observerFailure.get() != null) return false;
+            for (DispatchState dispatch : active.values()) {
+                if (dispatch.future.isDone() || dispatch.acknowledgedWait != null) continue;
+                if (dispatch.pendingResponse != null) continue;
+                return false;
+            }
+            return true;
+        }
+
         private Event nextEvent() {
             Event next = null;
-            for (ScheduledResponse response : responses) {
-                next = earlier(next, new Event(response.releaseAt(), EventKind.RESPONSE));
+            Instant now = harness.clock.instant();
+            for (ControlledResponse response : responses) {
+                next = earlier(next, new Event(response.releaseAt, EventKind.RESPONSE));
             }
-            if (!active.isEmpty()) return next;
-            if (dispatches < DISPATCH_LIMIT) {
+            for (DispatchState dispatch : active.values()) {
+                WaitState wait = dispatch.acknowledgedWait;
+                if (wait != null && wait.kind == WaitKind.SPACING && wait.nextDue.isAfter(now)) {
+                    next = earlier(next, new Event(wait.nextDue, EventKind.SPACING));
+                }
+            }
+            if (dispatches < DISPATCH_LIMIT && hasActiveRuns()) {
                 for (int worker : List.of(1, 2)) {
-                    next = earlier(next, new Event(nextAt[worker - 1], EventKind.WORKER_START));
+                    if (!active.containsKey(worker)) {
+                        next = earlier(next, new Event(nextAt[worker - 1], EventKind.WORKER_START));
+                    }
                 }
             }
             return next;
@@ -682,13 +774,14 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
         private void waitForEvent() throws Exception {
             RequestArrival arrival = harness.server.pollArrival(
                     Math.min(POLL_NANOS, harness.remainingWallNanos()), TimeUnit.NANOSECONDS);
-            if (arrival != null) schedule(arrival);
+            if (arrival != null) unassignedArrivals.add(arrival);
         }
 
         private void quiesceAtCutoff() throws InterruptedException {
             harness.stopDispatchWorkers();
             active.clear();
             responses.clear();
+            unassignedArrivals.clear();
         }
 
         private void samplePartialPairs() {
@@ -702,28 +795,105 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
 
         private void setToScheduledStart(int worker) {
             Instant due = nextAt[worker - 1];
-            if (due.isAfter(harness.clock.instant())) harness.clock.set(due);
+            if (due.isAfter(harness.clock.instant())) advanceTo(due);
         }
 
-        private PendingDispatch start(int worker) {
+        private void advanceTo(Instant instant) {
+            Instant current = harness.clock.instant();
+            if (!instant.isAfter(current)) return;
+            if (!activeStatesAcknowledged()) {
+                throw new IllegalStateException("driver cannot advance without an acknowledged wait, "
+                        + "controlled response release or completed dispatch for every active worker");
+            }
+            if (instant.isAfter(stopAt)) throw new IllegalStateException("virtual time ceiling exceeded");
+            harness.clock.set(instant);
+            harness.turnNanoTime.addAndGet(Duration.between(current, instant).toNanos());
+            harness.http.clockAdvancedForTests();
+        }
+
+        private DispatchState start(int worker) {
             if (dispatches >= DISPATCH_LIMIT) throw new IllegalStateException("dispatch ceiling exceeded");
+            if (active.containsKey(worker)) throw new IllegalStateException("worker already has an active dispatch");
+            DispatchState dispatch = new DispatchState(worker);
+            active.put(worker, dispatch);
             dispatches++;
-            Future<DispatchCompletion> future = harness.dispatchWorkers.submit(() -> {
-                boolean claimed = harness.coordinator.dispatchOne(Integer.toString(worker));
-                return new DispatchCompletion(worker, claimed, harness.clock.instant());
+            FutureTask<DispatchCompletion> task = new FutureTask<>(() -> {
+                Thread current = Thread.currentThread();
+                dispatch.thread = current;
+                if (dispatchByThread.putIfAbsent(current, dispatch) != null) {
+                    throw new IllegalStateException("dispatch worker thread was already linked");
+                }
+                try {
+                    boolean claimed = harness.coordinator.dispatchOne(Integer.toString(worker));
+                    return new DispatchCompletion(worker, claimed, harness.clock.instant());
+                } finally {
+                    dispatchByThread.remove(current, dispatch);
+                }
             });
-            return new PendingDispatch(worker, future);
+            dispatch.future = task;
+            harness.dispatchWorkers.execute(task);
+            return dispatch;
         }
 
-        private void observeAdmission(int worker) {
-            if (firstAdmissionWorker == 0) firstAdmissionWorker = worker;
+        private void assertWaitObservationsBalanced() {
+            assertThat(observerFailure.get()).as("wait observer must link each park to its dispatch").isNull();
+            assertThat(predecessorResumes).as("FIFO wait START/RESUME tokens must pair")
+                    .hasValue(predecessorWaits.get());
+            assertThat(spacingResumes).as("spacing wait START/RESUME tokens must pair")
+                    .hasValue(spacingWaits.get());
+            assertThat(dispatchByThread).as("completed dispatch threads must be unlinked").isEmpty();
         }
 
-        private enum EventKind { RESPONSE, WORKER_START }
+        private enum EventKind { RESPONSE, SPACING, WORKER_START }
 
         private record Event(Instant at, EventKind kind) { }
 
-        private record PendingDispatch(int worker, Future<DispatchCompletion> future) { }
+        private record WaitState(WaitKind kind, Instant nextDue, long token) { }
+
+        private static final class ControlledResponse {
+            private final DispatchState owner;
+            private final RequestArrival arrival;
+            private final Instant releaseAt;
+            ControlledResponse(DispatchState owner, RequestArrival arrival, Instant releaseAt) {
+                this.owner = owner;
+                this.arrival = arrival;
+                this.releaseAt = releaseAt;
+            }
+        }
+
+        private static final class DispatchState {
+            private final int worker;
+            private volatile Thread thread;
+            private volatile Future<DispatchCompletion> future;
+            private volatile WaitState acknowledgedWait;
+            private ControlledResponse pendingResponse;
+
+            DispatchState(int worker) {
+                this.worker = worker;
+            }
+
+            synchronized void observe(WaitObservation observation, AtomicReference<String> failure) {
+                WaitState current = acknowledgedWait;
+                if (observation.phase() == WaitPhase.START) {
+                    if (current != null) {
+                        failure.compareAndSet(null, "a dispatch started a new wait before resuming its prior token");
+                        acknowledgedWait = null;
+                    } else {
+                        acknowledgedWait = new WaitState(observation.kind(), observation.nextDue(),
+                                observation.token());
+                    }
+                    return;
+                }
+                if (current == null || current.token != observation.token()
+                        || current.kind != observation.kind()
+                        || !java.util.Objects.equals(current.nextDue, observation.nextDue())) {
+                    failure.compareAndSet(null, "wait RESUME did not match its START generation token");
+                    acknowledgedWait = null;
+                    return;
+                }
+                acknowledgedWait = null;
+            }
+        }
     }
 
     private static final class RequestServer implements AutoCloseable {

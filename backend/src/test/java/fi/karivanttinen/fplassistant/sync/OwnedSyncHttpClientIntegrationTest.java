@@ -38,6 +38,9 @@ import fi.karivanttinen.fplassistant.sync.OwnedSyncHttpClient.DeferredResult;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncHttpClient.Failure;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncHttpClient.FailureKind;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncHttpClient.Response;
+import fi.karivanttinen.fplassistant.sync.OwnedSyncHttpClient.WaitKind;
+import fi.karivanttinen.fplassistant.sync.OwnedSyncHttpClient.WaitObservation;
+import fi.karivanttinen.fplassistant.sync.OwnedSyncHttpClient.WaitPhase;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncDbOperations.Outcome;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncRequestBudget.DeferredReason;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.Endpoint;
@@ -521,6 +524,155 @@ class OwnedSyncHttpClientIntegrationTest {
                 releaseFirst.countDown();
                 joinAndAssertStopped(firstCaller, secondCaller);
             }
+        }
+    }
+
+    @Test
+    @Timeout(value = 10, unit = TimeUnit.SECONDS)
+    void reportsFifoAndSpacingParkPairsAndResumesAtVirtualDue() throws Exception {
+        List<WaitObservation> waits = new CopyOnWriteArrayList<>();
+        CountDownLatch firstRequest = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        CountDownLatch predecessorStarted = new CountDownLatch(1);
+        CountDownLatch spacingStarted = new CountDownLatch(1);
+        CountDownLatch secondRequest = new CountDownLatch(1);
+        AtomicInteger requests = new AtomicInteger();
+        HttpServer server = server(exchange -> {
+            if (requests.getAndIncrement() == 0) {
+                firstRequest.countDown();
+                awaitIgnoringInterrupts(releaseFirst);
+            } else {
+                secondRequest.countDown();
+            }
+            respond(exchange, 200, new byte[0]);
+        });
+        URI base = URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/api/");
+        AtomicLong virtualTurnNanos = new AtomicLong(System.nanoTime());
+        OwnedSyncDbOperations operations = new OwnedSyncDbOperations();
+        OwnedSyncHttpClient transport = new OwnedSyncHttpClient(budget, base, Duration.ofSeconds(3),
+                budgetClock, operations, Duration.ofSeconds(180), virtualTurnNanos::get);
+        transport.setWaitObserverForTests(wait -> {
+            waits.add(wait);
+            if (wait.phase() != WaitPhase.START) return;
+            if (wait.kind() == WaitKind.PREDECESSOR) predecessorStarted.countDown();
+            if (wait.kind() == WaitKind.SPACING) spacingStarted.countDown();
+        });
+        AtomicReference<OwnedSyncHttpClient.Result> firstResult = new AtomicReference<>();
+        AtomicReference<OwnedSyncHttpClient.Result> followerResult = new AtomicReference<>();
+        Thread firstCaller = Thread.ofPlatform().start(
+                () -> firstResult.set(transport.get(Endpoint.fixtures(), 1)));
+        Thread follower = null;
+        try {
+            assertThat(firstRequest.await(2, TimeUnit.SECONDS)).isTrue();
+            follower = Thread.ofPlatform().start(
+                    () -> followerResult.set(transport.get(Endpoint.bootstrap(), 1)));
+            assertThat(predecessorStarted.await(2, TimeUnit.SECONDS)).isTrue();
+
+            releaseFirst.countDown();
+            firstCaller.join(5_000);
+            assertThat(firstCaller.isAlive()).isFalse();
+            assertThat(spacingStarted.await(2, TimeUnit.SECONDS)).isTrue();
+            Instant exactDue = budgetClock.instant().plusSeconds(1);
+            assertThat(waits.get(2).nextDue()).isEqualTo(exactDue);
+
+            budgetClock.advance(Duration.ofSeconds(1));
+            virtualTurnNanos.addAndGet(Duration.ofSeconds(1).toNanos());
+            transport.clockAdvancedForTests();
+            assertThat(secondRequest.await(2, TimeUnit.SECONDS)).isTrue();
+            joinAndAssertStopped(follower);
+
+            assertThat(firstResult.get()).isInstanceOf(Response.class);
+            assertThat(followerResult.get()).isInstanceOf(Response.class);
+            assertThat(requests).hasValue(2);
+            assertThat(waits).extracting(WaitObservation::phase)
+                    .containsExactly(WaitPhase.START, WaitPhase.RESUME, WaitPhase.START, WaitPhase.RESUME);
+            assertThat(waits).extracting(WaitObservation::kind)
+                    .containsExactly(WaitKind.PREDECESSOR, WaitKind.PREDECESSOR,
+                            WaitKind.SPACING, WaitKind.SPACING);
+            assertThat(waits.get(0).thread()).isSameAs(follower);
+            assertThat(waits.get(1).thread()).isSameAs(follower);
+            assertThat(waits.get(0).token()).isEqualTo(waits.get(1).token());
+            assertThat(waits.get(2).thread()).isSameAs(follower);
+            assertThat(waits.get(3).thread()).isSameAs(follower);
+            assertThat(waits.get(2).token()).isEqualTo(waits.get(3).token())
+                    .isNotEqualTo(waits.get(0).token());
+            assertThat(waits.get(0).nextDue()).isNull();
+            assertThat(waits.get(2).nextDue()).isEqualTo(exactDue);
+            assertThat(waits.get(3).nextDue()).isEqualTo(exactDue);
+        } finally {
+            releaseFirst.countDown();
+            transport.stopSending();
+            joinAndAssertStopped(firstCaller, follower);
+            transport.close();
+            operations.close();
+        }
+    }
+
+    @Test
+    @Timeout(value = 10, unit = TimeUnit.SECONDS)
+    void closingDuringSpacingResumesWaiterWithoutAnotherGet() throws Exception {
+        List<WaitObservation> waits = new CopyOnWriteArrayList<>();
+        CountDownLatch firstRequest = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        CountDownLatch predecessorStarted = new CountDownLatch(1);
+        CountDownLatch spacingStarted = new CountDownLatch(1);
+        AtomicInteger requests = new AtomicInteger();
+        HttpServer server = server(exchange -> {
+            requests.incrementAndGet();
+            firstRequest.countDown();
+            awaitIgnoringInterrupts(releaseFirst);
+            respond(exchange, 200, new byte[0]);
+        });
+        URI base = URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/api/");
+        AtomicLong virtualTurnNanos = new AtomicLong(System.nanoTime());
+        OwnedSyncDbOperations operations = new OwnedSyncDbOperations();
+        OwnedSyncHttpClient transport = new OwnedSyncHttpClient(budget, base, Duration.ofSeconds(3),
+                budgetClock, operations, Duration.ofSeconds(180), virtualTurnNanos::get);
+        transport.setWaitObserverForTests(wait -> {
+            waits.add(wait);
+            if (wait.phase() == WaitPhase.START && wait.kind() == WaitKind.PREDECESSOR) {
+                predecessorStarted.countDown();
+            }
+            if (wait.phase() == WaitPhase.START && wait.kind() == WaitKind.SPACING) {
+                spacingStarted.countDown();
+            }
+        });
+        AtomicReference<OwnedSyncHttpClient.Result> firstResult = new AtomicReference<>();
+        AtomicReference<OwnedSyncHttpClient.Result> followerResult = new AtomicReference<>();
+        Thread firstCaller = Thread.ofPlatform().start(
+                () -> firstResult.set(transport.get(Endpoint.fixtures(), 1)));
+        Thread follower = null;
+        try {
+            assertThat(firstRequest.await(2, TimeUnit.SECONDS)).isTrue();
+            follower = Thread.ofPlatform().start(
+                    () -> followerResult.set(transport.get(Endpoint.bootstrap(), 1)));
+            assertThat(predecessorStarted.await(2, TimeUnit.SECONDS)).isTrue();
+
+            releaseFirst.countDown();
+            firstCaller.join(5_000);
+            assertThat(firstCaller.isAlive()).isFalse();
+            assertThat(spacingStarted.await(2, TimeUnit.SECONDS)).isTrue();
+            Instant exactDue = waits.getLast().nextDue();
+            transport.close();
+            joinAndAssertStopped(follower);
+
+            assertThat(firstResult.get()).isInstanceOf(Response.class);
+            assertThat(followerResult.get()).isInstanceOfSatisfying(DeferredResult.class,
+                    deferred -> assertThat(deferred.reason()).isEqualTo(DeferredReason.HTTP_CLIENT_CLOSED));
+            assertThat(requests).hasValue(1);
+            assertThat(waits).extracting(WaitObservation::phase)
+                    .containsExactly(WaitPhase.START, WaitPhase.RESUME, WaitPhase.START, WaitPhase.RESUME);
+            assertThat(waits).extracting(WaitObservation::kind)
+                    .containsExactly(WaitKind.PREDECESSOR, WaitKind.PREDECESSOR,
+                            WaitKind.SPACING, WaitKind.SPACING);
+            assertThat(waits.get(2).nextDue()).isEqualTo(exactDue);
+            assertThat(waits.get(3).nextDue()).isEqualTo(exactDue);
+        } finally {
+            releaseFirst.countDown();
+            transport.stopSending();
+            joinAndAssertStopped(firstCaller, follower);
+            transport.close();
+            operations.close();
         }
     }
 

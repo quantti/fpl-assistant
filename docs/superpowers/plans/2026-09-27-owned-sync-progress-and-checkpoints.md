@@ -1,6 +1,6 @@
 # Owned sync — bounded history progress and canonical checkpoint reads
 
-**PROGRESS:** KAR-72 durable readiness and bounded fair claim selection are implemented and focused-tested; HTTP admission/progress and remaining faults pending. Implementation 0/2 complete units. No production activation.
+**PROGRESS:** KAR-72 observed-wait FIFO driver meets 60-second history/partial targets; ready fixture/drain and remaining faults pending. Implementation 0/2 complete units. No production activation.
 
 Follow-up to KAR-71. Evidence: [STAGING retest PR #137](https://github.com/quantti/fpl-assistant/pull/137)
 and [`OWNED-SYNC-EGRESS-REPORT.md`](../../OWNED-SYNC-EGRESS-REPORT.md). The latest verified safe
@@ -280,6 +280,25 @@ fixture and observed 3/5 newly outstanding partial bootstrap pairs in the two ar
 those broader fixture/partial-pair targets remain open. This unit makes no HTTP/FIFO change and is
 not a complete Unit 1 result or production SLA.
 
+**Observed-wait FIFO checkpoint:** a two-ticket client-local turn now spans confirmed durable
+settlement. A follower waits within one three-second grace for the local predecessor, then only for
+the budget's `MINIMUM_SPACING` due and retries durable admission once; unknown results still refuse
+and block. All phase deadlines share method entry (180s overall, 73s preparation, 3s grace; up to
+35s per supervised DB operation). The loopback-only wait seam acknowledges each predecessor and
+spacing park/resume token so the manual driver can advance its injected clock only at observed
+response, wait or completion boundaries. Both arrival orders with the same 100 ms controlled
+responses and one-second completion-relative dispatch cadence now complete the first valid
+history at 1.2 virtual seconds and 30 distinct histories within 60 seconds, with zero new partial
+bootstrap pairs at the end and one at peak. Fifty-five GETs were observed (30 histories); 125
+predecessor and 55 spacing parks were observed in each order. No fixture STAGED during that short
+run; it is **not** ready-continuation or finite-drain evidence. Local FIFO is not cross-instance
+fairness, and the 180-second caller-return envelope is still a candidate pending rollback,
+connection-close, real pool exhaustion and slow-JVM fault tests. A review caught an expired-ticket
+promotion race; the committed guard and a focused loopback regression cover it. The FIFO loopback
+and budget classes had 57 passing tests before that guard; after the guard, the four touched fault
+cases and the separate grace regression passed in focused reruns. One broader HTTP-class run was
+red before final fixture fixes; do not call the whole class green yet.
+
 Serialized unfinished requests also make a simple admission-only FIFO insufficient. A second
 caller first sees `UNSETTLED` even for a healthy 100 ms predecessor; its 30-second recheck hint
 would miss the 15-second history target. A fair turn must wait *boundedly* for a known local
@@ -461,8 +480,10 @@ pair-level metadata rejection was underspecified; and canonical latest-row/parse
 could be confused with the fixture dispatcher. All five are addressed above. A second independent
 review found no remaining blocker to the bounded local reproduction.
 
-The two-second FIFO wait and worker preferences remain candidate designs, not approved runtime
-behavior. Unit 1's reproducer must establish the failure, then its policy/deadline checkpoint
-selects and reviews a feasible mechanism before production scheduling code changes. No test was
+The original two-second admission-only wait and worker-preference proposal were superseded by
+the fenced manifest, epoch-shared claim rotation and three-second turn-through-settlement FIFO
+above. Neither isolated claim bounds nor the passing 60-second history sample proves the ready
+fixture or finite-drain targets; complete the remaining fault and progress checkpoints before a
+PR or production activation. No test was
 run against Supabase, no runtime implementation was made, and no production setting changed during
 planning/review. KAR-70 is not a dependency; operational acceptance remains a separate permission.

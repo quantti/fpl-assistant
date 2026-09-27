@@ -77,7 +77,9 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
     private static final Duration SETTLEMENT_SAFETY_MARGIN = Duration.ofSeconds(1);
     private static final Duration PERMIT_SAFETY_MARGIN = Duration.ofMillis(1);
     private static final Duration CANCELLATION_ACK_TIMEOUT = Duration.ofSeconds(1);
+    private static final long CLOCK_RECHECK_NANOS = TimeUnit.MILLISECONDS.toNanos(100);
     private static final int MAX_RETRY_AFTER_CHARS = 1_024;
+    private static final WaitObserver NOOP_WAIT_OBSERVER = observation -> { };
 
     private final OwnedSyncRequestBudget budget;
     private final OwnedSyncDbOperations dbOperations;
@@ -94,6 +96,8 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
     private final Object sendGate = new Object();
     private final Object turnGate = new Object();
     private final java.util.ArrayDeque<TurnTicket> turns = new java.util.ArrayDeque<>();
+    private WaitObserver waitObserver = NOOP_WAIT_OBSERVER;
+    private long waitTokenSequence;
     private boolean closing;
     private boolean turnClosed;
     private boolean unsafeTurnChain;
@@ -193,9 +197,11 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
 
     private Result getInternal(Endpoint endpoint, int failureAttempt, Supplier<HttpFenceResult> fence) {
         long methodEntryNanos = System.nanoTime();
+        long turnEntryNanos = loopbackTest ? turnNanoTime.getAsLong() : methodEntryNanos;
         OwnedSyncDeadline methodDeadline = OwnedSyncDeadline.after(methodTimeout, methodEntryNanos);
         OwnedSyncDeadline preparationDeadline = methodDeadline.cappedBy(PREPARATION_DEADLINE, methodEntryNanos);
-        OwnedSyncDeadline graceDeadline = methodDeadline.cappedBy(TURN_GRACE, methodEntryNanos);
+        Duration turnGrace = methodTimeout.compareTo(TURN_GRACE) < 0 ? methodTimeout : TURN_GRACE;
+        OwnedSyncDeadline graceDeadline = OwnedSyncDeadline.after(turnGrace, turnEntryNanos);
         TurnJoin joined = joinTurn(graceDeadline);
         if (joined.failure != null) return turnJoinFailure(joined.failure);
 
@@ -619,6 +625,23 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
         return new DeferredResult(clock.instant().plus(recheck), reason);
     }
 
+    /** Installs an in-memory-only observer for loopback tests; callbacks run under {@code turnGate}. */
+    void setWaitObserverForTests(WaitObserver observer) {
+        if (!loopbackTest) throw new IllegalStateException("Wait observation is loopback-test only");
+        synchronized (turnGate) {
+            if (!turns.isEmpty()) throw new IllegalStateException("Cannot change observer during a turn");
+            waitObserver = Objects.requireNonNull(observer);
+        }
+    }
+
+    /** Wakes loopback-test waiters after advancing their injected clock. */
+    void clockAdvancedForTests() {
+        if (!loopbackTest) throw new IllegalStateException("Clock wakeup is loopback-test only");
+        synchronized (turnGate) {
+            turnGate.notifyAll();
+        }
+    }
+
     private DeferredResult locallyClosed() {
         return databaseDeferral(DeferredReason.HTTP_CLIENT_CLOSED);
     }
@@ -667,7 +690,7 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
                     break;
                 }
                 try {
-                    waitOn(turnGate, remaining);
+                    parkForTurn(remaining, WaitKind.PREDECESSOR, null);
                 } catch (InterruptedException interrupted) {
                     turns.remove(ticket);
                     turnGate.notifyAll();
@@ -705,18 +728,21 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
                     result = SpacingWait.INTERRUPTED;
                     break;
                 }
-                long graceRemaining = graceDeadline.remainingNanos();
+                long graceRemaining = graceDeadline.remainingNanos(turnNanoTime.getAsLong());
                 if (graceRemaining == 0) {
                     result = SpacingWait.EXPIRED;
                     break;
                 }
-                long dueRemaining = dueDeadline.remainingNanos();
-                if (dueRemaining == 0) {
+                if (!clock.instant().isBefore(nextDue)) {
                     result = SpacingWait.READY;
                     break;
                 }
+                long dueRemaining = dueDeadline.remainingNanos();
+                long waitNanos = dueRemaining == 0
+                        ? Math.min(graceRemaining, CLOCK_RECHECK_NANOS)
+                        : Math.min(graceRemaining, dueRemaining);
                 try {
-                    waitOn(turnGate, Math.min(graceRemaining, dueRemaining));
+                    parkForTurn(waitNanos, WaitKind.SPACING, nextDue);
                 } catch (InterruptedException interrupted) {
                     restoreInterrupt = true;
                     result = SpacingWait.INTERRUPTED;
@@ -726,6 +752,18 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
         }
         if (restoreInterrupt) Thread.currentThread().interrupt();
         return result;
+    }
+
+    /** Caller holds {@code turnGate}, making each park pair ordered with turn changes. */
+    private void parkForTurn(long nanos, WaitKind kind, Instant nextDue) throws InterruptedException {
+        long token = ++waitTokenSequence;
+        Thread thread = Thread.currentThread();
+        waitObserver.onWait(new WaitObservation(WaitPhase.START, kind, nextDue, thread, token));
+        try {
+            waitOn(turnGate, nanos);
+        } finally {
+            waitObserver.onWait(new WaitObservation(WaitPhase.RESUME, kind, nextDue, thread, token));
+        }
     }
 
     private void releaseTurn(TurnTicket ticket, boolean safeToHandover) {
@@ -1050,6 +1088,22 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
             this.waited = waited;
         }
     }
+
+    enum WaitPhase { START, RESUME }
+    enum WaitKind { PREDECESSOR, SPACING }
+
+    record WaitObservation(WaitPhase phase, WaitKind kind, Instant nextDue, Thread thread, long token) {
+        WaitObservation {
+            Objects.requireNonNull(phase);
+            Objects.requireNonNull(kind);
+            Objects.requireNonNull(thread);
+            if (kind == WaitKind.SPACING) Objects.requireNonNull(nextDue);
+            else if (nextDue != null) throw new IllegalArgumentException("Predecessor wait has no due instant");
+        }
+    }
+
+    @FunctionalInterface
+    interface WaitObserver { void onWait(WaitObservation observation); }
 
     private enum TurnJoinFailure { CLOSED, FULL, INTERRUPTED, TIMED_OUT }
     private enum SpacingWait { READY, CLOSED, INTERRUPTED, EXPIRED }

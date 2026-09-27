@@ -93,10 +93,13 @@ loading bodies. The fair selector now gives due canonical work priority, then ro
 current-epoch non-canonical attempts through history, ready fixture, blocked fixture and untouched
 fixture classes. Focused disposable-DB tests cover the four-claim/eight-claim selection bounds,
 expired/future-floor work, canonical takeover, competing stores, restart and epoch reset. The
-unchanged two-worker reproduction now completes its first history in 1.2 virtual seconds and 25/33
-histories within 60 seconds, but stages no fixture and peaks at 3/5 new partial pairs in the two
-arrival orders; broader fixture-progress/admission criteria remain open. The fair selector is
-inert while the owned runtime remains OFF; HTTP/FIFO behavior is unchanged. Production remains OFF. KAR-73 remains separate. KAR-70's
+two-worker reproduction with an acknowledged FIFO wait driver now completes its first valid
+history at 1.2 virtual seconds and 30 histories within 60 seconds in both arrival orders;
+55 GETs occurred (30 histories) and at most one new partial bootstrap pair was outstanding.
+The 60-second case still stages no fixture; ready-continuation, full finite drain and the
+180-second fault bound remain unverified. The FIFO holds a local turn through confirmed settlement
+with a three-second entry-anchored grace; unknown attempts still block admission. The fair
+selector and FIFO remain inert while the owned runtime stays OFF. Production remains OFF. KAR-73 remains separate. KAR-70's
 unavailable provider API is not a dependency. Latest verified containment is OFF epoch 67; the
 retest evidence is in PR #137.
 
