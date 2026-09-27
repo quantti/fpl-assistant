@@ -1,6 +1,67 @@
 # Owned sync egress — bounded production observations
 
-**PROGRESS:** The 2026-09-26 STAGING observation reached its conservative 20 MB traffic stop threshold before completing the backlog. Production is verified OFF epoch 65. Sustainable egress remains unverified; this report implements no runtime fix.
+**PROGRESS:** The 2026-09-27 KAR-71 STAGING retest stopped at 15 MB observed DB traffic before completing any history. Production is verified OFF epoch 67. Sustainable egress and GW5 restoration remain unverified; this report implements no runtime fix.
+
+## 2026-09-27 — KAR-71 STAGING retest stopped at the DB threshold
+
+The owner authorized an attended retest with a ten-minute deadline from the mode request, a
+15,000,000-byte observed PostgreSQL TCP RX trigger and a 20,000,000-byte whole-machine RX trigger.
+The already deployed single Fly machine ran `80dba18` (successful master CI/deploy), which
+contains KAR-71's metadata-first history/fixture payload selection. The preceding observation ran
+on `bc5ced7`, before KAR-71. No application image, Tapas configuration or database role changed.
+The owner-provided preflight dashboard showed 0.024 / 5 GB organisation egress and 0.166 / 0.5 GB
+database size; its billing data can lag. The database preflight read OFF epoch 65, zero active
+runs, 706 published receipts, 6,523 evidence rows and 40 VERIFIED fixtures.
+
+The independent rollback supervisor was armed **before** requesting STAGING. The temporary
+read-only Linux socket observer passed its 524,288-byte loopback/cookie/port-filter self-test on
+the deployed Fly image. It sampled DB socket counters once a second; the controller checked the
+latest complete sample and machine traffic approximately every two seconds. The owner remained
+available for Fly-console fallback. The guest-memory floor was 192 MiB, with a 90-second startup
+health grace and fail-closed checks for missing/stale telemetry, changed boot and runtime errors.
+Both traffic thresholds were stop *triggers*, not provider-enforced hard quotas.
+
+| Event (UTC, 27 September) | Result |
+|---|---|
+| Preflight OFF epoch 65 | 03:43:05; zero active runs |
+| Guard armed; STAGING requested | 03:43:06 |
+| New STAGING boot observed | 03:43:18 |
+| DB traffic stop requested | 03:44:13, about 66 seconds after request |
+| Durable OFF epoch 67 and queue fenced | 03:44:17 |
+| OFF environment and public health verified | 03:44:56 |
+| Durable OFF, drained queue and publication baseline verified | 03:45:00 |
+
+At the stop request the observer reported **15,211,025 bytes DB TCP RX** and **17,194,620 bytes
+whole-machine RX**. The last sampled STAGING socket state before replacement was 15,222,242
+DB bytes and 17,205,471 machine bytes, with zero observed DB socket closures and a lowest sampled
+guest available memory above 440 MiB. These counters include startup but not every byte during
+shutdown; DB socket RX includes TCP/TLS/protocol overhead and can miss connections born and closed
+between samples. Neither number is exact Supabase billing or an organisation-wide rate. The machine
+counter includes FPL traffic and diagnostics. The provider dashboard has not yet reported the
+post-test billing amount.
+
+In this epoch **two catalogue/schedule runs completed**, 50 fixture runs were fenced FAILED by
+normal OFF (13 total fixture attempts), and 68 history runs were fenced FAILED with **zero history
+attempts**. No fixture job reached STAGED and no history completed. These shutdown failures are
+not independent source errors. Sixteen payload rows and sixteen request attempts were added.
+`pg_stat_statements`' reset instant did not change. Its selected deltas from before the request
+to after rollback were: ten legacy-shaped own-checkpoint body calls returning three rows, one
+canonical-pair body call returning one pair, zero new single-payload-body returns, and 16 payload
+inserts. The categories describe SQL shapes; they do not identify which body ids crossed the
+wire, and source response size is not billed DB egress. No fan-out history body return was
+observed, but no history job was attempted either, so this run cannot establish whether KAR-71
+reduced that path's transfer under load. It did not produce history progress before the DB stop.
+It cannot be declared a sustainable egress fix from this test.
+
+Postflight SELECTs confirmed OFF epoch 67, zero PENDING/LEASED runs, public health UP, the same
+published-receipt fingerprint and 706 rows, 6,523 evidence rows and 40 VERIFIED fixtures. GW5
+has zero physical PFS rows and ten `VERIFYING` fixture receipts. Tapas core writes stayed disabled,
+STAGING published no core rows, and no ACTIVE mode was requested. The guest diagnostic directory
+did not survive the OFF replacement; private raw logs are held in a mode-0700 local temporary
+directory and are not a persistent monitoring service. Do not use this brief cold-start interval
+as a monthly forecast, repeat it without a reviewed cause/stop budget, or move to ACTIVE to
+manufacture progress. Next: isolate which still-eligible checkpoint/pair bodies account for the
+traffic and why fixture work made no history attempts within the bound.
 
 ## 2026-09-26 — STAGING stopped at the traffic threshold
 

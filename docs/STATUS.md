@@ -1,5 +1,30 @@
 # Status — Phase 1
 
+## Owned sync — KAR-71 STAGING retest (2026-09-27)
+
+An owner-authorized, attended STAGING retest ran on deployed `80dba18`, which includes KAR-71's
+availability-first payload hydration. The 26 September test had run on the earlier `bc5ced7`.
+The independent guard was armed before the mode request; the on-machine read-only socket meter
+passed its 524,288-byte loopback test. The owner-provided preflight dashboard showed 0.024 / 5 GB
+organisation egress and 0.166 / 0.5 GB database size. The test was bounded to ten minutes from
+request, 15 MB observed DB TCP RX or 20 MB whole-machine RX, whichever came first.
+
+The DB stop fired **66 seconds after the request**, at 15.21 MB observed DB RX and 17.19 MB
+whole-machine RX. One last pre-shutdown socket sample recorded 15.22 MB and 17.21 MB respectively;
+these are not exact Supabase billing totals. Two catalogue/schedule jobs completed, but **no player
+history completed and no fixture job staged**: 68 history runs had zero attempts when OFF fenced
+them, and 50 fixture jobs were fenced FAILED on shutdown. `pg_stat_statements` deltas showed ten
+old-style checkpoint-body query calls returning three bodies, one canonical-pair body read, and
+no new single-payload-body returns. The identities of those bodies are not known from these
+counters. This is not evidence of sustainable throughput or a GW5 backfill.
+
+Normal rollback is verified **OFF epoch 67**, zero active queue, public health UP, unchanged
+publication fingerprint (706 published receipts), 6,523 player-evidence rows and 40 VERIFIED
+fixtures. GW5 still has zero physical `player_fixture_stats` rows and ten `VERIFYING` fixtures.
+Tapas core writes remain disabled; no ACTIVE mode or core publication occurred. The next step is
+an investigation of the remaining body transfers and fixture/history admission, not another
+unbounded activation. Evidence and measurement limits: [`OWNED-SYNC-EGRESS-REPORT.md`](OWNED-SYNC-EGRESS-REPORT.md).
+
 ## Owned sync — bounded STAGING egress observation (2026-09-26)
 
 The owner-authorized ten-minute / 20 MB experiment ran on deployed `bc5ced7`, including all three
