@@ -204,6 +204,39 @@ public final class OwnedSyncStore {
         });
     }
 
+    /**
+     * Fences a caller immediately before HTTP without holding a transaction over the request.
+     * The returned expiry is read from the locked durable lease, so a still-current pre-renewal
+     * lease value is accepted; callers must renew separately when needed before network I/O.
+     */
+    public HttpFenceResult httpFence(Lease lease, Endpoint endpoint, Instant endpointFloor) {
+        Objects.requireNonNull(lease);
+        Objects.requireNonNull(endpoint);
+        Objects.requireNonNull(endpointFloor);
+        if (runtimeFence == null) {
+            throw new RuntimeFenceLostException("HTTP fencing requires a configured owned-sync runtime");
+        }
+        validateEndpoint(endpoint);
+        return tx.execute(status -> {
+            LockedRun run = lockAndValidate(lease);
+            if (!lease.season().equals(run.season)
+                    || lease.kind() != run.kind
+                    || !lease.coalescingKey().equals(run.coalescingKey)
+                    || !lease.publicationKey().equals(run.publicationKey)) {
+                throw new LeaseLostException("Lease identity no longer matches generation " + lease.generation());
+            }
+            if (runtimeFence != null && !runtimeFence.season().equals(run.season)) {
+                throw new RuntimeFenceLostException("Run belongs to another configured season");
+            }
+            requireHttpEndpoint(run, endpoint);
+            Instant sourceFloor = effectiveSourceFloor(lease, endpointFloor);
+            Instant checkedAt = now();
+            requireNotExpired(run, checkedAt);
+            if (sourceFloor.isAfter(checkedAt)) return new FutureFloor(sourceFloor);
+            return new Ready(run.expiresAt, sourceFloor);
+        });
+    }
+
     /** Stores arbitrary (including malformed) source bytes, provided the bounded lease is current. */
     public long stage(Lease lease, Endpoint endpoint, SourceRead read, Validation validation, byte[] body) {
         Objects.requireNonNull(endpoint);
@@ -826,6 +859,48 @@ public final class OwnedSyncStore {
         return callerFloor.isAfter(durableFloor) ? callerFloor : durableFloor;
     }
 
+    private static void requireHttpEndpoint(LockedRun run, Endpoint endpoint) {
+        // A fixture publication key holds the fixture id, not the selected event id. The dispatcher
+        // owns that association; validate EVENT_LIVE's positive id without equating those domains.
+        boolean matches = switch (run.kind) {
+            case CATALOGUE_SCHEDULE -> isCatalogueRun(run)
+                    && (endpoint.kind == EndpointKind.BOOTSTRAP_STATIC
+                    || endpoint.kind == EndpointKind.FIXTURES);
+            case FIXTURE_VERIFICATION -> canonicalNumericRunKey(run, "fixture:")
+                    && (endpoint.kind == EndpointKind.BOOTSTRAP_STATIC
+                    || endpoint.kind == EndpointKind.FIXTURES
+                    || endpoint.kind == EndpointKind.EVENT_LIVE);
+            case PLAYER_HISTORY -> canonicalNumericRunKey(run, "player-history:")
+                    && endpoint.kind == EndpointKind.ELEMENT_SUMMARY
+                    && endpoint.playerId == numericRunKeyId(run, "player-history:");
+            case SOURCE_STATUS -> false;
+        };
+        if (!matches) throw new IllegalArgumentException("Endpoint does not match leased run");
+    }
+
+    private static boolean isCatalogueRun(LockedRun run) {
+        boolean catalogue = CatalogueScheduleDispatcher.CATALOGUE_PRICE_COALESCING_KEY.equals(run.coalescingKey)
+                && CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY.equals(run.publicationKey);
+        boolean schedule = CatalogueScheduleDispatcher.SCHEDULE_COALESCING_KEY.equals(run.coalescingKey)
+                && CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY.equals(run.publicationKey);
+        return catalogue || schedule;
+    }
+
+    private static boolean canonicalNumericRunKey(LockedRun run, String prefix) {
+        if (!run.publicationKey.equals(run.coalescingKey)
+                || !run.publicationKey.startsWith(prefix)) return false;
+        try {
+            int id = Integer.parseInt(run.publicationKey.substring(prefix.length()));
+            return id > 0 && run.publicationKey.equals(prefix + id);
+        } catch (NumberFormatException invalid) {
+            return false;
+        }
+    }
+
+    private static int numericRunKeyId(LockedRun run, String prefix) {
+        return Integer.parseInt(run.publicationKey.substring(prefix.length()));
+    }
+
     private LockedRun lockAndValidate(Lease lease) {
         Objects.requireNonNull(lease);
         assertRuntimeFence(lease.season());
@@ -1045,6 +1120,19 @@ public final class OwnedSyncStore {
     public record Lease(long generation, SyncKind kind, String season, String coalescingKey,
                         String publicationKey, String owner, UUID token, long fence,
                         Instant expiresAt, int attemptCount) { }
+
+    public sealed interface HttpFenceResult permits Ready, FutureFloor { }
+
+    public record Ready(Instant expiresAt, Instant sourceFloor) implements HttpFenceResult {
+        public Ready {
+            Objects.requireNonNull(expiresAt);
+            Objects.requireNonNull(sourceFloor);
+        }
+    }
+
+    public record FutureFloor(Instant nextDue) implements HttpFenceResult {
+        public FutureFloor { Objects.requireNonNull(nextDue); }
+    }
 
     record StagedPayloadMetadata(long id, long runGeneration, Endpoint endpoint,
                                  SourceRead read, ValidationState validationState) {

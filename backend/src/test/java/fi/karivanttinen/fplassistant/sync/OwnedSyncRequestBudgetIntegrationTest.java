@@ -12,9 +12,15 @@ import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.LockSupport;
 
 import javax.sql.DataSource;
 
+import fi.karivanttinen.fplassistant.sync.OwnedSyncDbOperations.Outcome;
+import fi.karivanttinen.fplassistant.sync.OwnedSyncDbOperations.Uncertain;
+import fi.karivanttinen.fplassistant.sync.OwnedSyncDbOperations.Uncertainty;
+import fi.karivanttinen.fplassistant.sync.OwnedSyncRequestBudget.Admission;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncRequestBudget.Allowed;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncRequestBudget.Completion;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncRequestBudget.Deferred;
@@ -24,12 +30,14 @@ import fi.karivanttinen.fplassistant.sync.OwnedSyncRequestBudget.Permit;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class OwnedSyncRequestBudgetIntegrationTest {
 
@@ -66,6 +74,7 @@ class OwnedSyncRequestBudgetIntegrationTest {
         Deferred early = deferred(reopened.admit());
         assertThat(early.reason()).isEqualTo(DeferredReason.MINIMUM_SPACING);
         assertThat(early.nextDue()).isEqualTo(first.admittedAt().plusSeconds(1));
+        assertThat(reopened.nextAdmissionHint()).isEmpty();
 
         clock.advance(Duration.ofSeconds(1));
         var start = new CountDownLatch(1);
@@ -80,6 +89,30 @@ class OwnedSyncRequestBudgetIntegrationTest {
             Object denied = a instanceof Deferred ? a : b;
             assertThat(((Deferred) denied).reason()).isEqualTo(DeferredReason.UNSETTLED);
         }
+    }
+
+    @Test
+    void completedAttemptSpacingUsesCompletionTimeAfterRestart() {
+        Permit permit = allowed(budget.admit());
+        clock.advance(Duration.ofMillis(800));
+        Instant completedAt = clock.instant();
+
+        budget.complete(permit, Completion.success());
+        OwnedSyncRequestBudget reopened = new OwnedSyncRequestBudget(jdbc, tx, clock, TABLES);
+
+        Instant spacingDue = completedAt.plusSeconds(1);
+        Deferred blocked = deferred(reopened.admit());
+        assertThat(blocked.reason()).isEqualTo(DeferredReason.MINIMUM_SPACING);
+        assertThat(blocked.nextDue()).isEqualTo(spacingDue);
+        assertThat(reopened.nextAdmissionHint()).isEmpty();
+
+        clock.advance(Duration.ofMillis(200));
+        Deferred admissionSpacingExpired = deferred(reopened.admit());
+        assertThat(admissionSpacingExpired.reason()).isEqualTo(DeferredReason.MINIMUM_SPACING);
+        assertThat(admissionSpacingExpired.nextDue()).isEqualTo(spacingDue);
+
+        clock.advance(Duration.ofMillis(800));
+        assertThat(reopened.admit()).isInstanceOf(Allowed.class);
     }
 
     @Test
@@ -109,6 +142,125 @@ class OwnedSyncRequestBudgetIntegrationTest {
         assertThat(unsettled.reason()).isEqualTo(DeferredReason.UNSETTLED);
         assertThat(unsettled.nextDue()).isEqualTo(clock.instant().plusSeconds(30));
         assertThat(unresolvedAttempts()).isEqualTo(1);
+    }
+
+    @Test
+    @Timeout(value = 10, unit = TimeUnit.SECONDS)
+    void timedOutAdmissionCanCommitOnlyUnresolvedPreallocatedAttemptAndBlocksAfterRestart() throws Exception {
+        CountDownLatch lockAcquired = new CountDownLatch(1);
+        CountDownLatch releaseLock = new CountDownLatch(1);
+        var lockOwner = Executors.newSingleThreadExecutor();
+        Future<?> lockTransaction = lockOwner.submit(() -> holdRequestStateLock(lockAcquired, releaseLock));
+        OwnedSyncDbOperations operations = new OwnedSyncDbOperations();
+        CountDownLatch operationStarted = new CountDownLatch(1);
+        CountDownLatch operationFinished = new CountDownLatch(1);
+        UUID attemptId = UUID.randomUUID();
+        try {
+            assertThat(lockAcquired.await(1, TimeUnit.SECONDS)).isTrue();
+            Outcome<Admission> outcome = operations.call(() -> {
+                operationStarted.countDown();
+                try {
+                    return budget.admit(attemptId);
+                } finally {
+                    operationFinished.countDown();
+                }
+            }, OwnedSyncDeadline.after(Duration.ofMillis(250)));
+
+            assertThat(operationStarted.getCount()).isZero();
+            assertThat(outcome).isInstanceOfSatisfying(Uncertain.class,
+                    result -> assertThat(result.reason()).isEqualTo(Uncertainty.TIMED_OUT));
+            assertThat(awaitBudgetLockWait("SELECT last_admitted_at, cooldown_until FROM "
+                    + TABLES.requestState())).isTrue();
+            assertThat(attemptExists(attemptId)).isFalse();
+
+            releaseLock.countDown();
+            assertThat(operationFinished.await(2, TimeUnit.SECONDS)).isTrue();
+            lockTransaction.get(2, TimeUnit.SECONDS);
+            assertThat(attemptExists(attemptId)).isTrue();
+            assertThat(unresolvedAttempts()).isEqualTo(1);
+
+            OwnedSyncRequestBudget reopened = new OwnedSyncRequestBudget(jdbc, tx, clock, TABLES);
+            Deferred blocked = deferred(reopened.admit());
+            assertThat(blocked.reason()).isEqualTo(DeferredReason.UNSETTLED);
+        } finally {
+            releaseLock.countDown();
+            operations.close();
+            try {
+                assertThat(operationFinished.await(2, TimeUnit.SECONDS)).isTrue();
+                lockTransaction.get(2, TimeUnit.SECONDS);
+            } finally {
+                lockOwner.shutdownNow();
+            }
+        }
+    }
+
+    @Test
+    @Timeout(value = 10, unit = TimeUnit.SECONDS)
+    void timedOutSettlementIsUnresolvedUntilAtomicCompletionAndCooldownCommit() throws Exception {
+        Permit permit = allowed(budget.admit());
+        CountDownLatch lockAcquired = new CountDownLatch(1);
+        CountDownLatch releaseLock = new CountDownLatch(1);
+        var lockOwner = Executors.newSingleThreadExecutor();
+        Future<?> lockTransaction = lockOwner.submit(() -> holdRequestStateLock(lockAcquired, releaseLock));
+        OwnedSyncDbOperations operations = new OwnedSyncDbOperations();
+        CountDownLatch operationStarted = new CountDownLatch(1);
+        CountDownLatch operationFinished = new CountDownLatch(1);
+        try {
+            assertThat(lockAcquired.await(1, TimeUnit.SECONDS)).isTrue();
+            Outcome<OwnedSyncRequestBudget.Settlement> outcome = operations.call(() -> {
+                operationStarted.countDown();
+                try {
+                    return budget.complete(permit, Completion.http(429, "7200", 1));
+                } finally {
+                    operationFinished.countDown();
+                }
+            }, OwnedSyncDeadline.after(Duration.ofMillis(250)));
+
+            assertThat(operationStarted.getCount()).isZero();
+            assertThat(outcome).isInstanceOfSatisfying(Uncertain.class,
+                    result -> assertThat(result.reason()).isEqualTo(Uncertainty.TIMED_OUT));
+            assertThat(awaitBudgetLockWait("SELECT singleton FROM " + TABLES.requestState())).isTrue();
+            assertThat(attemptCompletedAt(permit.id())).isNull();
+            assertThat(budget.nextAdmissionHint()).isEmpty();
+
+            releaseLock.countDown();
+            assertThat(operationFinished.await(2, TimeUnit.SECONDS)).isTrue();
+            lockTransaction.get(2, TimeUnit.SECONDS);
+            assertThat(attemptCompletedAt(permit.id())).isEqualTo(clock.instant());
+            Instant expectedCooldown = clock.instant().plusSeconds(7_200);
+            assertThat(budget.nextAdmissionHint()).contains(expectedCooldown);
+            Deferred cooldown = deferred(budget.admit());
+            assertThat(cooldown.reason()).isEqualTo(DeferredReason.COOLDOWN);
+            assertThat(cooldown.nextDue()).isEqualTo(expectedCooldown);
+        } finally {
+            releaseLock.countDown();
+            operations.close();
+            try {
+                assertThat(operationFinished.await(2, TimeUnit.SECONDS)).isTrue();
+                lockTransaction.get(2, TimeUnit.SECONDS);
+            } finally {
+                lockOwner.shutdownNow();
+            }
+        }
+    }
+
+    @Test
+    void duplicateCompletionReturnsCommittedCooldownAndMissingPermitIsInvariantFailure() {
+        Permit permit = allowed(budget.admit());
+        Instant expectedCooldown = clock.instant().plus(Duration.ofDays(2));
+
+        OwnedSyncRequestBudget.Settlement first = budget.complete(permit,
+                Completion.http(429, "172800", 1));
+        OwnedSyncRequestBudget.Settlement repeated = budget.complete(permit, Completion.success());
+
+        assertThat(first.committedCooldownUntil()).contains(expectedCooldown);
+        assertThat(repeated.committedCooldownUntil()).contains(expectedCooldown);
+        assertThat(budget.nextAdmissionHint()).contains(expectedCooldown);
+
+        Permit missing = new Permit(UUID.randomUUID(), clock.instant(), clock.instant().plusSeconds(1));
+        assertThatThrownBy(() -> budget.complete(missing, Completion.success()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("missing owned-sync permit");
     }
 
     @Test
@@ -262,6 +414,44 @@ class OwnedSyncRequestBudgetIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.requestAttempt()
                 + " WHERE admitted_at < ?", Integer.class, Timestamp.from(clock.instant().minus(Duration.ofHours(24)))))
                 .isZero();
+    }
+
+    private static Void holdRequestStateLock(CountDownLatch acquired, CountDownLatch release) {
+        return tx.execute(status -> {
+            jdbc.queryForObject("SELECT singleton FROM " + TABLES.requestState()
+                    + " WHERE singleton = TRUE FOR UPDATE", Boolean.class);
+            acquired.countDown();
+            try {
+                if (!release.await(3, TimeUnit.SECONDS)) throw new AssertionError("lock release timed out");
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(interrupted);
+            }
+            return null;
+        });
+    }
+
+    private static boolean awaitBudgetLockWait(String queryPrefix) {
+        long deadline = System.nanoTime() + Duration.ofSeconds(2).toNanos();
+        while (System.nanoTime() < deadline) {
+            Boolean waiting = jdbc.queryForObject("SELECT EXISTS (SELECT 1 FROM pg_stat_activity "
+                    + "WHERE pid <> pg_backend_pid() AND datname = current_database() "
+                    + "AND wait_event_type = 'Lock' AND query LIKE ?)", Boolean.class, queryPrefix + "%");
+            if (Boolean.TRUE.equals(waiting)) return true;
+            LockSupport.parkNanos(Duration.ofMillis(10).toNanos());
+        }
+        return false;
+    }
+
+    private boolean attemptExists(UUID id) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS (SELECT 1 FROM "
+                + TABLES.requestAttempt() + " WHERE permit_id = ?)", Boolean.class, id));
+    }
+
+    private Instant attemptCompletedAt(UUID id) {
+        Timestamp completed = jdbc.queryForObject("SELECT completed_at FROM " + TABLES.requestAttempt()
+                + " WHERE permit_id = ?", Timestamp.class, id);
+        return completed == null ? null : completed.toInstant();
     }
 
     private int unresolvedAttempts() {

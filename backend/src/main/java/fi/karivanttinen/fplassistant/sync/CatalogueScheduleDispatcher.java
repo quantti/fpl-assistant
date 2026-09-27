@@ -48,8 +48,8 @@ public final class CatalogueScheduleDispatcher {
     private static final ZoneId UK = ZoneId.of("Europe/London");
     private static final LocalTime PRICE_CUTOVER = LocalTime.of(2, 0);
     private static final LocalTime SCHEDULE_CUTOVER = LocalTime.of(3, 0);
-    private static final Duration NETWORK_RENEW_THRESHOLD = Duration.ofSeconds(45);
-    private static final Duration NETWORK_LEASE = Duration.ofMinutes(2);
+    private static final Duration NETWORK_RENEW_THRESHOLD = Duration.ofMinutes(4);
+    private static final Duration NETWORK_LEASE = Duration.ofMinutes(5);
     private static final Duration MAX_BACKOFF = Duration.ofMinutes(30);
     private static final int REUSABLE_PAIR_LIMIT = 20;
 
@@ -62,8 +62,7 @@ public final class CatalogueScheduleDispatcher {
     /** Production construction uses exactly the bounded Task 2 HTTP GET. */
     public CatalogueScheduleDispatcher(OwnedSyncStore store, CatalogueScheduleWriter writer,
                                        OwnedSyncHttpClient http, Clock clock) {
-        this(store, writer, (endpoint, attempt) -> withRetryHint(
-                http.get(endpoint, attempt), http.nextAdmissionHint()), clock, true);
+        this(store, writer, fencedFetch(store, http), clock, true);
     }
 
     /** Minimal test seam; callers supply raw transport results, not a second queue or transport. */
@@ -84,8 +83,7 @@ public final class CatalogueScheduleDispatcher {
 
     static CatalogueScheduleDispatcher staging(OwnedSyncStore store, OwnedSyncHttpClient http,
                                                 Clock clock) {
-        return new CatalogueScheduleDispatcher(store, null, (endpoint, attempt) -> withRetryHint(
-                http.get(endpoint, attempt), http.nextAdmissionHint()), clock, false);
+        return new CatalogueScheduleDispatcher(store, null, fencedFetch(store, http), clock, false);
     }
 
     public Run enqueueCatalogue(Season season, Instant dueAt) {
@@ -189,13 +187,13 @@ public final class CatalogueScheduleDispatcher {
 
         try {
             if (bootstrap == null) {
-                FetchResult result = fetchAndStage(lease, Endpoint.bootstrap());
+                FetchResult result = fetchAndStage(lease, Endpoint.bootstrap(), requestedAfter);
                 lease = result.lease;
                 bootstrap = result.payload;
                 ownedIds.add(bootstrap.id());
             }
             if (fixtures == null) {
-                FetchResult result = fetchAndStage(lease, Endpoint.fixtures());
+                FetchResult result = fetchAndStage(lease, Endpoint.fixtures(), requestedAfter);
                 lease = result.lease;
                 fixtures = result.payload;
                 ownedIds.add(fixtures.id());
@@ -253,9 +251,10 @@ public final class CatalogueScheduleDispatcher {
                 .filter(payload -> !payload.read().startedAt().isBefore(requestedAfter));
     }
 
-    private FetchResult fetchAndStage(Lease lease, Endpoint endpoint) {
+    private FetchResult fetchAndStage(Lease lease, Endpoint endpoint, Instant sourceFloor) {
         lease = renewBeforeNetwork(lease);
-        OwnedSyncHttpClient.Result result = fetch.get(endpoint, Math.max(1, lease.attemptCount()));
+        OwnedSyncHttpClient.Result result = fetch.get(lease, endpoint,
+                Math.max(1, lease.attemptCount()), sourceFloor);
         if (result instanceof DeferredResult deferred) {
             Instant due = strictlyFuture(deferred.nextDue());
             store.retry(lease, due, "HTTP budget deferred: " + deferred.reason());
@@ -292,7 +291,9 @@ public final class CatalogueScheduleDispatcher {
     }
 
     private Lease renewBeforeNetwork(Lease lease) {
-        Duration remaining = Duration.between(clock.instant(), lease.expiresAt());
+        Instant now = clock.instant();
+        if (!lease.expiresAt().isAfter(now)) return lease;
+        Duration remaining = Duration.between(now, lease.expiresAt());
         return remaining.compareTo(NETWORK_RENEW_THRESHOLD) <= 0
                 ? store.renew(lease, NETWORK_LEASE) : lease;
     }
@@ -361,21 +362,20 @@ public final class CatalogueScheduleDispatcher {
         return candidate.isAfter(now) ? candidate : now.plusSeconds(1);
     }
 
-    private static OwnedSyncHttpClient.Result withRetryHint(OwnedSyncHttpClient.Result result,
-                                                             Optional<Instant> hint) {
-        Instant nextDue = hint.orElse(null);
-        if (result instanceof Response response
-                && (response.statusCode() == 429 || response.statusCode() >= 500)) {
-            return new Response(response.statusCode(), response.body(), response.retryAfter(),
-                    response.read(), nextDue);
-        }
-        if (result instanceof Failure failure && (failure.kind() == FailureKind.TIMEOUT
-                || failure.statusCode() != null
-                && (failure.statusCode() == 429 || failure.statusCode() >= 500))) {
-            return new Failure(failure.kind(), failure.message(), failure.statusCode(),
-                    failure.retryAfter(), failure.read(), nextDue);
-        }
-        return result;
+    private static Fetch fencedFetch(OwnedSyncStore store, OwnedSyncHttpClient http) {
+        return new Fetch() {
+            @Override
+            public OwnedSyncHttpClient.Result get(Endpoint endpoint, int failureAttempt) {
+                throw new IllegalStateException("Owned-sync HTTP fetch requires its caller lease");
+            }
+
+            @Override
+            public OwnedSyncHttpClient.Result get(Lease lease, Endpoint endpoint, int failureAttempt,
+                                                  Instant sourceFloor) {
+                return http.get(endpoint, failureAttempt,
+                        () -> store.httpFence(lease, endpoint, sourceFloor));
+            }
+        };
     }
 
     private static Documents documents(StagedPayload bootstrap, StagedPayload fixtures) {
@@ -416,9 +416,7 @@ public final class CatalogueScheduleDispatcher {
     }
 
     @FunctionalInterface
-    interface Fetch {
-        OwnedSyncHttpClient.Result get(Endpoint endpoint, int failureAttempt);
-    }
+    interface Fetch extends OwnedSyncHttpClient.DispatcherFetch { }
 
     public enum Outcome { STAGED, PUBLISHED, RETRY_SCHEDULED, FAILED }
 

@@ -18,9 +18,9 @@ import org.springframework.transaction.support.TransactionTemplate;
  * Durable, process-shared admission and cooldown state for the future owned-sync HTTP client.
  * This class performs no network I/O and never sleeps.
  *
- * <p>The Task 2c transport timeout is strictly shorter than {@link Limits#permitTtl()}. If worker
- * termination cannot be confirmed after cancellation, completion is recorded but the permit stays
- * live until that original expiry.
+ * <p>The transport reserves time for settlement within its request deadline. If exchange-worker
+ * termination cannot be confirmed after cancellation, the attempt remains incomplete and blocks
+ * admission indefinitely until reconciled.
  */
 public final class OwnedSyncRequestBudget {
 
@@ -56,6 +56,15 @@ public final class OwnedSyncRequestBudget {
 
     /** Atomically admits and records an attempt, or identifies when and why it should be retried. */
     public Admission admit() {
+        return admit(UUID.randomUUID());
+    }
+
+    /**
+     * Supervised callers allocate the attempt id before submitting this DB-only operation, so a
+     * timed-out caller can later reconcile the durable row without accepting a late result.
+     */
+    Admission admit(UUID preallocatedAttemptId) {
+        Objects.requireNonNull(preallocatedAttemptId);
         return tx.execute(status -> {
             State state = jdbc.queryForObject("SELECT last_admitted_at, cooldown_until FROM %s "
                     .formatted(tables.requestState()) + "WHERE singleton = TRUE FOR UPDATE", (rs, row) ->
@@ -74,6 +83,9 @@ public final class OwnedSyncRequestBudget {
                 // its completion is durably recorded or an operator reconciles it.
                 return new Deferred(now.plus(UNSETTLED_RECHECK), DeferredReason.UNSETTLED);
             }
+            Timestamp latestCompletedAt = jdbc.queryForObject("SELECT max(completed_at) FROM %s"
+                    .formatted(tables.requestAttempt()), Timestamp.class);
+            Instant lastCompletedAt = instant(latestCompletedAt);
 
             Deferral deferral = null;
             if (state.cooldownUntil != null && state.cooldownUntil.isAfter(now)) {
@@ -81,6 +93,10 @@ public final class OwnedSyncRequestBudget {
             }
             if (state.lastAdmittedAt != null) {
                 Instant spacedAt = state.lastAdmittedAt.plus(limits.minimumSpacing);
+                if (spacedAt.isAfter(now)) deferral = later(deferral, spacedAt, DeferredReason.MINIMUM_SPACING);
+            }
+            if (lastCompletedAt != null) {
+                Instant spacedAt = lastCompletedAt.plus(limits.minimumSpacing);
                 if (spacedAt.isAfter(now)) deferral = later(deferral, spacedAt, DeferredReason.MINIMUM_SPACING);
             }
 
@@ -105,27 +121,27 @@ public final class OwnedSyncRequestBudget {
 
             if (deferral != null) return new Deferred(deferral.nextDue, deferral.reason);
 
-            UUID id = UUID.randomUUID();
             Instant expiresAt = now.plus(limits.permitTtl);
             jdbc.update("INSERT INTO %s(permit_id, admitted_at, permit_expires_at) VALUES (?, ?, ?)"
-                    .formatted(tables.requestAttempt()), id, timestamp(now), timestamp(expiresAt));
+                    .formatted(tables.requestAttempt()), preallocatedAttemptId, timestamp(now), timestamp(expiresAt));
             jdbc.update("UPDATE %s SET last_admitted_at = ? WHERE singleton = TRUE"
                     .formatted(tables.requestState()), timestamp(now));
-            return new Allowed(new Permit(id, now, expiresAt));
+            return new Allowed(new Permit(preallocatedAttemptId, now, expiresAt));
         });
     }
 
     /**
-     * Completes only the supplied permit. Repeated and late completions are harmless. Transient
-     * outcomes extend (but can never shorten) the shared cooldown. A valid {@code Retry-After}
-     * supplies its exact, uncapped deadline when PostgreSQL can persist it; only the
-     * exponential-jitter fallback for a missing, malformed, overflowing, or unpersistable header
-     * is capped by {@link Limits#maximumBackoff()}.
+     * Completes only the supplied permit and returns the cooldown committed by the same transaction.
+     * Repeated and late completions reconcile the existing row without changing its outcome;
+     * completing an unknown permit is an invariant error. Only transient outcomes update the shared
+     * cooldown. A valid {@code Retry-After} supplies its exact, uncapped deadline when PostgreSQL can
+     * persist it; only the exponential-jitter fallback for a missing, malformed, overflowing, or
+     * unpersistable header is capped by {@link Limits#maximumBackoff()}.
      */
-    public Optional<Instant> complete(Permit permit, Completion completion) {
+    public Settlement complete(Permit permit, Completion completion) {
         Objects.requireNonNull(permit);
         Objects.requireNonNull(completion);
-        Instant nextAdmission = tx.execute(status -> {
+        return tx.execute(status -> {
             jdbc.queryForObject("SELECT singleton FROM %s WHERE singleton = TRUE FOR UPDATE"
                     .formatted(tables.requestState()), Boolean.class);
             Instant now = clock.instant();
@@ -133,23 +149,35 @@ public final class OwnedSyncRequestBudget {
                             .formatted(tables.requestAttempt())
                             + "WHERE permit_id = ? AND completed_at IS NULL",
                     timestamp(now), completion.holdUntilExpiry, permit.id);
-            if (completed == 0 || !completion.transientFailure()) return null;
+            if (completed == 0) {
+                Boolean exists = jdbc.queryForObject("SELECT EXISTS (SELECT 1 FROM %s WHERE permit_id = ?)"
+                        .formatted(tables.requestAttempt()), Boolean.class, permit.id);
+                if (!Boolean.TRUE.equals(exists)) {
+                    throw new IllegalStateException("Cannot complete missing owned-sync permit " + permit.id);
+                }
+                return committedSettlement();
+            }
 
-            Instant proposed = retryAfterDeadline(completion.retryAfter, now);
-            if (proposed == null) {
-                proposed = now.plus(exponentialBackoff(completion.failureAttempt, permit.id));
+            if (completion.transientFailure()) {
+                Instant proposed = retryAfterDeadline(completion.retryAfter, now);
+                if (proposed == null) {
+                    proposed = now.plus(exponentialBackoff(completion.failureAttempt, permit.id));
+                }
+                if (proposed.isAfter(now)) {
+                    jdbc.update("UPDATE %s SET cooldown_until = CASE WHEN cooldown_until IS NULL THEN ? "
+                                    .formatted(tables.requestState())
+                                    + "ELSE GREATEST(cooldown_until, ?) END WHERE singleton = TRUE",
+                            timestamp(proposed), timestamp(proposed));
+                }
             }
-            if (proposed.isAfter(now)) {
-                jdbc.update("UPDATE %s SET cooldown_until = CASE WHEN cooldown_until IS NULL THEN ? "
-                                .formatted(tables.requestState())
-                                + "ELSE GREATEST(cooldown_until, ?) END WHERE singleton = TRUE",
-                        timestamp(proposed), timestamp(proposed));
-            }
-            Timestamp persisted = jdbc.queryForObject("SELECT cooldown_until FROM %s WHERE singleton = TRUE"
-                    .formatted(tables.requestState()), Timestamp.class);
-            return persisted == null ? null : persisted.toInstant();
+            return committedSettlement();
         });
-        return Optional.ofNullable(nextAdmission);
+    }
+
+    private Settlement committedSettlement() {
+        Timestamp persisted = jdbc.queryForObject("SELECT cooldown_until FROM %s WHERE singleton = TRUE"
+                .formatted(tables.requestState()), Timestamp.class);
+        return new Settlement(Optional.ofNullable(persisted).map(Timestamp::toInstant));
     }
 
     /** Persisted shared cooldown hint; reading it never admits or consumes a permit. */
@@ -231,7 +259,12 @@ public final class OwnedSyncRequestBudget {
     }
 
     /** UNSETTLED's nextDue is only a bounded recheck hint, not a promise of future eligibility. */
-    public enum DeferredReason { MINIMUM_SPACING, LIVE_PERMITS, ATTEMPT_LIMIT, COOLDOWN, UNSETTLED }
+    public enum DeferredReason {
+        MINIMUM_SPACING, LIVE_PERMITS, ATTEMPT_LIMIT, COOLDOWN, UNSETTLED,
+        DB_OPERATIONS_SATURATED, DB_OPERATIONS_CLOSED, DB_DEADLINE_EXPIRED,
+        DB_INTERRUPTED, DB_ADMISSION_UNCERTAIN, NO_FETCH_UNCERTAIN, HTTP_CLIENT_CLOSED, HTTP_NOT_SUBMITTED,
+        HTTP_WORKERS_SATURATED, HTTP_EXCHANGE_UNCERTAIN, SETTLEMENT_UNCERTAIN
+    }
 
     public record Permit(UUID id, Instant admittedAt, Instant expiresAt) {
         public Permit {
@@ -240,6 +273,11 @@ public final class OwnedSyncRequestBudget {
             Objects.requireNonNull(expiresAt);
             if (!expiresAt.isAfter(admittedAt)) throw new IllegalArgumentException("permit must have positive TTL");
         }
+    }
+
+    /** Durable result returned only after completion and cooldown state commit atomically. */
+    public record Settlement(Optional<Instant> committedCooldownUntil) {
+        public Settlement { Objects.requireNonNull(committedCooldownUntil); }
     }
 
     public record Completion(Kind kind, int statusCode, String retryAfter, int failureAttempt,

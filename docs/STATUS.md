@@ -50,6 +50,16 @@ completion, idle behavior or the first watchdog tick. Checkpoint/dependency body
 the next correction; this result is not a monthly cost extrapolation or permission to reactivate.
 Measurements, limitations and UTC timeline: [`OWNED-SYNC-EGRESS-REPORT.md`](OWNED-SYNC-EGRESS-REPORT.md).
 
+## Disposable test database network containment (2026-09-27)
+
+The VPS test container was found listening on all interfaces with the documented disposable
+password. Its role refused login and its logs showed a failed suspicious command; this is not
+proof of successful execution, nor a finding about the production database. The container was
+stopped, recreated from the checked-in schema and verified listening only on
+`127.0.0.1:55432`. [PR #139](https://github.com/quantti/fpl-assistant/pull/139) changes both
+creation paths and the stub contract test. Existing containers elsewhere still require an idle
+reset to acquire the new binding. No unrelated Docker container was touched.
+
 ## Owned sync — reviewed progress/checkpoint plan (2026-09-27)
 
 Plan: [`2026-09-27-owned-sync-progress-and-checkpoints.md`](superpowers/plans/2026-09-27-owned-sync-progress-and-checkpoints.md).
@@ -65,11 +75,14 @@ would serialize overlapping requests and might pause sync indefinitely pending m
 The owner approved serializing unfinished HTTP requests and pausing indefinitely for manual
 reconciliation when an outcome is unknown. The budget guard now retains unresolved attempts and
 blocks admission across expiry/restart; its 11 focused tests passed on the disposable DB. This
-is a prerequisite, not a completed transport/scheduling fix: the baseline still fails, and the
-method-entry deadline and caller fence remain at the checkpoint. Independent review found the
-existing JDBC timeouts cannot bound commit/cleanup, so a fixed-capacity supervised DB-operation
-path needs separate approval before implementing transport waiting or scheduling. KAR-73 remains
-separate.
+is a prerequisite, not a completed transport/scheduling fix: the baseline still fails. The
+owner approved fixed-capacity DB supervision; a candidate bounded-return transport, atomic
+settlement, conservative response pacing and both dispatchers' HTTP fences now have focused
+local tests, but work-pool/commit fault evidence remains incomplete. Scheduling still cannot
+meet the ready-continuation bound from current run metadata: older blocked retries are
+indistinguishable from a newly ready one without a durable dependency manifest. The plan
+records a choice between that narrow owned-schema addition and a weaker backlog-dependent
+selection target. No policy or production activation is approved. KAR-73 remains separate.
 KAR-70's unavailable provider API is not a dependency. No production scheduling or setting
 changed. Latest verified containment is OFF epoch 67; the retest evidence is in PR #137.
 

@@ -1,8 +1,11 @@
 package fi.karivanttinen.fplassistant.sync;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.io.InputStream;
+import java.net.InetSocketAddress;
+import java.net.URI;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -10,8 +13,13 @@ import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.ArrayDeque;
 import java.util.Deque;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+
+import com.sun.net.httpserver.HttpServer;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -83,6 +91,134 @@ class HistoryFixtureDispatcherIntegrationTest {
     }
 
     @Test
+    void historyHttpCallerFenceDefersWhenDemandAdvancesAfterSourceSelection() throws Exception {
+        activateStagingStore();
+        seedCanonicalPair();
+        var historyRun = dispatcher.enqueuePlayerHistory(SEASON, 1, clock.instant());
+        Lease lease = acquire(historyRun.generation(), Duration.ofMinutes(2));
+        Instant selectedFloor = store.requestedSourceAfter(lease);
+        Instant advancedFloor = clock.instant().plus(Duration.ofHours(1));
+        AtomicReference<HttpFetchRequest> observed = new AtomicReference<>();
+
+        try (Loopback loopback = loopback()) {
+            dispatcher = dispatcher(fencedHttpFetch(loopback, request -> {
+                observed.set(request);
+                store.enqueue(SyncKind.PLAYER_HISTORY, SEASON.code(), "player-history:1",
+                        "player-history:1", advancedFloor);
+            }));
+
+            DispatchResult result = dispatcher.process(lease, SEASON);
+
+            assertThat(result.failure()).isEqualTo(FailureType.HTTP_DEFERRED);
+            assertThat(observed.get().endpoint()).isEqualTo(Endpoint.elementSummary(1));
+            assertThat(observed.get().sourceFloor()).isEqualTo(selectedFloor);
+            assertThat(observed.get().lease().expiresAt()).isAfter(clock.instant().plusSeconds(180));
+            assertNoHttpOrFetchFailure(loopback, lease.generation(), 2);
+            assertThat(jdbc.queryForObject("SELECT due_at FROM " + TABLES.run()
+                    + " WHERE generation=?", java.sql.Timestamp.class, lease.generation()).toInstant())
+                    .isEqualTo(advancedFloor);
+        }
+    }
+
+    @Test
+    void fixturePairHttpCallerFenceUsesItsSelectedFloorWhenDemandAdvances() throws Exception {
+        activateStagingStore();
+        var run = dispatcher.enqueueFixtureVerification(SEASON, 21, clock.instant());
+        Lease lease = acquire(run.generation(), Duration.ofMinutes(2));
+        Instant selectedFloor = store.requestedSourceAfter(lease);
+        Instant advancedFloor = clock.instant().plus(Duration.ofHours(1));
+        AtomicReference<HttpFetchRequest> observed = new AtomicReference<>();
+
+        try (Loopback loopback = loopback()) {
+            dispatcher = dispatcher(fencedHttpFetch(loopback, request -> {
+                observed.set(request);
+                store.enqueue(SyncKind.FIXTURE_VERIFICATION, SEASON.code(), "fixture:21",
+                        "fixture:21", advancedFloor);
+            }));
+
+            DispatchResult result = dispatcher.process(lease, SEASON);
+
+            assertThat(result.failure()).isEqualTo(FailureType.HTTP_DEFERRED);
+            assertThat(observed.get().endpoint()).isEqualTo(Endpoint.bootstrap());
+            assertThat(observed.get().sourceFloor()).isEqualTo(selectedFloor);
+            assertThat(observed.get().lease().expiresAt()).isAfter(clock.instant().plusSeconds(180));
+            assertNoHttpOrFetchFailure(loopback, lease.generation(), 0);
+        }
+    }
+
+    @Test
+    void historyHttpCallerFenceRejectsAReplacedRuntimeEpochBeforeAdmission() throws Exception {
+        activateStagingStore();
+        seedCanonicalPair();
+        Lease lease = enqueueAndAcquireHistory();
+        int stages = payloadCount();
+
+        try (Loopback loopback = loopback()) {
+            dispatcher = dispatcher(fencedHttpFetch(loopback, request ->
+                    new PlannerRuntimeRepository(jdbc, tx, clock, TABLES)
+                            .activate(SEASON.code(), OwnedSyncMode.STAGING)));
+
+            assertThatThrownBy(() -> dispatcher.process(lease, SEASON))
+                    .isInstanceOf(OwnedSyncStore.LeaseLostException.class);
+
+            assertNoHttpOrFetchFailure(loopback, lease.generation(), stages);
+        }
+    }
+
+    @Test
+    void historyHttpCallerFenceRejectsLeaseReassignmentWithoutRenewingExpiredLease() throws Exception {
+        activateStagingStore();
+        seedCanonicalPair();
+        Lease lease = enqueueAndAcquireHistory();
+        int stages = payloadCount();
+        AtomicReference<Lease> replacement = new AtomicReference<>();
+
+        try (Loopback loopback = loopback()) {
+            dispatcher = dispatcher(fencedHttpFetch(loopback, request -> {
+                clock.advance(Duration.ofMinutes(6));
+                replacement.set(store.acquire("replacement", Duration.ofMinutes(5)).orElseThrow());
+            }));
+
+            assertThatThrownBy(() -> dispatcher.process(lease, SEASON))
+                    .isInstanceOf(OwnedSyncStore.LeaseLostException.class);
+
+            assertThat(replacement.get().generation()).isEqualTo(lease.generation());
+            assertThat(jdbc.queryForObject("SELECT lease_owner FROM " + TABLES.run()
+                    + " WHERE generation=?", String.class, lease.generation())).isEqualTo("replacement");
+            assertNoHttpOrFetchFailure(loopback, lease.generation(), stages);
+        }
+    }
+
+    @Test
+    void historyPostAdmissionFenceInvalidationSettlesWithoutSendingOrStaging() throws Exception {
+        activateStore(OwnedSyncMode.ACTIVE);
+        seedCanonicalPair();
+        Lease lease = enqueueAndAcquireHistory();
+        int stages = payloadCount();
+
+        try (Loopback loopback = loopback()) {
+            installPostAdmissionEpochInvalidation();
+            try {
+                dispatcher = new HistoryFixtureDispatcher(store, publisher(), loopback.http, clock);
+
+                assertThatThrownBy(() -> dispatcher.process(lease, SEASON))
+                        .isInstanceOf(OwnedSyncStore.LeaseLostException.class);
+
+                assertThat(loopback.requests).hasValue(0);
+                assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.requestAttempt(), Integer.class))
+                        .isOne();
+                assertThat(jdbc.queryForObject("SELECT completed_at IS NOT NULL FROM "
+                        + TABLES.requestAttempt(), Boolean.class)).isTrue();
+                assertThat(jdbc.queryForObject("SELECT consecutive_fetch_failures FROM " + TABLES.run()
+                        + " WHERE generation=?", Integer.class, lease.generation())).isZero();
+                assertThat(payloadCount()).isEqualTo(stages);
+            } finally {
+                removePostAdmissionEpochInvalidation();
+            }
+        }
+    }
+
+    @Test
     void playerJobPublishesCanonicalRawHistoryReceiptWithoutWritingPfs() {
         seedCanonicalPair();
         int before = jdbc.queryForObject("SELECT count(*) FROM player_fixture_stats", Integer.class);
@@ -98,6 +234,52 @@ class HistoryFixtureDispatcherIntegrationTest {
                 + " WHERE endpoint_kind='ELEMENT_SUMMARY'", String.class)).isEqualTo("VALID");
         assertThat(jdbc.queryForObject("SELECT count(*) FROM player_fixture_stats", Integer.class))
                 .isEqualTo(before);
+    }
+
+    @Test
+    void fixtureRecheckFetchesUseTheLatestHistoryFinishPlusOneMillisecond() {
+        HistoryFixtureDispatcher staged = new HistoryFixtureDispatcher(store, null, fetch, clock, false);
+        var fixtureRun = staged.enqueueFixtureVerification(SEASON, 21, clock.instant());
+        Lease fixtureLease = acquire(fixtureRun.generation());
+        SourceRead pairRead = readNow();
+        stagedPair(fixtureLease, pairRead);
+        clock.advance(Duration.ofMillis(1));
+        SourceRead liveRead = readNow();
+        store.stage(fixtureLease, Endpoint.eventLive(3), liveRead, Validation.valid(), liveThree);
+
+        var interval = new CatalogueScheduleParser.ReadInterval(pairRead.startedAt(), pairRead.finishedAt());
+        var snapshot = CatalogueScheduleParser.parse(SEASON,
+                new CatalogueScheduleParser.SourceDocument(bootstrap, interval),
+                new CatalogueScheduleParser.SourceDocument(fixtures, interval));
+        var fixture = snapshot.fixtures().stream().filter(row -> row.id() == 21).findFirst().orElseThrow();
+        Set<Integer> players = new LinkedHashSet<>();
+        snapshot.players().stream().filter(player -> player.teamId() == fixture.homeTeamId()
+                        || player.teamId() == fixture.awayTeamId())
+                .map(CatalogueScheduleParser.PlayerRow::id).forEach(players::add);
+        players.addAll(FixtureVerification.participantIds(fixture,
+                new CatalogueScheduleParser.SourceDocument(liveThree,
+                        new CatalogueScheduleParser.ReadInterval(liveRead.startedAt(), liveRead.finishedAt()))));
+        SourceRead historyRead = readNow();
+        var evidenceRun = store.enqueue(SyncKind.PLAYER_HISTORY, SEASON.code(), "player-history:1",
+                "player-history:1", historyRead.startedAt());
+        Lease evidenceLease = acquire(evidenceRun.generation());
+        for (int playerId : players) {
+            store.stage(evidenceLease, Endpoint.elementSummary(playerId), historyRead,
+                    Validation.valid(), historyOne);
+        }
+        store.completeStaged(evidenceLease, historyRead, List.of(historyRead));
+        Instant recheckFloor = historyRead.finishedAt().plusMillis(1);
+        clock.advance(Duration.ofMillis(2));
+        SourceRead recheckRead = readNow();
+        fetch.results.add(new Response(200, bootstrap, null, recheckRead));
+        fetch.results.add(new Response(200, fixtures, null, recheckRead));
+
+        DispatchResult result = staged.process(fixtureLease, SEASON);
+
+        assertThat(result.outcome()).isEqualTo(Outcome.STAGED);
+        assertThat(fetch.endpoints).containsExactly(Endpoint.bootstrap(), Endpoint.fixtures());
+        assertThat(fetch.requests).extracting(HttpFetchRequest::sourceFloor)
+                .containsExactly(recheckFloor, recheckFloor);
     }
 
     @Test
@@ -164,7 +346,8 @@ class HistoryFixtureDispatcherIntegrationTest {
     void fixtureJobFansOutExplicitPlayerJobsIncludingZeroMinuteDepartedParticipant() throws Exception {
         byte[] liveWithDeparted = departedZeroMinuteLive();
         int before = jdbc.queryForObject("SELECT count(*) FROM player_fixture_stats", Integer.class);
-        var run = dispatcher.enqueueFixtureVerification(SEASON, 21, clock.instant());
+        Instant requestedFloor = clock.instant();
+        var run = dispatcher.enqueueFixtureVerification(SEASON, 21, requestedFloor);
         fetch.results.add(ok(bootstrap));
         fetch.results.add(ok(fixtures));
         clock.advance(Duration.ofMillis(1));
@@ -175,6 +358,10 @@ class HistoryFixtureDispatcherIntegrationTest {
         assertThat(result.outcome()).isEqualTo(Outcome.WAITING_FOR_HISTORIES);
         assertThat(fetch.endpoints).containsExactly(Endpoint.bootstrap(), Endpoint.fixtures(),
                 Endpoint.eventLive(3));
+        assertThat(fetch.requests).extracting(HttpFetchRequest::sourceFloor)
+                .containsExactly(requestedFloor, requestedFloor, jdbc.queryForObject("SELECT read_finished_at FROM "
+                        + TABLES.payload() + " WHERE run_generation=? AND endpoint_kind='FIXTURES'",
+                        java.sql.Timestamp.class, run.generation()).toInstant().plusMillis(1));
         assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
                 + " WHERE kind='PLAYER_HISTORY'", Integer.class)).isEqualTo(73);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
@@ -446,6 +633,11 @@ class HistoryFixtureDispatcherIntegrationTest {
         store.publish(lease, read, () -> null);
     }
 
+    private void stagedPair(Lease lease, SourceRead read) {
+        store.stage(lease, Endpoint.bootstrap(), read, Validation.valid(), bootstrap);
+        store.stage(lease, Endpoint.fixtures(), read, Validation.valid(), fixtures);
+    }
+
     private void seedCanonicalPair() {
         var run = store.enqueue(SyncKind.CATALOGUE_SCHEDULE, SEASON.code(), "test-canonical",
                 "test-canonical", clock.instant());
@@ -459,11 +651,117 @@ class HistoryFixtureDispatcherIntegrationTest {
     }
 
     private Lease acquire(long generation) {
+        return acquire(generation, Duration.ofMinutes(5));
+    }
+
+    private Lease acquire(long generation, Duration duration) {
         Lease lease;
         do {
-            lease = store.acquire("worker", Duration.ofMinutes(5)).orElseThrow();
+            lease = store.acquire("worker", duration).orElseThrow();
         } while (lease.generation() != generation);
         return lease;
+    }
+
+    private Lease enqueueAndAcquireHistory() {
+        var run = dispatcher.enqueuePlayerHistory(SEASON, 1, clock.instant());
+        return acquire(run.generation());
+    }
+
+    private void activateStagingStore() {
+        activateStore(OwnedSyncMode.STAGING);
+    }
+
+    private void activateStore(OwnedSyncMode mode) {
+        OwnedSyncStore.RuntimeFence fence = new PlannerRuntimeRepository(jdbc, tx, clock, TABLES)
+                .activate(SEASON.code(), mode);
+        store = new OwnedSyncStore(jdbc, tx, clock, TABLES, fence);
+        dispatcher = dispatcher(fetch);
+    }
+
+    private HistoryFixtureDispatcher dispatcher(HistoryFixtureDispatcher.Fetch httpFetch) {
+        return new HistoryFixtureDispatcher(store, publisher(), httpFetch, clock);
+    }
+
+    private FixtureSyncPublisher publisher() {
+        return new FixtureSyncPublisher(jdbc, clock, store,
+                new FixtureSyncRepository(jdbc, TABLES), TABLES);
+    }
+
+    private HistoryFixtureDispatcher.Fetch fencedHttpFetch(Loopback loopback,
+                                                            java.util.function.Consumer<HttpFetchRequest> beforeFence) {
+        return new HistoryFixtureDispatcher.Fetch() {
+            @Override
+            public OwnedSyncHttpClient.Result get(Endpoint endpoint, int failureAttempt) {
+                throw new AssertionError("fenced fetch overload was not used");
+            }
+
+            @Override
+            public OwnedSyncHttpClient.Result get(Lease lease, Endpoint endpoint, int failureAttempt,
+                                                  Instant sourceFloor) {
+                beforeFence.accept(new HttpFetchRequest(lease, endpoint, sourceFloor));
+                return loopback.http.get(endpoint, failureAttempt,
+                        () -> store.httpFence(lease, endpoint, sourceFloor));
+            }
+        };
+    }
+
+    private Loopback loopback() throws Exception {
+        jdbc.update("DELETE FROM " + TABLES.requestAttempt());
+        jdbc.update("UPDATE " + TABLES.requestState() + " SET last_admitted_at=NULL, cooldown_until=NULL");
+        AtomicInteger requests = new AtomicInteger();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/", exchange -> {
+            requests.incrementAndGet();
+            exchange.sendResponseHeaders(200, -1);
+            exchange.close();
+        });
+        server.start();
+        OwnedSyncRequestBudget budget = new OwnedSyncRequestBudget(jdbc, tx, clock, TABLES);
+        OwnedSyncHttpClient http = new OwnedSyncHttpClient(budget,
+                URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/api/"),
+                Duration.ofSeconds(2), clock);
+        return new Loopback(server, http, requests);
+    }
+
+    private void assertNoHttpOrFetchFailure(Loopback loopback, long generation, int expectedPayloads) {
+        assertThat(loopback.requests).hasValue(0);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.requestAttempt(), Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT consecutive_fetch_failures FROM " + TABLES.run()
+                + " WHERE generation=?", Integer.class, generation)).isZero();
+        assertThat(payloadCount()).isEqualTo(expectedPayloads);
+    }
+
+    private void installPostAdmissionEpochInvalidation() {
+        jdbc.execute("CREATE OR REPLACE FUNCTION fpl_history_test_bump_epoch() RETURNS trigger AS $$ "
+                + "BEGIN UPDATE " + TABLES.plannerRuntime()
+                + " SET runtime_epoch=runtime_epoch+1 WHERE instance_id='mode:2026-27'; "
+                + "RETURN NEW; END; $$ LANGUAGE plpgsql");
+        jdbc.execute("CREATE TRIGGER fpl_history_test_epoch_trigger AFTER INSERT ON "
+                + TABLES.requestAttempt() + " FOR EACH ROW EXECUTE FUNCTION fpl_history_test_bump_epoch()");
+    }
+
+    private void removePostAdmissionEpochInvalidation() {
+        jdbc.execute("DROP TRIGGER IF EXISTS fpl_history_test_epoch_trigger ON " + TABLES.requestAttempt());
+        jdbc.execute("DROP FUNCTION IF EXISTS fpl_history_test_bump_epoch()");
+    }
+
+    private record HttpFetchRequest(Lease lease, Endpoint endpoint, Instant sourceFloor) { }
+
+    private final class Loopback implements AutoCloseable {
+        private final HttpServer server;
+        private final OwnedSyncHttpClient http;
+        private final AtomicInteger requests;
+
+        private Loopback(HttpServer server, OwnedSyncHttpClient http, AtomicInteger requests) {
+            this.server = server;
+            this.http = http;
+            this.requests = requests;
+        }
+
+        @Override public void close() {
+            http.close();
+            server.stop(0);
+        }
     }
 
     private Response ok(byte[] body) {
@@ -474,6 +772,10 @@ class HistoryFixtureDispatcherIntegrationTest {
 
     private SourceRead readNow() {
         return new SourceRead(clock.instant(), clock.instant());
+    }
+
+    private int payloadCount() {
+        return jdbc.queryForObject("SELECT count(*) FROM " + TABLES.payload(), Integer.class);
     }
 
     private static byte[] departedZeroMinuteLive() throws Exception {
@@ -509,10 +811,16 @@ class HistoryFixtureDispatcherIntegrationTest {
     private final class FakeFetch implements HistoryFixtureDispatcher.Fetch {
         private final Deque<OwnedSyncHttpClient.Result> results = new ArrayDeque<>();
         private final java.util.List<Endpoint> endpoints = new java.util.ArrayList<>();
+        private final java.util.List<HttpFetchRequest> requests = new java.util.ArrayList<>();
         @Override public OwnedSyncHttpClient.Result get(Endpoint endpoint, int failureAttempt) {
             endpoints.add(endpoint);
             if (results.isEmpty()) throw new AssertionError("Unexpected fetch " + endpoint);
             return results.removeFirst();
+        }
+        @Override public OwnedSyncHttpClient.Result get(Lease lease, Endpoint endpoint,
+                                                        int failureAttempt, Instant sourceFloor) {
+            requests.add(new HttpFetchRequest(lease, endpoint, sourceFloor));
+            return get(endpoint, failureAttempt);
         }
     }
 

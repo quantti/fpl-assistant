@@ -37,7 +37,7 @@ import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.ValidationState;
  */
 public final class HistoryFixtureDispatcher {
 
-    private static final Duration NETWORK_RENEW_THRESHOLD = Duration.ofSeconds(45);
+    private static final Duration NETWORK_RENEW_THRESHOLD = Duration.ofMinutes(4);
     private static final Duration NETWORK_LEASE = Duration.ofMinutes(5);
     private static final Duration RETRY = Duration.ofSeconds(30);
     private static final int PUBLIC_PAIR_LIMIT = 20;
@@ -51,8 +51,7 @@ public final class HistoryFixtureDispatcher {
 
     public HistoryFixtureDispatcher(OwnedSyncStore store, FixtureSyncPublisher publisher,
                                     OwnedSyncHttpClient http, Clock clock) {
-        this(store, publisher, (endpoint, attempt) -> withNextDue(
-                http.get(endpoint, attempt), http.nextAdmissionHint()), clock, true);
+        this(store, publisher, fencedFetch(store, http), clock, true);
     }
 
     HistoryFixtureDispatcher(OwnedSyncStore store, FixtureSyncPublisher publisher,
@@ -72,8 +71,7 @@ public final class HistoryFixtureDispatcher {
 
     static HistoryFixtureDispatcher staging(OwnedSyncStore store, OwnedSyncHttpClient http,
                                              Clock clock) {
-        return new HistoryFixtureDispatcher(store, null, (endpoint, attempt) -> withNextDue(
-                http.get(endpoint, attempt), http.nextAdmissionHint()), clock, false);
+        return new HistoryFixtureDispatcher(store, null, fencedFetch(store, http), clock, false);
     }
 
     public Run enqueuePlayerHistory(Season season, int playerId, Instant dueAt) {
@@ -119,20 +117,33 @@ public final class HistoryFixtureDispatcher {
 
     private DispatchResult processHistory(Lease lease, Season season) {
         int playerId = requireHistoryLease(lease, season);
-        CanonicalPair canonical = canonicalSnapshot(season).orElseGet(() -> {
+        Optional<CanonicalPair> canonicalEvidence = canonicalSnapshot(season);
+        if (canonicalEvidence.isEmpty()) {
             queueMissingCanonicalDependencies(season);
             retry(lease, clock.instant().plus(RETRY), "Canonical schedule is not available");
             throw new Stopped(DispatchResult.retry(FailureType.MISSING_CANONICAL_SCHEDULE));
-        });
+        }
+        CanonicalPair canonical = canonicalEvidence.get();
         Instant floor = store.requestedSourceAfter(lease);
         Endpoint endpoint = Endpoint.elementSummary(playerId);
         StagedPayloadMetadata checkpoint = store.latestStagedPayloadMetadata(lease, endpoint)
                 .filter(row -> row.validationState() != ValidationState.INVALID)
                 .filter(row -> !row.read().startedAt().isBefore(floor))
                 .orElse(null);
-        StagedPayload payload = checkpoint == null ? fetchAndStage(lease, endpoint)
-                : store.hydrateStagedPayload(lease, endpoint, checkpoint, floor)
-                        .orElseGet(() -> fetchAndStage(lease, endpoint));
+        StagedPayload payload;
+        if (checkpoint == null) {
+            FetchResult fetched = fetchAndStage(lease, endpoint, floor);
+            lease = fetched.lease;
+            payload = fetched.payload;
+        } else {
+            Optional<StagedPayload> hydrated = store.hydrateStagedPayload(lease, endpoint, checkpoint, floor);
+            if (hydrated.isPresent()) payload = hydrated.get();
+            else {
+                FetchResult fetched = fetchAndStage(lease, endpoint, floor);
+                lease = fetched.lease;
+                payload = fetched.payload;
+            }
+        }
         SourceDocument history = document(payload);
         HistoryParser.HistoryBatch batch;
         try {
@@ -178,6 +189,7 @@ public final class HistoryFixtureDispatcher {
         }
         Instant floor = store.requestedSourceAfter(lease);
         PayloadPair pair = ownCanonicalPair(lease, season, floor);
+        lease = pair.lease;
         Snapshot snapshot = pair.snapshot;
         var fixture = snapshot.fixtures().stream().filter(row -> row.id() == fixtureId).findFirst().orElse(null);
         if (fixture == null) {
@@ -196,9 +208,21 @@ public final class HistoryFixtureDispatcher {
         Endpoint liveEndpoint = Endpoint.eventLive(fixture.gameweek());
         Instant liveFloor = later(floor, pair.fixtures.read().finishedAt().plusMillis(1));
         StagedPayloadMetadata liveCheckpoint = usableOwn(lease, liveEndpoint, liveFloor).orElse(null);
-        StagedPayload livePayload = liveCheckpoint == null ? fetchAndStage(lease, liveEndpoint)
-                : store.hydrateStagedPayload(lease, liveEndpoint, liveCheckpoint, liveFloor)
-                        .orElseGet(() -> fetchAndStage(lease, liveEndpoint));
+        StagedPayload livePayload;
+        if (liveCheckpoint == null) {
+            FetchResult fetched = fetchAndStage(lease, liveEndpoint, liveFloor);
+            lease = fetched.lease;
+            livePayload = fetched.payload;
+        } else {
+            Optional<StagedPayload> hydrated = store.hydrateStagedPayload(
+                    lease, liveEndpoint, liveCheckpoint, liveFloor);
+            if (hydrated.isPresent()) livePayload = hydrated.get();
+            else {
+                FetchResult fetched = fetchAndStage(lease, liveEndpoint, liveFloor);
+                lease = fetched.lease;
+                livePayload = fetched.payload;
+            }
+        }
         SourceDocument live = document(livePayload);
 
         Set<Integer> players = new LinkedHashSet<>();
@@ -250,6 +274,7 @@ public final class HistoryFixtureDispatcher {
         Instant historiesFinished = histories.values().stream()
                 .map(document -> document.readInterval().completedAt()).max(Instant::compareTo).orElseThrow();
         PayloadPair recheck = recheckPair(lease, season, historiesFinished.plusMillis(1));
+        lease = recheck.lease;
         Snapshot rechecked = recheck.snapshot;
         var finalFixture = rechecked.fixtures().stream().filter(row -> row.id() == fixtureId)
                 .findFirst().orElse(null);
@@ -318,20 +343,40 @@ public final class HistoryFixtureDispatcher {
                 ? (allowValid ? usableOwn(lease, Endpoint.fixtures(), floor)
                         : uncheckedOwn(lease, Endpoint.fixtures(), floor)).orElse(null) : null;
         boolean resumed = bootstrapCheckpoint != null || fixturesCheckpoint != null;
-        StagedPayload bootstrap = bootstrapCheckpoint == null ? fetchAndStage(lease, Endpoint.bootstrap()) : null;
-        StagedPayload fixtures = fixturesCheckpoint == null ? fetchAndStage(lease, Endpoint.fixtures()) : null;
+        StagedPayload bootstrap = null;
+        if (bootstrapCheckpoint == null) {
+            FetchResult fetched = fetchAndStage(lease, Endpoint.bootstrap(), floor);
+            lease = fetched.lease;
+            bootstrap = fetched.payload;
+        }
+        StagedPayload fixtures = null;
+        if (fixturesCheckpoint == null) {
+            FetchResult fetched = fetchAndStage(lease, Endpoint.fixtures(), floor);
+            lease = fetched.lease;
+            fixtures = fetched.payload;
+        }
         if (bootstrap == null) {
             bootstrap = store.hydrateStagedPayload(lease, Endpoint.bootstrap(), bootstrapCheckpoint, floor)
-                    .orElseGet(() -> fetchAndStage(lease, Endpoint.bootstrap()));
+                    .orElse(null);
+            if (bootstrap == null) {
+                FetchResult fetched = fetchAndStage(lease, Endpoint.bootstrap(), floor);
+                lease = fetched.lease;
+                bootstrap = fetched.payload;
+            }
         }
         if (fixtures == null) {
             fixtures = store.hydrateStagedPayload(lease, Endpoint.fixtures(), fixturesCheckpoint, floor)
-                    .orElseGet(() -> fetchAndStage(lease, Endpoint.fixtures()));
+                    .orElse(null);
+            if (fixtures == null) {
+                FetchResult fetched = fetchAndStage(lease, Endpoint.fixtures(), floor);
+                lease = fetched.lease;
+                fixtures = fetched.payload;
+            }
         }
         try {
             Snapshot parsed = CatalogueScheduleParser.parse(season, document(bootstrap), document(fixtures));
             store.validateStagedPayloads(lease, List.of(bootstrap.id(), fixtures.id()), Validation.valid());
-            return new PayloadPair(bootstrap, fixtures, parsed);
+            return new PayloadPair(lease, bootstrap, fixtures, parsed);
         } catch (IllegalArgumentException invalid) {
             store.validateStagedPayloads(lease, List.of(bootstrap.id(), fixtures.id()),
                     Validation.invalid(bounded(invalid.getMessage())));
@@ -363,16 +408,17 @@ public final class HistoryFixtureDispatcher {
         });
     }
 
-    private StagedPayload fetchAndStage(Lease lease, Endpoint endpoint) {
+    private FetchResult fetchAndStage(Lease lease, Endpoint endpoint, Instant sourceFloor) {
         Lease renewed = renewBeforeNetwork(lease);
-        Response response = requireResponse(renewed, endpoint);
+        Response response = requireResponse(renewed, endpoint, sourceFloor);
         long id = store.stage(renewed, endpoint, response.read(), Validation.unchecked(), response.body());
-        return new StagedPayload(id, renewed.generation(), endpoint.kind(), response.read(),
-                ValidationState.UNCHECKED, null, response.body());
+        return new FetchResult(renewed, new StagedPayload(id, renewed.generation(), endpoint.kind(),
+                response.read(), ValidationState.UNCHECKED, null, response.body()));
     }
 
-    private Response requireResponse(Lease lease, Endpoint endpoint) {
-        OwnedSyncHttpClient.Result result = fetch.get(endpoint, Math.max(1, lease.attemptCount()));
+    private Response requireResponse(Lease lease, Endpoint endpoint, Instant sourceFloor) {
+        OwnedSyncHttpClient.Result result = fetch.get(lease, endpoint,
+                Math.max(1, lease.attemptCount()), sourceFloor);
         if (result instanceof DeferredResult deferred) {
             defer(lease, future(deferred.nextDue()), "HTTP admission deferred: " + deferred.reason());
             throw new Stopped(DispatchResult.retry(FailureType.HTTP_DEFERRED));
@@ -403,7 +449,9 @@ public final class HistoryFixtureDispatcher {
     }
 
     private Lease renewBeforeNetwork(Lease lease) {
-        return Duration.between(clock.instant(), lease.expiresAt()).compareTo(NETWORK_RENEW_THRESHOLD) <= 0
+        Instant now = clock.instant();
+        if (!lease.expiresAt().isAfter(now)) return lease;
+        return Duration.between(now, lease.expiresAt()).compareTo(NETWORK_RENEW_THRESHOLD) <= 0
                 ? store.renew(lease, NETWORK_LEASE) : lease;
     }
 
@@ -535,21 +583,20 @@ public final class HistoryFixtureDispatcher {
                 payload.read().startedAt(), payload.read().finishedAt()));
     }
 
-    private static OwnedSyncHttpClient.Result withNextDue(OwnedSyncHttpClient.Result result,
-                                                           Optional<Instant> hint) {
-        Instant due = hint.orElse(null);
-        if (result instanceof Response response
-                && (response.statusCode() == 429 || response.statusCode() >= 500)) {
-            return new Response(response.statusCode(), response.body(), response.retryAfter(),
-                    response.read(), due);
-        }
-        if (result instanceof Failure failure && (failure.kind() == FailureKind.TIMEOUT
-                || failure.statusCode() != null
-                && (failure.statusCode() == 429 || failure.statusCode() >= 500))) {
-            return new Failure(failure.kind(), failure.message(), failure.statusCode(),
-                    failure.retryAfter(), failure.read(), due);
-        }
-        return result;
+    private static Fetch fencedFetch(OwnedSyncStore store, OwnedSyncHttpClient http) {
+        return new Fetch() {
+            @Override
+            public OwnedSyncHttpClient.Result get(Endpoint endpoint, int failureAttempt) {
+                throw new IllegalStateException("Owned-sync HTTP fetch requires its caller lease");
+            }
+
+            @Override
+            public OwnedSyncHttpClient.Result get(Lease lease, Endpoint endpoint, int failureAttempt,
+                                                  Instant sourceFloor) {
+                return http.get(endpoint, failureAttempt,
+                        () -> store.httpFence(lease, endpoint, sourceFloor));
+            }
+        };
     }
 
     private static Instant later(Instant first, Instant second) {
@@ -568,9 +615,7 @@ public final class HistoryFixtureDispatcher {
     }
 
     @FunctionalInterface
-    interface Fetch {
-        OwnedSyncHttpClient.Result get(Endpoint endpoint, int failureAttempt);
-    }
+    interface Fetch extends OwnedSyncHttpClient.DispatcherFetch { }
 
     public enum Outcome { COMPLETED, STAGED, WAITING_FOR_HISTORIES, PENDING, PUBLISHED, RETRY_SCHEDULED, FAILED }
     public enum FailureType {
@@ -592,10 +637,13 @@ public final class HistoryFixtureDispatcher {
         static DispatchResult failed(FailureType failure) { return new DispatchResult(Outcome.FAILED, failure, null); }
     }
 
-    private record PayloadPair(StagedPayload bootstrap, StagedPayload fixtures, Snapshot snapshot) {
+    private record PayloadPair(Lease lease, StagedPayload bootstrap,
+                               StagedPayload fixtures, Snapshot snapshot) {
         SourceDocument bootstrapDocument() { return document(bootstrap); }
         SourceDocument fixturesDocument() { return document(fixtures); }
     }
+
+    private record FetchResult(Lease lease, StagedPayload payload) { }
 
     private record CanonicalPair(StagedPayload bootstrap, StagedPayload fixtures, Snapshot snapshot) {
         boolean currentFor(CatalogueScheduleParser.ReadInterval child) {

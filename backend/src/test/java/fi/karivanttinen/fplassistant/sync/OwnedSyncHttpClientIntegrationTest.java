@@ -10,16 +10,17 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.AbstractExecutorService;
-import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
-import java.util.concurrent.FutureTask;
+import java.util.concurrent.Future;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
 
 import javax.sql.DataSource;
@@ -30,20 +31,34 @@ import fi.karivanttinen.fplassistant.sync.OwnedSyncHttpClient.DeferredResult;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncHttpClient.Failure;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncHttpClient.FailureKind;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncHttpClient.Response;
+import fi.karivanttinen.fplassistant.sync.OwnedSyncDbOperations.Outcome;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncRequestBudget.DeferredReason;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.Endpoint;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.EndpointKind;
+import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.FutureFloor;
+import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.HttpFenceResult;
+import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.Ready;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
+import org.apache.hc.core5.io.CloseMode;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 
 class OwnedSyncHttpClientIntegrationTest {
 
@@ -104,6 +119,203 @@ class OwnedSyncHttpClientIntegrationTest {
     }
 
     @Test
+    @Timeout(value = 10, unit = TimeUnit.SECONDS)
+    void productionFixedHostRequiresTheFencedOverload() {
+        OwnedSyncHttpClient production = new OwnedSyncHttpClient(budget);
+        transports.add(production);
+
+        assertThatThrownBy(() -> production.get(Endpoint.fixtures(), 1))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("caller fence");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.requestAttempt(), Integer.class)).isZero();
+    }
+
+    @Test
+    @Timeout(value = 10, unit = TimeUnit.SECONDS)
+    void fenceCallbacksBracketAdmissionOnSupervisedDbWorkersAndFinishTransactionsBeforeHttp() throws Exception {
+        AtomicInteger fenceCalls = new AtomicInteger();
+        AtomicInteger transactionCompletions = new AtomicInteger();
+        List<Thread> callbackThreads = new CopyOnWriteArrayList<>();
+        HttpServer server = server(exchange -> {
+            assertThat(fenceCalls).hasValue(2);
+            assertThat(transactionCompletions).hasValue(2);
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.requestAttempt()
+                    + " WHERE completed_at IS NULL", Integer.class)).isEqualTo(1);
+            respond(exchange, 200, new byte[0]);
+        });
+        URI base = URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/api/");
+        OwnedSyncHttpClient transport = new OwnedSyncHttpClient(
+                budget, base, Duration.ofSeconds(2), budgetClock);
+        transports.add(transport);
+        Thread caller = Thread.currentThread();
+        java.util.function.Supplier<HttpFenceResult> fence = () -> {
+            callbackThreads.add(Thread.currentThread());
+            return tx.execute(status -> {
+                int ordinal = fenceCalls.incrementAndGet();
+                int attempts = jdbc.queryForObject("SELECT count(*) FROM " + TABLES.requestAttempt(),
+                        Integer.class);
+                assertThat(attempts).isEqualTo(ordinal == 1 ? 0 : 1);
+                TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                    @Override public void afterCompletion(int completionStatus) {
+                        transactionCompletions.incrementAndGet();
+                    }
+                });
+                return readyFence();
+            });
+        };
+
+        assertThat(transport.get(Endpoint.fixtures(), 1, fence)).isInstanceOf(Response.class);
+
+        assertThat(callbackThreads).hasSize(2).allSatisfy(thread -> {
+            assertThat(thread).isNotSameAs(caller);
+            assertThat(thread.getName()).startsWith("owned-sync-db-");
+        });
+        assertCompletedPermit();
+    }
+
+    @Test
+    void futureFloorBeforeAdmissionReturnsItsDueWithoutCreatingPermitOrGetting() throws Exception {
+        Instant nextDue = budgetClock.instant().plus(Duration.ofMinutes(8));
+        AtomicInteger calls = new AtomicInteger();
+        HttpServer server = server(exchange -> {
+            calls.incrementAndGet();
+            respond(exchange, 200, new byte[0]);
+        });
+        OwnedSyncHttpClient transport = transport(server, Duration.ofSeconds(2));
+
+        DeferredResult result = (DeferredResult) transport.get(Endpoint.fixtures(), 1,
+                () -> new FutureFloor(nextDue));
+
+        assertThat(result.nextDue()).isEqualTo(nextDue);
+        assertThat(result.reason()).isEqualTo(DeferredReason.HTTP_NOT_SUBMITTED);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.requestAttempt(), Integer.class)).isZero();
+        assertThat(calls).hasValue(0);
+    }
+
+    @Test
+    void futureFloorAfterAdmissionSettlesPermitAndReturnsItsExactDueWithoutGetting() throws Exception {
+        Instant nextDue = budgetClock.instant().plus(Duration.ofMinutes(8));
+        AtomicInteger fences = new AtomicInteger();
+        AtomicInteger calls = new AtomicInteger();
+        HttpServer server = server(exchange -> {
+            calls.incrementAndGet();
+            respond(exchange, 200, new byte[0]);
+        });
+        OwnedSyncHttpClient transport = transport(server, Duration.ofSeconds(2));
+
+        DeferredResult result = (DeferredResult) transport.get(Endpoint.fixtures(), 1,
+                () -> fences.incrementAndGet() == 1 ? readyFence() : new FutureFloor(nextDue));
+
+        assertThat(result.nextDue()).isEqualTo(nextDue);
+        assertThat(result.reason()).isEqualTo(DeferredReason.HTTP_NOT_SUBMITTED);
+        assertThat(fences).hasValue(2);
+        assertCompletedPermit();
+        assertThat(calls).hasValue(0);
+    }
+
+    @Test
+    void lostFenceBeforePermitSkipsAdmissionAndLostFenceAfterPermitSettlesNoFetch() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        AtomicInteger serverCalls = new AtomicInteger();
+        HttpServer server = server(exchange -> {
+            serverCalls.incrementAndGet();
+            respond(exchange, 200, new byte[0]);
+        });
+        OwnedSyncHttpClient transport = transport(server, Duration.ofSeconds(2));
+
+        DeferredResult before = (DeferredResult) transport.get(Endpoint.fixtures(), 1, () -> {
+            calls.incrementAndGet();
+            throw new IllegalStateException("lease lost");
+        });
+        assertThat(before.reason()).isEqualTo(DeferredReason.DB_ADMISSION_UNCERTAIN);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.requestAttempt(), Integer.class)).isZero();
+
+        DeferredResult after = (DeferredResult) transport.get(Endpoint.fixtures(), 1, () -> {
+            if (calls.incrementAndGet() == 2) return readyFence();
+            throw new IllegalStateException("lease lost after admission");
+        });
+        assertThat(after.reason()).isEqualTo(DeferredReason.NO_FETCH_UNCERTAIN);
+        assertCompletedPermit();
+        assertThat(serverCalls).hasValue(0);
+    }
+
+    @Test
+    @Timeout(value = 10, unit = TimeUnit.SECONDS)
+    void sendGateRejectsReadyFenceThatExpiresWhileExchangeWorkerIsWaiting() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        HttpServer server = server(exchange -> {
+            calls.incrementAndGet();
+            respond(exchange, 200, new byte[0]);
+        });
+        DelayedExecutor delayed = new DelayedExecutor();
+        URI base = URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/api/");
+        OwnedSyncHttpClient transport = new OwnedSyncHttpClient(budget, base,
+                Duration.ofSeconds(5), budgetClock, delayed);
+        transports.add(transport);
+        AtomicInteger fences = new AtomicInteger();
+        AtomicReference<OwnedSyncHttpClient.Result> result = new AtomicReference<>();
+        Thread caller = Thread.ofPlatform().start(() -> result.set(transport.get(Endpoint.fixtures(), 1,
+                () -> fences.incrementAndGet() == 1 ? readyFence()
+                        : new Ready(budgetClock.instant().plusSeconds(50), budgetClock.instant()))));
+
+        assertThat(delayed.awaitSubmitted()).isTrue();
+        budgetClock.advance(Duration.ofSeconds(51));
+        delayed.release();
+        caller.join(3_000);
+
+        assertThat(caller.isAlive()).isFalse();
+        assertThat(result.get()).isInstanceOfSatisfying(DeferredResult.class,
+                deferred -> assertThat(deferred.reason()).isEqualTo(DeferredReason.HTTP_NOT_SUBMITTED));
+        assertThat(fences).hasValue(2);
+        assertCompletedPermit();
+        assertThat(calls).hasValue(0);
+    }
+
+    @Test
+    @Timeout(value = 10, unit = TimeUnit.SECONDS)
+    void timedOutPostAdmissionFenceSettlesPermitAndLateReadyCannotSend() throws Exception {
+        CountDownLatch stalledFence = new CountDownLatch(1);
+        CountDownLatch releaseFence = new CountDownLatch(1);
+        CountDownLatch fenceFinished = new CountDownLatch(1);
+        AtomicInteger fences = new AtomicInteger();
+        AtomicInteger calls = new AtomicInteger();
+        HttpServer server = server(exchange -> {
+            calls.incrementAndGet();
+            respond(exchange, 200, new byte[0]);
+        });
+        OwnedSyncDbOperations operations = new OwnedSyncDbOperations(Duration.ofMillis(100));
+        OwnedSyncHttpClient transport = transport(
+                server, Duration.ofSeconds(2), operations, Duration.ofSeconds(3));
+        try {
+            DeferredResult result = (DeferredResult) transport.get(Endpoint.fixtures(), 1, () -> {
+                if (fences.incrementAndGet() == 1) return readyFence();
+                stalledFence.countDown();
+                try {
+                    releaseFence.await();
+                    return readyFence();
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(interrupted);
+                } finally {
+                    fenceFinished.countDown();
+                }
+            });
+
+            assertThat(stalledFence.getCount()).isZero();
+            assertThat(result.reason()).isEqualTo(DeferredReason.NO_FETCH_UNCERTAIN);
+            assertCompletedPermit();
+            assertThat(calls).hasValue(0);
+            releaseFence.countDown();
+            assertThat(fenceFinished.await(2, TimeUnit.SECONDS)).isTrue();
+            assertThat(fences).hasValue(2);
+            assertThat(calls).hasValue(0);
+        } finally {
+            releaseFence.countDown();
+            operations.close();
+        }
+    }
+
+    @Test
     void deferredAdmissionMakesNoRequestAndReturnsCause() throws Exception {
         AtomicInteger calls = new AtomicInteger();
         HttpServer server = server(exchange -> {
@@ -118,6 +330,112 @@ class OwnedSyncHttpClientIntegrationTest {
         assertThat(deferred.reason()).isEqualTo(DeferredReason.MINIMUM_SPACING);
         assertThat(deferred.nextDue()).isEqualTo(budgetClock.instant().plusSeconds(1));
         assertThat(calls).hasValue(1);
+    }
+
+    @Test
+    @Timeout(value = 10, unit = TimeUnit.SECONDS)
+    void serverObservedGetStartsStayOneSecondApartAfterDelayedFirstStart() throws Exception {
+        Clock actualClock = Clock.systemUTC();
+        budget = new OwnedSyncRequestBudget(jdbc, tx, actualClock, TABLES);
+        List<ServerObservation> observations = new CopyOnWriteArrayList<>();
+        HttpServer server = server(exchange -> {
+            observations.add(new ServerObservation(Instant.now(), System.nanoTime()));
+            respond(exchange, 200, new byte[0]);
+        });
+        URI base = URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/api/");
+        DelayedExecutor delayed = new DelayedExecutor();
+        OwnedSyncHttpClient firstTransport = new OwnedSyncHttpClient(budget, base,
+                Duration.ofSeconds(5), actualClock, delayed);
+        transports.add(firstTransport);
+        OwnedSyncHttpClient secondTransport = new OwnedSyncHttpClient(budget, base, Duration.ofSeconds(5));
+        transports.add(secondTransport);
+        AtomicReference<OwnedSyncHttpClient.Result> firstResult = new AtomicReference<>();
+        Thread firstCaller = Thread.ofPlatform().start(
+                () -> firstResult.set(firstTransport.get(Endpoint.fixtures(), 1)));
+
+        assertThat(delayed.awaitSubmitted()).isTrue();
+        Instant admittedAt = jdbc.queryForObject("SELECT admitted_at FROM " + TABLES.requestAttempt(),
+                java.sql.Timestamp.class).toInstant();
+        DeferredResult overlapping = (DeferredResult) secondTransport.get(Endpoint.fixtures(), 1);
+        assertThat(overlapping.reason()).isEqualTo(DeferredReason.UNSETTLED);
+        assertThat(observations).isEmpty();
+
+        LockSupport.parkNanos(Duration.ofMillis(800).toNanos());
+        delayed.release();
+        firstCaller.join(5_000);
+        assertThat(firstCaller.isAlive()).isFalse();
+        assertThat(firstResult.get()).isInstanceOf(Response.class);
+        assertThat(delayed.awaitFinished()).isTrue();
+        assertThat(observations).hasSize(1);
+        assertThat(Duration.between(admittedAt, observations.get(0).observedAt()))
+                .isGreaterThanOrEqualTo(Duration.ofMillis(750));
+
+        DeferredResult spacing = (DeferredResult) secondTransport.get(Endpoint.fixtures(), 1);
+        assertThat(spacing.reason()).isEqualTo(DeferredReason.MINIMUM_SPACING);
+        Instant completedAt = jdbc.queryForObject("SELECT completed_at FROM " + TABLES.requestAttempt(),
+                java.sql.Timestamp.class).toInstant();
+        assertThat(spacing.nextDue()).isEqualTo(completedAt.plusSeconds(1));
+        assertThat(budget.nextAdmissionHint()).isEmpty();
+        assertThat(observations).hasSize(1);
+
+        long waitNanos = Duration.between(Instant.now(), spacing.nextDue().plusMillis(25)).toNanos();
+        if (waitNanos > 0) LockSupport.parkNanos(waitNanos);
+        assertThat(secondTransport.get(Endpoint.fixtures(), 1)).isInstanceOf(Response.class);
+
+        assertThat(observations).hasSize(2);
+        assertThat(observations.get(1).monotonicNanos() - observations.get(0).monotonicNanos())
+                .isGreaterThanOrEqualTo(Duration.ofSeconds(1).toNanos());
+    }
+
+    @Test
+    @Timeout(value = 10, unit = TimeUnit.SECONDS)
+    void delayed800MillisecondResponseUsesMinimumSpacingNotCooldown() throws Exception {
+        Clock actualClock = Clock.systemUTC();
+        budget = new OwnedSyncRequestBudget(jdbc, tx, actualClock, TABLES);
+        List<ServerObservation> observations = new CopyOnWriteArrayList<>();
+        CountDownLatch firstRequestStarted = new CountDownLatch(1);
+        AtomicInteger calls = new AtomicInteger();
+        HttpServer server = server(exchange -> {
+            observations.add(new ServerObservation(Instant.now(), System.nanoTime()));
+            if (calls.getAndIncrement() == 0) {
+                firstRequestStarted.countDown();
+                LockSupport.parkNanos(Duration.ofMillis(800).toNanos());
+            }
+            respond(exchange, 200, new byte[0]);
+        });
+        URI base = URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/api/");
+        OwnedSyncHttpClient firstTransport = new OwnedSyncHttpClient(budget, base,
+                Duration.ofSeconds(5), actualClock);
+        transports.add(firstTransport);
+        OwnedSyncHttpClient secondTransport = new OwnedSyncHttpClient(budget, base,
+                Duration.ofSeconds(5), actualClock);
+        transports.add(secondTransport);
+        AtomicReference<OwnedSyncHttpClient.Result> firstResult = new AtomicReference<>();
+        Thread firstCaller = Thread.ofPlatform().start(
+                () -> firstResult.set(firstTransport.get(Endpoint.fixtures(), 1)));
+
+        assertThat(firstRequestStarted.await(2, TimeUnit.SECONDS)).isTrue();
+        DeferredResult overlapping = (DeferredResult) secondTransport.get(Endpoint.fixtures(), 1);
+        assertThat(overlapping.reason()).isEqualTo(DeferredReason.UNSETTLED);
+        firstCaller.join(5_000);
+        assertThat(firstCaller.isAlive()).isFalse();
+        assertThat(firstResult.get()).isInstanceOf(Response.class);
+
+        Instant completedAt = jdbc.queryForObject("SELECT completed_at FROM " + TABLES.requestAttempt(),
+                java.sql.Timestamp.class).toInstant();
+        assertThat(Duration.between(observations.getFirst().observedAt(), completedAt))
+                .isGreaterThanOrEqualTo(Duration.ofMillis(750));
+        DeferredResult spacing = (DeferredResult) secondTransport.get(Endpoint.fixtures(), 1);
+        assertThat(spacing.reason()).isEqualTo(DeferredReason.MINIMUM_SPACING);
+        assertThat(spacing.nextDue()).isEqualTo(completedAt.plusSeconds(1));
+        assertThat(budget.nextAdmissionHint()).isEmpty();
+
+        long waitNanos = Duration.between(Instant.now(), spacing.nextDue().plusMillis(25)).toNanos();
+        if (waitNanos > 0) LockSupport.parkNanos(waitNanos);
+        assertThat(secondTransport.get(Endpoint.fixtures(), 1)).isInstanceOf(Response.class);
+        assertThat(observations).hasSize(2);
+        assertThat(observations.get(1).monotonicNanos() - observations.get(0).monotonicNanos())
+                .isGreaterThanOrEqualTo(Duration.ofSeconds(1).toNanos());
     }
 
     @Test
@@ -140,7 +458,7 @@ class OwnedSyncHttpClientIntegrationTest {
     }
 
     @Test
-    void connectionClosedBeforeHeadersIsNotRetriedAfterTheJdkClientIsInitialized() throws Exception {
+    void connectionClosedBeforeHeadersLeavesUnknownAttemptBlockingAcrossRestartAndTtl() throws Exception {
         HttpServer unrelated = server(exchange -> respond(exchange, 200, new byte[0]));
         URI unrelatedUri = URI.create("http://127.0.0.1:" + unrelated.getAddress().getPort() + "/initialize");
         java.net.http.HttpClient.newHttpClient().send(
@@ -152,20 +470,34 @@ class OwnedSyncHttpClientIntegrationTest {
             calls.incrementAndGet();
             exchange.close();
         });
+        OwnedSyncHttpClient transport = transport(server, Duration.ofSeconds(2));
 
-        Failure failure = (Failure) transport(server, Duration.ofSeconds(2)).get(Endpoint.fixtures(), 1);
+        DeferredResult unknown = (DeferredResult) transport.get(Endpoint.fixtures(), 1);
 
-        assertThat(failure.kind()).isEqualTo(FailureKind.IO_ERROR);
+        assertThat(unknown.reason()).isEqualTo(DeferredReason.HTTP_EXCHANGE_UNCERTAIN);
         assertThat(calls).hasValue(1);
-        assertCompletedPermit();
+        assertThat(jdbc.queryForObject("SELECT completed_at IS NULL FROM " + TABLES.requestAttempt(),
+                Boolean.class)).isTrue();
+        assertThat(((DeferredResult) transport.get(Endpoint.fixtures(), 1)).reason())
+                .isEqualTo(DeferredReason.UNSETTLED);
+
+        budgetClock.advance(Duration.ofMinutes(3));
+        OwnedSyncRequestBudget reopenedBudget = new OwnedSyncRequestBudget(jdbc, tx, budgetClock, TABLES);
+        OwnedSyncHttpClient restarted = new OwnedSyncHttpClient(reopenedBudget,
+                URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/api/"),
+                Duration.ofSeconds(2));
+        transports.add(restarted);
+        assertThat(((DeferredResult) restarted.get(Endpoint.fixtures(), 1)).reason())
+                .isEqualTo(DeferredReason.UNSETTLED);
+        assertThat(calls).hasValue(1);
     }
 
     @Test
-    void retryAfterOn429IsPersistedAndOnlyOneAttemptIsSent() throws Exception {
+    void twoHourRetryAfterOn429IsPersistedAndOnlyOneAttemptIsSent() throws Exception {
         AtomicInteger calls = new AtomicInteger();
         HttpServer server = server(exchange -> {
             calls.incrementAndGet();
-            exchange.getResponseHeaders().add("Retry-After", "120");
+            exchange.getResponseHeaders().add("Retry-After", "7200");
             respond(exchange, 429, "slow down".getBytes(StandardCharsets.UTF_8));
         });
         OwnedSyncHttpClient transport = transport(server, Duration.ofSeconds(2));
@@ -174,9 +506,10 @@ class OwnedSyncHttpClientIntegrationTest {
         DeferredResult deferred = (DeferredResult) transport.get(Endpoint.fixtures(), 1);
 
         assertThat(response.statusCode()).isEqualTo(429);
-        assertThat(response.retryAfter()).isEqualTo("120");
+        assertThat(response.retryAfter()).isEqualTo("7200");
+        assertThat(response.nextDue()).isEqualTo(budgetClock.instant().plusSeconds(7_200));
         assertThat(deferred.reason()).isEqualTo(DeferredReason.COOLDOWN);
-        assertThat(deferred.nextDue()).isEqualTo(budgetClock.instant().plusSeconds(120));
+        assertThat(deferred.nextDue()).isEqualTo(budgetClock.instant().plusSeconds(7_200));
         assertThat(calls).hasValue(1);
     }
 
@@ -217,6 +550,34 @@ class OwnedSyncHttpClientIntegrationTest {
     }
 
     @Test
+    void timeoutBeforeHeadersLeavesAttemptUnknownAndNeverAdmitsAnotherGet() throws Exception {
+        CountDownLatch requestReceived = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        AtomicInteger calls = new AtomicInteger();
+        HttpServer server = server(exchange -> {
+            calls.incrementAndGet();
+            requestReceived.countDown();
+            await(release);
+            exchange.close();
+        });
+        OwnedSyncHttpClient transport = transport(server, Duration.ofMillis(150));
+        var result = new java.util.concurrent.atomic.AtomicReference<OwnedSyncHttpClient.Result>();
+        Thread caller = Thread.ofPlatform().start(() -> result.set(transport.get(Endpoint.fixtures(), 1)));
+        assertThat(requestReceived.await(2, TimeUnit.SECONDS)).isTrue();
+        caller.join(2_000);
+        release.countDown();
+
+        assertThat(caller.isAlive()).isFalse();
+        DeferredResult unknown = (DeferredResult) result.get();
+        assertThat(unknown.reason()).isEqualTo(DeferredReason.HTTP_EXCHANGE_UNCERTAIN);
+        assertThat(jdbc.queryForObject("SELECT completed_at IS NULL FROM " + TABLES.requestAttempt(),
+                Boolean.class)).isTrue();
+        assertThat(((DeferredResult) transport.get(Endpoint.fixtures(), 1)).reason())
+                .isEqualTo(DeferredReason.UNSETTLED);
+        assertThat(calls).hasValue(1);
+    }
+
+    @Test
     void retryAfterHeadersSurviveAHangingBodyTimeout() throws Exception {
         CountDownLatch release = new CountDownLatch(1);
         HttpServer server = server(exchange -> {
@@ -234,6 +595,7 @@ class OwnedSyncHttpClientIntegrationTest {
         assertThat(failure.kind()).isEqualTo(FailureKind.TIMEOUT);
         assertThat(failure.statusCode()).isEqualTo(429);
         assertThat(failure.retryAfter()).isEqualTo("90");
+        assertThat(failure.nextDue()).isEqualTo(budgetClock.instant().plusSeconds(90));
         OwnedSyncRequestBudget.Deferred deferred = (OwnedSyncRequestBudget.Deferred) budget.admit();
         assertThat(deferred.reason()).isEqualTo(DeferredReason.COOLDOWN);
         assertThat(deferred.nextDue()).isEqualTo(budgetClock.instant().plusSeconds(90));
@@ -253,7 +615,7 @@ class OwnedSyncHttpClientIntegrationTest {
     }
 
     @Test
-    void interruptionCancelsTheExchangeRestoresTheFlagAndCompletesPermit() throws Exception {
+    void interruptionBeforeHeadersLeavesUnknownAttemptAndRestoresTheFlag() throws Exception {
         CountDownLatch entered = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
         HttpServer server = server(exchange -> {
@@ -275,42 +637,409 @@ class OwnedSyncHttpClientIntegrationTest {
         release.countDown();
 
         assertThat(worker.isAlive()).isFalse();
-        assertThat(((Failure) result.get()).kind()).isEqualTo(FailureKind.INTERRUPTED);
+        assertThat(result.get()).isInstanceOfSatisfying(DeferredResult.class,
+                deferred -> assertThat(deferred.reason()).isEqualTo(DeferredReason.HTTP_EXCHANGE_UNCERTAIN));
         assertThat(interrupted).isTrue();
-        assertCompletedPermit();
+        assertThat(jdbc.queryForObject("SELECT completed_at IS NULL FROM " + TABLES.requestAttempt(),
+                Boolean.class)).isTrue();
+        assertThat(((DeferredResult) transport.get(Endpoint.fixtures(), 1)).reason())
+                .isEqualTo(DeferredReason.UNSETTLED);
     }
 
     @Test
-    void unacknowledgedCancellationReturnsBoundedlyAndHoldsPermitThroughCooldownUntilExpiry() throws Exception {
-        HttpServer server = server(exchange -> respond(exchange, 200, new byte[0]));
-        var blocked = new UnacknowledgedExecutor();
+    void stopSendingRefusesBeforeDatabaseAdmission() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        HttpServer server = server(exchange -> {
+            calls.incrementAndGet();
+            respond(exchange, 200, new byte[0]);
+        });
+        OwnedSyncHttpClient transport = transport(server, Duration.ofSeconds(2));
+        transport.stopSending();
+
+        DeferredResult stopped = (DeferredResult) transport.get(Endpoint.fixtures(), 1);
+
+        assertThat(stopped.reason()).isEqualTo(DeferredReason.HTTP_CLIENT_CLOSED);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.requestAttempt(), Integer.class)).isZero();
+        assertThat(calls).hasValue(0);
+    }
+
+    @Test
+    @Timeout(value = 10, unit = TimeUnit.SECONDS)
+    void delayedWorkerReleasedAfterStopSendingSettlesPermitWithoutSending() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        HttpServer server = server(exchange -> {
+            calls.incrementAndGet();
+            respond(exchange, 200, new byte[0]);
+        });
+        DelayedExecutor delayed = new DelayedExecutor();
         OwnedSyncHttpClient transport = new OwnedSyncHttpClient(budget,
                 URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/api/"),
-                Duration.ofMillis(100), blocked);
+                Duration.ofSeconds(5), budgetClock, delayed);
         transports.add(transport);
+        var result = new AtomicReference<OwnedSyncHttpClient.Result>();
+        Thread caller = Thread.ofPlatform().start(
+                () -> result.set(transport.get(Endpoint.fixtures(), 1, this::readyFence)));
 
-        long started = System.nanoTime();
-        Failure failure = (Failure) transport.get(Endpoint.fixtures(), 1);
-        Duration elapsed = Duration.ofNanos(System.nanoTime() - started);
+        assertThat(delayed.awaitSubmitted()).isTrue();
+        transport.stopSending();
+        delayed.release();
+        caller.join(2_000);
 
-        assertThat(failure.kind()).isEqualTo(FailureKind.TIMEOUT);
-        assertThat(elapsed).isLessThan(Duration.ofSeconds(2));
-        assertThat(jdbc.queryForObject("SELECT hold_until_expiry FROM " + TABLES.requestAttempt(),
-                Boolean.class)).isTrue();
+        assertThat(caller.isAlive()).isFalse();
+        assertThat(result.get()).isInstanceOfSatisfying(DeferredResult.class,
+                deferred -> assertThat(deferred.reason()).isEqualTo(DeferredReason.HTTP_CLIENT_CLOSED));
         assertThat(jdbc.queryForObject("SELECT completed_at IS NOT NULL FROM " + TABLES.requestAttempt(),
                 Boolean.class)).isTrue();
-        DeferredResult cooldown = (DeferredResult) transport.get(Endpoint.fixtures(), 1);
-        assertThat(cooldown.reason()).isEqualTo(DeferredReason.COOLDOWN);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.requestAttempt(), Integer.class)).isEqualTo(1);
+        assertThat(((DeferredResult) transport.get(Endpoint.fixtures(), 1)).reason())
+                .isEqualTo(DeferredReason.HTTP_CLIENT_CLOSED);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.requestAttempt(), Integer.class)).isEqualTo(1);
+        assertThat(delayed.awaitFinished()).isTrue();
+        assertThat(calls).hasValue(0);
+    }
 
-        budgetClock.advance(Duration.ofSeconds(3));
-        assertThat(budget.admit()).isInstanceOf(OwnedSyncRequestBudget.Allowed.class);
-        budgetClock.advance(Duration.ofSeconds(1));
-        OwnedSyncRequestBudget.Deferred occupied = (OwnedSyncRequestBudget.Deferred) budget.admit();
-        assertThat(occupied.reason()).isEqualTo(DeferredReason.LIVE_PERMITS);
-        assertThat(occupied.nextDue()).isEqualTo(Instant.parse("2097-08-15T12:02:00Z"));
+    @Test
+    @Timeout(value = 5, unit = TimeUnit.SECONDS)
+    void blockedClientCloseRunsOffCallerAndConcurrentGetDoesNotReachDatabase() throws Exception {
+        CountDownLatch closeEntered = new CountDownLatch(1);
+        CountDownLatch releaseClose = new CountDownLatch(1);
+        AtomicReference<Thread> closeThread = new AtomicReference<>();
+        CloseableHttpClient apache = mock(CloseableHttpClient.class);
+        doAnswer(invocation -> {
+            closeThread.set(Thread.currentThread());
+            closeEntered.countDown();
+            awaitIgnoringInterrupts(releaseClose);
+            return null;
+        }).when(apache).close(CloseMode.IMMEDIATE);
+        OwnedSyncDbOperations operations = new OwnedSyncDbOperations(Duration.ofMillis(100));
+        OwnedSyncHttpClient transport = customTransport(apache, boundedExecutor(1, "close-control-"), operations);
+        AtomicReference<Throwable> closeFailure = new AtomicReference<>();
+        Thread caller = Thread.currentThread();
+        Thread closer = Thread.ofPlatform().start(() -> {
+            try {
+                transport.close();
+            } catch (Throwable failure) {
+                closeFailure.set(failure);
+            }
+        });
 
-        budgetClock.advance(Duration.between(budgetClock.instant(), occupied.nextDue()));
-        assertThat(budget.admit()).isInstanceOf(OwnedSyncRequestBudget.Allowed.class);
+        try {
+            assertThat(closeEntered.await(1, TimeUnit.SECONDS)).isTrue();
+            DeferredResult stopped = (DeferredResult) transport.get(Endpoint.fixtures(), 1);
+            closer.join(2_000);
+
+            assertThat(closer.isAlive()).isFalse();
+            assertThat(closeFailure.get()).isNull();
+            assertThat(closeThread.get()).isNotSameAs(caller);
+            assertThat(stopped.reason()).isEqualTo(DeferredReason.HTTP_CLIENT_CLOSED);
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.requestAttempt(), Integer.class)).isZero();
+            assertThat(operations.call(() -> true, OwnedSyncDeadline.after(Duration.ofSeconds(1))))
+                    .isInstanceOfSatisfying(OwnedSyncDbOperations.Rejected.class,
+                            rejected -> assertThat(rejected.reason())
+                                    .isEqualTo(OwnedSyncDbOperations.Rejection.CLOSED));
+        } finally {
+            releaseClose.countDown();
+            closer.join(1_000);
+        }
+    }
+
+    @Test
+    @Timeout(value = 5, unit = TimeUnit.SECONDS)
+    void throwingClientCloseDoesNotSkipExecutorAndDatabaseCleanup() throws Exception {
+        CloseableHttpClient apache = mock(CloseableHttpClient.class);
+        doThrow(new IllegalStateException("close failed")).when(apache).close(CloseMode.IMMEDIATE);
+        OwnedSyncDbOperations operations = new OwnedSyncDbOperations(Duration.ofMillis(100));
+        OwnedSyncHttpClient transport = customTransport(apache, boundedExecutor(1, "close-control-"), operations);
+
+        transport.close();
+
+        verify(apache).close(CloseMode.IMMEDIATE);
+        assertThat(operations.call(() -> true, OwnedSyncDeadline.after(Duration.ofSeconds(1))))
+                .isInstanceOfSatisfying(OwnedSyncDbOperations.Rejected.class,
+                        rejected -> assertThat(rejected.reason()).isEqualTo(OwnedSyncDbOperations.Rejection.CLOSED));
+    }
+
+    @Test
+    @Timeout(value = 5, unit = TimeUnit.SECONDS)
+    void saturatedControlWorkerDoesNotBlockCloseOrSkipOtherCleanup() throws Exception {
+        CountDownLatch controlStarted = new CountDownLatch(1);
+        CountDownLatch releaseControl = new CountDownLatch(1);
+        ThreadPoolExecutor control = boundedExecutor(1, "close-control-");
+        control.execute(() -> {
+            controlStarted.countDown();
+            awaitIgnoringInterrupts(releaseControl);
+        });
+        assertThat(controlStarted.await(1, TimeUnit.SECONDS)).isTrue();
+        CloseableHttpClient apache = mock(CloseableHttpClient.class);
+        OwnedSyncDbOperations operations = new OwnedSyncDbOperations(Duration.ofMillis(100));
+        OwnedSyncHttpClient transport = customTransport(apache, control, operations);
+
+        try {
+            transport.close();
+
+            verify(apache, never()).close(CloseMode.IMMEDIATE);
+            assertThat(operations.call(() -> true, OwnedSyncDeadline.after(Duration.ofSeconds(1))))
+                    .isInstanceOfSatisfying(OwnedSyncDbOperations.Rejected.class,
+                            rejected -> assertThat(rejected.reason())
+                                    .isEqualTo(OwnedSyncDbOperations.Rejection.CLOSED));
+        } finally {
+            releaseControl.countDown();
+        }
+    }
+
+    @Test
+    @Timeout(value = 10, unit = TimeUnit.SECONDS)
+    void delayedWorkerReleasedAfterTimeoutCannotSendAndNoEarlyAdmissionOccurs() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        HttpServer server = server(exchange -> {
+            calls.incrementAndGet();
+            respond(exchange, 200, new byte[0]);
+        });
+        DelayedExecutor delayed = new DelayedExecutor();
+        OwnedSyncHttpClient transport = new OwnedSyncHttpClient(budget,
+                URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/api/"),
+                Duration.ofMillis(150), delayed);
+        transports.add(transport);
+
+        DeferredResult notSubmitted = (DeferredResult) transport.get(Endpoint.fixtures(), 1);
+
+        assertThat(notSubmitted.reason()).isEqualTo(DeferredReason.HTTP_NOT_SUBMITTED);
+        assertThat(jdbc.queryForObject("SELECT completed_at IS NOT NULL FROM " + TABLES.requestAttempt(),
+                Boolean.class)).isTrue();
+        assertThat(((DeferredResult) transport.get(Endpoint.fixtures(), 1)).reason())
+                .isEqualTo(DeferredReason.MINIMUM_SPACING);
+        assertThat(calls).hasValue(0);
+
+        delayed.release();
+        assertThat(delayed.awaitFinished()).isTrue();
+        assertThat(calls).hasValue(0);
+    }
+
+    @Test
+    @Timeout(value = 10, unit = TimeUnit.SECONDS)
+    void insufficientExchangeTimeSettlesProvenNoFetch() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        HttpServer server = server(exchange -> {
+            calls.incrementAndGet();
+            respond(exchange, 200, new byte[0]);
+        });
+        OwnedSyncDbOperations operations = new OwnedSyncDbOperations(Duration.ofMillis(250));
+        OwnedSyncHttpClient transport = transport(
+                server, Duration.ofSeconds(2), operations, Duration.ofSeconds(2));
+        try {
+            DeferredResult result = (DeferredResult) transport.get(Endpoint.fixtures(), 1);
+
+            assertThat(result.reason()).isEqualTo(DeferredReason.HTTP_NOT_SUBMITTED);
+            assertCompletedPermit();
+            assertThat(calls).hasValue(0);
+        } finally {
+            operations.close();
+        }
+    }
+
+    @Test
+    @Timeout(value = 10, unit = TimeUnit.SECONDS)
+    void rejectedPostAdmissionAttemptClearsAndRestoresInterruptForSupervisedSettlement() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        HttpServer server = server(exchange -> {
+            calls.incrementAndGet();
+            respond(exchange, 200, new byte[0]);
+        });
+        RejectingInterruptingExecutor rejecting = new RejectingInterruptingExecutor();
+        OwnedSyncHttpClient transport = new OwnedSyncHttpClient(budget,
+                URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/api/"),
+                Duration.ofSeconds(2), rejecting);
+        transports.add(transport);
+        var result = new java.util.concurrent.atomic.AtomicReference<OwnedSyncHttpClient.Result>();
+        var interrupted = new java.util.concurrent.atomic.AtomicBoolean();
+        Thread caller = Thread.ofPlatform().start(() -> {
+            result.set(transport.get(Endpoint.fixtures(), 1));
+            interrupted.set(Thread.currentThread().isInterrupted());
+        });
+        caller.join(3_000);
+
+        assertThat(caller.isAlive()).isFalse();
+        assertThat(result.get()).isInstanceOfSatisfying(DeferredResult.class,
+                deferred -> assertThat(deferred.reason()).isEqualTo(DeferredReason.HTTP_WORKERS_SATURATED));
+        assertThat(interrupted).isTrue();
+        assertCompletedPermit();
+        assertThat(calls).hasValue(0);
+    }
+
+    @Test
+    @Timeout(value = 10, unit = TimeUnit.SECONDS)
+    void sourceReadIntervalBeginsOnExchangeWorkerAndAdmissionWaitsForIt() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        HttpServer server = server(exchange -> {
+            calls.incrementAndGet();
+            respond(exchange, 200, new byte[0]);
+        });
+        MutableClock workerClock = new MutableClock(budgetClock.instant());
+        DelayedExecutor delayed = new DelayedExecutor();
+        OwnedSyncHttpClient transport = new OwnedSyncHttpClient(budget,
+                URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/api/"),
+                Duration.ofSeconds(3), workerClock, delayed);
+        transports.add(transport);
+        var result = new java.util.concurrent.atomic.AtomicReference<OwnedSyncHttpClient.Result>();
+        Thread caller = Thread.ofPlatform().start(() -> result.set(transport.get(Endpoint.fixtures(), 1)));
+
+        assertThat(delayed.awaitSubmitted()).isTrue();
+        java.time.Instant admittedAt = jdbc.queryForObject("SELECT admitted_at FROM "
+                + TABLES.requestAttempt(), java.sql.Timestamp.class).toInstant();
+        assertThat(((DeferredResult) transport.get(Endpoint.fixtures(), 1)).reason())
+                .isEqualTo(DeferredReason.UNSETTLED);
+        assertThat(calls).hasValue(0);
+
+        workerClock.advance(Duration.ofSeconds(30));
+        delayed.release();
+        assertThat(delayed.awaitFinished()).isTrue();
+        caller.join(3_000);
+
+        Response response = (Response) result.get();
+        assertThat(response.read().startedAt()).isAfterOrEqualTo(admittedAt.plusSeconds(30));
+        assertThat(response.read().finishedAt()).isAfterOrEqualTo(response.read().startedAt());
+        assertThat(calls).hasValue(1);
+    }
+
+    @Test
+    @Timeout(value = 10, unit = TimeUnit.SECONDS)
+    void timedOutSettlementWaitsForLate429AndCommitsCooldownWithoutReturningARead() throws Exception {
+        CountDownLatch headersSent = new CountDownLatch(1);
+        CountDownLatch releaseServer = new CountDownLatch(1);
+        HttpServer server = server(exchange -> {
+            exchange.getResponseHeaders().add("Retry-After", "90");
+            exchange.sendResponseHeaders(429, 0);
+            exchange.getResponseBody().write('x');
+            exchange.getResponseBody().flush();
+            headersSent.countDown();
+            await(releaseServer);
+            exchange.close();
+        });
+        CountDownLatch lockAcquired = new CountDownLatch(1);
+        CountDownLatch releaseLock = new CountDownLatch(1);
+        var lockOwner = Executors.newSingleThreadExecutor();
+        OwnedSyncDbOperations operations = new OwnedSyncDbOperations(Duration.ofMillis(250));
+        OwnedSyncHttpClient transport = transport(
+                server, Duration.ofSeconds(2), operations, Duration.ofSeconds(6));
+        var result = new java.util.concurrent.atomic.AtomicReference<OwnedSyncHttpClient.Result>();
+        Thread caller = Thread.ofPlatform().start(() -> result.set(transport.get(Endpoint.fixtures(), 1)));
+        Future<?> lockTransaction = null;
+        try {
+            assertThat(headersSent.await(2, TimeUnit.SECONDS)).isTrue();
+            lockTransaction = lockOwner.submit(() -> holdRequestStateLock(lockAcquired, releaseLock));
+            assertThat(lockAcquired.await(1, TimeUnit.SECONDS)).isTrue();
+            caller.join(5_000);
+
+            assertThat(caller.isAlive()).isFalse();
+            assertThat(result.get()).isInstanceOfSatisfying(DeferredResult.class,
+                    deferred -> assertThat(deferred.reason()).isEqualTo(DeferredReason.SETTLEMENT_UNCERTAIN));
+            assertThat(jdbc.queryForObject("SELECT completed_at IS NULL FROM " + TABLES.requestAttempt(),
+                    Boolean.class)).isTrue();
+
+            releaseServer.countDown();
+            releaseLock.countDown();
+            lockTransaction.get(2, TimeUnit.SECONDS);
+            assertThat(awaitCompletedAttempt()).isTrue();
+            assertThat(budget.nextAdmissionHint()).contains(budgetClock.instant().plusSeconds(90));
+            assertThat(transport.get(Endpoint.fixtures(), 1)).isInstanceOf(DeferredResult.class);
+        } finally {
+            releaseServer.countDown();
+            releaseLock.countDown();
+            operations.close();
+            if (lockTransaction != null) lockTransaction.get(2, TimeUnit.SECONDS);
+            lockOwner.shutdownNow();
+        }
+    }
+
+    @Test
+    @Timeout(value = 10, unit = TimeUnit.SECONDS)
+    void timedOutSupervisedAdmissionNeverGetsAfterLateCommitAndBlocksAnotherClient() throws Exception {
+        CountDownLatch lockAcquired = new CountDownLatch(1);
+        CountDownLatch releaseLock = new CountDownLatch(1);
+        var lockOwner = Executors.newSingleThreadExecutor();
+        Future<?> lockTransaction = lockOwner.submit(() -> holdRequestStateLock(lockAcquired, releaseLock));
+        OwnedSyncDbOperations operations = new OwnedSyncDbOperations(Duration.ofMillis(250));
+        AtomicInteger calls = new AtomicInteger();
+        HttpServer server = server(exchange -> {
+            calls.incrementAndGet();
+            respond(exchange, 200, new byte[0]);
+        });
+        OwnedSyncHttpClient first = transport(server, Duration.ofSeconds(2), operations, Duration.ofSeconds(2));
+        OwnedSyncHttpClient second = transport(server, Duration.ofSeconds(2), operations, Duration.ofSeconds(2));
+        try {
+            assertThat(lockAcquired.await(1, TimeUnit.SECONDS)).isTrue();
+
+            DeferredResult timedOut = (DeferredResult) first.get(Endpoint.fixtures(), 1);
+
+            assertThat(timedOut.reason()).isEqualTo(DeferredReason.DB_ADMISSION_UNCERTAIN);
+            assertThat(timedOut.nextDue()).isEqualTo(budgetClock.instant().plusSeconds(30));
+            assertThat(awaitBudgetLockWait("SELECT last_admitted_at, cooldown_until FROM "
+                    + TABLES.requestState())).isTrue();
+            assertThat(calls).hasValue(0);
+
+            releaseLock.countDown();
+            lockTransaction.get(2, TimeUnit.SECONDS);
+            assertThat(awaitUnresolvedAttempt()).isTrue();
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.requestAttempt()
+                    + " WHERE completed_at IS NULL", Integer.class)).isEqualTo(1);
+
+            DeferredResult blocked = (DeferredResult) second.get(Endpoint.fixtures(), 1);
+            assertThat(blocked.reason()).isEqualTo(DeferredReason.UNSETTLED);
+            Thread.sleep(100);
+            assertThat(calls).hasValue(0);
+        } finally {
+            releaseLock.countDown();
+            operations.close();
+            try {
+                lockTransaction.get(2, TimeUnit.SECONDS);
+            } finally {
+                lockOwner.shutdownNow();
+            }
+        }
+    }
+
+    @Test
+    @Timeout(value = 10, unit = TimeUnit.SECONDS)
+    void saturatedDbAdmissionIsDeferredWithoutQueuingAGet() throws Exception {
+        OwnedSyncDbOperations operations = new OwnedSyncDbOperations(Duration.ofMillis(200));
+        CountDownLatch operationsStarted = new CountDownLatch(2);
+        CountDownLatch operationsFinished = new CountDownLatch(2);
+        CountDownLatch releaseOperations = new CountDownLatch(1);
+        AtomicInteger calls = new AtomicInteger();
+        HttpServer server = server(exchange -> {
+            calls.incrementAndGet();
+            respond(exchange, 200, new byte[0]);
+        });
+        OwnedSyncHttpClient transport = transport(
+                server, Duration.ofSeconds(2), operations, Duration.ofSeconds(2));
+        try {
+            for (int i = 0; i < 2; i++) {
+                Outcome<Boolean> occupied = operations.call(() -> {
+                    operationsStarted.countDown();
+                    try {
+                        releaseOperations.await();
+                        return true;
+                    } finally {
+                        operationsFinished.countDown();
+                    }
+                }, OwnedSyncDeadline.after(Duration.ofSeconds(2)));
+                assertThat(occupied).isInstanceOf(OwnedSyncDbOperations.Uncertain.class);
+            }
+            assertThat(operationsStarted.getCount()).isZero();
+
+            DeferredResult result = (DeferredResult) transport.get(Endpoint.fixtures(), 1);
+            assertThat(result.reason()).isEqualTo(DeferredReason.DB_OPERATIONS_SATURATED);
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.requestAttempt(), Integer.class))
+                    .isZero();
+
+            releaseOperations.countDown();
+            assertThat(operationsFinished.await(1, TimeUnit.SECONDS)).isTrue();
+            Thread.sleep(100);
+            assertThat(calls).hasValue(0);
+        } finally {
+            releaseOperations.countDown();
+            operations.close();
+        }
     }
 
     @Test
@@ -332,14 +1061,109 @@ class OwnedSyncHttpClientIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.requestAttempt(), Integer.class)).isZero();
     }
 
+    private OwnedSyncHttpClient customTransport(CloseableHttpClient apache, ThreadPoolExecutor control,
+                                                OwnedSyncDbOperations operations) {
+        OwnedSyncHttpClient transport = new OwnedSyncHttpClient(budget, apache,
+                boundedExecutor(2, "test-owned-http-"), control, URI.create("http://127.0.0.1:1/api/"),
+                Duration.ofSeconds(2), budgetClock, operations, Duration.ofSeconds(5), true, true);
+        transports.add(transport);
+        return transport;
+    }
+
+    private static ThreadPoolExecutor boundedExecutor(int workers, String threadPrefix) {
+        AtomicInteger sequence = new AtomicInteger();
+        return new ThreadPoolExecutor(workers, workers, 0, TimeUnit.NANOSECONDS, new SynchronousQueue<>(),
+                task -> {
+                    Thread thread = new Thread(task, threadPrefix + sequence.incrementAndGet());
+                    thread.setDaemon(true);
+                    return thread;
+                });
+    }
+
+    private static void awaitIgnoringInterrupts(CountDownLatch latch) {
+        boolean interrupted = false;
+        while (true) {
+            try {
+                latch.await();
+                break;
+            } catch (InterruptedException ignored) {
+                interrupted = true;
+            }
+        }
+        if (interrupted) Thread.currentThread().interrupt();
+    }
+
+    private boolean awaitBudgetLockWait(String queryPrefix) {
+        long deadline = System.nanoTime() + Duration.ofSeconds(2).toNanos();
+        while (System.nanoTime() < deadline) {
+            Boolean waiting = jdbc.queryForObject("SELECT EXISTS (SELECT 1 FROM pg_stat_activity "
+                    + "WHERE pid <> pg_backend_pid() AND datname = current_database() "
+                    + "AND wait_event_type = 'Lock' AND query LIKE ?)", Boolean.class, queryPrefix + "%");
+            if (Boolean.TRUE.equals(waiting)) return true;
+            LockSupport.parkNanos(Duration.ofMillis(10).toNanos());
+        }
+        return false;
+    }
+
+    private boolean awaitUnresolvedAttempt() {
+        long deadline = System.nanoTime() + Duration.ofSeconds(2).toNanos();
+        while (System.nanoTime() < deadline) {
+            Integer unresolved = jdbc.queryForObject("SELECT count(*) FROM " + TABLES.requestAttempt()
+                    + " WHERE completed_at IS NULL", Integer.class);
+            if (unresolved != null && unresolved > 0) return true;
+            LockSupport.parkNanos(Duration.ofMillis(10).toNanos());
+        }
+        return false;
+    }
+
+    private boolean awaitCompletedAttempt() {
+        long deadline = System.nanoTime() + Duration.ofSeconds(2).toNanos();
+        while (System.nanoTime() < deadline) {
+            Integer completed = jdbc.queryForObject("SELECT count(*) FROM " + TABLES.requestAttempt()
+                    + " WHERE completed_at IS NOT NULL", Integer.class);
+            if (completed != null && completed > 0) return true;
+            LockSupport.parkNanos(Duration.ofMillis(10).toNanos());
+        }
+        return false;
+    }
+
+    private static Void holdRequestStateLock(CountDownLatch acquired, CountDownLatch release) {
+        return tx.execute(status -> {
+            jdbc.queryForObject("SELECT singleton FROM " + TABLES.requestState()
+                    + " WHERE singleton = TRUE FOR UPDATE", Boolean.class);
+            acquired.countDown();
+            try {
+                if (!release.await(4, TimeUnit.SECONDS)) throw new AssertionError("lock release timed out");
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(interrupted);
+            }
+            return null;
+        });
+    }
+
     private void assertCompletedPermit() {
         assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.requestAttempt()
                 + " WHERE completed_at IS NOT NULL", Integer.class)).isEqualTo(1);
     }
 
+    private Ready readyFence() {
+        Instant now = budgetClock.instant();
+        return new Ready(now.plusSeconds(90), now);
+    }
+
     private OwnedSyncHttpClient transport(HttpServer server, Duration timeout) {
         OwnedSyncHttpClient transport = new OwnedSyncHttpClient(budget,
                 URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/api/"), timeout);
+        transports.add(transport);
+        return transport;
+    }
+
+    private OwnedSyncHttpClient transport(HttpServer server, Duration timeout,
+                                          OwnedSyncDbOperations operations, Duration methodTimeout) {
+        OwnedSyncHttpClient transport = new OwnedSyncHttpClient(budget,
+                URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/api/"),
+                timeout, budgetClock, operations, methodTimeout);
         transports.add(transport);
         return transport;
     }
@@ -373,28 +1197,63 @@ class OwnedSyncHttpClientIntegrationTest {
         }
     }
 
+    private record ServerObservation(Instant observedAt, long monotonicNanos) {}
+
     @FunctionalInterface
     private interface ThrowingHandler { void handle(HttpExchange exchange) throws Exception; }
 
-    private static final class UnacknowledgedExecutor extends AbstractExecutorService {
+    private static final class DelayedExecutor extends AbstractExecutorService {
+        private final CountDownLatch submitted = new CountDownLatch(1);
+        private final CountDownLatch finished = new CountDownLatch(1);
+        private volatile Runnable queued;
         private volatile boolean shutdown;
 
-        @Override protected <T> java.util.concurrent.RunnableFuture<T> newTaskFor(Callable<T> task) {
-            return new FutureTask<>(task) {
-                @Override public T get() {
-                    throw new AssertionError("cancellation acknowledgement must never wait unboundedly");
-                }
-
-                @Override public T get(long timeout, TimeUnit unit) throws TimeoutException {
-                    LockSupport.parkNanos(unit.toNanos(timeout));
-                    throw new TimeoutException("worker did not acknowledge cancellation");
-                }
-            };
+        @Override public void execute(Runnable command) {
+            if (shutdown) throw new java.util.concurrent.RejectedExecutionException();
+            queued = command;
+            submitted.countDown();
         }
 
-        @Override public void execute(Runnable command) {}
+        boolean awaitSubmitted() throws InterruptedException {
+            return submitted.await(2, TimeUnit.SECONDS);
+        }
+
+        void release() {
+            Runnable task = queued;
+            if (task == null) throw new IllegalStateException("no exchange task was submitted");
+            Thread.ofPlatform().start(() -> {
+                try {
+                    task.run();
+                } finally {
+                    finished.countDown();
+                }
+            });
+        }
+
+        boolean awaitFinished() throws InterruptedException {
+            return finished.await(2, TimeUnit.SECONDS);
+        }
+
         @Override public void shutdown() { shutdown = true; }
-        @Override public List<Runnable> shutdownNow() { shutdown = true; return Collections.emptyList(); }
+        @Override public List<Runnable> shutdownNow() {
+            shutdown = true;
+            return queued == null ? List.of() : List.of(queued);
+        }
+        @Override public boolean isShutdown() { return shutdown; }
+        @Override public boolean isTerminated() { return shutdown; }
+        @Override public boolean awaitTermination(long timeout, TimeUnit unit) { return shutdown; }
+    }
+
+    private static final class RejectingInterruptingExecutor extends AbstractExecutorService {
+        private volatile boolean shutdown;
+
+        @Override public void execute(Runnable command) {
+            Thread.currentThread().interrupt();
+            throw new java.util.concurrent.RejectedExecutionException("test rejection");
+        }
+
+        @Override public void shutdown() { shutdown = true; }
+        @Override public List<Runnable> shutdownNow() { shutdown = true; return List.of(); }
         @Override public boolean isShutdown() { return shutdown; }
         @Override public boolean isTerminated() { return shutdown; }
         @Override public boolean awaitTermination(long timeout, TimeUnit unit) { return shutdown; }
@@ -415,7 +1274,7 @@ class OwnedSyncHttpClientIntegrationTest {
     }
 
     private static final class MutableClock extends Clock {
-        private Instant instant;
+        private volatile Instant instant;
         private MutableClock(Instant instant) { this.instant = instant; }
         void advance(Duration duration) { instant = instant.plus(duration); }
         @Override public ZoneId getZone() { return ZoneOffset.UTC; }

@@ -9,21 +9,37 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Objects;
-import java.util.Optional;
+import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 
+import fi.karivanttinen.fplassistant.sync.OwnedSyncDbOperations.Outcome;
+import fi.karivanttinen.fplassistant.sync.OwnedSyncDbOperations.Rejected;
+import fi.karivanttinen.fplassistant.sync.OwnedSyncDbOperations.Rejection;
+import fi.karivanttinen.fplassistant.sync.OwnedSyncDbOperations.Success;
+import fi.karivanttinen.fplassistant.sync.OwnedSyncDbOperations.Uncertain;
+import fi.karivanttinen.fplassistant.sync.OwnedSyncDbOperations.Uncertainty;
+import fi.karivanttinen.fplassistant.sync.OwnedSyncRequestBudget.Admission;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncRequestBudget.Allowed;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncRequestBudget.Completion;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncRequestBudget.Deferred;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncRequestBudget.DeferredReason;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncRequestBudget.Permit;
+import fi.karivanttinen.fplassistant.sync.OwnedSyncRequestBudget.Settlement;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.Endpoint;
+import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.FutureFloor;
+import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.HttpFenceResult;
+import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.Ready;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.SourceRead;
 import org.apache.hc.client5.http.classic.methods.HttpGet;
 import org.apache.hc.client5.http.config.ConnectionConfig;
@@ -39,136 +55,431 @@ import org.apache.hc.core5.util.Timeout;
 /**
  * Inert, explicitly-invoked transport for the four public FPL source endpoints.
  *
- * <p>It does not schedule, validate, stage or publish anything. One admitted invocation submits one
- * GET. Apache HttpClient hard cancellation aborts the active exchange. Cancellation acknowledgement
- * is awaited only briefly; if worker termination remains unconfirmed, the durable permit stays held
- * until its original expiry. This does not guarantee that the peer has observed a closed socket.
+ * <p>It does not schedule, validate, stage or publish anything. An admitted invocation submits at
+ * most one GET, and only while enough bounded time remains for cancellation and settlement.
+ * Cancellation is requested on a bounded worker; only the exchange worker's exit latch
+ * acknowledges termination. If it remains unconfirmed, the durable attempt is left unresolved and
+ * blocks later admission indefinitely. This does not guarantee that the peer has observed a closed
+ * socket.
  */
 public final class OwnedSyncHttpClient implements AutoCloseable {
 
     private static final URI FPL_BASE = URI.create("https://fantasy.premierleague.com/api/");
     private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(10);
     private static final Duration DEFAULT_REQUEST_TIMEOUT = Duration.ofSeconds(30);
+    private static final Duration METHOD_DEADLINE = Duration.ofSeconds(180);
+    private static final Duration DB_REJECTION_RECHECK = Duration.ofSeconds(1);
+    private static final Duration DB_ADMISSION_UNCERTAIN_RECHECK = Duration.ofSeconds(30);
+    private static final Duration UNSETTLED_RECHECK = Duration.ofSeconds(30);
+    private static final Duration SETTLEMENT_SAFETY_MARGIN = Duration.ofSeconds(1);
     private static final Duration PERMIT_SAFETY_MARGIN = Duration.ofMillis(1);
     private static final Duration CANCELLATION_ACK_TIMEOUT = Duration.ofSeconds(1);
     private static final int MAX_RETRY_AFTER_CHARS = 1_024;
 
     private final OwnedSyncRequestBudget budget;
+    private final OwnedSyncDbOperations dbOperations;
     private final CloseableHttpClient client;
     private final ExecutorService exchanges;
+    private final ExecutorService cancellations;
     private final URI baseUri;
     private final Duration requestTimeout;
+    private final Duration methodTimeout;
     private final Clock clock;
+    private final boolean closeDbOperations;
+    private final boolean loopbackTest;
+    private final Object sendGate = new Object();
+    private boolean closing;
 
     /** Production construction deliberately fixes the source host and transport limits. */
     public OwnedSyncHttpClient(OwnedSyncRequestBudget budget) {
-        this(budget, newSingleAttemptClient(), newExchangeExecutor(), FPL_BASE,
-                DEFAULT_REQUEST_TIMEOUT, Clock.systemUTC(), false);
+        this(budget, newSingleAttemptClient(), newExchangeExecutor(), newCancellationExecutor(), FPL_BASE,
+                DEFAULT_REQUEST_TIMEOUT, Clock.systemUTC(), new OwnedSyncDbOperations(),
+                METHOD_DEADLINE, false, true);
     }
 
     /** Package-private loopback-only seam for local transport tests. */
     OwnedSyncHttpClient(OwnedSyncRequestBudget budget, URI loopbackBase, Duration requestTimeout) {
-        this(budget, testClient(loopbackBase), newExchangeExecutor(), loopbackBase,
-                requestTimeout, Clock.systemUTC(), true);
+        this(budget, testClient(loopbackBase), newExchangeExecutor(), newCancellationExecutor(), loopbackBase,
+                requestTimeout, Clock.systemUTC(), new OwnedSyncDbOperations(), METHOD_DEADLINE, true, true);
     }
 
     /** Package-private clock seam for deterministic loopback transport tests. */
     OwnedSyncHttpClient(OwnedSyncRequestBudget budget, URI loopbackBase, Duration requestTimeout,
                         Clock clock) {
-        this(budget, testClient(loopbackBase), newExchangeExecutor(), loopbackBase,
-                requestTimeout, clock, true);
+        this(budget, testClient(loopbackBase), newExchangeExecutor(), newCancellationExecutor(), loopbackBase,
+                requestTimeout, clock, new OwnedSyncDbOperations(), METHOD_DEADLINE, true, true);
     }
 
     /** Package-private cancellation seam for a worker that does not acknowledge abort. */
     OwnedSyncHttpClient(OwnedSyncRequestBudget budget, URI loopbackBase, Duration requestTimeout,
                         ExecutorService exchanges) {
-        this(budget, testClient(loopbackBase), exchanges, loopbackBase,
-                requestTimeout, Clock.systemUTC(), true);
+        this(budget, testClient(loopbackBase), exchanges, newCancellationExecutor(), loopbackBase,
+                requestTimeout, Clock.systemUTC(), new OwnedSyncDbOperations(), METHOD_DEADLINE, true, true);
     }
 
-    private OwnedSyncHttpClient(OwnedSyncRequestBudget budget, CloseableHttpClient client,
-                                ExecutorService exchanges, URI baseUri,
-                                Duration requestTimeout, Clock clock, boolean testBase) {
+    /** Package-private clock seam for delayed exchange-worker tests. */
+    OwnedSyncHttpClient(OwnedSyncRequestBudget budget, URI loopbackBase, Duration requestTimeout,
+                        Clock clock, ExecutorService exchanges) {
+        this(budget, testClient(loopbackBase), exchanges, newCancellationExecutor(), loopbackBase,
+                requestTimeout, clock, new OwnedSyncDbOperations(), METHOD_DEADLINE, true, true);
+    }
+
+    /** Loopback seam shares the supplied supervisor and permits short method deadlines in tests. */
+    OwnedSyncHttpClient(OwnedSyncRequestBudget budget, URI loopbackBase, Duration requestTimeout,
+                        Clock clock, OwnedSyncDbOperations dbOperations, Duration methodTimeout) {
+        this(budget, testClient(loopbackBase), newExchangeExecutor(), newCancellationExecutor(), loopbackBase,
+                requestTimeout, clock, dbOperations, methodTimeout, true, false);
+    }
+
+    OwnedSyncHttpClient(OwnedSyncRequestBudget budget, CloseableHttpClient client,
+                        ExecutorService exchanges, ExecutorService cancellations,
+                        URI baseUri, Duration requestTimeout,
+                        Clock clock, OwnedSyncDbOperations dbOperations, Duration methodTimeout,
+                        boolean testBase, boolean closeDbOperations) {
         this.budget = Objects.requireNonNull(budget);
+        this.dbOperations = Objects.requireNonNull(dbOperations);
         this.client = Objects.requireNonNull(client);
         this.exchanges = Objects.requireNonNull(exchanges);
+        this.cancellations = Objects.requireNonNull(cancellations);
         this.baseUri = normalizedBase(baseUri, testBase);
         this.requestTimeout = positive(requestTimeout);
+        this.methodTimeout = boundedMethodTimeout(methodTimeout);
         this.clock = Objects.requireNonNull(clock);
+        this.closeDbOperations = closeDbOperations;
+        this.loopbackTest = testBase;
     }
 
-    public Result get(Endpoint endpoint, int failureAttempt) {
+    /** Two-argument calls are reserved for package-private loopback tests. */
+    Result get(Endpoint endpoint, int failureAttempt) {
+        if (!loopbackTest) {
+            throw new IllegalStateException("Production HTTP requests require a caller fence");
+        }
+        return getInternal(endpoint, failureAttempt, null);
+    }
+
+    /**
+     * Fetches one fixed public FPL endpoint after two supervised DB-only caller-fence checks.
+     * The supplier must only inspect durable DB state; it must not initiate or schedule HTTP.
+     */
+    public Result get(Endpoint endpoint, int failureAttempt, Supplier<HttpFenceResult> fence) {
+        return getInternal(endpoint, failureAttempt, Objects.requireNonNull(fence));
+    }
+
+    private Result getInternal(Endpoint endpoint, int failureAttempt, Supplier<HttpFenceResult> fence) {
+        OwnedSyncDeadline methodDeadline = OwnedSyncDeadline.after(methodTimeout);
         String path = path(endpoint); // Validate all model-derived identifiers before admission.
         if (failureAttempt < 1) throw new IllegalArgumentException("failureAttempt must be positive");
+        if (isClosing()) return locallyClosed();
 
-        var admission = budget.admit();
+        if (fence != null) {
+            Outcome<HttpFenceResult> beforeAdmission = checkFence(fence, methodDeadline);
+            if (!(beforeAdmission instanceof Success<?> success)) return fenceFailure(beforeAdmission);
+            Object checked = success.value();
+            if (checked instanceof FutureFloor futureFloor) {
+                return new DeferredResult(futureFloor.nextDue(), DeferredReason.HTTP_NOT_SUBMITTED);
+            }
+            if (!(checked instanceof Ready)) return uncertainAdmission(Uncertainty.OPERATION_FAILED);
+        }
+
+        UUID attemptId = UUID.randomUUID();
+        Outcome<Admission> admissionOutcome = dbOperations.call(
+                () -> budget.admit(attemptId), methodDeadline);
+        if (admissionOutcome instanceof Rejected<?> rejected) {
+            return rejectedAdmission(rejected.reason());
+        }
+        if (admissionOutcome instanceof Uncertain<?> uncertain) {
+            return uncertainAdmission(uncertain.reason());
+        }
+
+        Admission admission = (Admission) ((Success<?>) admissionOutcome).value();
         if (admission instanceof Deferred deferred) {
             return new DeferredResult(deferred.nextDue(), deferred.reason());
         }
 
         Permit permit = ((Allowed) admission).permit();
-        Instant callDeadline = clock.instant().plus(requestTimeout);
-        Instant permitDeadline = permit.expiresAt().minus(PERMIT_SAFETY_MARGIN);
-        Instant deadline = callDeadline.isBefore(permitDeadline) ? callDeadline : permitDeadline;
-        AtomicReference<Headers> headers = new AtomicReference<>();
-        HttpGet request = null;
-        Future<?> exchange = null;
-        Instant readStarted = clock.instant();
-        Completion completion = Completion.error();
-        try {
-            Duration remaining = Duration.between(readStarted, deadline);
-            if (remaining.isZero() || remaining.isNegative()) {
-                completion = Completion.timeout(failureAttempt);
-                return failure(FailureKind.TIMEOUT, "Request permit expired before submission",
-                        readStarted, clock.instant(), headers.get());
+        Ready postFence = null;
+        if (fence != null) {
+            Outcome<HttpFenceResult> afterAdmission = checkFence(fence, methodDeadline);
+            if (afterAdmission instanceof Success<?> success) {
+                Object checked = success.value();
+                if (checked instanceof FutureFloor futureFloor) {
+                    return settledFutureFloor(permit, futureFloor.nextDue(), methodDeadline);
+                }
+                if (checked instanceof Ready ready) {
+                    postFence = ready;
+                } else {
+                    return settledNoFetch(permit, Completion.error(), methodDeadline,
+                            DeferredReason.NO_FETCH_UNCERTAIN);
+                }
+            } else {
+                return settledNoFetch(permit, Completion.error(), methodDeadline,
+                        fenceFailureReason(afterAdmission));
             }
+        }
+        if (isClosing()) {
+            return settledNoFetch(permit, Completion.error(), methodDeadline, DeferredReason.HTTP_CLIENT_CLOSED);
+        }
+        Duration permitRemaining = Duration.between(clock.instant(), permit.expiresAt());
+        if (permitRemaining.isZero() || permitRemaining.isNegative()) {
+            return settledNoFetch(permit, Completion.error(), methodDeadline,
+                    DeferredReason.HTTP_NOT_SUBMITTED);
+        }
+
+        OwnedSyncDeadline permitDeadline = OwnedSyncDeadline.after(permitRemaining);
+        Duration settlementAndCancellationReserve = dbOperations.maximumCallerWait()
+                .plus(SETTLEMENT_SAFETY_MARGIN).plus(CANCELLATION_ACK_TIMEOUT);
+        OwnedSyncDeadline fenceDeadline = null;
+        if (postFence != null) {
+            Duration fenceRemaining = Duration.between(clock.instant(), postFence.expiresAt());
+            if (fenceRemaining.isZero() || fenceRemaining.isNegative()) {
+                return settledNoFetch(permit, Completion.error(), methodDeadline,
+                        DeferredReason.HTTP_NOT_SUBMITTED);
+            }
+            if (postFence.sourceFloor().isAfter(clock.instant())) {
+                return settledFutureFloor(permit, postFence.sourceFloor(), methodDeadline);
+            }
+            fenceDeadline = OwnedSyncDeadline.after(fenceRemaining);
+        }
+        OwnedSyncDeadline exchangeDeadline = postFence == null
+                ? OwnedSyncDeadline.earliest(
+                        OwnedSyncDeadline.after(requestTimeout),
+                        methodDeadline.minus(settlementAndCancellationReserve),
+                        permitDeadline.minus(settlementAndCancellationReserve.plus(PERMIT_SAFETY_MARGIN)))
+                : OwnedSyncDeadline.earliest(
+                        OwnedSyncDeadline.after(requestTimeout),
+                        methodDeadline.minus(settlementAndCancellationReserve),
+                        permitDeadline.minus(settlementAndCancellationReserve.plus(PERMIT_SAFETY_MARGIN)),
+                        fenceDeadline.minus(settlementAndCancellationReserve.plus(PERMIT_SAFETY_MARGIN)));
+        if (Thread.currentThread().isInterrupted()) {
+            return settledNoFetch(permit, Completion.error(), methodDeadline,
+                    DeferredReason.HTTP_NOT_SUBMITTED);
+        }
+        long initialExchangeNanos = exchangeDeadline.remainingNanos();
+        if (initialExchangeNanos == 0) {
+            return settledNoFetch(permit, Completion.error(), methodDeadline,
+                    DeferredReason.HTTP_NOT_SUBMITTED);
+        }
+
+        HttpGet request;
+        try {
             request = new HttpGet(baseUri.resolve(path));
             request.setHeader("Accept", "application/json");
-            request.setConfig(requestConfig(remaining));
-            HttpGet submitted = request;
-            exchange = exchanges.submit(() -> execute(submitted, headers));
-            long waitNanos = Math.max(1, Duration.between(clock.instant(), deadline).toNanos());
-            WireResponse response = (WireResponse) exchange.get(waitNanos, TimeUnit.NANOSECONDS);
-            Instant readFinished = clock.instant();
-            completion = response.statusCode >= 200 && response.statusCode < 300
-                    ? Completion.success()
-                    : Completion.http(response.statusCode, response.retryAfter, failureAttempt);
-            return new Response(response.statusCode, response.body, response.retryAfter,
-                    new SourceRead(readStarted, readFinished));
-        } catch (InterruptedException e) {
-            completion = failureCompletion(headers.get(), failureAttempt, Completion.error());
-            if (!abortAndAwait(request, exchange)) completion = completion.holdingPermitUntilExpiry();
-            Thread.currentThread().interrupt();
-            return failure(FailureKind.INTERRUPTED, "Request interrupted", readStarted, clock.instant(), headers.get());
-        } catch (TimeoutException e) {
-            completion = transientCompletion(headers.get(), failureAttempt);
-            if (!abortAndAwait(request, exchange)) completion = completion.holdingPermitUntilExpiry();
-            return failure(FailureKind.TIMEOUT, "Request timed out", readStarted, clock.instant(), headers.get());
-        } catch (ExecutionException e) {
-            Throwable cause = rootCause(e);
-            if (hasCause(e, SocketTimeoutException.class)) {
-                completion = transientCompletion(headers.get(), failureAttempt);
-                return failure(FailureKind.TIMEOUT, "Request timed out", readStarted, clock.instant(), headers.get());
-            }
-            completion = failureCompletion(headers.get(), failureAttempt, Completion.error());
-            if (cause instanceof BodyTooLargeException) {
-                return failure(FailureKind.OVERSIZE, cause.getMessage(), readStarted, clock.instant(), headers.get());
-            }
-            return failure(FailureKind.IO_ERROR, boundedMessage(cause), readStarted, clock.instant(), headers.get());
-        } catch (RuntimeException e) {
-            completion = failureCompletion(headers.get(), failureAttempt, Completion.error());
-            if (!abortAndAwait(request, exchange)) completion = completion.holdingPermitUntilExpiry();
-            return failure(FailureKind.IO_ERROR, boundedMessage(e), readStarted, clock.instant(), headers.get());
+            request.setConfig(requestConfig(Duration.ofNanos(initialExchangeNanos)));
+        } catch (RuntimeException setupFailure) {
+            return settledNoFetch(permit, Completion.error(), methodDeadline,
+                    DeferredReason.HTTP_NOT_SUBMITTED);
+        }
+        if (Thread.currentThread().isInterrupted()) {
+            return settledNoFetch(permit, Completion.error(), methodDeadline,
+                    DeferredReason.HTTP_NOT_SUBMITTED);
+        }
+        if (isClosing()) {
+            return settledNoFetch(permit, Completion.error(), methodDeadline, DeferredReason.HTTP_CLIENT_CLOSED);
+        }
+
+        Ready sendFence = postFence;
+        ExchangeGate gate = new ExchangeGate();
+        ExchangeAttempt attempt = new ExchangeAttempt();
+        CountDownLatch workerExited = new CountDownLatch(1);
+        Future<?> exchange;
+        try {
+            exchange = exchanges.submit(() -> {
+                try {
+                    long remaining = exchangeDeadline.remainingNanos();
+                    if (remaining == 0) {
+                        gate.abandon();
+                        return;
+                    }
+                    request.setConfig(requestConfig(Duration.ofNanos(remaining)));
+                    if (!tryStart(gate, methodDeadline, permitDeadline, exchangeDeadline, sendFence)) return;
+                    Instant started = clock.instant();
+                    attempt.begin(started);
+                    try {
+                        attempt.response = execute(request, attempt);
+                    } catch (Throwable failure) {
+                        attempt.failure = failure;
+                        if (failure instanceof Error error) throw error;
+                    } finally {
+                        attempt.finish(clock.instant());
+                    }
+                } finally {
+                    workerExited.countDown();
+                }
+            });
+        } catch (RejectedExecutionException saturated) {
+            gate.abandon();
+            if (gate.started()) return unresolved(DeferredReason.HTTP_EXCHANGE_UNCERTAIN);
+            DeferredReason reason = isClosing()
+                    ? DeferredReason.HTTP_CLIENT_CLOSED : DeferredReason.HTTP_WORKERS_SATURATED;
+            return settledNoFetch(permit, Completion.error(), methodDeadline, reason);
+        } catch (RuntimeException submissionFailure) {
+            gate.abandon();
+            if (!gate.started()) return settleGateNoFetch(permit, gate, methodDeadline);
+            return unresolved(DeferredReason.HTTP_EXCHANGE_UNCERTAIN);
+        }
+
+        boolean restoreInterrupt = false;
+        try {
+            long waitNanos = exchangeDeadline.remainingNanos();
+            if (waitNanos == 0) throw new TimeoutException();
+            exchange.get(waitNanos, TimeUnit.NANOSECONDS);
+            if (workerExited.getCount() != 0) return unresolved(DeferredReason.HTTP_EXCHANGE_UNCERTAIN);
+            if (!gate.started()) return settleGateNoFetch(permit, gate, methodDeadline);
+            return completedAttempt(permit, attempt, failureAttempt, methodDeadline, null);
+        } catch (InterruptedException interrupted) {
+            restoreInterrupt = true; // InterruptedException cleared the flag for bounded cleanup/settlement.
+            gate.abandon();
+            if (!gate.started()) return settleGateNoFetch(permit, gate, methodDeadline);
+            ExitAcknowledgement exit = cancelAndAwait(request, workerExited, methodDeadline);
+            restoreInterrupt |= exit.interrupted();
+            if (!exit.acknowledged()) return unresolved(DeferredReason.HTTP_EXCHANGE_UNCERTAIN);
+            return completedAttempt(permit, attempt, failureAttempt, methodDeadline, FailureKind.INTERRUPTED);
+        } catch (TimeoutException timeout) {
+            gate.abandon();
+            if (!gate.started()) return settleGateNoFetch(permit, gate, methodDeadline);
+            ExitAcknowledgement exit = cancelAndAwait(request, workerExited, methodDeadline);
+            restoreInterrupt |= exit.interrupted();
+            if (!exit.acknowledged()) return unresolved(DeferredReason.HTTP_EXCHANGE_UNCERTAIN);
+            return completedAttempt(permit, attempt, failureAttempt, methodDeadline, FailureKind.TIMEOUT);
+        } catch (ExecutionException executionFailure) {
+            if (workerExited.getCount() != 0) return unresolved(DeferredReason.HTTP_EXCHANGE_UNCERTAIN);
+            if (!gate.started()) return settleGateNoFetch(permit, gate, methodDeadline);
+            if (attempt.failure == null) attempt.failure = rootCause(executionFailure);
+            return completedAttempt(permit, attempt, failureAttempt, methodDeadline, null);
+        } catch (RuntimeException exchangeFailure) {
+            gate.abandon();
+            if (!gate.started()) return settleGateNoFetch(permit, gate, methodDeadline);
+            ExitAcknowledgement exit = cancelAndAwait(request, workerExited, methodDeadline);
+            restoreInterrupt |= exit.interrupted();
+            if (!exit.acknowledged()) return unresolved(DeferredReason.HTTP_EXCHANGE_UNCERTAIN);
+            if (attempt.failure == null) attempt.failure = exchangeFailure;
+            return completedAttempt(permit, attempt, failureAttempt, methodDeadline, null);
         } finally {
-            budget.complete(permit, completion);
+            if (restoreInterrupt) Thread.currentThread().interrupt();
         }
     }
 
-    private WireResponse execute(HttpGet request, AtomicReference<Headers> headers) throws IOException {
+    private Result completedAttempt(Permit permit, ExchangeAttempt attempt, int failureAttempt,
+                                    OwnedSyncDeadline deadline, FailureKind callerFailure) {
+        SourceRead read = attempt.read();
+        if (read == null) return unresolved(DeferredReason.HTTP_EXCHANGE_UNCERTAIN);
+        WireResponse response = attempt.response;
+        if (response != null) {
+            Completion completion = response.statusCode >= 200 && response.statusCode < 300
+                    ? Completion.success()
+                    : Completion.http(response.statusCode, response.retryAfter, failureAttempt);
+            return settledResponse(permit, completion, deadline, response, read);
+        }
+
+        Headers observed = attempt.headers;
+        if (observed == null) return unresolved(DeferredReason.HTTP_EXCHANGE_UNCERTAIN);
+        Throwable failure = attempt.failure;
+        boolean timeout = callerFailure == FailureKind.TIMEOUT
+                || (callerFailure == null && hasCause(failure, SocketTimeoutException.class));
+        FailureKind kind = callerFailure;
+        String message;
+        if (callerFailure != null) {
+            message = callerFailure == FailureKind.TIMEOUT ? "Request timed out" : "Request interrupted";
+        } else if (failure instanceof BodyTooLargeException) {
+            kind = FailureKind.OVERSIZE;
+            message = failure.getMessage();
+        } else if (timeout) {
+            kind = FailureKind.TIMEOUT;
+            message = "Request timed out";
+        } else {
+            kind = FailureKind.IO_ERROR;
+            message = failure == null ? "Exchange ended after receiving headers" : boundedMessage(rootCause(failure));
+        }
+        Completion completion = timeout ? transientCompletion(observed, failureAttempt)
+                : failureCompletion(observed, failureAttempt, Completion.error());
+        return settledFailure(permit, completion, deadline, kind, message, read, observed);
+    }
+
+    private Result settledResponse(Permit permit, Completion completion, OwnedSyncDeadline deadline,
+                                   WireResponse response, SourceRead read) {
+        Outcome<Settlement> outcome = settle(permit, completion, deadline);
+        if (!(outcome instanceof Success<?> success)) return unresolved(DeferredReason.SETTLEMENT_UNCERTAIN);
+        Settlement settlement = (Settlement) success.value();
+        return new Response(response.statusCode, response.body, response.retryAfter,
+                read, settlement.committedCooldownUntil().orElse(null));
+    }
+
+    private Result settledFailure(Permit permit, Completion completion, OwnedSyncDeadline deadline,
+                                  FailureKind kind, String message, SourceRead read, Headers headers) {
+        Outcome<Settlement> outcome = settle(permit, completion, deadline);
+        if (!(outcome instanceof Success<?> success)) return unresolved(DeferredReason.SETTLEMENT_UNCERTAIN);
+        Settlement settlement = (Settlement) success.value();
+        return new Failure(kind, message, headers.statusCode, headers.retryAfter, read,
+                settlement.committedCooldownUntil().orElse(null));
+    }
+
+    private Result settledNoFetch(Permit permit, Completion completion, OwnedSyncDeadline deadline,
+                                  DeferredReason reason) {
+        boolean restoreInterrupt = Thread.interrupted();
+        try {
+            Outcome<Settlement> outcome = settle(permit, completion, deadline);
+            return outcome instanceof Success<?> ? databaseDeferral(reason)
+                    : unresolved(DeferredReason.SETTLEMENT_UNCERTAIN);
+        } finally {
+            if (restoreInterrupt) Thread.currentThread().interrupt();
+        }
+    }
+
+    private Result settledFutureFloor(Permit permit, Instant nextDue, OwnedSyncDeadline deadline) {
+        boolean restoreInterrupt = Thread.interrupted();
+        try {
+            Outcome<Settlement> outcome = settle(permit, Completion.error(), deadline);
+            return outcome instanceof Success<?>
+                    ? new DeferredResult(nextDue, DeferredReason.HTTP_NOT_SUBMITTED)
+                    : unresolved(DeferredReason.SETTLEMENT_UNCERTAIN);
+        } finally {
+            if (restoreInterrupt) Thread.currentThread().interrupt();
+        }
+    }
+
+    private Outcome<HttpFenceResult> checkFence(Supplier<HttpFenceResult> fence,
+                                                 OwnedSyncDeadline deadline) {
+        return dbOperations.call(fence::get, deadline);
+    }
+
+    private Result fenceFailure(Outcome<HttpFenceResult> outcome) {
+        if (outcome instanceof Rejected<?> rejected) return rejectedAdmission(rejected.reason());
+        Uncertainty uncertainty = outcome instanceof Uncertain<?> uncertain
+                ? uncertain.reason() : Uncertainty.OPERATION_FAILED;
+        return uncertainAdmission(uncertainty);
+    }
+
+    private DeferredReason fenceFailureReason(Outcome<HttpFenceResult> outcome) {
+        if (outcome instanceof Rejected<?> rejected) {
+            return switch (rejected.reason()) {
+                case SATURATED -> DeferredReason.DB_OPERATIONS_SATURATED;
+                case CLOSED -> DeferredReason.DB_OPERATIONS_CLOSED;
+                case DEADLINE_EXPIRED -> DeferredReason.DB_DEADLINE_EXPIRED;
+                case INTERRUPTED -> DeferredReason.DB_INTERRUPTED;
+            };
+        }
+        if (outcome instanceof Uncertain<?> uncertain && uncertain.reason() == Uncertainty.INTERRUPTED) {
+            return DeferredReason.DB_INTERRUPTED;
+        }
+        return DeferredReason.NO_FETCH_UNCERTAIN;
+    }
+
+    private Result settleGateNoFetch(Permit permit, ExchangeGate gate, OwnedSyncDeadline deadline) {
+        Instant nextDue = gate.futureFloorDue();
+        return nextDue == null
+                ? settledNoFetch(permit, Completion.error(), deadline, notStartedReason())
+                : settledFutureFloor(permit, nextDue, deadline);
+    }
+
+    private Outcome<Settlement> settle(Permit permit, Completion completion, OwnedSyncDeadline deadline) {
+        return dbOperations.call(() -> budget.complete(permit, completion), deadline);
+    }
+
+    private WireResponse execute(HttpGet request, ExchangeAttempt attempt) throws IOException {
         return client.execute(request, response -> {
             int statusCode = response.getCode();
             String retryAfter = bounded(header(response.getFirstHeader("Retry-After")));
-            headers.set(new Headers(statusCode, retryAfter));
+            attempt.headers = new Headers(statusCode, retryAfter);
             return new WireResponse(statusCode, boundedBody(response.getEntity()), retryAfter);
         });
     }
@@ -214,14 +525,60 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
         return fallback;
     }
 
-    Optional<Instant> nextAdmissionHint() {
-        return budget.nextAdmissionHint();
+    private DeferredResult rejectedAdmission(Rejection rejection) {
+        DeferredReason reason = switch (rejection) {
+            case SATURATED -> DeferredReason.DB_OPERATIONS_SATURATED;
+            case CLOSED -> DeferredReason.DB_OPERATIONS_CLOSED;
+            case DEADLINE_EXPIRED -> DeferredReason.DB_DEADLINE_EXPIRED;
+            case INTERRUPTED -> DeferredReason.DB_INTERRUPTED;
+        };
+        return databaseDeferral(reason);
     }
 
-    private static Failure failure(FailureKind kind, String message, Instant started, Instant finished,
-                                   Headers headers) {
-        return new Failure(kind, message, headers == null ? null : headers.statusCode,
-                headers == null ? null : headers.retryAfter, new SourceRead(started, finished));
+    private DeferredResult uncertainAdmission(Uncertainty uncertainty) {
+        DeferredReason reason = uncertainty == Uncertainty.INTERRUPTED
+                ? DeferredReason.DB_INTERRUPTED : DeferredReason.DB_ADMISSION_UNCERTAIN;
+        return new DeferredResult(clock.instant().plus(DB_ADMISSION_UNCERTAIN_RECHECK), reason);
+    }
+
+    private DeferredResult databaseDeferral(DeferredReason reason) {
+        Duration recheck = reason == DeferredReason.HTTP_CLIENT_CLOSED
+                ? UNSETTLED_RECHECK : DB_REJECTION_RECHECK;
+        return new DeferredResult(clock.instant().plus(recheck), reason);
+    }
+
+    private DeferredResult locallyClosed() {
+        return databaseDeferral(DeferredReason.HTTP_CLIENT_CLOSED);
+    }
+
+    private DeferredReason notStartedReason() {
+        return isClosing() ? DeferredReason.HTTP_CLIENT_CLOSED : DeferredReason.HTTP_NOT_SUBMITTED;
+    }
+
+    private boolean isClosing() {
+        synchronized (sendGate) {
+            return closing;
+        }
+    }
+
+    private boolean tryStart(ExchangeGate gate, OwnedSyncDeadline methodDeadline,
+                             OwnedSyncDeadline permitDeadline, OwnedSyncDeadline exchangeDeadline,
+                             Ready fence) {
+        synchronized (sendGate) {
+            return gate.tryStart(closing, methodDeadline, permitDeadline, exchangeDeadline,
+                    fence, clock.instant());
+        }
+    }
+
+    /** Closes only the local GET gate; it performs no shutdown or database work. */
+    void stopSending() {
+        synchronized (sendGate) {
+            closing = true;
+        }
+    }
+
+    private DeferredResult unresolved(DeferredReason reason) {
+        return new DeferredResult(clock.instant().plus(UNSETTLED_RECHECK), reason);
     }
 
     private static String path(Endpoint endpoint) {
@@ -250,8 +607,22 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
     }
 
     private static ExecutorService newExchangeExecutor() {
-        return Executors.newThreadPerTaskExecutor(
-                Thread.ofVirtual().name("owned-sync-http-", 0).factory());
+        return boundedExecutor(2, "owned-sync-http-");
+    }
+
+    private static ExecutorService newCancellationExecutor() {
+        return boundedExecutor(1, "owned-sync-cancel-");
+    }
+
+    private static ExecutorService boundedExecutor(int workers, String name) {
+        AtomicInteger sequence = new AtomicInteger();
+        ThreadFactory factory = task -> {
+            Thread thread = new Thread(task, name + sequence.incrementAndGet());
+            thread.setDaemon(true);
+            return thread;
+        };
+        return new ThreadPoolExecutor(workers, workers, 0, TimeUnit.NANOSECONDS,
+                new SynchronousQueue<>(), factory, new ThreadPoolExecutor.AbortPolicy());
     }
 
     private static CloseableHttpClient newSingleAttemptClient() {
@@ -288,6 +659,14 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
         return timeout;
     }
 
+    private static Duration boundedMethodTimeout(Duration timeout) {
+        Objects.requireNonNull(timeout);
+        if (timeout.isZero() || timeout.isNegative() || timeout.compareTo(METHOD_DEADLINE) > 0) {
+            throw new IllegalArgumentException("method timeout must be positive and at most 180 seconds");
+        }
+        return timeout;
+    }
+
     private static String header(Header header) {
         return header == null ? null : header.getValue();
     }
@@ -317,44 +696,108 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
         return false;
     }
 
-    private static boolean abortAndAwait(HttpGet request, Future<?> exchange) {
-        if (request != null) request.cancel();
-        if (exchange == null) return true;
-        long deadline = System.nanoTime() + CANCELLATION_ACK_TIMEOUT.toNanos();
-        boolean interrupted = false;
+    private ExitAcknowledgement cancelAndAwait(HttpGet request, CountDownLatch workerExited,
+                                               OwnedSyncDeadline methodDeadline) {
         try {
-            while (true) {
-                long remaining = deadline - System.nanoTime();
-                if (remaining <= 0) return false;
+            cancellations.execute(() -> {
                 try {
-                    exchange.get(remaining, TimeUnit.NANOSECONDS);
-                    return true;
-                } catch (InterruptedException e) {
-                    interrupted = true;
-                } catch (ExecutionException | java.util.concurrent.CancellationException e) {
-                    return true;
-                } catch (TimeoutException e) {
-                    return false;
+                    request.cancel();
+                } catch (RuntimeException ignored) {
+                    // Cancellation is best effort; only worker exit is an acknowledgement.
+                }
+            });
+        } catch (RejectedExecutionException ignored) {
+            // A saturated/closed cancellation worker must never block the caller.
+        }
+
+        long settlementReserve = dbOperations.maximumCallerWait().toNanos()
+                + SETTLEMENT_SAFETY_MARGIN.toNanos();
+        long waitNanos = Math.min(CANCELLATION_ACK_TIMEOUT.toNanos(),
+                Math.max(0, methodDeadline.remainingNanos() - settlementReserve));
+        long waitDeadline = System.nanoTime() + waitNanos;
+        boolean interrupted = false;
+        while (workerExited.getCount() != 0) {
+            long remaining = waitDeadline - System.nanoTime();
+            if (remaining <= 0) return new ExitAcknowledgement(false, interrupted);
+            try {
+                if (!workerExited.await(remaining, TimeUnit.NANOSECONDS)) {
+                    return new ExitAcknowledgement(false, interrupted);
+                }
+            } catch (InterruptedException ignored) {
+                interrupted = true;
+            }
+        }
+        return new ExitAcknowledgement(true, interrupted);
+    }
+
+    /**
+     * Closes the send gate first, then attempts Apache cleanup on the bounded control executor.
+     * The caller waits at most one second for that cleanup and worker termination. If the control
+     * worker is saturated or client close ignores interruption, Apache resources may remain unclosed;
+     * only the fixed-capacity daemon control and exchange workers can linger. The local gate remains
+     * closed, so this containment tradeoff cannot admit another GET.
+     */
+    @Override public void close() {
+        stopSending();
+        long deadline = System.nanoTime() + CANCELLATION_ACK_TIMEOUT.toNanos();
+        Future<?> clientClose = null;
+        boolean interrupted = Thread.interrupted();
+        try {
+            try {
+                clientClose = cancellations.submit(() -> {
+                    client.close(CloseMode.IMMEDIATE);
+                    return null;
+                });
+            } catch (RejectedExecutionException saturated) {
+                // Cleanup below still shuts down every owned executor and DB supervisor.
+            }
+            if (clientClose != null) {
+                long remaining = deadline - System.nanoTime();
+                if (remaining > 0) {
+                    try {
+                        clientClose.get(remaining, TimeUnit.NANOSECONDS);
+                    } catch (InterruptedException shutdownInterrupted) {
+                        interrupted = true;
+                        clientClose.cancel(true);
+                    } catch (ExecutionException | TimeoutException ignored) {
+                        clientClose.cancel(true);
+                    }
+                } else {
+                    clientClose.cancel(true);
                 }
             }
         } finally {
-            if (interrupted) Thread.currentThread().interrupt();
+            try {
+                cancellations.shutdownNow();
+            } finally {
+                try {
+                    exchanges.shutdownNow();
+                } finally {
+                    try {
+                        if (closeDbOperations) dbOperations.close();
+                    } finally {
+                        long remaining = deadline - System.nanoTime();
+                        if (remaining > 0) {
+                            try {
+                                exchanges.awaitTermination(remaining, TimeUnit.NANOSECONDS);
+                            } catch (InterruptedException shutdownInterrupted) {
+                                interrupted = true;
+                            }
+                        }
+                        if (interrupted) Thread.currentThread().interrupt();
+                    }
+                }
+            }
         }
     }
 
-    /** Aborts active I/O and gives workers at most one second to acknowledge shutdown. */
-    @Override public void close() {
-        client.close(CloseMode.IMMEDIATE);
-        exchanges.shutdownNow();
-        boolean interrupted = false;
-        try {
-            try {
-                exchanges.awaitTermination(CANCELLATION_ACK_TIMEOUT.toNanos(), TimeUnit.NANOSECONDS);
-            } catch (InterruptedException e) {
-                interrupted = true;
-            }
-        } finally {
-            if (interrupted) Thread.currentThread().interrupt();
+    @FunctionalInterface
+    interface DispatcherFetch {
+        Result get(Endpoint endpoint, int failureAttempt);
+
+        default Result get(OwnedSyncStore.Lease lease, Endpoint endpoint, int failureAttempt,
+                           Instant sourceFloor) {
+            return get(endpoint, failureAttempt);
         }
     }
 
@@ -398,6 +841,68 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
 
     private record Headers(int statusCode, String retryAfter) {}
     private record WireResponse(int statusCode, byte[] body, String retryAfter) {}
+    private record ExitAcknowledgement(boolean acknowledged, boolean interrupted) {}
+
+    private static final class ExchangeGate {
+        private boolean started;
+        private boolean abandoned;
+        private Instant futureFloorDue;
+
+        synchronized boolean tryStart(boolean closing, OwnedSyncDeadline methodDeadline,
+                                      OwnedSyncDeadline permitDeadline, OwnedSyncDeadline exchangeDeadline,
+                                      Ready fence, Instant now) {
+            if (started || abandoned) return false;
+            if (closing || Thread.currentThread().isInterrupted()
+                    || methodDeadline.remainingNanos() == 0
+                    || permitDeadline.remainingNanos() == 0
+                    || exchangeDeadline.remainingNanos() == 0
+                    || (fence != null && !fence.expiresAt().isAfter(now))) {
+                abandoned = true;
+                return false;
+            }
+            if (fence != null && fence.sourceFloor().isAfter(now)) {
+                futureFloorDue = fence.sourceFloor();
+                abandoned = true;
+                return false;
+            }
+            started = true;
+            return true;
+        }
+
+        synchronized void abandon() {
+            if (!started) abandoned = true;
+        }
+
+        synchronized boolean started() {
+            return started;
+        }
+
+        synchronized Instant futureFloorDue() {
+            return futureFloorDue;
+        }
+    }
+
+    private static final class ExchangeAttempt {
+        private volatile Instant startedAt;
+        private volatile Instant finishedAt;
+        private volatile Headers headers;
+        private volatile WireResponse response;
+        private volatile Throwable failure;
+
+        void begin(Instant startedAt) {
+            this.startedAt = startedAt;
+        }
+
+        void finish(Instant finishedAt) {
+            this.finishedAt = finishedAt;
+        }
+
+        SourceRead read() {
+            Instant started = startedAt;
+            Instant finished = finishedAt;
+            return started == null || finished == null ? null : new SourceRead(started, finished);
+        }
+    }
 
     private static final class BodyTooLargeException extends IOException {
         private BodyTooLargeException(int maximum) {

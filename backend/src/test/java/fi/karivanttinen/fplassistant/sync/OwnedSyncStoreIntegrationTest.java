@@ -18,9 +18,12 @@ import javax.sql.DataSource;
 
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.Endpoint;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.EndpointKind;
+import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.FutureFloor;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.Lease;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.LeaseLostException;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.PayloadRetentionLimitException;
+import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.Ready;
+import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.RuntimeFenceLostException;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.Run;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.SourceRead;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.StaleGenerationException;
@@ -253,6 +256,115 @@ class OwnedSyncStoreIntegrationTest {
         })).isInstanceOf(LeaseLostException.class);
 
         store.stage(takeover, Endpoint.fixtures(), read(), Validation.valid(), bytes("new"));
+    }
+
+    @Test
+    void httpFenceUsesTheDurableRenewalAndAcceptsFixtureEndpoints() {
+        OwnedSyncStore fenced = fencedStore();
+        Run run = enqueueFixtureVerification(fenced, 44);
+        Lease initial = fenced.acquireForSeason("2097-98", "http-worker", Duration.ofMinutes(2))
+                .orElseThrow();
+        assertThat(initial.generation()).isEqualTo(run.generation());
+
+        clock.advance(Duration.ofSeconds(30));
+        Lease renewed = fenced.renew(initial, Duration.ofMinutes(4));
+        Instant endpointFloor = clock.instant().minusSeconds(40);
+
+        assertThat(fenced.httpFence(initial, Endpoint.bootstrap(), endpointFloor))
+                .isEqualTo(new Ready(renewed.expiresAt(), clock.instant().minusSeconds(30)));
+        assertThat(fenced.httpFence(initial, Endpoint.fixtures(), endpointFloor))
+                .isEqualTo(new Ready(renewed.expiresAt(), clock.instant().minusSeconds(30)));
+        assertThat(fenced.httpFence(initial, Endpoint.eventLive(7), endpointFloor))
+                .isEqualTo(new Ready(renewed.expiresAt(), clock.instant().minusSeconds(30)));
+        assertNoHttpEffects("fixture:44");
+    }
+
+    @Test
+    void httpFenceRejectsExpiredAndReassignedLeasesWithoutStagingOrPublishing() {
+        OwnedSyncStore fenced = fencedStore();
+        enqueueFixtureVerification(fenced, 45);
+        Lease old = fenced.acquireForSeason("2097-98", "old-worker", Duration.ofMinutes(1))
+                .orElseThrow();
+        clock.advance(Duration.ofMinutes(2));
+
+        assertThatThrownBy(() -> fenced.httpFence(old, Endpoint.bootstrap(), clock.instant()))
+                .isInstanceOf(LeaseLostException.class);
+        Lease replacement = fenced.acquireForSeason("2097-98", "new-worker", Duration.ofMinutes(5))
+                .orElseThrow();
+        assertThat(replacement.fence()).isGreaterThan(old.fence());
+        assertThatThrownBy(() -> fenced.httpFence(old, Endpoint.bootstrap(), clock.instant()))
+                .isInstanceOf(LeaseLostException.class);
+        assertNoHttpEffects("fixture:45");
+    }
+
+    @Test
+    void httpFenceRejectsAReplacedRuntimeEpochWithoutStagingOrPublishing() {
+        OwnedSyncStore stale = fencedStore();
+        enqueueFixtureVerification(stale, 46);
+        Lease lease = stale.acquireForSeason("2097-98", "epoch-worker", Duration.ofMinutes(5))
+                .orElseThrow();
+
+        new PlannerRuntimeRepository(jdbc, tx, clock, TABLES).activate("2097-98", OwnedSyncMode.STAGING);
+
+        assertThatThrownBy(() -> stale.httpFence(lease, Endpoint.bootstrap(), clock.instant()))
+                .isInstanceOf(RuntimeFenceLostException.class);
+        assertNoHttpEffects("fixture:46");
+    }
+
+    @Test
+    void httpFenceSeesDemandAdvancedSinceEndpointSelection() {
+        OwnedSyncStore fenced = fencedStore();
+        Run run = enqueueCatalogueSchedule(fenced);
+        Lease lease = fenced.acquireForSeason("2097-98", "demand-worker", Duration.ofMinutes(5))
+                .orElseThrow();
+        assertThat(lease.generation()).isEqualTo(run.generation());
+        Instant earlierSelection = fenced.requestedSourceAfter(lease);
+
+        clock.advance(Duration.ofSeconds(20));
+        Instant nextDue = clock.instant().plusSeconds(15);
+        fenced.enqueue(SyncKind.CATALOGUE_SCHEDULE, "2097-98",
+                CatalogueScheduleDispatcher.SCHEDULE_COALESCING_KEY,
+                CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY, nextDue);
+
+        assertThat(fenced.httpFence(lease, Endpoint.fixtures(), earlierSelection))
+                .isEqualTo(new FutureFloor(nextDue));
+        assertNoHttpEffects(CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY);
+    }
+
+    @Test
+    void httpFenceRejectsWrongCatalogueEndpointAndHistoryPlayerId() {
+        OwnedSyncStore fenced = fencedStore();
+        enqueueCatalogueSchedule(fenced);
+        String historyKey = HistoryFixtureDispatcher.playerHistoryPublicationKey(321);
+        fenced.enqueue(SyncKind.PLAYER_HISTORY, "2097-98", historyKey, historyKey, clock.instant());
+
+        Lease catalogue = fenced.acquireForSeason("2097-98", "endpoint-worker", Duration.ofMinutes(5))
+                .orElseThrow();
+        assertThatThrownBy(() -> fenced.httpFence(catalogue, Endpoint.eventLive(7), clock.instant()))
+                .isInstanceOf(IllegalArgumentException.class);
+        Lease history = fenced.acquireForSeason("2097-98", "history-worker", Duration.ofMinutes(5))
+                .orElseThrow();
+        assertThat(history.kind()).isEqualTo(SyncKind.PLAYER_HISTORY);
+        assertThatThrownBy(() -> fenced.httpFence(history, Endpoint.elementSummary(322), clock.instant()))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> fenced.httpFence(history, Endpoint.eventLive(0), clock.instant()))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertNoHttpEffects(CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY);
+        assertNoHttpEffects(historyKey);
+    }
+
+    @Test
+    void httpFenceReturnsFutureFloorForTheExactHistoryEndpoint() {
+        OwnedSyncStore fenced = fencedStore();
+        String historyKey = HistoryFixtureDispatcher.playerHistoryPublicationKey(321);
+        fenced.enqueue(SyncKind.PLAYER_HISTORY, "2097-98", historyKey, historyKey, clock.instant());
+        Lease lease = fenced.acquireForSeason("2097-98", "history-worker", Duration.ofMinutes(5))
+                .orElseThrow();
+        Instant endpointFloor = clock.instant().plusSeconds(30);
+
+        assertThat(fenced.httpFence(lease, Endpoint.elementSummary(321), endpointFloor))
+                .isEqualTo(new FutureFloor(endpointFloor));
+        assertNoHttpEffects(historyKey);
     }
 
     @Test
@@ -760,6 +872,29 @@ class OwnedSyncStoreIntegrationTest {
 
     private void enqueue(String coalescingKey, String publicationKey) {
         store.enqueue(SyncKind.FIXTURE_VERIFICATION, "2097-98", coalescingKey, publicationKey, clock.instant());
+    }
+
+    private OwnedSyncStore fencedStore() {
+        var fence = new PlannerRuntimeRepository(jdbc, tx, clock, TABLES)
+                .activate("2097-98", OwnedSyncMode.STAGING);
+        return new OwnedSyncStore(jdbc, tx, clock, TABLES, fence);
+    }
+
+    private Run enqueueFixtureVerification(OwnedSyncStore target, int fixtureId) {
+        String key = FixtureSyncPublisher.publicationKey(fixtureId);
+        return target.enqueue(SyncKind.FIXTURE_VERIFICATION, "2097-98", key, key, clock.instant());
+    }
+
+    private Run enqueueCatalogueSchedule(OwnedSyncStore target) {
+        return target.enqueue(SyncKind.CATALOGUE_SCHEDULE, "2097-98",
+                CatalogueScheduleDispatcher.SCHEDULE_COALESCING_KEY,
+                CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY, clock.instant());
+    }
+
+    private void assertNoHttpEffects(String publicationKey) {
+        assertThat(count(TABLES.payload())).isZero();
+        assertThat(jdbc.queryForObject("SELECT latest_generation FROM " + TABLES.receipt()
+                + " WHERE season = '2097-98' AND publication_key = ?", Long.class, publicationKey)).isNull();
     }
 
     private SourceRead read() {

@@ -96,6 +96,7 @@ public final class OwnedMatchdayRuntime implements SmartLifecycle {
     @Override
     public synchronized void stop() {
         if (!running.compareAndSet(true, false)) return;
+        http.stopSending();
         try {
             runtimeRepository.deactivate(runtimeFence);
         } catch (RuntimeException failure) {
