@@ -305,13 +305,13 @@ check_reset_failure() {
 }
 
 check_reset_port() {
-    local name="TEST_DB_PORT selects the reset container's port"
+    local name="TEST_DB_PORT binds the reset container only to loopback"
     new_fixture reset-port
     run_reset TEST_DB_PORT=56543
-    if [[ "$STATUS" -eq 0 ]] && grep -q 'docker run .* -p 56543:5432 ' "$LOG"; then
+    if [[ "$STATUS" -eq 0 ]] && grep -q 'docker run .* -p 127.0.0.1:56543:5432 ' "$LOG"; then
         pass "$name"
     else
-        fail "$name" "the port override did not reach docker run"
+        fail "$name" "the loopback port override did not reach docker run"
     fi
 }
 
