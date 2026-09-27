@@ -142,6 +142,13 @@ public final class OwnedSyncSchema {
                 .formatted(tables.payload(), tables.payload()));
         jdbc.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_%s_id_run ON %s(id, run_generation)"
                 .formatted(tables.payload(), tables.payload()));
+        // The fixture-readiness anti-join probes each required player and read floor across runs.
+        jdbc.execute("""
+                CREATE INDEX IF NOT EXISTS idx_%s_history_readiness
+                ON %s(player_id, read_started_at, run_generation)
+                WHERE endpoint_kind='ELEMENT_SUMMARY' AND event_id IS NULL
+                  AND validation_state='VALID'
+                """.formatted(tables.payload(), tables.payload()));
         jdbc.execute("""
                 CREATE OR REPLACE FUNCTION fpl_sync_required_ids_valid(ids INTEGER[])
                 RETURNS BOOLEAN

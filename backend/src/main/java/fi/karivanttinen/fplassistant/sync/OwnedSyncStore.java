@@ -165,6 +165,31 @@ public final class OwnedSyncStore {
         });
     }
 
+    /** Returns due fixture runs whose durable dependency evidence is complete, without loading bodies. */
+    List<Run> readyFixtureGenerations(String season, int limit) {
+        String validSeason = bounded("season", season, 10);
+        if (limit < 1) throw new IllegalArgumentException("limit must be positive");
+        Instant checkedAt = now();
+        return tx.execute(status -> {
+            assertRuntimeFence(validSeason);
+            String sql = """
+                    SELECT r.generation, r.kind, r.season, r.coalescing_key,
+                           r.publication_key, r.due_at, r.state, r.attempt_count
+                    FROM %s r
+                    WHERE r.kind = 'FIXTURE_VERIFICATION'
+                      AND r.season = ? AND r.runtime_mode = ? AND r.runtime_epoch = ?
+                      AND r.due_at <= ?
+                      AND (r.state = 'PENDING'
+                           OR (r.state = 'LEASED' AND r.lease_expires_at <= ?))
+                      AND %s
+                    ORDER BY r.priority, r.due_at, r.generation
+                    LIMIT ?
+                    """.formatted(tables.run(), fixtureReadinessPredicate());
+            return jdbc.query(sql, this::run, validSeason, runtimeMode(), runtimeEpoch(),
+                    timestamp(checkedAt), timestamp(checkedAt), limit);
+        });
+    }
+
     /** Claims one due run. Priority, due time and generation make selection deterministic. */
     public Optional<Lease> acquire(String owner, Duration duration) {
         return acquire(owner, duration, null);
@@ -972,6 +997,63 @@ public final class OwnedSyncStore {
             publicPairCache.keySet().removeIf(key -> payloadIds.contains(key.bootstrapId())
                     || payloadIds.contains(key.fixturesId()));
         }
+    }
+
+    /** Reusable metadata-only admission predicate for a fixture run aliased as {@code r}. */
+    private String fixtureReadinessPredicate() {
+        return """
+                EXISTS (
+                    SELECT 1
+                    FROM %s m
+                    JOIN %s b ON b.id = m.bootstrap_payload_id
+                              AND b.run_generation = r.generation
+                    JOIN %s f ON f.id = m.fixtures_payload_id
+                              AND f.run_generation = r.generation
+                    JOIN %s l ON l.id = m.live_payload_id
+                              AND l.run_generation = r.generation
+                    WHERE m.run_generation = r.generation
+                      AND r.kind = 'FIXTURE_VERIFICATION'
+                      AND b.endpoint_kind = 'BOOTSTRAP_STATIC'
+                      AND b.event_id IS NULL AND b.player_id IS NULL
+                      AND b.validation_state = 'VALID'
+                      AND b.read_started_at >= r.requested_source_after
+                      AND f.endpoint_kind = 'FIXTURES'
+                      AND f.event_id IS NULL AND f.player_id IS NULL
+                      AND f.validation_state = 'VALID'
+                      AND f.read_started_at >= r.requested_source_after
+                      AND l.endpoint_kind = 'EVENT_LIVE'
+                      AND l.event_id > 0 AND l.player_id IS NULL
+                      AND l.validation_state = 'VALID'
+                      AND l.read_started_at >= GREATEST(
+                          r.requested_source_after,
+                          f.read_finished_at + INTERVAL '1 millisecond')
+                      AND fpl_sync_required_ids_valid(m.required_player_ids)
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM unnest(m.required_player_ids) AS required(player_id)
+                          WHERE NOT EXISTS (
+                              SELECT 1
+                              FROM %s hp
+                              JOIN %s hr ON hr.generation = hp.run_generation
+                              WHERE hp.endpoint_kind = 'ELEMENT_SUMMARY'
+                                AND hp.event_id IS NULL
+                                AND hp.player_id = required.player_id
+                                AND hp.validation_state = 'VALID'
+                                AND hp.read_started_at >= GREATEST(
+                                    r.requested_source_after,
+                                    m.source_floor,
+                                    f.read_finished_at + INTERVAL '1 millisecond')
+                                AND hr.kind = 'PLAYER_HISTORY'
+                                AND hr.coalescing_key = 'player-history:' || required.player_id::text
+                                AND hr.publication_key = 'player-history:' || required.player_id::text
+                                AND hr.season = r.season
+                                AND hr.runtime_mode = r.runtime_mode
+                                AND hr.runtime_epoch = r.runtime_epoch
+                          )
+                      )
+                )
+                """.formatted(tables.fixtureDependencyManifest(), tables.payload(), tables.payload(),
+                tables.payload(), tables.payload(), tables.run());
     }
 
     private Instant effectiveSourceFloor(Lease lease, Instant callerFloor) {

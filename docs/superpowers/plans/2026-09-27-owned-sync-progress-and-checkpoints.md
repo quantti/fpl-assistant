@@ -1,6 +1,6 @@
 # Owned sync — bounded history progress and canonical checkpoint reads
 
-**PROGRESS:** KAR-72 manifest, source-floor and transport fault tests pass; readiness/selection progress remains pending. Implementation 0/2 units. No production activation.
+**PROGRESS:** KAR-72 durable readiness classification tested; claim policy, admission fairness and remaining faults pending. Implementation 0/2 units. No production activation.
 
 Follow-up to KAR-71. Evidence: [STAGING retest PR #137](https://github.com/quantti/fpl-assistant/pull/137)
 and [`OWNED-SYNC-EGRESS-REPORT.md`](../../OWNED-SYNC-EGRESS-REPORT.md). The latest verified safe
@@ -252,10 +252,14 @@ Fixture-only history notifications now ensure each history job's requested sourc
 least the fixture response floor, without promoting an unchanged requirement to the current
 notification time. A genuinely newer requirement still advances the floor; direct/planner demand
 keeps its old semantics. Focused store/dispatcher tests pass (including repeated notices and
-leased jobs). Next prove metadata-only readiness matches the dispatcher's hydration rules, then
-compare selection policies on the unchanged two-worker driver; fair HTTP admission and remaining
-DB fault tests remain independent blockers. Neither claim-selection nor a production rollout is approved by
-these passing manifest tests alone.
+leased jobs). A metadata-only readiness predicate now checks the exact own anchors, current
+demand and each required player's VALID history from the same season/epoch after its fixture
+response floor. It applies readiness before any result limit, accepts a reusable history despite
+newer pending demand, and selects no body bytes. Focused store tests pass (45 tests, including
+blocked retries ahead of ready fixtures). Claim selection still uses the old priority order;
+compare policies on the unchanged two-worker driver. Fair HTTP admission and remaining DB fault
+tests are independent blockers. Neither claim selection nor production rollout follows from
+passing manifest/readiness tests alone.
 
 Serialized unfinished requests also make a simple admission-only FIFO insufficient. A second
 caller first sees `UNSETTLED` even for a healthy 100 ms predecessor; its 30-second recheck hint
