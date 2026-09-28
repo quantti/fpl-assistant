@@ -157,6 +157,37 @@ class OwnedSyncStoreIntegrationTest {
     }
 
     @Test
+    void unchangedOrOlderHistoryDemandPreservesAnHttpCooldownButNewerDemandCanAdvanceIt() {
+        Instant initialFloor = clock.instant().minusSeconds(60);
+        Run run = store.ensurePlayerHistoryAtLeast("2097-98", 76, initialFloor);
+        Lease lease = store.acquire("history-worker", Duration.ofMinutes(5)).orElseThrow();
+        Instant cooldown = clock.instant().plus(Duration.ofMinutes(30));
+        store.retry(lease, cooldown, "HTTP admission cooldown");
+
+        store.ensurePlayerHistoryAtLeast("2097-98", 76, initialFloor);
+        assertThat(jdbc.queryForObject("SELECT due_at FROM " + TABLES.run()
+                + " WHERE generation=?", java.sql.Timestamp.class, run.generation()).toInstant())
+                .isEqualTo(cooldown);
+
+        store.ensurePlayerHistoryAtLeast("2097-98", 76, initialFloor.minusSeconds(30));
+        assertThat(jdbc.queryForObject("SELECT due_at FROM " + TABLES.run()
+                + " WHERE generation=?", java.sql.Timestamp.class, run.generation()).toInstant())
+                .isEqualTo(cooldown);
+        assertThat(jdbc.queryForObject("SELECT requested_source_after FROM " + TABLES.run()
+                + " WHERE generation=?", java.sql.Timestamp.class, run.generation()).toInstant())
+                .isEqualTo(initialFloor);
+
+        Instant newerFloor = initialFloor.plusSeconds(30);
+        store.ensurePlayerHistoryAtLeast("2097-98", 76, newerFloor);
+        assertThat(jdbc.queryForObject("SELECT due_at FROM " + TABLES.run()
+                + " WHERE generation=?", java.sql.Timestamp.class, run.generation()).toInstant())
+                .isEqualTo(newerFloor);
+        assertThat(jdbc.queryForObject("SELECT requested_source_after FROM " + TABLES.run()
+                + " WHERE generation=?", java.sql.Timestamp.class, run.generation()).toInstant())
+                .isEqualTo(newerFloor);
+    }
+
+    @Test
     void concurrentHistoryNotificationsKeepTheMaximumFloorOnOneLeasedRun() throws Exception {
         Instant initialFloor = clock.instant().minusSeconds(60);
         Run run = store.ensurePlayerHistoryAtLeast("2097-98", 72, initialFloor);
@@ -470,6 +501,48 @@ class OwnedSyncStoreIntegrationTest {
     }
 
     @Test
+    void readyFixtureSelectionUsesDueTimeBeforePriority() {
+        OwnedSyncStore fair = fencedStore();
+        ReadinessFixture older = seedReadinessFixture(fair, 19, 9_019);
+        seedReadinessHistory(fair, 9_019, true);
+        ReadinessFixture newer = seedReadinessFixture(fair, 20, 9_020);
+        seedReadinessHistory(fair, 9_020, true);
+        Instant olderDue = clock.instant().minusSeconds(20);
+        Instant newerDue = clock.instant().minusSeconds(10);
+        jdbc.update("UPDATE " + TABLES.run() + " SET priority=4, due_at=? WHERE generation=?",
+                java.sql.Timestamp.from(olderDue), older.generation());
+        jdbc.update("UPDATE " + TABLES.run() + " SET priority=1, due_at=? WHERE generation=?",
+                java.sql.Timestamp.from(newerDue), newer.generation());
+
+        assertThat(fair.readyFixtureGenerations("2097-98", 2).stream().map(Run::generation).toList())
+                .containsExactly(older.generation(), newer.generation());
+
+        resetAttemptsForCurrentEpoch();
+        Lease claimed = fair.acquireFairForSeason("2097-98", "ready-order", Duration.ofMinutes(5))
+                .orElseThrow();
+        assertThat(claimed.generation()).isEqualTo(older.generation());
+    }
+
+    @Test
+    void fairReadyFixtureClaimsUseDueTimeBeforePriority() {
+        OwnedSyncStore fair = fencedStore();
+        ReadinessFixture older = seedReadinessFixture(fair, 29, 9_029);
+        seedReadinessHistory(fair, 9_029, true);
+        ReadinessFixture newer = seedReadinessFixture(fair, 30, 9_030);
+        seedReadinessHistory(fair, 9_030, true);
+        jdbc.update("UPDATE " + TABLES.run() + " SET priority=4, due_at=? WHERE generation=?",
+                java.sql.Timestamp.from(clock.instant().minusSeconds(20)), older.generation());
+        jdbc.update("UPDATE " + TABLES.run() + " SET priority=1, due_at=? WHERE generation=?",
+                java.sql.Timestamp.from(clock.instant().minusSeconds(10)), newer.generation());
+        resetAttemptsForCurrentEpoch();
+
+        Lease claimed = fair.acquireFairForSeason("2097-98", "fair-ready-order", Duration.ofMinutes(5))
+                .orElseThrow();
+
+        assertThat(claimed.generation()).isEqualTo(older.generation());
+    }
+
+    @Test
     void canonicalClaimsPreemptRotationIncludingAnExpiredExclusiveLease() {
         OwnedSyncStore fair = fencedStore();
         ReadinessFixture ready = seedReadinessFixture(fair, 14, 9_014);
@@ -593,6 +666,22 @@ class OwnedSyncStoreIntegrationTest {
         assertThat(firstNextEpoch.generation()).isEqualTo(nextHistory.generation());
         assertThat(firstNextEpoch.generation()).isNotEqualTo(nextReady.generation());
         assertThat(firstNextEpoch.generation()).isNotEqualTo(nextBlocked.generation());
+    }
+
+    @Test
+    void dependencyManifestCanBeRecordedWithoutReleasingLeaseOrBypassingMissingHistory() {
+        Run run = enqueueFixtureVerification(store, 69);
+        Lease lease = store.acquire("fixture-worker", Duration.ofMinutes(5)).orElseThrow();
+        ManifestAnchors anchors = stageManifestAnchors(lease, Validation.valid(), true);
+
+        store.recordDependencyManifest(lease, 69, 3, anchors.pair(), anchors.live(), List.of(1));
+
+        assertThat(jdbc.queryForObject("SELECT state || ':' || (lease_token IS NOT NULL)::text || ':' || priority "
+                + "FROM " + TABLES.run() + " WHERE generation=?", String.class, run.generation()))
+                .isEqualTo("LEASED:true:1");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.fixtureDependencyManifest()
+                + " WHERE run_generation=?", Integer.class, run.generation())).isOne();
+        assertThat(store.readyFixtureGenerations("2097-98", 1)).isEmpty();
     }
 
     @Test

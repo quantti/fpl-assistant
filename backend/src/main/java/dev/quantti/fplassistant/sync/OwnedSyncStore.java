@@ -96,14 +96,18 @@ public final class OwnedSyncStore {
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT (kind, season, coalescing_key)
                         WHERE state IN ('PENDING', 'LEASED')
-                    DO UPDATE SET due_at = LEAST(%s.due_at, EXCLUDED.due_at),
+                    DO UPDATE SET due_at = CASE
+                                      WHEN EXCLUDED.requested_source_after > %s.requested_source_after
+                                          THEN LEAST(%s.due_at, EXCLUDED.due_at)
+                                      ELSE %s.due_at END,
                                   requested_source_after = GREATEST(
                                       %s.requested_source_after, EXCLUDED.requested_source_after),
                                   updated_at = EXCLUDED.updated_at
                     WHERE %s.publication_key = EXCLUDED.publication_key
                     RETURNING generation, kind, season, coalescing_key, publication_key,
                               due_at, state, attempt_count
-                    """.formatted(tables.run(), tables.run(), tables.run(), tables.run()), this::run,
+                    """.formatted(tables.run(), tables.run(), tables.run(), tables.run(),
+                        tables.run(), tables.run()), this::run,
                         SyncKind.PLAYER_HISTORY.name(), validSeason, key, key,
                         SyncKind.PLAYER_HISTORY.priority, timestamp(historyFloor), timestamp(historyFloor),
                         runtimeMode(), runtimeEpoch(), timestamp(enqueuedAt), timestamp(enqueuedAt));
@@ -189,7 +193,7 @@ public final class OwnedSyncStore {
                       AND (r.state = 'PENDING'
                            OR (r.state = 'LEASED' AND r.lease_expires_at <= ?))
                       AND %s
-                    ORDER BY r.priority, r.due_at, r.generation
+                    ORDER BY r.due_at, r.generation
                     LIMIT ?
                     """.formatted(tables.run(), fixtureReadinessPredicate());
             return jdbc.query(sql, this::run, validSeason, runtimeMode(), runtimeEpoch(),
@@ -245,7 +249,10 @@ public final class OwnedSyncStore {
                     borrowingOrder.add(FAIR_CYCLE.get((firstTurn + offset) % FAIR_CYCLE.size()));
                 }
                 for (ClaimClass claimClass : borrowingOrder) {
-                    generation = fairCandidate(validSeason, checkedAt, claimClass.predicate(this));
+                    generation = claimClass == ClaimClass.READY_FIXTURE
+                            ? fairCandidateOrdered(validSeason, checkedAt, claimClass.predicate(this),
+                                    "r.due_at, r.generation")
+                            : fairCandidate(validSeason, checkedAt, claimClass.predicate(this));
                     if (generation != null) break;
                 }
                 // Preserve the coordinator's existing failure handling for unsupported work.
@@ -259,6 +266,12 @@ public final class OwnedSyncStore {
     }
 
     private Long fairCandidate(String season, Instant checkedAt, String predicate, Object... predicateValues) {
+        return fairCandidateOrdered(season, checkedAt, predicate,
+                "r.priority, r.due_at, r.generation", predicateValues);
+    }
+
+    private Long fairCandidateOrdered(String season, Instant checkedAt, String predicate,
+                                      String orderBy, Object... predicateValues) {
         String sql = """
                 SELECT r.generation
                 FROM %s r
@@ -266,9 +279,9 @@ public final class OwnedSyncStore {
                   AND r.due_at<=? AND r.requested_source_after<=?
                   AND (r.state='PENDING' OR (r.state='LEASED' AND r.lease_expires_at<=?))
                   AND (%s)
-                ORDER BY r.priority, r.due_at, r.generation
+                ORDER BY %s
                 LIMIT 1 FOR UPDATE OF r SKIP LOCKED
-                """.formatted(tables.run(), predicate);
+                """.formatted(tables.run(), predicate, orderBy);
         List<Object> parameters = new ArrayList<>(List.of(season, runtimeMode(), runtimeEpoch(),
                 timestamp(checkedAt), timestamp(checkedAt), timestamp(checkedAt)));
         parameters.addAll(List.of(predicateValues));
@@ -939,6 +952,20 @@ public final class OwnedSyncStore {
         finishAttempt(lease, dueAt, error, false, false, true);
     }
 
+    /** Stores the fixture's validated history dependency manifest without releasing its lease. */
+    public void recordDependencyManifest(Lease lease, int fixtureId, int eventId,
+                                         PublicPayloadPair pair, StagedPayload live,
+                                         List<Integer> requiredPlayerIds) {
+        Objects.requireNonNull(lease);
+        Objects.requireNonNull(pair);
+        Objects.requireNonNull(live);
+        List<Integer> sortedPlayerIds = sortedRequiredPlayerIds(requiredPlayerIds);
+        tx.executeWithoutResult(status -> {
+            LockedRun run = lockAndValidate(lease);
+            writeFixtureDependencyManifest(lease, run, fixtureId, eventId, pair, live, sortedPlayerIds);
+        });
+    }
+
     /** Writes the fixture's validated history dependency manifest and releases its lease atomically. */
     public void retryForDependency(Lease lease, Instant dueAt, String error, int fixtureId, int eventId,
                                    PublicPayloadPair pair, StagedPayload live,
@@ -948,67 +975,11 @@ public final class OwnedSyncStore {
         Objects.requireNonNull(pair);
         Objects.requireNonNull(live);
         List<Integer> sortedPlayerIds = sortedRequiredPlayerIds(requiredPlayerIds);
-        if (fixtureId <= 0 || eventId <= 0) {
-            throw new IllegalArgumentException("fixture and event ids must be positive");
-        }
 
         tx.executeWithoutResult(status -> {
             LockedRun run = lockAndValidate(lease);
-            if (!lease.season().equals(run.season) || lease.kind() != run.kind
-                    || !lease.coalescingKey().equals(run.coalescingKey)
-                    || !lease.publicationKey().equals(run.publicationKey)) {
-                throw new LeaseLostException("Lease identity no longer matches generation " + lease.generation());
-            }
-            if (run.kind != SyncKind.FIXTURE_VERIFICATION
-                    || !canonicalNumericRunKey(run, "fixture:")
-                    || numericRunKeyId(run, "fixture:") != fixtureId) {
-                throw new IllegalArgumentException("Dependency manifest does not match fixture run identity");
-            }
-            if (pair.runGeneration() != run.generation || live.runGeneration() != run.generation) {
-                throw new IllegalArgumentException("Dependency payloads must belong to the leased fixture run");
-            }
-
-            DependencyPayload bootstrap = dependencyPayload(lease, pair.bootstrap(),
-                    EndpointKind.BOOTSTRAP_STATIC, null);
-            DependencyPayload fixtures = dependencyPayload(lease, pair.fixtures(),
-                    EndpointKind.FIXTURES, null);
-            DependencyPayload livePayload = dependencyPayload(lease, live,
-                    EndpointKind.EVENT_LIVE, eventId);
-
-            Instant sourceFloor = jdbc.queryForObject("SELECT requested_source_after FROM %s WHERE generation = ?"
-                    .formatted(tables.run()), Timestamp.class, run.generation).toInstant();
-            if (bootstrap.read().startedAt().isBefore(sourceFloor)
-                    || fixtures.read().startedAt().isBefore(sourceFloor)
-                    || livePayload.read().startedAt().isBefore(sourceFloor)) {
-                throw new SourceDemandAdvancedException(run.generation, sourceFloor);
-            }
-            if (livePayload.read().startedAt().isBefore(fixtures.read().finishedAt().plusMillis(1))) {
-                throw new IllegalArgumentException("Live dependency payload predates the fixture response floor");
-            }
-
-            Instant recordedAt = now();
-            requireNotExpired(run, recordedAt);
-            jdbc.update(connection -> {
-                var statement = connection.prepareStatement("""
-                        INSERT INTO %s(run_generation, bootstrap_payload_id, fixtures_payload_id,
-                                       live_payload_id, required_player_ids, source_floor)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                        ON CONFLICT (run_generation) DO UPDATE SET
-                            bootstrap_payload_id = EXCLUDED.bootstrap_payload_id,
-                            fixtures_payload_id = EXCLUDED.fixtures_payload_id,
-                            live_payload_id = EXCLUDED.live_payload_id,
-                            required_player_ids = EXCLUDED.required_player_ids,
-                            source_floor = EXCLUDED.source_floor
-                        """.formatted(tables.fixtureDependencyManifest()));
-                statement.setLong(1, run.generation);
-                statement.setLong(2, bootstrap.id());
-                statement.setLong(3, fixtures.id());
-                statement.setLong(4, livePayload.id());
-                statement.setArray(5, connection.createArrayOf("integer",
-                        sortedPlayerIds.toArray(Integer[]::new)));
-                statement.setTimestamp(6, timestamp(sourceFloor));
-                return statement;
-            });
+            Instant recordedAt = writeFixtureDependencyManifest(
+                    lease, run, fixtureId, eventId, pair, live, sortedPlayerIds);
             int released = jdbc.update("""
                     UPDATE %s SET state = 'PENDING', priority = ?, due_at = ?, last_error = ?,
                         failed_at = NULL, lease_owner = NULL, lease_token = NULL,
@@ -1022,6 +993,69 @@ public final class OwnedSyncStore {
                 throw new LeaseLostException("Lease is stale for generation " + run.generation);
             }
         });
+    }
+
+    private Instant writeFixtureDependencyManifest(Lease lease, LockedRun run, int fixtureId, int eventId,
+                                                   PublicPayloadPair pair, StagedPayload live,
+                                                   List<Integer> sortedPlayerIds) {
+        if (fixtureId <= 0 || eventId <= 0) {
+            throw new IllegalArgumentException("fixture and event ids must be positive");
+        }
+        if (!lease.season().equals(run.season) || lease.kind() != run.kind
+                || !lease.coalescingKey().equals(run.coalescingKey)
+                || !lease.publicationKey().equals(run.publicationKey)) {
+            throw new LeaseLostException("Lease identity no longer matches generation " + lease.generation());
+        }
+        if (run.kind != SyncKind.FIXTURE_VERIFICATION
+                || !canonicalNumericRunKey(run, "fixture:")
+                || numericRunKeyId(run, "fixture:") != fixtureId) {
+            throw new IllegalArgumentException("Dependency manifest does not match fixture run identity");
+        }
+        if (pair.runGeneration() != run.generation || live.runGeneration() != run.generation) {
+            throw new IllegalArgumentException("Dependency payloads must belong to the leased fixture run");
+        }
+
+        DependencyPayload bootstrap = dependencyPayload(lease, pair.bootstrap(),
+                EndpointKind.BOOTSTRAP_STATIC, null);
+        DependencyPayload fixtures = dependencyPayload(lease, pair.fixtures(),
+                EndpointKind.FIXTURES, null);
+        DependencyPayload livePayload = dependencyPayload(lease, live, EndpointKind.EVENT_LIVE, eventId);
+
+        Instant sourceFloor = jdbc.queryForObject("SELECT requested_source_after FROM %s WHERE generation = ?"
+                .formatted(tables.run()), Timestamp.class, run.generation).toInstant();
+        if (bootstrap.read().startedAt().isBefore(sourceFloor)
+                || fixtures.read().startedAt().isBefore(sourceFloor)
+                || livePayload.read().startedAt().isBefore(sourceFloor)) {
+            throw new SourceDemandAdvancedException(run.generation, sourceFloor);
+        }
+        if (livePayload.read().startedAt().isBefore(fixtures.read().finishedAt().plusMillis(1))) {
+            throw new IllegalArgumentException("Live dependency payload predates the fixture response floor");
+        }
+
+        Instant recordedAt = now();
+        requireNotExpired(run, recordedAt);
+        jdbc.update(connection -> {
+            var statement = connection.prepareStatement("""
+                    INSERT INTO %s(run_generation, bootstrap_payload_id, fixtures_payload_id,
+                                   live_payload_id, required_player_ids, source_floor)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT (run_generation) DO UPDATE SET
+                        bootstrap_payload_id = EXCLUDED.bootstrap_payload_id,
+                        fixtures_payload_id = EXCLUDED.fixtures_payload_id,
+                        live_payload_id = EXCLUDED.live_payload_id,
+                        required_player_ids = EXCLUDED.required_player_ids,
+                        source_floor = EXCLUDED.source_floor
+                    """.formatted(tables.fixtureDependencyManifest()));
+            statement.setLong(1, run.generation);
+            statement.setLong(2, bootstrap.id());
+            statement.setLong(3, fixtures.id());
+            statement.setLong(4, livePayload.id());
+            statement.setArray(5, connection.createArrayOf("integer",
+                    sortedPlayerIds.toArray(Integer[]::new)));
+            statement.setTimestamp(6, timestamp(sourceFloor));
+            return statement;
+        });
+        return recordedAt;
     }
 
     /** Requeues a real source failure and durably advances its consecutive-failure count. */

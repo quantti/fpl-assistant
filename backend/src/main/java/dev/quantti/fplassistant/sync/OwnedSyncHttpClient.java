@@ -13,6 +13,7 @@ import java.util.IdentityHashMap;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -83,6 +84,7 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
     private static final long CLOCK_RECHECK_NANOS = TimeUnit.MILLISECONDS.toNanos(100);
     private static final int MAX_RETRY_AFTER_CHARS = 1_024;
     private static final WaitObserver NOOP_WAIT_OBSERVER = observation -> { };
+    private static final Runnable NOOP_SETTLEMENT_CALL_HOOK = () -> { };
 
     private final OwnedSyncRequestBudget budget;
     private final OwnedSyncDbOperations dbOperations;
@@ -100,9 +102,13 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
     private final Object turnGate = new Object();
     private final java.util.ArrayDeque<TurnTicket> turns = new java.util.ArrayDeque<>();
     private WaitObserver waitObserver = NOOP_WAIT_OBSERVER;
+    private Runnable beforeSettlementCallHook = NOOP_SETTLEMENT_CALL_HOOK;
     private long waitTokenSequence;
     private boolean closing;
     private boolean turnClosed;
+    private int inFlightGets;
+    private boolean dbClosePending;
+    private boolean dbOperationsClosed;
     private boolean unsafeTurnChain;
 
     /** Production construction deliberately fixes the source host and transport limits. */
@@ -209,9 +215,10 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
         if (joined.failure != null) return turnJoinFailure(joined.failure);
 
         TurnTicket ticket = joined.ticket;
+        boolean tracked = beginGet();
         boolean safeToHandover = false;
         try {
-            if (isClosing()) return locallyClosed();
+            if (!tracked || isClosing()) return locallyClosed();
             if (ticket.poisoned) return unresolved(DeferredReason.UNSETTLED);
             String path;
             try {
@@ -227,6 +234,7 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
             return result;
         } finally {
             releaseTurn(ticket, safeToHandover);
+            if (tracked) endGet();
         }
     }
 
@@ -550,7 +558,21 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
     }
 
     private Outcome<Settlement> settle(Permit permit, Completion completion, OwnedSyncDeadline deadline) {
-        return dbOperations.call(() -> budget.complete(permit, completion), deadline);
+        boolean restoreInterrupt = Thread.interrupted();
+        try {
+            while (true) {
+                beforeSettlementCallHook.run();
+                Outcome<Settlement> outcome = dbOperations.call(
+                        () -> budget.complete(permit, completion), deadline);
+                if (!(outcome instanceof Rejected<?> rejected)
+                        || rejected.reason() != Rejection.INTERRUPTED) return outcome;
+
+                restoreInterrupt |= Thread.interrupted();
+                if (deadline.remainingNanos() == 0) return outcome;
+            }
+        } finally {
+            if (restoreInterrupt) Thread.currentThread().interrupt();
+        }
     }
 
     private WireResponse execute(HttpGet request, ExchangeAttempt attempt) throws IOException {
@@ -634,6 +656,29 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
         }
     }
 
+    /** Installs a loopback-only hook immediately before each supervised settlement call. */
+    void setBeforeSettlementCallHookForTests(Runnable hook) {
+        if (!loopbackTest) throw new IllegalStateException("Settlement hook is loopback-test only");
+        synchronized (turnGate) {
+            if (!turns.isEmpty()) throw new IllegalStateException("Cannot change settlement hook during a turn");
+            beforeSettlementCallHook = Objects.requireNonNull(hook);
+        }
+    }
+
+    /**
+     * Runs shutdown deactivation on the fixed-capacity DB-only supervisor until the stop-entry
+     * deadline. The callable must contain only DB work and must not initiate or schedule HTTP.
+     */
+    OwnedSyncDbOperations.Outcome<Void> deactivateDatabaseOnly(Callable<Void> deactivation,
+                                                                 long deadlineNanos) {
+        return dbOperations.call(Objects.requireNonNull(deactivation), OwnedSyncDeadline.at(deadlineNanos));
+    }
+
+    /** Waits for supervised DB work to exit within the caller's stop-entry deadline. */
+    boolean awaitDbOperationsUntil(long deadlineNanos) {
+        return dbOperations.awaitTerminationUntil(deadlineNanos);
+    }
+
     /** Wakes loopback-test waiters after advancing their injected clock. */
     void clockAdvancedForTests() {
         if (!loopbackTest) throw new IllegalStateException("Clock wakeup is loopback-test only");
@@ -654,6 +699,39 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
         synchronized (sendGate) {
             return closing;
         }
+    }
+
+    private boolean beginGet() {
+        synchronized (sendGate) {
+            if (closing) return false;
+            inFlightGets++;
+            return true;
+        }
+    }
+
+    private void endGet() {
+        boolean closeDb = false;
+        synchronized (sendGate) {
+            inFlightGets--;
+            if (inFlightGets == 0 && dbClosePending && !dbOperationsClosed) {
+                dbOperationsClosed = true;
+                closeDb = true;
+            }
+        }
+        if (closeDb) dbOperations.close();
+    }
+
+    private void closeDbOperationsWhenIdle() {
+        if (!closeDbOperations) return;
+        boolean closeDb = false;
+        synchronized (sendGate) {
+            dbClosePending = true;
+            if (inFlightGets == 0 && !dbOperationsClosed) {
+                dbOperationsClosed = true;
+                closeDb = true;
+            }
+        }
+        if (closeDb) dbOperations.close();
     }
 
     private TurnJoin joinTurn(OwnedSyncDeadline graceDeadline, OwnedSyncDeadline methodDeadline) {
@@ -1018,7 +1096,7 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
                     exchanges.shutdownNow();
                 } finally {
                     try {
-                        if (closeDbOperations) dbOperations.close();
+                        closeDbOperationsWhenIdle();
                     } finally {
                         long remaining = deadline - System.nanoTime();
                         if (remaining > 0) {
