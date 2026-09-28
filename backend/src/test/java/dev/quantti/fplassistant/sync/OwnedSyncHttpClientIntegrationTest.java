@@ -1499,6 +1499,63 @@ class OwnedSyncHttpClientIntegrationTest {
     }
 
     @Test
+    @Timeout(value = 6, unit = TimeUnit.SECONDS)
+    void blockedRuntimeDeactivationReturnsByStopDeadlineAndPreventsLateGets() throws Exception {
+        CountDownLatch dispatchGate = new CountDownLatch(1);
+        RuntimeDrainFixture fixture = runtimeDrainFixture(
+                Duration.ofMillis(600), Duration.ofMillis(80), dispatchGate);
+        CountDownLatch deactivationEntered = new CountDownLatch(1);
+        CountDownLatch releaseDeactivation = new CountDownLatch(1);
+        CountDownLatch deactivationFinished = new CountDownLatch(1);
+        CountDownLatch stopReturned = new CountDownLatch(1);
+        AtomicLong stopElapsed = new AtomicLong();
+        AtomicInteger deactivationCalls = new AtomicInteger();
+        doAnswer(invocation -> {
+            deactivationCalls.incrementAndGet();
+            deactivationEntered.countDown();
+            awaitIgnoringInterrupts(releaseDeactivation);
+            deactivationFinished.countDown();
+            return null;
+        }).when(fixture.repository).deactivate(any());
+        fixture.runtime.start();
+        assertThat(fixture.dispatchEntered.await(1, TimeUnit.SECONDS)).isTrue();
+        Thread stopper = Thread.ofPlatform().name("owned-sync-blocked-deactivation-stop").start(() -> {
+            long started = System.nanoTime();
+            try {
+                fixture.runtime.stop();
+                stopElapsed.set(System.nanoTime() - started);
+            } finally {
+                stopReturned.countDown();
+            }
+        });
+
+        try {
+            assertThat(deactivationEntered.await(1, TimeUnit.SECONDS)).isTrue();
+            dispatchGate.countDown();
+            assertThat(fixture.dispatcherReturned.await(1, TimeUnit.SECONDS)).isTrue();
+            assertThat(fixture.result.get()).isInstanceOfSatisfying(DeferredResult.class, deferred ->
+                    assertThat(deferred.reason()).isEqualTo(DeferredReason.HTTP_CLIENT_CLOSED));
+            assertThat(fixture.requests).hasValue(0);
+            assertThat(stopReturned.await(2, TimeUnit.SECONDS)).isTrue();
+            assertThat(stopElapsed.get()).isLessThan(Duration.ofSeconds(1).toNanos());
+            assertThat(fixture.transport.get(Endpoint.fixtures(), 1))
+                    .isInstanceOfSatisfying(DeferredResult.class, deferred ->
+                            assertThat(deferred.reason()).isEqualTo(DeferredReason.HTTP_CLIENT_CLOSED));
+            assertThat(fixture.requests).hasValue(0);
+            assertThat(deactivationCalls).hasValue(1);
+            assertThat(deactivationFinished.getCount()).isEqualTo(1);
+        } finally {
+            dispatchGate.countDown();
+            releaseDeactivation.countDown();
+            stopper.join(2_000);
+            assertThat(deactivationFinished.await(1, TimeUnit.SECONDS)).isTrue();
+            assertThat(deactivationCalls).hasValue(1);
+            fixture.operations.awaitTerminationForTests(Duration.ofSeconds(2));
+            fixture.runtime.stop();
+        }
+    }
+
+    @Test
     @Timeout(value = 10, unit = TimeUnit.SECONDS)
     void runtimeWaitsForInterruptedSettlementToCommitBeforeWorkPoolCloses() throws Exception {
         RuntimeDrainFixture fixture = runtimeDrainFixture(Duration.ofSeconds(2), Duration.ofMillis(100));
@@ -2864,6 +2921,11 @@ class OwnedSyncHttpClientIntegrationTest {
 
     private RuntimeDrainFixture runtimeDrainFixture(Duration shutdownLimit, Duration shutdownGrace)
             throws IOException {
+        return runtimeDrainFixture(shutdownLimit, shutdownGrace, null);
+    }
+
+    private RuntimeDrainFixture runtimeDrainFixture(Duration shutdownLimit, Duration shutdownGrace,
+                                                     CountDownLatch dispatchGate) throws IOException {
         HikariConfig config = new HikariConfig();
         config.setJdbcUrl(requiredEnv("DATABASE_URL"));
         config.setUsername(requiredEnv("DB_USER"));
@@ -2895,6 +2957,7 @@ class OwnedSyncHttpClientIntegrationTest {
                 base, Duration.ofSeconds(2), budgetClock, operations, Duration.ofSeconds(10), true, true);
         transports.add(transport);
 
+        CountDownLatch dispatchEntered = new CountDownLatch(1);
         CountDownLatch dispatcherReturned = new CountDownLatch(1);
         AtomicReference<OwnedSyncHttpClient.Result> result = new AtomicReference<>();
         AtomicBoolean dispatcherInterrupted = new AtomicBoolean();
@@ -2902,6 +2965,8 @@ class OwnedSyncHttpClientIntegrationTest {
         OwnedMatchdayCoordinator coordinator = mock(OwnedMatchdayCoordinator.class);
         doAnswer(invocation -> {
             if (dispatches.getAndIncrement() == 0) {
+                dispatchEntered.countDown();
+                if (dispatchGate != null) awaitIgnoringInterrupts(dispatchGate);
                 try {
                     result.set(transport.get(Endpoint.fixtures(), 1));
                 } finally {
@@ -2916,8 +2981,9 @@ class OwnedSyncHttpClientIntegrationTest {
         var fence = new OwnedSyncStore.RuntimeFence("2026-27", OwnedSyncMode.STAGING, 7, Instant.EPOCH);
         OwnedMatchdayRuntime runtime = new OwnedMatchdayRuntime(coordinator, repository, transport,
                 "test", fence, watchdog, "2026-27", shutdownLimit, shutdownGrace);
-        return new RuntimeDrainFixture(pool, operations, transport, runtime, commitEntered,
-                releaseCommit, commitFinished, dispatcherReturned, dispatcherInterrupted, result, requests);
+        return new RuntimeDrainFixture(pool, operations, transport, runtime, repository, commitEntered,
+                releaseCommit, commitFinished, dispatchEntered, dispatcherReturned, dispatcherInterrupted,
+                result, requests);
     }
 
     private OwnedSyncHttpClient customTransport(CloseableHttpClient apache, ThreadPoolExecutor control,
@@ -3142,9 +3208,11 @@ class OwnedSyncHttpClientIntegrationTest {
         private final OwnedSyncDbOperations operations;
         private final OwnedSyncHttpClient transport;
         private final OwnedMatchdayRuntime runtime;
+        private final PlannerRuntimeRepository repository;
         private final CountDownLatch commitEntered;
         private final CountDownLatch releaseCommit;
         private final CountDownLatch commitFinished;
+        private final CountDownLatch dispatchEntered;
         private final CountDownLatch dispatcherReturned;
         private final AtomicBoolean dispatcherInterrupted;
         private final AtomicReference<OwnedSyncHttpClient.Result> result;
@@ -3152,18 +3220,21 @@ class OwnedSyncHttpClientIntegrationTest {
 
         private RuntimeDrainFixture(HikariDataSource pool, OwnedSyncDbOperations operations,
                                     OwnedSyncHttpClient transport, OwnedMatchdayRuntime runtime,
+                                    PlannerRuntimeRepository repository,
                                     CountDownLatch commitEntered, CountDownLatch releaseCommit,
-                                    CountDownLatch commitFinished, CountDownLatch dispatcherReturned,
-                                    AtomicBoolean dispatcherInterrupted,
+                                    CountDownLatch commitFinished, CountDownLatch dispatchEntered,
+                                    CountDownLatch dispatcherReturned, AtomicBoolean dispatcherInterrupted,
                                     AtomicReference<OwnedSyncHttpClient.Result> result,
                                     AtomicInteger requests) {
             this.pool = pool;
             this.operations = operations;
             this.transport = transport;
             this.runtime = runtime;
+            this.repository = repository;
             this.commitEntered = commitEntered;
             this.releaseCommit = releaseCommit;
             this.commitFinished = commitFinished;
+            this.dispatchEntered = dispatchEntered;
             this.dispatcherReturned = dispatcherReturned;
             this.dispatcherInterrupted = dispatcherInterrupted;
             this.result = result;

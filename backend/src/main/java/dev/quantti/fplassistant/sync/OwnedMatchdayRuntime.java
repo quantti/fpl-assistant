@@ -116,9 +116,21 @@ public final class OwnedMatchdayRuntime implements SmartLifecycle {
         if (!running.compareAndSet(true, false)) return;
         http.stopSending();
         try {
-            runtimeRepository.deactivate(runtimeFence);
+            OwnedSyncDbOperations.Outcome<Void> deactivation = http.deactivateDatabaseOnly(() -> {
+                runtimeRepository.deactivate(runtimeFence);
+                return null;
+            }, deadline);
+            if (deactivation instanceof OwnedSyncDbOperations.Rejected<?> rejected) {
+                log.error("owned sync OFF not confirmed during shutdown: DB deactivation rejected ({})",
+                        rejected.reason());
+            } else if (deactivation instanceof OwnedSyncDbOperations.Uncertain<?> uncertain) {
+                log.error("owned sync OFF not confirmed during shutdown: DB deactivation outcome uncertain ({})",
+                        uncertain.reason(), uncertain.failure());
+            } else if (!(deactivation instanceof OwnedSyncDbOperations.Success<?>)) {
+                log.error("owned sync OFF not confirmed during shutdown: invalid DB deactivation outcome");
+            }
         } catch (RuntimeException failure) {
-            log.error("owned sync could not durably fence this activation during shutdown; cancelling local work", failure);
+            log.error("owned sync OFF not confirmed during shutdown: DB deactivation supervisor failed", failure);
         } finally {
             shutdown(plannerExecutor);
             shutdown(workerExecutor);
