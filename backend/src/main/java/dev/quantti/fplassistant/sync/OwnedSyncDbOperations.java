@@ -111,6 +111,25 @@ final class OwnedSyncDbOperations implements AutoCloseable {
         return maximumCallerWait;
     }
 
+    /** Waits for shutdown workers to exit by an absolute monotonic deadline without cancelling them. */
+    boolean awaitTerminationUntil(long deadlineNanos) {
+        boolean interrupted = Thread.interrupted();
+        try {
+            while (!executor.isTerminated()) {
+                long remaining = deadlineNanos - System.nanoTime();
+                if (remaining <= 0) return false;
+                try {
+                    if (executor.awaitTermination(remaining, TimeUnit.NANOSECONDS)) return true;
+                } catch (InterruptedException shutdownInterrupted) {
+                    interrupted = true;
+                }
+            }
+            return true;
+        } finally {
+            if (interrupted) Thread.currentThread().interrupt();
+        }
+    }
+
     /** Test-only bounded wait for all accepted DB operations to exit after close. */
     boolean awaitTerminationForTests(Duration timeout) throws InterruptedException {
         Objects.requireNonNull(timeout);

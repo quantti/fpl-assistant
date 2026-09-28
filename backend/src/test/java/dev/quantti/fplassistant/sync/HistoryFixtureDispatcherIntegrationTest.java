@@ -697,6 +697,60 @@ class HistoryFixtureDispatcherIntegrationTest {
     }
 
     @Test
+    void finalRecheckDeferralKeepsValidHistoryFixtureReadyForRetry() throws Exception {
+        HistoryFixtureDispatcher staged = new HistoryFixtureDispatcher(store, null, fetch, clock, false);
+        var fixtureRun = staged.enqueueFixtureVerification(SEASON, 21, clock.instant());
+        Lease fixtureLease = acquire(fixtureRun.generation());
+        SourceRead pairRead = readNow();
+        long bootstrapId = store.stage(fixtureLease, Endpoint.bootstrap(), pairRead,
+                Validation.valid(), bootstrap);
+        long fixturesId = store.stage(fixtureLease, Endpoint.fixtures(), pairRead,
+                Validation.valid(), fixtures);
+        clock.advance(Duration.ofMillis(1));
+        SourceRead liveRead = readNow();
+        long liveId = store.stage(fixtureLease, Endpoint.eventLive(3), liveRead,
+                Validation.valid(), liveThree);
+        Set<Integer> playerIds = fixturePlayerIds(pairRead);
+        clock.advance(Duration.ofMillis(1));
+        Instant historyFloor = pairRead.finishedAt().plusMillis(1);
+        for (int playerId : playerIds) {
+            var historyRun = store.enqueue(SyncKind.PLAYER_HISTORY, SEASON.code(),
+                    "player-history:" + playerId, "player-history:" + playerId, historyFloor);
+            Lease historyLease = acquire(historyRun.generation());
+            SourceRead historyRead = readNow();
+            store.stage(historyLease, Endpoint.elementSummary(playerId), historyRead,
+                    Validation.valid(), historyOne);
+            store.completeStaged(historyLease, historyRead, List.of(historyRead));
+        }
+
+        Instant deferredDue = clock.instant().plusSeconds(30);
+        fetch.results.add(new DeferredResult(deferredDue, DeferredReason.MINIMUM_SPACING));
+        DispatchResult result = staged.process(fixtureLease, SEASON);
+
+        assertThat(result.outcome()).isEqualTo(Outcome.RETRY_SCHEDULED);
+        assertThat(result.failure()).isEqualTo(FailureType.HTTP_DEFERRED);
+        assertThat(fetch.endpoints).containsExactly(Endpoint.bootstrap());
+        assertThat(jdbc.query("SELECT bootstrap_payload_id, fixtures_payload_id, live_payload_id FROM "
+                        + TABLES.fixtureDependencyManifest() + " WHERE run_generation=?",
+                (rs, row) -> List.of(rs.getLong(1), rs.getLong(2), rs.getLong(3)), fixtureRun.generation()))
+                .containsExactly(List.of(bootstrapId, fixturesId, liveId));
+        Integer[] requiredPlayerIds = jdbc.queryForObject("SELECT required_player_ids FROM "
+                        + TABLES.fixtureDependencyManifest() + " WHERE run_generation=?",
+                (rs, row) -> (Integer[]) rs.getArray(1).getArray(), fixtureRun.generation());
+        assertThat(requiredPlayerIds).containsExactlyElementsOf(playerIds.stream().sorted().toList());
+        assertThat(jdbc.queryForObject("SELECT state || ':' || (lease_token IS NULL)::text FROM "
+                + TABLES.run() + " WHERE generation=?", String.class, fixtureRun.generation()))
+                .isEqualTo("PENDING:true");
+        assertThat(jdbc.queryForObject("SELECT due_at FROM " + TABLES.run()
+                + " WHERE generation=?", java.sql.Timestamp.class, fixtureRun.generation()).toInstant())
+                .isEqualTo(deferredDue);
+        clock.advance(Duration.between(clock.instant(), deferredDue));
+        assertThat(store.readyFixtureGenerations(SEASON.code(), 10).stream()
+                .map(ready -> ready.generation()).toList())
+                .contains(fixtureRun.generation());
+    }
+
+    @Test
     void rateLimitedFirstEndpointUsesAuthoritativeDueAndRetainsItsRawResponse() {
         Instant due = clock.instant().plus(Duration.ofHours(2));
         var run = dispatcher.enqueueFixtureVerification(SEASON, 21, clock.instant());

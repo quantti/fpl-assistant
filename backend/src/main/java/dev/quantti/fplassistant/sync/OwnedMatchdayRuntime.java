@@ -15,7 +15,9 @@ import org.springframework.context.SmartLifecycle;
 public final class OwnedMatchdayRuntime implements SmartLifecycle {
 
     private static final Logger log = LoggerFactory.getLogger(OwnedMatchdayRuntime.class);
-    private static final Duration SHUTDOWN_LIMIT = Duration.ofSeconds(10);
+    private static final Duration SHUTDOWN_LIMIT = Duration.ofSeconds(50);
+    private static final Duration SHUTDOWN_GRACE = Duration.ofSeconds(10);
+    private static final Duration TRANSPORT_CLOSE_RESERVE = Duration.ofMillis(1_100);
 
     private final OwnedMatchdayCoordinator coordinator;
     private final PlannerRuntimeRepository runtimeRepository;
@@ -24,6 +26,8 @@ public final class OwnedMatchdayRuntime implements SmartLifecycle {
     private final OwnedSyncStore.RuntimeFence runtimeFence;
     private final OwnedSyncWatchdog watchdog;
     private final String season;
+    private final Duration shutdownLimit;
+    private final Duration shutdownGrace;
     private final AtomicBoolean running = new AtomicBoolean();
     private ScheduledExecutorService plannerExecutor;
     private ScheduledExecutorService workerExecutor;
@@ -35,6 +39,16 @@ public final class OwnedMatchdayRuntime implements SmartLifecycle {
                                 OwnedSyncHttpClient http, String instanceId,
                                 OwnedSyncStore.RuntimeFence runtimeFence,
                                 OwnedSyncWatchdog watchdog, String season) {
+        this(coordinator, runtimeRepository, http, instanceId, runtimeFence, watchdog, season,
+                SHUTDOWN_LIMIT, SHUTDOWN_GRACE);
+    }
+
+    OwnedMatchdayRuntime(OwnedMatchdayCoordinator coordinator,
+                         PlannerRuntimeRepository runtimeRepository,
+                         OwnedSyncHttpClient http, String instanceId,
+                         OwnedSyncStore.RuntimeFence runtimeFence,
+                         OwnedSyncWatchdog watchdog, String season,
+                         Duration shutdownLimit, Duration shutdownGrace) {
         this.coordinator = Objects.requireNonNull(coordinator);
         this.runtimeRepository = Objects.requireNonNull(runtimeRepository);
         this.http = Objects.requireNonNull(http);
@@ -42,6 +56,8 @@ public final class OwnedMatchdayRuntime implements SmartLifecycle {
         this.runtimeFence = Objects.requireNonNull(runtimeFence);
         this.watchdog = Objects.requireNonNull(watchdog);
         this.season = Objects.requireNonNull(season);
+        this.shutdownLimit = positiveShutdownLimit(shutdownLimit);
+        this.shutdownGrace = positiveShutdownGrace(shutdownGrace, this.shutdownLimit);
     }
 
     @Override
@@ -95,6 +111,8 @@ public final class OwnedMatchdayRuntime implements SmartLifecycle {
 
     @Override
     public synchronized void stop() {
+        long stopStarted = System.nanoTime();
+        long deadline = stopStarted + shutdownLimit.toNanos();
         if (!running.compareAndSet(true, false)) return;
         http.stopSending();
         try {
@@ -106,27 +124,89 @@ public final class OwnedMatchdayRuntime implements SmartLifecycle {
             shutdown(workerExecutor);
             shutdown(watchdogExecutor);
             shutdown(deliveryExecutor);
-            long deadline = System.nanoTime() + SHUTDOWN_LIMIT.toNanos();
-            await(plannerExecutor, deadline);
-            await(workerExecutor, deadline);
-            await(watchdogExecutor, deadline);
-            await(deliveryExecutor, deadline);
-            http.close();
+            long closeReserve = Math.min(TRANSPORT_CLOSE_RESERVE.toNanos(), shutdownLimit.toNanos() / 4);
+            long drainDeadline = deadline - closeReserve;
+            long graceDeadline = Math.min(drainDeadline, stopStarted + shutdownGrace.toNanos());
+            StopWait wait = new StopWait();
+            try {
+                wait.await(workerExecutor, graceDeadline);
+                wait.await(plannerExecutor, graceDeadline);
+                wait.await(watchdogExecutor, graceDeadline);
+                wait.await(deliveryExecutor, graceDeadline);
+                shutdownNow(plannerExecutor);
+                shutdownNow(workerExecutor);
+                shutdownNow(watchdogExecutor);
+                shutdownNow(deliveryExecutor);
+
+                boolean workerExited = wait.await(workerExecutor, drainDeadline);
+                boolean plannerExited = wait.await(plannerExecutor, drainDeadline);
+                boolean watchdogExited = wait.await(watchdogExecutor, drainDeadline);
+                boolean deliveryExited = wait.await(deliveryExecutor, drainDeadline);
+                if (!workerExited) {
+                    log.warn("owned sync worker did not exit and settle within the shutdown budget; "
+                            + "the owned work database may close with the attempt unresolved");
+                }
+                if (!plannerExited || !watchdogExited || !deliveryExited) {
+                    log.warn("owned sync auxiliary executor did not exit within the shutdown budget");
+                }
+            } finally {
+                try {
+                    http.close();
+                } finally {
+                    try {
+                        if (!http.awaitDbOperationsUntil(deadline)) {
+                            log.warn("owned sync DB operation did not exit within the shutdown budget; "
+                                    + "the owned work database may close with settlement unresolved");
+                        }
+                    } finally {
+                        if (wait.interrupted()) Thread.currentThread().interrupt();
+                    }
+                }
+            }
         }
+    }
+
+    private static Duration positiveShutdownLimit(Duration limit) {
+        Objects.requireNonNull(limit);
+        if (limit.isZero() || limit.isNegative() || limit.compareTo(SHUTDOWN_LIMIT) > 0) {
+            throw new IllegalArgumentException("shutdown limit must be positive and at most 50 seconds");
+        }
+        return limit;
+    }
+
+    private static Duration positiveShutdownGrace(Duration grace, Duration limit) {
+        Objects.requireNonNull(grace);
+        if (grace.isZero() || grace.isNegative() || grace.compareTo(limit) > 0) {
+            throw new IllegalArgumentException("shutdown grace must be positive and no longer than its limit");
+        }
+        return grace;
     }
 
     private static void shutdown(ScheduledExecutorService executor) {
         if (executor != null) executor.shutdown();
     }
 
-    private static void await(ScheduledExecutorService executor, long deadline) {
-        if (executor == null) return;
-        try {
-            long remaining = Math.max(0, deadline - System.nanoTime());
-            if (!executor.awaitTermination(remaining, TimeUnit.NANOSECONDS)) executor.shutdownNow();
-        } catch (InterruptedException interrupted) {
-            executor.shutdownNow();
-            Thread.currentThread().interrupt();
+    private static void shutdownNow(ScheduledExecutorService executor) {
+        if (executor != null) executor.shutdownNow();
+    }
+
+    private static final class StopWait {
+        private boolean interrupted = Thread.interrupted();
+
+        boolean interrupted() { return interrupted; }
+
+        boolean await(ScheduledExecutorService executor, long deadline) {
+            if (executor == null) return true;
+            while (!executor.isTerminated()) {
+                long remaining = deadline - System.nanoTime();
+                if (remaining <= 0) return false;
+                try {
+                    if (executor.awaitTermination(remaining, TimeUnit.NANOSECONDS)) return true;
+                } catch (InterruptedException shutdownInterrupted) {
+                    interrupted = true;
+                }
+            }
+            return true;
         }
     }
 
