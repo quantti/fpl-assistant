@@ -1,6 +1,6 @@
 # Owned sync — bounded history progress and canonical checkpoint reads
 
-**PROGRESS:** KAR-72 Unit 1 implemented and reviewed in PR #140; focused tests and full PR CI passed, owner merge pending. KAR-73 Unit 2 unstarted. Production OFF.
+**PROGRESS:** KAR-72 Unit 1 merged as `0cc38c9` (PR #140, 2026-09-28). KAR-73 Unit 2 in PR #141; focused disposable-DB tests, independent review and full PR CI passed. Owner merge pending. Latest documented production state OFF.
 
 Follow-up to KAR-71. Evidence: [STAGING retest PR #137](https://github.com/quantti/fpl-assistant/pull/137)
 and [`OWNED-SYNC-EGRESS-REPORT.md`](../../OWNED-SYNC-EGRESS-REPORT.md). The latest verified safe
@@ -433,6 +433,10 @@ disclosed, its exact cause unproven; the owner has not merged the PR. No product
 change, publication or deployment occurred.
 
 ## Unit 2 — metadata-first canonical checkpoint selection (KAR-73)
+
+Bounded implementation tasks and code-specific test design:
+[`2026-09-28-kar-73-canonical-checkpoint-hydration.md`](2026-09-28-kar-73-canonical-checkpoint-hydration.md).
+The scope and invariants below remain authoritative; KAR-72 merged on 28 September.
 
 Keep this separate from scheduling so its body-read reduction is independently measurable.
 Change `CatalogueScheduleDispatcher.obtainPair` / `usableOwn` to reuse KAR-71's bounded metadata
