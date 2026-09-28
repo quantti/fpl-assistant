@@ -29,6 +29,7 @@ import dev.quantti.fplassistant.sync.OwnedSyncStore.Run;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.SourceDemandAdvancedException;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.SourceRead;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.StagedPayload;
+import dev.quantti.fplassistant.sync.OwnedSyncStore.StagedPayloadMetadata;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.SyncKind;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.Validation;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.ValidationState;
@@ -176,23 +177,25 @@ public final class CatalogueScheduleDispatcher {
             if (reusable.isPresent()) return new PairLease(lease, reusable.get());
         }
 
-        StagedPayload bootstrap = allowReusable
+        StagedPayloadMetadata bootstrapMetadata = allowReusable
                 ? usableOwn(lease, Endpoint.bootstrap(), requestedAfter).orElse(null) : null;
-        StagedPayload fixtures = allowReusable
+        StagedPayloadMetadata fixturesMetadata = allowReusable
                 ? usableOwn(lease, Endpoint.fixtures(), requestedAfter).orElse(null) : null;
-        boolean resumedPayloads = bootstrap != null || fixtures != null;
+        boolean resumedPayloads = bootstrapMetadata != null || fixturesMetadata != null;
         List<Long> ownedIds = new ArrayList<>(2);
-        if (bootstrap != null) ownedIds.add(bootstrap.id());
-        if (fixtures != null) ownedIds.add(fixtures.id());
+        if (bootstrapMetadata != null) ownedIds.add(bootstrapMetadata.id());
+        if (fixturesMetadata != null) ownedIds.add(fixturesMetadata.id());
 
+        StagedPayload bootstrap = null;
+        StagedPayload fixtures = null;
         try {
-            if (bootstrap == null) {
+            if (bootstrapMetadata == null) {
                 FetchResult result = fetchAndStage(lease, Endpoint.bootstrap(), requestedAfter);
                 lease = result.lease;
                 bootstrap = result.payload;
                 ownedIds.add(bootstrap.id());
             }
-            if (fixtures == null) {
+            if (fixturesMetadata == null) {
                 FetchResult result = fetchAndStage(lease, Endpoint.fixtures(), requestedAfter);
                 lease = result.lease;
                 fixtures = result.payload;
@@ -203,14 +206,36 @@ public final class CatalogueScheduleDispatcher {
             throw new Stopped(Outcome.FAILED);
         }
 
-        Documents documents = documents(bootstrap, fixtures);
-        if (resumedPayloads && !withinSourceWindow(documents)) {
+        ReadIntervals selectedReads = readIntervals(bootstrapMetadata, fixturesMetadata, bootstrap, fixtures);
+        if (resumedPayloads && !withinSourceWindow(selectedReads)) {
             store.validateStagedPayloads(lease, ownedIds,
                     Validation.invalid("Staged public pair exceeded the bounded source window"));
             return obtainPair(lease, season, false);
         }
-        if (!isToday(documents) || !startsAtOrAfter(documents, requestedAfter)
-                || regressesReceipts(season.code(), documents)) {
+        if (!isToday(selectedReads) || !startsAtOrAfter(selectedReads, requestedAfter)
+                || regressesReceipts(season.code(), selectedReads)) {
+            store.validateStagedPayloads(lease, ownedIds,
+                    Validation.invalid("Staged public pair is obsolete for today's source streams"));
+            retry(lease, Duration.ofSeconds(1), "Staged public pair became obsolete; refreshing");
+            throw new Stopped(Outcome.RETRY_SCHEDULED);
+        }
+
+        if (bootstrapMetadata != null) {
+            bootstrap = hydrateOwn(lease, Endpoint.bootstrap(), bootstrapMetadata, requestedAfter);
+        }
+        if (fixturesMetadata != null) {
+            fixtures = hydrateOwn(lease, Endpoint.fixtures(), fixturesMetadata, requestedAfter);
+        }
+
+        Documents documents = documents(bootstrap, fixtures);
+        ReadIntervals hydratedReads = readIntervals(documents);
+        if (resumedPayloads && !withinSourceWindow(hydratedReads)) {
+            store.validateStagedPayloads(lease, ownedIds,
+                    Validation.invalid("Staged public pair exceeded the bounded source window"));
+            return obtainPair(lease, season, false);
+        }
+        if (!isToday(hydratedReads) || !startsAtOrAfter(hydratedReads, requestedAfter)
+                || regressesReceipts(season.code(), hydratedReads)) {
             store.validateStagedPayloads(lease, ownedIds,
                     Validation.invalid("Staged public pair is obsolete for today's source streams"));
             retry(lease, Duration.ofSeconds(1), "Staged public pair became obsolete; refreshing");
@@ -232,8 +257,9 @@ public final class CatalogueScheduleDispatcher {
         Instant minimumReadStart = requestedAfter.isAfter(dayStart) ? requestedAfter : dayStart;
         return store.findInLatestValidPublicPayloadPairs(season.code(), REUSABLE_PAIR_LIMIT, minimumReadStart, pair -> {
             Documents documents = documents(pair.bootstrap(), pair.fixtures());
-            if (!isToday(documents) || !startsAtOrAfter(documents, requestedAfter)
-                    || regressesReceipts(season.code(), documents)) return Optional.empty();
+            ReadIntervals reads = readIntervals(documents);
+            if (!isToday(reads) || !startsAtOrAfter(reads, requestedAfter)
+                    || regressesReceipts(season.code(), reads)) return Optional.empty();
             try {
                 CatalogueScheduleParser.parse(season, documents.bootstrap, documents.fixtures);
                 return Optional.of(documents);
@@ -244,11 +270,26 @@ public final class CatalogueScheduleDispatcher {
         });
     }
 
-    private Optional<StagedPayload> usableOwn(Lease lease, Endpoint endpoint, Instant requestedAfter) {
-        return store.latestStagedPublicPayload(lease, endpoint)
+    private Optional<StagedPayloadMetadata> usableOwn(Lease lease, Endpoint endpoint, Instant requestedAfter) {
+        return store.latestStagedPayloadMetadata(lease, endpoint)
                 .filter(payload -> payload.validationState() != ValidationState.INVALID)
                 .filter(payload -> isToday(payload.read()))
                 .filter(payload -> !payload.read().startedAt().isBefore(requestedAfter));
+    }
+
+    private StagedPayload hydrateOwn(Lease lease, Endpoint endpoint,
+                                     StagedPayloadMetadata metadata, Instant sourceFloor) {
+        Optional<StagedPayload> hydrated = store.hydrateStagedPayload(lease, endpoint, metadata, sourceFloor);
+        if (hydrated.isEmpty()) retryHydrationMiss(lease);
+        return hydrated.orElseThrow();
+    }
+
+    private void retryHydrationMiss(Lease lease) {
+        Instant sourceFloor = store.requestedSourceAfter(lease);
+        Instant minimumDue = clock.instant().plusSeconds(1);
+        Instant due = sourceFloor.isAfter(minimumDue) ? sourceFloor : minimumDue;
+        store.retry(lease, due, "Staged source checkpoint changed before hydration; retrying");
+        throw new Stopped(Outcome.RETRY_SCHEDULED);
     }
 
     private FetchResult fetchAndStage(Lease lease, Endpoint endpoint, Instant sourceFloor) {
@@ -298,46 +339,57 @@ public final class CatalogueScheduleDispatcher {
                 ? store.renew(lease, NETWORK_LEASE) : lease;
     }
 
-    private boolean regressesReceipts(String season, Documents documents) {
+    private boolean regressesReceipts(String season, ReadIntervals reads) {
         Optional<SourceRead> bootstrapReceipt = store.sourceReceipt(
                 season, CatalogueScheduleWriter.SHARED_TEAM_SOURCE_RECEIPT_KEY);
         Optional<SourceRead> fixtureReceipt = store.sourceReceipt(
                 season, CatalogueScheduleWriter.FIXTURE_SOURCE_RECEIPT_KEY);
         return bootstrapReceipt.filter(receipt -> receipt.finishedAt().isAfter(
-                        documents.bootstrap.readInterval().completedAt())).isPresent()
+                        reads.bootstrap.completedAt())).isPresent()
                 || fixtureReceipt.filter(receipt -> receipt.finishedAt().isAfter(
-                        documents.fixtures.readInterval().completedAt())).isPresent();
+                        reads.fixtures.completedAt())).isPresent();
     }
 
-    private boolean isToday(Documents documents) {
-        return isToday(documents.bootstrap.readInterval()) && isToday(documents.fixtures.readInterval());
+    private boolean isToday(ReadIntervals reads) {
+        LocalDate today = date(clock.instant());
+        return isToday(reads.bootstrap, today) && isToday(reads.fixtures, today);
     }
 
-    private static boolean startsAtOrAfter(Documents documents, Instant floor) {
-        return !documents.bootstrap.readInterval().startedAt().isBefore(floor)
-                && !documents.fixtures.readInterval().startedAt().isBefore(floor);
+    private static boolean startsAtOrAfter(ReadIntervals reads, Instant floor) {
+        return !reads.bootstrap.startedAt().isBefore(floor)
+                && !reads.fixtures.startedAt().isBefore(floor);
     }
 
-    private static boolean withinSourceWindow(Documents documents) {
-        Instant start = documents.bootstrap.readInterval().startedAt().isBefore(
-                documents.fixtures.readInterval().startedAt())
-                ? documents.bootstrap.readInterval().startedAt()
-                : documents.fixtures.readInterval().startedAt();
-        Instant end = documents.bootstrap.readInterval().completedAt().isAfter(
-                documents.fixtures.readInterval().completedAt())
-                ? documents.bootstrap.readInterval().completedAt()
-                : documents.fixtures.readInterval().completedAt();
+    private static boolean withinSourceWindow(ReadIntervals reads) {
+        Instant start = reads.bootstrap.startedAt().isBefore(reads.fixtures.startedAt())
+                ? reads.bootstrap.startedAt() : reads.fixtures.startedAt();
+        Instant end = reads.bootstrap.completedAt().isAfter(reads.fixtures.completedAt())
+                ? reads.bootstrap.completedAt() : reads.fixtures.completedAt();
         return ChronoUnit.MINUTES.between(start, end) <= 10;
     }
 
-    private boolean isToday(SourceRead read) {
-        return date(read.startedAt()).equals(date(clock.instant()))
-                && date(read.finishedAt()).equals(date(clock.instant()));
+    private static ReadIntervals readIntervals(StagedPayloadMetadata bootstrapMetadata,
+                                                StagedPayloadMetadata fixturesMetadata,
+                                                StagedPayload bootstrap, StagedPayload fixtures) {
+        return new ReadIntervals(interval(bootstrapMetadata == null ? bootstrap.read() : bootstrapMetadata.read()),
+                interval(fixturesMetadata == null ? fixtures.read() : fixturesMetadata.read()));
     }
 
-    private boolean isToday(ReadInterval read) {
-        return date(read.startedAt()).equals(date(clock.instant()))
-                && date(read.completedAt()).equals(date(clock.instant()));
+    private static ReadIntervals readIntervals(Documents documents) {
+        return new ReadIntervals(documents.bootstrap.readInterval(), documents.fixtures.readInterval());
+    }
+
+    private static ReadInterval interval(SourceRead read) {
+        return new ReadInterval(read.startedAt(), read.finishedAt());
+    }
+
+    private boolean isToday(SourceRead read) {
+        LocalDate today = date(clock.instant());
+        return date(read.startedAt()).equals(today) && date(read.finishedAt()).equals(today);
+    }
+
+    private boolean isToday(ReadInterval read, LocalDate today) {
+        return date(read.startedAt()).equals(today) && date(read.completedAt()).equals(today);
     }
 
     private Instant cutoff(String publicationKey) {
@@ -428,6 +480,7 @@ public final class CatalogueScheduleDispatcher {
     }
 
     private record Documents(SourceDocument bootstrap, SourceDocument fixtures) { }
+    private record ReadIntervals(ReadInterval bootstrap, ReadInterval fixtures) { }
     private record PairLease(Lease lease, Documents documents) { }
     private record FetchResult(Lease lease, StagedPayload payload) { }
 

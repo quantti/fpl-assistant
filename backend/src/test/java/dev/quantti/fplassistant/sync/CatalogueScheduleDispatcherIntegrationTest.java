@@ -10,6 +10,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalTime;
 import java.time.ZoneId;
 import java.util.ArrayDeque;
 import java.util.Deque;
@@ -25,9 +26,11 @@ import java.util.concurrent.atomic.AtomicReference;
 import com.sun.net.httpserver.HttpServer;
 import dev.quantti.fplassistant.sync.CatalogueScheduleDispatcher.Outcome;
 import dev.quantti.fplassistant.sync.CatalogueScheduleParser.Season;
+import dev.quantti.fplassistant.sync.OwnedSyncHttpClient.DeferredResult;
 import dev.quantti.fplassistant.sync.OwnedSyncHttpClient.Failure;
 import dev.quantti.fplassistant.sync.OwnedSyncHttpClient.FailureKind;
 import dev.quantti.fplassistant.sync.OwnedSyncHttpClient.Response;
+import dev.quantti.fplassistant.sync.OwnedSyncRequestBudget.DeferredReason;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.Endpoint;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.Lease;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.LeaseLostException;
@@ -40,6 +43,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.RowMapper;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -97,6 +101,7 @@ class CatalogueScheduleDispatcherIntegrationTest {
 
     @Test
     void stagingValidatesAndStoresPayloadsWithoutCoreCaptureOrFixtureStateWrites() {
+        activateStagingStore();
         dispatcher = new CatalogueScheduleDispatcher(store, null, fetch, clock, false);
         int teams = jdbc.queryForObject("SELECT count(*) FROM team WHERE season_id=27", Integer.class);
         int players = jdbc.queryForObject("SELECT count(*) FROM player WHERE season_id=27", Integer.class);
@@ -287,6 +292,68 @@ class CatalogueScheduleDispatcherIntegrationTest {
     }
 
     @Test
+    void coherentPreCutoverPairRemainsReusableAfterMoreThanTenMinutesAtBothUkCutovers() {
+        List<PublicationCase> cases = List.of(
+                new PublicationCase(CatalogueScheduleDispatcher.CATALOGUE_PRICE_COALESCING_KEY,
+                        CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY, LocalTime.of(2, 0)),
+                new PublicationCase(CatalogueScheduleDispatcher.SCHEDULE_COALESCING_KEY,
+                        CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY, LocalTime.of(3, 0)));
+
+        for (PublicationCase publication : cases) {
+            cleanRunsAndCore();
+            fetch.calls = 0;
+            fetch.endpoints.clear();
+            fetch.results.clear();
+            clock.set(Instant.parse("2026-09-13T00:30:00Z")); // 01:30 BST
+            PayloadReadProbe probe = installPayloadReadProbe();
+            store.enqueue(SyncKind.CATALOGUE_SCHEDULE, SEASON.code(), publication.coalescingKey(),
+                    publication.publicationKey(), clock.instant());
+            Lease first = acquireOne(Duration.ofHours(1));
+            Instant sourceStarted = clock.instant();
+
+            assertThat(dispatcher.process(first, SEASON)).isEqualTo(Outcome.RETRY_SCHEDULED);
+            Instant cutoff = sourceStarted.atZone(ZoneId.of("Europe/London")).toLocalDate()
+                    .atTime(publication.cutover()).atZone(ZoneId.of("Europe/London")).toInstant();
+            assertThat(Duration.between(sourceStarted, cutoff)).isGreaterThan(Duration.ofMinutes(10));
+            assertThat(fetch.calls).as("endpoints=%s state=%s error=%s", fetch.endpoints,
+                    jdbc.queryForObject("SELECT state FROM " + OWNED.run(), String.class),
+                    jdbc.queryForObject("SELECT last_error FROM " + OWNED.run(), String.class)).isEqualTo(2);
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM " + OWNED.payload()
+                    + " WHERE validation_state='VALID'", Integer.class)).isEqualTo(2);
+
+            clock.set(cutoff);
+            store = new OwnedSyncStore(probe, tx, clock, OWNED);
+            dispatcher = dispatcher(CAPTURED); // cold process restart at the cutover
+            assertThat(dispatcher.process(acquireOne(Duration.ofHours(1)), SEASON)).isEqualTo(Outcome.PUBLISHED);
+
+            assertThat(fetch.calls).isEqualTo(2);
+            assertThat(probe.snapshot().family(PayloadReadProbe.Family.GUARDED_SINGLE))
+                    .isEqualTo(new PayloadReadProbe.FamilyMetrics(0, 0, 0, 0));
+            assertThat(probe.snapshot().family(PayloadReadProbe.Family.CANONICAL_PAIR))
+                    .isEqualTo(new PayloadReadProbe.FamilyMetrics(1, 1, 2, bootstrap.length + fixtures.length));
+        }
+    }
+
+    @Test
+    void malformedReusableValidPairIsSkippedForTheNextUsableCanonicalCandidate() {
+        enqueueCatalogue();
+        Lease target = acquireOne(Duration.ofHours(1));
+        seedReusablePair(bootstrap, fixtures);
+        clock.advance(Duration.ofSeconds(1));
+        seedReusablePair("{}".getBytes(), fixtures);
+        PayloadReadProbe probe = installPayloadReadProbe();
+
+        assertThat(dispatcher.process(target, SEASON)).isEqualTo(Outcome.PUBLISHED);
+
+        assertThat(fetch.calls).isZero();
+        assertThat(probe.snapshot().family(PayloadReadProbe.Family.CANONICAL_PAIR))
+                .isEqualTo(new PayloadReadProbe.FamilyMetrics(2, 2, 4,
+                        bootstrap.length + 2L * fixtures.length + 2));
+        assertThat(probe.snapshot().family(PayloadReadProbe.Family.GUARDED_SINGLE))
+                .isEqualTo(new PayloadReadProbe.FamilyMetrics(0, 0, 0, 0));
+    }
+
+    @Test
     void delayedPartialRestartRefetchesInsteadOfPermanentlyFailingThePairWindow() {
         enqueueCatalogue();
         Lease first = acquireOne(Duration.ofMinutes(5));
@@ -294,9 +361,11 @@ class CatalogueScheduleDispatcherIntegrationTest {
         store.stage(first, Endpoint.bootstrap(), bootstrapRead, Validation.unchecked(), bootstrap);
         store.retry(first, clock.instant(), "restart after first endpoint");
         clock.advance(Duration.ofMinutes(11));
+        PayloadReadProbe probe = installPayloadReadProbe();
 
         assertThat(dispatcher.process(acquireOne(Duration.ofMinutes(5)), SEASON)).isEqualTo(Outcome.PUBLISHED);
         assertThat(fetch.calls).isEqualTo(3); // old bootstrap + fetched fixture was rejected, then both refreshed
+        assertNoBodyReads(probe);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM " + OWNED.payload()
                 + " WHERE validation_state='INVALID'", Integer.class)).isEqualTo(2);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM " + OWNED.payload()
@@ -311,13 +380,531 @@ class CatalogueScheduleDispatcherIntegrationTest {
         clock.advance(Duration.ofMinutes(11));
         store.stage(first, Endpoint.fixtures(), readNow(), Validation.unchecked(), fixtures);
         store.retry(first, clock.instant(), "restart after both endpoints");
+        PayloadReadProbe probe = installPayloadReadProbe();
 
         assertThat(dispatcher.process(acquireOne(Duration.ofMinutes(5)), SEASON)).isEqualTo(Outcome.PUBLISHED);
         assertThat(fetch.calls).isEqualTo(2);
+        assertNoBodyReads(probe);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM " + OWNED.payload()
                 + " WHERE validation_state='INVALID'", Integer.class)).isEqualTo(2);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM " + OWNED.payload()
                 + " WHERE validation_state='VALID'", Integer.class)).isEqualTo(2);
+    }
+
+    @Test
+    void resumedPairAtExactlyTenMinutesIsAcceptedAndHydratedOncePerEndpoint() {
+        assertResumedPairWindow(Duration.ofMinutes(10), false);
+    }
+
+    @Test
+    void resumedPairAtTenMinutesFiftyNineSecondsIsAcceptedByWholeMinutePolicy() {
+        assertResumedPairWindow(Duration.ofMinutes(10).plusSeconds(59), false);
+    }
+
+    @Test
+    void resumedPairAtExactlyElevenMinutesRefreshesWithoutHydratingRejectedBodies() {
+        assertResumedPairWindow(Duration.ofMinutes(11), true);
+    }
+
+    @Test
+    void freshElevenMinutePairPassesPreflightThenFailsStrictParserTerminally() {
+        enqueueCatalogue();
+        Lease lease = acquireOne(Duration.ofHours(1));
+        Instant firstRead = clock.instant();
+        clock.advance(Duration.ofMinutes(11));
+        fetch.results.add(new Response(200, bootstrap, null, new SourceRead(firstRead, firstRead)));
+        Instant secondRead = firstRead.plus(Duration.ofMinutes(11));
+        fetch.results.add(new Response(200, fixtures, null, new SourceRead(secondRead, secondRead)));
+        PayloadReadProbe probe = installPayloadReadProbe();
+
+        assertThat(dispatcher.process(lease, SEASON)).isEqualTo(Outcome.FAILED);
+
+        assertRunState("FAILED");
+        assertThat(fetch.calls).isEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + OWNED.payload()
+                + " WHERE validation_state='INVALID'", Integer.class)).isEqualTo(2);
+        assertNoBodyReads(probe);
+    }
+
+    @Test
+    void freshOverWindowCrossingUkMidnightRetriesObsoleteBeforeStrictParsing() {
+        clock.set(Instant.parse("2026-09-13T22:50:00Z")); // 23:50 BST
+        enqueueCatalogue();
+        Lease lease = acquireOne(Duration.ofHours(1));
+        Instant bootstrapRead = Instant.parse("2026-09-13T22:55:00Z"); // 23:55 BST
+        Instant fixturesRead = Instant.parse("2026-09-13T23:06:00Z"); // 00:06 BST next day
+        clock.set(Instant.parse("2026-09-13T23:10:00Z")); // 00:10 BST next day
+        assertThat(bootstrapRead.atZone(ZoneId.of("Europe/London")).toLocalDate())
+                .isBefore(clock.instant().atZone(ZoneId.of("Europe/London")).toLocalDate());
+        fetch.results.add(new Response(200, bootstrap, null, new SourceRead(bootstrapRead, bootstrapRead)));
+        fetch.results.add(new Response(200, fixtures, null, new SourceRead(fixturesRead, fixturesRead)));
+        PayloadReadProbe probe = installPayloadReadProbe();
+
+        assertThat(dispatcher.process(lease, SEASON)).isEqualTo(Outcome.RETRY_SCHEDULED);
+
+        assertThat(fetch.calls).isEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT due_at FROM " + OWNED.run()
+                + " WHERE generation=?", java.sql.Timestamp.class, lease.generation()).toInstant())
+                .isEqualTo(clock.instant().plusSeconds(1));
+        assertThat(jdbc.queryForObject("SELECT last_error FROM " + OWNED.run()
+                + " WHERE generation=?", String.class, lease.generation())).contains("obsolete");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + OWNED.payload()
+                + " WHERE validation_state='INVALID'", Integer.class)).isEqualTo(2);
+        assertNoBodyReads(probe);
+    }
+
+    @Test
+    void freshOverWindowWithBootstrapReceiptRegressionRetriesBeforeStrictParsing() {
+        enqueueCatalogue();
+        Lease lease = acquireOne(Duration.ofHours(1));
+        Instant firstRead = clock.instant();
+        clock.advance(Duration.ofMinutes(12));
+        seedSourceReceipt(CatalogueScheduleWriter.SHARED_TEAM_SOURCE_RECEIPT_KEY,
+                new SourceRead(firstRead, firstRead.plusSeconds(1)));
+        fetch.results.add(new Response(200, bootstrap, null, new SourceRead(firstRead, firstRead)));
+        Instant secondRead = firstRead.plus(Duration.ofMinutes(11));
+        fetch.results.add(new Response(200, fixtures, null, new SourceRead(secondRead, secondRead)));
+        PayloadReadProbe probe = installPayloadReadProbe();
+
+        assertThat(dispatcher.process(lease, SEASON)).isEqualTo(Outcome.RETRY_SCHEDULED);
+
+        assertThat(fetch.calls).isEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT due_at FROM " + OWNED.run()
+                + " WHERE generation=?", java.sql.Timestamp.class, lease.generation()).toInstant())
+                .isEqualTo(clock.instant().plusSeconds(1));
+        assertThat(jdbc.queryForObject("SELECT last_error FROM " + OWNED.run()
+                + " WHERE generation=?", String.class, lease.generation())).contains("obsolete");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + OWNED.payload()
+                + " WHERE validation_state='INVALID'", Integer.class)).isEqualTo(2);
+        assertNoBodyReads(probe);
+    }
+
+    @Test
+    void resumedOverWindowCrossingUkMidnightAndRegressingReceiptTakesWindowFallbackFirst() {
+        clock.set(Instant.parse("2026-09-13T22:59:00Z")); // 23:59 BST
+        enqueueCatalogue();
+        Lease lease = acquireOne(Duration.ofHours(1));
+        SourceRead oldBootstrapRead = readNow();
+        store.stage(lease, Endpoint.bootstrap(), oldBootstrapRead, Validation.valid(), bootstrap);
+        seedSourceReceipt(CatalogueScheduleWriter.SHARED_TEAM_SOURCE_RECEIPT_KEY,
+                new SourceRead(oldBootstrapRead.startedAt(), oldBootstrapRead.finishedAt().plusSeconds(1)));
+        AtomicBoolean advancedAcrossMidnight = new AtomicBoolean();
+        fetch.beforeResponse = endpoint -> {
+            if (endpoint.equals(Endpoint.fixtures()) && advancedAcrossMidnight.compareAndSet(false, true)) {
+                clock.advance(Duration.ofMinutes(11));
+            }
+        };
+        PayloadReadProbe probe = installPayloadReadProbe();
+
+        Outcome outcome = dispatcher.process(lease, SEASON);
+        assertThat(outcome).as("endpoints=%s state=%s error=%s", fetch.endpoints,
+                jdbc.queryForObject("SELECT state FROM " + OWNED.run(), String.class),
+                jdbc.queryForObject("SELECT last_error FROM " + OWNED.run(), String.class))
+                .isEqualTo(Outcome.RETRY_SCHEDULED);
+
+        assertThat(clock.instant().atZone(ZoneId.of("Europe/London")).toLocalDate())
+                .isAfter(oldBootstrapRead.startedAt().atZone(ZoneId.of("Europe/London")).toLocalDate());
+        assertThat(fetch.endpoints).containsExactly(Endpoint.fixtures(), Endpoint.bootstrap(), Endpoint.fixtures());
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + OWNED.payload()
+                + " WHERE validation_state='INVALID'", Integer.class)).isEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + OWNED.payload()
+                + " WHERE validation_state='VALID'", Integer.class)).isEqualTo(2);
+        assertNoBodyReads(probe);
+    }
+
+    @Test
+    void missingPartnerWaitCrossingUkMidnightRejectsSameUkDayBeforeHydration() {
+        clock.set(Instant.parse("2026-09-13T22:59:00Z")); // 23:59 BST, still 22:59 UTC
+        enqueueCatalogue();
+        Lease lease = acquireOne(Duration.ofHours(1));
+        store.stage(lease, Endpoint.bootstrap(), readNow(), Validation.valid(), bootstrap);
+        AtomicBoolean crossedMidnight = new AtomicBoolean();
+        fetch.beforeResponse = endpoint -> {
+            if (crossedMidnight.compareAndSet(false, true)) clock.advance(Duration.ofMinutes(2));
+        };
+        PayloadReadProbe probe = installPayloadReadProbe();
+
+        assertThat(dispatcher.process(lease, SEASON)).isEqualTo(Outcome.RETRY_SCHEDULED);
+
+        assertThat(clock.instant().atZone(ZoneId.of("UTC")).toLocalDate())
+                .isEqualTo(LocalDate.of(2026, 9, 13));
+        assertThat(clock.instant().atZone(ZoneId.of("Europe/London")).toLocalDate())
+                .isEqualTo(LocalDate.of(2026, 9, 14));
+        assertThat(fetch.endpoints).containsExactly(Endpoint.fixtures());
+        assertThat(jdbc.queryForObject("SELECT due_at FROM " + OWNED.run()
+                + " WHERE generation=?", java.sql.Timestamp.class, lease.generation()).toInstant())
+                .isEqualTo(clock.instant().plusSeconds(1));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + OWNED.payload()
+                + " WHERE validation_state='INVALID'", Integer.class)).isEqualTo(2);
+        assertNoBodyReads(probe);
+    }
+
+    @Test
+    void previousDayOwnPairStagesAreRejectedBeforeEitherBodyIsRead() {
+        enqueueCatalogue();
+        Lease lease = acquireOne(Duration.ofHours(1));
+        SourceRead previousDay = new SourceRead(clock.instant().minus(Duration.ofDays(1)),
+                clock.instant().minus(Duration.ofDays(1)));
+        long bootstrapId = store.stage(lease, Endpoint.bootstrap(), previousDay,
+                Validation.valid(), bootstrap);
+        long fixturesId = store.stage(lease, Endpoint.fixtures(), previousDay,
+                Validation.unchecked(), fixtures);
+        PayloadReadProbe probe = installPayloadReadProbe();
+
+        assertThat(dispatcher.process(lease, SEASON)).isEqualTo(Outcome.PUBLISHED);
+
+        assertThat(fetch.endpoints).containsExactly(Endpoint.bootstrap(), Endpoint.fixtures());
+        assertThat(jdbc.queryForObject("SELECT validation_state FROM " + OWNED.payload()
+                + " WHERE id=?", String.class, bootstrapId)).isEqualTo("VALID");
+        assertThat(jdbc.queryForObject("SELECT validation_state FROM " + OWNED.payload()
+                + " WHERE id=?", String.class, fixturesId)).isEqualTo("UNCHECKED");
+        assertNoBodyReads(probe);
+    }
+
+    @Test
+    void bootstrapAndFixtureReceiptEqualityAreNotRegressions() {
+        PairSeed pair = stageOwnPair(Duration.ZERO);
+        seedSourceReceipt(CatalogueScheduleWriter.SHARED_TEAM_SOURCE_RECEIPT_KEY, pair.bootstrapRead());
+        seedSourceReceipt(CatalogueScheduleWriter.FIXTURE_SOURCE_RECEIPT_KEY, pair.fixturesRead());
+        PayloadReadProbe probe = installPayloadReadProbe();
+
+        assertThat(dispatcher.process(pair.lease(), SEASON)).isEqualTo(Outcome.PUBLISHED);
+
+        assertThat(fetch.calls).isZero();
+        assertThat(probe.snapshot().family(PayloadReadProbe.Family.GUARDED_SINGLE))
+                .isEqualTo(new PayloadReadProbe.FamilyMetrics(2, 2, 2, bootstrap.length + fixtures.length));
+        assertThat(probe.snapshot().family(PayloadReadProbe.Family.CANONICAL_PAIR))
+                .isEqualTo(new PayloadReadProbe.FamilyMetrics(0, 0, 0, 0));
+    }
+
+    @Test
+    void bootstrapReceiptRegressionRejectsResumedPairBeforeHydration() {
+        assertResumedReceiptRegression(CatalogueScheduleWriter.SHARED_TEAM_SOURCE_RECEIPT_KEY, true);
+    }
+
+    @Test
+    void fixtureReceiptRegressionRejectsResumedPairBeforeHydration() {
+        assertResumedReceiptRegression(CatalogueScheduleWriter.FIXTURE_SOURCE_RECEIPT_KEY, false);
+    }
+
+    @Test
+    void bootstrapReceiptRegressionDiscoveredAfterMissingPartnerAvoidsHydration() {
+        assertPartialReceiptRegression(Endpoint.bootstrap(), Endpoint.fixtures());
+    }
+
+    @Test
+    void fixtureReceiptRegressionDiscoveredAfterMissingPartnerAvoidsHydration() {
+        assertPartialReceiptRegression(Endpoint.fixtures(), Endpoint.bootstrap());
+    }
+
+    @Test
+    void invalidOwnCheckpointIsRejectedWithoutReadingItsBody() {
+        assertIneligibleOwnBootstrap(Validation.invalid("seed invalid"), readNow(), "INVALID");
+    }
+
+    @Test
+    void previousDayOwnCheckpointIsRejectedWithoutReadingItsBody() {
+        SourceRead previousDay = new SourceRead(clock.instant().minus(Duration.ofDays(1)),
+                clock.instant().minus(Duration.ofDays(1)));
+        assertIneligibleOwnBootstrap(Validation.valid(), previousDay, "VALID");
+    }
+
+    @Test
+    void belowFloorOwnCheckpointIsRejectedWithoutReadingItsBody() {
+        SourceRead beforeFloor = new SourceRead(clock.instant().minusSeconds(2), clock.instant().minusSeconds(1));
+        assertIneligibleOwnBootstrap(Validation.valid(), beforeFloor, "VALID");
+    }
+
+    @Test
+    void partialBootstrapDefersMissingFixturesWithoutReadingTheCheckpointBody() {
+        assertPartialCheckpointDefers(Endpoint.bootstrap(), Endpoint.fixtures());
+    }
+
+    @Test
+    void partialFixturesCheckpointDefersMissingBootstrapWithoutReadingTheCheckpointBody() {
+        assertPartialCheckpointDefers(Endpoint.fixtures(), Endpoint.bootstrap());
+    }
+
+    @Test
+    void newerInvalidOwnCheckpointHidesOlderValidCheckpointWithoutReadingEitherBody() {
+        enqueueCatalogue();
+        Lease lease = acquireOne(Duration.ofMinutes(5));
+        long olderId = store.stage(lease, Endpoint.bootstrap(), readNow(), Validation.valid(), bootstrap);
+        long latestId = store.stage(lease, Endpoint.bootstrap(), readNow(), Validation.invalid("newest invalid"), fixtures);
+        PayloadReadProbe probe = installPayloadReadProbe();
+
+        assertThat(dispatcher.process(lease, SEASON)).isEqualTo(Outcome.PUBLISHED);
+
+        assertThat(fetch.endpoints).containsExactly(Endpoint.bootstrap(), Endpoint.fixtures());
+        assertThat(jdbc.queryForObject("SELECT validation_state FROM " + OWNED.payload()
+                + " WHERE id=?", String.class, olderId)).isEqualTo("VALID");
+        assertThat(jdbc.queryForObject("SELECT validation_state FROM " + OWNED.payload()
+                + " WHERE id=?", String.class, latestId)).isEqualTo("INVALID");
+        assertNoBodyReads(probe);
+    }
+
+    @Test
+    void partialBootstrapCheckpointHydratesOnlyAfterMissingFixturesSucceed() {
+        assertPartialCheckpointResumes(Endpoint.bootstrap(), Endpoint.fixtures());
+    }
+
+    @Test
+    void partialFixturesCheckpointHydratesOnlyAfterMissingBootstrapSucceed() {
+        assertPartialCheckpointResumes(Endpoint.fixtures(), Endpoint.bootstrap());
+    }
+
+    @Test
+    void malformedResumedOwnCheckpointStillFailsStrictlyWithoutFreshPairFallback() {
+        enqueueCatalogue();
+        Lease lease = acquireOne(Duration.ofMinutes(5));
+        long checkpointId = store.stage(lease, Endpoint.bootstrap(), readNow(),
+                Validation.unchecked(), "{}".getBytes());
+        PayloadReadProbe probe = installPayloadReadProbe();
+
+        assertThat(dispatcher.process(lease, SEASON)).isEqualTo(Outcome.FAILED);
+
+        assertThat(fetch.endpoints).containsExactly(Endpoint.fixtures());
+        assertRunState("FAILED");
+        assertThat(jdbc.queryForObject("SELECT validation_state FROM " + OWNED.payload()
+                + " WHERE id=?", String.class, checkpointId)).isEqualTo("INVALID");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + OWNED.payload()
+                + " WHERE validation_state='INVALID'", Integer.class)).isEqualTo(2);
+        assertThat(probe.snapshot().family(PayloadReadProbe.Family.GUARDED_SINGLE))
+                .isEqualTo(new PayloadReadProbe.FamilyMetrics(1, 1, 1, 2));
+    }
+
+    @Test
+    void hydrationMissRereadsAdvancedFloorAndRetriesWithoutAnotherFetchOrInvalidation() {
+        PayloadReadProbe probe = new PayloadReadProbe(jdbc.getDataSource());
+        activateStagingStore(probe);
+        enqueueCatalogue();
+        Lease lease = acquireOne(Duration.ofMinutes(5));
+        long checkpointId = store.stage(lease, Endpoint.bootstrap(), readNow(), Validation.valid(), bootstrap);
+        Instant advancedFloor = clock.instant().plus(Duration.ofHours(2));
+        fetch.beforeResponse = endpoint -> store.enqueue(SyncKind.CATALOGUE_SCHEDULE, SEASON.code(),
+                CatalogueScheduleDispatcher.CATALOGUE_PRICE_COALESCING_KEY,
+                CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY, advancedFloor);
+
+        assertThat(dispatcher.process(lease, SEASON)).isEqualTo(Outcome.RETRY_SCHEDULED);
+
+        assertRunState("PENDING");
+        assertThat(fetch.endpoints).containsExactly(Endpoint.fixtures());
+        assertThat(jdbc.queryForObject("SELECT due_at FROM " + OWNED.run()
+                + " WHERE generation=?", java.sql.Timestamp.class, lease.generation()).toInstant())
+                .isEqualTo(advancedFloor);
+        assertThat(jdbc.queryForObject("SELECT validation_state FROM " + OWNED.payload()
+                + " WHERE id=?", String.class, checkpointId)).isEqualTo("VALID");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + OWNED.payload()
+                + " WHERE validation_state='INVALID'", Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT consecutive_fetch_failures FROM " + OWNED.run()
+                + " WHERE generation=?", Integer.class, lease.generation())).isZero();
+        assertThat(probe.snapshot().family(PayloadReadProbe.Family.GUARDED_SINGLE))
+                .isEqualTo(new PayloadReadProbe.FamilyMetrics(1, 0, 0, 0));
+    }
+
+    @Test
+    void deletedSelectedCheckpointReturnsNoBodyAndSchedulesDurableRetry() {
+        PayloadReadProbe probe = new PayloadReadProbe(jdbc.getDataSource());
+        activateStagingStore(probe);
+        Lease lease = enqueueAndAcquireCatalogue();
+        long checkpointId = store.stage(lease, Endpoint.bootstrap(), readNow(), Validation.valid(), bootstrap);
+        // Inject defensive same-run loss; normal terminal-payload retention protects active runs.
+        fetch.beforeResponse = endpoint -> jdbc.update("DELETE FROM " + OWNED.payload() + " WHERE id=?", checkpointId);
+
+        assertThat(dispatcher.process(lease, SEASON)).isEqualTo(Outcome.RETRY_SCHEDULED);
+
+        assertThat(fetch.endpoints).containsExactly(Endpoint.fixtures());
+        assertThat(fetch.calls).isOne();
+        assertRunState("PENDING");
+        assertThat(jdbc.queryForObject("SELECT due_at FROM " + OWNED.run()
+                + " WHERE generation=?", java.sql.Timestamp.class, lease.generation()).toInstant())
+                .isEqualTo(clock.instant().plusSeconds(1));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + OWNED.payload(), Integer.class)).isOne();
+        assertThat(jdbc.queryForObject("SELECT consecutive_fetch_failures FROM " + OWNED.run()
+                + " WHERE generation=?", Integer.class, lease.generation())).isZero();
+        assertThat(probe.snapshot().family(PayloadReadProbe.Family.GUARDED_SINGLE))
+                .isEqualTo(new PayloadReadProbe.FamilyMetrics(1, 0, 0, 0));
+    }
+
+    @Test
+    void lossOfSecondCheckpointAfterFirstReadReturnsOnlyFirstBodyAndRetries() {
+        AtomicReference<Long> firstId = new AtomicReference<>();
+        AtomicReference<Long> secondId = new AtomicReference<>();
+        AtomicBoolean deleted = new AtomicBoolean();
+        PayloadReadProbe probe = new PayloadReadProbe(jdbc.getDataSource()) {
+            @Override
+            public <T> List<T> query(String sql, RowMapper<T> rowMapper, Object... args) {
+                List<T> rows = super.query(sql, rowMapper, args);
+                if (sql.toLowerCase(java.util.Locale.ROOT).contains("p.id = ?")
+                        && rows.stream().anyMatch(row -> row instanceof OwnedSyncStore.StagedPayload payload
+                        && payload.id() == firstId.get())
+                        && deleted.compareAndSet(false, true)) {
+                    jdbc.update("DELETE FROM " + OWNED.payload() + " WHERE id=?", secondId.get());
+                }
+                return rows;
+            }
+        };
+        activateStagingStore(probe);
+        Lease lease = enqueueAndAcquireCatalogue();
+        firstId.set(store.stage(lease, Endpoint.bootstrap(), readNow(), Validation.unchecked(), bootstrap));
+        secondId.set(store.stage(lease, Endpoint.fixtures(), readNow(), Validation.unchecked(), fixtures));
+
+        assertThat(dispatcher.process(lease, SEASON)).isEqualTo(Outcome.RETRY_SCHEDULED);
+
+        assertThat(deleted).isTrue();
+        assertThat(fetch.calls).isZero();
+        assertRunState("PENDING");
+        assertThat(jdbc.queryForObject("SELECT due_at FROM " + OWNED.run()
+                + " WHERE generation=?", java.sql.Timestamp.class, lease.generation()).toInstant())
+                .isEqualTo(clock.instant().plusSeconds(1));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + OWNED.payload()
+                + " WHERE id=?", Integer.class, secondId.get())).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + OWNED.payload()
+                + " WHERE id=?", Integer.class, firstId.get())).isOne();
+        assertThat(jdbc.queryForObject("SELECT consecutive_fetch_failures FROM " + OWNED.run()
+                + " WHERE generation=?", Integer.class, lease.generation())).isZero();
+        assertThat(probe.snapshot().family(PayloadReadProbe.Family.GUARDED_SINGLE))
+                .isEqualTo(new PayloadReadProbe.FamilyMetrics(2, 1, 1, bootstrap.length));
+    }
+
+    @Test
+    void ukDayRolloverAfterHydrationRejectsTheSelectedPairBeforePublication() {
+        clock.set(Instant.parse("2026-09-13T22:58:00Z")); // 23:58 BST
+        AtomicInteger hydratedRows = new AtomicInteger();
+        PayloadReadProbe probe = new PayloadReadProbe(jdbc.getDataSource()) {
+            @Override
+            public <T> List<T> query(String sql, RowMapper<T> rowMapper, Object... args) {
+                List<T> rows = super.query(sql, rowMapper, args);
+                if (sql.toLowerCase(java.util.Locale.ROOT).contains("p.id = ?") && !rows.isEmpty()
+                        && hydratedRows.incrementAndGet() == 2) {
+                    LocalDate nextUkDay = LocalDate.ofInstant(clock.instant(), ZoneId.of("Europe/London"))
+                            .plusDays(1);
+                    clock.set(nextUkDay.atStartOfDay(ZoneId.of("Europe/London")).toInstant());
+                }
+                return rows;
+            }
+        };
+        activateStore(OwnedSyncMode.ACTIVE, probe);
+        Lease lease = enqueueAndAcquireCatalogue(Duration.ofHours(1));
+        store.stage(lease, Endpoint.bootstrap(), readNow(), Validation.unchecked(), bootstrap);
+        store.stage(lease, Endpoint.fixtures(), readNow(), Validation.unchecked(), fixtures);
+        List<Integer> writesBefore = publicationCounts();
+
+        assertThat(dispatcher.process(lease, SEASON)).isEqualTo(Outcome.RETRY_SCHEDULED);
+
+        assertThat(hydratedRows).hasValue(2);
+        assertRunState("PENDING");
+        assertThat(jdbc.queryForObject("SELECT due_at FROM " + OWNED.run()
+                + " WHERE generation=?", java.sql.Timestamp.class, lease.generation()).toInstant())
+                .isEqualTo(clock.instant().plusSeconds(1));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + OWNED.payload()
+                + " WHERE validation_state='INVALID'", Integer.class)).isEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT consecutive_fetch_failures FROM " + OWNED.run()
+                + " WHERE generation=?", Integer.class, lease.generation())).isZero();
+        assertThat(jdbc.queryForObject("SELECT latest_generation FROM " + OWNED.receipt()
+                + " WHERE season='2026-27' AND publication_key='catalogue-price'", Long.class)).isNull();
+        assertThat(publicationCounts()).isEqualTo(writesBefore);
+        assertThat(probe.snapshot().family(PayloadReadProbe.Family.GUARDED_SINGLE))
+                .isEqualTo(new PayloadReadProbe.FamilyMetrics(2, 2, 2, bootstrap.length + fixtures.length));
+    }
+
+    @Test
+    void leaseLossOnHydrationMissFloorRereadPropagatesWithoutRetryOrFailureCount() {
+        enqueueCatalogue();
+        Lease lease = acquireOne(Duration.ofMinutes(5));
+        long checkpointId = store.stage(lease, Endpoint.bootstrap(), readNow(), Validation.valid(), bootstrap);
+        PayloadReadProbe probe = new PayloadReadProbe(jdbc.getDataSource()) {
+            @Override
+            public <T> List<T> query(String sql, RowMapper<T> rowMapper, Object... args) {
+                List<T> rows = super.query(sql, rowMapper, args);
+                String lower = sql.toLowerCase(java.util.Locale.ROOT);
+                if (rows.isEmpty() && lower.contains("p.id = ?") && lower.contains("p.body")) {
+                    jdbc.update("UPDATE " + OWNED.run() + " SET lease_token=? WHERE generation=?",
+                            java.util.UUID.randomUUID(), lease.generation());
+                }
+                return rows;
+            }
+        };
+        store = new OwnedSyncStore(probe, tx, clock, OWNED);
+        dispatcher = dispatcher(CAPTURED);
+        Instant advancedFloor = clock.instant().plus(Duration.ofHours(2));
+        fetch.beforeResponse = endpoint -> store.enqueue(SyncKind.CATALOGUE_SCHEDULE, SEASON.code(),
+                CatalogueScheduleDispatcher.CATALOGUE_PRICE_COALESCING_KEY,
+                CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY, advancedFloor);
+
+        assertThatThrownBy(() -> dispatcher.process(lease, SEASON)).isInstanceOf(LeaseLostException.class);
+
+        assertThat(fetch.endpoints).containsExactly(Endpoint.fixtures());
+        assertThat(jdbc.queryForObject("SELECT state FROM " + OWNED.run()
+                + " WHERE generation=?", String.class, lease.generation())).isEqualTo("LEASED");
+        assertThat(jdbc.queryForObject("SELECT consecutive_fetch_failures FROM " + OWNED.run()
+                + " WHERE generation=?", Integer.class, lease.generation())).isZero();
+        assertThat(jdbc.queryForObject("SELECT validation_state FROM " + OWNED.payload()
+                + " WHERE id=?", String.class, checkpointId)).isEqualTo("VALID");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + OWNED.payload()
+                + " WHERE validation_state='INVALID'", Integer.class)).isZero();
+        assertThat(probe.snapshot().family(PayloadReadProbe.Family.GUARDED_SINGLE))
+                .isEqualTo(new PayloadReadProbe.FamilyMetrics(1, 0, 0, 0));
+    }
+
+    @Test
+    void hydrationMissRetriesAtNowPlusOneSecondAndColdDispatcherResumesWithoutRefetch() {
+        enqueueCatalogue();
+        Lease lease = acquireOne(Duration.ofMinutes(5));
+        long checkpointId = store.stage(lease, Endpoint.bootstrap(), readNow(), Validation.unchecked(), bootstrap);
+        fetch.beforeResponse = endpoint -> jdbc.update("UPDATE " + OWNED.payload()
+                + " SET validation_state='VALID', validation_error=NULL WHERE id=?", checkpointId);
+        PayloadReadProbe probe = installPayloadReadProbe();
+
+        assertThat(dispatcher.process(lease, SEASON)).isEqualTo(Outcome.RETRY_SCHEDULED);
+        Instant due = jdbc.queryForObject("SELECT due_at FROM " + OWNED.run()
+                + " WHERE generation=?", java.sql.Timestamp.class, lease.generation()).toInstant();
+        assertThat(due).isEqualTo(clock.instant().plusSeconds(1));
+        assertThat(fetch.endpoints).containsExactly(Endpoint.fixtures());
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + OWNED.payload()
+                + " WHERE validation_state='INVALID'", Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT consecutive_fetch_failures FROM " + OWNED.run()
+                + " WHERE generation=?", Integer.class, lease.generation())).isZero();
+        assertThat(probe.snapshot().family(PayloadReadProbe.Family.GUARDED_SINGLE))
+                .isEqualTo(new PayloadReadProbe.FamilyMetrics(1, 0, 0, 0));
+
+        clock.advance(Duration.ofSeconds(1));
+        store = new OwnedSyncStore(probe, tx, clock, OWNED);
+        dispatcher = dispatcher(CAPTURED);
+        assertThat(dispatcher.process(acquireOne(Duration.ofMinutes(5)), SEASON)).isEqualTo(Outcome.PUBLISHED);
+
+        assertThat(fetch.calls).isOne();
+        assertThat(probe.snapshot().family(PayloadReadProbe.Family.GUARDED_SINGLE))
+                .isEqualTo(new PayloadReadProbe.FamilyMetrics(3, 2, 2, bootstrap.length + fixtures.length));
+        assertThat(probe.snapshot().family(PayloadReadProbe.Family.OLD_OWN_CHECKPOINT))
+                .isEqualTo(new PayloadReadProbe.FamilyMetrics(0, 0, 0, 0));
+    }
+
+    @Test
+    void realBudgetAndLoopbackDeferralPreservesPartialFencedCheckpoint() throws Exception {
+        PayloadReadProbe probe = new PayloadReadProbe(jdbc.getDataSource());
+        activateStagingStore(probe);
+        Lease lease = enqueueAndAcquireCatalogue();
+        long checkpointId = store.stage(lease, Endpoint.bootstrap(), readNow(), Validation.valid(), bootstrap);
+        try (Loopback loopback = loopback()) {
+            jdbc.update("UPDATE " + OWNED.requestState() + " SET last_admitted_at=? WHERE singleton=true",
+                    java.sql.Timestamp.from(clock.instant()));
+            dispatcher = new CatalogueScheduleDispatcher(store,
+                    new CatalogueScheduleWriter(jdbc, clock, store, OWNED, CAPTURED), loopback.http, clock);
+            probe.reset();
+
+            assertThat(dispatcher.process(lease, SEASON)).isEqualTo(Outcome.RETRY_SCHEDULED);
+
+            assertThat(loopback.requests).hasValue(0);
+            assertThat(jdbc.queryForObject("SELECT due_at FROM " + OWNED.run()
+                    + " WHERE generation=?", java.sql.Timestamp.class, lease.generation()).toInstant())
+                    .isEqualTo(clock.instant().plusSeconds(1));
+            assertThat(jdbc.queryForObject("SELECT validation_state FROM " + OWNED.payload()
+                    + " WHERE id=?", String.class, checkpointId)).isEqualTo("VALID");
+            assertThat(jdbc.queryForObject("SELECT consecutive_fetch_failures FROM " + OWNED.run()
+                    + " WHERE generation=?", Integer.class, lease.generation())).isZero();
+            assertThat(probe.snapshot().attempts()).isZero();
+        }
     }
 
     @Test
@@ -341,45 +928,23 @@ class CatalogueScheduleDispatcherIntegrationTest {
 
     @Test
     void sourceReceiptRaceRefreshesOnceAndUsesTheSamePublicationErrorHandling() throws Exception {
-        enqueueCatalogue();
-        Lease lease = acquireOne(Duration.ofMinutes(5));
-        CountDownLatch seasonLocked = new CountDownLatch(1);
-        CountDownLatch releaseSeason = new CountDownLatch(1);
+        assertSourceReceiptRace(CatalogueScheduleDispatcher.CATALOGUE_PRICE_COALESCING_KEY,
+                CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY,
+                CatalogueScheduleWriter.SHARED_TEAM_SOURCE_RECEIPT_KEY);
+    }
 
-        try (var executor = Executors.newFixedThreadPool(2)) {
-            Future<?> blocker = executor.submit(() -> tx.executeWithoutResult(status -> {
-                jdbc.queryForObject("SELECT id FROM season WHERE id=27 FOR UPDATE", Integer.class);
-                seasonLocked.countDown();
-                await(releaseSeason);
-            }));
-            assertThat(seasonLocked.await(5, TimeUnit.SECONDS)).isTrue();
-            Future<Outcome> outcome = executor.submit(() -> dispatcher.process(lease, SEASON));
-            awaitFetchCalls(2);
-            awaitPublisherWaiting();
-            jdbc.update("""
-                    INSERT INTO %s(season, publication_key, source_read_started_at,
-                                   source_read_finished_at, published_at)
-                    VALUES ('2026-27', ?, ?, ?, ?)
-                    ON CONFLICT (season, publication_key) DO UPDATE SET
-                        source_read_started_at=EXCLUDED.source_read_started_at,
-                        source_read_finished_at=EXCLUDED.source_read_finished_at,
-                        published_at=EXCLUDED.published_at
-                    """.formatted(OWNED.receipt()),
-                    CatalogueScheduleWriter.SHARED_TEAM_SOURCE_RECEIPT_KEY,
-                    java.sql.Timestamp.from(clock.instant()), java.sql.Timestamp.from(clock.instant()),
-                    java.sql.Timestamp.from(clock.instant()));
-            releaseSeason.countDown();
-            blocker.get(5, TimeUnit.SECONDS);
+    @Test
+    void scheduleBootstrapReceiptRaceRefreshesBeforePublishing() throws Exception {
+        assertSourceReceiptRace(CatalogueScheduleDispatcher.SCHEDULE_COALESCING_KEY,
+                CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY,
+                CatalogueScheduleWriter.SHARED_TEAM_SOURCE_RECEIPT_KEY);
+    }
 
-            Outcome actual = outcome.get(10, TimeUnit.SECONDS);
-            assertThat(actual).as("calls=%s state=%s error=%s", fetch.calls,
-                    jdbc.queryForObject("SELECT state FROM " + OWNED.run(), String.class),
-                    jdbc.queryForObject("SELECT last_error FROM " + OWNED.run(), String.class))
-                    .isEqualTo(Outcome.PUBLISHED);
-            assertThat(fetch.calls).isEqualTo(4);
-        } finally {
-            releaseSeason.countDown();
-        }
+    @Test
+    void scheduleFixtureReceiptRaceRefreshesBeforePublishing() throws Exception {
+        assertSourceReceiptRace(CatalogueScheduleDispatcher.SCHEDULE_COALESCING_KEY,
+                CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY,
+                CatalogueScheduleWriter.FIXTURE_SOURCE_RECEIPT_KEY);
     }
 
     @Test
@@ -427,6 +992,8 @@ class CatalogueScheduleDispatcherIntegrationTest {
 
     @Test
     void publicationSqlRollbackKeepsValidatedStagesAndSchedulesDurableRetry() {
+        PayloadReadProbe probe = new PayloadReadProbe(jdbc.getDataSource());
+        OwnedSyncStore.RuntimeFence fence = activateStore(OwnedSyncMode.ACTIVE, probe);
         enqueueCatalogue();
         CatalogueScheduleTables failing = new CatalogueScheduleTables(
                 "fpl_daily_price_fail_dispatch_test", CAPTURED.gameweek(), CAPTURED.fixture());
@@ -435,16 +1002,42 @@ class CatalogueScheduleDispatcherIntegrationTest {
         jdbc.execute("ALTER TABLE " + failing.dailyPrice() + " DROP CONSTRAINT IF EXISTS fail_dispatch_price");
         jdbc.execute("ALTER TABLE " + failing.dailyPrice()
                 + " ADD CONSTRAINT fail_dispatch_price CHECK (now_cost < 0)");
+        List<Integer> writesBefore = publicationCounts();
         dispatcher = dispatcher(failing);
 
-        assertThat(dispatcher.process(acquireOne(Duration.ofMinutes(5)), SEASON))
-                .isEqualTo(Outcome.RETRY_SCHEDULED);
+        Lease lease = acquireOne(Duration.ofMinutes(5));
+        assertThat(dispatcher.process(lease, SEASON)).isEqualTo(Outcome.RETRY_SCHEDULED);
         assertRunState("PENDING");
         assertThat(jdbc.queryForObject("SELECT count(*) FROM " + OWNED.payload()
                 + " WHERE validation_state='VALID'", Integer.class)).isEqualTo(2);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM player WHERE season_id=27", Integer.class)).isZero();
+        assertThat(publicationCounts()).isEqualTo(writesBefore);
         assertThat(jdbc.queryForObject("SELECT latest_generation FROM " + OWNED.receipt()
                 + " WHERE season='2026-27' AND publication_key='catalogue-price'", Long.class)).isNull();
+        assertNoBodyReads(probe);
+
+        Instant retryAt = jdbc.queryForObject("SELECT due_at FROM " + OWNED.run()
+                + " WHERE generation=?", java.sql.Timestamp.class, lease.generation()).toInstant();
+        jdbc.execute("ALTER TABLE " + failing.dailyPrice() + " DROP CONSTRAINT fail_dispatch_price");
+        clock.set(retryAt);
+        store = new OwnedSyncStore(probe, tx, clock, OWNED, fence);
+        dispatcher = dispatcher(CAPTURED);
+        probe.reset();
+
+        assertThat(dispatcher.process(acquireOne(Duration.ofMinutes(5)), SEASON)).isEqualTo(Outcome.PUBLISHED);
+
+        assertRunState("COMPLETED");
+        assertThat(fetch.calls).isEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + OWNED.payload()
+                + " WHERE validation_state='VALID'", Integer.class)).isEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT latest_generation FROM " + OWNED.receipt()
+                + " WHERE season='2026-27' AND publication_key='catalogue-price'", Long.class))
+                .isEqualTo(lease.generation());
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM player WHERE season_id=27", Integer.class))
+                .isGreaterThan(0);
+        assertThat(publicationCounts()).isNotEqualTo(writesBefore);
+        assertThat(probe.snapshot().family(PayloadReadProbe.Family.CANONICAL_PAIR))
+                .isEqualTo(new PayloadReadProbe.FamilyMetrics(1, 1, 2, bootstrap.length + fixtures.length));
     }
 
     @Test
@@ -470,18 +1063,35 @@ class CatalogueScheduleDispatcherIntegrationTest {
     }
 
     private Lease enqueueAndAcquireCatalogue() {
+        return enqueueAndAcquireCatalogue(Duration.ofMinutes(5));
+    }
+
+    private Lease enqueueAndAcquireCatalogue(Duration duration) {
         enqueueCatalogue();
-        return acquireOne(Duration.ofMinutes(5));
+        return acquireOne(duration);
     }
 
     private void activateStagingStore() {
         activateStore(OwnedSyncMode.STAGING);
     }
 
-    private void activateStore(OwnedSyncMode mode) {
+    private void activateStagingStore(PayloadReadProbe probe) {
+        activateStore(OwnedSyncMode.STAGING, probe);
+    }
+
+    private OwnedSyncStore.RuntimeFence activateStore(OwnedSyncMode mode) {
         OwnedSyncStore.RuntimeFence fence = new PlannerRuntimeRepository(jdbc, tx, clock, OWNED)
                 .activate(SEASON.code(), mode);
         store = new OwnedSyncStore(jdbc, tx, clock, OWNED, fence);
+        return fence;
+    }
+
+    private OwnedSyncStore.RuntimeFence activateStore(OwnedSyncMode mode, PayloadReadProbe probe) {
+        OwnedSyncStore.RuntimeFence fence = new PlannerRuntimeRepository(jdbc, tx, clock, OWNED)
+                .activate(SEASON.code(), mode);
+        store = new OwnedSyncStore(probe, tx, clock, OWNED, fence);
+        dispatcher = dispatcher(CAPTURED);
+        return fence;
     }
 
     private CatalogueScheduleDispatcher.Fetch fencedHttpFetch(Loopback loopback,
@@ -543,6 +1153,8 @@ class CatalogueScheduleDispatcherIntegrationTest {
     }
 
     private record HttpFetchRequest(Lease lease, Endpoint endpoint, Instant sourceFloor) { }
+    private record PairSeed(Lease lease, SourceRead bootstrapRead, SourceRead fixturesRead) { }
+    private record PublicationCase(String coalescingKey, String publicationKey, LocalTime cutover) { }
 
     private final class Loopback implements AutoCloseable {
         private final HttpServer server;
@@ -559,6 +1171,304 @@ class CatalogueScheduleDispatcherIntegrationTest {
             http.close();
             server.stop(0);
         }
+    }
+
+    private void assertResumedPairWindow(Duration span, boolean refresh) {
+        PairSeed pair = stageOwnPair(span);
+        PayloadReadProbe probe = installPayloadReadProbe();
+
+        assertThat(dispatcher.process(pair.lease(), SEASON)).isEqualTo(Outcome.PUBLISHED);
+
+        if (refresh) {
+            assertThat(fetch.endpoints).containsExactly(Endpoint.bootstrap(), Endpoint.fixtures());
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM " + OWNED.payload()
+                    + " WHERE validation_state='INVALID'", Integer.class)).isEqualTo(2);
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM " + OWNED.payload()
+                    + " WHERE validation_state='VALID'", Integer.class)).isEqualTo(2);
+            assertNoBodyReads(probe);
+        } else {
+            assertThat(fetch.calls).isZero();
+            assertThat(probe.snapshot().family(PayloadReadProbe.Family.GUARDED_SINGLE))
+                    .isEqualTo(new PayloadReadProbe.FamilyMetrics(2, 2, 2, bootstrap.length + fixtures.length));
+            assertThat(probe.snapshot().family(PayloadReadProbe.Family.CANONICAL_PAIR))
+                    .isEqualTo(new PayloadReadProbe.FamilyMetrics(0, 0, 0, 0));
+        }
+    }
+
+    private PairSeed stageOwnPair(Duration span) {
+        enqueueCatalogue();
+        Lease lease = acquireOne(Duration.ofHours(1));
+        Instant start = clock.instant();
+        SourceRead bootstrapRead = new SourceRead(start, start);
+        store.stage(lease, Endpoint.bootstrap(), bootstrapRead, Validation.valid(), bootstrap);
+        clock.advance(span);
+        Instant fixturesAt = start.plus(span);
+        SourceRead fixturesRead = new SourceRead(fixturesAt, fixturesAt);
+        store.stage(lease, Endpoint.fixtures(), fixturesRead, Validation.unchecked(), fixtures);
+        return new PairSeed(lease, bootstrapRead, fixturesRead);
+    }
+
+    private void assertResumedReceiptRegression(String receiptKey, boolean bootstrapReceipt) {
+        PairSeed pair = stageOwnPair(Duration.ZERO);
+        clock.advance(Duration.ofSeconds(2));
+        SourceRead endpointRead = bootstrapReceipt ? pair.bootstrapRead() : pair.fixturesRead();
+        seedSourceReceipt(receiptKey, new SourceRead(endpointRead.startedAt(),
+                endpointRead.finishedAt().plusSeconds(1)));
+        PayloadReadProbe probe = installPayloadReadProbe();
+
+        assertThat(dispatcher.process(pair.lease(), SEASON)).isEqualTo(Outcome.RETRY_SCHEDULED);
+
+        assertThat(fetch.calls).isZero();
+        assertThat(jdbc.queryForObject("SELECT due_at FROM " + OWNED.run()
+                + " WHERE generation=?", java.sql.Timestamp.class, pair.lease().generation()).toInstant())
+                .isEqualTo(clock.instant().plusSeconds(1));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + OWNED.payload()
+                + " WHERE validation_state='INVALID'", Integer.class)).isEqualTo(2);
+        assertNoBodyReads(probe);
+    }
+
+    private void assertPartialReceiptRegression(Endpoint checkpointEndpoint, Endpoint missingEndpoint) {
+        enqueueCatalogue();
+        Lease lease = acquireOne(Duration.ofHours(1));
+        SourceRead checkpointRead = readNow();
+        byte[] body = checkpointEndpoint.equals(Endpoint.bootstrap()) ? bootstrap : fixtures;
+        store.stage(lease, checkpointEndpoint, checkpointRead, Validation.valid(), body);
+        String receiptKey = checkpointEndpoint.equals(Endpoint.bootstrap())
+                ? CatalogueScheduleWriter.SHARED_TEAM_SOURCE_RECEIPT_KEY
+                : CatalogueScheduleWriter.FIXTURE_SOURCE_RECEIPT_KEY;
+        fetch.beforeResponse = endpoint -> seedSourceReceipt(receiptKey,
+                new SourceRead(checkpointRead.startedAt(), clock.instant().plusMillis(50)));
+        PayloadReadProbe probe = installPayloadReadProbe();
+
+        assertThat(dispatcher.process(lease, SEASON)).isEqualTo(Outcome.RETRY_SCHEDULED);
+
+        assertThat(fetch.endpoints).containsExactly(missingEndpoint);
+        assertThat(fetch.calls).isOne();
+        assertThat(jdbc.queryForObject("SELECT due_at FROM " + OWNED.run()
+                + " WHERE generation=?", java.sql.Timestamp.class, lease.generation()).toInstant())
+                .isEqualTo(clock.instant().plusSeconds(1));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + OWNED.payload()
+                + " WHERE validation_state='INVALID'", Integer.class)).isEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT consecutive_fetch_failures FROM " + OWNED.run()
+                + " WHERE generation=?", Integer.class, lease.generation())).isZero();
+        assertNoBodyReads(probe);
+    }
+
+    private void seedSourceReceipt(String publicationKey, SourceRead read) {
+        jdbc.update("""
+                INSERT INTO %s(season, publication_key, source_read_started_at,
+                               source_read_finished_at, published_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT (season, publication_key) DO UPDATE SET
+                    source_read_started_at=EXCLUDED.source_read_started_at,
+                    source_read_finished_at=EXCLUDED.source_read_finished_at,
+                    published_at=EXCLUDED.published_at
+                """.formatted(OWNED.receipt()), SEASON.code(), publicationKey,
+                java.sql.Timestamp.from(read.startedAt()), java.sql.Timestamp.from(read.finishedAt()),
+                java.sql.Timestamp.from(clock.instant()));
+    }
+
+    private void assertSourceReceiptRace(String coalescingKey, String publicationKey,
+                                         String racedSourceKey) throws Exception {
+        PayloadReadProbe probe = new PayloadReadProbe(jdbc.getDataSource());
+        activateStore(OwnedSyncMode.ACTIVE, probe);
+        store.enqueue(SyncKind.CATALOGUE_SCHEDULE, SEASON.code(), coalescingKey, publicationKey, clock.instant());
+        Lease lease = acquireOne(Duration.ofMinutes(5));
+        List<Integer> writesBefore = publicationCounts();
+        CountDownLatch seasonLocked = new CountDownLatch(1);
+        CountDownLatch publisherAtSeason = new CountDownLatch(1);
+        CountDownLatch releaseSeason = new CountDownLatch(1);
+        CountDownLatch freshPairStarted = new CountDownLatch(1);
+        CountDownLatch releaseFreshPair = new CountDownLatch(1);
+        AtomicBoolean delayedFreshPair = new AtomicBoolean();
+        AtomicReference<Instant> racedReceiptAt = new AtomicReference<>();
+        JdbcTemplate writerJdbc = new JdbcTemplate(jdbc.getDataSource()) {
+            @Override
+            public <T> List<T> query(String sql, RowMapper<T> rowMapper, Object... args) {
+                if (sql.toLowerCase(java.util.Locale.ROOT).contains("from season where id = ? for update")) {
+                    publisherAtSeason.countDown();
+                }
+                return super.query(sql, rowMapper, args);
+            }
+        };
+        dispatcher = new CatalogueScheduleDispatcher(store,
+                new CatalogueScheduleWriter(writerJdbc, clock, store, OWNED, CAPTURED), fetch, clock);
+        fetch.beforeResponse = endpoint -> {
+            if (fetch.calls == 3 && endpoint.equals(Endpoint.bootstrap())
+                    && delayedFreshPair.compareAndSet(false, true)) {
+                freshPairStarted.countDown();
+                await(releaseFreshPair);
+            }
+        };
+
+        try (var executor = Executors.newFixedThreadPool(2)) {
+            Future<?> blocker = executor.submit(() -> tx.executeWithoutResult(status -> {
+                jdbc.queryForObject("SELECT id FROM season WHERE id=27 FOR UPDATE", Integer.class);
+                seasonLocked.countDown();
+                await(releaseSeason);
+            }));
+            assertThat(seasonLocked.await(5, TimeUnit.SECONDS)).isTrue();
+            Future<Outcome> outcome = executor.submit(() -> dispatcher.process(lease, SEASON));
+            assertThat(publisherAtSeason.await(5, TimeUnit.SECONDS)).isTrue();
+
+            clock.advance(Duration.ofSeconds(1));
+            racedReceiptAt.set(clock.instant());
+            seedSourceReceipt(racedSourceKey, new SourceRead(racedReceiptAt.get(), racedReceiptAt.get()));
+            assertThat(publicationCounts()).isEqualTo(writesBefore);
+            assertThat(jdbc.queryForObject("SELECT latest_generation FROM " + OWNED.receipt()
+                    + " WHERE season=? AND publication_key=?", Long.class, SEASON.code(), publicationKey)).isNull();
+            assertThat(jdbc.queryForObject("SELECT source_read_finished_at FROM " + OWNED.receipt()
+                    + " WHERE season=? AND publication_key=?", java.sql.Timestamp.class,
+                    SEASON.code(), racedSourceKey).toInstant()).isEqualTo(racedReceiptAt.get());
+
+            releaseSeason.countDown();
+            blocker.get(5, TimeUnit.SECONDS);
+            assertThat(freshPairStarted.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(publicationCounts()).isEqualTo(writesBefore);
+            assertThat(jdbc.queryForObject("SELECT latest_generation FROM " + OWNED.receipt()
+                    + " WHERE season=? AND publication_key=?", Long.class,
+                    SEASON.code(), publicationKey)).isNull();
+            assertThat(jdbc.queryForObject("SELECT source_read_finished_at FROM " + OWNED.receipt()
+                    + " WHERE season=? AND publication_key=?", java.sql.Timestamp.class,
+                    SEASON.code(), racedSourceKey).toInstant()).isEqualTo(racedReceiptAt.get());
+            releaseFreshPair.countDown();
+            assertThat(outcome.get(10, TimeUnit.SECONDS)).isEqualTo(Outcome.PUBLISHED);
+        } finally {
+            releaseSeason.countDown();
+            releaseFreshPair.countDown();
+        }
+
+        assertThat(fetch.calls).isEqualTo(4);
+        assertThat(fetch.endpoints).containsExactly(Endpoint.bootstrap(), Endpoint.fixtures(),
+                Endpoint.bootstrap(), Endpoint.fixtures());
+        assertThat(payloadCount()).isEqualTo(4);
+        assertRunState("COMPLETED");
+        assertThat(jdbc.queryForObject("SELECT consecutive_fetch_failures FROM " + OWNED.run()
+                + " WHERE generation=?", Integer.class, lease.generation())).isZero();
+        assertThat(jdbc.queryForObject("SELECT latest_generation FROM " + OWNED.receipt()
+                + " WHERE season=? AND publication_key=?", Long.class, SEASON.code(), publicationKey))
+                .isEqualTo(lease.generation());
+        assertThat(jdbc.queryForObject("SELECT source_read_finished_at FROM " + OWNED.receipt()
+                + " WHERE season=? AND publication_key=?", java.sql.Timestamp.class,
+                SEASON.code(), racedSourceKey).toInstant()).isAfter(racedReceiptAt.get());
+        assertThat(publicationCounts()).isNotEqualTo(writesBefore);
+        assertThat(probe.snapshot().family(PayloadReadProbe.Family.GUARDED_SINGLE))
+                .isEqualTo(new PayloadReadProbe.FamilyMetrics(0, 0, 0, 0));
+        assertThat(probe.snapshot().family(PayloadReadProbe.Family.CANONICAL_PAIR))
+                .isEqualTo(new PayloadReadProbe.FamilyMetrics(0, 0, 0, 0));
+    }
+
+    private List<Integer> publicationCounts() {
+        return List.of(
+                jdbc.queryForObject("SELECT count(*) FROM team WHERE season_id=27", Integer.class),
+                jdbc.queryForObject("SELECT count(*) FROM player WHERE season_id=27", Integer.class),
+                jdbc.queryForObject("SELECT count(*) FROM gameweek WHERE season_id=27", Integer.class),
+                jdbc.queryForObject("SELECT count(*) FROM fixture WHERE season_id=27", Integer.class),
+                jdbc.queryForObject("SELECT count(*) FROM " + CAPTURED.dailyPrice(), Integer.class),
+                jdbc.queryForObject("SELECT count(*) FROM " + CAPTURED.gameweek(), Integer.class),
+                jdbc.queryForObject("SELECT count(*) FROM " + CAPTURED.fixture(), Integer.class),
+                jdbc.queryForObject("SELECT count(*) FROM " + OWNED.fixtureSync(), Integer.class));
+    }
+
+    private void seedReusablePair(byte[] bootstrapBody, byte[] fixturesBody) {
+        dispatcher.enqueueSchedule(SEASON, clock.instant());
+        Lease lease = acquireOne(Duration.ofHours(1));
+        SourceRead bootstrapRead = readNow();
+        SourceRead fixturesRead = readNow();
+        store.stage(lease, Endpoint.bootstrap(), bootstrapRead, Validation.valid(), bootstrapBody);
+        store.stage(lease, Endpoint.fixtures(), fixturesRead, Validation.valid(), fixturesBody);
+        store.completeStaged(lease, readNow(), List.of(bootstrapRead, fixturesRead));
+    }
+
+    private void assertNoBodyReads(PayloadReadProbe probe) {
+        PayloadReadProbe.FamilyMetrics none = new PayloadReadProbe.FamilyMetrics(0, 0, 0, 0);
+        for (PayloadReadProbe.Family family : PayloadReadProbe.Family.values()) {
+            assertThat(probe.snapshot().family(family)).as("unexpected %s body read", family).isEqualTo(none);
+        }
+        assertThat(probe.snapshot().attempts()).isZero();
+    }
+
+    private void assertIneligibleOwnBootstrap(Validation validation, SourceRead sourceRead,
+                                               String expectedValidationState) {
+        enqueueCatalogue();
+        Lease lease = acquireOne(Duration.ofMinutes(5));
+        long checkpointId = store.stage(lease, Endpoint.bootstrap(), sourceRead, validation, bootstrap);
+        PayloadReadProbe probe = installPayloadReadProbe();
+
+        assertThat(dispatcher.process(lease, SEASON)).isEqualTo(Outcome.PUBLISHED);
+        assertThat(fetch.calls).isEqualTo(2);
+        assertThat(fetch.endpoints).containsExactly(Endpoint.bootstrap(), Endpoint.fixtures());
+        assertRunState("COMPLETED");
+        assertThat(jdbc.queryForObject("SELECT validation_state FROM " + OWNED.payload()
+                + " WHERE id=?", String.class, checkpointId)).isEqualTo(expectedValidationState);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + OWNED.payload()
+                + " WHERE validation_state='INVALID'", Integer.class))
+                .isEqualTo(expectedValidationState.equals("INVALID") ? 1 : 0);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + OWNED.payload()
+                + " WHERE validation_state='VALID'", Integer.class))
+                .isEqualTo(expectedValidationState.equals("VALID") ? 3 : 2);
+        assertThat(jdbc.queryForObject("SELECT consecutive_fetch_failures FROM " + OWNED.run()
+                + " WHERE generation=?", Integer.class, lease.generation())).isZero();
+
+        assertNoBodyReads(probe);
+    }
+
+    private void assertPartialCheckpointResumes(Endpoint checkpointEndpoint, Endpoint missingEndpoint) {
+        enqueueCatalogue();
+        Lease lease = acquireOne(Duration.ofMinutes(5));
+        byte[] checkpointBody = checkpointEndpoint.equals(Endpoint.bootstrap()) ? bootstrap : fixtures;
+        int checkpointLength = checkpointBody.length;
+        store.stage(lease, checkpointEndpoint, readNow(), Validation.valid(), checkpointBody);
+        PayloadReadProbe probe = installPayloadReadProbe();
+        fetch.beforeResponse = endpoint -> assertThat(probe.snapshot().attempts())
+                .as("the missing partner must succeed before checkpoint hydration")
+                .isZero();
+
+        assertThat(dispatcher.process(lease, SEASON)).isEqualTo(Outcome.PUBLISHED);
+
+        assertThat(fetch.endpoints).containsExactly(missingEndpoint);
+        assertThat(payloadCount()).isEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + OWNED.payload()
+                + " WHERE validation_state='VALID'", Integer.class)).isEqualTo(2);
+        assertThat(probe.snapshot().family(PayloadReadProbe.Family.OLD_OWN_CHECKPOINT))
+                .isEqualTo(new PayloadReadProbe.FamilyMetrics(0, 0, 0, 0));
+        assertThat(probe.snapshot().family(PayloadReadProbe.Family.GUARDED_SINGLE))
+                .isEqualTo(new PayloadReadProbe.FamilyMetrics(1, 1, 1, checkpointLength));
+        assertThat(probe.snapshot().family(PayloadReadProbe.Family.CANONICAL_PAIR))
+                .isEqualTo(new PayloadReadProbe.FamilyMetrics(0, 0, 0, 0));
+    }
+
+    private void assertPartialCheckpointDefers(Endpoint checkpointEndpoint, Endpoint missingEndpoint) {
+        enqueueCatalogue();
+        Lease lease = acquireOne(Duration.ofMinutes(5));
+        long checkpointId = store.stage(lease, checkpointEndpoint, readNow(), Validation.valid(), bootstrap);
+        Instant due = clock.instant().plus(Duration.ofMinutes(7));
+        fetch.results.add(new DeferredResult(due, DeferredReason.MINIMUM_SPACING));
+        PayloadReadProbe probe = installPayloadReadProbe();
+
+        assertThat(dispatcher.process(lease, SEASON)).isEqualTo(Outcome.RETRY_SCHEDULED);
+        assertThat(fetch.calls).isOne();
+        assertThat(fetch.endpoints).containsExactly(missingEndpoint);
+        assertRunState("PENDING");
+        assertThat(jdbc.queryForObject("SELECT due_at FROM " + OWNED.run()
+                + " WHERE generation=?", java.sql.Timestamp.class, lease.generation()).toInstant()).isEqualTo(due);
+        assertThat(jdbc.queryForObject("SELECT validation_state FROM " + OWNED.payload()
+                + " WHERE id=?", String.class, checkpointId)).isEqualTo("VALID");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + OWNED.payload(), Integer.class)).isOne();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + OWNED.payload()
+                + " WHERE validation_state='INVALID'", Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT consecutive_fetch_failures FROM " + OWNED.run()
+                + " WHERE generation=?", Integer.class, lease.generation())).isZero();
+
+        assertNoBodyReads(probe);
+    }
+
+    private PayloadReadProbe installPayloadReadProbe() {
+        PayloadReadProbe probe = new PayloadReadProbe(jdbc.getDataSource());
+        store = new OwnedSyncStore(probe, tx, clock, OWNED);
+        dispatcher = dispatcher(CAPTURED);
+        probe.reset();
+        return probe;
     }
 
     private void enqueueCatalogue() {
@@ -584,29 +1494,9 @@ class CatalogueScheduleDispatcherIntegrationTest {
         return new SourceRead(clock.instant(), clock.instant());
     }
 
-    private void awaitFetchCalls(int expected) throws InterruptedException {
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
-        while (fetch.calls < expected && System.nanoTime() < deadline) Thread.sleep(10);
-        assertThat(fetch.calls).isGreaterThanOrEqualTo(expected);
-    }
-
-    private static void awaitPublisherWaiting() throws InterruptedException {
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
-        while (System.nanoTime() < deadline) {
-            Integer waiting = jdbc.queryForObject("""
-                    SELECT count(*) FROM pg_stat_activity
-                    WHERE datname=current_database() AND wait_event_type='Lock'
-                      AND query LIKE '%FROM season WHERE id =%'
-                    """, Integer.class);
-            if (waiting != null && waiting > 0) return;
-            Thread.sleep(10);
-        }
-        throw new AssertionError("publisher did not reach the season lock");
-    }
-
     private static void await(CountDownLatch latch) {
         try {
-            latch.await();
+            if (!latch.await(5, TimeUnit.SECONDS)) throw new AssertionError("timed out awaiting test latch");
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException(e);
@@ -691,12 +1581,14 @@ class CatalogueScheduleDispatcherIntegrationTest {
 
     private final class FakeFetch implements CatalogueScheduleDispatcher.Fetch {
         private final Deque<OwnedSyncHttpClient.Result> results = new ArrayDeque<>();
+        private final List<Endpoint> endpoints = new java.util.ArrayList<>();
         private java.util.function.Consumer<Endpoint> beforeResponse = endpoint -> { };
         private volatile int calls;
 
         @Override
         public OwnedSyncHttpClient.Result get(Endpoint endpoint, int failureAttempt) {
             calls++;
+            endpoints.add(endpoint);
             if (!results.isEmpty()) return results.removeFirst();
             Instant started = clock.instant();
             beforeResponse.accept(endpoint);
@@ -707,7 +1599,7 @@ class CatalogueScheduleDispatcherIntegrationTest {
     }
 
     private static final class MutableClock extends Clock {
-        private Instant value;
+        private volatile Instant value;
         private MutableClock(Instant value) { this.value = value; }
         private void set(Instant value) { this.value = value; }
         private void advance(Duration duration) { value = value.plus(duration); }
