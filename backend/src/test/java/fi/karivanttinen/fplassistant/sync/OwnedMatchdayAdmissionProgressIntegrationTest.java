@@ -177,6 +177,9 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
             assertThat(metrics.historiesWithin60())
                     .as("at least ten distinct valid histories must complete within 60 virtual seconds")
                     .isGreaterThanOrEqualTo(10);
+            assertThat(metrics.peakNewPartialPairs())
+                    .as("the mixed backlog leaves at most two new partial bootstrap pairs outstanding")
+                    .isLessThanOrEqualTo(2);
         });
     }
 
