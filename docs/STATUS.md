@@ -1,5 +1,33 @@
 # Status — Phase 1
 
+## Owned sync — KAR-73 checkpoint hydration (2026-09-28)
+
+KAR-72 is Done in Linear; [PR #140](https://github.com/quantti/fpl-assistant/pull/140) merged as
+`0cc38c9` on 28 September. This supersedes the pending-merge notes in the 27 September checkpoints
+below, not their recorded test limitations. KAR-73's [reviewed implementation plan](superpowers/plans/2026-09-28-kar-73-canonical-checkpoint-hydration.md)
+is implemented locally for PR review; production remains OFF.
+
+The canonical dispatcher now selects both own endpoints by latest metadata, fetches a missing
+partner before guarded hydration, and rejects known interval/day/floor/receipt failures without
+reading rejected bodies. A hydration miss retries from a fresh durable floor. Fresh/resumed
+rejection precedence, strict parse, terminal malformed-own behavior, bounded reusable-pair cache
+and publication guards are unchanged. Test-side JDBC instrumentation counts attempted SELECTs,
+returned rows/bodies and raw body bytes separately. Synthetic tests cover both partial orders,
+deferral, races, UK midnight, cutovers, receipts, exact window boundaries and fenced lease/epoch
+loss. The complete dispatcher and store integration classes passed separately on the disposable
+loopback database; all five admission/progress tests passed. The fixed two-worker workload kept
+30 histories within 60 virtual seconds, first GET/completion at 1.1/1.2s, zero staged fixtures,
+55 admitted GETs, zero deferrals and at most one new partial pair in either arrival order. It had
+**no old own-checkpoint reads before or after**; its DB body-read families are unchanged. The
+focused cases, not that workload, demonstrate the avoided own-body reads. The separate finite
+drain completed all 50 fixtures and 68 required histories in 613.4 virtual seconds. Raw lengths
+are not provider-billed egress or a production cost estimate; full-suite CI and independent PR
+review remain. Existing writer commit-day/group-specific receipt limits were not expanded.
+
+No production SQL, external FPL requests, mode change, publication or deployment occurred. OFF
+epoch 67 remains the latest documented containment, not a fresh live-state check. Any production
+experiment still needs separate owner authorization.
+
 ## Owned sync — KAR-71 STAGING retest (2026-09-27)
 
 An owner-authorized, attended STAGING retest ran on deployed `80dba18`, which includes KAR-71's

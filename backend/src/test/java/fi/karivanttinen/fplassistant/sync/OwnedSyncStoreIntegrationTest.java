@@ -39,7 +39,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.jdbc.core.RowMapper;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -1129,6 +1128,191 @@ class OwnedSyncStoreIntegrationTest {
     }
 
     @Test
+    void payloadReadProbeCountsOwnCanonicalGuardedAndMetadataReadsAtTheMapperBoundary() {
+        PayloadReadProbe probe = new PayloadReadProbe(jdbc.getDataSource());
+        OwnedSyncStore tracked = new OwnedSyncStore(probe, tx, clock, TABLES);
+        tracked.enqueue(SyncKind.CATALOGUE_SCHEDULE, "2097-98", "catalogue-probe",
+                "catalogue-probe", clock.instant());
+        Lease lease = tracked.acquire("payload-probe-worker", Duration.ofMinutes(5)).orElseThrow();
+        clock.advance(Duration.ofSeconds(3));
+        SourceRead sourceRead = read();
+        byte[] ownBody = bytes("known own checkpoint body");
+        byte[] fixtureBody = bytes("known fixture checkpoint body");
+        tracked.stage(lease, Endpoint.bootstrap(), sourceRead, Validation.valid(), ownBody);
+        tracked.stage(lease, Endpoint.fixtures(), sourceRead, Validation.valid(), fixtureBody);
+
+        probe.reset();
+        assertThat(tracked.latestStagedPublicPayload(lease, Endpoint.bootstrap()).orElseThrow().body())
+                .isEqualTo(ownBody);
+        var own = probe.snapshot().family(PayloadReadProbe.Family.OLD_OWN_CHECKPOINT);
+        assertThat(own).isEqualTo(new PayloadReadProbe.FamilyMetrics(1, 1, 1, ownBody.length));
+
+        probe.reset();
+        var pair = tracked.findInLatestValidPublicPayloadPairs("2097-98", 20, sourceRead.startedAt(),
+                candidate -> java.util.Optional.of(candidate)).orElseThrow();
+        assertThat(pair.bootstrap().body()).isEqualTo(ownBody);
+        assertThat(pair.fixtures().body()).isEqualTo(fixtureBody);
+        var canonical = probe.snapshot().family(PayloadReadProbe.Family.CANONICAL_PAIR);
+        assertThat(canonical).isEqualTo(new PayloadReadProbe.FamilyMetrics(1, 1, 2,
+                ownBody.length + fixtureBody.length));
+
+        probe.reset();
+        var selected = tracked.latestStagedPayloadMetadata(lease, Endpoint.bootstrap()).orElseThrow();
+        assertThat(probe.snapshot().attempts()).isZero();
+        assertThat(tracked.hydrateStagedPayload(lease, Endpoint.bootstrap(), selected, sourceRead.startedAt())
+                .orElseThrow().body()).isEqualTo(ownBody);
+        var guarded = probe.snapshot().family(PayloadReadProbe.Family.GUARDED_SINGLE);
+        assertThat(guarded).isEqualTo(new PayloadReadProbe.FamilyMetrics(1, 1, 1, ownBody.length));
+
+        jdbc.update("UPDATE " + TABLES.payload()
+                + " SET validation_state='INVALID', validation_error='probe zero-row guard' WHERE id=?", selected.id());
+        probe.reset();
+        assertThat(tracked.hydrateStagedPayload(lease, Endpoint.bootstrap(), selected, sourceRead.startedAt()))
+                .isEmpty();
+        var emptyGuarded = probe.snapshot().family(PayloadReadProbe.Family.GUARDED_SINGLE);
+        assertThat(emptyGuarded).isEqualTo(new PayloadReadProbe.FamilyMetrics(1, 0, 0, 0));
+
+        probe.reset();
+        assertThat(tracked.latestStagedPayloadMetadata(lease, Endpoint.bootstrap())).isPresent();
+        assertThat(probe.snapshot().attempts()).isZero();
+        assertThat(probe.snapshot().bodyValues()).isZero();
+    }
+
+    @Test
+    void latestMetadataKeepsNewestInvalidExactEndpointWithoutReadingOlderValidBody() {
+        PayloadReadProbe probe = new PayloadReadProbe(jdbc.getDataSource());
+        OwnedSyncStore tracked = new OwnedSyncStore(probe, tx, clock, TABLES);
+        tracked.enqueue(SyncKind.CATALOGUE_SCHEDULE, "2097-98", "metadata-latest",
+                "metadata-latest", clock.instant());
+        Lease lease = tracked.acquire("metadata-latest-worker", Duration.ofMinutes(5)).orElseThrow();
+        clock.advance(Duration.ofSeconds(3));
+        SourceRead sourceRead = read();
+        long olderId = tracked.stage(lease, Endpoint.bootstrap(), sourceRead,
+                Validation.valid(), bytes("older valid"));
+        long fixturesId = tracked.stage(lease, Endpoint.fixtures(), sourceRead,
+                Validation.valid(), bytes("other endpoint"));
+        long newestId = tracked.stage(lease, Endpoint.bootstrap(), sourceRead,
+                Validation.invalid("newest invalid"), bytes("newest invalid"));
+
+        probe.reset();
+        var selected = tracked.latestStagedPayloadMetadata(lease, Endpoint.bootstrap()).orElseThrow();
+
+        assertThat(newestId).isGreaterThan(olderId);
+        assertThat(selected.id()).isEqualTo(newestId);
+        assertThat(selected.validationState()).isEqualTo(ValidationState.INVALID);
+        assertThat(selected.endpoint()).isEqualTo(Endpoint.bootstrap());
+        assertThat(tracked.latestStagedPayloadMetadata(lease, Endpoint.fixtures()).orElseThrow().id())
+                .isEqualTo(fixturesId);
+        assertThat(tracked.hydrateStagedPayload(lease, Endpoint.bootstrap(), selected, sourceRead.startedAt()))
+                .isEmpty();
+        assertThatThrownBy(() -> tracked.hydrateStagedPayload(lease, Endpoint.fixtures(), selected,
+                sourceRead.startedAt())).isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("endpoint mismatch");
+        assertThat(probe.snapshot().attempts()).isZero();
+        assertThat(probe.snapshot().bodyValues()).isZero();
+    }
+
+    @Test
+    void guardedOwnHydrationRejectsWrongRunAdvancedFloorAndSeasonWithoutReturningBodies() {
+        PayloadReadProbe probe = new PayloadReadProbe(jdbc.getDataSource());
+        OwnedSyncStore tracked = new OwnedSyncStore(probe, tx, clock, TABLES);
+        tracked.enqueue(SyncKind.CATALOGUE_SCHEDULE, "2097-98", "metadata-guard-target",
+                "metadata-guard-target", clock.instant());
+        Lease target = tracked.acquire("metadata-guard-target-worker", Duration.ofMinutes(5)).orElseThrow();
+        tracked.enqueue(SyncKind.CATALOGUE_SCHEDULE, "2098-99", "metadata-guard-source",
+                "metadata-guard-source", clock.instant());
+        Lease source = tracked.acquire("metadata-guard-source-worker", Duration.ofMinutes(5)).orElseThrow();
+        clock.advance(Duration.ofSeconds(3));
+        SourceRead sourceRead = read();
+        tracked.stage(target, Endpoint.bootstrap(), sourceRead, Validation.valid(), bytes("target body"));
+        tracked.stage(target, Endpoint.fixtures(), sourceRead, Validation.valid(), bytes("fixture body"));
+        long foreignId = tracked.stage(source, Endpoint.bootstrap(), sourceRead,
+                Validation.valid(), bytes("foreign body"));
+        var bootstrap = tracked.latestStagedPayloadMetadata(target, Endpoint.bootstrap()).orElseThrow();
+        var fixture = tracked.latestStagedPayloadMetadata(target, Endpoint.fixtures()).orElseThrow();
+        var foreign = tracked.latestStagedPayloadMetadata(source, Endpoint.bootstrap()).orElseThrow();
+
+        probe.reset();
+        var wrongRun = new OwnedSyncStore.StagedPayloadMetadata(foreignId, target.generation(),
+                Endpoint.bootstrap(), foreign.read(), foreign.validationState());
+        assertThat(tracked.hydrateStagedPayload(target, Endpoint.bootstrap(), wrongRun, sourceRead.startedAt()))
+                .isEmpty();
+        assertThat(probe.snapshot().family(PayloadReadProbe.Family.GUARDED_SINGLE))
+                .isEqualTo(new PayloadReadProbe.FamilyMetrics(1, 0, 0, 0));
+
+        probe.reset();
+        assertThat(tracked.hydrateStagedPayload(target, Endpoint.bootstrap(), bootstrap,
+                sourceRead.startedAt().plusMillis(1))).isEmpty();
+        assertThat(probe.snapshot().family(PayloadReadProbe.Family.GUARDED_SINGLE))
+                .isEqualTo(new PayloadReadProbe.FamilyMetrics(1, 0, 0, 0));
+
+        jdbc.update("INSERT INTO " + TABLES.receipt()
+                + "(season, publication_key) VALUES ('2098-99', 'metadata-guard-target') ON CONFLICT DO NOTHING");
+        jdbc.update("UPDATE " + TABLES.run() + " SET season='2098-99' WHERE generation=?", target.generation());
+        probe.reset();
+        assertThat(tracked.hydrateStagedPayload(target, Endpoint.fixtures(), fixture, sourceRead.startedAt()))
+                .isEmpty();
+        assertThat(probe.snapshot().family(PayloadReadProbe.Family.GUARDED_SINGLE))
+                .isEqualTo(new PayloadReadProbe.FamilyMetrics(1, 0, 0, 0));
+    }
+
+    @Test
+    void fencedHydrationRejectsExpiredAndReassignedLeaseWithoutReadingCheckpointBody() {
+        PayloadReadProbe probe = new PayloadReadProbe(jdbc.getDataSource());
+        OwnedSyncStore.RuntimeFence fence = new PlannerRuntimeRepository(jdbc, tx, clock, TABLES)
+                .activate("2097-98", OwnedSyncMode.STAGING);
+        OwnedSyncStore fenced = new OwnedSyncStore(probe, tx, clock, TABLES, fence);
+        Run run = enqueueCatalogueSchedule(fenced);
+        Lease old = fenced.acquireForSeason("2097-98", "hydration-old", Duration.ofMinutes(1))
+                .orElseThrow();
+        assertThat(old.generation()).isEqualTo(run.generation());
+        Endpoint endpoint = Endpoint.bootstrap();
+        SourceRead sourceRead = new SourceRead(clock.instant(), clock.instant());
+        fenced.stage(old, endpoint, sourceRead, Validation.valid(), bytes("fenced body"));
+        var selected = fenced.latestStagedPayloadMetadata(old, endpoint).orElseThrow();
+
+        clock.advance(Duration.ofMinutes(2));
+        assertThatThrownBy(() -> fenced.hydrateStagedPayload(old, endpoint, selected, sourceRead.startedAt()))
+                .isInstanceOf(LeaseLostException.class);
+        Lease replacement = fenced.acquireForSeason("2097-98", "hydration-replacement", Duration.ofMinutes(5))
+                .orElseThrow();
+        assertThat(replacement.generation()).isEqualTo(old.generation());
+        assertThat(replacement.fence()).isGreaterThan(old.fence());
+        assertThatThrownBy(() -> fenced.hydrateStagedPayload(old, endpoint, selected, sourceRead.startedAt()))
+                .isInstanceOf(LeaseLostException.class);
+
+        assertThat(probe.snapshot().family(PayloadReadProbe.Family.GUARDED_SINGLE))
+                .isEqualTo(new PayloadReadProbe.FamilyMetrics(0, 0, 0, 0));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.payload()
+                + " WHERE id=?", Integer.class, selected.id())).isOne();
+    }
+
+    @Test
+    void fencedHydrationRejectsReplacedEpochWithoutReadingCheckpointBody() {
+        PayloadReadProbe probe = new PayloadReadProbe(jdbc.getDataSource());
+        OwnedSyncStore.RuntimeFence fence = new PlannerRuntimeRepository(jdbc, tx, clock, TABLES)
+                .activate("2097-98", OwnedSyncMode.STAGING);
+        OwnedSyncStore fenced = new OwnedSyncStore(probe, tx, clock, TABLES, fence);
+        enqueueCatalogueSchedule(fenced);
+        Lease lease = fenced.acquireForSeason("2097-98", "hydration-epoch", Duration.ofMinutes(5))
+                .orElseThrow();
+        Endpoint endpoint = Endpoint.bootstrap();
+        SourceRead sourceRead = new SourceRead(clock.instant(), clock.instant());
+        fenced.stage(lease, endpoint, sourceRead, Validation.valid(), bytes("fenced epoch body"));
+        var selected = fenced.latestStagedPayloadMetadata(lease, endpoint).orElseThrow();
+        probe.reset();
+
+        new PlannerRuntimeRepository(jdbc, tx, clock, TABLES).activate("2097-98", OwnedSyncMode.STAGING);
+
+        assertThatThrownBy(() -> fenced.hydrateStagedPayload(lease, endpoint, selected, sourceRead.startedAt()))
+                .isInstanceOf(RuntimeFenceLostException.class);
+        assertThat(probe.snapshot().family(PayloadReadProbe.Family.GUARDED_SINGLE))
+                .isEqualTo(new PayloadReadProbe.FamilyMetrics(0, 0, 0, 0));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.payload()
+                + " WHERE run_generation=?", Integer.class, lease.generation())).isOne();
+    }
+
+    @Test
     void metadataSelectionRejectsIneligibleCheckpointsBeforeHydratingTheExactEligibleOne() {
         TrackingJdbcTemplate tracking = new TrackingJdbcTemplate(jdbc.getDataSource());
         OwnedSyncStore tracked = new OwnedSyncStore(tracking, tx, clock, TABLES);
@@ -1179,6 +1363,8 @@ class OwnedSyncStoreIntegrationTest {
 
         assertThat(tracked.hydrateStagedPayload(lease, endpoint, selected, sourceRead.startedAt())).isEmpty();
         assertThat(tracking.hydratedBodies()).isZero();
+        assertThat(tracking.snapshot().family(PayloadReadProbe.Family.GUARDED_SINGLE))
+                .isEqualTo(new PayloadReadProbe.FamilyMetrics(1, 0, 0, 0));
     }
 
     @Test
@@ -1206,6 +1392,8 @@ class OwnedSyncStoreIntegrationTest {
 
         assertThat(tracked.hydrateStagedPayload(lease, endpoint, selected, sourceRead.startedAt())).isEmpty();
         assertThat(tracking.hydratedBodies()).isZero();
+        assertThat(tracking.snapshot().family(PayloadReadProbe.Family.GUARDED_SINGLE))
+                .isEqualTo(new PayloadReadProbe.FamilyMetrics(1, 0, 0, 0));
     }
 
     @Test
@@ -1631,33 +1819,21 @@ class OwnedSyncStoreIntegrationTest {
         assertThat(TABLES.receipt()).endsWith("_test");
     }
 
-    private static final class TrackingJdbcTemplate extends JdbcTemplate {
-        private final AtomicInteger hydratedBodies = new AtomicInteger();
-        private final AtomicInteger payloadBodySelects = new AtomicInteger();
-
+    private static final class TrackingJdbcTemplate extends PayloadReadProbe {
         private TrackingJdbcTemplate(DataSource dataSource) {
             super(dataSource);
         }
 
-        @Override
-        public <T> List<T> query(String sql, RowMapper<T> rowMapper, Object... args) {
-            List<T> rows = super.query(sql, rowMapper, args);
-            if (sql.toLowerCase(java.util.Locale.ROOT).contains("body")) payloadBodySelects.incrementAndGet();
-            if (sql.contains("p.body")) hydratedBodies.addAndGet(rows.size());
-            return rows;
-        }
-
         private int hydratedBodies() {
-            return hydratedBodies.get();
+            return Math.toIntExact(snapshot().bodyValues());
         }
 
         private int payloadBodySelects() {
-            return payloadBodySelects.get();
+            return Math.toIntExact(snapshot().attempts());
         }
 
         private void resetHydratedBodies() {
-            hydratedBodies.set(0);
-            payloadBodySelects.set(0);
+            reset();
         }
     }
 
