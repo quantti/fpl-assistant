@@ -200,6 +200,28 @@ class PlannerRuntimeRepositoryIntegrationTest {
     }
 
     @Test
+    void lateOldEpochDeactivationCannotFenceANewerSameModeEpochOrItsLease() {
+        var oldFence = repository(FIRST).activate("2026-27", OwnedSyncMode.STAGING);
+        var newFence = repository(FIRST.plusSeconds(1)).activate("2026-27", OwnedSyncMode.STAGING);
+        PlannerRuntimeRepository delayedOldRuntime = repository(FIRST.plusSeconds(2));
+        OwnedSyncStore currentStore = fencedStore(FIRST.plusSeconds(2), newFence);
+        var run = currentStore.enqueue(OwnedSyncStore.SyncKind.CATALOGUE_SCHEDULE, "2026-27",
+                "new-epoch", "new-epoch", FIRST.plusSeconds(2));
+        var lease = currentStore.acquireForSeason("2026-27", "new-worker", java.time.Duration.ofMinutes(5))
+                .orElseThrow();
+
+        delayedOldRuntime.deactivate(oldFence);
+
+        assertThat(jdbc.queryForObject("SELECT runtime_mode FROM " + TABLES.plannerRuntime()
+                + " WHERE instance_id='mode:2026-27'", String.class)).isEqualTo("STAGING");
+        assertThat(jdbc.queryForObject("SELECT runtime_epoch FROM " + TABLES.plannerRuntime()
+                + " WHERE instance_id='mode:2026-27'", Long.class)).isEqualTo(newFence.epoch());
+        assertThat(jdbc.queryForObject("SELECT state FROM " + TABLES.run() + " WHERE generation=?",
+                String.class, run.generation())).isEqualTo("LEASED");
+        assertThat(currentStore.renew(lease, java.time.Duration.ofMinutes(5))).isNotNull();
+    }
+
+    @Test
     void canonicalFallbackLoadsOnlyVisitedFullSizePairsAndKeepsAllFences() throws Exception {
         byte[] bootstrap = resource("bootstrap-static.json");
         byte[] fixtures = resource("fixtures.json");

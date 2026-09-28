@@ -4,10 +4,11 @@
 
 The [KAR-75 follow-up plan](superpowers/plans/2026-09-28-kar-75-owned-sync-review-followup.md)
 records five KAR-72/73 review findings and a separately authorized, bounded STAGING test runbook.
-Local changes cover known-result permit settlement on interruption/shutdown, a bounded worker and
-DB-operation drain before work-pool destruction, ready-fixture manifests/order, and unchanged
-history retry dates. The seven affected HTTP, runtime, DB-supervisor, store, history/fixture,
-canonical-dispatcher and two-worker progress test classes passed on disposable loopback Postgres;
+Local changes cover known-result permit settlement on interruption/shutdown, supervised
+stop-entry-bounded deactivation and a worker/DB-operation drain before work-pool destruction,
+ready-fixture manifests/order, and unchanged history retry dates. Nine focused HTTP, runtime,
+DB-supervisor, deadline, store, planner-runtime, history/fixture, canonical-dispatcher and
+two-worker progress test classes passed on disposable loopback Postgres;
 new regressions failed before their fixes. CI and owner PR review remain pending. A timed-out
 shutdown/DB outage still leaves uncertain permits blocking until manually reconciled. **No STAGING
 run or production query was performed**; OFF epoch 67 is the latest *documented* containment,

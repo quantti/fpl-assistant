@@ -13,6 +13,7 @@ import java.util.IdentityHashMap;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -662,6 +663,15 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
             if (!turns.isEmpty()) throw new IllegalStateException("Cannot change settlement hook during a turn");
             beforeSettlementCallHook = Objects.requireNonNull(hook);
         }
+    }
+
+    /**
+     * Runs shutdown deactivation on the fixed-capacity DB-only supervisor until the stop-entry
+     * deadline. The callable must contain only DB work and must not initiate or schedule HTTP.
+     */
+    OwnedSyncDbOperations.Outcome<Void> deactivateDatabaseOnly(Callable<Void> deactivation,
+                                                                 long deadlineNanos) {
+        return dbOperations.call(Objects.requireNonNull(deactivation), OwnedSyncDeadline.at(deadlineNanos));
     }
 
     /** Waits for supervised DB work to exit within the caller's stop-entry deadline. */
