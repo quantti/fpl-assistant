@@ -67,8 +67,10 @@ class OwnedMatchdayCoordinatorIntegrationTest {
         jdbc.update("DELETE FROM " + TABLES.run());
         jdbc.update("DELETE FROM " + TABLES.receipt());
         Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
-        store = new OwnedSyncStore(jdbc, tx, clock, TABLES);
-        runtimeRepository = new PlannerRuntimeRepository(jdbc, tx, clock, TABLES);
+        var activation = new PlannerRuntimeRepository(jdbc, tx, clock, TABLES);
+        var fence = activation.activate("2097-98", OwnedSyncMode.STAGING);
+        store = new OwnedSyncStore(jdbc, tx, clock, TABLES, fence);
+        runtimeRepository = new PlannerRuntimeRepository(jdbc, tx, clock, TABLES, fence);
         inputs = mock(PlannerInputRepository.class);
         catalogue = mock(CatalogueScheduleDispatcher.class);
         histories = mock(HistoryFixtureDispatcher.class);

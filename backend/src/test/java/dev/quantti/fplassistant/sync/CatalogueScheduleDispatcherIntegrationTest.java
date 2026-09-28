@@ -4,6 +4,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.io.InputStream;
+import java.net.InetSocketAddress;
+import java.net.URI;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -17,6 +19,10 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+
+import com.sun.net.httpserver.HttpServer;
 import dev.quantti.fplassistant.sync.CatalogueScheduleDispatcher.Outcome;
 import dev.quantti.fplassistant.sync.CatalogueScheduleParser.Season;
 import dev.quantti.fplassistant.sync.OwnedSyncHttpClient.Failure;
@@ -168,6 +174,98 @@ class CatalogueScheduleDispatcherIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT due_at FROM " + OWNED.run(),
                 java.sql.Timestamp.class).toInstant()).isEqualTo(futureFloor);
         assertThat(store.acquire("too-early", Duration.ofMinutes(5))).isEmpty();
+    }
+
+    @Test
+    void httpCallerFenceDefersWhenDemandAdvancesAfterSourceSelection() throws Exception {
+        activateStagingStore();
+        enqueueCatalogue();
+        Lease lease = acquireOne(Duration.ofMinutes(2));
+        Instant selectedFloor = store.requestedSourceAfter(lease);
+        Instant advancedFloor = clock.instant().plus(Duration.ofHours(1));
+        AtomicReference<HttpFetchRequest> observed = new AtomicReference<>();
+
+        try (Loopback loopback = loopback()) {
+            dispatcher = dispatcher(fencedHttpFetch(loopback, (request) -> {
+                observed.set(request);
+                store.enqueue(SyncKind.CATALOGUE_SCHEDULE, SEASON.code(),
+                        CatalogueScheduleDispatcher.CATALOGUE_PRICE_COALESCING_KEY,
+                        CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY, advancedFloor);
+            }));
+
+            assertThat(dispatcher.process(lease, SEASON)).isEqualTo(Outcome.RETRY_SCHEDULED);
+
+            assertThat(observed.get().endpoint()).isEqualTo(Endpoint.bootstrap());
+            assertThat(observed.get().sourceFloor()).isEqualTo(selectedFloor);
+            assertThat(observed.get().lease().expiresAt()).isAfter(clock.instant().plusSeconds(180));
+            assertNoHttpOrFetchFailure(loopback, lease.generation());
+            assertThat(jdbc.queryForObject("SELECT due_at FROM " + OWNED.run()
+                    + " WHERE generation=?", java.sql.Timestamp.class, lease.generation()).toInstant())
+                    .isEqualTo(advancedFloor);
+        }
+    }
+
+    @Test
+    void httpCallerFenceRejectsReplacedEpochBeforeAdmission() throws Exception {
+        activateStagingStore();
+        Lease lease = enqueueAndAcquireCatalogue();
+        try (Loopback loopback = loopback()) {
+            dispatcher = dispatcher(fencedHttpFetch(loopback, request ->
+                    new PlannerRuntimeRepository(jdbc, tx, clock, OWNED)
+                            .activate(SEASON.code(), OwnedSyncMode.STAGING)));
+
+            assertThatThrownBy(() -> dispatcher.process(lease, SEASON)).isInstanceOf(LeaseLostException.class);
+
+            assertNoHttpOrFetchFailure(loopback, lease.generation());
+        }
+    }
+
+    @Test
+    void httpCallerFenceRejectsLeaseReassignmentWithoutRenewingTheExpiredLease() throws Exception {
+        activateStagingStore();
+        Lease lease = enqueueAndAcquireCatalogue();
+        AtomicReference<Lease> replacement = new AtomicReference<>();
+        try (Loopback loopback = loopback()) {
+            dispatcher = dispatcher(fencedHttpFetch(loopback, request -> {
+                clock.advance(Duration.ofMinutes(6));
+                replacement.set(store.acquire("replacement", Duration.ofMinutes(5)).orElseThrow());
+            }));
+
+            assertThatThrownBy(() -> dispatcher.process(lease, SEASON)).isInstanceOf(LeaseLostException.class);
+
+            assertThat(replacement.get().generation()).isEqualTo(lease.generation());
+            assertThat(jdbc.queryForObject("SELECT lease_owner FROM " + OWNED.run()
+                    + " WHERE generation=?", String.class, lease.generation())).isEqualTo("replacement");
+            assertNoHttpOrFetchFailure(loopback, lease.generation());
+        }
+    }
+
+    @Test
+    void postAdmissionFenceInvalidationSettlesThePermitWithoutSendingOrStaging() throws Exception {
+        activateStore(OwnedSyncMode.ACTIVE);
+        Lease lease = enqueueAndAcquireCatalogue();
+        try (Loopback loopback = loopback()) {
+            installPostAdmissionEpochInvalidation();
+            try {
+                dispatcher = new CatalogueScheduleDispatcher(store,
+                        new CatalogueScheduleWriter(jdbc, clock, store, OWNED, CAPTURED),
+                        loopback.http, clock);
+
+                assertThatThrownBy(() -> dispatcher.process(lease, SEASON))
+                        .isInstanceOf(LeaseLostException.class);
+
+                assertThat(loopback.requests).hasValue(0);
+                assertThat(jdbc.queryForObject("SELECT count(*) FROM " + OWNED.requestAttempt(), Integer.class))
+                        .isOne();
+                assertThat(jdbc.queryForObject("SELECT completed_at IS NOT NULL FROM "
+                        + OWNED.requestAttempt(), Boolean.class)).isTrue();
+                assertThat(jdbc.queryForObject("SELECT consecutive_fetch_failures FROM " + OWNED.run()
+                        + " WHERE generation=?", Integer.class, lease.generation())).isZero();
+                assertThat(payloadCount()).isZero();
+            } finally {
+                removePostAdmissionEpochInvalidation();
+            }
+        }
     }
 
     @Test
@@ -364,6 +462,103 @@ class CatalogueScheduleDispatcherIntegrationTest {
     private CatalogueScheduleDispatcher dispatcher(CatalogueScheduleTables tables) {
         return new CatalogueScheduleDispatcher(store,
                 new CatalogueScheduleWriter(jdbc, clock, store, OWNED, tables), fetch, clock);
+    }
+
+    private CatalogueScheduleDispatcher dispatcher(CatalogueScheduleDispatcher.Fetch httpFetch) {
+        return new CatalogueScheduleDispatcher(store,
+                new CatalogueScheduleWriter(jdbc, clock, store, OWNED, CAPTURED), httpFetch, clock);
+    }
+
+    private Lease enqueueAndAcquireCatalogue() {
+        enqueueCatalogue();
+        return acquireOne(Duration.ofMinutes(5));
+    }
+
+    private void activateStagingStore() {
+        activateStore(OwnedSyncMode.STAGING);
+    }
+
+    private void activateStore(OwnedSyncMode mode) {
+        OwnedSyncStore.RuntimeFence fence = new PlannerRuntimeRepository(jdbc, tx, clock, OWNED)
+                .activate(SEASON.code(), mode);
+        store = new OwnedSyncStore(jdbc, tx, clock, OWNED, fence);
+    }
+
+    private CatalogueScheduleDispatcher.Fetch fencedHttpFetch(Loopback loopback,
+                                                               java.util.function.Consumer<HttpFetchRequest> beforeFence) {
+        return new CatalogueScheduleDispatcher.Fetch() {
+            @Override
+            public OwnedSyncHttpClient.Result get(Endpoint endpoint, int failureAttempt) {
+                throw new AssertionError("fenced fetch overload was not used");
+            }
+
+            @Override
+            public OwnedSyncHttpClient.Result get(Lease lease, Endpoint endpoint, int failureAttempt,
+                                                  Instant sourceFloor) {
+                beforeFence.accept(new HttpFetchRequest(lease, endpoint, sourceFloor));
+                return loopback.http.get(endpoint, failureAttempt,
+                        () -> store.httpFence(lease, endpoint, sourceFloor));
+            }
+        };
+    }
+
+    private Loopback loopback() throws Exception {
+        jdbc.update("DELETE FROM " + OWNED.requestAttempt());
+        jdbc.update("UPDATE " + OWNED.requestState() + " SET last_admitted_at=NULL, cooldown_until=NULL");
+        AtomicInteger requests = new AtomicInteger();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/", exchange -> {
+            requests.incrementAndGet();
+            exchange.sendResponseHeaders(200, -1);
+            exchange.close();
+        });
+        server.start();
+        OwnedSyncRequestBudget budget = new OwnedSyncRequestBudget(jdbc, tx, clock, OWNED);
+        OwnedSyncHttpClient http = new OwnedSyncHttpClient(budget,
+                URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/api/"),
+                Duration.ofSeconds(2), clock);
+        return new Loopback(server, http, requests);
+    }
+
+    private void assertNoHttpOrFetchFailure(Loopback loopback, long generation) {
+        assertThat(loopback.requests).hasValue(0);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + OWNED.requestAttempt(), Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT consecutive_fetch_failures FROM " + OWNED.run()
+                + " WHERE generation=?", Integer.class, generation)).isZero();
+        assertThat(payloadCount()).isZero();
+    }
+
+    private void installPostAdmissionEpochInvalidation() {
+        jdbc.execute("CREATE OR REPLACE FUNCTION fpl_catalogue_test_bump_epoch() RETURNS trigger AS $$ "
+                + "BEGIN UPDATE " + OWNED.plannerRuntime()
+                + " SET runtime_epoch=runtime_epoch+1 WHERE instance_id='mode:2026-27'; "
+                + "RETURN NEW; END; $$ LANGUAGE plpgsql");
+        jdbc.execute("CREATE TRIGGER fpl_catalogue_test_epoch_trigger AFTER INSERT ON "
+                + OWNED.requestAttempt() + " FOR EACH ROW EXECUTE FUNCTION fpl_catalogue_test_bump_epoch()");
+    }
+
+    private void removePostAdmissionEpochInvalidation() {
+        jdbc.execute("DROP TRIGGER IF EXISTS fpl_catalogue_test_epoch_trigger ON " + OWNED.requestAttempt());
+        jdbc.execute("DROP FUNCTION IF EXISTS fpl_catalogue_test_bump_epoch()");
+    }
+
+    private record HttpFetchRequest(Lease lease, Endpoint endpoint, Instant sourceFloor) { }
+
+    private final class Loopback implements AutoCloseable {
+        private final HttpServer server;
+        private final OwnedSyncHttpClient http;
+        private final AtomicInteger requests;
+
+        private Loopback(HttpServer server, OwnedSyncHttpClient http, AtomicInteger requests) {
+            this.server = server;
+            this.http = http;
+            this.requests = requests;
+        }
+
+        @Override public void close() {
+            http.close();
+            server.stop(0);
+        }
     }
 
     private void enqueueCatalogue() {

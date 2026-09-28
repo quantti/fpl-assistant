@@ -448,6 +448,8 @@ class OwnedMatchdayEndToEndIntegrationTest {
 
         @Override public OwnedSyncHttpClient.Result get(Endpoint endpoint, int attempt) {
             try {
+                // The direct fake bypasses the HTTP fence; leave the fixture/live source floor's 1 ms gap.
+                clock.advance(Duration.ofMillis(1));
                 Instant started = clock.instant();
                 clock.advance(Duration.ofMillis(100));
                 SourceRead read = new SourceRead(started, clock.instant());

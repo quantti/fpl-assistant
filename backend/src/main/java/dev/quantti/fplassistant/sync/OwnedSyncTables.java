@@ -6,7 +6,8 @@ import java.util.regex.Pattern;
 /** SQL identifiers for the inert owned-sync store. */
 public record OwnedSyncTables(String run, String payload, String receipt,
                               String requestState, String requestAttempt, String fixtureSync,
-                              String playerFixtureEvidence, String plannerSlot, String plannerRuntime) {
+                              String playerFixtureEvidence, String plannerSlot, String plannerRuntime,
+                              String fixtureDependencyManifest) {
 
     private static final Pattern SQL_IDENTIFIER = Pattern.compile("[a-z][a-z0-9_]{0,39}");
 
@@ -20,6 +21,15 @@ public record OwnedSyncTables(String run, String payload, String receipt,
         playerFixtureEvidence = valid(playerFixtureEvidence);
         plannerSlot = valid(plannerSlot);
         plannerRuntime = valid(plannerRuntime);
+        fixtureDependencyManifest = valid(fixtureDependencyManifest);
+    }
+
+    /** Compatibility constructor for callers that name all existing tables explicitly. */
+    public OwnedSyncTables(String run, String payload, String receipt,
+                           String requestState, String requestAttempt, String fixtureSync,
+                           String playerFixtureEvidence, String plannerSlot, String plannerRuntime) {
+        this(run, payload, receipt, requestState, requestAttempt, fixtureSync, playerFixtureEvidence,
+                plannerSlot, plannerRuntime, dependencyManifestName(run));
     }
 
     /** Compatibility constructor for callers that name the fixture publication tables explicitly. */
@@ -27,7 +37,7 @@ public record OwnedSyncTables(String run, String payload, String receipt,
                            String requestState, String requestAttempt, String fixtureSync,
                            String playerFixtureEvidence) {
         this(run, payload, receipt, requestState, requestAttempt, fixtureSync, playerFixtureEvidence,
-                run + "_planner_slot", run + "_planner_runtime");
+                run + "_planner_slot", run + "_planner_runtime", dependencyManifestName(run));
     }
 
     /** Compatibility constructor for callers that name the Task 2 request tables explicitly. */
@@ -46,14 +56,15 @@ public record OwnedSyncTables(String run, String payload, String receipt,
     public static OwnedSyncTables defaults() {
         return new OwnedSyncTables("fpl_sync_run", "fpl_sync_payload", "fpl_sync_receipt",
                 "fpl_sync_request_state", "fpl_sync_request_attempt", "fpl_fixture_sync",
-                "fpl_player_fixture_evidence", "fpl_sync_planner_slot", "fpl_sync_planner_runtime");
+                "fpl_player_fixture_evidence", "fpl_sync_planner_slot", "fpl_sync_planner_runtime",
+                "fpl_fixture_dependency_manifest");
     }
 
     public static OwnedSyncTables tests() {
         return new OwnedSyncTables("fpl_sync_run_test", "fpl_sync_payload_test", "fpl_sync_receipt_test",
                 "fpl_sync_request_state_test", "fpl_sync_request_attempt_test", "fpl_fixture_sync_test",
                 "fpl_player_fixture_evidence_test", "fpl_sync_planner_slot_test",
-                "fpl_sync_planner_runtime_test");
+                "fpl_sync_planner_runtime_test", "fpl_fixture_dependency_manifest_test");
     }
 
     public String historyFingerprint() {
@@ -64,6 +75,10 @@ public record OwnedSyncTables(String run, String payload, String receipt,
         if (run.equals("fpl_sync_run")) return "fpl_sync_alert";
         if (run.equals("fpl_sync_run_test")) return "fpl_sync_alert_test";
         return valid(run + "_alert");
+    }
+
+    private static String dependencyManifestName(String run) {
+        return valid(run + "_fixture_dep_manifest");
     }
 
     private static String valid(String identifier) {
