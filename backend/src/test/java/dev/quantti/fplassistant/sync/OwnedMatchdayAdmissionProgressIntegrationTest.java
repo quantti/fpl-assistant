@@ -127,6 +127,7 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
             try (Harness harness = new Harness(firstWorker, wallDeadline)) {
                 harness.seedCanonicalPair();
                 harness.seedMixedBacklog();
+                harness.resetPayloadReads();
                 Metrics metrics = harness.driveMixedBacklog();
                 baselines.add(metrics);
                 if (metrics.deferrals() > 0) {
@@ -159,6 +160,16 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                 metrics.returnedGets(), metrics.returnedRawBytes(), metrics.newPartialBootstraps(),
                 metrics.peakNewPartialPairs(), metrics.dispatches(), metrics.predecessorWaits(),
                 metrics.spacingWaits(), metrics.virtualSeconds()));
+        baselines.forEach(metrics -> System.out.printf(
+                "OWNED_ADMISSION_DB_BODY_READS firstWorker=%d oldOwn=%s guardedSingle=%s canonicalPair=%s "
+                        + "other=%s totals=%d/%d/%d/%d%n",
+                metrics.firstWorker(),
+                metrics.payloadReads().family(PayloadReadProbe.Family.OLD_OWN_CHECKPOINT).counts(),
+                metrics.payloadReads().family(PayloadReadProbe.Family.GUARDED_SINGLE).counts(),
+                metrics.payloadReads().family(PayloadReadProbe.Family.CANONICAL_PAIR).counts(),
+                metrics.payloadReads().family(PayloadReadProbe.Family.OTHER_BODY_SELECT).counts(),
+                metrics.payloadReads().attempts(), metrics.payloadReads().resultRows(),
+                metrics.payloadReads().bodyValues(), metrics.payloadReads().rawBytes()));
 
         assertThat(baselines).hasSize(2).allSatisfy(metrics -> {
             assertThat(metrics.firstAdmissionWorker()).isEqualTo(metrics.firstWorker());
@@ -416,7 +427,7 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                            Map<EndpointKind, Integer> getsByEndpoint, int payloadRows, long stagedRawBytes,
                            int returnedGets, long returnedRawBytes, int newPartialBootstraps,
                            int peakNewPartialPairs, int dispatches, int predecessorWaits,
-                           int spacingWaits, double virtualSeconds) { }
+                           int spacingWaits, double virtualSeconds, PayloadReadProbe.Snapshot payloadReads) { }
 
     private record FiniteDrainMetrics(String stopReason, int seededFixtureCount,
                                       int seededFixtureRunsCompleted, int completedFixtures,
@@ -493,6 +504,7 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
         private final RuntimeFence fence;
         private final PlannerRuntimeRepository activation;
         private final OwnedSyncStore store;
+        private final PayloadReadProbe payloadReads;
         private final OwnedSyncRequestBudget budget;
         private final OwnedSyncDbOperations dbOperations;
         private final AtomicLong turnNanoTime = new AtomicLong(System.nanoTime());
@@ -531,7 +543,9 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
             clearOwnedRows();
             activation = new PlannerRuntimeRepository(jdbc, tx, clock, TABLES);
             fence = activation.activate(SEASON.code(), OwnedSyncMode.STAGING);
-            store = new OwnedSyncStore(jdbc, tx, clock, TABLES, fence);
+            payloadReads = new PayloadReadProbe(jdbc.getDataSource());
+            payloadReads.setQueryTimeout(10);
+            store = new OwnedSyncStore(payloadReads, tx, clock, TABLES, fence);
             budget = new OwnedSyncRequestBudget(jdbc, tx, clock, TABLES);
             dbOperations = new OwnedSyncDbOperations();
             server = new RequestServer(source, clock);
@@ -545,6 +559,10 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                     runtime, store, catalogue, histories, "admission-repro");
             long watchdogDelay = Math.max(1, wallDeadline - System.nanoTime());
             watchdogTask = watchdog.schedule(this::emergencyStop, watchdogDelay, TimeUnit.NANOSECONDS);
+        }
+
+        void resetPayloadReads() {
+            payloadReads.reset();
         }
 
         void seedCanonicalPair() {
@@ -1032,7 +1050,7 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                     server.getsByEndpoint(), payloadRows, stagedBytes, server.returnedGets(),
                     server.returnedRawBytes(), partials, driver.peakNewPartialPairs, driver.dispatches,
                     driver.predecessorWaits.get(), driver.spacingWaits.get(),
-                    Duration.between(START, end).toNanos() / 1e9);
+                    Duration.between(START, end).toNanos() / 1e9, payloadReads.snapshot());
         }
 
         private Map<Long, FixtureManifestCheck> fixtureManifestChecks() {
