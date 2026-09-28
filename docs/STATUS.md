@@ -1,13 +1,27 @@
 # Status — Phase 1
 
+## Owned sync — KAR-75 post-merge review fixes (2026-09-28)
+
+The [KAR-75 follow-up plan](superpowers/plans/2026-09-28-kar-75-owned-sync-review-followup.md)
+records five KAR-72/73 review findings and a separately authorized, bounded STAGING test runbook.
+Local changes cover known-result permit settlement on interruption/shutdown, a bounded worker and
+DB-operation drain before work-pool destruction, ready-fixture manifests/order, and unchanged
+history retry dates. The seven affected HTTP, runtime, DB-supervisor, store, history/fixture,
+canonical-dispatcher and two-worker progress test classes passed on disposable loopback Postgres;
+new regressions failed before their fixes. CI and owner PR review remain pending. A timed-out
+shutdown/DB outage still leaves uncertain permits blocking until manually reconciled. **No STAGING
+run or production query was performed**; OFF epoch 67 is the latest *documented* containment,
+not a fresh live-state check. No sustained egress or GW5 backfill claim follows from local tests.
+
 ## Owned sync — KAR-73 checkpoint hydration (2026-09-28)
 
 KAR-72 is Done in Linear; [PR #140](https://github.com/quantti/fpl-assistant/pull/140) merged as
 `0cc38c9` on 28 September. This supersedes the pending-merge notes in the 27 September checkpoints
 below, not their recorded test limitations. KAR-73's [reviewed implementation plan](superpowers/plans/2026-09-28-kar-73-canonical-checkpoint-hydration.md)
-is in [PR #141](https://github.com/quantti/fpl-assistant/pull/141), independently reviewed with
-no blockers or warnings; full [PR CI run 36395771136](https://github.com/quantti/fpl-assistant/actions/runs/36395771136)
-passed. Owner merge is pending; production remains OFF.
+shipped in [PR #141](https://github.com/quantti/fpl-assistant/pull/141), merged as `bb8814b` on
+28 September after review and passing [PR CI run 36395771136](https://github.com/quantti/fpl-assistant/actions/runs/36395771136).
+Master CI/deploy [36399421488](https://github.com/quantti/fpl-assistant/actions/runs/36399421488)
+passed; the owned runtime remains OFF by default.
 
 The canonical dispatcher now selects both own endpoints by latest metadata, fetches a missing
 partner before guarded hydration, and rejects known interval/day/floor/receipt failures without
