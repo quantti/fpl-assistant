@@ -63,7 +63,9 @@ reset to acquire the new binding. No unrelated Docker container was touched.
 ## Owned sync — reviewed progress/checkpoint plan (2026-09-27)
 
 Plan: [`2026-09-27-owned-sync-progress-and-checkpoints.md`](superpowers/plans/2026-09-27-owned-sync-progress-and-checkpoints.md).
-Implementation remains 0/2 complete units. Before the fair selector, KAR-72's disposable-DB/
+KAR-72 Unit 1 is implemented and reviewed in [PR #140](https://github.com/quantti/fpl-assistant/pull/140),
+with focused tests and full PR CI passing; owner merge is pending. KAR-73 Unit 2 is unstarted.
+Before the fair selector, KAR-72's disposable-DB/
 loopback two-worker baseline failed in both arrival orders (zero history GETs/completions in 60
 virtual seconds, 56 admitted GETs and 37–38 peak new partial pairs). Its cold-parent probe fetched
 both prerequisites across a bounded retry. The bounded claim-selection follow-up is now locally
@@ -120,8 +122,9 @@ two workers/no backlog and does not enlarge the method or operation deadline. Th
 permit/deferral diagnostics on recurrence and awaits DB-worker exit before reusing test rows.
 Direct-fetch end-to-end and pressure fakes needed a 1 ms inter-read gap to honour the unchanged
 fixture/live floor; their focused tests now pass. Explicit wait arithmetic is conditionally at most
-139 seconds, **not** a hard 180-second guarantee under JVM/OS stalls. Full PR CI and independent
-review remain before Unit 1 can close. The fair selector and FIFO
+139 seconds, **not** a hard 180-second guarantee under JVM/OS stalls. Independent PR review found
+one unasserted partial-pair ceiling; `82b6600` added it, both arrival orders passed locally, review
+confirmed it and full PR CI passed. The owner has not merged PR #140. The fair selector and FIFO
 remain inert while the owned runtime stays OFF; no production requests, mode change, publication
 or deployment occurred. KAR-73 is separate. KAR-70's unavailable provider API is not a dependency.
 Latest verified production containment is OFF epoch 67; the retest evidence is in PR #137.

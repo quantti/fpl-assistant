@@ -1,6 +1,6 @@
 # Owned sync — bounded history progress and canonical checkpoint reads
 
-**PROGRESS:** KAR-72 local progress, ready-fixture and finite-drain targets pass; conditional deadline proof, focused regressions and PR review remain. Implementation 0/2 complete units. No production activation.
+**PROGRESS:** KAR-72 Unit 1 implemented and reviewed in PR #140; focused tests and full PR CI passed, owner merge pending. KAR-73 Unit 2 unstarted. Production OFF.
 
 Follow-up to KAR-71. Evidence: [STAGING retest PR #137](https://github.com/quantti/fpl-assistant/pull/137)
 and [`OWNED-SYNC-EGRESS-REPORT.md`](../../OWNED-SYNC-EGRESS-REPORT.md). The latest verified safe
@@ -425,8 +425,12 @@ the original operation/method deadlines. The original red run's precise cause re
 the driver now prints deferral/permit evidence if it recurs and waits for DB workers to terminate
 before clearing the shared test tables. Older direct-fetch end-to-end/pressure fakes required a
 1 ms inter-read gap because they bypass the production HTTP fence's fixture-to-live floor; both
-focused cases now pass without weakening that floor. Focused regressions, PR CI and independent
-review remain gates. No production request, mode change, publication or deployment occurred.
+focused cases now pass without weakening that floor. Focused regressions and the full PR suite
+passed on [PR #140](https://github.com/quantti/fpl-assistant/pull/140). Independent review found
+that the mixed-case partial-pair ceiling was only logged; commit `82b6600` asserts it in both
+arrival orders, passed focused verification and was re-reviewed. The original red run remains
+disclosed, its exact cause unproven; the owner has not merged the PR. No production request, mode
+change, publication or deployment occurred.
 
 ## Unit 2 — metadata-first canonical checkpoint selection (KAR-73)
 
