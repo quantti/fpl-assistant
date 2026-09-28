@@ -8,7 +8,10 @@ import java.net.URI;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
@@ -202,7 +205,7 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
         OwnedSyncDeadline preparationDeadline = methodDeadline.cappedBy(PREPARATION_DEADLINE, methodEntryNanos);
         Duration turnGrace = methodTimeout.compareTo(TURN_GRACE) < 0 ? methodTimeout : TURN_GRACE;
         OwnedSyncDeadline graceDeadline = OwnedSyncDeadline.after(turnGrace, turnEntryNanos);
-        TurnJoin joined = joinTurn(graceDeadline);
+        TurnJoin joined = joinTurn(graceDeadline, methodDeadline);
         if (joined.failure != null) return turnJoinFailure(joined.failure);
 
         TurnTicket ticket = joined.ticket;
@@ -219,7 +222,7 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
                 throw invalidRequest;
             }
             Result result = getWithTurnHeld(path, failureAttempt, fence, methodDeadline,
-                    preparationDeadline, graceDeadline, ticket.waited);
+                    preparationDeadline, graceDeadline);
             safeToHandover = safeForHandover(result);
             return result;
         } finally {
@@ -229,8 +232,7 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
 
     private Result getWithTurnHeld(String path, int failureAttempt,
                                    Supplier<HttpFenceResult> fence, OwnedSyncDeadline methodDeadline,
-                                   OwnedSyncDeadline preparationDeadline, OwnedSyncDeadline graceDeadline,
-                                   boolean waitedForTurn) {
+                                   OwnedSyncDeadline preparationDeadline, OwnedSyncDeadline graceDeadline) {
         if (isClosing()) return locallyClosed();
 
         Admission admission = null;
@@ -245,9 +247,8 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
                 if (!(checked instanceof Ready)) return uncertainAdmission(Uncertainty.OPERATION_FAILED);
             }
 
-            UUID attemptId = UUID.randomUUID();
             Outcome<Admission> admissionOutcome = dbOperations.call(
-                    () -> budget.admit(attemptId), preparationDeadline);
+                    () -> budget.admit(UUID.randomUUID()), preparationDeadline);
             if (admissionOutcome instanceof Rejected<?> rejected) {
                 return rejectedAdmission(rejected.reason());
             }
@@ -257,9 +258,8 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
 
             admission = (Admission) ((Success<?>) admissionOutcome).value();
             if (admission instanceof Deferred deferred) {
-                if (admissionTry == 0 && waitedForTurn
-                        && deferred.reason() == DeferredReason.MINIMUM_SPACING) {
-                    SpacingWait wait = waitForSpacing(deferred.nextDue(), graceDeadline);
+                if (admissionTry == 0 && deferred.reason() == DeferredReason.MINIMUM_SPACING) {
+                    SpacingWait wait = waitForSpacing(deferred.nextDue(), graceDeadline, methodDeadline);
                     if (wait == SpacingWait.READY) continue;
                     if (wait == SpacingWait.CLOSED) return locallyClosed();
                     if (wait == SpacingWait.INTERRUPTED) {
@@ -656,7 +656,7 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
         }
     }
 
-    private TurnJoin joinTurn(OwnedSyncDeadline graceDeadline) {
+    private TurnJoin joinTurn(OwnedSyncDeadline graceDeadline, OwnedSyncDeadline methodDeadline) {
         boolean restoreInterrupt = false;
         TurnJoin result;
         synchronized (turnGate) {
@@ -672,7 +672,8 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
                     result = new TurnJoin(null, TurnJoinFailure.CLOSED);
                     break;
                 }
-                long remaining = graceDeadline.remainingNanos(turnNanoTime.getAsLong());
+                long graceRemaining = graceDeadline.remainingNanos(turnNanoTime.getAsLong());
+                long remaining = Math.min(graceRemaining, methodDeadline.remainingNanos());
                 if (ticket.waited && remaining == 0) {
                     turns.remove(ticket);
                     turnGate.notifyAll();
@@ -713,7 +714,8 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
         };
     }
 
-    private SpacingWait waitForSpacing(Instant nextDue, OwnedSyncDeadline graceDeadline) {
+    private SpacingWait waitForSpacing(Instant nextDue, OwnedSyncDeadline graceDeadline,
+                                        OwnedSyncDeadline methodDeadline) {
         Duration delay = Duration.between(clock.instant(), nextDue);
         OwnedSyncDeadline dueDeadline = OwnedSyncDeadline.after(delay.isNegative() ? Duration.ZERO : delay);
         boolean restoreInterrupt = false;
@@ -729,7 +731,9 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
                     break;
                 }
                 long graceRemaining = graceDeadline.remainingNanos(turnNanoTime.getAsLong());
-                if (graceRemaining == 0) {
+                long methodRemaining = methodDeadline.remainingNanos();
+                long waitLimit = Math.min(graceRemaining, methodRemaining);
+                if (waitLimit == 0) {
                     result = SpacingWait.EXPIRED;
                     break;
                 }
@@ -739,8 +743,8 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
                 }
                 long dueRemaining = dueDeadline.remainingNanos();
                 long waitNanos = dueRemaining == 0
-                        ? Math.min(graceRemaining, CLOCK_RECHECK_NANOS)
-                        : Math.min(graceRemaining, dueRemaining);
+                        ? Math.min(waitLimit, CLOCK_RECHECK_NANOS)
+                        : Math.min(waitLimit, dueRemaining);
                 try {
                     parkForTurn(waitNanos, WaitKind.SPACING, nextDue);
                 } catch (InterruptedException interrupted) {
@@ -920,13 +924,17 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
     }
 
     private static Throwable rootCause(Throwable error) {
+        Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
         Throwable result = error;
-        while (result.getCause() != null) result = result.getCause();
+        while (result != null && visited.add(result) && result.getCause() != null) {
+            result = result.getCause();
+        }
         return result;
     }
 
     private static boolean hasCause(Throwable error, Class<? extends Throwable> type) {
-        for (Throwable current = error; current != null; current = current.getCause()) {
+        Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
+        for (Throwable current = error; current != null && visited.add(current); current = current.getCause()) {
             if (type.isInstance(current)) return true;
         }
         return false;

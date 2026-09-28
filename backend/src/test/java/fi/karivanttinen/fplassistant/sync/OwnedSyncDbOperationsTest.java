@@ -2,9 +2,12 @@ package fi.karivanttinen.fplassistant.sync;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.lang.reflect.Field;
 import java.time.Duration;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -22,6 +25,79 @@ import fi.karivanttinen.fplassistant.sync.OwnedSyncDbOperations.Uncertain;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncDbOperations.Uncertainty;
 
 class OwnedSyncDbOperationsTest {
+
+    @Test
+    @Timeout(value = 4, unit = TimeUnit.SECONDS)
+    void successfulSignalBeforeWorkerIdleMustAllowThirdOperationWithinOriginalDeadline() throws Exception {
+        Duration callerWait = Duration.ofMillis(500);
+        OwnedSyncDbOperations operations = new OwnedSyncDbOperations(callerWait);
+        CountDownLatch finishedSignalReached = new CountDownLatch(2);
+        CountDownLatch releaseWorkers = new CountDownLatch(1);
+        CountDownLatch thirdCallIssued = new CountDownLatch(1);
+        operations.afterFinishedSignal(finishedSignalReached, releaseWorkers);
+        OwnedSyncDeadline methodDeadline = OwnedSyncDeadline.after(callerWait);
+        AtomicReference<Thread> firstWorker = new AtomicReference<>();
+        AtomicReference<Thread> secondWorker = new AtomicReference<>();
+        AtomicReference<Thread> thirdWorker = new AtomicReference<>();
+        Thread releaser = new Thread(() -> {
+            try {
+                if (thirdCallIssued.await(1, TimeUnit.SECONDS)) {
+                    LockSupport.parkNanos(Duration.ofMillis(20).toNanos());
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            } finally {
+                releaseWorkers.countDown();
+            }
+        }, "owned-sync-db-test-release");
+        releaser.setDaemon(true);
+        try {
+            Outcome<String> first = operations.call(() -> {
+                firstWorker.set(Thread.currentThread());
+                return "first";
+            }, methodDeadline);
+            Outcome<String> second = operations.call(() -> {
+                secondWorker.set(Thread.currentThread());
+                return "second";
+            }, methodDeadline);
+
+            assertThat(first).isEqualTo(new Success<>("first"));
+            assertThat(second).isEqualTo(new Success<>("second"));
+            assertThat(firstWorker.get()).isNotSameAs(secondWorker.get());
+            assertThat(firstWorker.get().isAlive()).isTrue();
+            assertThat(secondWorker.get().isAlive()).isTrue();
+            assertThat(finishedSignalReached.await(1, TimeUnit.SECONDS)).isTrue();
+
+            ThreadPoolExecutor executor = supervisedWorkers(operations);
+            assertThat(executor.getQueue()).isInstanceOf(SynchronousQueue.class);
+            assertThat(executor.getQueue()).isEmpty();
+            assertThat(executor.getLargestPoolSize()).isLessThanOrEqualTo(2);
+            assertThat(methodDeadline.remainingNanos()).isPositive();
+
+            releaser.start();
+            long thirdCallStarted = System.nanoTime();
+            thirdCallIssued.countDown();
+            Outcome<String> third = operations.call(() -> {
+                thirdWorker.set(Thread.currentThread());
+                return "third";
+            }, methodDeadline);
+            long thirdCallElapsed = System.nanoTime() - thirdCallStarted;
+
+            assertThat(third).isEqualTo(new Success<>("third"));
+            assertThat(thirdCallElapsed).isLessThan(callerWait.toNanos());
+            assertThat(methodDeadline.remainingNanos()).isPositive();
+            assertThat(thirdWorker.get()).isIn(firstWorker.get(), secondWorker.get());
+            assertThat(executor.getQueue()).isEmpty();
+            assertThat(executor.getLargestPoolSize()).isLessThanOrEqualTo(2);
+        } finally {
+            releaseWorkers.countDown();
+            releaser.join(1_000);
+            operations.close();
+            join(firstWorker.get());
+            join(secondWorker.get());
+            join(thirdWorker.get());
+        }
+    }
 
     @Test
     @Timeout(value = 7, unit = TimeUnit.SECONDS)
@@ -233,6 +309,13 @@ class OwnedSyncDbOperationsTest {
             operations.close();
             join(worker.get());
         }
+    }
+
+    private static ThreadPoolExecutor supervisedWorkers(OwnedSyncDbOperations operations)
+            throws ReflectiveOperationException {
+        Field executorField = OwnedSyncDbOperations.class.getDeclaredField("executor");
+        executorField.setAccessible(true);
+        return (ThreadPoolExecutor) executorField.get(operations);
     }
 
     private static Callable<String> stuckTask(CountDownLatch started, CountDownLatch finished,

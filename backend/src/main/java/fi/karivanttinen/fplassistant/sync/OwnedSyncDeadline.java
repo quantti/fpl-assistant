@@ -54,11 +54,21 @@ final class OwnedSyncDeadline {
     }
 
     static OwnedSyncDeadline earliest(OwnedSyncDeadline... deadlines) {
+        return earliestAt(System.nanoTime(), deadlines);
+    }
+
+    static OwnedSyncDeadline earliestAt(long nowNanos, OwnedSyncDeadline... deadlines) {
         if (deadlines.length == 0) throw new IllegalArgumentException("at least one deadline is required");
-        long earliest = Objects.requireNonNull(deadlines[0]).deadlineNanos;
+        OwnedSyncDeadline earliest = Objects.requireNonNull(deadlines[0]);
+        long shortestRemaining = earliest.deadlineNanos - nowNanos;
         for (int i = 1; i < deadlines.length; i++) {
-            earliest = Math.min(earliest, Objects.requireNonNull(deadlines[i]).deadlineNanos);
+            OwnedSyncDeadline candidate = Objects.requireNonNull(deadlines[i]);
+            long remaining = candidate.deadlineNanos - nowNanos;
+            if (remaining < shortestRemaining) {
+                earliest = candidate;
+                shortestRemaining = remaining;
+            }
         }
-        return new OwnedSyncDeadline(earliest);
+        return earliest;
     }
 }

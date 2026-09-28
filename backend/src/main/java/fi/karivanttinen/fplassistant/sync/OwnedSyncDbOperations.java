@@ -22,6 +22,7 @@ final class OwnedSyncDbOperations implements AutoCloseable {
 
     private final ThreadPoolExecutor executor;
     private final Duration maximumCallerWait;
+    private volatile AfterFinishedSignalHook afterFinishedSignalHook;
 
     OwnedSyncDbOperations() {
         this(MAX_CALLER_WAIT);
@@ -49,11 +50,40 @@ final class OwnedSyncDbOperations implements AutoCloseable {
         if (Thread.currentThread().isInterrupted()) return new Rejected<>(Rejection.INTERRUPTED);
         if (waitDeadline.remainingNanos() == 0) return new Rejected<>(Rejection.DEADLINE_EXPIRED);
 
-        Operation<T> task = new Operation<>(operation);
-        try {
-            executor.execute(task);
-        } catch (RejectedExecutionException rejected) {
-            return new Rejected<>(executor.isShutdown() ? Rejection.CLOSED : Rejection.SATURATED);
+        Operation<T> task = new Operation<>(operation, afterFinishedSignalHook);
+        long retryDeadlineNanos = 0;
+        boolean retryWindowStarted = false;
+        while (true) {
+            if (Thread.currentThread().isInterrupted()) return new Rejected<>(Rejection.INTERRUPTED);
+            if (waitDeadline.remainingNanos() == 0) return new Rejected<>(Rejection.DEADLINE_EXPIRED);
+            if (retryWindowStarted && retryDeadlineNanos - System.nanoTime() <= 0) {
+                return new Rejected<>(Rejection.SATURATED);
+            }
+            try {
+                executor.execute(task);
+                break;
+            } catch (RejectedExecutionException rejected) {
+                if (executor.isShutdown()) return new Rejected<>(Rejection.CLOSED);
+                if (Thread.currentThread().isInterrupted()) return new Rejected<>(Rejection.INTERRUPTED);
+                if (waitDeadline.remainingNanos() == 0) return new Rejected<>(Rejection.DEADLINE_EXPIRED);
+                if (task.state.get() != State.WAITING) {
+                    return new Uncertain<>(Uncertainty.OPERATION_FAILED, rejected);
+                }
+                if (!retryWindowStarted) {
+                    retryDeadlineNanos = System.nanoTime()
+                            + Math.min(TimeUnit.MILLISECONDS.toNanos(100), waitDeadline.remainingNanos());
+                    retryWindowStarted = true;
+                }
+                long retryRemainingNanos = retryDeadlineNanos - System.nanoTime();
+                if (retryRemainingNanos <= 0) return new Rejected<>(Rejection.SATURATED);
+                try {
+                    TimeUnit.NANOSECONDS.sleep(Math.min(retryRemainingNanos,
+                            TimeUnit.MILLISECONDS.toNanos(1)));
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    return new Rejected<>(Rejection.INTERRUPTED);
+                }
+            }
         }
 
         long remaining = waitDeadline.remainingNanos();
@@ -79,6 +109,21 @@ final class OwnedSyncDbOperations implements AutoCloseable {
 
     Duration maximumCallerWait() {
         return maximumCallerWait;
+    }
+
+    /** Test-only bounded wait for all accepted DB operations to exit after close. */
+    boolean awaitTerminationForTests(Duration timeout) throws InterruptedException {
+        Objects.requireNonNull(timeout);
+        if (timeout.isNegative() || timeout.compareTo(Duration.ofSeconds(5)) > 0) {
+            throw new IllegalArgumentException("test termination wait must be between zero and five seconds");
+        }
+        return executor.awaitTermination(timeout.toNanos(), TimeUnit.NANOSECONDS);
+    }
+
+    /** Test-only seam: hold a worker after it signals completion but before its executor task exits. */
+    void afterFinishedSignal(CountDownLatch reached, CountDownLatch release) {
+        afterFinishedSignalHook = new AfterFinishedSignalHook(
+                Objects.requireNonNull(reached), Objects.requireNonNull(release));
     }
 
     @Override
@@ -121,16 +166,20 @@ final class OwnedSyncDbOperations implements AutoCloseable {
 
     private enum State { WAITING, RUNNING, ABANDONED, FINISHED }
 
+    private record AfterFinishedSignalHook(CountDownLatch reached, CountDownLatch release) {}
+
     private static final class Operation<T> implements Runnable {
 
         private final Callable<T> operation;
+        private final AfterFinishedSignalHook afterFinishedSignalHook;
         private final AtomicReference<State> state = new AtomicReference<>(State.WAITING);
         private final CountDownLatch finished = new CountDownLatch(1);
         private volatile T value;
         private volatile Throwable failure;
 
-        private Operation(Callable<T> operation) {
+        private Operation(Callable<T> operation, AfterFinishedSignalHook afterFinishedSignalHook) {
             this.operation = operation;
+            this.afterFinishedSignalHook = afterFinishedSignalHook;
         }
 
         @Override
@@ -147,6 +196,14 @@ final class OwnedSyncDbOperations implements AutoCloseable {
             } finally {
                 state.set(State.FINISHED);
                 finished.countDown();
+                if (afterFinishedSignalHook != null) {
+                    afterFinishedSignalHook.reached().countDown();
+                    try {
+                        afterFinishedSignalHook.release().await();
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
             }
         }
 
