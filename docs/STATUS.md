@@ -3,14 +3,16 @@
 ## Owned sync — KAR-75 post-merge review fixes (2026-09-28)
 
 The [KAR-75 follow-up plan](superpowers/plans/2026-09-28-kar-75-owned-sync-review-followup.md)
-records five KAR-72/73 review findings and a separately authorized, bounded STAGING test runbook.
+records five KAR-72/73 review findings and a bounded STAGING test runbook requiring separate owner authorization.
 Local changes cover known-result permit settlement on interruption/shutdown, supervised
 stop-entry-bounded deactivation and a worker/DB-operation drain before work-pool destruction,
 ready-fixture manifests/order, and unchanged history retry dates. Nine focused HTTP, runtime,
 DB-supervisor, deadline, store, planner-runtime, history/fixture, canonical-dispatcher and
 two-worker progress test classes passed on disposable loopback Postgres;
-new regressions failed before their fixes. CI and owner PR review remain pending. A timed-out
-shutdown/DB outage still leaves uncertain permits blocking until manually reconciled. **No STAGING
+new regressions failed before their fixes. [PR #142](https://github.com/quantti/fpl-assistant/pull/142)
+passed full [PR CI run 36453707799](https://github.com/quantti/fpl-assistant/actions/runs/36453707799)
+and independent code review; owner merge remains pending. A timed-out shutdown/DB outage still
+leaves uncertain permits blocking until manually reconciled. **No STAGING
 run or production query was performed**; OFF epoch 67 is the latest *documented* containment,
 not a fresh live-state check. No sustained egress or GW5 backfill claim follows from local tests.
 
