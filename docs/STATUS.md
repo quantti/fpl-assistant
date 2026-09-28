@@ -50,16 +50,84 @@ completion, idle behavior or the first watchdog tick. Checkpoint/dependency body
 the next correction; this result is not a monthly cost extrapolation or permission to reactivate.
 Measurements, limitations and UTC timeline: [`OWNED-SYNC-EGRESS-REPORT.md`](OWNED-SYNC-EGRESS-REPORT.md).
 
+## Disposable test database network containment (2026-09-27)
+
+The VPS test container was found listening on all interfaces with the documented disposable
+password. Its role refused login and its logs showed a failed suspicious command; this is not
+proof of successful execution, nor a finding about the production database. The container was
+stopped, recreated from the checked-in schema and verified listening only on
+`127.0.0.1:55432`. Merged [PR #139](https://github.com/quantti/fpl-assistant/pull/139) changes both
+creation paths and the stub contract test. Existing containers elsewhere still require an idle
+reset to acquire the new binding. No unrelated Docker container was touched.
+
 ## Owned sync — reviewed progress/checkpoint plan (2026-09-27)
 
 Plan: [`2026-09-27-owned-sync-progress-and-checkpoints.md`](superpowers/plans/2026-09-27-owned-sync-progress-and-checkpoints.md).
-Implementation is 0/2 units: KAR-72 first reproduces real two-worker HTTP admission and bounded
-history/fixture progress; KAR-73 then makes canonical own-checkpoint selection metadata-first.
-The scheduling mechanism and a numerical end-to-end deadline remain a mandatory design checkpoint
-after the failing reproduction, not decisions already validated by the plan. Two review passes
-resolved timing, queue-progress, test-cadence and checkpoint-semantics gaps. KAR-70's unavailable
-provider API is not a dependency. No runtime code or production setting changed. Latest verified
-containment is OFF epoch 67; the retest evidence is in PR #137.
+KAR-72 Unit 1 is implemented and reviewed in [PR #140](https://github.com/quantti/fpl-assistant/pull/140),
+with focused tests and full PR CI passing; owner merge is pending. KAR-73 Unit 2 is unstarted.
+Before the fair selector, KAR-72's disposable-DB/
+loopback two-worker baseline failed in both arrival orders (zero history GETs/completions in 60
+virtual seconds, 56 admitted GETs and 37–38 peak new partial pairs). Its cold-parent probe fetched
+both prerequisites across a bounded retry. The bounded claim-selection follow-up is now locally
+implemented and focused-tested; it does not complete Unit 1's broader HTTP/admission criteria.
+The broader checkpoint remains **blocked** before production activation: the original
+pre-selector test was deliberately red, no numerical end-to-end deadline is approved, and the
+implemented claim-selection policy does not complete the remaining admission/progress criteria.
+After the owner approved expanding the DB-failure investigation, review found that an unknown
+429 could be forgotten if the database recovers before permit expiry, while blocking every unknown result
+would serialize overlapping requests and might pause sync indefinitely pending manual review.
+The owner approved serializing unfinished HTTP requests and pausing indefinitely for manual
+reconciliation when an outcome is unknown. The budget guard now retains unresolved attempts and
+blocks admission across expiry/restart; its 11 focused tests passed on the disposable DB. This
+is a prerequisite, not a completed transport/admission fix. The owner approved fixed-capacity DB
+supervision; a candidate bounded-return transport, atomic settlement, conservative response pacing
+and both dispatchers' HTTP fences have focused local
+tests. KAR-72 now additionally covers post-COMMIT admission/settlement acknowledgement loss,
+blocked connection acquisition on two zero-queue DB workers, and an unacknowledged exchange that
+later observes a loopback 429. These earlier controlled cases did not establish the candidate 180-second
+return bound; later rollback/connection-cleanup probes are reported below, while the composed
+numeric envelope remains unverified. The earlier ready-continuation metadata blocker was resolved by the owner-approved
+manifest and metadata-only readiness predicate; claim selection is now covered by the focused
+policy tests below. Fixture-only history notifications now preserve an unchanged source
+floor instead of advancing it to notification time; focused store/dispatcher tests pass.
+Metadata-only readiness distinguishes older blocked retries from a valid ready fixture without
+loading bodies. The fair selector now gives due canonical work priority, then rotates durable
+current-epoch non-canonical attempts through history, ready fixture, blocked fixture and untouched
+fixture classes. Focused disposable-DB tests cover the four-claim/eight-claim selection bounds,
+expired/future-floor work, canonical takeover, competing stores, restart and epoch reset. The
+two-worker reproduction with an acknowledged FIFO wait driver now completes its first valid
+history at 1.2 virtual seconds and 30 histories within 60 seconds in both arrival orders;
+55 GETs occurred (30 histories) and at most one new partial bootstrap pair was outstanding.
+The 60-second case still stages no fixture. Separate canonical-parent/real-history-GET pressure
+cases now claim a ready fixture immediately, complete its two final GETs in three durable
+admissions, STAGE it by 2.3 virtual seconds, and claim an untouched fixture by 5.5 seconds/after
+five completed dispatches. The same bounds pass after a dispatcher-generated two-minute dependency
+retry matures, with source-valid histories completed one minute earlier. A capped two-worker drain
+stages all 50 seeded fixtures with valid anchored manifests and completes all 68 required histories
+in roughly ten virtual minutes, about 500 durable attempts and 500 completed dispatches, with
+at most one new partial pair. About 200 history GETs are repeats for later fixture source floors;
+this fixed synthetic case is not an idle/matchday cost or production egress estimate.
+
+The FIFO holds a local turn through confirmed settlement with a three-second entry-anchored grace;
+unknown attempts still block admission. Focused disposable-DB/loopback probes now cover blocked
+actual rollback, post-COMMIT JDBC close and genuine one-connection Hikari exhaustion with zero late
+GETs, alongside pre-existing lost-acknowledgement and late-429 tests. Deadline wrap, frozen test
+clock waits and cyclic exception causes have bounded regressions. A short real-clock composed test
+covers FIFO, one-second spacing, an HTTP 429 and timed-out post-COMMIT settlement. One full focused
+progress run was red in its second arrival order (7 histories, 14 admissions/13 GETs and 92
+deferrals); later reruns passed, but the original cause is unproven. Review found a reproducible
+zero-queue DB-worker handoff rejection between completion signalling and worker availability: a
+bounded 100 ms resubmission of definitely unstarted DB tasks now passes the red latch test, retains
+two workers/no backlog and does not enlarge the method or operation deadline. The driver records
+permit/deferral diagnostics on recurrence and awaits DB-worker exit before reusing test rows.
+Direct-fetch end-to-end and pressure fakes needed a 1 ms inter-read gap to honour the unchanged
+fixture/live floor; their focused tests now pass. Explicit wait arithmetic is conditionally at most
+139 seconds, **not** a hard 180-second guarantee under JVM/OS stalls. Independent PR review found
+one unasserted partial-pair ceiling; `82b6600` added it, both arrival orders passed locally, review
+confirmed it and full PR CI passed. The owner has not merged PR #140. The fair selector and FIFO
+remain inert while the owned runtime stays OFF; no production requests, mode change, publication
+or deployment occurred. KAR-73 is separate. KAR-70's unavailable provider API is not a dependency.
+Latest verified production containment is OFF epoch 67; the retest evidence is in PR #137.
 
 ## Temporary Supabase maintenance (2026-09-23)
 

@@ -1,6 +1,6 @@
 # Owned sync — bounded history progress and canonical checkpoint reads
 
-**PROGRESS:** Plan reviewed; implementation 0/2 units. Ready for KAR-72's bounded reproduction only; the scheduling policy/deadline checkpoint still precedes runtime implementation. No production activation.
+**PROGRESS:** KAR-72 Unit 1 implemented and reviewed in PR #140; focused tests and full PR CI passed, owner merge pending. KAR-73 Unit 2 unstarted. Production OFF.
 
 Follow-up to KAR-71. Evidence: [STAGING retest PR #137](https://github.com/quantti/fpl-assistant/pull/137)
 and [`OWNED-SYNC-EGRESS-REPORT.md`](../../OWNED-SYNC-EGRESS-REPORT.md). The latest verified safe
@@ -53,7 +53,7 @@ state, requested-source floor and genuine newer-demand checks. Keep same-run pai
 post-history public rechecks, correction revocation and optional-component masking. Do not bridge
 fixture-owned observations through the canonical cache to make request counts smaller.
 
-Do not change the one-second HTTP spacing, two live permits, 5,000 attempts per rolling day,
+Keep the one-second HTTP spacing, the two-live-permit safety ceiling, 5,000 attempts per rolling day,
 Retry-After/cooldown handling, payload caps, planner/source schedules or two-worker count. Do not
 count scheduling/admission/dependency waits as failed source fetches. Keep source-read intervals
 separate from scheduling time. Keep the two independent verification batches whose second start
@@ -100,6 +100,214 @@ The proposed two-second wait is not approved merely by writing it into this plan
 scheduling protocol or broader deadline/pool redesign is needed, stop and revise the plan before
 implementation. Do not raise test bounds to hide failure.
 
+### KAR-72 checkpoint — reproduction complete; production policy not approved (2026-09-27)
+
+`OwnedMatchdayAdmissionProgressIntegrationTest` uses fenced store/coordinator/dispatchers,
+real budget and loopback HTTP, a driver-controlled clock, two completion-relative workers,
+100 ms responses and a separate wall watchdog. It seeds a valid canonical pair, 49 priority-1
+fixtures, one dependency-waiting fixture, ten partial bootstrap checkpoints and 68 histories.
+With unchanged runtime selection/admission, both arrival orders failed the first-history target
+at 60 virtual seconds. In the latest focused run the first order made 112 dispatches,
+56 admitted/server-observed GETs, 108 deferrals, zero history GETs/completions and reached
+37 **new** partial pairs at peak. The reverse order made 112 dispatches, 56 GETs, 109
+deferrals, zero history GETs/completions and peaked at 38 new partial pairs. The cold-parent case fetched bootstrap, then fixtures on the same parent's
+bounded retry after spacing. These are synthetic local observations, not traffic or source
+billing estimates. The baseline driver advances virtual time only at observed response
+releases or worker completion-plus-one-second boundaries; it does **not yet** drive a future
+FIFO spacing wait. Before comparing policies, add an explicit wait-state acknowledgement and
+use the same event schedule before/after. Do not advance the clock on a quiet-period guess.
+This deliberately failing test is **not** a green implementation or a production SLA.
+
+**Design blocker:** neither worker preference nor due-class rotation is selected yet. Rotation
+(history → ready continuation → history → untouched fixture, with due canonical work first) is
+worth comparing with worker preference, but classifying a *ready* continuation over older
+blocked dependency retries without body reads remains unproven. More importantly, no numerical
+method-entry-to-**durable-settlement** deadline can be justified from the present transport and
+work-pool settings. A 30-second transaction timeout is not a preemptive wall deadline for pool
+acquisition, commit, rollback and connection cleanup. Even an illustrative envelope of 2 seconds
+queueing + four DB operations of 2 seconds pool / 30 seconds transaction + 30 seconds HTTP +
+1 second cancellation is 161 seconds before terminal I/O allowance; a spacing retry or further
+fence checks enlarge it. This is **not** an approved bound: a timeout/interrupt can make synchronous
+`budget.complete()` fail, leaving a permit live until its durable two-minute expiry. Permit
+expiry does **not** reconstruct a lost Retry-After cooldown. Presently interruption is restored
+before `complete()`, increasing that risk under pool contention. A bounded *attempt* to settle
+is not the same as a guaranteed settled permit. `nextAdmissionHint()`
+in the dispatcher is another out-of-deadline DB call.
+
+Per §1a, stop before production scheduling changes. Design approval must decide whether an
+unsettled permit with expiry/containment is acceptable on DB failure, or require a stronger
+persistence/deadline design. Then select/test a numerical deadline inclusive of pool, lock,
+socket, cancellation and settlement; define lease/epoch/source-floor checks at the dispatcher
+handoff; compare the two scheduling policies against all §1c targets using the same driver.
+Do not weaken the acceptance bounds or enable STAGING/ACTIVE to bypass this checkpoint.
+
+**DB-failure scope review (owner approved investigation, 2026-09-27):** An expiry-only
+unsettled-attempt guard is unsafe. An admitted request can receive `429 Retry-After: 7200`, fail
+to commit its result, and crash; if the database recovers before the two-minute permit expiry,
+a second caller can see no cooldown and issue an early GET. The database cannot distinguish
+this row from an ordinarily in-flight request. Current retention also deletes expired incomplete
+attempts after 24 hours, so even an expiry guard would forget a lost, arbitrarily long
+Retry-After. Completion/cooldown must remain atomic; an ambiguous commit cannot be treated as a
+refund. Waiting out the TTL does not reconstruct a lost header.
+
+The smallest fail-closed design, without a schema change, refuses new admission while **any**
+attempt lacks a confirmed completion, retains those rows beyond 24 hours and requires explicit
+operator reconciliation for an unknown result. That keeps the two-live-permit *ceiling* but
+serializes normal overlapping requests and can stop sync indefinitely on a crash or database
+failure. Already-admitted but not-yet-sent requests also need a final gate. Unacknowledged
+cancellation can still receive headers after the current completion snapshot; such an exchange
+cannot be marked safely settled merely by holding a completed permit for two minutes. The
+interruption path must attempt settlement before restoring the interrupt flag. A stronger
+multi-permit protocol would need a separately reviewed, process/epoch-aware request lifecycle,
+not just a queue-order change. Neither design can promise a successful database commit by a
+finite deadline during an arbitrary outage: the defensible endpoint is **confirmed settlement
+or an explicit uncertain outcome with durable fail-closed containment**. No numerical
+method-entry bound is approved yet; the actual work-pool contention, cancellation and cleanup
+behavior must be measured before choosing one.
+
+**Owner decision 2026-09-27:** approved the smallest fail-closed design: retain the two-permit
+*ceiling*, serialize unfinished requests, and pause indefinitely pending manual reconciliation
+of an unknown outcome. A 30-second recheck is a wakeup, not permission to send a GET. Do not
+claim a successful database commit can be guaranteed during an outage: the deadline contract
+must distinguish confirmed settlement from an uncertain result whose original attempt remains
+durably blocking. The original §1c safety and progress targets remain; if serialization makes
+the healthy-source targets impossible, stop and revisit the policy rather than restoring unsafe
+overlap. The budget prerequisite is implemented in a separate bounded step and its 11 focused tests
+passed against the disposable database. They prove unresolved rows block before/after TTL and
+after 24 hours, not that an actual database outage or lost commit acknowledgement is handled.
+The HTTP-client settlement, FIFO and scheduling changes are not approved until the monotonic
+deadline and caller-fence handoff are specified and reviewed. Changes to
+crash-expiry and unacknowledged-cancellation tests must explain this stronger safety contract.
+No schema change or production activation is authorized.
+
+**Deadline follow-up:** independent review of the approved budget prerequisite found that the
+current work pool's two-second connection-acquisition, three-second connection/lock, ten-second
+socket/query and 30-second transaction settings do **not** bound the entire synchronous JDBC
+operation, commit, rollback, or cleanup. Merely choosing 60 seconds or subtracting a queue wait
+from the 30-second HTTP timeout would be a false guarantee. A bounded return requires a
+separately supervised, fixed-capacity DB-operation path that can stop the caller waiting while
+never sending a late GET; timed-out admission may later commit only an unresolved row and timed-out
+settlement may later atomically commit completion plus cooldown. Until those outcomes are known,
+the durable unresolved row must block fresh admission. The operation path must quarantine
+nonterminating work so timeout retries cannot accumulate unbounded threads/connections, and must
+be tested under pool/lock/socket and ambiguous-commit faults before selecting a numerical
+method-entry bound. A hard successful commit during an arbitrary outage is impossible. The owner approved this fixed-capacity supervised DB path on 2026-09-27. Before transport
+integration, verify two stuck operations exhaust two zero-queue workers without spawning
+replacements and that late tasks cannot send HTTP. A **candidate** 180-second per-GET
+method-entry-to-return target allocates 2 seconds to future FIFO waits, up to 70 seconds to
+prechecks/admission, 35 seconds to the final caller fence, 30 seconds to HTTP, 35 seconds to
+settlement, 2 seconds to termination acknowledgements and 6 seconds to local overhead.
+Each DB operation receives at most 35 seconds of caller wait through one monotonic deadline;
+its worker may finish later but cannot initiate HTTP. This is a caller-return bound under a
+schedulable JVM, **not** a promise of a successful DB commit, process restart time or physical
+remote cancellation; no numerical bound is approved until fault tests verify it. Supervise at
+most two DB operations with no queue or caller-runs fallback. Timeout leaves an unknown result,
+not a refundable permit; `complete()` remains atomic with cooldown. Also repair the
+unacknowledged-cancellation path: a completed-but-TTL-held attempt does not block new admission
+and cannot protect a late Retry-After; leave it unresolved instead. Caller fencing and eliminating
+the extra out-of-deadline `nextAdmissionHint()` query belong in that transport unit. The owner
+approved fixed-capacity DB supervision; a candidate 180-second bounded-return transport and both
+dispatcher fences have focused local coverage; commit-ack ambiguity, two-worker saturation and
+already-started late-429 cases now have focused evidence, while rollback/connection-close faults
+remain untested. Neither a 180-second production guarantee nor a scheduling policy is accepted yet.
+
+**Transport fault-evidence follow-up (2026-09-27):** `OwnedSyncHttpClientIntegrationTest` adds
+four disposable-Postgres/loopback cases: a post-COMMIT admission acknowledgement loss that times
+out, sends no late GET and remains blocking beyond permit TTL; a post-COMMIT settlement
+acknowledgement loss after `429 Retry-After: 7200`, where cooldown persists but the caller receives
+`SETTLEMENT_UNCERTAIN`; blocked connection acquisition exhausting both zero-queue DB workers while
+callers return and no late GET follows release; and a started/cancelled exchange that later consumes
+a loopback 429 while its permit remains unresolved. The final focused run passed all 37 class tests
+(0 failures, 71.73 seconds wall; JUnit class time 26.953 seconds). The four added test-case times
+were 0.398, 0.470, 0.364 and 4.452 seconds respectively. The injected DB caller waits were 150–200
+ms; asserted caller-return ceilings were 2–2.5 seconds, with saturation rejected within 300 ms.
+These are controlled fault observations, not a 180-second end-to-end guarantee. Real rollback / connection-close stalls, a genuinely exhausted production-style pool, JVM scheduling pressure and the full method-entry envelope remain untested; no production, scheduling or manifest code changed.
+
+**Scheduling checkpoint — further owner decision needed:** current run/payload *metadata* cannot
+say whether a matured two-minute fixture retry has all its particular histories. That required
+player set is discovered from its own parsed bootstrap, fixture and live bodies, then the queue
+stores only a generic waiting priority/error; STAGING does not publish verification evidence.
+Consider eight older, still-blocked due retries followed by one due retry whose histories are
+complete. All nine can have identical allowed selection metadata. Worker preference and due-class
+rotation both pick the older blocked runs first, so the ready ninth cannot be selected in four
+completed dispatch opportunities. Randomness does not give a bound. Do not claim a preference
+policy meets §1c by merely selecting *some* fixture lease.
+
+Two honest choices: (1) with approval, add a narrowly scoped durable per-run dependency manifest
+(<=80 players, exact own checkpoint ids and source floor), recorded when parsing the fixture's
+already-fetched bodies and fenced/invalidated on changed demand/checkpoints/epoch; selection reads
+only its metadata against valid history evidence, not new payload bodies; or (2) retain current
+schema, weaken the four-opportunity **ready** guarantee to bounded class probing with a bound
+that grows with blocked backlog. The reviewed plan requires a stop if a durable scheduling
+protocol is needed: no production claim-selection change until the owner chooses. This is
+separate from, and not automatically authorized by, the approval for the DB supervisor.
+
+**Owner decision (2026-09-27):** approved the narrow owned, `fpl_`-prefixed per-fixture
+manifest table; PRs #138 and #139 have merged, and KAR-72 is rebased onto master. The manifest
+write is now implemented with the exact same-run VALID bootstrap/fixtures/live payload IDs,
+source floor and 1–80 sorted unique required players, inside the leased run's retry transaction.
+It does not make claims ready by itself. Focused store and dispatcher integration tests (59 total)
+pass against disposable Postgres, including stale demand, rollback and a lost history hydration.
+Fixture-only history notifications now ensure each history job's requested source floor is at
+least the fixture response floor, without promoting an unchanged requirement to the current
+notification time. A genuinely newer requirement still advances the floor; direct/planner demand
+keeps its old semantics. Focused store/dispatcher tests pass (including repeated notices and
+leased jobs). A metadata-only readiness predicate now checks the exact own anchors, current
+demand and each required player's VALID history from the same season/epoch after its fixture
+response floor. It applies readiness before any result limit, accepts a reusable history despite
+newer pending demand, and selects no body bytes. Focused store tests pass (45 tests, including
+blocked retries ahead of ready fixtures). Claim selection still uses the old priority order;
+compare policies on the unchanged two-worker driver. Fair HTTP admission and remaining DB fault
+tests are independent blockers. Neither claim selection nor production rollout follows from
+passing manifest/readiness tests alone.
+
+**KAR-72 bounded claim-selection follow-up (2026-09-27):** `OwnedSyncStore.acquireFairForSeason`
+now runs only through `OwnedMatchdayCoordinator.dispatchOne`; legacy `acquireForSeason` is unchanged.
+Under the runtime-mode row lock it gives due canonical catalogue/schedule keys priority, then uses
+the current season/mode/epoch's durable non-canonical `SUM(attempt_count)` for the
+H,R,H,D,H,R,H,N cycle. Readiness is evaluated before row limiting with the existing metadata-only
+predicate; D/N use manifest/payload existence only. Candidate queries preserve season/mode/epoch,
+due/source-floor, pending/expired-lease and `FOR UPDATE OF r SKIP LOCKED` fences. The unique active
+work index and the two exact canonical keys cap due canonical candidates at two; an epoch-scoped
+covering index bounds the durable aggregate to that epoch's rows.
+
+Four focused disposable-DB selector tests and the seven coordinator tests pass, covering eleven
+older blocked fixtures, ready/untouched bounds with continuously due histories, canonical takeover,
+future floors, expired leases, competing store instances, restart and epoch reset. The unchanged
+two-worker reproduction also now passes its first-history/ten-history targets: first history
+completed at 1.2 virtual seconds and 25/33 histories completed within 60 seconds. It staged no
+fixture and observed 3/5 newly outstanding partial bootstrap pairs in the two arrival orders, so
+those broader fixture/partial-pair targets remain open. This unit makes no HTTP/FIFO change and is
+not a complete Unit 1 result or production SLA.
+
+**Observed-wait FIFO checkpoint:** a two-ticket client-local turn now spans confirmed durable
+settlement. A follower waits within one three-second grace for the local predecessor, then only for
+the budget's `MINIMUM_SPACING` due and retries durable admission once; unknown results still refuse
+and block. All phase deadlines share method entry (180s overall, 73s preparation, 3s grace; up to
+35s per supervised DB operation). The loopback-only wait seam acknowledges each predecessor and
+spacing park/resume token so the manual driver can advance its injected clock only at observed
+response, wait or completion boundaries. Both arrival orders with the same 100 ms controlled
+responses and one-second completion-relative dispatch cadence now complete the first valid
+history at 1.2 virtual seconds and 30 distinct histories within 60 seconds, with zero new partial
+bootstrap pairs at the end and one at peak. Fifty-five GETs were observed (30 histories); 125
+predecessor and 55 spacing parks were observed in each order. No fixture STAGED during that short
+run; it is **not** ready-continuation or finite-drain evidence. Local FIFO is not cross-instance
+fairness, and the 180-second caller-return envelope is still a candidate pending rollback,
+connection-close, real pool exhaustion and slow-JVM fault tests. A review caught an expired-ticket
+promotion race; the committed guard and a focused loopback regression cover it. The FIFO loopback
+and budget classes had 57 passing tests before that guard; after the guard, the four touched fault
+cases and the separate grace regression passed in focused reruns. One broader HTTP-class run was
+red before final fixture fixes; do not call the whole class green yet.
+
+Serialized unfinished requests also make a simple admission-only FIFO insufficient. A second
+caller first sees `UNSETTLED` even for a healthy 100 ms predecessor; its 30-second recheck hint
+would miss the 15-second history target. A fair turn must wait *boundedly* for a known local
+predecessor's confirmed settlement, then retry durable admission; an orphan/unknown attempt
+still refuses immediately. With completion-relative one-second spacing and two queued callers,
+the second eligible GET can begin after 2.1 seconds, so the original proposed two-second
+queue-plus-spacing limit must be retested/revised inside the 180-second method-entry budget,
+not quietly raised to make a failing test pass.
+
 ### 1b. Proposed minimal mechanism
 
 A global priority reversal merely trades history delay for fixture delay. Alternating claims alone
@@ -141,8 +349,9 @@ to prove these semantics is a design blocker, not an excuse to omit them.
 Candidate production files (all under `backend/src/main/java/fi/karivanttinen/fplassistant/sync/`):
 `OwnedSyncStore`, `OwnedMatchdayCoordinator`, `OwnedMatchdayRuntime`, `OwnedSyncHttpClient` and,
 only for caller-fence integration, the two dispatchers. Any change to the durable budget's timeout
-API must be explicitly selected at the checkpoint. No schema change is assumed. Keep the
-existing unfenced store seam's scope explicit; test the actual fenced runtime path as well.
+API must be explicitly selected at the checkpoint. The owner has approved only the additional owned fixture-dependency manifest table, not
+modifications to Tapas tables. Keep the existing unfenced store seam's scope explicit; test the
+actual fenced runtime path as well.
 
 ### 1c. Acceptance and review
 
@@ -183,6 +392,45 @@ HTTP-client, budget and history/fixture dispatcher cases. Preserve the existing 
 a memory/serial-drain test with its limitation explicit; it is not the new admission oracle.
 Commit/push a dedicated branch, open a PR to master, require full PR CI and an independent review.
 Return to the orchestrator before Unit 2. Deployment remains OFF.
+
+**KAR-72 local progress/fault checkpoint (2026-09-27):** In both 60-second arrival orders the
+first valid history completed at 1.2 virtual seconds, 30 distinct histories completed and one new
+partial pair peaked. With a usable canonical parent and competing history GETs, a due ready fixture
+was first claimed at its claimable instant, used two final recheck GETs within three durable
+admissions, and STAGED at 2.3 virtual seconds; an untouched fixture was claimed at 5.5 seconds
+after five completed dispatches. The same bounds passed with the dependency retry generated by
+the dispatcher at its actual two-minute due time and histories completed one minute earlier.
+The healthy-source 50-fixture drain completed all fixtures and all 68 required players in about
+ten virtual minutes, well within 5,000 admissions, 6,000 completed/unsuccessful dispatches and
+300 seconds wall time. It also fetched each player's history repeatedly (about 200 repeat GETs)
+to satisfy later fixture read floors. This fixed local case is bounded, not an idle/matchday cost
+measurement; returned raw bodies and staged bytes are not production network or billed egress.
+
+Disposable-DB/loopback probes now cover actual JDBC rollback blocked after admission work,
+post-COMMIT connection close blocked before the caller receives an acknowledgement, and an
+exhausted one-connection Hikari pool with two zero-queue supervised DB workers. Late completion
+cannot send the original caller's GET; an unresolved committed permit blocks fresh admission even
+after TTL. The shared entry-anchored deadline caps both observed FIFO/spacing waits even with a
+frozen test clock; relative deadline selection handles monotonic wrap and cyclic exception causes
+terminate. The explicit bounded waits fit a conditional 73 + 30 + 1 + 35 = 139-second envelope,
+not a guaranteed 180-second wall-clock return under JVM/OS pauses. A real-clock, short-deadline
+composition now covers queued FIFO, one-second durable spacing, HTTP 429 and a timed-out
+post-COMMIT settlement acknowledgement. One combined focused run was red in its second arrival
+order (7 histories, 14 admissions/13 GETs and 92 deferrals); subsequent targeted and full-class
+runs passed but do not prove its cause. An independent review identified and a deterministic red
+latch test reproduced a zero-queue DB-worker handoff rejection after both workers signalled
+success but before either became idle. A bounded, interruptible 100 ms retry of only definitely
+unstarted DB operations now passes that regression while retaining two workers, zero backlog and
+the original operation/method deadlines. The original red run's precise cause remains unknown;
+the driver now prints deferral/permit evidence if it recurs and waits for DB workers to terminate
+before clearing the shared test tables. Older direct-fetch end-to-end/pressure fakes required a
+1 ms inter-read gap because they bypass the production HTTP fence's fixture-to-live floor; both
+focused cases now pass without weakening that floor. Focused regressions and the full PR suite
+passed on [PR #140](https://github.com/quantti/fpl-assistant/pull/140). Independent review found
+that the mixed-case partial-pair ceiling was only logged; commit `82b6600` asserts it in both
+arrival orders, passed focused verification and was re-reviewed. The original red run remains
+disclosed, its exact cause unproven; the owner has not merged the PR. No production request, mode
+change, publication or deployment occurred.
 
 ## Unit 2 — metadata-first canonical checkpoint selection (KAR-73)
 
@@ -271,8 +519,10 @@ pair-level metadata rejection was underspecified; and canonical latest-row/parse
 could be confused with the fixture dispatcher. All five are addressed above. A second independent
 review found no remaining blocker to the bounded local reproduction.
 
-The two-second FIFO wait and worker preferences remain candidate designs, not approved runtime
-behavior. Unit 1's reproducer must establish the failure, then its policy/deadline checkpoint
-selects and reviews a feasible mechanism before production scheduling code changes. No test was
+The original two-second admission-only wait and worker-preference proposal were superseded by
+the fenced manifest, epoch-shared claim rotation and three-second turn-through-settlement FIFO
+above. Neither isolated claim bounds nor the passing 60-second history sample proves the ready
+fixture or finite-drain targets; complete the remaining fault and progress checkpoints before a
+PR or production activation. No test was
 run against Supabase, no runtime implementation was made, and no production setting changed during
 planning/review. KAR-70 is not a dependency; operational acceptance remains a separate permission.
