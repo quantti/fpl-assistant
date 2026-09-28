@@ -1,6 +1,6 @@
 # Owned sync — bounded history progress and canonical checkpoint reads
 
-**PROGRESS:** KAR-72 Unit 1 merged as `0cc38c9` (PR #140, 2026-09-28). KAR-73 Unit 2 implemented locally with focused disposable-DB tests passed; PR CI/review pending. Latest documented production state OFF.
+**PROGRESS:** KAR-72 Unit 1 merged as `0cc38c9` (PR #140, 2026-09-28). KAR-73 Unit 2 in PR #141; focused disposable-DB tests, independent review and full PR CI passed. Owner merge pending. Latest documented production state OFF.
 
 Follow-up to KAR-71. Evidence: [STAGING retest PR #137](https://github.com/quantti/fpl-assistant/pull/137)
 and [`OWNED-SYNC-EGRESS-REPORT.md`](../../OWNED-SYNC-EGRESS-REPORT.md). The latest verified safe

@@ -1,6 +1,6 @@
 # KAR-73 — metadata-first canonical checkpoint hydration
 
-**PROGRESS:** Task 4/5 done; deterministic hydration/fencing races pass focused tests.
+**PROGRESS:** Task 5/5 done; PR #141 reviewed, full CI passed, owner merge pending.
 
 Ticket: [KAR-73](https://linear.app/quantti/issue/KAR-73).
 This expands [Unit 2 of the reviewed progress/checkpoint plan](2026-09-27-owned-sync-progress-and-checkpoints.md#unit-2--metadata-first-canonical-checkpoint-selection-kar-73), not its scope.
@@ -322,4 +322,7 @@ focused own-path tests, not by an unchanged throughput case. The separate finite
 50 fixtures and 68 required unique histories in 613.4 virtual seconds, 506 admitted GETs,
 peak one partial pair, zero failed runs. None of these synthetic lengths is TCP traffic or
 Supabase billing; there was no production action. `git diff --check` passed; canonical reusable
-cache, history dispatcher and activation paths were not edited. Full suite belongs to PR CI.
+cache, history dispatcher and activation paths were not edited. Independent PR #141 review of
+`8aaa757` found no blockers or warnings; full [PR CI run 36395771136](https://github.com/quantti/fpl-assistant/actions/runs/36395771136)
+passed (the deploy job skipped for this PR). The owner merges; no mode change, deployment or
+production experiment was performed.

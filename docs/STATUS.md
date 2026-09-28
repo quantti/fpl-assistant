@@ -5,7 +5,9 @@
 KAR-72 is Done in Linear; [PR #140](https://github.com/quantti/fpl-assistant/pull/140) merged as
 `0cc38c9` on 28 September. This supersedes the pending-merge notes in the 27 September checkpoints
 below, not their recorded test limitations. KAR-73's [reviewed implementation plan](superpowers/plans/2026-09-28-kar-73-canonical-checkpoint-hydration.md)
-is implemented locally for PR review; production remains OFF.
+is in [PR #141](https://github.com/quantti/fpl-assistant/pull/141), independently reviewed with
+no blockers or warnings; full [PR CI run 36395771136](https://github.com/quantti/fpl-assistant/actions/runs/36395771136)
+passed. Owner merge is pending; production remains OFF.
 
 The canonical dispatcher now selects both own endpoints by latest metadata, fetches a missing
 partner before guarded hydration, and rejects known interval/day/floor/receipt failures without
@@ -21,8 +23,8 @@ loopback database; all five admission/progress tests passed. The fixed two-worke
 **no old own-checkpoint reads before or after**; its DB body-read families are unchanged. The
 focused cases, not that workload, demonstrate the avoided own-body reads. The separate finite
 drain completed all 50 fixtures and 68 required histories in 613.4 virtual seconds. Raw lengths
-are not provider-billed egress or a production cost estimate; full-suite CI and independent PR
-review remain. Existing writer commit-day/group-specific receipt limits were not expanded.
+are not provider-billed egress or a production cost estimate. Existing writer
+commit-day/group-specific receipt limits were not expanded.
 
 No production SQL, external FPL requests, mode change, publication or deployment occurred. OFF
 epoch 67 remains the latest documented containment, not a fresh live-state check. Any production
