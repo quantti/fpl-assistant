@@ -272,6 +272,10 @@ public final class HistoryFixtureDispatcher {
             waitForHistories(lease, pair, fixture, livePayload, players);
         }
 
+        store.recordDependencyManifest(lease, fixtureId, fixture.gameweek(),
+                new PublicPayloadPair(pair.bootstrap.runGeneration(), pair.bootstrap, pair.fixtures),
+                livePayload, List.copyOf(players));
+
         // Re-read both public endpoints after the slow fan-out. Successful endpoint reads are
         // checkpointed so a durable admission deferral cannot restart this pair indefinitely.
         Instant historiesFinished = histories.values().stream()

@@ -22,6 +22,10 @@ final class OwnedSyncDeadline {
         return new OwnedSyncDeadline(startedAtNanos + duration.toNanos());
     }
 
+    static OwnedSyncDeadline at(long deadlineNanos) {
+        return new OwnedSyncDeadline(deadlineNanos);
+    }
+
     long remainingNanos() {
         return remainingNanos(System.nanoTime());
     }
