@@ -86,7 +86,7 @@ public final class OwnedMatchdayCoordinator {
 
     /** Claims and routes one run. Database leases/fences remain authoritative across instances. */
     public boolean dispatchOne(String workerId) {
-        Lease lease = store.acquireForSeason(season.code(), instanceId + ":" + workerId, LEASE).orElse(null);
+        Lease lease = store.acquireFairForSeason(season.code(), instanceId + ":" + workerId, LEASE).orElse(null);
         if (lease == null) return false;
         if (!lease.season().equals(season.code())) {
             store.fail(lease, "Owned runtime acquired a run for an unconfigured season");

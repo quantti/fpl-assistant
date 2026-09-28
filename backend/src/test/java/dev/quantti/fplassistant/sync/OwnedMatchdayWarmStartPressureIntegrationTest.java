@@ -429,6 +429,8 @@ class OwnedMatchdayWarmStartPressureIntegrationTest {
         public OwnedSyncHttpClient.Result get(Endpoint endpoint, int attempt) {
             try {
                 requests.computeIfAbsent(endpoint.kind(), ignored -> new AtomicInteger()).incrementAndGet();
+                // This direct fake skips the HTTP fence; preserve its 1 ms fixture/live source floor.
+                clock.advance(Duration.ofMillis(1));
                 Instant readStarted = clock.instant();
                 if (endpoint.kind() == EndpointKind.ELEMENT_SUMMARY && firstHistory == null) {
                     firstHistory = readStarted;

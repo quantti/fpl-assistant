@@ -3,6 +3,7 @@ package dev.quantti.fplassistant.sync;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.after;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.verify;
@@ -70,7 +71,9 @@ class OwnedMatchdayRuntimeTest {
         runtime.stop();
 
         assertThat(runtime.isRunning()).isFalse();
-        verify(repository).deactivate(fence);
-        verify(http, timeout(1_000)).close();
+        var shutdownOrder = inOrder(http, repository);
+        shutdownOrder.verify(http).stopSending();
+        shutdownOrder.verify(repository).deactivate(fence);
+        shutdownOrder.verify(http).close();
     }
 }
