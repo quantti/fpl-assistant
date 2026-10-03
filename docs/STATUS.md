@@ -6,6 +6,27 @@ The owner approved improving internal queue order without pinning one fixture. T
 
 A new 657-player / 50-fixture two-worker test with stale pre-anchor histories fails without preference at 350 admissions, zero STAGED fixtures. With it, the first source-complete fixture stages at 298.2 virtual seconds / 272 admissions (273 by driver stop), with 53.45 MB returned raw DB body values versus 68.27 MB at the unsuccessful disabled stop. Those unequal-outcome synthetic counts are neither billed/wire egress nor production latency. The source-completeness oracle and sustained overlapping-manifest/competing-store fairness cases pass; 108 focused store, admission, dispatcher and verification tests passed on disposable loopback Postgres. No full local suite, production query, mode change or limit increase occurred; the latest previously verified production containment is OFF epoch 77 in [PR #144](https://github.com/quantti/fpl-assistant/pull/144). Implementation/review are in [PR #145](https://github.com/quantti/fpl-assistant/pull/145), pending owner merge. Fresh provider headroom and a separately approved useful observation budget are still needed before STAGING/ACTIVE.
 
+## Owned sync — second bounded STAGING run, still no staged fixture (2026-10-03)
+
+After the earlier epoch-74 run, the owner approved one further attended test with unchanged full-queue scheduling: 20 minutes / 50 MB observed DB-RX / 65 MB machine-RX stop triggers. The owner provided fresh Supabase usage (0.115 GB egress / 0.136 GB DB) and explicitly accepted the Fly-API dependency of both the guard and Fly-console rollback. The DB trigger fired about six minutes after the request at **53.19 MB observed DB RX** (59.94 MB machine RX); lowest sampled available memory was 232,612 KiB. Epoch 76 completed **84 histories but zero fixtures STAGED**; fifteen fixture manifests remained incomplete, best 37/71 post-floor histories. Rollback and a subsequent SELECT-only check confirmed **OFF epoch 77**, zero active runs/unresolved attempts, public health UP and unchanged publication fingerprint (706 receipts), 6,523 evidence rows, 40 VERIFIED fixtures and core/GW5 counts. The [egress report](OWNED-SYNC-EGRESS-REPORT.md) has the UTC timeline, stop-sampling caveats and separate first-run evidence. This is not billed egress, a sustainable-rate result or permission for another run or ACTIVE.
+
+## Owned sync — bounded STAGING retest stopped before fixture progress (2026-10-03)
+
+The [owner-authorized runbook](superpowers/plans/2026-10-03-owned-sync-bounded-staging-retest.md)
+ran one attended STAGING epoch 74 on the already-deployed KAR-72/73/75 fixes. At about
+248 seconds from the mode request it hit the 20 MB observed DB-RX stop (20.62 MB, with
+25.04 MB whole-machine RX); memory stayed above 192 MiB. **48 histories completed,
+zero fixtures STAGED.** Durable OFF epoch 75, zero active runs/unresolved HTTP attempts,
+public health UP and unchanged publication fingerprint (706 receipts, 6,523 evidence
+rows, 40 VERIFIED fixtures) were confirmed. GW5 still has no physical PFS rows.
+The [egress report](OWNED-SYNC-EGRESS-REPORT.md) records measurements and caveats:
+these socket counters are not billed Supabase egress or a monthly forecast. A newly
+recovered 28 September local run had already completed 43 histories under a smaller
+traffic cap, also with zero fixtures STAGED; older OFF epoch 67 notes below are
+historical. No ACTIVE mode, core publication, Tapas writer change or app deployment
+occurred. The progress gate failed; do not enlarge limits or reactivate without a
+separate review of fixture progress and egress.
+
 ## Owned sync — KAR-75 post-merge review fixes (2026-09-28)
 
 The [KAR-75 follow-up plan](superpowers/plans/2026-09-28-kar-75-owned-sync-review-followup.md)
