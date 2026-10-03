@@ -79,11 +79,18 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
     private static final Duration WORKER_DELAY = Duration.ofSeconds(1);
     private static final Duration VIRTUAL_LIMIT = Duration.ofSeconds(60);
     private static final Duration DRAIN_VIRTUAL_LIMIT = Duration.ofHours(2);
+    private static final Duration ROSTER_BASELINE_VIRTUAL_LIMIT = Duration.ofSeconds(400);
     private static final int DISPATCH_LIMIT = 150;
     private static final int DRAIN_ADMISSION_LIMIT = 5_000;
     private static final int DRAIN_DISPATCH_LIMIT = 6_000;
+    private static final int ROSTER_BASELINE_ADMISSION_LIMIT = 350;
+    private static final int ROSTER_BASELINE_DISPATCH_LIMIT = 500;
+    private static final long ROSTER_BASELINE_WALL_LIMIT_NANOS = TimeUnit.SECONDS.toNanos(240);
+    private static final long ROSTER_BASELINE_DRAIN_RESERVE_NANOS = TimeUnit.SECONDS.toNanos(30);
     private static final int FIXTURE_RUNS = 50;
     private static final int HISTORY_RUNS = 68;
+    private static final int FULL_ROSTER_PLAYERS = 657;
+    private static final int FULL_ROSTER_CLUBS = 20;
     private static final int SEEDED_PARTIALS = 10;
     private static final long WALL_LIMIT_NANOS = TimeUnit.SECONDS.toNanos(110);
     private static final long DRAIN_WALL_LIMIT_NANOS = TimeUnit.SECONDS.toNanos(300);
@@ -246,6 +253,96 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                 .isZero();
         assertThat(metrics.predecessorWaits()).as("real FIFO wait advancement was observed").isGreaterThan(0);
         assertThat(metrics.spacingWaits()).as("real spacing wait advancement was observed").isGreaterThan(0);
+    }
+
+    @Test
+    @Timeout(value = 255, unit = TimeUnit.SECONDS)
+    void fullRosterTwoWorkersStageSourceCompleteFixtureWithinBudget() throws Exception {
+        SourceData fullRoster = SourceData.loadFullRoster();
+        JsonNode bootstrap = JSON.readTree(fullRoster.bootstrapBytes());
+        Map<Integer, Integer> clubSizes = new HashMap<>();
+        bootstrap.withArray("elements").forEach(player ->
+                clubSizes.merge(player.get("team").intValue(), 1, Integer::sum));
+        assertThat(fullRoster.playerIds()).hasSize(FULL_ROSTER_PLAYERS).doesNotHaveDuplicates();
+        assertThat(fullRoster.playerIds()).isEqualTo(fullRoster.playerIds().stream().sorted().toList());
+        assertThat(clubSizes).hasSize(FULL_ROSTER_CLUBS);
+        assertThat(clubSizes.values()).allMatch(size -> size >= 25 && size <= 43);
+        Map<Integer, Set<Integer>> requiredByFixture = fullRoster.requiredHistoryPlayersByFixture(FIXTURE_RUNS);
+        assertThat(requiredByFixture).hasSize(FIXTURE_RUNS);
+        assertThat(requiredByFixture.values()).allSatisfy(players ->
+                assertThat(players.size()).isBetween(50, 86));
+
+        long wallStartedAt = System.nanoTime();
+        long wallDeadline = wallStartedAt + ROSTER_BASELINE_WALL_LIMIT_NANOS;
+        RosterBaselineMetrics metrics;
+        try (Harness harness = new Harness(1, wallDeadline, wallStartedAt, fullRoster)) {
+            harness.seedCanonicalPair();
+            harness.seedPreAnchorHistories();
+            harness.seedMixedBacklog();
+            harness.resetPayloadReads();
+            metrics = harness.driveRosterBaseline();
+            harness.assertStagedHistoryCoverage();
+        }
+        double wallSeconds = (System.nanoTime() - wallStartedAt) / 1_000_000_000.0;
+        double postWorkSeconds = wallSeconds - metrics.workWallSeconds();
+        System.out.printf("OWNED_ADMISSION_ROSTER_BASELINE stop=%s firstStageFixture=%s "
+                        + "firstStageSeconds=%s firstStageAdmissions=%s admissions=%d dispatchStarts=%d "
+                        + "completedDispatches=%d endpoints=%s returnedGets=%d returnedRawBytes=%d "
+                        + "payloadBodyValues=%d payloadReturnedRawBytes=%d preAnchorHistories=%d "
+                        + "historyRunsCompleted=%d historyRunsPending=%d historyJobsNotYetClaimed=%d "
+                        + "historyRequestsAdvancedPastPreAnchor=%d "
+                        + "repeatedHistoryGets=%d playersWithRepeatedHistoryGets=%d fixturesCompleted=%d "
+                        + "untouchedFixtures=%d readyCoverage=%d manifests=%d validManifests=%d "
+                        + "manifestRequiredIds=%d..%d manifestOverlap=%d manifestedPlayers=%d "
+                        + "unmanifestedRosterPlayers=%d manifestMismatches=%d sourceFloorMismatches=%d "
+                        + "epochMismatches=%d failedRuns=%d invalidPayloads=%d uncertainAttempts=%d "
+                        + "unresolvedAttempts=%d virtualSeconds=%.3f wallSeconds=%.3f%n",
+                metrics.stopReason(), metrics.firstStageFixture(), offset(metrics.firstStageAt()),
+                metrics.firstStageAt() == null ? "none" : metrics.admissionsAtFirstStage(),
+                metrics.admissions(), metrics.dispatchStarts(),
+                metrics.completedDispatches(), metrics.endpoints(), metrics.returnedGets(), metrics.returnedRawBytes(),
+                metrics.payloadReads().bodyValues(), metrics.payloadReads().rawBytes(),
+                metrics.preAnchorHistories(), metrics.historyRunsCompleted(), metrics.historyRunsPending(),
+                metrics.historyJobsNotYetClaimed(), metrics.historyRequestsAdvancedPastPreAnchor(),
+                metrics.repeatedHistoryGets(), metrics.playersWithRepeatedHistoryGets(),
+                metrics.fixturesCompleted(), metrics.untouchedFixtures(),
+                metrics.readyCoverage(), metrics.manifests(), metrics.validManifests(),
+                metrics.minimumManifestPlayers(), metrics.maximumManifestPlayers(), metrics.manifestOverlap(),
+                metrics.manifestedPlayers(), metrics.unmanifestedRosterPlayers(), metrics.manifestMismatches(),
+                metrics.sourceFloorMismatches(), metrics.epochMismatches(), metrics.failedRuns(),
+                metrics.invalidPayloads(), metrics.uncertainAttempts(), metrics.unresolvedAttempts(),
+                metrics.virtualSeconds(), metrics.workWallSeconds());
+        System.out.printf("OWNED_ADMISSION_ROSTER_DB_BODY_READS oldOwn=%s guardedSingle=%s canonicalPair=%s "
+                        + "other=%s totals=%d/%d/%d/%d%n",
+                metrics.payloadReads().family(PayloadReadProbe.Family.OLD_OWN_CHECKPOINT).counts(),
+                metrics.payloadReads().family(PayloadReadProbe.Family.GUARDED_SINGLE).counts(),
+                metrics.payloadReads().family(PayloadReadProbe.Family.CANONICAL_PAIR).counts(),
+                metrics.payloadReads().family(PayloadReadProbe.Family.OTHER_BODY_SELECT).counts(),
+                metrics.payloadReads().attempts(), metrics.payloadReads().resultRows(),
+                metrics.payloadReads().bodyValues(), metrics.payloadReads().rawBytes());
+
+        assertThat(metrics.stopReason()).isEqualTo("STAGED");
+        assertThat(metrics.firstStageAt()).isNotNull();
+        assertThat(metrics.fixturesCompleted()).isGreaterThan(0);
+        assertThat(metrics.payloadReads().rawBytes()).isLessThanOrEqualTo(70_000_000);
+        assertThat(metrics.virtualSeconds()).isLessThanOrEqualTo(ROSTER_BASELINE_VIRTUAL_LIMIT.toNanos() / 1e9);
+        assertThat(metrics.admissions()).isLessThanOrEqualTo(ROSTER_BASELINE_ADMISSION_LIMIT);
+        assertThat(metrics.dispatchStarts()).isLessThanOrEqualTo(ROSTER_BASELINE_DISPATCH_LIMIT);
+        assertThat(metrics.workWallSeconds()).isLessThanOrEqualTo(ROSTER_BASELINE_WALL_LIMIT_NANOS / 1e9);
+        assertThat(postWorkSeconds).as("post-work metrics and cleanup fit within the existing reserve")
+                .isLessThanOrEqualTo(DRAIN_CLEANUP_RESERVE_NANOS / 1e9);
+        assertThat(metrics.manifestMismatches()).isZero();
+        assertThat(metrics.sourceFloorMismatches()).isZero();
+        assertThat(metrics.epochMismatches()).isZero();
+        assertThat(metrics.failedRuns()).isZero();
+        assertThat(metrics.invalidPayloads()).isZero();
+        assertThat(metrics.uncertainAttempts()).isZero();
+        assertThat(metrics.unresolvedAttempts()).isZero();
+        if (metrics.manifests() > 0) {
+            assertThat(metrics.minimumManifestPlayers()).isBetween(50, 86);
+            assertThat(metrics.maximumManifestPlayers()).isBetween(50, 86);
+            assertThat(metrics.validManifests()).isEqualTo(metrics.manifests());
+        }
     }
 
     @Test
@@ -444,6 +541,23 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                                       int predecessorWaits, int spacingWaits,
                                       double virtualSeconds, double wallSeconds) { }
 
+    private record RosterBaselineMetrics(String stopReason, Instant firstStageAt, Integer firstStageFixture,
+                                         Integer admissionsAtFirstStage, int admissions, int dispatchStarts,
+                                         int completedDispatches, Map<EndpointKind, Integer> endpoints,
+                                         int returnedGets, long returnedRawBytes,
+                                         PayloadReadProbe.Snapshot payloadReads, int preAnchorHistories,
+                                         int historyRunsCompleted, int historyRunsPending,
+                                         int historyJobsNotYetClaimed, int historyRequestsAdvancedPastPreAnchor,
+                                         int repeatedHistoryGets,
+                                         int playersWithRepeatedHistoryGets, int fixturesCompleted,
+                                         int untouchedFixtures, int readyCoverage, int manifests,
+                                         int validManifests, int minimumManifestPlayers,
+                                         int maximumManifestPlayers, int manifestOverlap, int manifestedPlayers,
+                                         int unmanifestedRosterPlayers, int manifestMismatches,
+                                         int sourceFloorMismatches, int epochMismatches, int failedRuns,
+                                         int invalidPayloads, int uncertainAttempts, int unresolvedAttempts,
+                                         double virtualSeconds, double workWallSeconds) { }
+
     private record SeededFixture(int fixtureId, long generation) { }
 
     private record ColdParentEvidence(int pendingParents, boolean historyDeferred,
@@ -499,6 +613,7 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
         private final long wallStartedAtNanos;
         private final long cleanupDeadline;
         private final boolean finiteDrain;
+        private final SourceData source;
         private volatile String finiteStopReason;
         private final MutableClock clock = new MutableClock(START);
         private final RuntimeFence fence;
@@ -526,19 +641,26 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
         private Set<Integer> seededHistoryPlayerIds = Set.of();
 
         Harness(int firstWorker, long wallDeadline) throws Exception {
-            this(firstWorker, wallDeadline, wallDeadline - WALL_LIMIT_NANOS, false);
+            this(firstWorker, wallDeadline, wallDeadline - WALL_LIMIT_NANOS, false,
+                    OwnedMatchdayAdmissionProgressIntegrationTest.source);
         }
 
         Harness(int firstWorker, long wallDeadline, long wallStartedAtNanos) throws Exception {
-            this(firstWorker, wallDeadline, wallStartedAtNanos, true);
+            this(firstWorker, wallDeadline, wallStartedAtNanos, true,
+                    OwnedMatchdayAdmissionProgressIntegrationTest.source);
+        }
+
+        Harness(int firstWorker, long wallDeadline, long wallStartedAtNanos, SourceData source) throws Exception {
+            this(firstWorker, wallDeadline, wallStartedAtNanos, true, source);
         }
 
         private Harness(int firstWorker, long wallDeadline, long wallStartedAtNanos,
-                        boolean finiteDrain) throws Exception {
+                        boolean finiteDrain, SourceData source) throws Exception {
             this.firstWorker = firstWorker;
             this.wallDeadline = wallDeadline;
             this.wallStartedAtNanos = wallStartedAtNanos;
             this.finiteDrain = finiteDrain;
+            this.source = source;
             this.cleanupDeadline = wallDeadline + (finiteDrain ? DRAIN_CLEANUP_RESERVE_NANOS : 0);
             clearOwnedRows();
             activation = new PlannerRuntimeRepository(jdbc, tx, clock, TABLES);
@@ -585,6 +707,21 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
             store.completeStaged(lease, read, List.of(read, read));
         }
 
+        void seedPreAnchorHistories() {
+            var read = new SourceRead(clock.instant(), clock.instant());
+            var interval = new CatalogueScheduleParser.ReadInterval(read.startedAt(), read.finishedAt());
+            var snapshot = CatalogueScheduleParser.parse(SEASON,
+                    new CatalogueScheduleParser.SourceDocument(source.bootstrapBytes(), interval),
+                    new CatalogueScheduleParser.SourceDocument(source.fixtureBytes(), interval));
+            source.playerIds().stream().sorted().forEach(playerId ->
+                    seedValidHistory(snapshot, playerId, clock.instant()));
+            assertThat(jdbc.queryForObject("SELECT count(DISTINCT p.player_id) FROM " + TABLES.payload()
+                    + " p JOIN " + TABLES.run() + " r ON r.generation=p.run_generation"
+                    + " WHERE r.season=? AND r.kind='PLAYER_HISTORY' AND p.endpoint_kind='ELEMENT_SUMMARY'"
+                    + " AND p.validation_state='VALID' AND p.read_started_at<=?",
+                    Integer.class, SEASON.code(), Timestamp.from(START))).isEqualTo(source.playerIds().size());
+        }
+
         void seedMixedBacklog() {
             var histories = HistoryFixtureDispatcher.staging(store, http, clock);
             requiredHistoryPlayersByFixture = source.requiredHistoryPlayersByFixture(FIXTURE_RUNS);
@@ -618,8 +755,8 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                 jdbc.update("UPDATE " + TABLES.run() + " SET due_at=? WHERE generation=?",
                         Timestamp.from(clock.instant()), generation);
             }
-            assertThat(source.playerIds()).as("the established baseline seeds 68 initially due histories")
-                    .hasSize(HISTORY_RUNS);
+            assertThat(source.playerIds()).as("history jobs follow the coordinator's player-id ordering")
+                    .hasSize(source.fullRoster() ? FULL_ROSTER_PLAYERS : HISTORY_RUNS);
             Set<Integer> requiredPlayers = requiredHistoryPlayersByFixture.values().stream()
                     .flatMap(Set::stream).collect(java.util.stream.Collectors.toCollection(java.util.TreeSet::new));
             List<Integer> historiesToEnqueue = new ArrayList<>(source.playerIds());
@@ -634,8 +771,8 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                     + " WHERE season=? AND kind='FIXTURE_VERIFICATION'", Integer.class, SEASON.code()))
                     .isEqualTo(FIXTURE_RUNS);
             assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
-                    + " WHERE season=? AND kind='PLAYER_HISTORY'", Integer.class, SEASON.code()))
-                    .isEqualTo(seededHistoryPlayerIds.size());
+                    + " WHERE season=? AND kind='PLAYER_HISTORY' AND state='PENDING'",
+                    Integer.class, SEASON.code())).isEqualTo(seededHistoryPlayerIds.size());
             assertThat(seededFixtureRuns).hasSize(FIXTURE_RUNS);
             assertThat(seededHistoryPlayerIds).containsAll(requiredPlayers);
             assertThat(seededPartialGenerations).hasSize(SEEDED_PARTIALS);
@@ -980,6 +1117,14 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
             return metrics(driver);
         }
 
+        RosterBaselineMetrics driveRosterBaseline() throws Exception {
+            ManualDriver driver = new ManualDriver(this, ROSTER_BASELINE_VIRTUAL_LIMIT,
+                    ROSTER_BASELINE_ADMISSION_LIMIT, ROSTER_BASELINE_DISPATCH_LIMIT);
+            http.setWaitObserverForTests(driver::observeWait);
+            driver.run();
+            return rosterBaselineMetrics(driver);
+        }
+
         FiniteDrainMetrics driveFiniteDrain() throws Exception {
             ManualDriver driver = new ManualDriver(this, true);
             http.setWaitObserverForTests(driver::observeWait);
@@ -1010,6 +1155,134 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                     metrics.claims(), metrics.deferrals(), metrics.predecessorWaits(), metrics.spacingWaits(),
                     metrics.virtualSeconds(), metrics.wallSeconds());
             return metrics;
+        }
+
+        void assertStagedHistoryCoverage() {
+            int missingHistories = jdbc.queryForObject("""
+                    SELECT count(*) FROM %s r
+                    JOIN %s m ON m.run_generation = r.generation
+                    JOIN %s f ON f.id = m.fixtures_payload_id
+                    CROSS JOIN LATERAL unnest(m.required_player_ids) AS required(player_id)
+                    WHERE r.season = ? AND r.runtime_mode = ? AND r.runtime_epoch = ?
+                      AND r.kind = 'FIXTURE_VERIFICATION' AND r.state = 'COMPLETED'
+                      AND NOT EXISTS (
+                          SELECT 1 FROM %s hp JOIN %s hr ON hr.generation = hp.run_generation
+                          WHERE hp.endpoint_kind = 'ELEMENT_SUMMARY' AND hp.event_id IS NULL
+                            AND hp.player_id = required.player_id AND hp.validation_state = 'VALID'
+                            AND hp.read_started_at >= GREATEST(r.requested_source_after, m.source_floor,
+                                f.read_finished_at + INTERVAL '1 millisecond')
+                            AND hp.read_finished_at <= r.completed_at AND hp.staged_at <= r.completed_at
+                            AND hr.kind = 'PLAYER_HISTORY' AND hr.state = 'COMPLETED'
+                            AND hr.completed_at <= r.completed_at
+                            AND hr.coalescing_key = 'player-history:' || required.player_id::text
+                            AND hr.publication_key = 'player-history:' || required.player_id::text
+                            AND hr.season = r.season AND hr.runtime_mode = r.runtime_mode
+                            AND hr.runtime_epoch = r.runtime_epoch
+                      )
+                    """.formatted(TABLES.run(), TABLES.fixtureDependencyManifest(), TABLES.payload(),
+                    TABLES.payload(), TABLES.run()), Integer.class, SEASON.code(), fence.mode().name(), fence.epoch());
+            assertThat(missingHistories).as("every staged fixture has complete post-anchor history evidence").isZero();
+        }
+
+        private RosterBaselineMetrics rosterBaselineMetrics(ManualDriver driver) {
+            String fixturePlaceholders = String.join(",", seededFixtureRuns.stream()
+                    .map(ignored -> "?").toList());
+            Object[] fixtureGenerations = seededFixtureRuns.stream()
+                    .map(SeededFixture::generation).toArray();
+            List<Map.Entry<Integer, Instant>> staged = jdbc.query("SELECT substring(publication_key from 9)::int, "
+                            + "completed_at FROM " + TABLES.run() + " WHERE generation IN ("
+                            + fixturePlaceholders + ") AND kind='FIXTURE_VERIFICATION' AND state='COMPLETED' "
+                            + "ORDER BY completed_at,generation LIMIT 1",
+                    (rs, row) -> Map.entry(rs.getInt(1), rs.getTimestamp(2).toInstant()), fixtureGenerations);
+            Instant firstStageAt = staged.isEmpty() ? null : staged.getFirst().getValue();
+            Integer firstStageFixture = staged.isEmpty() ? null : staged.getFirst().getKey();
+            int admissions = durableAdmissionCount();
+            Integer admissionsAtFirstStage = firstStageAt == null ? null : jdbc.queryForObject(
+                    "SELECT count(*) FROM " + TABLES.requestAttempt() + " WHERE admitted_at<=?",
+                    Integer.class, Timestamp.from(firstStageAt));
+            Map<Long, FixtureManifestCheck> manifestChecks = fixtureManifestChecks();
+            Set<Integer> manifestedPlayers = new HashSet<>();
+            int manifests = 0;
+            int validManifests = 0;
+            int manifestEntries = 0;
+            int minimumManifestPlayers = Integer.MAX_VALUE;
+            int maximumManifestPlayers = 0;
+            int manifestMismatches = 0;
+            for (SeededFixture fixture : seededFixtureRuns) {
+                FixtureManifestCheck check = manifestChecks.get(fixture.generation());
+                if (check == null || check.manifestPlayers() == null) continue;
+                manifests++;
+                Set<Integer> manifestPlayers = check.manifestPlayers();
+                manifestEntries += manifestPlayers.size();
+                manifestedPlayers.addAll(manifestPlayers);
+                minimumManifestPlayers = Math.min(minimumManifestPlayers, manifestPlayers.size());
+                maximumManifestPlayers = Math.max(maximumManifestPlayers, manifestPlayers.size());
+                boolean expected = requiredHistoryPlayersByFixture.get(fixture.fixtureId()).equals(manifestPlayers);
+                boolean realistic = manifestPlayers.size() >= 50 && manifestPlayers.size() <= 86;
+                if (!check.checked() || !expected || !realistic) manifestMismatches++;
+                else validManifests++;
+            }
+            if (manifests == 0) minimumManifestPlayers = 0;
+            int sourceFloorMismatches = jdbc.queryForObject("SELECT count(*) FROM "
+                            + TABLES.fixtureDependencyManifest() + " m JOIN " + TABLES.run()
+                            + " r ON r.generation=m.run_generation WHERE m.run_generation IN ("
+                            + fixturePlaceholders + ") AND m.source_floor IS DISTINCT FROM r.requested_source_after",
+                    Integer.class, fixtureGenerations);
+            int epochMismatches = jdbc.queryForObject("SELECT count(*) FROM "
+                            + TABLES.fixtureDependencyManifest() + " m JOIN " + TABLES.run()
+                            + " r ON r.generation=m.run_generation WHERE m.run_generation IN ("
+                            + fixturePlaceholders + ") AND (r.runtime_mode<>? OR r.runtime_epoch<>?)",
+                    Integer.class, java.util.stream.Stream.concat(java.util.Arrays.stream(fixtureGenerations),
+                            java.util.stream.Stream.of(fence.mode().name(), fence.epoch())).toArray());
+            int historyRunsCompleted = jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
+                    + " WHERE season=? AND kind='PLAYER_HISTORY' AND state='COMPLETED'",
+                    Integer.class, SEASON.code());
+            int historyRunsPending = jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
+                    + " WHERE season=? AND kind='PLAYER_HISTORY' AND state='PENDING'",
+                    Integer.class, SEASON.code());
+            int historyJobsNotYetClaimed = jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
+                    + " WHERE season=? AND kind='PLAYER_HISTORY' AND state='PENDING' AND attempt_count=0",
+                    Integer.class, SEASON.code());
+            int historyRequestsAdvancedPastPreAnchor = jdbc.queryForObject("SELECT count(DISTINCT publication_key) "
+                            + "FROM " + TABLES.run() + " WHERE season=? AND kind='PLAYER_HISTORY' "
+                            + "AND requested_source_after>?",
+                    Integer.class, SEASON.code(), Timestamp.from(START));
+            int preAnchorHistories = jdbc.queryForObject("SELECT count(DISTINCT p.player_id) FROM "
+                            + TABLES.payload() + " p JOIN " + TABLES.run()
+                            + " r ON r.generation=p.run_generation WHERE r.season=?"
+                            + " AND r.kind='PLAYER_HISTORY' AND p.endpoint_kind='ELEMENT_SUMMARY'"
+                            + " AND p.validation_state='VALID' AND p.read_started_at<=?",
+                    Integer.class, SEASON.code(), Timestamp.from(START));
+            int fixturesCompleted = jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
+                    + " WHERE season=? AND kind='FIXTURE_VERIFICATION' AND state='COMPLETED'",
+                    Integer.class, SEASON.code());
+            int untouchedFixtures = jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
+                    + " WHERE season=? AND kind='FIXTURE_VERIFICATION' AND attempt_count=0",
+                    Integer.class, SEASON.code());
+            int failedRuns = jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
+                    + " WHERE season=? AND state='FAILED'", Integer.class, SEASON.code());
+            int invalidPayloads = jdbc.queryForObject("SELECT count(*) FROM " + TABLES.payload()
+                    + " p JOIN " + TABLES.run() + " r ON r.generation=p.run_generation"
+                    + " WHERE r.season=? AND p.validation_state='INVALID'", Integer.class, SEASON.code());
+            int uncertainAttempts = jdbc.queryForObject("SELECT count(*) FROM " + TABLES.requestAttempt()
+                    + " WHERE hold_until_expiry", Integer.class);
+            int unresolvedAttempts = jdbc.queryForObject("SELECT count(*) FROM " + TABLES.requestAttempt()
+                    + " WHERE completed_at IS NULL", Integer.class);
+            Map<Integer, Integer> historyGets = server.historyGetsByPlayer();
+            return new RosterBaselineMetrics(driver.stopReason, firstStageAt, firstStageFixture,
+                    admissionsAtFirstStage, admissions, driver.dispatches, driver.completions.size(),
+                    server.getsByEndpoint(), server.returnedGets(), server.returnedRawBytes(), payloadReads.snapshot(),
+                    preAnchorHistories, historyRunsCompleted, historyRunsPending, historyJobsNotYetClaimed,
+                    historyRequestsAdvancedPastPreAnchor,
+                    historyGets.values().stream().mapToInt(count -> Math.max(0, count - 1)).sum(),
+                    (int) historyGets.values().stream().filter(count -> count > 1).count(), fixturesCompleted,
+                    untouchedFixtures, store.readyFixtureGenerations(SEASON.code(), FIXTURE_RUNS).size(),
+                    manifests, validManifests, minimumManifestPlayers, maximumManifestPlayers,
+                    manifestEntries - manifestedPlayers.size(), manifestedPlayers.size(),
+                    Math.max(0, source.playerIds().size() - manifestedPlayers.size()), manifestMismatches,
+                    sourceFloorMismatches, epochMismatches, failedRuns, invalidPayloads, uncertainAttempts,
+                    unresolvedAttempts, Duration.between(START, clock.instant()).toNanos() / 1e9,
+                    driver.workWallSeconds());
         }
 
         private Metrics metrics(ManualDriver driver) {
@@ -1060,7 +1333,7 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                            (r.season = ? AND r.runtime_mode = ? AND r.runtime_epoch = ?
                             AND m.run_generation IS NOT NULL
                             AND fpl_sync_required_ids_valid(m.required_player_ids)
-                            AND m.source_floor IS NOT NULL
+                            AND m.source_floor = r.requested_source_after
                             AND b.id IS NOT NULL AND f.id IS NOT NULL AND l.id IS NOT NULL
                             AND b.read_started_at >= r.requested_source_after
                             AND f.read_started_at >= r.requested_source_after
@@ -1459,6 +1732,10 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
         private final long readyGeneration;
         private final long untouchedGeneration;
         private final boolean finiteDrain;
+        private final boolean firstStageBaseline;
+        private final Duration virtualLimit;
+        private final int admissionLimit;
+        private final int dispatchStartLimit;
         private final int readySeedAttemptCount;
         private final int untouchedSeedAttemptCount;
         private ClaimEvidence readyFirstClaim;
@@ -1500,14 +1777,30 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
             this(harness, 0, 0, finiteDrain);
         }
 
+        ManualDriver(Harness harness, Duration virtualLimit, int admissionLimit, int dispatchStartLimit) {
+            this(harness, 0, 0, true, true, virtualLimit, admissionLimit, dispatchStartLimit);
+        }
+
         private ManualDriver(Harness harness, long readyGeneration, long untouchedGeneration,
                              boolean finiteDrain) {
+            this(harness, readyGeneration, untouchedGeneration, finiteDrain, false,
+                    finiteDrain ? DRAIN_VIRTUAL_LIMIT : VIRTUAL_LIMIT,
+                    DRAIN_ADMISSION_LIMIT, DRAIN_DISPATCH_LIMIT);
+        }
+
+        private ManualDriver(Harness harness, long readyGeneration, long untouchedGeneration,
+                             boolean finiteDrain, boolean firstStageBaseline, Duration virtualLimit,
+                             int admissionLimit, int dispatchStartLimit) {
             this.harness = harness;
             this.readyGeneration = readyGeneration;
             this.untouchedGeneration = untouchedGeneration;
             this.finiteDrain = finiteDrain;
+            this.firstStageBaseline = firstStageBaseline;
+            this.virtualLimit = virtualLimit;
+            this.admissionLimit = admissionLimit;
+            this.dispatchStartLimit = dispatchStartLimit;
             this.startAt = harness.clock.instant();
-            this.stopAt = startAt.plus(finiteDrain ? DRAIN_VIRTUAL_LIMIT : VIRTUAL_LIMIT);
+            this.stopAt = startAt.plus(virtualLimit);
             this.nextAt = new Instant[] { startAt, startAt };
             this.readySeedAttemptCount = readyGeneration > 0
                     ? harness.progress(readyGeneration).attemptCount() : 0;
@@ -1537,6 +1830,7 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
             }
 
             while (true) {
+                if (softWallCutoffReached()) stopReason = "WALL_LIMIT";
                 String entryLimit = finiteDrain ? limitReason() : null;
                 if (entryLimit != null) {
                     stopReason = entryLimit;
@@ -1565,6 +1859,7 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                 samplePartialPairs();
                 harness.captureDeferrals(this);
                 maybePrintFiniteProgress();
+                if (softWallCutoffReached()) stopReason = "WALL_LIMIT";
 
                 String limit = finiteDrain ? limitReason() : null;
                 if (limit != null) {
@@ -1574,7 +1869,8 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                     break;
                 }
 
-                if (harness.clock.instant().isBefore(stopAt) && !focusSatisfied()) startReadyWorkers();
+                if (harness.clock.instant().isBefore(stopAt) && !focusSatisfied()
+                        && !softWallCutoffReached()) startReadyWorkers();
 
                 if (active.isEmpty() && (focusSatisfied() || !hasActiveRuns() || !canStartDispatch())) break;
                 if (!harness.clock.instant().isBefore(stopAt)) {
@@ -1616,7 +1912,8 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                     || (stopReason == null && System.nanoTime() >= harness.wallDeadline))) {
                 stopReason = "WALL_LIMIT";
             }
-            if (stopReason == null) stopReason = "DRAINED";
+            if (firstStageBaseline && focusSatisfied()) stopReason = "STAGED";
+            else if (stopReason == null) stopReason = "DRAINED";
             recordWorkStop();
             harness.recordFiniteStopReason(stopReason);
             if (finiteDrain) harness.cancelWorkWatchdog();
@@ -1626,7 +1923,8 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
 
         private void recordWorkStop() {
             if (finiteDrain && "WALL_LIMIT".equals(stopReason)) {
-                workStoppedAtNanos = harness.wallDeadline;
+                workStoppedAtNanos = firstStageBaseline && !harness.watchdogFired.get()
+                        ? System.nanoTime() : harness.wallDeadline;
             } else if (workStoppedAtNanos < 0) {
                 workStoppedAtNanos = System.nanoTime();
             }
@@ -1634,6 +1932,11 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
 
         private boolean wallCutoffReached() {
             return finiteDrain && (harness.watchdogFired.get() || System.nanoTime() >= harness.wallDeadline);
+        }
+
+        private boolean softWallCutoffReached() {
+            return firstStageBaseline && System.nanoTime() >= harness.wallDeadline
+                    - ROSTER_BASELINE_DRAIN_RESERVE_NANOS;
         }
 
         private double workWallSeconds() {
@@ -1644,18 +1947,29 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
         private String limitReason() {
             if (!finiteDrain) return null;
             if (wallCutoffReached()) return "WALL_LIMIT";
+            if (softWallCutoffReached()) return null;
             if (!harness.clock.instant().isBefore(stopAt)) return "VIRTUAL_LIMIT";
             int admissions = harness.durableAdmissionCount();
             if (wallCutoffReached()) return "WALL_LIMIT";
-            if (admissions >= DRAIN_ADMISSION_LIMIT) return "ADMISSION_LIMIT";
-            if (completions.size() >= DRAIN_DISPATCH_LIMIT) return "DISPATCH_LIMIT";
+            if (firstStageBaseline) {
+                if (admissions >= admissionLimit) return "ADMISSION_LIMIT";
+                if (dispatches >= dispatchStartLimit) return "DISPATCH_LIMIT";
+            } else {
+                if (admissions >= DRAIN_ADMISSION_LIMIT) return "ADMISSION_LIMIT";
+                if (completions.size() >= DRAIN_DISPATCH_LIMIT) return "DISPATCH_LIMIT";
+            }
             return null;
         }
 
         private boolean canStartDispatch() {
             if (!finiteDrain) return dispatches < DISPATCH_LIMIT;
-            if (wallCutoffReached()) return false;
+            if (wallCutoffReached() || softWallCutoffReached()
+                    || (firstStageBaseline && focusSatisfied())) return false;
             int admissions = harness.durableAdmissionCount();
+            if (firstStageBaseline) {
+                return !wallCutoffReached() && dispatches < dispatchStartLimit
+                        && admissions < admissionLimit && harness.clock.instant().isBefore(stopAt);
+            }
             return !wallCutoffReached()
                     && dispatches < DRAIN_DISPATCH_LIMIT
                     && admissions < DRAIN_ADMISSION_LIMIT
@@ -1663,7 +1977,7 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
         }
 
         private void maybePrintFiniteProgress() {
-            if (!finiteDrain || completions.size() < nextProgressDispatchCount) return;
+            if (!finiteDrain || firstStageBaseline || completions.size() < nextProgressDispatchCount) return;
             harness.printFiniteProgress(this);
             nextProgressDispatchCount += 100;
         }
@@ -1782,6 +2096,11 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
         }
 
         private boolean focusSatisfied() {
+            if (firstStageBaseline) {
+                return jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM " + TABLES.run()
+                        + " WHERE season=? AND kind='FIXTURE_VERIFICATION' AND state='COMPLETED')",
+                        Boolean.class, SEASON.code());
+            }
             if (readyGeneration <= 0 || untouchedGeneration <= 0) return false;
             boolean readyStaged = jdbc.queryForObject("SELECT state='COMPLETED' FROM " + TABLES.run()
                     + " WHERE generation=?", Boolean.class, readyGeneration);
@@ -2103,17 +2422,28 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
         private final List<Integer> playerIds;
         private final Map<Integer, byte[]> liveByEvent;
         private final Map<Integer, byte[]> histories;
+        private final boolean fullRoster;
 
         private SourceData(byte[] bootstrap, byte[] fixtures, List<Integer> playerIds,
-                           Map<Integer, byte[]> liveByEvent, Map<Integer, byte[]> histories) {
+                           Map<Integer, byte[]> liveByEvent, Map<Integer, byte[]> histories,
+                           boolean fullRoster) {
             this.bootstrap = bootstrap;
             this.fixtures = fixtures;
             this.playerIds = playerIds;
             this.liveByEvent = liveByEvent;
             this.histories = histories;
+            this.fullRoster = fullRoster;
         }
 
         static SourceData load() throws Exception {
+            return load(false);
+        }
+
+        static SourceData loadFullRoster() throws Exception {
+            return load(true);
+        }
+
+        private static SourceData load(boolean fullRoster) throws Exception {
             ObjectNode bootstrap = (ObjectNode) JSON.readTree(resource("bootstrap-static.json"));
             ArrayNode fixtureRows = (ArrayNode) JSON.readTree(resource("fixtures.json"));
             Map<Integer, List<JsonNode>> sourcePlayersByTeam = new TreeMap<>();
@@ -2124,7 +2454,7 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
             Map<Integer, Integer> playerTeams = new HashMap<>();
             List<Integer> playerIds = new ArrayList<>();
             for (Map.Entry<Integer, List<JsonNode>> entry : sourcePlayersByTeam.entrySet()) {
-                int count = entry.getKey() <= 8 ? 4 : 3;
+                int count = fullRoster ? entry.getValue().size() : entry.getKey() <= 8 ? 4 : 3;
                 List<Integer> ids = entry.getValue().stream().limit(count)
                         .map(player -> player.get("id").intValue()).sorted().toList();
                 playersByTeam.put(entry.getKey(), ids);
@@ -2157,12 +2487,13 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                 addParticipants(minutes.putArray("h"), playersByTeam.get(home));
                 addParticipants(minutes.putArray("a"), playersByTeam.get(away));
             }
+            if (fullRoster) playerIds.sort(Integer::compareTo);
             byte[] bootstrapBytes = JSON.writeValueAsBytes(bootstrap);
             byte[] fixtureBytes = JSON.writeValueAsBytes(fixtureRows);
             Map<Integer, byte[]> lives = createLiveManifests(fixtureRows, playersByTeam);
             Map<Integer, byte[]> histories = createHistories(fixtureRows, playerIds, playerTeams, playersByTeam);
             return new SourceData(bootstrapBytes, fixtureBytes, List.copyOf(playerIds),
-                    Map.copyOf(lives), Map.copyOf(histories));
+                    Map.copyOf(lives), Map.copyOf(histories), fullRoster);
         }
 
         Map<Integer, Set<Integer>> requiredHistoryPlayersByFixture(int fixtureCount) {
@@ -2201,6 +2532,7 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
             return body;
         }
         List<Integer> playerIds() { return playerIds; }
+        boolean fullRoster() { return fullRoster; }
 
         Body response(String path) {
             if (path.equals("/api/bootstrap-static/")) return new Body(EndpointKind.BOOTSTRAP_STATIC, bootstrap);

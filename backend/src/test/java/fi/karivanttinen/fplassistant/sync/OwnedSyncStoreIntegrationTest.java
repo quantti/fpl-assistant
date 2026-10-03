@@ -501,6 +501,219 @@ class OwnedSyncStoreIntegrationTest {
     }
 
     @Test
+    void preferentialHistoryTurnSelectsLateManifestDemandThenPlainTurnKeepsHistoryFifo() {
+        OwnedSyncStore fair = fencedStore();
+        int satisfiedPlayer = 12_001;
+        int missingPlayer = 12_002;
+        ReadinessFixture fixture = seedReadinessFixture(fair, 91, List.of(satisfiedPlayer, missingPlayer));
+        Instant fixtureFloor = jdbc.queryForObject("SELECT requested_source_after FROM " + TABLES.run()
+                + " WHERE generation=?", java.sql.Timestamp.class, fixture.generation()).toInstant();
+        jdbc.update("UPDATE " + TABLES.run() + " SET due_at=? WHERE generation=?",
+                java.sql.Timestamp.from(clock.instant().plus(Duration.ofMinutes(2))), fixture.generation());
+
+        HistoryEvidence satisfiedEvidence = seedReadinessHistory(fair, satisfiedPlayer, true);
+        List<Run> broadRoster = new ArrayList<>();
+        for (int playerId = 10_000; playerId < 10_005; playerId++) {
+            broadRoster.add(enqueueHistory(fair, playerId));
+        }
+        Run alreadySatisfiedReread = fair.ensurePlayerHistoryAtLeast("2097-98", satisfiedPlayer, fixtureFloor);
+        jdbc.update("UPDATE " + TABLES.run() + " SET due_at=? WHERE generation=?",
+                java.sql.Timestamp.from(clock.instant()), alreadySatisfiedReread.generation());
+        Run lateDependency = enqueueHistory(fair, missingPlayer);
+        resetAttemptsForCurrentEpoch();
+
+        Lease preferential = fair.acquireFairForSeason("2097-98", "preferred-history", Duration.ofMinutes(5))
+                .orElseThrow();
+
+        assertThat(lateDependency.generation()).isGreaterThan(alreadySatisfiedReread.generation());
+        assertThat(lateDependency.generation()).isGreaterThan(broadRoster.getLast().generation());
+        assertThat(preferential.generation()).isEqualTo(lateDependency.generation());
+        assertThat(preferential.generation()).isNotEqualTo(alreadySatisfiedReread.generation());
+        assertThat(satisfiedEvidence.read().startedAt()).isAfter(fixtureFloor);
+        assertThat(jdbc.queryForObject("SELECT due_at FROM " + TABLES.run()
+                + " WHERE generation=?", java.sql.Timestamp.class, fixture.generation()).toInstant())
+                .isAfter(clock.instant());
+
+        Lease plainHistory = fair.acquireFairForSeason("2097-98", "plain-history", Duration.ofMinutes(5))
+                .orElseThrow();
+        assertThat(plainHistory.generation()).isEqualTo(broadRoster.getFirst().generation());
+    }
+
+    @Test
+    void preferentialHistoryUsesOldestManifestBeforeHistoryFifoOnSecondPreferredSlot() {
+        OwnedSyncStore fair = fencedStore();
+        ReadinessFixture oldestManifest = seedReadinessFixture(fair, 88, 13_001);
+        ReadinessFixture newerManifest = seedReadinessFixture(fair, 7, 13_002);
+        Run newerManifestHistory = enqueueHistory(fair, 13_002);
+        Run oldestManifestHistory = enqueueHistory(fair, 13_001);
+        resetAttemptsForCurrentEpoch();
+        jdbc.update("UPDATE " + TABLES.run() + " SET attempt_count=4 WHERE generation=?",
+                oldestManifestHistory.generation());
+
+        Lease preferred = fair.acquireFairForSeason("2097-98", "second-preferred-history",
+                Duration.ofMinutes(5)).orElseThrow();
+
+        assertThat(oldestManifest.generation()).isLessThan(newerManifest.generation());
+        assertThat(oldestManifestHistory.generation()).isGreaterThan(newerManifestHistory.generation());
+        assertThat(preferred.generation()).isEqualTo(oldestManifestHistory.generation());
+    }
+
+    @Test
+    void sustainedManifestPreferencePreservesRotationAndPlainHistoryFifoAcrossStores() {
+        var fence = new PlannerRuntimeRepository(jdbc, tx, clock, TABLES)
+                .activate("2097-98", OwnedSyncMode.STAGING);
+        TrackingJdbcTemplate tracking = new TrackingJdbcTemplate(jdbc.getDataSource());
+        OwnedSyncStore firstStore = new OwnedSyncStore(tracking, tx, clock, TABLES, fence);
+        OwnedSyncStore secondStore = new OwnedSyncStore(tracking, tx, clock, TABLES, fence);
+
+        int demandedFirstPlayer = 12_101;
+        int demandedSecondPlayer = 12_102;
+        List<ReadinessFixture> demandedFixtures = List.of(
+                seedReadinessFixture(firstStore, 111, List.of(demandedFirstPlayer, demandedSecondPlayer)),
+                seedReadinessFixture(firstStore, 112, List.of(demandedFirstPlayer, demandedSecondPlayer)));
+        jdbc.update("UPDATE " + TABLES.run() + " SET priority=100 WHERE generation IN (?, ?)",
+                demandedFixtures.get(0).generation(), demandedFixtures.get(1).generation());
+        for (int playerId : List.of(demandedFirstPlayer, demandedSecondPlayer)) {
+            assertThat(jdbc.queryForObject("""
+                    SELECT count(*) FROM %s m
+                    CROSS JOIN LATERAL unnest(m.required_player_ids) AS required(player_id)
+                    WHERE m.run_generation IN (?, ?) AND required.player_id=?
+                    """.formatted(TABLES.fixtureDependencyManifest()), Integer.class,
+                    demandedFixtures.get(0).generation(), demandedFixtures.get(1).generation(), playerId))
+                    .as("overlapping manifests produce duplicate candidates for player %d", playerId).isEqualTo(2);
+        }
+
+        int readyPlayer = 12_103;
+        List<ReadinessFixture> ready = new ArrayList<>();
+        for (int fixtureId = 113; fixtureId < 119; fixtureId++) {
+            ready.add(seedReadinessFixture(firstStore, fixtureId, readyPlayer));
+        }
+        seedReadinessHistory(firstStore, readyPlayer, true);
+
+        List<Run> ordinaryHistories = new ArrayList<>();
+        for (int playerId = 12_110; playerId < 12_116; playerId++) {
+            ordinaryHistories.add(enqueueHistory(firstStore, playerId));
+        }
+        Run demandedFirst = enqueueHistory(firstStore, demandedFirstPlayer);
+        enqueueHistory(firstStore, demandedSecondPlayer);
+
+        List<Run> blocked = new ArrayList<>();
+        for (int fixtureId = 119; fixtureId < 122; fixtureId++) {
+            blocked.add(seedPartialFixture(firstStore, fixtureId, clock.instant()));
+        }
+        List<Run> untouched = new ArrayList<>();
+        for (int fixtureId = 122; fixtureId < 125; fixtureId++) {
+            untouched.add(enqueueFixtureVerification(firstStore, fixtureId));
+        }
+
+        resetAttemptsForCurrentEpoch();
+        Lease warmup = firstStore.acquireFairForSeason("2097-98", "warmup-preference",
+                Duration.ofMinutes(5)).orElseThrow();
+        assertThat(warmup.generation()).isEqualTo(demandedFirst.generation());
+        assertThat(warmup.attemptCount()).isOne();
+        firstStore.retry(warmup, clock.instant(), "keep the missing manifest history due");
+        assertThatThrownBy(() -> firstStore.retry(warmup, clock.instant(), "stale preference lease"))
+                .isInstanceOf(LeaseLostException.class);
+        assertThat(jdbc.queryForObject("SELECT state FROM " + TABLES.run()
+                + " WHERE generation=?", String.class, demandedFirst.generation())).isEqualTo("PENDING");
+
+        int preferenceAttempts = 1;
+        List<OwnedSyncStore> stores = List.of(firstStore, secondStore);
+        for (int rotation = 0; rotation < 3; rotation++) {
+            List<Long> expectedGenerations = List.of(
+                    ready.get(rotation * 2).generation(), ordinaryHistories.get(rotation * 2).generation(),
+                    blocked.get(rotation).generation(), demandedFirst.generation(),
+                    ready.get(rotation * 2 + 1).generation(), ordinaryHistories.get(rotation * 2 + 1).generation(),
+                    untouched.get(rotation).generation(), demandedFirst.generation());
+            for (int slot = 0; slot < expectedGenerations.size(); slot++) {
+                OwnedSyncStore claimant = stores.get((rotation * 8 + slot) % stores.size());
+                Lease lease = claimant.acquireFairForSeason("2097-98",
+                        "rotation-" + rotation + "-slot-" + slot, Duration.ofMinutes(5)).orElseThrow();
+                assertThat(lease.generation()).as("rotation %d slot %d", rotation + 1, slot + 1)
+                        .isEqualTo(expectedGenerations.get(slot));
+                assertThat(lease.kind()).as("rotation %d slot %d class", rotation + 1, slot + 1)
+                        .isEqualTo(slot == 0 || slot == 2 || slot == 4 || slot == 6
+                                ? SyncKind.FIXTURE_VERIFICATION : SyncKind.PLAYER_HISTORY);
+                if (slot == 3 || slot == 7) {
+                    preferenceAttempts++;
+                    assertThat(lease.attemptCount()).isEqualTo(preferenceAttempts);
+                    claimant.retry(lease, clock.instant(), "keep the missing manifest history due");
+                    assertThat(jdbc.queryForObject("SELECT state FROM " + TABLES.run()
+                            + " WHERE generation=?", String.class, demandedFirst.generation()))
+                            .isEqualTo("PENDING");
+                } else {
+                    assertThat(lease.attemptCount()).isOne();
+                }
+            }
+        }
+
+        assertThat(preferenceAttempts).isEqualTo(7);
+        assertThat(jdbc.queryForObject("SELECT attempt_count FROM " + TABLES.run()
+                + " WHERE generation=?", Integer.class, demandedFirst.generation())).isEqualTo(7);
+        assertThat(tracking.payloadBodySelects()).isZero();
+        assertThat(tracking.hydratedBodies()).isZero();
+    }
+
+    @Test
+    void invalidEpochFutureFloorTerminalDeletedAndMisKeyedManifestsDoNotPreferHistory() {
+        OwnedSyncStore fair = fencedStore();
+        Run oldestBroadHistory = enqueueHistory(fair, 14_000);
+        enqueueHistory(fair, 14_001);
+
+        ReadinessFixture invalid = seedReadinessFixture(fair, 101, 14_101);
+        jdbc.update("UPDATE " + TABLES.payload() + " SET validation_state='INVALID' WHERE id=?",
+                invalid.bootstrapPayloadId());
+
+        ReadinessFixture wrongEpoch = seedReadinessFixture(fair, 102, 14_102);
+        jdbc.update("UPDATE " + TABLES.run() + " SET runtime_epoch=runtime_epoch+1 WHERE generation=?",
+                wrongEpoch.generation());
+
+        ReadinessFixture futureFloor = seedReadinessFixture(fair, 103, 14_103);
+        jdbc.update("UPDATE " + TABLES.fixtureDependencyManifest() + " SET source_floor=? WHERE run_generation=?",
+                java.sql.Timestamp.from(clock.instant().plus(Duration.ofMinutes(1))), futureFloor.generation());
+
+        ReadinessFixture deletedAnchor = seedReadinessFixture(fair, 104, 14_104);
+        jdbc.update("DELETE FROM " + TABLES.payload() + " WHERE id=?", deletedAnchor.fixturesPayloadId());
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.fixtureDependencyManifest()
+                + " WHERE run_generation=?", Integer.class, deletedAnchor.generation())).isZero();
+
+        ReadinessFixture misKeyedAnchor = seedReadinessFixture(fair, 105, 14_105);
+        jdbc.update("UPDATE " + TABLES.fixtureDependencyManifest()
+                + " SET bootstrap_payload_id=fixtures_payload_id WHERE run_generation=?",
+                misKeyedAnchor.generation());
+
+        ReadinessFixture futureRead = seedReadinessFixture(fair, 107, 14_107);
+        Instant futureReadAt = clock.instant().plus(Duration.ofMinutes(1));
+        jdbc.update("UPDATE " + TABLES.payload() + " SET read_started_at=?, read_finished_at=? WHERE id=?",
+                java.sql.Timestamp.from(futureReadAt), java.sql.Timestamp.from(futureReadAt),
+                futureRead.fixturesPayloadId());
+        jdbc.update("UPDATE " + TABLES.payload() + " SET read_started_at=?, read_finished_at=? WHERE id="
+                + "(SELECT live_payload_id FROM " + TABLES.fixtureDependencyManifest()
+                + " WHERE run_generation=?)", java.sql.Timestamp.from(futureReadAt.plusMillis(1)),
+                java.sql.Timestamp.from(futureReadAt.plusMillis(1)), futureRead.generation());
+
+        ReadinessFixture terminal = seedReadinessFixture(fair, 106, 14_106);
+        jdbc.update("UPDATE " + TABLES.run() + " SET priority=0 WHERE generation=?", terminal.generation());
+        Lease terminalLease = fair.acquireForSeason("2097-98", "terminal-fixture", Duration.ofMinutes(5))
+                .orElseThrow();
+        assertThat(terminalLease.generation()).isEqualTo(terminal.generation());
+        fair.fail(terminalLease, "terminal manifest test");
+
+        List<Run> unusableDependencies = List.of(
+                enqueueHistory(fair, 14_101), enqueueHistory(fair, 14_102),
+                enqueueHistory(fair, 14_103), enqueueHistory(fair, 14_104),
+                enqueueHistory(fair, 14_105), enqueueHistory(fair, 14_106), enqueueHistory(fair, 14_107));
+        resetAttemptsForCurrentEpoch();
+
+        Lease first = fair.acquireFairForSeason("2097-98", "unusable-manifests", Duration.ofMinutes(5))
+                .orElseThrow();
+
+        assertThat(unusableDependencies.stream().map(Run::generation).toList())
+                .allSatisfy(generation -> assertThat(generation).isGreaterThan(oldestBroadHistory.generation()));
+        assertThat(first.generation()).isEqualTo(oldestBroadHistory.generation());
+    }
+
+    @Test
     void readyFixtureSelectionUsesDueTimeBeforePriority() {
         OwnedSyncStore fair = fencedStore();
         ReadinessFixture older = seedReadinessFixture(fair, 19, 9_019);
@@ -622,10 +835,21 @@ class OwnedSyncStoreIntegrationTest {
         OwnedSyncStore firstStore = new OwnedSyncStore(jdbc, tx, clock, TABLES, firstFence);
         ReadinessFixture firstReady = seedReadinessFixture(firstStore, 16, 9_016);
         seedReadinessHistory(firstStore, 9_016, true);
+        ReadinessFixture firstDemand = seedReadinessFixture(firstStore, 19, List.of(10_150, 10_151));
+        ReadinessFixture secondDemand = seedReadinessFixture(firstStore, 20, List.of(10_150, 10_151));
+        List<Run> ordinaryHistories = new ArrayList<>();
         for (int playerId = 10_100; playerId < 10_110; playerId++) {
-            firstStore.enqueue(SyncKind.PLAYER_HISTORY, "2097-98", "player-history:" + playerId,
-                    "player-history:" + playerId, clock.instant());
+            ordinaryHistories.add(enqueueHistory(firstStore, playerId));
         }
+        Run demandedHistory = enqueueHistory(firstStore, 10_150);
+        enqueueHistory(firstStore, 10_151);
+        assertThat(firstDemand.generation()).isLessThan(secondDemand.generation());
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM %s m
+                CROSS JOIN LATERAL unnest(m.required_player_ids) AS required(player_id)
+                WHERE m.run_generation IN (?, ?) AND required.player_id=?
+                """.formatted(TABLES.fixtureDependencyManifest()), Integer.class,
+                firstDemand.generation(), secondDemand.generation(), 10_150)).isEqualTo(2);
         resetAttemptsForCurrentEpoch();
         OwnedSyncStore competingStore = new OwnedSyncStore(jdbc, tx, clock, TABLES, firstFence);
         CountDownLatch start = new CountDownLatch(1);
@@ -644,12 +868,15 @@ class OwnedSyncStoreIntegrationTest {
             List<Lease> claims = List.of(left.get(), right.get());
             assertThat(claims).extracting(Lease::kind)
                     .containsExactlyInAnyOrder(SyncKind.PLAYER_HISTORY, SyncKind.FIXTURE_VERIFICATION);
-            assertThat(claims).extracting(Lease::generation).contains(firstReady.generation());
+            assertThat(claims).extracting(Lease::generation).contains(firstReady.generation(), demandedHistory.generation())
+                    .doesNotHaveDuplicates();
         }
 
         OwnedSyncStore restarted = new OwnedSyncStore(jdbc, tx, clock, TABLES, firstFence);
-        assertThat(restarted.acquireFairForSeason("2097-98", "after-restart", Duration.ofMinutes(5))
-                .orElseThrow().kind()).isEqualTo(SyncKind.PLAYER_HISTORY);
+        Lease afterRestart = restarted.acquireFairForSeason("2097-98", "after-restart", Duration.ofMinutes(5))
+                .orElseThrow();
+        assertThat(afterRestart.kind()).isEqualTo(SyncKind.PLAYER_HISTORY);
+        assertThat(afterRestart.generation()).isEqualTo(ordinaryHistories.getFirst().generation());
 
         var nextFence = new PlannerRuntimeRepository(jdbc, tx, clock, TABLES)
                 .activate("2097-98", OwnedSyncMode.STAGING);
@@ -1769,12 +1996,17 @@ class OwnedSyncStoreIntegrationTest {
     }
 
     private ReadinessFixture seedReadinessFixture(OwnedSyncStore target, int fixtureId, int playerId) {
+        return seedReadinessFixture(target, fixtureId, List.of(playerId));
+    }
+
+    private ReadinessFixture seedReadinessFixture(OwnedSyncStore target, int fixtureId,
+                                                  List<Integer> playerIds) {
         String key = FixtureSyncPublisher.publicationKey(fixtureId);
         Run run = target.enqueue(SyncKind.FIXTURE_VERIFICATION, "2097-98", key, key, clock.instant());
         Lease lease = target.acquireForSeason("2097-98", "readiness-fixture-" + fixtureId,
                 Duration.ofMinutes(5)).orElseThrow();
         assertThat(lease.generation()).isEqualTo(run.generation());
-        return stageReadinessManifest(target, lease, fixtureId, playerId);
+        return stageReadinessManifest(target, lease, fixtureId, playerIds);
     }
 
     private ReadinessFixture refreshReadinessFixture(OwnedSyncStore target, ReadinessFixture existing,
@@ -1789,6 +2021,11 @@ class OwnedSyncStoreIntegrationTest {
 
     private ReadinessFixture stageReadinessManifest(OwnedSyncStore target, Lease lease,
                                                      int fixtureId, int playerId) {
+        return stageReadinessManifest(target, lease, fixtureId, List.of(playerId));
+    }
+
+    private ReadinessFixture stageReadinessManifest(OwnedSyncStore target, Lease lease,
+                                                     int fixtureId, List<Integer> playerIds) {
         long generation = lease.generation();
         SourceRead pairRead = new SourceRead(clock.instant(), clock.instant());
         long bootstrapId = target.stage(lease, Endpoint.bootstrap(), pairRead, Validation.valid(), bytes("bootstrap"));
@@ -1804,8 +2041,13 @@ class OwnedSyncStoreIntegrationTest {
         StagedPayload live = new StagedPayload(liveId, generation, EndpointKind.EVENT_LIVE,
                 liveRead, ValidationState.VALID, null, bytes("live"));
         target.retryForDependency(lease, clock.instant(), "waiting for history", fixtureId, 3,
-                new PublicPayloadPair(generation, bootstrap, fixtures), live, List.of(playerId));
+                new PublicPayloadPair(generation, bootstrap, fixtures), live, playerIds);
         return new ReadinessFixture(generation, bootstrapId, fixturesId);
+    }
+
+    private Run enqueueHistory(OwnedSyncStore target, int playerId) {
+        String key = HistoryFixtureDispatcher.playerHistoryPublicationKey(playerId);
+        return target.enqueue(SyncKind.PLAYER_HISTORY, "2097-98", key, key, clock.instant());
     }
 
     private HistoryEvidence seedReadinessHistory(OwnedSyncStore target, int playerId, boolean complete) {
