@@ -1,5 +1,22 @@
 # Status — Phase 1
 
+## Owned sync — bounded STAGING retest stopped before fixture progress (2026-10-03)
+
+The [owner-authorized runbook](superpowers/plans/2026-10-03-owned-sync-bounded-staging-retest.md)
+ran one attended STAGING epoch 74 on the already-deployed KAR-72/73/75 fixes. At about
+248 seconds from the mode request it hit the 20 MB observed DB-RX stop (20.62 MB, with
+25.04 MB whole-machine RX); memory stayed above 192 MiB. **48 histories completed,
+zero fixtures STAGED.** Durable OFF epoch 75, zero active runs/unresolved HTTP attempts,
+public health UP and unchanged publication fingerprint (706 receipts, 6,523 evidence
+rows, 40 VERIFIED fixtures) were confirmed. GW5 still has no physical PFS rows.
+The [egress report](OWNED-SYNC-EGRESS-REPORT.md) records measurements and caveats:
+these socket counters are not billed Supabase egress or a monthly forecast. A newly
+recovered 28 September local run had already completed 43 histories under a smaller
+traffic cap, also with zero fixtures STAGED; older OFF epoch 67 notes below are
+historical. No ACTIVE mode, core publication, Tapas writer change or app deployment
+occurred. The progress gate failed; do not enlarge limits or reactivate without a
+separate review of fixture progress and egress.
+
 ## Owned sync — KAR-75 post-merge review fixes (2026-09-28)
 
 The [KAR-75 follow-up plan](superpowers/plans/2026-09-28-kar-75-owned-sync-review-followup.md)
