@@ -8,11 +8,11 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -39,6 +39,7 @@ public final class OwnedSyncStore {
     public static final int MAX_ERROR_CHARS = 1_000;
     private static final Duration MAX_LEASE = Duration.ofHours(1);
     private static final int PUBLIC_PAIR_CACHE_ENTRIES = 2;
+    private static final Set<Integer> PREFERENTIAL_HISTORY_TURNS = Set.of(0, 4);
     private static final List<ClaimClass> FAIR_CYCLE = List.of(
             ClaimClass.HISTORY, ClaimClass.READY_FIXTURE,
             ClaimClass.HISTORY, ClaimClass.BLOCKED_FIXTURE,
@@ -244,15 +245,24 @@ public final class OwnedSyncStore {
                           AND kind IN ('PLAYER_HISTORY', 'FIXTURE_VERIFICATION')
                         """.formatted(tables.run()), Long.class, validSeason, runtimeMode(), runtimeEpoch());
                 int firstTurn = (int) (attempts % FAIR_CYCLE.size());
-                LinkedHashSet<ClaimClass> borrowingOrder = new LinkedHashSet<>();
+                Map<ClaimClass, Integer> borrowingOrder = new LinkedHashMap<>();
                 for (int offset = 0; offset < FAIR_CYCLE.size(); offset++) {
-                    borrowingOrder.add(FAIR_CYCLE.get((firstTurn + offset) % FAIR_CYCLE.size()));
+                    int cycleTurn = (firstTurn + offset) % FAIR_CYCLE.size();
+                    borrowingOrder.putIfAbsent(FAIR_CYCLE.get(cycleTurn), cycleTurn);
                 }
-                for (ClaimClass claimClass : borrowingOrder) {
-                    generation = claimClass == ClaimClass.READY_FIXTURE
-                            ? fairCandidateOrdered(validSeason, checkedAt, claimClass.predicate(this),
-                                    "r.due_at, r.generation")
-                            : fairCandidate(validSeason, checkedAt, claimClass.predicate(this));
+                for (Map.Entry<ClaimClass, Integer> entry : borrowingOrder.entrySet()) {
+                    ClaimClass claimClass = entry.getKey();
+                    int cycleTurn = entry.getValue();
+                    if (claimClass == ClaimClass.HISTORY
+                            && PREFERENTIAL_HISTORY_TURNS.contains(cycleTurn)) {
+                        generation = fairDemandedHistoryCandidate(validSeason, checkedAt);
+                    }
+                    if (generation == null) {
+                        generation = claimClass == ClaimClass.READY_FIXTURE
+                                ? fairCandidateOrdered(validSeason, checkedAt, claimClass.predicate(this),
+                                        "r.due_at, r.generation")
+                                : fairCandidate(validSeason, checkedAt, claimClass.predicate(this));
+                    }
                     if (generation != null) break;
                 }
                 // Preserve the coordinator's existing failure handling for unsupported work.
@@ -268,6 +278,39 @@ public final class OwnedSyncStore {
     private Long fairCandidate(String season, Instant checkedAt, String predicate, Object... predicateValues) {
         return fairCandidateOrdered(season, checkedAt, predicate,
                 "r.priority, r.due_at, r.generation", predicateValues);
+    }
+
+    /** Prefer one missing history from the oldest coherent active fixture manifest. */
+    private Long fairDemandedHistoryCandidate(String season, Instant checkedAt) {
+        String sql = """
+                SELECT h.generation
+                FROM %s fr
+                JOIN %s m ON m.run_generation = fr.generation
+                JOIN %s b ON b.id = m.bootstrap_payload_id AND b.run_generation = fr.generation
+                JOIN %s f ON f.id = m.fixtures_payload_id AND f.run_generation = fr.generation
+                JOIN %s l ON l.id = m.live_payload_id AND l.run_generation = fr.generation
+                CROSS JOIN LATERAL unnest(m.required_player_ids) AS required(player_id)
+                JOIN %s h ON h.coalescing_key = 'player-history:' || required.player_id::text
+                         AND h.publication_key = 'player-history:' || required.player_id::text
+                WHERE fr.season = ? AND fr.runtime_mode = ? AND fr.runtime_epoch = ?
+                  AND fr.state IN ('PENDING', 'LEASED')
+                  AND GREATEST(fr.requested_source_after, m.source_floor,
+                      f.read_finished_at + INTERVAL '1 millisecond') <= ?
+                  AND %s AND %s
+                  AND h.kind = 'PLAYER_HISTORY'
+                  AND h.season = ? AND h.runtime_mode = ? AND h.runtime_epoch = ?
+                  AND h.due_at <= ? AND h.requested_source_after <= ?
+                  AND (h.state = 'PENDING' OR (h.state = 'LEASED' AND h.lease_expires_at <= ?))
+                ORDER BY fr.generation, h.priority, h.due_at, h.generation
+                LIMIT 1 FOR UPDATE OF h SKIP LOCKED
+                """.formatted(tables.run(), tables.fixtureDependencyManifest(),
+                tables.payload(), tables.payload(), tables.payload(), tables.run(),
+                fixtureManifestAnchorConditions("fr"),
+                missingHistoryEvidencePredicate("fr", "required.player_id"));
+        return jdbc.queryForList(sql, Long.class, season, runtimeMode(), runtimeEpoch(),
+                timestamp(checkedAt), season, runtimeMode(), runtimeEpoch(),
+                timestamp(checkedAt), timestamp(checkedAt), timestamp(checkedAt))
+                .stream().findFirst().orElse(null);
     }
 
     private Long fairCandidateOrdered(String season, Instant checkedAt, String predicate,
@@ -1137,49 +1180,65 @@ public final class OwnedSyncStore {
                               AND f.run_generation = r.generation
                     JOIN %s l ON l.id = m.live_payload_id
                               AND l.run_generation = r.generation
-                    WHERE m.run_generation = r.generation
-                      AND r.kind = 'FIXTURE_VERIFICATION'
-                      AND b.endpoint_kind = 'BOOTSTRAP_STATIC'
-                      AND b.event_id IS NULL AND b.player_id IS NULL
-                      AND b.validation_state = 'VALID'
-                      AND b.read_started_at >= r.requested_source_after
-                      AND f.endpoint_kind = 'FIXTURES'
-                      AND f.event_id IS NULL AND f.player_id IS NULL
-                      AND f.validation_state = 'VALID'
-                      AND f.read_started_at >= r.requested_source_after
-                      AND l.endpoint_kind = 'EVENT_LIVE'
-                      AND l.event_id > 0 AND l.player_id IS NULL
-                      AND l.validation_state = 'VALID'
-                      AND l.read_started_at >= GREATEST(
-                          r.requested_source_after,
-                          f.read_finished_at + INTERVAL '1 millisecond')
-                      AND fpl_sync_required_ids_valid(m.required_player_ids)
+                    WHERE %s
                       AND NOT EXISTS (
-                          SELECT 1
-                          FROM unnest(m.required_player_ids) AS required(player_id)
-                          WHERE NOT EXISTS (
-                              SELECT 1
-                              FROM %s hp
-                              JOIN %s hr ON hr.generation = hp.run_generation
-                              WHERE hp.endpoint_kind = 'ELEMENT_SUMMARY'
-                                AND hp.event_id IS NULL
-                                AND hp.player_id = required.player_id
-                                AND hp.validation_state = 'VALID'
-                                AND hp.read_started_at >= GREATEST(
-                                    r.requested_source_after,
-                                    m.source_floor,
-                                    f.read_finished_at + INTERVAL '1 millisecond')
-                                AND hr.kind = 'PLAYER_HISTORY'
-                                AND hr.coalescing_key = 'player-history:' || required.player_id::text
-                                AND hr.publication_key = 'player-history:' || required.player_id::text
-                                AND hr.season = r.season
-                                AND hr.runtime_mode = r.runtime_mode
-                                AND hr.runtime_epoch = r.runtime_epoch
-                          )
+                          SELECT 1 FROM unnest(m.required_player_ids) AS required(player_id)
+                          WHERE %s
                       )
                 )
                 """.formatted(tables.fixtureDependencyManifest(), tables.payload(), tables.payload(),
-                tables.payload(), tables.payload(), tables.run());
+                tables.payload(), fixtureManifestAnchorConditions("r"),
+                missingHistoryEvidencePredicate("r", "required.player_id"));
+    }
+
+    /** The exact source, endpoint and validation fences shared by readiness and history preference. */
+    private String fixtureManifestAnchorConditions(String runAlias) {
+        return """
+                m.run_generation = %1$s.generation
+                AND %1$s.kind = 'FIXTURE_VERIFICATION'
+                AND b.endpoint_kind = 'BOOTSTRAP_STATIC'
+                AND b.event_id IS NULL AND b.player_id IS NULL
+                AND b.validation_state = 'VALID'
+                AND b.read_started_at >= %1$s.requested_source_after
+                AND f.endpoint_kind = 'FIXTURES'
+                AND f.event_id IS NULL AND f.player_id IS NULL
+                AND f.validation_state = 'VALID'
+                AND f.read_started_at >= %1$s.requested_source_after
+                AND l.endpoint_kind = 'EVENT_LIVE'
+                AND l.event_id > 0 AND l.player_id IS NULL
+                AND l.validation_state = 'VALID'
+                AND l.read_started_at >= GREATEST(
+                    %1$s.requested_source_after,
+                    f.read_finished_at + INTERVAL '1 millisecond')
+                AND fpl_sync_required_ids_valid(m.required_player_ids)
+                """.formatted(runAlias);
+    }
+
+    /** True only when this exact player lacks valid history at the manifest's readiness floor. */
+    private String missingHistoryEvidencePredicate(String fixtureRunAlias, String playerIdExpression) {
+        return """
+                NOT EXISTS (
+                    SELECT 1
+                    FROM %s hp
+                    JOIN %s hr ON hr.generation = hp.run_generation
+                    WHERE hp.endpoint_kind = 'ELEMENT_SUMMARY'
+                      AND hp.event_id IS NULL
+                      AND hp.player_id = %s
+                      AND hp.validation_state = 'VALID'
+                      AND hp.read_started_at >= GREATEST(
+                          %s.requested_source_after,
+                          m.source_floor,
+                          f.read_finished_at + INTERVAL '1 millisecond')
+                      AND hr.kind = 'PLAYER_HISTORY'
+                      AND hr.coalescing_key = 'player-history:' || %s::text
+                      AND hr.publication_key = 'player-history:' || %s::text
+                      AND hr.season = %s.season
+                      AND hr.runtime_mode = %s.runtime_mode
+                      AND hr.runtime_epoch = %s.runtime_epoch
+                )
+                """.formatted(tables.payload(), tables.run(), playerIdExpression,
+                fixtureRunAlias, playerIdExpression, playerIdExpression,
+                fixtureRunAlias, fixtureRunAlias, fixtureRunAlias);
     }
 
     private Instant effectiveSourceFloor(Lease lease, Instant callerFloor) {
