@@ -1,5 +1,11 @@
 # Status — Phase 1
 
+## Owned sync — bounded priority for missing fixture histories (2026-10-03)
+
+The owner approved improving internal queue order without pinning one fixture. Two of four history slots now prefer missing post-floor history for the oldest source-coherent active fixture manifests; ordinary history FIFO, canonical preemption and ready/blocked/untouched fixture turns remain. Coverage, season/epoch/source fences, two-batch verification and HTTP limits are unchanged. The [readiness plan](superpowers/plans/2026-10-03-owned-sync-production-readiness.md) records the implementation and its operational boundary.
+
+A new 657-player / 50-fixture two-worker test with stale pre-anchor histories fails without preference at 350 admissions, zero STAGED fixtures. With it, the first source-complete fixture stages at 298.2 virtual seconds / 272 admissions (273 by driver stop), with 53.45 MB returned raw DB body values versus 68.27 MB at the unsuccessful disabled stop. Those unequal-outcome synthetic counts are neither billed/wire egress nor production latency. The source-completeness oracle and sustained overlapping-manifest/competing-store fairness cases pass; 108 focused store, admission, dispatcher and verification tests passed on disposable loopback Postgres. No full local suite, production query, mode change or limit increase occurred; the latest previously verified production containment is OFF epoch 77 in [PR #144](https://github.com/quantti/fpl-assistant/pull/144). Implementation/review are in [PR #145](https://github.com/quantti/fpl-assistant/pull/145), pending owner merge. Fresh provider headroom and a separately approved useful observation budget are still needed before STAGING/ACTIVE.
+
 ## Owned sync — KAR-75 post-merge review fixes (2026-09-28)
 
 The [KAR-75 follow-up plan](superpowers/plans/2026-09-28-kar-75-owned-sync-review-followup.md)
