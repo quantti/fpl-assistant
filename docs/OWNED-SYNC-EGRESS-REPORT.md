@@ -1,6 +1,87 @@
 # Owned sync egress — bounded production observations
 
-**PROGRESS:** The 2026-09-27 KAR-71 STAGING retest stopped at 15 MB observed DB traffic before completing any history. Production is verified OFF epoch 67. Sustainable egress and GW5 restoration remain unverified; this report implements no runtime fix.
+**PROGRESS:** Two attended 2026-10-03 STAGING observations stopped at their DB-RX triggers. The latest completed 84 histories but no fixture STAGED; OFF epoch 77 and unchanged publication verified. Sustained egress and GW5 restoration remain unverified.
+
+## 2026-10-03 — second, longer full-queue observation: no fixture STAGED
+
+The owner approved **one further run** with the existing whole-queue scheduling: stop at 20 minutes from the request, 50,000,000 observed DB-RX bytes or 65,000,000 machine-RX bytes, retaining the 192 MiB guest-available-memory and 400,000,000-byte physical DB-size stops. The owner-provided post-first-run Supabase dashboard showed 0.115 GB egress and 0.136 GB database size; billing may lag. The owner explicitly accepted the residual risk that both the temporary supervisor and Fly-console rollback need Fly's API: these are observed stop triggers, not API-independent hard limits. An offline review and mocked guard/OFF/failure-path tests passed; the socket meter passed its 524,288-byte test on the unchanged deployed image. No app deployment, Tapas writer change, ACTIVE or core publication was requested.
+
+SELECT-only preflight read OFF epoch 75, zero active runs/unresolved attempts, no cooldown, 120,966,291 physical DB bytes and unchanged publication/core/GW5 baselines. The independent guard was armed before the 11:54:53 UTC STAGING request. The new boot appeared at 11:55:03 and the first history completed at 11:56:05. At **12:00:56 UTC**, roughly 363 seconds from the request, the DB-RX stop fired: **53,187,034 observed DB TCP payload bytes** (3,187,034 beyond the stop trigger) and **59,936,871 whole-machine RX bytes**. The lowest sampled guest `MemAvailable` was **232,612 KiB**, above 192 MiB. The last STAGING shutdown sample showed 53,187,034 DB and 59,949,294 machine bytes; the tail and short-lived sockets may be missed. None of these numbers is Supabase billed egress. OFF epoch 77 fenced the queue at 12:01:01; the guard and postflight verified OFF, public health UP and zero active runs/unresolved attempts by 12:01:52. A second SELECT-only check at 12:05 confirmed OFF epoch 77.
+
+Epoch 76 had **137 durable admissions**, two completed catalogue/schedule runs, **84 completed VALID histories** and **zero fixtures STAGED**. The last in-run progress query saw 79 histories; five more completed before the OFF fence. Fifteen fixture dependency manifests were persisted. In the best source-floor overlap, fixture 11 had only **37 of 71** required histories; fixture 10 had 33 of 68 at its floor (48 of 68 without that floor). Thus more completed histories did not establish a ready fixture. OFF fenced 50 fixture and 605 history runs as FAILED; these are shutdown markers, not independent source errors. All 137 new payloads were VALID (19 bootstrap, 18 fixtures, 16 live, 84 histories). No persisted 429, uncertain run, partial pair or unresolved permit remained.
+
+Physical DB size ended at 124,767,379 bytes, below the stop; selected statement counters with an unchanged reset instant added 2 canonical body-pair calls/returned pairs, no own-checkpoint body calls and 26 single-payload-body calls/returned rows. The **706 published receipts and their fingerprint, 6,523 evidence rows, 40 VERIFIED fixtures, core counts and GW5's zero physical PFS rows/ten VERIFYING receipts were unchanged**. This was a failed fixture-progress gate, not evidence of sustainable egress, a monthly billing rate or GW5 readiness. No second run follows from this approval. Temporary evidence: `/tmp/fpl-staging-20261003-second/`.
+
+## 2026-10-03 — bounded KAR-72/73/75 retest: histories, no fixture
+
+The owner approved one attended run under the [12-minute / 20 MB DB / 26 MB machine
+plan](superpowers/plans/2026-10-03-owned-sync-bounded-staging-retest.md), accepted the
+20 MB database and 26 MB machine stop triggers including sampling/shutdown overshoot,
+confirmed Fly-console fallback and that Tapas core writes remained disabled. The owner-provided
+Supabase screenshot showed the 25 September–25 October Free billing period at 0.093 GB egress
+and 0.132 GB database size before the run; the owner confirmed that this was the entire relevant
+DB usage. The dashboard can lag and was not rechecked after the run. The already deployed single
+Fly machine was 1 GiB, reporting image `deployment-01M3NVRHYDC320RHHQK3QTA767`; master
+[`5af29cf` CI/deploy and health smoke](https://github.com/quantti/fpl-assistant/actions/runs/36527740100)
+passed on 29 September. No application image, Tapas settings, monitoring route or database
+privileges changed for this observation.
+
+The temporary independent rollback supervisor was armed before the STAGING request. Its
+mocked OFF/failure and deadline dry-run passed without a mode change; the read-only socket meter
+measured exactly 524,288 bytes on a held loopback connection with stable cookie and port
+filter **on the deployed image**. A SELECT-only preflight showed OFF epoch 73, zero active
+runs/unresolved HTTP attempts, 116,518,035 physical database bytes, 706 published receipts,
+6,523 evidence rows, 40 VERIFIED fixtures and zero GW5 physical PFS rows. The guard watched
+192 MiB available-memory and 400,000,000-byte physical DB-size triggers as well as time,
+traffic, health, telemetry, unsettled permits and progress.
+
+| UTC on 3 October | Event |
+|---|---|
+| 09:03:27 | Guard armed; STAGING requested |
+| 09:03:38 | New STAGING boot observed (epoch 74) |
+| 09:04:41 | First completed VALID player history |
+| 09:07:35 | DB-RX trigger requested OFF, about 248 seconds after mode request |
+| 09:07:40 | Durable OFF epoch 75 fenced the remaining queue |
+| 09:08:22–09:08:26 | OFF machine environment/public health and durable OFF/drain/publication verified |
+
+At the stop sample the meter read **20,619,257 bytes observed PostgreSQL TCP payload RX** and
+**25,041,673 bytes whole-machine RX**. The 20,000,000-byte DB trigger overshot by 619,257 bytes;
+the 26,000,000-byte machine and 12-minute triggers did not fire. The last shutdown sample of the
+STAGING boot showed 25,052,035 machine RX bytes; the DB meter still showed 20,619,257 and no
+observed socket closures. The lowest sampled available memory was 222,280 KiB (about 217 MiB),
+above the 192 MiB stop; physical DB size went from 116,518,035 to 120,966,291 bytes, below the
+400 MB stop. Socket polling can miss connections that open and close between samples, the tail
+after the last sample is not captured, and neither counter is exact Supabase billed egress.
+
+Epoch 74 had **85 durable admissions**, two completed catalogue/schedule runs and **48 completed
+player-history runs** (45 at the last in-run progress poll; three completed before OFF fenced
+work). No fixture run completed STAGING's `completeStaged` path: **zero fixtures STAGED**. OFF
+fenced 50 fixture and 640 history runs as FAILED; these are shutdown markers, not independent
+source errors. All 85 staged responses were VALID: 13 bootstrap, 13 fixtures, 11 live and 48
+player-history payloads. Zero unfinished attempts, persisted 429s or uncertain runs remained.
+The normal retention sweep deleted 119 earlier payload rows, leaving 85; the physical DB-size
+delta cannot be equated with staged response bytes. The first postflight payload/fixture summary
+accidentally queried epoch 72, so those two empty outputs were discarded and the endpoint counts
+above were obtained from a corrected **SELECT-only** epoch-74 postflight query. The completion
+count and stop decision used the correct epoch throughout.
+
+`pg_stat_statements` had an unchanged reset instant. Between the before/after snapshots,
+canonical body-pair reads added **2 calls/2 returned pairs**, own-checkpoint body reads **0/0**,
+and single-payload body reads **6 calls/6 returned rows**. Payload inserts added 85 rows and
+run-metadata reads added 2,365 calls/1,512 returned rows; observer queries may contribute.
+These counters do not identify which body ids crossed the wire or allocate the measured RX to
+SQL families. The preceding locally recovered 28 September epoch-72 run stopped at 20.56 MB
+machine RX with 43 completed histories and zero fixtures STAGED. This test shows earlier history
+progress under its limits, **not fixture progress, sustained egress, an idle/matchday rate, a
+monthly billing estimate or a GW5 backfill**.
+
+Final SELECTs and the independent guard confirmed OFF epoch 75, zero PENDING/LEASED runs and
+unresolved attempts, public health UP, identical publication-receipt fingerprint (706), 6,523
+player-evidence rows, 40 VERIFIED fixtures, unchanged core row counts and zero GW5 physical PFS
+rows with ten VERIFYING fixture receipts. STAGING published no core rows. Do not enlarge the
+limits or enter ACTIVE to manufacture a fixture: diagnose the remaining fixture/history replay
+and retained full-body transfers locally first, then seek separate approval for any further
+production observation.
 
 ## 2026-09-27 — KAR-71 STAGING retest stopped at the DB threshold
 
