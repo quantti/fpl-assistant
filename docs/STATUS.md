@@ -1,5 +1,9 @@
 # Status — Phase 1
 
+## Owned sync — second bounded STAGING run, still no staged fixture (2026-10-03)
+
+After the earlier epoch-74 run, the owner approved one further attended test with unchanged full-queue scheduling: 20 minutes / 50 MB observed DB-RX / 65 MB machine-RX stop triggers. The owner provided fresh Supabase usage (0.115 GB egress / 0.136 GB DB) and explicitly accepted the Fly-API dependency of both the guard and Fly-console rollback. The DB trigger fired about six minutes after the request at **53.19 MB observed DB RX** (59.94 MB machine RX); lowest sampled available memory was 232,612 KiB. Epoch 76 completed **84 histories but zero fixtures STAGED**; fifteen fixture manifests remained incomplete, best 37/71 post-floor histories. Rollback and a subsequent SELECT-only check confirmed **OFF epoch 77**, zero active runs/unresolved attempts, public health UP and unchanged publication fingerprint (706 receipts), 6,523 evidence rows, 40 VERIFIED fixtures and core/GW5 counts. The [egress report](OWNED-SYNC-EGRESS-REPORT.md) has the UTC timeline, stop-sampling caveats and separate first-run evidence. This is not billed egress, a sustainable-rate result or permission for another run or ACTIVE.
+
 ## Owned sync — bounded STAGING retest stopped before fixture progress (2026-10-03)
 
 The [owner-authorized runbook](superpowers/plans/2026-10-03-owned-sync-bounded-staging-retest.md)

@@ -4,16 +4,17 @@ Production cut over to the assistant-owned writer on 2026-09-16. Tapas runs thro
 `tapas_runtime` login with `FPL_CORE_WRITES_ENABLED=false`; do not restore a second writer without
 the documented rollback fence. Deploy through the reviewed GitHub workflow, not manual Fly deploy.
 
-Latest containment (2026-10-03): the [owner-authorized bounded retest](OWNED-SYNC-EGRESS-REPORT.md)
-ran STAGING epoch 74 under an independent guard. The 20 MB observed DB-RX stop fired after
-about 248 seconds (20.62 MB DB / 25.04 MB whole-machine RX); 48 histories completed, zero
-fixtures STAGED. **OFF epoch 75**, zero active runs and unresolved request attempts, public
-health UP, 706 published receipts, 6,523 evidence rows, 40 VERIFIED fixtures and unchanged
-core/GW5 counts were verified after rollback. The guard and read-only socket observer were
-dry-run before activation; owner-provided billing and Fly-console fallback were checked.
-There was no ACTIVE mode, core publication, Tapas writer change or application deployment.
-The locally recovered 28 September epoch-72 attempt had earlier stopped at 20.56 MB machine RX
-with 43 histories and zero STAGED fixtures; older OFF epochs below are historical.
+Latest containment (2026-10-03): a second separately [owner-authorized bounded retest](OWNED-SYNC-EGRESS-REPORT.md)
+ran STAGING epoch 76 under the existing full-queue scheduling. It stopped after about 363 seconds
+at the 50 MB observed DB-RX trigger (53.19 MB DB / 59.94 MB whole-machine RX), with 84 completed
+histories and **zero fixtures STAGED**. The independent guard confirmed **OFF epoch 77**, zero active
+runs/unresolved requests and public health UP; postflight and a later SELECT-only check confirmed
+unchanged 706 published receipts, 6,523 evidence rows, 40 VERIFIED fixtures and core/GW5 counts.
+The owner accepted the known Fly-API dependency of both the guard and console fallback; these are
+observed triggers, not hard caps or billed egress. No ACTIVE, core publication, Tapas writer change
+or application deployment occurred. The earlier epoch-74 run stopped at 20.62 MB observed DB RX,
+completed 48 histories, staged no fixtures and returned to OFF epoch 75. The locally recovered
+28 September epoch-72 attempt had 43 histories and zero fixtures; older OFF epochs below are historical.
 
 Earlier containment (2026-09-27): the owner-authorized STAGING epoch 66 retested deployed
 `80dba18`, including KAR-71's metadata-first payload hydration. An attended ten-minute guard
@@ -26,7 +27,7 @@ Kuma were not changed. The earlier 26 September run on `bc5ced7` stopped at 20.8
 with 15.16 MB observed DB RX, and returned to OFF epoch 65; that is historical evidence.
 
 Do not restore sustained STAGING or ACTIVE yet: KAR-72/73/75's fixes made history progress,
-but no fixture reached STAGED before the traffic cap. Neither bounded observation establishes
+but no fixture reached STAGED before the traffic cap. None of these bounded observations establishes
 a monthly rate or GW5 readiness; do not extend the limit without a new cause and owner approval.
 Tapas core writes remain disabled under the existing cutover. See
 `docs/OWNED-SYNC-EGRESS-REPORT.md` for evidence and measurement limits. The 20 September ACTIVE
