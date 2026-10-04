@@ -4,7 +4,19 @@ Production cut over to the assistant-owned writer on 2026-09-16. Tapas runs thro
 `tapas_runtime` login with `FPL_CORE_WRITES_ENABLED=false`; do not restore a second writer without
 the documented rollback fence. Deploy through the reviewed GitHub workflow, not manual Fly deploy.
 
-Latest containment (2026-10-04): the separately approved priority-enabled full-queue observation
+Latest containment (2026-10-04 afternoon): the separately approved **60-minute / 500 MB observed
+DB-RX / 650 MB machine-RX ACTIVE** run republished five already-VERIFIED fixtures in GW2–3,
+rewriting 327 existing PFS rows with matched independent source observations. The old coherent
+baselines were from 18–19 September; this was not two fresh batches per fixture within the run.
+It stopped at the DB trigger after about 28 minutes (504.56 MB DB / 530.21 MB machine RX),
+then verified **OFF epoch 81**, zero active/unresolved work and health UP. SELECT-only checks at
+17:29 UTC reconfirmed the scope/fences and unchanged archived-season data. Current receipts/evidence
+changed as authorized, but the VERIFIED count stayed 40 and **GW5 still has zero physical rows**.
+The accepted Fly-API residual risk applied only to this attended run; remote email delivery/Kuma
+state was not verified. No continuous operation, repeat, image deployment or Tapas change was
+approved. [Exact publication/traffic/rollback evidence](OWNED-SYNC-EGRESS-REPORT.md).
+
+Earlier containment (2026-10-04 morning): the separately approved priority-enabled full-queue observation
 on deployed `94eb28a` reached **two STAGED fixtures**, with independent metadata coverage checks
 of 68/68 and 71/71 exact-season/epoch, post-floor histories. Its 30-minute / 200 MB DB-RX /
 260 MB machine-RX envelope stopped at the first-fixture + two-minute deadline; last STAGING
@@ -38,7 +50,8 @@ Kuma were not changed. The earlier 26 September run on `bc5ced7` stopped at 20.8
 with 15.16 MB observed DB RX, and returned to OFF epoch 65; that is historical evidence.
 
 Do not restore sustained STAGING or ACTIVE yet: the bounded fixture-progress gate now passed,
-but independent-batch publication, sustainable egress and GW5 readiness remain unproven. The
+and five existing fixtures have now passed independent-batch republication, but sustainable
+egress, full-backlog drain and GW5 readiness remain unproven. The
 [readiness plan](superpowers/plans/2026-10-03-owned-sync-production-readiness.md) still requires
 reviewed durable budgeting/API-independent containment and a separately approved publication decision.
 Tapas core writes remain disabled under the existing cutover. See

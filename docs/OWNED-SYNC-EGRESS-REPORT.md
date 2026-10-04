@@ -1,6 +1,43 @@
 # Owned sync egress — bounded production observations
 
-**PROGRESS:** The separately approved 2026-10-04 priority-enabled STAGING run completed two source-complete fixtures; OFF epoch 79 and unchanged publication verified. Sustained egress, independent-batch verification and GW5 restoration remain unverified.
+**PROGRESS:** The separately approved 2026-10-04 bounded ACTIVE run republished five already-VERIFIED fixtures and returned to verified OFF epoch 81. Sustained egress, full-backlog drain and GW5 restoration remain unverified.
+
+## 2026-10-04 — bounded ACTIVE publishes refreshed GW2–3 evidence, not GW5
+
+After the successful morning STAGING observation, the owner explicitly approved **one attended 60-minute / 500,000,000-byte observed DB-RX / 650,000,000-byte machine-RX ACTIVE run**, followed by OFF. The 192 MiB guest-memory and 400,000,000-byte physical DB-size stops remained. The owner accepted the same Fly-API-dependent stop/console risk for ACTIVE. Latest supplied dashboard usage was **0.338 GB egress / 0.151 GB DB**; no post-run provider reading is available. This approval did not cover continuous operation or a repeat.
+
+A fresh guarded harness distinguished completed fixture batches from actual receipt-backed publication, permitted current-season core writes and checked archived-season fingerprints instead of requiring STAGING's unchanged-publication invariant. Offline review caught a false alarm on reserved `source:bootstrap-static` / `source:fixtures` receipts: these intentionally reference canonical parent keys, and their `GREATEST` generation pointer can exceed the lease supplying the source interval. Exact permitted parent mappings and source/epoch/season fences were tested with seeded SQLite cases and nine SELECT-only literal PostgreSQL fixture-audit cases; the literals inserted no real database rows. Failure-path/deadline/OFF tests and the actual-image 524,288-byte meter check passed, then re-review found no blocker. Relevant publication/verification/dispatcher/writer/read-source tests in [full CI 37200104161](https://github.com/quantti/fpl-assistant/actions/runs/37200104161) had passed; deployed backend `94eb28a` was unchanged. Current remote email delivery/Kuma state was not verified; the attended controller and independent guard supervised this run.
+
+SELECT-only preflight confirmed **OFF79**, zero active/unresolved work, no cooldown, playing season **2 / 2026-27**, explicit cutover confirmation and denied core table/column writes for `tapas_runtime` with no postgres membership. Physical DB size was **136,350,867 bytes**. No session SET, application image deployment, Tapas change or schema change was requested by the observation.
+
+| UTC on 4 October | Event |
+|---|---|
+| 16:33:22 | Independent guard armed; ACTIVE requested, epoch 80 |
+| 16:33:32 | New ACTIVE boot observed |
+| 16:34:49 | First completed VALID history |
+| 16:44:19 | First verified fixture republication (12) |
+| 17:01:45 | 500 MB observed DB-RX trigger, about 1,703 seconds from request |
+| 17:01:50 | Durable OFF81 fenced remaining work |
+| 17:02:37 | OFF/drain/publication-scope/archive checks complete, health UP |
+| 17:29:25 | SELECT-only OFF/audit/physical-row follow-up confirmed |
+
+The trigger sample measured **504,556,009 DB TCP payload RX bytes** (4,556,009 beyond the trigger) and **530,211,670 machine RX bytes**. The last ACTIVE shutdown sample retained 504,556,009 DB / 530,220,396 machine bytes, with nine observed DB socket closures. Minimum controller-sampled `MemAvailable` was **209,340 KiB**, about 204 MiB. Neither memory, storage, machine-traffic nor sixty-minute limit fired. The shutdown tail and sockets born/closed between samples may be missed; diagnostics have their own traffic and these counters are not organisation-wide billed egress or a monthly forecast.
+
+Epoch 80 had **718 admissions**, two completed canonical runs, **584 VALID history completions / 562 distinct history keys**, and five completed/published fixture runs. All 718 payloads were VALID (47 bootstrap, 47 fixtures, 40 live, 584 histories); no persisted 429, uncertain run, partial pair or unresolved permit remained. OFF fenced 45 fixture and 301 history runs as FAILED, not independent source failures. Five existing fixtures were reverified/republished:
+
+| Fixture / GW | Required histories | Received/expected participants | Rewritten PFS / new evidence rows |
+|---|---:|---:|---:|
+| 12 / GW2 | 56 | 31/31 | 53 |
+| 13 / GW2 | 80 | 32/32 | 72 |
+| 14 / GW2 | 66 | 31/31 | 64 |
+| 26 / GW3 | 70 | 30/30 | 68 |
+| 28 / GW3 | 70 | 31/31 | 70 |
+
+Each receipt passed metadata-only exact-season/epoch/key/anchor/effective-history-floor checks; evidence pointed to existing physical rows, and source reads preceded publication. The observer separately retained each prior coherent finished observation, matched fingerprints and proved the new batch started at least ten minutes after the prior completed. **Those prior baselines were from 18–19 September, not fresh first batches collected during this run.** All five fixtures were already VERIFIED: the total stayed **40**, not 45. They rewrote **327 existing PFS rows**, adding 327 evidence rows (6,523 → **6,850**). Of the receipt keys, 571 showed publication since activation, including histories/canonical streams; the total published-receipt count rose only **706 → 707**, not by 571. Current fingerprint became `3ffa070e90b91509acdbe85da94241dd`.
+
+Physical DB size ended at **149,687,443 bytes** (net +13,336,576), with 137 older payloads deleted by retention. Selected body-query deltas were two canonical-pair calls/returned pairs, zero own-checkpoint reads and 624 single-payload-body calls/returned rows; unchanged statistics-reset time, no body-id/wire-byte attribution. Archived-season core-row hashes and archived receipt/evidence/state hashes stayed unchanged, as did playing-season and Tapas privilege gates. Core row counts stayed 40 teams / 1,508 players / 76 gameweeks / 760 fixtures / 32,296 PFS rows. Ownership/evidence was retained on OFF; legacy writes were not restored.
+
+**GW5 still has zero physical PFS rows and ten VERIFYING fixtures.** Fixtures 10/11 recorded source-demand-floor refusals and next due times at 5 October 02:00 UTC; no source floor was relaxed. Publication works for the five observed refreshes, but full-backlog progress, idle/matchday cost, sustained memory/egress and continuous-operation containment remain unproven. Do not infer a monthly rate, complete GW5 recovery or permission to reactivate. Next review should use the retained refusal/traffic evidence, not blindly enlarge the cap. Evidence: `/tmp/fpl-active-20261004/`, including postflight/after-check TSVs, physical-row query, verification proofs, observer tests/audits and result.
 
 ## 2026-10-04 — priority-enabled full queue reaches two STAGED fixtures
 
