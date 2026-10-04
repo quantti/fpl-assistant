@@ -1,5 +1,11 @@
 # Status — Phase 1
 
+## Owned sync — all-three repair plan reviewed, implementation not started (2026-10-04)
+
+The owner's requested [repair plan](superpowers/plans/2026-10-04-owned-sync-recovery-fixes.md) covers publication-backed correction completion across restart, bounded overdue recovery episodes, and a fenced metadata-only retry gate before anchor hydration. Proposed admission change is one fixed existing-twelve-hour episode per 03:00-UK recovery day, not permission for a twelve-hour production run. Unknown legacy future due times are preserved once, rather than guessed to be policy-only; at the due time recovery must not be deferred to another tomorrow. Completion uses valid current receipt/source intervals, including still-valid prior-epoch publications, never STAGING or mere enqueue state.
+
+Four dependency-ordered units with focused regressions end in **10/10 receipt-backed ACTIVE verifications of seeded unpublished fixtures** within a finite declared test bound; partial progress is failure. Static plan review passed after clarifying legacy transport ambiguity, retained episode consumption and full acceptance. Implementation has not started; no code, deployment or activation change. Last verified production state remains OFF83; spent approvals remain spent.
+
 ## Owned sync — offline diagnosis separates admission from queue/transfer work (2026-10-04)
 
 Saved evidence explains why another evening cap increase would not restore GW5: ACTIVE80 moved all ten fixtures to **5 October02:00 UTC** through the twelve-hour daily-only admission policy, and ACTIVE82 inherited that blocker before fetching anchors. Separately, activation clears the planner-slot ledger while planner inputs always report no completed corrections, replaying overdue work for already-VERIFIED fixtures; fixture14's unchanged-fingerprint repeat is a concrete example. Dependency-wait retries also hydrate three anchor bodies before discovering missing histories. These are separate mechanisms, not a proven byte allocation or justification to relax source floors.
