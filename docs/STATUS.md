@@ -1,5 +1,11 @@
 # Status — Phase 1
 
+## Owned sync — offline diagnosis separates admission from queue/transfer work (2026-10-04)
+
+Saved evidence explains why another evening cap increase would not restore GW5: ACTIVE80 moved all ten fixtures to **5 October02:00 UTC** through the twelve-hour daily-only admission policy, and ACTIVE82 inherited that blocker before fetching anchors. Separately, activation clears the planner-slot ledger while planner inputs always report no completed corrections, replaying overdue work for already-VERIFIED fixtures; fixture14's unchanged-fingerprint repeat is a concrete example. Dependency-wait retries also hydrate three anchor bodies before discovering missing histories. These are separate mechanisms, not a proven byte allocation or justification to relax source floors.
+
+Three existing focused characterization tests passed on guarded localhost55432 (daily admission, missed correction scheduling and three blocked-anchor reads). No production queries/activation or code changes were made for this investigation; last verified production state remains OFF83. Next: publication-backed correction completion across restart, explicit catch-up admission semantics, and metadata-only retry gating with byte-counting regressions. [Evidence, code paths and limitations](OWNED-SYNC-EGRESS-REPORT.md). Do not treat STAGING progress tests as proof of ACTIVE recovery.
+
 ## Owned sync — second bounded ACTIVE still does not restore GW5 (2026-10-04 evening)
 
 With the owner's fresh dashboard (**0.849 GB egress / 0.165 GB DB**) and explicit approval of another single attended 60-minute / 500 MB DB-RX / 650 MB machine-RX run, a fresh harness checked OFF81, source/writer gates and the unchanged deployed image. Guard/controller/meter tests, nine literal PostgreSQL audit cases on guarded localhost55432 and offline review passed. Remote email delivery remained unverified. Epoch 82 ran from **20:25:33 UTC** until the DB trigger around **20:57:10**, about 32 minutes: 500,758,775 observed DB / 526,145,016 machine RX bytes. These are not billing or hard caps.
