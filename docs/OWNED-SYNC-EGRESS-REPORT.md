@@ -1,6 +1,32 @@
 # Owned sync egress — bounded production observations
 
-**PROGRESS:** Two attended 2026-10-03 STAGING observations stopped at their DB-RX triggers. The latest completed 84 histories but no fixture STAGED; OFF epoch 77 and unchanged publication verified. Sustained egress and GW5 restoration remain unverified.
+**PROGRESS:** The separately approved 2026-10-04 priority-enabled STAGING run completed two source-complete fixtures; OFF epoch 79 and unchanged publication verified. Sustained egress, independent-batch verification and GW5 restoration remain unverified.
+
+## 2026-10-04 — priority-enabled full queue reaches two STAGED fixtures
+
+After merging PRs [#144](https://github.com/quantti/fpl-assistant/pull/144) and [#145](https://github.com/quantti/fpl-assistant/pull/145), master `94eb28a` passed [CI/deploy/smoke 37137462755](https://github.com/quantti/fpl-assistant/actions/runs/37137462755). The owner separately approved **one attended 30-minute / 200,000,000-byte observed DB-RX / 260,000,000-byte machine-RX run**, with the existing 192 MiB guest-memory and 400,000,000-byte physical DB-size stops, and OFF after at most two minutes from the first fixture completion. The latest owner-provided dashboard showed 0.172 GB egress / 0.14 GB DB size; no post-run billing reading is available. The accepted sampling/shutdown overshoot and Fly-API-dependent console/guard risk apply only to this run, not unattended ACTIVE.
+
+A fresh temporary harness updated every epoch filter and independent-start deadline, allowed the meter's 2,100-second watch, and passed local failure-path/SQL dry-runs and offline guard review. The deployed `deployment-01M41AKJYBEFNKNYZXTW6R6AC0` image passed the held 524,288-byte meter check. SELECT-only preflight confirmed sole OFF epoch 77, zero active runs/unresolved attempts, no cooldown, health UP and **124,914,835 physical DB bytes**. No session SET, application deployment or Tapas configuration change occurred during the observation.
+
+| UTC on 4 October | Event |
+|---|---|
+| 11:15:23 | Independent guard armed; STAGING requested |
+| 11:15:34 | New STAGING boot observed, epoch 78 |
+| 11:16:43 | First VALID history completion |
+| 11:27:32 | Fixture 10 STAGED, about 729 seconds from request |
+| 11:28:10 | Fixture 11 STAGED |
+| 11:29:36 | Controller stopped on the shared first-fixture + two-minute deadline |
+| 11:29:40 | Durable OFF epoch 79 fenced remaining work |
+| 11:30:29 | OFF/drain/publication checks complete, public health UP |
+| 11:43:16 | SELECT-only OFF/drain/source-coverage follow-up confirmed |
+
+The two-minute target was 11:29:32.309; controller detection was about four seconds later and durable fencing about eight seconds later. At the last ordinary telemetry sample the observer recorded **160,121,357 DB TCP payload RX bytes / 175,199,900 whole-machine RX bytes**. The last STAGING shutdown sample recorded **165,121,323 / 180,266,506 bytes**, respectively, with two observed DB socket closures. Neither traffic trigger fired. Lowest controller-sampled `MemAvailable` was **208,968 KiB** (about 204 MiB, only 12 MiB above the stop); this is not a sustained-memory result. The missing shutdown tail and sockets born/closed between samples remain limitations. These counters are neither billed Supabase egress nor a monthly-rate forecast, and do not prove equal-budget improvement over the earlier runs.
+
+Epoch 78 had **313 admissions**, two completed catalogue/schedule runs, **196 VALID history completions representing 181 distinct player-history keys**, and **two fixtures STAGED**. Metadata-only follow-up independently found source-coherent anchors and **68/68** required histories for fixture 10 and **71/71** for fixture 11. Every counted history was VALID, exact-season/mode/epoch and correctly keyed, read at or after its effective requested/manifest/fixture floor, and completed before its fixture. Effective floors were 11:17:18.189 and 11:17:39.669, not merely the manifests' earlier stored floors. No participant or source fence was relaxed.
+
+There were 312 VALID payloads (40 bootstrap, 40 fixtures, 36 live, 196 history) and one UNCHECKED history response stored during normal shutdown. No persisted 429, uncertain run, partial pair or unresolved attempt remained. OFF fenced 48 fixture and 633 history runs as FAILED; these are shutdown markers, not independent source failures. Physical DB size ended at **136,326,291 bytes**, a net increase of 11,411,456; the normal retention sweep deleted 85 older payloads, so this is not raw staged-body size. With an unchanged statistics-reset instant, selected body-query deltas were two canonical-pair calls/returned pairs, zero own-checkpoint reads and 226 single-payload-body calls/returned rows; these do not identify body ids or allocate wire bytes to query families.
+
+The **706 published receipts and fingerprint `625e14b91a4463612dc8d0fb4d5f891e`, 6,523 evidence rows, 40 VERIFIED fixtures and core row counts remained unchanged**. GW5 still had zero physical PFS rows and ten VERIFYING receipts. This passes the bounded fixture-progress gate only: STAGING did not exercise the two-independent-batch publication decision, restore GW5 or establish sustained egress. No ACTIVE or repeat run is authorized; durable budgeting and API-independent containment remain [readiness-plan](superpowers/plans/2026-10-03-owned-sync-production-readiness.md) work. Evidence: `/tmp/fpl-staging-20261004-priority/`, including preflight/postflight/after-check TSVs, `staged-coverage.sql`, telemetry, guard log and result.
 
 ## 2026-10-03 — second, longer full-queue observation: no fixture STAGED
 

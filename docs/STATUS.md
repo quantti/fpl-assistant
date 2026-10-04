@@ -1,5 +1,13 @@
 # Status — Phase 1
 
+## Owned sync — priority-enabled STAGING reaches two source-complete fixtures (2026-10-04)
+
+The owner merged PRs #144/#145; master `94eb28a` passed [CI/deploy/smoke 37137462755](https://github.com/quantti/fpl-assistant/actions/runs/37137462755) while OFF. With latest dashboard usage 0.172 GB egress / 0.14 GB DB, the owner separately approved one attended **30-minute / 200 MB observed DB-RX / 260 MB machine-RX** full-queue run, retaining memory/storage/source/ownership gates and accepting the known Fly-API rollback risk. Fresh guard/failure-path checks, offline review and actual-image meter validation passed.
+
+Epoch 78 staged fixtures 10/11 at 11:27:32/11:28:10 UTC; independent metadata-only checks found **68/68 and 71/71** VALID same-season/epoch histories after each effective source floor and completed before its fixture. It had 313 admissions and 196 VALID history completions (181 distinct keys). The first-fixture + two-minute deadline stopped the run; last shutdown samples showed **165.12 MB DB RX / 180.27 MB machine RX**, not billed usage. Minimum controller-sampled memory was 208,968 KiB; physical DB size ended at 136,326,291 bytes.
+
+Durable **OFF epoch 79**, zero active/unresolved work and health UP were verified and reconfirmed by SELECT-only follow-up at 11:43 UTC. The publication fingerprint/706 receipts, 6,523 evidence rows, 40 VERIFIED fixtures, core counts and GW5's zero physical PFS rows/ten VERIFYING receipts stayed unchanged. This passes the bounded fixture-progress gate, **not VERIFIED publication, sustained egress or GW5 restoration**. No ACTIVE, repeat run or Tapas writer change is approved. [Readiness-plan Task 3 of 4](superpowers/plans/2026-10-03-owned-sync-production-readiness.md) is complete; the publication decision and durable-budget/API-independent-containment requirements remain. [Report and measurement limits](OWNED-SYNC-EGRESS-REPORT.md).
+
 ## Owned sync — bounded priority for missing fixture histories (2026-10-03)
 
 The owner approved improving internal queue order without pinning one fixture. Two of four history slots now prefer missing post-floor history for the oldest source-coherent active fixture manifests; ordinary history FIFO, canonical preemption and ready/blocked/untouched fixture turns remain. Coverage, season/epoch/source fences, two-batch verification and HTTP limits are unchanged. The [readiness plan](superpowers/plans/2026-10-03-owned-sync-production-readiness.md) records the implementation and its operational boundary.

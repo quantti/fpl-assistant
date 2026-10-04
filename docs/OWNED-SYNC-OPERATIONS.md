@@ -4,7 +4,18 @@ Production cut over to the assistant-owned writer on 2026-09-16. Tapas runs thro
 `tapas_runtime` login with `FPL_CORE_WRITES_ENABLED=false`; do not restore a second writer without
 the documented rollback fence. Deploy through the reviewed GitHub workflow, not manual Fly deploy.
 
-Latest containment (2026-10-03): a second separately [owner-authorized bounded retest](OWNED-SYNC-EGRESS-REPORT.md)
+Latest containment (2026-10-04): the separately approved priority-enabled full-queue observation
+on deployed `94eb28a` reached **two STAGED fixtures**, with independent metadata coverage checks
+of 68/68 and 71/71 exact-season/epoch, post-floor histories. Its 30-minute / 200 MB DB-RX /
+260 MB machine-RX envelope stopped at the first-fixture + two-minute deadline; last STAGING
+shutdown samples were 165.12 MB observed DB RX / 180.27 MB machine RX. **OFF epoch 79**,
+zero active runs/unresolved attempts, public health UP and unchanged publication/evidence/core/GW5
+counts were reconfirmed by SELECT-only checks at 11:43 UTC. GW5 still has zero physical PFS rows.
+STAGED is not VERIFIED or a sustained-egress result. No ACTIVE, repeat run, Tapas writer change
+or application deployment was authorized during the observation. Exact measurements and the
+accepted Fly-API-dependent rollback limitation are in [the egress report](OWNED-SYNC-EGRESS-REPORT.md).
+
+Earlier containment (2026-10-03): a second separately [owner-authorized bounded retest](OWNED-SYNC-EGRESS-REPORT.md)
 ran STAGING epoch 76 under the existing full-queue scheduling. It stopped after about 363 seconds
 at the 50 MB observed DB-RX trigger (53.19 MB DB / 59.94 MB whole-machine RX), with 84 completed
 histories and **zero fixtures STAGED**. The independent guard confirmed **OFF epoch 77**, zero active
@@ -26,9 +37,10 @@ GW5 still has zero physical PFS rows and ten `VERIFYING` fixture receipts. Tapas
 Kuma were not changed. The earlier 26 September run on `bc5ced7` stopped at 20.81 MB machine RX,
 with 15.16 MB observed DB RX, and returned to OFF epoch 65; that is historical evidence.
 
-Do not restore sustained STAGING or ACTIVE yet: KAR-72/73/75's fixes made history progress,
-but no fixture reached STAGED before the traffic cap. None of these bounded observations establishes
-a monthly rate or GW5 readiness; do not extend the limit without a new cause and owner approval.
+Do not restore sustained STAGING or ACTIVE yet: the bounded fixture-progress gate now passed,
+but independent-batch publication, sustainable egress and GW5 readiness remain unproven. The
+[readiness plan](superpowers/plans/2026-10-03-owned-sync-production-readiness.md) still requires
+reviewed durable budgeting/API-independent containment and a separately approved publication decision.
 Tapas core writes remain disabled under the existing cutover. See
 `docs/OWNED-SYNC-EGRESS-REPORT.md` for evidence and measurement limits. The 20 September ACTIVE
 test and its OFF epoch 63 are historical, not the current mode. Reducing future traffic does not
