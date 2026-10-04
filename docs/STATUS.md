@@ -1,5 +1,13 @@
 # Status — Phase 1
 
+## Owned sync — second bounded ACTIVE still does not restore GW5 (2026-10-04 evening)
+
+With the owner's fresh dashboard (**0.849 GB egress / 0.165 GB DB**) and explicit approval of another single attended 60-minute / 500 MB DB-RX / 650 MB machine-RX run, a fresh harness checked OFF81, source/writer gates and the unchanged deployed image. Guard/controller/meter tests, nine literal PostgreSQL audit cases on guarded localhost55432 and offline review passed. Remote email delivery remained unverified. Epoch 82 ran from **20:25:33 UTC** until the DB trigger around **20:57:10**, about 32 minutes: 500,758,775 observed DB / 526,145,016 machine RX bytes. These are not billing or hard caps.
+
+It republished **fixtures 14/15/16/23/17 in GW2–3**, rewriting **322 existing PFS rows**. Fixture 14 had already been refreshed in ACTIVE80; four others were additional refreshes, yielding **nine distinct fixtures across the two ACTIVE runs**, not ten new VERIFIED fixtures. Total VERIFIED remains 40; **GW5 still has zero physical rows / ten VERIFYING**. Matching independent baselines were ACT80 for fixture14 and 18–19 September for the other four. Minimum sampled memory was **203,344 KiB (~199 MiB)**, only ~6.6 MiB above the stop.
+
+**OFF83**, zero active/unresolved work, publication/source/writer fences, unchanged archived-season hashes and health UP were verified and reconfirmed at **21:01 UTC**. DB ended at 168,864,915 bytes; receipts 710, evidence 7,172. Both one-time approvals are spent; no repeat or continuous ACTIVE is approved. Before another activation, investigate transfer cost, repeated refreshes and lack of GW5 progress offline without weakening source floors or pinning a fixture. [Detailed observation](OWNED-SYNC-EGRESS-REPORT.md).
+
 ## Owned sync — bounded ACTIVE republishes five fixtures, GW5 still empty (2026-10-04)
 
 The owner separately approved one attended **60-minute / 500 MB observed DB-RX / 650 MB machine-RX ACTIVE** run, retaining the 192 MiB memory / 400 MB physical DB stops and accepting the Fly-API-dependent rollback risk. Latest provided dashboard usage was 0.338 GB egress / 0.151 GB DB. Fresh SELECT-only preflight verified OFF79, playing season 2/2026-27, cutover confirmation, denied Tapas core table/column writes and no active/unresolved work. The deployed image was unchanged. Guard/meter tests and offline review passed after correcting the observer's handling of reserved canonical source receipts; remote email delivery was not verified.

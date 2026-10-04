@@ -1,6 +1,38 @@
 # Owned sync egress — bounded production observations
 
-**PROGRESS:** The separately approved 2026-10-04 bounded ACTIVE run republished five already-VERIFIED fixtures and returned to verified OFF epoch 81. Sustained egress, full-backlog drain and GW5 restoration remain unverified.
+**PROGRESS:** Two separately approved bounded ACTIVE runs refreshed nine distinct already-VERIFIED fixtures, ending at verified OFF83. Sustained egress, full-backlog drain and GW5 restoration remain unverified.
+
+## 2026-10-04 evening — second bounded ACTIVE, still no GW5 publication
+
+The owner supplied a new dashboard (**0.849 GB egress / 0.165 GB DB**) and explicitly approved one more attended **60-minute / 500,000,000-byte DB-RX / 650,000,000-byte machine-RX** run, then OFF, retaining 192 MiB memory / 400 MB physical DB stops and the accepted Fly-API-dependent rollback risk. No continuous operation or further repeat was approved. A fresh `/tmp/fpl-active-20261004-second/` copied only static harness/probe files, not armed/deadline/stop/results, and advanced OFF81→ACTIVE82→later OFF. Controller/guard dry runs, seeded receipt cases, **nine SELECT-only literal fixture-audit cases on guarded localhost55432 test DB**, an actual-image 524,288-byte meter test and bounded offline review passed. The image/digest remained the earlier deployed `94eb28a`; playing-season/cutover/Tapas privilege gates passed. Remote email delivery remained unverified; supervision was the attended controller and independent guard.
+
+| UTC on 4 October | Event |
+|---|---|
+| 20:25:33 | Fresh preflight passed; guard armed, ACTIVE82 requested |
+| 20:27:03 | First completed VALID history |
+| 20:41:58 | First fixture republication (14) |
+| 20:57:10 | 500 MB observed DB-RX stop, about 32 minutes from request |
+| 20:57:17 | Durable OFF83 fences remaining work |
+| 20:58:13 | OFF/drain/publication/archive/writer checks complete; health UP |
+| 21:01:30 | SELECT-only OFF/audit/physical-row follow-up and saved health probe passed |
+
+Trigger telemetry: **500,758,775 observed DB RX / 526,145,016 machine RX bytes**. Last ACTIVE shutdown telemetry: **500,776,327 / 526,153,099 bytes**, fourteen observed socket closures. The DB trigger overshot by at least 776,327 bytes; shutdown tails and between-sample sockets can still be missed. Minimum controller-sampled `MemAvailable` was **203,344 KiB (~198.6 MiB)**, only ~6.6 MiB above the stop. No memory/storage/machine-traffic/deadline limit fired. These counters are not billed/organisation-wide usage, hard caps or sustainable monthly rates; no new post-run provider dashboard was supplied.
+
+Epoch82 completed two canonical runs, **615 VALID history runs / 594 distinct history keys** and five fixture republications, with **742 admissions / 741 VALID payloads** (44 bootstrap, 44 fixtures, 38 live, 615 histories). The admission/body totals differ by one at shutdown; no persisted 429, uncertain run, partial pair or unresolved permit remained. OFF fenced 45 fixture and 244 history runs; one fenced history run had an attempt. These are shutdown markers, not 289 independent source failures.
+
+| Fixture / GW | Required histories | Received/expected participants | Rewritten PFS / new evidence rows | Matched prior baseline |
+|---|---:|---:|---:|---|
+| 14 / GW2 | 66 | 31/31 | 64 | ACTIVE80, 4 October |
+| 15 / GW2 | 75 | 31/31 | 67 | 18 September |
+| 16 / GW2 | 74 | 30/30 | 70 | 19 September |
+| 23 / GW3 | 68 | 29/29 | 67 | 18 September |
+| 17 / GW2 | 60 | 32/32 | 54 | 18 September |
+
+All five passed the exact-season/epoch/key/anchor/effective-floor and physical-evidence checks, with matching coherent finished observations independently captured at least ten minutes apart. This was not two newly collected batches per fixture within the run. **Fixture14 repeats a refresh from ACTIVE80**: four additional distinct fixtures, nine total across both ACTIVE runs. All were already VERIFIED; the count stayed **40**. The second run rewrote 322 existing PFS rows and added 322 evidence rows (**6,850→7,172**). 603 receipt keys showed publication since activation, but total published receipts rose only **707→710**; fingerprint `fc69799b138b6729cca4e98f4df40ac7`. Core row counts stayed unchanged, and **GW5 stayed zero physical PFS rows / ten VERIFYING fixtures**.
+
+Physical DB ended **168,864,915 bytes** (net +19,177,472); retention deleted zero older payload rows. Selected body-query deltas: one canonical-pair call/returned pair, zero own-checkpoint reads, 625 single-payload-body calls/returned rows; unchanged statistics-reset time, no body-id/wire-byte attribution. Archived-season core/receipt/evidence/state hashes and playing-season/Tapas privilege gates stayed unchanged. OFF retained real ownership/evidence and did not restore legacy writers. The new directory's `NOT_READY` was restored: approval spent.
+
+The second unchanged-image run again spent the traffic envelope without restoring GW5. The precise cause/transfer allocation is not established by these counters. **Next work should diagnose repeated refreshes, unmet source demands and transfer hotspots offline before another activation**, preserving full-queue fairness and exact source/participant floors; neither a pinned fixture nor a blind cap increase follows from this evidence. Sustained-budget/API-independent containment remains open.
 
 ## 2026-10-04 — bounded ACTIVE publishes refreshed GW2–3 evidence, not GW5
 

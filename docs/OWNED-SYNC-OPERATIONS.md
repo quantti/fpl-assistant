@@ -4,7 +4,19 @@ Production cut over to the assistant-owned writer on 2026-09-16. Tapas runs thro
 `tapas_runtime` login with `FPL_CORE_WRITES_ENABLED=false`; do not restore a second writer without
 the documented rollback fence. Deploy through the reviewed GitHub workflow, not manual Fly deploy.
 
-Latest containment (2026-10-04 afternoon): the separately approved **60-minute / 500 MB observed
+Latest containment (2026-10-04 evening): a second separately approved attended ACTIVE run
+stopped at the same 500 MB DB-RX trigger after about 32 minutes and verified **OFF83**,
+zero active/unresolved work and health UP; SELECT-only scope/gate/physical-row and health
+checks passed again at 21:01 UTC. Five existing GW2–3 fixtures were republished (322 rows),
+but one repeated ACTIVE80's fixture14: nine distinct refreshes across both runs, still only
+40 VERIFIED and **zero GW5 physical rows**. Last observed ACTIVE shutdown traffic was
+500.78 MB DB / 526.15 MB machine RX; minimum sampled memory was ~198.6 MiB. Archived-season
+hashes/writer gates stayed unchanged. Both one-time approvals are spent; no continuous or
+further repeat is approved. Remote email delivery remains unverified. Investigate transfer
+cost and backlog behavior offline before another activation; preserve source floors and
+full-queue fairness. [Exact evidence](OWNED-SYNC-EGRESS-REPORT.md).
+
+Earlier containment (2026-10-04 afternoon): the separately approved **60-minute / 500 MB observed
 DB-RX / 650 MB machine-RX ACTIVE** run republished five already-VERIFIED fixtures in GW2–3,
 rewriting 327 existing PFS rows with matched independent source observations. The old coherent
 baselines were from 18–19 September; this was not two fresh batches per fixture within the run.
