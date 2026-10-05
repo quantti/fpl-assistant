@@ -167,6 +167,42 @@ public final class OwnedSyncStore {
         });
     }
 
+    /** True only when reads can be tied to a known activation epoch for this season. */
+    boolean hasCurrentRuntimeEpoch(String season) {
+        return runtimeFence != null && runtimeFence.season().equals(season);
+    }
+
+    /** Whether a canonical parent pair came from a completed, receipt-backed current ACTIVE run. */
+    boolean isCurrentPublishedCanonicalPair(String season, long generation, Instant now) {
+        if (runtimeFence == null || runtimeFence.mode() != OwnedSyncMode.ACTIVE
+                || !runtimeFence.season().equals(season)) return false;
+        Boolean published = jdbc.queryForObject("""
+                SELECT EXISTS (
+                    SELECT 1 FROM %s r
+                    JOIN %s p ON p.season=r.season AND p.publication_key=r.publication_key
+                        AND p.latest_generation=r.generation
+                    WHERE r.generation=? AND r.season=? AND r.kind='CATALOGUE_SCHEDULE'
+                      AND ((r.coalescing_key=? AND r.publication_key=?)
+                           OR (r.coalescing_key=? AND r.publication_key=?))
+                      AND r.runtime_mode='ACTIVE' AND r.runtime_epoch=? AND r.state='COMPLETED'
+                      AND r.completed_at IS NOT NULL AND r.completed_at<=p.published_at
+                      AND p.published_at<=?
+                      AND r.source_read_started_at IS NOT NULL AND r.source_read_finished_at IS NOT NULL
+                      AND r.source_read_started_at<=r.source_read_finished_at
+                      AND r.source_read_finished_at<=p.published_at
+                      AND p.source_read_started_at=r.source_read_started_at
+                      AND p.source_read_finished_at=r.source_read_finished_at
+                )
+                """.formatted(tables.run(), tables.receipt()), Boolean.class,
+                generation, season,
+                CatalogueScheduleDispatcher.CATALOGUE_PRICE_COALESCING_KEY,
+                CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY,
+                CatalogueScheduleDispatcher.SCHEDULE_COALESCING_KEY,
+                CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY,
+                runtimeFence.epoch(), timestamp(now));
+        return Boolean.TRUE.equals(published);
+    }
+
     /** Executes a non-run runtime mutation while holding the durable activation fence. */
     public <T> T withinRuntimeFence(Supplier<T> callback) {
         Objects.requireNonNull(callback);
@@ -174,6 +210,17 @@ public final class OwnedSyncStore {
         return tx.execute(status -> {
             assertRuntimeFence(runtimeFence.season());
             return callback.get();
+        });
+    }
+
+    /** Runs one database mutation under the current runtime and run-lease fences. */
+    <T> T withinRunLease(Lease lease, Supplier<T> callback) {
+        Objects.requireNonNull(callback);
+        return tx.execute(status -> {
+            LockedRun run = lockAndValidate(lease);
+            T result = callback.get();
+            requireNotExpired(run, now());
+            return result;
         });
     }
 
@@ -987,12 +1034,17 @@ public final class OwnedSyncStore {
 
     /** Requeues work without treating admission or scheduling delay as a failed source fetch. */
     public void retry(Lease lease, Instant dueAt, String error) {
-        finishAttempt(lease, dueAt, error, false, false, false);
+        finishAttempt(lease, dueAt, error, false, false, false, null);
+    }
+
+    /** Applies a database-only retry mutation after validating the lease, in the retry transaction. */
+    public void retry(Lease lease, Instant dueAt, String error, Supplier<Instant> retryMutation) {
+        finishAttempt(lease, dueAt, error, false, false, false, Objects.requireNonNull(retryMutation));
     }
 
     /** Requeues a dependent behind the work needed to make it ready. */
     public void retryForDependency(Lease lease, Instant dueAt, String error) {
-        finishAttempt(lease, dueAt, error, false, false, true);
+        finishAttempt(lease, dueAt, error, false, false, true, null);
     }
 
     /** Stores the fixture's validated history dependency manifest without releasing its lease. */
@@ -1013,6 +1065,13 @@ public final class OwnedSyncStore {
     public void retryForDependency(Lease lease, Instant dueAt, String error, int fixtureId, int eventId,
                                    PublicPayloadPair pair, StagedPayload live,
                                    List<Integer> requiredPlayerIds) {
+        retryForDependency(lease, dueAt, error, fixtureId, eventId, pair, live, requiredPlayerIds, null);
+    }
+
+    /** Runs the dependency mutation only after lease/runtime validation, atomically with requeue. */
+    public void retryForDependency(Lease lease, Instant dueAt, String error, int fixtureId, int eventId,
+                                   PublicPayloadPair pair, StagedPayload live,
+                                   List<Integer> requiredPlayerIds, Supplier<Instant> retryMutation) {
         Objects.requireNonNull(lease);
         Objects.requireNonNull(dueAt);
         Objects.requireNonNull(pair);
@@ -1021,6 +1080,8 @@ public final class OwnedSyncStore {
 
         tx.executeWithoutResult(status -> {
             LockedRun run = lockAndValidate(lease);
+            Instant selectedDueAt = retryMutation == null ? dueAt
+                    : Objects.requireNonNull(retryMutation.get(), "retry mutation due time");
             Instant recordedAt = writeFixtureDependencyManifest(
                     lease, run, fixtureId, eventId, pair, live, sortedPlayerIds);
             int released = jdbc.update("""
@@ -1030,7 +1091,7 @@ public final class OwnedSyncStore {
                     WHERE generation = ? AND state = 'LEASED' AND lease_owner = ?
                       AND lease_token = ? AND lease_fence = ?
                     """.formatted(tables.run()), SyncKind.DEPENDENCY_WAITING_PRIORITY,
-                    timestamp(dueAt), boundedNullable(error, MAX_ERROR_CHARS), timestamp(recordedAt),
+                    timestamp(selectedDueAt), boundedNullable(error, MAX_ERROR_CHARS), timestamp(recordedAt),
                     run.generation, lease.owner(), lease.token(), lease.fence());
             if (released != 1) {
                 throw new LeaseLostException("Lease is stale for generation " + run.generation);
@@ -1103,15 +1164,20 @@ public final class OwnedSyncStore {
 
     /** Requeues a real source failure and durably advances its consecutive-failure count. */
     public void retryFetchFailure(Lease lease, Instant dueAt, String error) {
-        finishAttempt(lease, dueAt, error, false, true, false);
+        finishAttempt(lease, dueAt, error, false, true, false, null);
+    }
+
+    /** Applies the failure retry mutation only after validating the lease, in the retry transaction. */
+    public void retryFetchFailure(Lease lease, Instant dueAt, String error, Supplier<Instant> retryMutation) {
+        finishAttempt(lease, dueAt, error, false, true, false, Objects.requireNonNull(retryMutation));
     }
 
     public void fail(Lease lease, String error) {
-        finishAttempt(lease, null, error, true, false, false);
+        finishAttempt(lease, null, error, true, false, false, null);
     }
 
     public void failFetch(Lease lease, String error) {
-        finishAttempt(lease, null, error, true, true, false);
+        finishAttempt(lease, null, error, true, true, false, null);
     }
 
     /** A successful source response ends the consecutive failure sequence before later processing. */
@@ -1124,11 +1190,15 @@ public final class OwnedSyncStore {
     }
 
     private void finishAttempt(Lease lease, Instant dueAt, String error,
-                               boolean terminal, boolean fetchFailure, boolean dependencyWaiting) {
+                               boolean terminal, boolean fetchFailure, boolean dependencyWaiting,
+                               Supplier<Instant> retryMutation) {
         if (!terminal) Objects.requireNonNull(dueAt);
         tx.executeWithoutResult(status -> {
             LockedRun run = lockAndValidate(lease);
+            Instant selectedDueAt = terminal ? null : retryMutation == null
+                    ? dueAt : Objects.requireNonNull(retryMutation.get(), "retry mutation due time");
             Instant failedAt = now();
+            requireNotExpired(run, failedAt);
             int priority = dependencyWaiting ? SyncKind.DEPENDENCY_WAITING_PRIORITY : run.kind.priority;
             jdbc.update("""
                     UPDATE %s SET state = ?, priority = ?, due_at = COALESCE(?, due_at), last_error = ?,
@@ -1136,7 +1206,7 @@ public final class OwnedSyncStore {
                         lease_owner = NULL, lease_token = NULL,
                         lease_expires_at = NULL, updated_at = ? WHERE generation = ?
                     """.formatted(tables.run()), terminal ? "FAILED" : "PENDING", priority,
-                    dueAt == null ? null : timestamp(dueAt), boundedNullable(error, MAX_ERROR_CHARS),
+                    selectedDueAt == null ? null : timestamp(selectedDueAt), boundedNullable(error, MAX_ERROR_CHARS),
                     terminal ? timestamp(failedAt) : null, fetchFailure ? 1 : 0,
                     timestamp(failedAt), lease.generation());
         });

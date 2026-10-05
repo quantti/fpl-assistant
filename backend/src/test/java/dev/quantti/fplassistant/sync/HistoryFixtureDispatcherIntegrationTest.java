@@ -789,6 +789,8 @@ class HistoryFixtureDispatcherIntegrationTest {
             clock.advance(Duration.ofSeconds(delay));
         }
 
+        Instant persistedTransportDue = jdbc.queryForObject("SELECT next_due_at FROM " + TABLES.fixtureSync()
+                + " WHERE fixture_id=21", java.sql.Timestamp.class).toInstant();
         clock.advance(Duration.between(clock.instant(),
                 Instant.parse("2026-09-14T06:00:00Z")));
         int fetchedBefore = fetch.endpoints.size();
@@ -796,10 +798,12 @@ class HistoryFixtureDispatcherIntegrationTest {
         assertThat(capped.outcome()).isEqualTo(Outcome.RETRY_SCHEDULED);
         assertThat(fetch.endpoints).hasSize(fetchedBefore);
         assertThat(jdbc.queryForObject("SELECT alert_state FROM " + TABLES.fixtureSync()
-                + " WHERE fixture_id=21", String.class)).isEqualTo("DAILY_ONLY");
+                + " WHERE fixture_id=21", String.class)).isEqualTo("NONE");
         assertThat(jdbc.queryForObject("SELECT next_due_at FROM " + TABLES.fixtureSync()
                 + " WHERE fixture_id=21", java.sql.Timestamp.class).toInstant())
-                .isEqualTo(Instant.parse("2026-09-15T02:00:00Z"));
+                .isEqualTo(persistedTransportDue);
+        assertThat(jdbc.queryForObject("SELECT attempt_count FROM " + TABLES.fixtureSync()
+                + " WHERE fixture_id=21", Integer.class)).isEqualTo(4);
     }
 
     private void assertCorrectedHistoryRefreshesParent(String field, Object value) throws Exception {

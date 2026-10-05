@@ -31,6 +31,7 @@ import dev.quantti.fplassistant.sync.OwnedSyncStore.StagedPayloadMetadata;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.SyncKind;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.Validation;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.ValidationState;
+import dev.quantti.fplassistant.sync.SharedFixtureRecoveryPolicy.SourceStatus;
 
 /**
  * Explicit network dispatcher for player-history and fixture-verification runs.
@@ -183,10 +184,21 @@ public final class HistoryFixtureDispatcher {
     private DispatchResult processFixture(Lease lease, Season season) {
         int fixtureId = requireFixtureLease(lease, season);
         if (publicationEnabled) {
-            FixtureSyncRepository.AttemptAdmission admission = store.withinRuntimeFence(
-                    () -> publisher.admitAttempt(season, fixtureId));
+            FixtureSyncRepository.AttemptAdmission admission = store.withinRunLease(lease,
+                    () -> publisher.admitAttempt(season, fixtureId,
+                            currentParentFixtureStatus(season, fixtureId)));
             if (!admission.admitted()) {
-                store.retry(lease, admission.nextDueAt(), "Fixture verification is daily-only after retry cutoff");
+                if (admission.parentRefreshRequired()) {
+                    queueMissingCanonicalDependencies(season);
+                    store.retryForDependency(lease, clock.instant().plus(RETRY),
+                            "Waiting for a current published parent before overdue recovery");
+                } else if (admission.nextDueAt() == null) {
+                    store.retry(lease, clock.instant().plus(RETRY),
+                            "Waiting for a finished fixture before overdue recovery");
+                } else {
+                    store.retry(lease, admission.nextDueAt(),
+                            "Fixture verification is waiting for its persisted retry gate");
+                }
                 return DispatchResult.retry(FailureType.HTTP_DEFERRED);
             }
         }
@@ -404,6 +416,20 @@ public final class HistoryFixtureDispatcher {
                 .filter(payload -> !payload.read().startedAt().isBefore(floor));
     }
 
+    private SourceStatus currentParentFixtureStatus(Season season, int fixtureId) {
+        if (!store.hasCurrentRuntimeEpoch(season.code())) return SourceStatus.UNKNOWN;
+        Instant now = clock.instant();
+        return canonicalSnapshot(season)
+                .filter(canonical -> store.isCurrentPublishedCanonicalPair(
+                        season.code(), canonical.bootstrap().runGeneration(), now))
+                .filter(canonical -> !canonical.bootstrap().read().finishedAt().isAfter(now)
+                        && !canonical.fixtures().read().finishedAt().isAfter(now))
+                .flatMap(canonical -> canonical.snapshot().fixtures().stream()
+                        .filter(fixture -> fixture.id() == fixtureId).findFirst())
+                .map(fixture -> fixture.finished() ? SourceStatus.FINISHED : SourceStatus.UNFINISHED)
+                .orElse(SourceStatus.UNKNOWN);
+    }
+
     private Optional<CanonicalPair> canonicalSnapshot(Season season) {
         return store.findInLatestValidPublicPayloadPairs(season.code(), PUBLIC_PAIR_LIMIT, pair -> {
             try {
@@ -496,22 +522,29 @@ public final class HistoryFixtureDispatcher {
     }
 
     private void retry(Lease lease, Instant dueAt, String error) {
-        store.retry(lease, recordRetryDue(lease, dueAt, error), bounded(error));
+        Instant selected = dueAt.isAfter(clock.instant()) ? dueAt : clock.instant().plusSeconds(1);
+        if (publicationEnabled && lease.kind() == SyncKind.FIXTURE_VERIFICATION) {
+            store.retry(lease, selected, bounded(error), () -> recordRetryDue(lease, selected, error));
+        } else {
+            store.retry(lease, selected, bounded(error));
+        }
     }
 
     private void retryForDependency(Lease lease, Instant dueAt, String error, PayloadPair pair,
                                      CatalogueScheduleParser.FixtureRow fixture, StagedPayload live,
                                      Set<Integer> playerIds) {
         Instant selected = dueAt.isAfter(clock.instant()) ? dueAt : clock.instant().plusSeconds(1);
-        if (publicationEnabled && lease.kind() == SyncKind.FIXTURE_VERIFICATION) {
-            int fixtureId = fixtureId(lease.publicationKey());
-            store.withinRuntimeFence(
-                    () -> publisher.recordDependencyWait(lease.season(), fixtureId, selected, error));
-        }
         PublicPayloadPair publicPair = new PublicPayloadPair(pair.bootstrap.runGeneration(),
                 pair.bootstrap, pair.fixtures);
-        store.retryForDependency(lease, selected, bounded(error), fixture.id(), fixture.gameweek(),
-                publicPair, live, List.copyOf(playerIds));
+        if (publicationEnabled && lease.kind() == SyncKind.FIXTURE_VERIFICATION) {
+            int fixtureId = fixtureId(lease.publicationKey());
+            store.retryForDependency(lease, selected, bounded(error), fixture.id(), fixture.gameweek(),
+                    publicPair, live, List.copyOf(playerIds),
+                    () -> publisher.recordDependencyWait(lease.season(), fixtureId, selected, error));
+        } else {
+            store.retryForDependency(lease, selected, bounded(error), fixture.id(), fixture.gameweek(),
+                    publicPair, live, List.copyOf(playerIds));
+        }
     }
 
     private void waitForHistories(Lease lease, PayloadPair pair,
@@ -537,13 +570,11 @@ public final class HistoryFixtureDispatcher {
     private void retryFetchFailure(Lease lease, Instant dueAt, String error) {
         Instant selected = dueAt.isAfter(clock.instant()) ? dueAt : clock.instant().plusSeconds(1);
         if (publicationEnabled && lease.kind() == SyncKind.FIXTURE_VERIFICATION) {
-            int fixtureId = fixtureId(lease.publicationKey());
-            Instant minimum = selected;
-            Instant adaptive = store.withinRuntimeFence(
-                    () -> publisher.recordFailedAttempt(lease.season(), fixtureId, minimum, error));
-            if (adaptive.isAfter(selected)) selected = adaptive;
+            store.retryFetchFailure(lease, selected, bounded(error),
+                    () -> recordRetryDue(lease, selected, error));
+        } else {
+            store.retryFetchFailure(lease, selected, bounded(error));
         }
-        store.retryFetchFailure(lease, selected, bounded(error));
     }
 
     private static int fixtureId(String publicationKey) {
