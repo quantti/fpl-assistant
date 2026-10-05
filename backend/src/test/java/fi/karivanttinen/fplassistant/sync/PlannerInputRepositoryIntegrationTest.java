@@ -21,6 +21,7 @@ import java.util.stream.Collectors;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.env.MockEnvironment;
 
+import fi.karivanttinen.fplassistant.sync.AdaptiveMatchdayPlanner.RecoveryMetadata;
 import fi.karivanttinen.fplassistant.sync.CatalogueScheduleParser.Season;
 import fi.karivanttinen.fplassistant.testsupport.TapasSeed;
 
@@ -165,6 +166,69 @@ class PlannerInputRepositoryIntegrationTest {
     }
 
     @Test
+    void recoveryProjectionUsesOneMetadataQueryAndAnExactLastActiveReceiptAfterInvalidation() {
+        try (OwnedSyncMonitoringDatabase work = OwnedSyncMonitoringDatabase.work(environment())) {
+            var jdbc = spy(work.jdbc());
+            TapasSeed.ensure(jdbc);
+            new OwnedSyncSchema(jdbc, TABLES).initialize();
+            createCapturedTables(jdbc);
+            clearOwnedRows(jdbc);
+            jdbc.update("DELETE FROM season WHERE id=?", SEASON.id());
+            jdbc.update("INSERT INTO season(id,code,name,start_date,end_date,is_current) VALUES (?,?,?,?,?,false)",
+                    SEASON.id(), SEASON.code(), "Recovery projection season", SEASON.startsOn(), SEASON.endsOn());
+
+            Instant now = Instant.parse("2097-10-01T12:00:00Z");
+            Clock clock = Clock.fixed(now, ZoneOffset.UTC);
+            var activator = new PlannerRuntimeRepository(jdbc, work.transaction(), clock, TABLES);
+            var fence = activator.activate(SEASON.code(), OwnedSyncMode.ACTIVE);
+            Instant episodeStart = now.minusSeconds(20 * 3600L);
+            Instant readStarted = episodeStart.plusSeconds(60);
+            Instant readFinished = readStarted.plusSeconds(60);
+            Instant published = readFinished.plusSeconds(60);
+            long activeGeneration = seedRun(jdbc, "fixture:21014", "ACTIVE", "COMPLETED", fence.epoch(),
+                    readStarted, readFinished, published);
+            updateReceipt(jdbc, "fixture:21014", activeGeneration, readStarted, readFinished, published);
+            insertRecoveryFixture(jdbc, 21014, activeGeneration, now, episodeStart);
+
+            long stagingGeneration = seedRun(jdbc, "fixture:21015", "STAGING", "COMPLETED", fence.epoch(),
+                    readStarted, readFinished, published);
+            updateReceipt(jdbc, "fixture:21015", stagingGeneration, readStarted, readFinished, published);
+            insertRecoveryFixture(jdbc, 21015, stagingGeneration, now, episodeStart);
+            jdbc.update("UPDATE " + TABLES.requestState() + " SET cooldown_until=? WHERE singleton=TRUE",
+                    java.sql.Timestamp.from(now.plusSeconds(30 * 60L)));
+
+            var store = new OwnedSyncStore(jdbc, work.transaction(), clock, TABLES, fence);
+            var repository = new PlannerInputRepository(jdbc, store, TABLES, CAPTURED, clock);
+            clearInvocations(jdbc);
+            Map<Integer, RecoveryMetadata> metadata = repository.load(SEASON).progress().stream()
+                    .collect(Collectors.toMap(AdaptiveMatchdayPlanner.FixtureProgress::fixtureId,
+                            AdaptiveMatchdayPlanner.FixtureProgress::recovery));
+
+            assertThat(metadata.get(21014).recoveryDay()).isEqualTo(LocalDate.of(2097, 9, 30));
+            assertThat(metadata.get(21014).episodeStartedAt()).isEqualTo(episodeStart);
+            assertThat(metadata.get(21014).publishedAt()).isEqualTo(published);
+            assertThat(metadata.get(21014).dueReason())
+                    .isEqualTo(SharedFixtureRecoveryPolicy.DueReason.DEPENDENCY);
+            assertThat(metadata.get(21014).transportRetryAt()).isEqualTo(now.plusSeconds(20 * 60L));
+            assertThat(metadata.get(21014).dependencyRetryAt()).isEqualTo(now.plusSeconds(15 * 60L));
+            assertThat(metadata.get(21014).cooldownUntil()).isEqualTo(now.plusSeconds(30 * 60L));
+            assertThat(metadata.get(21015).publishedAt()).isNull();
+
+            List<String> querySql = mockingDetails(jdbc).getInvocations().stream()
+                    .filter(invocation -> invocation.getMethod().getName().startsWith("query")
+                            && invocation.getArguments().length > 0
+                            && invocation.getArguments()[0] instanceof String)
+                    .map(invocation -> ((String) invocation.getArguments()[0]).toLowerCase())
+                    .distinct().toList();
+            List<String> progressSql = querySql.stream().filter(sql -> sql.contains(TABLES.fixtureSync())
+                    && sql.contains("first_finished_observed_at")).toList();
+            assertThat(progressSql).hasSize(1);
+            assertThat(progressSql.getFirst()).doesNotContain(TABLES.payload(), "player_fixture_stats", "body")
+                    .contains(TABLES.receipt(), TABLES.run(), TABLES.requestState());
+        }
+    }
+
+    @Test
     void stampsTheFirstFinishedObservationWhenWeSeeIt() {
         try (OwnedSyncMonitoringDatabase work = OwnedSyncMonitoringDatabase.work(environment())) {
             var jdbc = work.jdbc();
@@ -208,6 +272,23 @@ class PlannerInputRepositoryIntegrationTest {
         jdbc.update("DELETE FROM " + TABLES.receipt());
         jdbc.update("DELETE FROM " + TABLES.plannerSlot());
         jdbc.update("DELETE FROM " + TABLES.plannerRuntime());
+    }
+
+    private static void insertRecoveryFixture(org.springframework.jdbc.core.JdbcTemplate jdbc, int fixtureId,
+                                              long lastGeneration, Instant now, Instant episodeStart) {
+        jdbc.update("""
+                INSERT INTO %s(season_id,season_code,fixture_id,state,last_verified_generation,
+                    first_finished_observed_at,next_due_at,due_reason,transport_retry_at,
+                    dependency_retry_at,recovery_day,recovery_started_at,recovery_until,updated_at)
+                VALUES (?, ?, ?, 'VERIFYING', ?, ?, ?, 'DEPENDENCY', ?, ?, ?, ?, ?, ?)
+                """.formatted(TABLES.fixtureSync()), SEASON.id(), SEASON.code(), fixtureId, lastGeneration,
+                java.sql.Timestamp.from(now.minusSeconds(35 * 3600L)),
+                java.sql.Timestamp.from(now.plusSeconds(15 * 60L)),
+                java.sql.Timestamp.from(now.plusSeconds(20 * 60L)),
+                java.sql.Timestamp.from(now.plusSeconds(15 * 60L)),
+                java.sql.Date.valueOf(SharedFixtureRecoveryPolicy.recoveryDayAt(episodeStart)),
+                java.sql.Timestamp.from(episodeStart), java.sql.Timestamp.from(episodeStart.plus(
+                        SharedFixtureRecoveryPolicy.FOLLOW_UP_LIMIT)), java.sql.Timestamp.from(now));
     }
 
     private static long seedVerifiedFixture(org.springframework.jdbc.core.JdbcTemplate jdbc, int fixtureId,
