@@ -170,7 +170,9 @@ public final class HistoryFixtureDispatcher {
         SourceRead read = payload.read();
         if (publicationEnabled) {
             store.publish(lease, read, List.of(read), () -> {
-                publisher.reconcileHistoryFingerprints(batch).stream().sorted()
+                Set<Integer> changedFixtures = publisher.reconcileHistoryFingerprints(batch);
+                publisher.invalidateHistoryCorrections(season, changedFixtures, clock.instant());
+                changedFixtures.stream().sorted()
                         .forEach(fixture -> enqueueFixtureVerification(season, fixture, read.finishedAt()));
                 return null;
             });

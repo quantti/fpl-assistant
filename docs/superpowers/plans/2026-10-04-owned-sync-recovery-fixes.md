@@ -1,6 +1,6 @@
 # Owned-sync recovery fixes
 
-**PROGRESS:** Planning only; Task 0/4 implemented. No code changes, deployment or activation authorized by this plan.
+**PROGRESS:** Task 1/4 implemented; focused tests and independent static review passed. PR/full CI gate pending; Tasks 2–4 untouched.
 
 ## Goal and evidence
 
@@ -46,6 +46,8 @@ Use the real planner input repository/coordinator/runtime with tiny seeded ACTIV
 - First verification retains the original correction schedule; invalidation/new verification series does not inherit old completion.
 
 **Pass:** restart neither republishes already-covered correction slots nor loses genuinely unfinished/changed work. No body reads added to planner input; bounded metadata SQL, not per-player queries.
+
+**Task 1 outcome (focused verification and independent re-review passed; PR/full CI still required):** correction completion comes from the current same-season fixture receipt and completed ACTIVE run, using its coherent combined source interval. The P1 history-only invalidation gap is also fixed: changed/removed history fingerprints revoke current verification and persist immediate fixture work in the same ACTIVE history-publication transaction; rollback restores fingerprints, fixture state and queue together. Physical PFS/evidence stays retained but is reader-masked until fresh proof. The real ACTIVE→OFF→ACTIVE regression, including an identical post-restart history read and fresh completion, plus rollback and focused planner/history tests pass. No schema or source/budget fence changed; no production runtime action occurred.
 
 ## Task 2 — bounded overdue recovery admission, shared with planning
 

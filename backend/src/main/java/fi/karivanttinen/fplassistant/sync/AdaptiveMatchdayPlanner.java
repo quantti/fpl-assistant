@@ -214,6 +214,20 @@ public final class AdaptiveMatchdayPlanner {
         }
     }
 
+    static Set<String> completedCorrections(Instant firstVerifiedAt, Instant dataCheckedTransitionAt,
+                                            Instant sourceStartedAt) {
+        if (firstVerifiedAt == null || sourceStartedAt == null) return Set.of();
+        Set<String> completed = new HashSet<>();
+        for (int index = 0; index < CORRECTIONS.size(); index++) {
+            String key = switch (index) { case 0 -> "2h"; case 1 -> "24h"; default -> "48h"; };
+            if (!sourceStartedAt.isBefore(firstVerifiedAt.plus(CORRECTIONS.get(index)))) completed.add(key);
+        }
+        if (dataCheckedTransitionAt != null && !sourceStartedAt.isBefore(dataCheckedTransitionAt)) {
+            completed.add("data-checked");
+        }
+        return Set.copyOf(completed);
+    }
+
     private static Duration followUpDelay(int attempts) {
         return switch (Math.max(1, attempts)) {
             case 1 -> Duration.ofMinutes(10);
