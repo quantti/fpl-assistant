@@ -22,11 +22,12 @@ public final class SharedFixtureRecoveryPolicy {
      */
     public static Decision decide(Input input) {
         Objects.requireNonNull(input);
-        if (input.sourceStatus() != SourceStatus.FINISHED || input.currentlyVerified()
-                || input.firstFinishedObservedAt() == null
+        if (input.currentlyVerified() || input.firstFinishedObservedAt() == null
                 || input.now().isBefore(input.firstFinishedObservedAt().plus(FOLLOW_UP_LIMIT))) {
             return Decision.normal();
         }
+        if (input.sourceStatus() == SourceStatus.UNKNOWN) return Decision.waitForParent();
+        if (input.sourceStatus() == SourceStatus.UNFINISHED) return Decision.waitForSource();
 
         boolean publishedDuringEpisode = input.recoveryDay() != null
                 && input.recoveryPublishedAt() != null
@@ -38,6 +39,7 @@ public final class SharedFixtureRecoveryPolicy {
         boolean futureEpisode = episodePending && input.now().isBefore(input.recoveryStartedAt());
 
         Instant blockedUntil = laterFuture(input.now(), input.transportRetryAt(), input.cooldownUntil());
+        blockedUntil = laterFuture(input.now(), blockedUntil, input.dependencyRetryAt());
         // Only a calendar-policy date is bypassable before a reserved episode.
         // Independent-batch/source-time waits are DEPENDENCY dates and must always be honored.
         if (input.dueReason() != DueReason.POLICY || activeEpisode || futureEpisode) {
@@ -113,17 +115,19 @@ public final class SharedFixtureRecoveryPolicy {
      */
     public enum DueReason { POLICY, DEPENDENCY, TRANSPORT }
 
-    public enum Action { NORMAL, WAIT, RESERVE_EPISODE, CONTINUE_EPISODE }
+    public enum Action { NORMAL, WAIT, WAIT_FOR_PARENT, WAIT_FOR_SOURCE, RESERVE_EPISODE, CONTINUE_EPISODE }
 
     /**
      * {@code recoveryPublishedAt}, when present, must come from a successfully published ACTIVE
      * run and receipt for this exact season/fixture; it may remain available after invalidation.
      * STAGING, queued work and a verification decision alone are not episode completion evidence.
+     * {@code dependencyRetryAt} remains an independent gate even when {@code nextDueAt} is POLICY.
      */
     public record Input(Instant now, SourceStatus sourceStatus, boolean currentlyVerified,
                         Instant firstFinishedObservedAt, Instant nextDueAt, DueReason dueReason,
                         Instant transportRetryAt, Instant cooldownUntil, LocalDate recoveryDay,
-                        Instant recoveryStartedAt, Instant recoveryUntil, Instant recoveryPublishedAt) {
+                        Instant recoveryStartedAt, Instant recoveryUntil, Instant recoveryPublishedAt,
+                        Instant dependencyRetryAt) {
         public Input {
             Objects.requireNonNull(now);
             Objects.requireNonNull(sourceStatus);
@@ -161,10 +165,22 @@ public final class SharedFixtureRecoveryPolicy {
             if (action == Action.WAIT && notBefore == null) {
                 throw new IllegalArgumentException("A wait decision requires its next due instant");
             }
+            if ((action == Action.WAIT_FOR_PARENT || action == Action.WAIT_FOR_SOURCE)
+                    && (notBefore != null || completeEpisode)) {
+                throw new IllegalArgumentException("A source dependency wait has no recovery metadata or due time");
+            }
         }
 
         private static Decision normal() {
             return new Decision(Action.NORMAL, null, null, null, null);
+        }
+
+        private static Decision waitForParent() {
+            return new Decision(Action.WAIT_FOR_PARENT, null, null, null, null);
+        }
+
+        private static Decision waitForSource() {
+            return new Decision(Action.WAIT_FOR_SOURCE, null, null, null, null);
         }
     }
 }
