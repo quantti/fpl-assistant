@@ -282,6 +282,36 @@ public final class OwnedSyncSchema {
                 .formatted(tables.fixtureSync()));
         jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS next_due_at TIMESTAMPTZ"
                 .formatted(tables.fixtureSync()));
+        jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS recovery_day DATE"
+                .formatted(tables.fixtureSync()));
+        jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS recovery_started_at TIMESTAMPTZ"
+                .formatted(tables.fixtureSync()));
+        jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS recovery_until TIMESTAMPTZ"
+                .formatted(tables.fixtureSync()));
+        jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS due_reason VARCHAR(16)"
+                .formatted(tables.fixtureSync()));
+        jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS transport_retry_at TIMESTAMPTZ"
+                .formatted(tables.fixtureSync()));
+        jdbc.execute("ALTER TABLE %s DROP CONSTRAINT IF EXISTS ck_%s_recovery_episode"
+                .formatted(tables.fixtureSync(), tables.fixtureSync()));
+        jdbc.execute("""
+                ALTER TABLE %s ADD CONSTRAINT ck_%s_recovery_episode CHECK (
+                    (recovery_day IS NULL AND recovery_started_at IS NULL AND recovery_until IS NULL)
+                    OR (recovery_day IS NOT NULL AND recovery_started_at IS NOT NULL
+                        AND recovery_until IS NOT NULL AND recovery_started_at < recovery_until
+                        AND recovery_until <= recovery_started_at + INTERVAL '12 hours'
+                        AND recovery_day = CASE
+                            WHEN (recovery_started_at AT TIME ZONE 'Europe/London')::time < TIME '03:00'
+                            THEN (recovery_started_at AT TIME ZONE 'Europe/London')::date - 1
+                            ELSE (recovery_started_at AT TIME ZONE 'Europe/London')::date
+                        END)
+                )
+                """.formatted(tables.fixtureSync(), tables.fixtureSync()));
+        jdbc.execute("ALTER TABLE %s DROP CONSTRAINT IF EXISTS ck_%s_due_reason"
+                .formatted(tables.fixtureSync(), tables.fixtureSync()));
+        jdbc.execute("ALTER TABLE %s ADD CONSTRAINT ck_%s_due_reason CHECK "
+                .formatted(tables.fixtureSync(), tables.fixtureSync())
+                + "(due_reason IS NULL OR due_reason IN ('POLICY', 'DEPENDENCY', 'TRANSPORT'))");
         jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS attempt_count INTEGER NOT NULL DEFAULT 0"
                 .formatted(tables.fixtureSync()));
         jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS consecutive_fetch_failures INTEGER NOT NULL DEFAULT 0"
