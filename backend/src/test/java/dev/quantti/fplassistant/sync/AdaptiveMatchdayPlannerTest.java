@@ -3,7 +3,9 @@ package dev.quantti.fplassistant.sync;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -19,9 +21,12 @@ import dev.quantti.fplassistant.sync.AdaptiveMatchdayPlanner.Fixture;
 import dev.quantti.fplassistant.sync.AdaptiveMatchdayPlanner.FixtureProgress;
 import dev.quantti.fplassistant.sync.AdaptiveMatchdayPlanner.Input;
 import dev.quantti.fplassistant.sync.AdaptiveMatchdayPlanner.Plan;
+import dev.quantti.fplassistant.sync.AdaptiveMatchdayPlanner.RecoveryMetadata;
 import dev.quantti.fplassistant.sync.AdaptiveMatchdayPlanner.SlotReason;
 import dev.quantti.fplassistant.sync.AdaptiveMatchdayPlanner.WorkKind;
 import dev.quantti.fplassistant.sync.AdaptiveMatchdayPlanner.WorkSlot;
+import dev.quantti.fplassistant.sync.SharedFixtureRecoveryPolicy.DueReason;
+import dev.quantti.fplassistant.sync.SharedFixtureRecoveryPolicy.SourceStatus;
 
 class AdaptiveMatchdayPlannerTest {
 
@@ -166,6 +171,7 @@ class AdaptiveMatchdayPlannerTest {
         assertThat(result.dueSlots()).filteredOn(slot -> slot.reason() == SlotReason.WAITING_FINISH)
                 .singleElement().satisfies(slot -> assertThat(slot.dueAt())
                         .isEqualTo(Instant.parse("2026-09-19T18:00:00Z")));
+        assertThat(result.dueSlots()).noneMatch(slot -> slot.reason() == SlotReason.DAILY_RECOVERY);
     }
 
     @Test
@@ -182,6 +188,104 @@ class AdaptiveMatchdayPlannerTest {
                         SlotReason.DATA_CHECKED);
         assertThat(result.dueSlots()).filteredOn(slot -> slot.reason() == SlotReason.CORRECTION)
                 .extracting(WorkSlot::dueAt).containsExactly(Instant.parse("2026-09-20T16:00:00Z"));
+    }
+
+    @Test
+    void overdueRecoveryUsesSharedPolicyWithoutMovingLegacyWaitOrEnqueueingCalendarOnlyWaits() {
+        Instant now = Instant.parse("2026-09-20T08:00:00Z");
+        Instant finished = now.minus(Duration.ofHours(13));
+        Fixture fixture = fixture(72, 12, "2026-09-19T14:00:00Z", true, ids(1));
+        Instant legacyDue = Instant.parse("2026-09-21T02:00:00Z");
+        FixtureProgress legacy = progress(72, finished, null, 3, legacyDue, null, null, Set.of());
+
+        Plan beforeLegacyDue = planner(now.toString()).plan(new Input(SEASON, 650, List.of(fixture),
+                List.of(legacy), List.of()));
+        assertThat(beforeLegacyDue.dueSlots()).filteredOn(slot -> slot.kind() == WorkKind.FIXTURE_VERIFICATION)
+                .isEmpty();
+        assertThat(beforeLegacyDue.nextDueAt()).isPresent();
+
+        WorkSlot admittedAtLegacyDue = latest(planner(legacyDue.toString()).plan(new Input(SEASON, 650,
+                List.of(fixture), List.of(legacy), List.of())), WorkKind.FIXTURE_VERIFICATION);
+        WorkSlot admittedAfterMissedTick = latest(planner(legacyDue.plus(Duration.ofMinutes(30)).toString())
+                .plan(new Input(SEASON, 650, List.of(fixture), List.of(legacy), List.of())),
+                WorkKind.FIXTURE_VERIFICATION);
+        assertThat(admittedAtLegacyDue.dueAt()).isEqualTo(legacyDue);
+        assertThat(admittedAfterMissedTick.id()).isEqualTo(admittedAtLegacyDue.id());
+        assertThat(admittedAfterMissedTick.dueAt()).isEqualTo(legacyDue);
+        assertThat(admittedAtLegacyDue.reason()).isEqualTo(SlotReason.DAILY_RECOVERY);
+
+        FixtureProgress calendarOnly = progressWithRecovery(72, finished, null, 3,
+                now.plus(Duration.ofHours(20)), null, new RecoveryMetadata(
+                        DueReason.POLICY, null, null, null, null, null, null, null));
+        Plan immediatePolicy = planner(now.toString()).plan(new Input(SEASON, 650,
+                List.of(fixture), List.of(calendarOnly), List.of()));
+        assertThat(immediatePolicy.dueSlots()).filteredOn(slot -> slot.kind() == WorkKind.FIXTURE_VERIFICATION)
+                .singleElement().satisfies(slot -> assertThat(slot.dueAt()).isBefore(now));
+
+        Instant dependency = now.plus(Duration.ofMinutes(10));
+        Instant transport = now.plus(Duration.ofMinutes(20));
+        Instant cooldown = now.plus(Duration.ofMinutes(30));
+        FixtureProgress gated = progressWithRecovery(72, finished, null, 3, now.plusSeconds(1), null,
+                new RecoveryMetadata(DueReason.POLICY, transport, dependency, cooldown,
+                        null, null, null, null));
+        Plan waiting = planner(now.toString()).plan(new Input(SEASON, 650, List.of(fixture),
+                List.of(gated), List.of()));
+        assertThat(waiting.dueSlots()).filteredOn(slot -> slot.kind() == WorkKind.FIXTURE_VERIFICATION).isEmpty();
+        assertThat(waiting.nextDueAt()).contains(cooldown);
+    }
+
+    @Test
+    void overdueRecoveryWaitsForExactParentAndResumesTenMinuteDependencyInsideFixedEpisode() {
+        Instant now = Instant.parse("2026-09-20T08:00:00Z");
+        Instant finished = now.minus(Duration.ofHours(13));
+        Fixture unknown = new Fixture(73, 12, Instant.parse("2026-09-19T14:00:00Z"), true, true,
+                false, now, ids(1), SourceStatus.UNKNOWN);
+        FixtureProgress noParent = progress(73, finished, null, 1, null, null, null, Set.of());
+        Plan noRecovery = planner(now.toString()).plan(new Input(SEASON, 650, List.of(unknown),
+                List.of(noParent), List.of()));
+        assertThat(noRecovery.dueSlots()).filteredOn(slot -> slot.kind() == WorkKind.FIXTURE_VERIFICATION).isEmpty();
+
+        LocalDate recoveryDay = LocalDate.of(2026, 9, 20);
+        Instant episodeStart = now.minus(Duration.ofHours(1));
+        Instant episodeUntil = episodeStart.plus(SharedFixtureRecoveryPolicy.FOLLOW_UP_LIMIT);
+        Instant nextBatch = now.plus(Duration.ofMinutes(10));
+        RecoveryMetadata active = new RecoveryMetadata(DueReason.DEPENDENCY, null, nextBatch, null,
+                recoveryDay, episodeStart, episodeUntil, null);
+        FixtureProgress waitingForBatch = progressWithRecovery(73, finished, null, 1,
+                nextBatch, null, active);
+        Plan beforeBatch = planner(now.toString()).plan(new Input(SEASON, 650, List.of(fixture(73, 12,
+                "2026-09-19T14:00:00Z", true, ids(1))), List.of(waitingForBatch), List.of()));
+        assertThat(beforeBatch.dueSlots()).filteredOn(slot -> slot.kind() == WorkKind.FIXTURE_VERIFICATION).isEmpty();
+        assertThat(beforeBatch.nextDueAt()).contains(nextBatch);
+
+        Plan matureBatch = planner(nextBatch.toString()).plan(new Input(SEASON, 650, List.of(fixture(73, 12,
+                "2026-09-19T14:00:00Z", true, ids(1))), List.of(waitingForBatch), List.of()));
+        assertThat(latest(matureBatch, WorkKind.FIXTURE_VERIFICATION).dueAt()).isEqualTo(nextBatch);
+        assertThat(latest(matureBatch, WorkKind.FIXTURE_VERIFICATION).reason()).isEqualTo(SlotReason.DAILY_RECOVERY);
+    }
+
+    @Test
+    void publishedRecoveryStaysConsumedAfterInvalidationUntilTheNextUkBoundary() {
+        Instant now = Instant.parse("2026-09-20T08:00:00Z");
+        Instant episodeStart = now.minus(Duration.ofHours(2));
+        Instant published = episodeStart.plus(Duration.ofMinutes(30));
+        Instant episodeUntil = episodeStart.plus(SharedFixtureRecoveryPolicy.FOLLOW_UP_LIMIT);
+        RecoveryMetadata consumed = new RecoveryMetadata(null, null, null, null,
+                LocalDate.of(2026, 9, 20), episodeStart, episodeUntil, published);
+        Fixture fixture = fixture(74, 12, "2026-09-19T14:00:00Z", true, ids(1));
+        FixtureProgress invalidated = progressWithRecovery(74, now.minus(Duration.ofHours(14)), null, 4,
+                null, null, consumed);
+
+        Plan held = planner(now.toString()).plan(new Input(SEASON, 650, List.of(fixture),
+                List.of(invalidated), List.of()));
+        assertThat(held.dueSlots()).filteredOn(slot -> slot.kind() == WorkKind.FIXTURE_VERIFICATION).isEmpty();
+        assertThat(held.nextDueAt()).isPresent();
+
+        Plan nextDay = planner("2026-09-21T02:00:00Z").plan(new Input(SEASON, 650, List.of(fixture),
+                List.of(invalidated), List.of()));
+        assertThat(nextDay.dueSlots()).filteredOn(slot -> slot.kind() == WorkKind.FIXTURE_VERIFICATION)
+                .singleElement().satisfies(slot -> assertThat(slot.dueAt())
+                        .isEqualTo(Instant.parse("2026-09-21T02:00:00Z")));
     }
 
     @Test
@@ -233,6 +337,11 @@ class AdaptiveMatchdayPlannerTest {
     private static FixtureProgress progress(int id, Instant first, Instant last, int attempts,
                                             Instant next, Instant verified, Instant checked, Set<String> completed) {
         return new FixtureProgress(id, true, first, last, attempts, next, verified, checked, completed);
+    }
+
+    private static FixtureProgress progressWithRecovery(int id, Instant first, Instant last, int attempts,
+                                                        Instant next, Instant verified, RecoveryMetadata recovery) {
+        return new FixtureProgress(id, true, first, last, attempts, next, verified, null, Set.of(), recovery);
     }
 
     private static Set<Integer> ids(int... values) {
