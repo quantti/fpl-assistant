@@ -238,6 +238,43 @@ public final class FixtureSyncRepository {
         return Set.copyOf(changed);
     }
 
+    /**
+     * Revokes fixture verification when a published player history changes or loses a row. A
+     * first-seen fingerprint is conservatively treated as a change because equality with existing
+     * physical PFS cannot be proven. Call inside the history publication transaction, after
+     * fingerprint reconciliation and before its verification job is enqueued. Physical PFS and
+     * evidence remain available for diagnosis,
+     * while readers reject them until a fresh verification publishes.
+     */
+    public int invalidateHistoryCorrections(Season season, Collection<Integer> fixtureIds, Instant updatedAt) {
+        Objects.requireNonNull(season);
+        Objects.requireNonNull(fixtureIds);
+        Objects.requireNonNull(updatedAt);
+        Set<Integer> affected = Set.copyOf(fixtureIds);
+        if (affected.isEmpty()) return 0;
+        if (affected.stream().anyMatch(id -> id <= 0)) {
+            throw new IllegalArgumentException("fixture ids must be positive");
+        }
+        return jdbc.update(connection -> {
+            PreparedStatement statement = connection.prepareStatement("""
+                    UPDATE %s SET state='VERIFYING', observation=NULL, observation_generation=NULL,
+                        current_verified_generation=NULL, first_verified_at=NULL,
+                        expected_participants=NULL, received_participants=NULL,
+                        source_read_started_at=NULL, source_read_finished_at=NULL,
+                        validation_failures=ARRAY['SOURCE_CORRECTION'], next_due_at=?, updated_at=?
+                    WHERE season_id=? AND season_code=? AND fixture_id=ANY(?)
+                      AND (observation IS NOT NULL OR current_verified_generation IS NOT NULL)
+                    """.formatted(tables.fixtureSync()));
+            statement.setTimestamp(1, timestamp(updatedAt));
+            statement.setTimestamp(2, timestamp(updatedAt));
+            statement.setInt(3, season.id());
+            statement.setString(4, season.code());
+            statement.setArray(5, connection.createArrayOf("integer", affected.stream()
+                    .sorted().toArray(Integer[]::new)));
+            return statement;
+        });
+    }
+
     /** Parent checks are explicit; sparse PFS rows are never used as an FK probe. */
     public Set<Reason> missingParents(CatalogueScheduleParser.Season season, FixtureRow fixture,
                                       Collection<Integer> playerIds, Set<Integer> cataloguePlayerIds) {
