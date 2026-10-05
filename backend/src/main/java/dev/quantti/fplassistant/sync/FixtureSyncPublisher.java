@@ -149,6 +149,10 @@ public final class FixtureSyncPublisher {
         return repository.reconcileHistoryFingerprints(batch, clock.instant());
     }
 
+    int invalidateHistoryCorrections(Season season, Set<Integer> fixtureIds, Instant updatedAt) {
+        return repository.invalidateHistoryCorrections(season, fixtureIds, updatedAt);
+    }
+
     FixtureSyncRepository.AttemptAdmission admitAttempt(Season season, int fixtureId) {
         return repository.admitAttempt(season, fixtureId, clock.instant());
     }

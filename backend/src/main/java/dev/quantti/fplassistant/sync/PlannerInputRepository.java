@@ -146,20 +146,51 @@ public final class PlannerInputRepository {
     }
 
     private List<FixtureProgress> progress(Season season) {
+        Instant now = clock.instant();
         return jdbc.query("""
-                SELECT fixture_id, state, first_finished_observed_at, updated_at, attempt_count,
-                       next_due_at, first_verified_at, data_checked_transition_at
-                FROM %s WHERE season_id=? AND season_code=?
-                """.formatted(owned.fixtureSync()), (rs, row) -> new FixtureProgress(
-                rs.getInt("fixture_id"), Set.of("WAITING_FINISH", "WAITING_STATS", "VERIFYING")
-                        .contains(rs.getString("state")),
-                instant(rs.getTimestamp("first_finished_observed_at")),
-                rs.getInt("attempt_count") == 0 ? null : instant(rs.getTimestamp("updated_at")),
-                rs.getInt("attempt_count"), instant(rs.getTimestamp("next_due_at")),
-                "VERIFIED".equals(rs.getString("state"))
-                        ? instant(rs.getTimestamp("first_verified_at")) : null,
-                instant(rs.getTimestamp("data_checked_transition_at")), Set.of()),
-                season.id(), season.code());
+                SELECT fs.fixture_id, fs.state, fs.first_finished_observed_at, fs.updated_at, fs.attempt_count,
+                       fs.next_due_at, fs.first_verified_at, fs.data_checked_transition_at,
+                       CASE WHEN fs.state='VERIFIED' AND fs.current_verified_generation IS NOT NULL
+                                  AND fs.first_verified_at IS NOT NULL
+                                  AND publication.latest_generation=fs.current_verified_generation
+                                  AND publication.published_at IS NOT NULL AND publication.published_at<=?
+                                  AND publication.source_read_started_at IS NOT NULL
+                                  AND publication.source_read_finished_at IS NOT NULL
+                                  AND publication.source_read_started_at<=publication.source_read_finished_at
+                                  AND publication.source_read_finished_at<=publication.published_at
+                                  AND publication.source_read_started_at=run.source_read_started_at
+                                  AND publication.source_read_finished_at=run.source_read_finished_at
+                                  AND run.kind='FIXTURE_VERIFICATION' AND run.state='COMPLETED'
+                                  AND run.runtime_mode='ACTIVE' AND run.runtime_epoch>0
+                                  AND run.completed_at IS NOT NULL AND run.completed_at<=publication.published_at
+                                  AND run.source_read_started_at IS NOT NULL
+                                  AND run.source_read_finished_at IS NOT NULL
+                                  AND run.source_read_started_at<=run.source_read_finished_at
+                                  AND run.source_read_finished_at<=publication.published_at
+                            THEN publication.source_read_started_at END AS completed_source_started_at
+                FROM %s fs
+                JOIN season s ON s.id=fs.season_id AND s.code=fs.season_code
+                LEFT JOIN %s publication ON publication.season=fs.season_code
+                    AND publication.publication_key='fixture:' || fs.fixture_id::text
+                    AND publication.latest_generation=fs.current_verified_generation
+                LEFT JOIN %s run ON run.generation=fs.current_verified_generation
+                    AND run.season=fs.season_code
+                    AND run.coalescing_key='fixture:' || fs.fixture_id::text
+                    AND run.publication_key='fixture:' || fs.fixture_id::text
+                WHERE fs.season_id=? AND fs.season_code=?
+                """.formatted(owned.fixtureSync(), owned.receipt(), owned.run()), (rs, row) -> {
+            Instant firstVerified = "VERIFIED".equals(rs.getString("state"))
+                    ? instant(rs.getTimestamp("first_verified_at")) : null;
+            Instant sourceStarted = instant(rs.getTimestamp("completed_source_started_at"));
+            Set<String> completedCorrections = AdaptiveMatchdayPlanner.completedCorrections(firstVerified,
+                    instant(rs.getTimestamp("data_checked_transition_at")), sourceStarted);
+            return new FixtureProgress(rs.getInt("fixture_id"),
+                    Set.of("WAITING_FINISH", "WAITING_STATS", "VERIFYING").contains(rs.getString("state")),
+                    instant(rs.getTimestamp("first_finished_observed_at")),
+                    rs.getInt("attempt_count") == 0 ? null : instant(rs.getTimestamp("updated_at")),
+                    rs.getInt("attempt_count"), instant(rs.getTimestamp("next_due_at")), firstVerified,
+                    instant(rs.getTimestamp("data_checked_transition_at")), completedCorrections);
+        }, timestamp(now), season.id(), season.code());
     }
 
     private static SourceDocument document(OwnedSyncStore.StagedPayload payload) {
