@@ -243,8 +243,9 @@ public final class FixtureSyncRepository {
      * first-seen fingerprint is conservatively treated as a change because equality with existing
      * physical PFS cannot be proven. Call inside the history publication transaction, after
      * fingerprint reconciliation and before its verification job is enqueued. Physical PFS and
-     * evidence remain available for diagnosis,
-     * while readers reject them until a fresh verification publishes.
+     * evidence remain available for diagnosis, while readers reject them until a fresh verification
+     * publishes. Keep the observation/generation pair as the ownership marker, but make its stored
+     * baseline incoherent so changed history cannot be compared against it.
      */
     public int invalidateHistoryCorrections(Season season, Collection<Integer> fixtureIds, Instant updatedAt) {
         Objects.requireNonNull(season);
@@ -257,7 +258,8 @@ public final class FixtureSyncRepository {
         }
         return jdbc.update(connection -> {
             PreparedStatement statement = connection.prepareStatement("""
-                    UPDATE %s SET state='VERIFYING', observation=NULL, observation_generation=NULL,
+                    UPDATE %s SET state='VERIFYING',
+                        observation=jsonb_set(observation, '{coherent}', 'false'::jsonb),
                         current_verified_generation=NULL, first_verified_at=NULL,
                         expected_participants=NULL, received_participants=NULL,
                         source_read_started_at=NULL, source_read_finished_at=NULL,

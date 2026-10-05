@@ -302,7 +302,8 @@ class OwnedMatchdayEndToEndIntegrationTest {
         Map<String, Object> fingerprintBefore = jdbc.queryForMap("SELECT fingerprint,source_read_finished_at,updated_at "
                 + "FROM " + TABLES.historyFingerprint() + " WHERE season_id=? AND player_id=? AND fixture_id=?",
                 SEASON.id(), historyPlayer, INDEPENDENT);
-        Map<String, Object> fixtureDatesBeforeRollback = jdbc.queryForMap("SELECT first_verified_at,next_due_at,updated_at "
+        Map<String, Object> fixtureDatesBeforeRollback = jdbc.queryForMap("SELECT first_verified_at,next_due_at,updated_at,"
+                + "observation::text,observation_generation,current_verified_generation,last_verified_generation "
                 + "FROM " + TABLES.fixtureSync() + " WHERE season_id=? AND fixture_id=?",
                 SEASON.id(), INDEPENDENT);
         Map<String, Object> historyReceiptBefore = jdbc.queryForMap("SELECT latest_generation,source_read_started_at,"
@@ -326,7 +327,8 @@ class OwnedMatchdayEndToEndIntegrationTest {
                 + "FROM " + TABLES.historyFingerprint() + " WHERE season_id=? AND player_id=? AND fixture_id=?",
                 SEASON.id(), historyPlayer, INDEPENDENT);
         assertThat(fingerprintAfterRollback).isEqualTo(fingerprintBefore);
-        assertThat(jdbc.queryForMap("SELECT first_verified_at,next_due_at,updated_at FROM " + TABLES.fixtureSync()
+        assertThat(jdbc.queryForMap("SELECT first_verified_at,next_due_at,updated_at,observation::text,"
+                + "observation_generation,current_verified_generation,last_verified_generation FROM " + TABLES.fixtureSync()
                 + " WHERE season_id=? AND fixture_id=?", SEASON.id(), INDEPENDENT))
                 .isEqualTo(fixtureDatesBeforeRollback);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
@@ -341,13 +343,19 @@ class OwnedMatchdayEndToEndIntegrationTest {
                 + " WHERE generation=?", String.class, rollbackLease.generation())).isEqualTo("LEASED");
         assertThat(harness.histories.process(rollbackLease, SEASON).outcome()).isEqualTo(Outcome.COMPLETED);
         assertThat(currentGenerationOrNull(INDEPENDENT)).isNull();
+        Map<String, Object> invalidatedObservation = jdbc.queryForMap("SELECT observation::text,observation_generation "
+                + "FROM " + TABLES.fixtureSync() + " WHERE season_id=? AND fixture_id=?",
+                SEASON.id(), INDEPENDENT);
+        assertThat(JSON.readTree((String) invalidatedObservation.get("observation"))
+                .path("coherent").booleanValue()).isFalse();
         assertThat(jdbc.queryForObject("SELECT state FROM " + TABLES.fixtureSync()
                 + " WHERE season_id=? AND fixture_id=?", String.class, SEASON.id(), INDEPENDENT))
                 .isEqualTo("VERIFYING");
-        assertThat(jdbc.queryForObject("SELECT observation IS NULL AND observation_generation IS NULL "
+        assertThat(jdbc.queryForObject("SELECT observation->>'coherent'='false' "
+                + "AND observation_generation=? AND current_verified_generation IS NULL "
                 + "AND first_verified_at IS NULL AND last_verified_generation=? "
                 + "AND first_finished_observed_at IS NOT NULL FROM " + TABLES.fixtureSync()
-                + " WHERE season_id=? AND fixture_id=?", Boolean.class, verifiedGeneration,
+                + " WHERE season_id=? AND fixture_id=?", Boolean.class, verifiedGeneration, verifiedGeneration,
                 SEASON.id(), INDEPENDENT)).isTrue();
         assertThat(jdbc.queryForObject("SELECT count(*) FROM player_fixture_stats "
                 + "WHERE season_id=? AND fixture_id=?", Integer.class, SEASON.id(), INDEPENDENT))
@@ -375,6 +383,9 @@ class OwnedMatchdayEndToEndIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
                 + " WHERE kind='FIXTURE_VERIFICATION' AND publication_key=?", Integer.class,
                 "fixture:" + INDEPENDENT)).isEqualTo(fixtureRunCount);
+        assertThat(jdbc.queryForMap("SELECT observation::text,observation_generation FROM "
+                + TABLES.fixtureSync() + " WHERE season_id=? AND fixture_id=?",
+                SEASON.id(), INDEPENDENT)).isEqualTo(invalidatedObservation);
 
         var invalidated = new PlannerInputRepository(jdbc, restarted.store, TABLES, CAPTURED, clock)
                 .load(SEASON).progress().stream().filter(progress -> progress.fixtureId() == INDEPENDENT)
@@ -402,10 +413,126 @@ class OwnedMatchdayEndToEndIntegrationTest {
                 + " WHERE season_id=? AND player_id=? AND fixture_id=?", Integer.class,
                 SEASON.id(), historyPlayer, INDEPENDENT)).isZero();
         assertThat(currentGenerationOrNull(INDEPENDENT)).isNull();
+        assertThat(jdbc.queryForObject("SELECT observation->>'coherent'='false' "
+                + "AND observation_generation IS NOT NULL AND last_verified_generation IS NOT NULL "
+                + "FROM " + TABLES.fixtureSync() + " WHERE season_id=? AND fixture_id=?",
+                Boolean.class, SEASON.id(), INDEPENDENT)).isTrue();
         assertThat(readRows("ACTIVE", INDEPENDENT)).isEmpty();
         assertThat(jdbc.queryForObject("SELECT count(*) FROM player_fixture_stats "
                 + "WHERE season_id=? AND fixture_id=?", Integer.class, SEASON.id(), INDEPENDENT))
                 .isEqualTo(physicalRows);
+    }
+
+    @Test
+    void firstPendingHistoryCorrectionsKeepOwnershipAndRequireTwoFreshObservations() throws Exception {
+        cleanSeason();
+        jdbc.update("UPDATE season SET is_current=false");
+        jdbc.update("INSERT INTO season(id,code,name,start_date,end_date,is_current) VALUES "
+                + "(27,'2026-27','First pending history correction season','2026-08-21',NULL,true)");
+        seedLegacyRow();
+
+        MutableClock clock = new MutableClock(Instant.parse("2026-09-06T17:00:00Z"));
+        PlannerRuntimeRepository activator = new PlannerRuntimeRepository(jdbc, tx, clock, TABLES);
+        RuntimeFence firstFence = activator.activate(SEASON.code(), OwnedSyncMode.ACTIVE);
+        FakeFpl fpl = new FakeFpl(clock);
+        Harness harness = harness(clock, firstFence, fpl);
+        harness.catalogue.enqueueCycle(SEASON, clock.instant());
+        harness.drainDue();
+
+        int historyPlayer = fpl.playersByFixture.get(INDEPENDENT).getFirst();
+        assertThat(seedRetainedLegacyPfs(INDEPENDENT, historyPlayer)).isOne();
+        assertThat(readRows("OFF", INDEPENDENT)).hasSize(1);
+        assertThat(jdbc.queryForObject("SELECT expected_goals FROM player_fixture_stats "
+                + "WHERE season_id=? AND fixture_id=? AND player_id=?", BigDecimal.class,
+                SEASON.id(), INDEPENDENT, historyPlayer)).isEqualByComparingTo("0.77");
+
+        observe(harness, INDEPENDENT);
+        Map<String, Object> firstPending = jdbc.queryForMap("SELECT state,observation::text,"
+                + "observation_generation,current_verified_generation,last_verified_generation "
+                + "FROM " + TABLES.fixtureSync() + " WHERE season_id=? AND fixture_id=?",
+                SEASON.id(), INDEPENDENT);
+        assertThat(firstPending.get("state")).isEqualTo("VERIFYING");
+        assertThat(JSON.readTree((String) firstPending.get("observation")).path("coherent").booleanValue())
+                .isTrue();
+        assertThat(firstPending.get("observation_generation")).isNotNull();
+        assertThat(firstPending.get("current_verified_generation")).isNull();
+        assertThat(firstPending.get("last_verified_generation")).isNull();
+        long firstGeneration = ((Number) firstPending.get("observation_generation")).longValue();
+
+        fpl.correctedHistory30 = true;
+        assertThat(publishPlayerHistory(harness, historyPlayer).outcome()).isEqualTo(Outcome.COMPLETED);
+        assertThat(jdbc.queryForObject("SELECT observation->>'coherent'='false' "
+                + "AND observation_generation=? FROM " + TABLES.fixtureSync()
+                + " WHERE season_id=? AND fixture_id=?", Boolean.class,
+                firstGeneration, SEASON.id(), INDEPENDENT)).isTrue();
+        observe(harness, INDEPENDENT);
+        assertThat(jdbc.queryForObject("SELECT validation_failures[1] FROM " + TABLES.fixtureSync()
+                + " WHERE season_id=? AND fixture_id=?", String.class, SEASON.id(), INDEPENDENT))
+                .isEqualTo("NEEDS_SECOND_OBSERVATION");
+        long changedPendingGeneration = jdbc.queryForObject("SELECT observation_generation FROM "
+                + TABLES.fixtureSync() + " WHERE season_id=? AND fixture_id=?",
+                Long.class, SEASON.id(), INDEPENDENT);
+        assertThat(changedPendingGeneration).isGreaterThan(firstGeneration);
+
+        fpl.removedHistory30 = true;
+        assertThat(publishPlayerHistory(harness, historyPlayer).outcome()).isEqualTo(Outcome.COMPLETED);
+
+        Map<String, Object> invalidated = jdbc.queryForMap("SELECT observation::text,observation_generation,"
+                + "current_verified_generation,last_verified_generation FROM " + TABLES.fixtureSync()
+                + " WHERE season_id=? AND fixture_id=?", SEASON.id(), INDEPENDENT);
+        assertThat(JSON.readTree((String) invalidated.get("observation")).path("coherent").booleanValue())
+                .isFalse();
+        assertThat(invalidated.get("observation_generation")).isEqualTo(changedPendingGeneration);
+        assertThat(invalidated.get("current_verified_generation")).isNull();
+        assertThat(invalidated.get("last_verified_generation")).isNull();
+        assertThat(jdbc.queryForObject("SELECT expected_goals FROM player_fixture_stats "
+                + "WHERE season_id=? AND fixture_id=? AND player_id=?", BigDecimal.class,
+                SEASON.id(), INDEPENDENT, historyPlayer)).isEqualByComparingTo("0.77");
+        assertThat(readRows("ACTIVE", INDEPENDENT)).isEmpty();
+
+        FixtureSyncRepository repository = new FixtureSyncRepository(jdbc, TABLES);
+        var stored = tx.execute(status -> repository.lockObservation(SEASON, INDEPENDENT, clock.instant())
+                .orElseThrow());
+        assertThat(stored.generation()).isEqualTo(changedPendingGeneration);
+        assertThat(stored.observation().coherent()).isFalse();
+
+        activator.deactivate(firstFence);
+        PfsReadSource off = new PfsReadSource(jdbc, "OFF", SEASON.code(),
+                TABLES.fixtureSync(), TABLES.playerFixtureEvidence());
+        assertThat(readRows("OFF", INDEPENDENT)).isEmpty();
+        assertThat(off.fixtureReceipts(SEASON.id(), SEASON.code(), Set.of(INDEPENDENT)))
+                .containsEntry(INDEPENDENT, PfsReadSource.FixtureReceipt.UNVERIFIED_OWNED);
+
+        RuntimeFence restartedFence = activator.activate(SEASON.code(), OwnedSyncMode.ACTIVE);
+        Harness restarted = harness(clock, restartedFence, fpl);
+        fpl.removedHistory30 = false;
+        restarted.catalogue.enqueueCycle(SEASON, clock.instant());
+        restarted.drainDue();
+        assertThat(publishPlayerHistory(restarted, historyPlayer).outcome()).isEqualTo(Outcome.COMPLETED);
+        assertThat(jdbc.queryForObject("SELECT observation_generation FROM " + TABLES.fixtureSync()
+                + " WHERE season_id=? AND fixture_id=?", Long.class, SEASON.id(), INDEPENDENT))
+                .isEqualTo(changedPendingGeneration);
+        assertThat(jdbc.queryForObject("SELECT observation->>'coherent'='false' FROM " + TABLES.fixtureSync()
+                + " WHERE season_id=? AND fixture_id=?", Boolean.class, SEASON.id(), INDEPENDENT)).isTrue();
+
+        observe(restarted, INDEPENDENT);
+        assertThat(jdbc.queryForObject("SELECT validation_failures[1] FROM " + TABLES.fixtureSync()
+                + " WHERE season_id=? AND fixture_id=?", String.class, SEASON.id(), INDEPENDENT))
+                .isEqualTo("NEEDS_SECOND_OBSERVATION");
+        assertThat(jdbc.queryForObject("SELECT current_verified_generation FROM " + TABLES.fixtureSync()
+                + " WHERE season_id=? AND fixture_id=?", Long.class, SEASON.id(), INDEPENDENT)).isNull();
+        assertThat(readRows("ACTIVE", INDEPENDENT)).isEmpty();
+
+        clock.advance(Duration.ofMinutes(11));
+        observe(restarted, INDEPENDENT);
+        assertVerified(INDEPENDENT);
+        assertThat(currentGeneration(INDEPENDENT)).isGreaterThan(changedPendingGeneration);
+        assertThat(lastTwoReads(INDEPENDENT)).satisfies(reads ->
+                assertThat(reads.get(1).started()).isAfterOrEqualTo(
+                        reads.get(0).finished().plus(Duration.ofMinutes(10))));
+        assertThat(jdbc.queryForObject("SELECT expected_goals FROM player_fixture_stats "
+                + "WHERE season_id=? AND fixture_id=? AND player_id=?", BigDecimal.class,
+                SEASON.id(), INDEPENDENT, historyPlayer)).isEqualByComparingTo("0.99");
     }
 
     @Test
@@ -591,6 +718,18 @@ class OwnedMatchdayEndToEndIntegrationTest {
                     team_h_score integer, team_a_score integer,
                     captured_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(season,id))
                 """);
+    }
+
+    private static int seedRetainedLegacyPfs(int fixtureId, int playerId) {
+        return jdbc.update("""
+                INSERT INTO player_fixture_stats (fixture_id,player_id,season_id,gameweek,player_team_id,
+                    opponent_team_id,was_home,kickoff_time,minutes,total_points,expected_goals,expected_assists,value)
+                SELECT f.id,p.id,f.season_id,f.gameweek,p.team_id,
+                    CASE WHEN p.team_id=f.team_h THEN f.team_a ELSE f.team_h END,
+                    p.team_id=f.team_h,f.kickoff_time,90,3,0.77,0.15,50
+                FROM fixture f JOIN player p ON p.season_id=f.season_id
+                WHERE f.season_id=? AND f.id=? AND p.id=?
+                """, SEASON.id(), fixtureId, playerId);
     }
 
     private static void seedLegacyRow() {
