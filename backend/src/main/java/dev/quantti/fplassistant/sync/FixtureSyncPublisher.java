@@ -23,6 +23,7 @@ import dev.quantti.fplassistant.sync.OwnedSyncStore.ConditionalPublication;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.Lease;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.SourceRead;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.SyncKind;
+import dev.quantti.fplassistant.sync.SharedFixtureRecoveryPolicy.SourceStatus;
 
 /** Explicit, network-free fixture observation and verified PFS publication boundary. */
 public final class FixtureSyncPublisher {
@@ -154,7 +155,12 @@ public final class FixtureSyncPublisher {
     }
 
     FixtureSyncRepository.AttemptAdmission admitAttempt(Season season, int fixtureId) {
-        return repository.admitAttempt(season, fixtureId, clock.instant());
+        return admitAttempt(season, fixtureId, SourceStatus.UNKNOWN);
+    }
+
+    FixtureSyncRepository.AttemptAdmission admitAttempt(Season season, int fixtureId,
+                                                         SourceStatus sourceStatus) {
+        return repository.admitAttempt(season, fixtureId, clock.instant(), sourceStatus);
     }
 
     Instant recordDependencyWait(String seasonCode, int fixtureId, Instant dueAt, String error) {

@@ -292,6 +292,8 @@ public final class OwnedSyncSchema {
                 .formatted(tables.fixtureSync()));
         jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS transport_retry_at TIMESTAMPTZ"
                 .formatted(tables.fixtureSync()));
+        jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS dependency_retry_at TIMESTAMPTZ"
+                .formatted(tables.fixtureSync()));
         jdbc.execute("ALTER TABLE %s DROP CONSTRAINT IF EXISTS ck_%s_recovery_episode"
                 .formatted(tables.fixtureSync(), tables.fixtureSync()));
         jdbc.execute("""
