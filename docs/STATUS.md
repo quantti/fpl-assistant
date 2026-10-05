@@ -1,5 +1,9 @@
 # Status — Phase 1
 
+## PR #147 post-push P1 — history ownership marker (2026-10-05)
+
+History-correction invalidation now retains the paired observation/generation as the ownership marker and sets the stored observation `coherent=false`; current verification is revoked without inventing a last-verified generation. Three focused tests passed individually against guarded localhost:55432, covering first-pending changed/removed history, OFF masking of retained PFS, rejection of the old comparison baseline, two fresh observations, rollback/no-op preservation, and unchanged schedule invalidation. The analogous pre-existing schedule path (`invalidateCorrections`) still clears the pair for pending observations; it remains out of scope and needs a separate fix. No production action.
+
 ## Owned sync — recovery fixes Task 1 implemented locally (2026-10-05)
 
 The owner's requested [repair plan](superpowers/plans/2026-10-04-owned-sync-recovery-fixes.md) covers publication-backed correction completion across restart, bounded overdue recovery episodes, and a fenced metadata-only retry gate before anchor hydration. Proposed admission change is one fixed existing-twelve-hour episode per 03:00-UK recovery day, not permission for a twelve-hour production run. Unknown legacy future due times are preserved once, rather than guessed to be policy-only; at the due time recovery must not be deferred to another tomorrow. Completion uses valid current receipt/source intervals, including still-valid prior-epoch publications, never STAGING or mere enqueue state.
