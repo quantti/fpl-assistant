@@ -26,7 +26,8 @@ import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
 
 class PlannerInputRepositoryIntegrationTest {
 
-    private static final OwnedSyncTables TABLES = OwnedSyncTables.tests();
+    private static final OwnedSyncTables TABLES = new OwnedSyncTables(
+            "fpl_plan_run_test", "fpl_plan_payload_test", "fpl_plan_receipt_test");
     private static final CatalogueScheduleTables CAPTURED = new CatalogueScheduleTables(
             "fpl_plan_price_test", "fpl_plan_gw_test", "fpl_plan_fixture_test");
     private static final Season SEASON = new Season(97, "2097-98",
@@ -39,9 +40,7 @@ class PlannerInputRepositoryIntegrationTest {
             SharedStatsSeed.ensure(jdbc);
             new OwnedSyncSchema(jdbc, TABLES).initialize();
             createCapturedTables(jdbc);
-            jdbc.update("DELETE FROM " + TABLES.fixtureSync() + " WHERE season_id=?", SEASON.id());
-            jdbc.update("DELETE FROM " + TABLES.plannerSlot() + " WHERE season=?", SEASON.code());
-            jdbc.update("DELETE FROM " + TABLES.plannerRuntime() + " WHERE instance_id=?", "mode:" + SEASON.code());
+            clearOwnedRows(jdbc);
             jdbc.update("DELETE FROM season WHERE id=?", SEASON.id());
             jdbc.update("INSERT INTO season(id,code,name,start_date,end_date,is_current) VALUES (?,?,?,?,?,false)",
                     SEASON.id(), SEASON.code(), "Planner batch season", SEASON.startsOn(), SEASON.endsOn());
@@ -172,9 +171,7 @@ class PlannerInputRepositoryIntegrationTest {
             SharedStatsSeed.ensure(jdbc);
             new OwnedSyncSchema(jdbc, TABLES).initialize();
             createCapturedTables(jdbc);
-            jdbc.update("DELETE FROM " + TABLES.fixtureSync() + " WHERE season_id=?", SEASON.id());
-            jdbc.update("DELETE FROM " + TABLES.plannerSlot() + " WHERE season=?", SEASON.code());
-            jdbc.update("DELETE FROM " + TABLES.plannerRuntime() + " WHERE instance_id=?", "mode:" + SEASON.code());
+            clearOwnedRows(jdbc);
             jdbc.update("DELETE FROM season WHERE id=?", SEASON.id());
             jdbc.update("INSERT INTO season(id,code,name,start_date,end_date,is_current) VALUES (?,?,?,?,?,false)",
                     SEASON.id(), SEASON.code(), "Backlog season", SEASON.startsOn(), SEASON.endsOn());
@@ -206,11 +203,11 @@ class PlannerInputRepositoryIntegrationTest {
     }
 
     private static void clearOwnedRows(org.springframework.jdbc.core.JdbcTemplate jdbc) {
-        jdbc.update("DELETE FROM " + TABLES.fixtureSync() + " WHERE season_id=?", SEASON.id());
-        jdbc.update("DELETE FROM " + TABLES.run() + " WHERE season=?", SEASON.code());
-        jdbc.update("DELETE FROM " + TABLES.receipt() + " WHERE season=?", SEASON.code());
-        jdbc.update("DELETE FROM " + TABLES.plannerSlot() + " WHERE season=?", SEASON.code());
-        jdbc.update("DELETE FROM " + TABLES.plannerRuntime() + " WHERE instance_id=?", "mode:" + SEASON.code());
+        jdbc.update("DELETE FROM " + TABLES.fixtureSync());
+        jdbc.update("DELETE FROM " + TABLES.run());
+        jdbc.update("DELETE FROM " + TABLES.receipt());
+        jdbc.update("DELETE FROM " + TABLES.plannerSlot());
+        jdbc.update("DELETE FROM " + TABLES.plannerRuntime());
     }
 
     private static long seedVerifiedFixture(org.springframework.jdbc.core.JdbcTemplate jdbc, int fixtureId,
