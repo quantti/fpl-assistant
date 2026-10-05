@@ -43,6 +43,7 @@ import fi.karivanttinen.fplassistant.sync.HistoryParser.HistoryBatch;
 import fi.karivanttinen.fplassistant.sync.HistoryParser.HistoryRow;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.Lease;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.SyncKind;
+import fi.karivanttinen.fplassistant.sync.SharedFixtureRecoveryPolicy.SourceStatus;
 import fi.karivanttinen.fplassistant.testsupport.TapasSeed;
 
 class FixtureSyncPublisherIntegrationTest {
@@ -246,9 +247,10 @@ class FixtureSyncPublisherIntegrationTest {
             int attemptsBefore = jdbc.queryForObject("SELECT attempt_count FROM " + TABLES.fixtureSync()
                     + " WHERE fixture_id=98101", Integer.class);
 
-            Instant wait = clock.instant().plusSeconds(120);
-            repository.recordDependencyWait(SEASON, 98101, wait,
+            Instant requestedWait = clock.instant().plusSeconds(120);
+            Instant wait = repository.recordDependencyWait(SEASON, 98101, requestedWait,
                     "Waiting for fresh player histories", clock.instant());
+            assertThat(wait).isAfter(requestedWait);
 
             Map<String, Object> row = jdbc.queryForMap("SELECT attempt_count, next_due_at, last_error,"
                     + " alert_state FROM " + TABLES.fixtureSync() + " WHERE fixture_id=98101");
@@ -258,7 +260,7 @@ class FixtureSyncPublisherIntegrationTest {
             assertThat(((java.sql.Timestamp) row.get("next_due_at")).toInstant()).isEqualTo(wait);
             // One attempt a day can never finish a verification that has to wait for histories,
             // so the follow-up of a wait is admitted at its own due time, not at the next sweep.
-            assertThat(repository.admitAttempt(SEASON, 98101, wait).admitted()).isTrue();
+            assertThat(repository.admitAttempt(SEASON, 98101, wait, SourceStatus.FINISHED).admitted()).isTrue();
             status.setRollbackOnly();
         });
     }
