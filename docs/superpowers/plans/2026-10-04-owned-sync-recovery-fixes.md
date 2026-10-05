@@ -1,6 +1,6 @@
 # Owned-sync recovery fixes
 
-**PROGRESS:** Planning only; Task 0/4 implemented. No code changes, deployment or activation authorized by this plan.
+**PROGRESS:** Task 1/4 implemented; focused tests and independent static review passed. PR/full CI gate pending; Tasks 2–4 untouched.
 
 ## Goal and evidence
 
@@ -46,6 +46,10 @@ Use the real planner input repository/coordinator/runtime with tiny seeded ACTIV
 - First verification retains the original correction schedule; invalidation/new verification series does not inherit old completion.
 
 **Pass:** restart neither republishes already-covered correction slots nor loses genuinely unfinished/changed work. No body reads added to planner input; bounded metadata SQL, not per-player queries.
+
+**Task 1 outcome (focused verification and independent re-review passed; PR/full CI still required):** correction completion comes from the current same-season fixture receipt and completed ACTIVE run, using its coherent combined source interval. The P1 history-only invalidation gap is also fixed: changed/removed history fingerprints revoke current verification and persist immediate fixture work in the same ACTIVE history-publication transaction; rollback restores fingerprints, fixture state and queue together. Physical PFS/evidence stays retained but is reader-masked until fresh proof. History invalidation retains the paired observation/generation ownership marker with `coherent=false`, preventing pending-first-observation rows from falling back to legacy reads after OFF. The old baseline cannot count as a coherent independent batch. The real ACTIVE→OFF→ACTIVE regression, including an identical post-restart history read and fresh completion, plus rollback and focused planner/history tests pass. No schema or source/budget fence changed; no production runtime action occurred.
+
+**Bounded CI-isolation follow-up (2026-10-05):** CI run 37276350222 had 18 reset failures (12 planner-runtime, six sync-operations) because this integration class seeded the shared `fpl_fixture_sync_test` with a generation reference, then a later class deleted its `fpl_sync_run_test` parent. The test now uses a class-specific `fpl_plan_*` `OwnedSyncTables` prefix and clears its own fixture/run/receipt/planner rows, capture rows and season before reseeding. The focused planner-input class passed 3/3 on guarded localhost:55432; planner-runtime plus sync-operations then passed together, 18/18. This is focused verification only: the complete CI gate has not been rerun and is not claimed green.
 
 ## Task 2 — bounded overdue recovery admission, shared with planning
 
@@ -102,7 +106,7 @@ Use the real planner input repository/coordinator/runtime with tiny seeded ACTIV
 - Extend the representative progress driver to **ACTIVE**, not just STAGING: seed 20 clubs/full roster, 50 finished fixtures, 40 previously verified and 10 never published, old daily-only state, and a realistic mix of served/unserved genuine corrections. All data is disposable and seeded.
 - Exercise actual ACTIVE→OFF→ACTIVE with retained publication evidence and fixed clocks. Include the observed first- and second-run shapes; keep a bounded virtual-time/claim limit and independent coverage/source-floor oracle.
 - Require **10/10 never-published fixtures to obtain receipt-backed ACTIVE verification** within a finite virtual-time/claim bound fixed in the test before running it. Advance the seeded clock to eligible legacy due where applicable; test immediate new-policy admission separately. Report first verification separately, but fewer than 10 complete is a failure, not partial success. Assert source-complete history demands are served, served corrections do not replay, and ordinary FIFO/canonical/ready-blocked-untouched lanes still progress. No pinned fixture or test oracle based on production contents.
-- Include two-batch timing, same-fingerprint republication where genuinely due, changed-source correction, rollback/late callback, optional-component masking and read-source ownership behavior.
+- Include two-batch timing, same-fingerprint republication where genuinely due, changed-source correction, rollback/late callback, optional-component masking and read-source ownership behavior. A separately identified pre-existing schedule-invalidation path clears the ownership marker for first-pending observations; fix/test that bounded path before accepting Task 4, just as history invalidation must retain ownership while invalidating its comparison baseline.
 - Measure body-read counts/bytes at equal work; report first-new-verification and backlog completion separately. Do not compare unequal publication outcomes as a billing saving or multiply a synthetic rate into a monthly forecast.
 - Focused tests locally, one agent/build unit at a time with the checked-in limits. Full suite is GitHub CI on each PR and merge. Independent review must cover ACTIVE admission, completion proof, metadata races and OFF rollback.
 
