@@ -328,6 +328,7 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                 assertThat(verified.get(1).state()).isEqualTo(FixtureVerification.State.VERIFIED);
                 assertThat(verified.get(1).observation().reads().startedAt())
                         .isAfterOrEqualTo(firstFinished.plus(Duration.ofMinutes(10)));
+                assertTargetReceiptIntervalNegativeCases(baseline, 1);
                 assertBaselineCandidateCoverage(fixtureIds, compactSource);
                 assertReceiptBackedFixtures(baseline.fence, fixtureIds);
 
@@ -366,6 +367,15 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                 assertThat(baselinePublicationChecksum(fixtureIds)).isEqualTo(publicationChecksum);
                 assertThat(historyFingerprintChecksum(fixtureIds)).isEqualTo(fingerprintChecksum);
                 assertCanonicalPairProof(resumed, compactSource);
+                PayloadReadProbe.Snapshot workerReadsBeforeOracle = resumed.payloadReads.snapshot();
+                CanonicalParentProof diagnosticParent = currentCanonicalParentProof(resumed);
+                assertThat(diagnosticParent.currentPublished()).isTrue();
+                assertThat(diagnosticParent.immutable()).isTrue();
+                assertThat(numberLong(diagnosticParent.trace().get("diagnosticPayloadQueries"))).isEqualTo(1);
+                assertThat(numberLong(diagnosticParent.trace().get("diagnosticPayloadRawBytes"))).isPositive();
+                assertThat(resumed.payloadReads.snapshot())
+                        .as("non-probe oracle body reads are separate from worker measurements")
+                        .isEqualTo(workerReadsBeforeOracle);
                 assertStoredFixtureOracle(1, sourceFixtureOracles(compactSource, fixtureIds).get(1));
             }
         } finally {
@@ -423,6 +433,39 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                     assertThat(slot.dueAt()).isEqualTo(due);
                     assertThat(slot.fixtureIds()).containsExactly(fixture.id());
                 });
+    }
+
+    @Test
+    void unrelatedDailyDeadlineDoesNotProveFixtureSpecificRecoveryWork() {
+        Instant now = ACTIVE_PRICE_CAPTURE;
+        int fixtureId = 99;
+        AdaptiveMatchdayPlanner.Fixture fixture = new AdaptiveMatchdayPlanner.Fixture(fixtureId, 1,
+                now.minus(Duration.ofHours(1)), true, true, true, now.minus(Duration.ofHours(14)),
+                Set.of(1), SharedFixtureRecoveryPolicy.SourceStatus.UNKNOWN);
+        AdaptiveMatchdayPlanner.FixtureProgress progress = new AdaptiveMatchdayPlanner.FixtureProgress(
+                fixtureId, true, now.minus(Duration.ofHours(14)), now.minus(Duration.ofHours(13)), 1,
+                now.minus(Duration.ofHours(1)), null, null, Set.of(),
+                AdaptiveMatchdayPlanner.RecoveryMetadata.empty());
+        AdaptiveMatchdayPlanner.Plan plan = new AdaptiveMatchdayPlanner(Clock.fixed(now, ZoneOffset.UTC)).plan(
+                new AdaptiveMatchdayPlanner.Input(SEASON.code(), 0, List.of(fixture), List.of(progress), List.of()));
+        SharedFixtureRecoveryPolicy.Decision recovery = fixtureOnlyRecoveryDecision(fixture, progress, now);
+        Instant fixtureOnlyDue = fixtureOnlyFutureDue(SEASON.code(), 0, Clock.fixed(now, ZoneOffset.UTC),
+                fixture, progress, recovery);
+        AdaptiveMatchdayPlanner.WorkSlot dailySlot = new AdaptiveMatchdayPlanner.WorkSlot(
+                SEASON.code() + ":daily_schedule:unrelated", AdaptiveMatchdayPlanner.WorkKind.DAILY_SCHEDULE,
+                ACTIVE_SCHEDULE_CAPTURE, Set.of(), Set.of(), AdaptiveMatchdayPlanner.SlotReason.ROUTINE, 2);
+
+        assertThat(plan.dueSlots()).anyMatch(slot -> slot.kind()
+                == AdaptiveMatchdayPlanner.WorkKind.DAILY_CATALOGUE);
+        assertThat(plan.nextDueAt()).contains(ACTIVE_SCHEDULE_CAPTURE);
+        assertThat(plan.dueSlots()).noneMatch(slot -> slot.fixtureIds().contains(fixtureId));
+        assertThat(recovery.action()).isEqualTo(SharedFixtureRecoveryPolicy.Action.WAIT_FOR_PARENT);
+        assertThat(fixtureOnlyDue).isNull();
+        assertThat(hasFixtureSpecificFutureWork(fixtureId, false,
+                List.of(new PlannerRuntimeRepository.DurableSlot(dailySlot, now)), fixtureOnlyDue,
+                plan.nextDueAt().orElse(null), now))
+                .as("an unrelated daily wake and a pending observation cannot stand in for this fixture's work")
+                .isFalse();
     }
 
     @Test
@@ -770,6 +813,7 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                         Math.max(0, ACTIVE_RECOVERY_DISPATCH_LIMIT - dispatchesBeforeDriver));
                 resumed.http.setWaitObserverForTests(driver::observeWait);
                 driver.run();
+                completePublicationBodies = resumed.payloadReads.snapshot();
                 System.out.printf("OWNED_ACTIVE_RECOVERY_DRIVER stop=%s clock=%s next=%s "
                                 + "claims=%d admissions=%d dispatches=%d lastAdmissions=%s completions=%d "
                                 + "pendingTarget=%d gates=%s%n",
@@ -781,7 +825,6 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                         pendingFixtureRuns(resumed.fence.epoch(), neverPublished), fixtureGateTrace(neverPublished));
                 accepted = activeAcceptanceMetrics(resumed, preparationDriver, driver, neverPublished,
                         servedCorrectionReceipts);
-                completePublicationBodies = resumed.payloadReads.snapshot();
                 System.out.println(activeAcceptanceTrace(resumed, preparationDriver, driver,
                         neverPublished, accepted, blockedRetryBodies, completePublicationBodies));
                 assertThat(accepted.verifiedFixtureIds()).as("combined ACTIVE acceptance trace above")
@@ -830,13 +873,10 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                         .bodyValues()).isPositive();
                 assertThat(completePublicationBodies.bodyFamily(PayloadReadProbe.BodyFamily.CROSS_RUN_HISTORIES)
                         .bodyValues()).isPositive();
-                assertThat(completePublicationBodies.bodyFamily(PayloadReadProbe.BodyFamily.CANONICAL_PAIRS)
-                        .bodyValues()).isPositive();
+                assertWorkerCanonicalPairReads(completePublicationBodies);
                 assertThat(completePublicationBodies.bodyFamily(PayloadReadProbe.BodyFamily.OWN_ANCHORS).rawBytes())
                         .isPositive();
                 assertThat(completePublicationBodies.bodyFamily(PayloadReadProbe.BodyFamily.CROSS_RUN_HISTORIES)
-                        .rawBytes()).isPositive();
-                assertThat(completePublicationBodies.bodyFamily(PayloadReadProbe.BodyFamily.CANONICAL_PAIRS)
                         .rawBytes()).isPositive();
 
                 assertUnverifiedAfterScheduleCorrection(3, fixtureThreeBeforeScheduleCorrection,
@@ -1392,23 +1432,21 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
         PlannerRuntimeRepository runtime = new PlannerRuntimeRepository(jdbc, tx, harness.clock, TABLES,
                 harness.fence);
         List<PlannerRuntimeRepository.DurableSlot> ledger = runtime.loadSlots(SEASON.code());
-        Instant fixtureDeadline = fixturePlan.nextDueAt().orElse(null);
-        Map<Integer, Map<String, Object>> rows = new TreeMap<>();
         for (int fixtureId : fixtureIds.stream().sorted().toList()) {
             Map<String, Object> row = jdbc.queryForMap("SELECT state,observation,observation_generation,"
                     + "current_verified_generation,last_verified_generation,next_due_at,validation_failures::text"
                     + " validation_failures FROM " + TABLES.fixtureSync()
                     + " WHERE season_id=? AND fixture_id=?", SEASON.id(), fixtureId);
-            rows.put(fixtureId, row);
             assertThat(row.get("current_verified_generation")).as("fixture %d remains unverified", fixtureId).isNull();
             assertThat(nullableLong(row.get("last_verified_generation")))
                     .as("fixture %d retains its actual last publication", fixtureId)
                     .isEqualTo(actualVerifiedGenerations.get(fixtureId));
             boolean queued = jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM " + TABLES.run()
-                    + " WHERE season=? AND publication_key=? AND kind='FIXTURE_VERIFICATION'"
-                    + " AND runtime_mode='ACTIVE' AND runtime_epoch=? AND state IN ('PENDING','LEASED')"
-                    + " AND generation>?)", Boolean.class, SEASON.code(), "fixture:" + fixtureId,
-                    harness.fence.epoch(), actualVerifiedGenerations.get(fixtureId));
+                    + " WHERE season=? AND coalescing_key=? AND publication_key=?"
+                    + " AND kind='FIXTURE_VERIFICATION' AND runtime_mode='ACTIVE' AND runtime_epoch=?"
+                    + " AND state IN ('PENDING','LEASED') AND generation>?)", Boolean.class, SEASON.code(),
+                    "fixture:" + fixtureId, "fixture:" + fixtureId, harness.fence.epoch(),
+                    actualVerifiedGenerations.get(fixtureId));
             boolean pendingObservation = "VERIFYING".equals(row.get("state"))
                     && "true".equals(jdbc.queryForObject("SELECT observation->>'coherent' FROM "
                             + TABLES.fixtureSync() + " WHERE season_id=? AND fixture_id=?",
@@ -1416,29 +1454,98 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                     && row.get("observation_generation") != null
                     && String.valueOf(row.get("validation_failures")).contains("NEEDS_SECOND_OBSERVATION")
                     && jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM " + TABLES.run()
-                            + " WHERE generation=? AND season=? AND publication_key=?"
+                            + " WHERE generation=? AND season=? AND coalescing_key=? AND publication_key=?"
                             + " AND kind='FIXTURE_VERIFICATION' AND runtime_mode='ACTIVE'"
                             + " AND runtime_epoch=? AND state='COMPLETED')", Boolean.class,
                             nullableLong(row.get("observation_generation")), SEASON.code(),
-                            "fixture:" + fixtureId, harness.fence.epoch());
-            boolean coordinatorHasFutureWake = fixtureDeadline != null && fixtureDeadline.isAfter(harness.clock.instant())
-                    && coordinatorTick.nextDueAt() != null
-                    && !coordinatorTick.nextDueAt().isAfter(fixtureDeadline);
-            // Ledger presence is diagnostic only: a slot is never treated as publication or served evidence.
-            boolean ledgerDiagnostic = ledger.stream().anyMatch(slot -> slot.slot().fixtureIds().contains(fixtureId));
-            Set<String> completedCorrections = progress.stream().filter(value -> value.fixtureId() == fixtureId)
-                    .map(AdaptiveMatchdayPlanner.FixtureProgress::completedCorrections).findFirst().orElse(Set.of());
+                            "fixture:" + fixtureId, "fixture:" + fixtureId, harness.fence.epoch());
+            AdaptiveMatchdayPlanner.Fixture fixture = fixtures.stream()
+                    .filter(value -> value.id() == fixtureId).findFirst().orElseThrow();
+            AdaptiveMatchdayPlanner.FixtureProgress fixtureProgress = progress.stream()
+                    .filter(value -> value.fixtureId() == fixtureId).findFirst().orElseThrow();
+            SharedFixtureRecoveryPolicy.Decision fixtureRecovery = fixtureOnlyRecoveryDecision(
+                    fixture, fixtureProgress, harness.clock.instant());
+            Instant fixtureOnlyDue = fixtureOnlyFutureDue(SEASON.code(), snapshot.playerIds().size(),
+                    harness.clock, fixture, fixtureProgress, fixtureRecovery);
+            boolean fixtureWork = hasFixtureSpecificFutureWork(fixtureId, queued, ledger, fixtureOnlyDue,
+                    coordinatorTick.nextDueAt(), harness.clock.instant());
             System.out.printf("OWNED_TASK4_CORRECTION_WORK fixture=%d completedCorrections=%s queued=%s "
-                            + "pendingObservation=%s fixtureDeadline=%s coordinatorNext=%s ledgerDiagnostic=%s%n",
-                    fixtureId, completedCorrections, queued, pendingObservation, fixtureDeadline,
-                    coordinatorTick.nextDueAt(), ledgerDiagnostic);
-            assertThat(queued || (pendingObservation && coordinatorHasFutureWake))
-                    .as("fixture %d correction remains queued or has a normal pending observation and a real "
-                                    + "coordinator wake; queued=%s pendingObservation=%s fixtureDeadline=%s "
-                                    + "coordinatorNext=%s ledgerSlots=%s row=%s",
-                            fixtureId, queued, pendingObservation, fixtureDeadline, coordinatorTick.nextDueAt(),
-                            ledgerDiagnostic, row)
+                            + "pendingObservation=%s fixtureRecovery=%s fixtureOnlyDue=%s coordinatorNext=%s globalPlanNext=%s "
+                            + "durableFixtureSlot=%s row=%s%n",
+                    fixtureId, fixtureProgress.completedCorrections(), queued, pendingObservation, fixtureRecovery,
+                    fixtureOnlyDue, coordinatorTick.nextDueAt(), fixturePlan.nextDueAt().orElse(null),
+                    hasFutureFixtureSlot(fixtureId, ledger, harness.clock.instant()), row);
+            assertThat(fixtureWork)
+                    .as("fixture %d remains unverified with exact queued/durable work or a fixture-only future "
+                                    + "recovery decision and coordinator wake; queued=%s pendingObservation=%s "
+                                    + "fixtureRecovery=%s fixtureOnlyDue=%s coordinatorNext=%s globalPlanNext=%s row=%s",
+                            fixtureId, queued, pendingObservation, fixtureRecovery, fixtureOnlyDue,
+                            coordinatorTick.nextDueAt(),
+                            fixturePlan.nextDueAt().orElse(null), row)
                     .isTrue();
+        }
+    }
+
+    private static SharedFixtureRecoveryPolicy.Decision fixtureOnlyRecoveryDecision(
+            AdaptiveMatchdayPlanner.Fixture fixture, AdaptiveMatchdayPlanner.FixtureProgress progress,
+            Instant now) {
+        AdaptiveMatchdayPlanner.RecoveryMetadata recovery = progress.recovery();
+        return SharedFixtureRecoveryPolicy.decide(new SharedFixtureRecoveryPolicy.Input(now,
+                fixture.recoverySourceStatus(), progress.verifiedAt() != null,
+                progress.firstFinishedObservedAt(), progress.nextDueAt(), recovery.dueReason(),
+                recovery.transportRetryAt(), recovery.cooldownUntil(), recovery.recoveryDay(),
+                recovery.episodeStartedAt(), recovery.episodeUntil(), recovery.publishedAt(),
+                recovery.dependencyRetryAt()));
+    }
+
+    private static boolean hasFutureFixtureSlot(int fixtureId,
+                                                List<PlannerRuntimeRepository.DurableSlot> slots, Instant now) {
+        return slots.stream().map(PlannerRuntimeRepository.DurableSlot::slot).anyMatch(slot ->
+                (slot.kind() == AdaptiveMatchdayPlanner.WorkKind.FIXTURE_VERIFICATION
+                        || slot.kind() == AdaptiveMatchdayPlanner.WorkKind.FIXTURE_CORRECTION)
+                        && slot.fixtureIds().equals(Set.of(fixtureId))
+                        && slot.id().endsWith(":fixtures=" + fixtureId + ":" + slot.dueAt())
+                        && slot.dueAt().isAfter(now));
+    }
+
+    private static Instant fixtureOnlyFutureDue(String season, int activePlayerCount, Clock clock,
+                                                AdaptiveMatchdayPlanner.Fixture fixture,
+                                                AdaptiveMatchdayPlanner.FixtureProgress progress,
+                                                SharedFixtureRecoveryPolicy.Decision recovery) {
+        Instant now = clock.instant();
+        Instant candidate = switch (recovery.action()) {
+            case WAIT -> recovery.notBefore();
+            case NORMAL -> progress.nextDueAt();
+            case WAIT_FOR_PARENT, WAIT_FOR_SOURCE, RESERVE_EPISODE, CONTINUE_EPISODE -> null;
+        };
+        if (candidate == null || !candidate.isAfter(now)) return null;
+        AdaptiveMatchdayPlanner.Plan plan = new AdaptiveMatchdayPlanner(clock).plan(
+                new AdaptiveMatchdayPlanner.Input(season, activePlayerCount, List.of(fixture),
+                        List.of(progress), List.of()));
+        return plan.nextDueAt().filter(candidate::equals).orElse(null);
+    }
+
+    private static boolean hasFixtureSpecificFutureWork(int fixtureId, boolean queuedRun,
+                                                         List<PlannerRuntimeRepository.DurableSlot> slots,
+                                                         Instant fixtureOnlyDue, Instant coordinatorNext, Instant now) {
+        boolean policyFuture = fixtureOnlyDue != null && fixtureOnlyDue.isAfter(now)
+                && coordinatorNext != null && coordinatorNext.isAfter(now)
+                && !coordinatorNext.isAfter(fixtureOnlyDue);
+        return queuedRun || hasFutureFixtureSlot(fixtureId, slots, now) || policyFuture;
+    }
+
+    private static void assertWorkerCanonicalPairReads(PayloadReadProbe.Snapshot workerReads) {
+        PayloadReadProbe.FamilyMetrics pairReads = workerReads.bodyFamily(
+                PayloadReadProbe.BodyFamily.CANONICAL_PAIRS);
+        assertThat(pairReads.bodyValues()).isIn(0L, 2L);
+        if (pairReads.bodyValues() == 0) {
+            assertThat(pairReads.attempts()).isZero();
+            assertThat(pairReads.resultRows()).isZero();
+            assertThat(pairReads.rawBytes()).isZero();
+        } else {
+            assertThat(pairReads.attempts()).isEqualTo(1);
+            assertThat(pairReads.resultRows()).isEqualTo(1);
+            assertThat(pairReads.rawBytes()).isPositive();
         }
     }
 
@@ -2089,7 +2196,7 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                 + " AND ((p.publication_key=? AND r.coalescing_key=? AND r.publication_key=?)"
                 + " OR (p.publication_key=? AND r.coalescing_key=? AND r.publication_key=?))"
                 + " ORDER BY p.published_at DESC,r.generation DESC LIMIT 1";
-        List<CanonicalParentProof> rows = harness.payloadReads.query(sql, (rs, index) -> {
+        List<CanonicalParentProof> rows = jdbc.query(sql, (rs, index) -> {
             String publicationKey = rs.getString("publication_key");
             long publicationGeneration = rs.getLong("publication_generation");
             long sourceGeneration = rs.getLong("b_generation");
@@ -2147,17 +2254,16 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                     && bFinishedValue.equals(rs.getTimestamp("source_bootstrap_read_finished_at"))
                     && fStartedValue.equals(rs.getTimestamp("source_fixtures_read_started_at"))
                     && fFinishedValue.equals(rs.getTimestamp("source_fixtures_read_finished_at"));
-            boolean sourceInterval = publishedAtValue != null && completedAtValue != null
-                    && runStartedValue != null && runFinishedValue != null
-                    && receiptStartedValue != null && receiptFinishedValue != null
-                    && !completedAtValue.after(publishedAtValue)
-                    && !publishedAtValue.toInstant().isAfter(harness.clock.instant())
-                    && !runStartedValue.after(runFinishedValue)
-                    && !runFinishedValue.after(publishedAtValue)
-                    && runStartedValue.equals(receiptStartedValue)
-                    && runFinishedValue.equals(receiptFinishedValue)
-                    && bFinishedValue != null && fFinishedValue != null
-                    && !bFinishedValue.after(publishedAtValue) && !fFinishedValue.after(publishedAtValue);
+            Timestamp combinedStarted = earlier(bStartedValue, fStartedValue);
+            Timestamp combinedFinished = later(bFinishedValue, fFinishedValue);
+            boolean sourceRolesOrdered = bStartedValue != null && bFinishedValue != null
+                    && fStartedValue != null && fFinishedValue != null
+                    && !bStartedValue.after(bFinishedValue) && !fStartedValue.after(fFinishedValue);
+            boolean sourceInterval = sourceRolesOrdered && runStartedValue != null && runFinishedValue != null
+                    && runStartedValue.equals(combinedStarted) && runFinishedValue.equals(combinedFinished)
+                    && receiptIntervalProof(runStartedValue, runFinishedValue, receiptStartedValue,
+                            receiptFinishedValue, completedAtValue, publishedAtValue, harness.clock.instant())
+                    && databaseMicroseconds(bStartedValue, bFinishedValue, fStartedValue, fFinishedValue);
             boolean currentPublished = rs.getLong("latest_generation") == publicationGeneration
                     && "COMPLETED".equals(rs.getString("publication_state"))
                     && publicationIdentity && sourceIdentity && payloadIdentity && sourceInterval
@@ -2194,7 +2300,10 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
             trace.put("sourceIntervals", java.util.Arrays.asList(bStartedValue, bFinishedValue,
                     fStartedValue, fFinishedValue));
             trace.put("receiptInterval", java.util.Arrays.asList(receiptStartedValue,
-                    receiptFinishedValue, publishedAtValue));
+                    receiptFinishedValue, completedAtValue, publishedAtValue));
+            trace.put("diagnosticPayloadQueries", 1);
+            trace.put("diagnosticPayloadRawBytes", (bootstrapBody == null ? 0 : bootstrapBody.length)
+                    + (fixturesBody == null ? 0 : fixturesBody.length));
             trace.put("bodyHashMatches", immutable);
             trace.put("currentPublished", currentPublished);
             trace.put("immutable", immutable);
@@ -2214,6 +2323,33 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                 CatalogueScheduleDispatcher.SCHEDULE_COALESCING_KEY,
                 CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY);
         return rows.isEmpty() ? CanonicalParentProof.missing() : rows.getFirst();
+    }
+
+    private static Timestamp earlier(Timestamp first, Timestamp second) {
+        if (first == null || second == null) return null;
+        return first.before(second) ? first : second;
+    }
+
+    private static Timestamp later(Timestamp first, Timestamp second) {
+        if (first == null || second == null) return null;
+        return first.after(second) ? first : second;
+    }
+
+    private static boolean receiptIntervalProof(Timestamp sourceStarted, Timestamp sourceFinished,
+                                               Timestamp receiptStarted, Timestamp receiptFinished,
+                                               Timestamp completedAt, Timestamp publishedAt, Instant asOf) {
+        if (!databaseMicroseconds(sourceStarted, sourceFinished, receiptStarted, receiptFinished,
+                completedAt, publishedAt)) return false;
+        return !sourceStarted.after(sourceFinished) && sourceStarted.equals(receiptStarted)
+                && sourceFinished.equals(receiptFinished) && !sourceFinished.after(completedAt)
+                && !completedAt.after(publishedAt) && !publishedAt.toInstant().isAfter(asOf);
+    }
+
+    private static boolean databaseMicroseconds(Timestamp... values) {
+        for (Timestamp value : values) {
+            if (value == null || value.getNanos() % 1_000 != 0) return false;
+        }
+        return true;
     }
 
     private static long numberLong(Object value) {
@@ -2257,7 +2393,8 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                 + "l.id l_id,l.run_generation l_generation,l.endpoint_kind l_role,l.event_id l_event,"
                 + "l.player_id l_player,l.validation_state l_validation,l.body IS NOT NULL l_body,"
                 + "l.read_started_at l_started,l.read_finished_at l_finished,"
-                + "p.latest_generation receipt_latest,"
+                + "p.latest_generation receipt_latest,p.source_read_started_at receipt_started,"
+                + "p.source_read_finished_at receipt_finished,p.published_at receipt_published,"
                 + "(SELECT min(e.source_read_started_at) FROM " + TABLES.playerFixtureEvidence()
                 + " e WHERE e.season_id=fs.season_id AND e.fixture_id=fs.fixture_id"
                 + " AND e.generation=r.generation) evidence_started,"
@@ -2293,6 +2430,9 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
         Timestamp wanted = (Timestamp) row.get("requested_source_after");
         Timestamp floor = (Timestamp) row.get("source_floor");
         Timestamp effective = (Timestamp) row.get("effective_floor");
+        Timestamp receiptStarted = (Timestamp) row.get("receipt_started");
+        Timestamp receiptFinished = (Timestamp) row.get("receipt_finished");
+        Timestamp receiptPublished = (Timestamp) row.get("receipt_published");
         Timestamp bStarted = (Timestamp) row.get("b_started");
         Timestamp bFinished = (Timestamp) row.get("b_finished");
         Timestamp fStarted = (Timestamp) row.get("f_started");
@@ -2359,15 +2499,23 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                 + TABLES.fixtureSync() + " WHERE season_id=? AND fixture_id=?", Boolean.class,
                 SEASON.id(), fixtureId);
         boolean sourceIntervals = generation > 0 && sourceIntervalProof(generation, row);
+        boolean targetReceiptInterval = receiptIntervalProof(rTimestamp(row, "run_started"),
+                rTimestamp(row, "run_finished"), receiptStarted, receiptFinished,
+                rTimestamp(row, "completed_at"), receiptPublished, harness.clock.instant());
         boolean timestampPrecision = timestampPrecision(row, wanted, floor, bStarted, bFinished,
-                fStarted, fFinished, lStarted, lFinished, effective);
+                fStarted, fFinished, lStarted, lFinished, rTimestamp(row, "evidence_started"),
+                rTimestamp(row, "evidence_finished"),
+                rTimestamp(row, "run_started"), rTimestamp(row, "run_finished"),
+                rTimestamp(row, "completed_at"), receiptStarted, receiptFinished, receiptPublished,
+                rTimestamp(row, "fixture_started"), rTimestamp(row, "fixture_finished"), effective);
         boolean parentCurrent = parent.currentPublished() && parent.immutable()
                 && actualParent.currentPublished();
         boolean parentProofMatchesProduction = parent.currentPublished() == actualParent.currentPublished();
         boolean publishedManifestProof = generationGate && epochCurrent && seasonCurrent && keyCurrent && sourceFloorWanted
                 && readIdentity && anchorValidation && bodyPresent && timeOrder && eventHeader
                 && membershipKnown && coherent && participantsMatch && markerMatches && recoveryWindow
-                && sourceIntervals && timestampPrecision && parentCurrent && parentProofMatchesProduction
+                && sourceIntervals && targetReceiptInterval && timestampPrecision
+                && parentCurrent && parentProofMatchesProduction
                 && actualParent.fixtureFinished();
         Map<String, Object> result = new TreeMap<>();
         result.put("fixtureId", fixtureId);
@@ -2391,7 +2539,8 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
         sourceReads.put("live", java.util.Arrays.asList(lStarted, lFinished));
         sourceReads.put("history", java.util.Arrays.asList(row.get("evidence_started"), row.get("evidence_finished")));
         sourceReads.put("fixtureRun", java.util.Arrays.asList(row.get("run_started"), row.get("run_finished")));
-        sourceReads.put("completedAt", row.get("completed_at"));
+        sourceReads.put("fixtureReceipt", java.util.Arrays.asList(receiptStarted, receiptFinished,
+                row.get("completed_at"), receiptPublished));
         result.put("sourceRead3Anchors", sourceReads);
         result.put("anchorRolesValid", readIdentity && anchorValidation);
         result.put("coherentBodyPresent", Map.of("coherent", coherent, "bodyPresent", bodyPresent));
@@ -2411,6 +2560,7 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
         result.put("actualRuleFixtureFinished", actualParent.fixtureFinished());
         result.put("recoveryWindow", recoveryWindow);
         result.put("sourceIntervalsCoherent", sourceIntervals);
+        result.put("targetReceiptInterval", targetReceiptInterval);
         result.put("timestampPrecision", timestampPrecision);
         result.put("participantCounts", participantsMatch);
         result.put("publishedManifestProof", publishedManifestProof);
@@ -2449,19 +2599,27 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                 evidenceStarted.toInstant()).stream().min(Instant::compareTo).orElseThrow();
         Instant expectedFixtureFinished = List.of(fFinished.toInstant(), lFinished.toInstant(),
                 evidenceFinished.toInstant()).stream().max(Instant::compareTo).orElseThrow();
-        return runStarted.toInstant().equals(expectedStarted) && runFinished.toInstant().equals(expectedFinished)
+        boolean rolesOrdered = !bStarted.after(bFinished) && !fStarted.after(fFinished)
+                && !lStarted.after(lFinished) && !evidenceStarted.after(evidenceFinished);
+        return rolesOrdered && runStarted.toInstant().equals(expectedStarted)
+                && runFinished.toInstant().equals(expectedFinished)
                 && fixtureStarted.toInstant().equals(expectedFixtureStarted)
                 && fixtureFinished.toInstant().equals(expectedFixtureFinished)
-                && !runFinished.after(completedAt) && runStarted.getNanos() % 1_000 == 0
-                && runFinished.getNanos() % 1_000 == 0 && generation == numberLong(row.get("run_generation"));
+                && !fixtureStarted.before(runStarted) && !fixtureFinished.after(runFinished)
+                && !runStarted.after(runFinished) && !runFinished.after(completedAt)
+                && databaseMicroseconds(runStarted, runFinished, completedAt, bStarted, bFinished,
+                        fStarted, fFinished, lStarted, lFinished, evidenceStarted, evidenceFinished,
+                        fixtureStarted, fixtureFinished)
+                && generation == numberLong(row.get("run_generation"));
     }
 
     private static boolean timestampPrecision(Map<String, Object> row, Timestamp... values) {
         for (Timestamp value : values) {
             if (value == null || value.getNanos() % 1_000 != 0) return false;
         }
-        for (String column : List.of("completed_at", "run_started", "run_finished",
-                "recovery_started_at", "recovery_until")) {
+        for (String column : List.of("completed_at", "run_started", "run_finished", "receipt_started",
+                "receipt_finished", "receipt_published", "fixture_started", "fixture_finished",
+                "evidence_started", "evidence_finished", "recovery_started_at", "recovery_until")) {
             Timestamp value = (Timestamp) row.get(column);
             if (value != null && value.getNanos() % 1_000 != 0) return false;
         }
@@ -2798,8 +2956,11 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                 + ",claims=" + metrics.claims() + "/" + ACTIVE_RECOVERY_CLAIM_LIMIT
                 + ",dispatches=" + metrics.dispatches() + "/" + ACTIVE_RECOVERY_DISPATCH_LIMIT
                 + ",wallSeconds=" + Duration.ofNanos(System.nanoTime() - harness.wallStartedAtNanos).toMillis() / 1000.0
-                + "/1500} blockedRetryLogicalReads=" + logicalReadStats(blockedRetryBodies)
-                + " completePublicationLogicalReads=" + logicalReadStats(completePublicationBodies)
+                + "/1500} blockedRetryWorkerLogicalReads=" + logicalReadStats(blockedRetryBodies)
+                + " workerPublicationLogicalReads=" + logicalReadStats(completePublicationBodies)
+                + " diagnosticCanonicalParentPayload={queries="
+                + metrics.canonicalParentProof().get("diagnosticPayloadQueries") + ",rawBytes="
+                + metrics.canonicalParentProof().get("diagnosticPayloadRawBytes") + "}"
                 + " syncRows=" + syncRows + " fixtureRuns=" + fixtureRuns + " manifests=" + manifests;
     }
 
@@ -2824,52 +2985,87 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
         return result;
     }
 
+    private static void assertTargetReceiptIntervalNegativeCases(Harness harness, int fixtureId) {
+        Map<String, Object> receipt = jdbc.queryForMap("SELECT r.source_read_started_at run_started,"
+                + "r.source_read_finished_at run_finished,r.completed_at,p.source_read_started_at receipt_started,"
+                + "p.source_read_finished_at receipt_finished,p.published_at receipt_published FROM "
+                + TABLES.fixtureSync() + " fs JOIN " + TABLES.receipt() + " p ON p.season=fs.season_code"
+                + " AND p.publication_key='fixture:' || fs.fixture_id::text"
+                + " AND p.latest_generation=fs.current_verified_generation JOIN " + TABLES.run()
+                + " r ON r.generation=p.latest_generation AND r.season=p.season"
+                + " WHERE fs.season_id=? AND fs.fixture_id=? AND fs.state='VERIFIED'"
+                + " AND r.kind='FIXTURE_VERIFICATION' AND r.runtime_mode='ACTIVE' AND r.runtime_epoch=?",
+                SEASON.id(), fixtureId, harness.fence.epoch());
+        Timestamp runStarted = rTimestamp(receipt, "run_started");
+        Timestamp runFinished = rTimestamp(receipt, "run_finished");
+        Timestamp receiptStarted = rTimestamp(receipt, "receipt_started");
+        Timestamp receiptFinished = rTimestamp(receipt, "receipt_finished");
+        Timestamp completedAt = rTimestamp(receipt, "completed_at");
+        Timestamp publishedAt = rTimestamp(receipt, "receipt_published");
+        Instant now = harness.clock.instant();
+
+        assertThat(receiptIntervalProof(runStarted, runFinished, receiptStarted, receiptFinished,
+                completedAt, publishedAt, now)).as("actual current receipt interval").isTrue();
+        assertThat(receiptIntervalProof(runStarted, runFinished, null, receiptFinished,
+                completedAt, publishedAt, now)).as("NULL receipt start is rejected").isFalse();
+        assertThat(receiptIntervalProof(runStarted, runFinished,
+                Timestamp.from(runStarted.toInstant().plusNanos(1_000)), receiptFinished,
+                completedAt, publishedAt, now)).as("a one-microsecond receipt/run start mismatch is rejected")
+                .isFalse();
+        assertThat(receiptIntervalProof(runStarted, runFinished, receiptStarted, receiptFinished,
+                completedAt, Timestamp.from(now.plusNanos(1_000)), now))
+                .as("a future publication timestamp is rejected").isFalse();
+    }
+
     private static void assertCanonicalPairProof(Harness harness, SourceData source) {
         Map<String, Object> parent = jdbc.queryForMap("SELECT p.source_pair_fingerprint,"
                 + "p.source_bootstrap_sha256,p.source_fixtures_sha256,p.source_bootstrap_payload_id,"
-                + "p.source_fixtures_payload_id,p.source_read_started_at,p.source_read_finished_at,p.published_at,"
-                + "b.run_generation AS source_generation,b.body AS bootstrap_body,"
-                + "p.source_bootstrap_sha256 AS bootstrap_sha256,"
-                + "b.read_started_at AS bootstrap_started,b.read_finished_at AS bootstrap_finished,"
-                + "f.body AS fixtures_body,p.source_fixtures_sha256 AS fixtures_sha256,"
-                + "f.read_started_at AS fixtures_started,"
+                + "p.source_fixtures_payload_id,p.source_read_started_at receipt_started,"
+                + "p.source_read_finished_at receipt_finished,p.published_at,"
+                + "r.source_read_started_at run_started,r.source_read_finished_at run_finished,r.completed_at,"
+                + "b.run_generation AS source_generation,b.read_started_at AS bootstrap_started,"
+                + "b.read_finished_at AS bootstrap_finished,f.read_started_at AS fixtures_started,"
                 + "f.read_finished_at AS fixtures_finished FROM " + TABLES.receipt() + " p"
-                + " JOIN " + TABLES.run() + " r ON r.generation=p.latest_generation"
+                + " JOIN " + TABLES.run() + " r ON r.generation=p.latest_generation AND r.season=p.season"
                 + " JOIN " + TABLES.payload() + " b ON b.id=p.source_bootstrap_payload_id"
                 + " JOIN " + TABLES.payload() + " f ON f.id=p.source_fixtures_payload_id"
-                + " WHERE p.season=? AND p.publication_key=? AND r.runtime_mode='ACTIVE'"
+                + " WHERE p.season=? AND p.publication_key=? AND p.latest_generation=r.generation"
+                + " AND r.kind='CATALOGUE_SCHEDULE' AND r.runtime_mode='ACTIVE'"
                 + " AND r.runtime_epoch=? AND r.state='COMPLETED' AND b.run_generation=f.run_generation"
                 + " AND b.validation_state='VALID' AND f.validation_state='VALID'"
                 + " AND b.source_published=true AND f.source_published=true"
                 + " ORDER BY p.published_at DESC LIMIT 1", SEASON.code(),
                 CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY, harness.fence.epoch());
         long sourceGeneration = ((Number) parent.get("source_generation")).longValue();
-        String bootstrapHash = OwnedSyncStore.sha256((byte[]) parent.get("bootstrap_body"));
-        String fixturesHash = OwnedSyncStore.sha256((byte[]) parent.get("fixtures_body"));
+        String bootstrapHash = (String) parent.get("source_bootstrap_sha256");
+        String fixturesHash = (String) parent.get("source_fixtures_sha256");
         assertThat(bootstrapHash).isEqualTo(OwnedSyncStore.sha256(source.bootstrapBytes()));
         assertThat(fixturesHash).isEqualTo(OwnedSyncStore.sha256(source.fixtureBytes()));
-        assertThat(parent.get("bootstrap_sha256")).isEqualTo(bootstrapHash);
-        assertThat(parent.get("fixtures_sha256")).isEqualTo(fixturesHash);
-        assertThat(parent.get("source_bootstrap_sha256")).isEqualTo(bootstrapHash);
-        assertThat(parent.get("source_fixtures_sha256")).isEqualTo(fixturesHash);
-        Instant publishedAt = ((Timestamp) parent.get("published_at")).toInstant();
-        Instant pairReadStarted = ((Timestamp) parent.get("source_read_started_at")).toInstant();
-        Instant pairReadFinished = ((Timestamp) parent.get("source_read_finished_at")).toInstant();
-        Instant bootstrapStarted = ((Timestamp) parent.get("bootstrap_started")).toInstant();
-        Instant bootstrapFinished = ((Timestamp) parent.get("bootstrap_finished")).toInstant();
-        Instant fixturesStarted = ((Timestamp) parent.get("fixtures_started")).toInstant();
-        Instant fixturesFinished = ((Timestamp) parent.get("fixtures_finished")).toInstant();
-        assertThat(pairReadStarted).isBeforeOrEqualTo(pairReadFinished);
-        assertThat(pairReadFinished).isBeforeOrEqualTo(publishedAt);
+        Timestamp publishedAt = rTimestamp(parent, "published_at");
+        Timestamp runStarted = rTimestamp(parent, "run_started");
+        Timestamp runFinished = rTimestamp(parent, "run_finished");
+        Timestamp receiptStarted = rTimestamp(parent, "receipt_started");
+        Timestamp receiptFinished = rTimestamp(parent, "receipt_finished");
+        Timestamp completedAt = rTimestamp(parent, "completed_at");
+        Timestamp bootstrapStarted = rTimestamp(parent, "bootstrap_started");
+        Timestamp bootstrapFinished = rTimestamp(parent, "bootstrap_finished");
+        Timestamp fixturesStarted = rTimestamp(parent, "fixtures_started");
+        Timestamp fixturesFinished = rTimestamp(parent, "fixtures_finished");
+        assertThat(databaseMicroseconds(publishedAt, runStarted, runFinished, receiptStarted, receiptFinished,
+                completedAt, bootstrapStarted, bootstrapFinished, fixturesStarted, fixturesFinished)).isTrue();
         assertThat(bootstrapStarted).isBeforeOrEqualTo(bootstrapFinished);
         assertThat(fixturesStarted).isBeforeOrEqualTo(fixturesFinished);
+        assertThat(runStarted).isEqualTo(earlier(bootstrapStarted, fixturesStarted));
+        assertThat(runFinished).isEqualTo(later(bootstrapFinished, fixturesFinished));
+        assertThat(receiptIntervalProof(runStarted, runFinished, receiptStarted, receiptFinished,
+                completedAt, publishedAt, harness.clock.instant())).isTrue();
         var pair = OwnedSyncStore.CanonicalSourcePair.of(
                 new OwnedSyncStore.CanonicalSourcePayload(((Number) parent.get("source_bootstrap_payload_id")).longValue(),
                         sourceGeneration, EndpointKind.BOOTSTRAP_STATIC,
-                        new SourceRead(bootstrapStarted, bootstrapFinished), bootstrapHash),
+                        new SourceRead(bootstrapStarted.toInstant(), bootstrapFinished.toInstant()), bootstrapHash),
                 new OwnedSyncStore.CanonicalSourcePayload(((Number) parent.get("source_fixtures_payload_id")).longValue(),
                         sourceGeneration, EndpointKind.FIXTURES,
-                        new SourceRead(fixturesStarted, fixturesFinished), fixturesHash));
+                        new SourceRead(fixturesStarted.toInstant(), fixturesFinished.toInstant()), fixturesHash));
         assertThat(parent.get("source_pair_fingerprint")).isEqualTo(pair.fingerprint());
     }
 
