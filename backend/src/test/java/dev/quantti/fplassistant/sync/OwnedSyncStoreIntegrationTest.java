@@ -1,17 +1,24 @@
 package dev.quantti.fplassistant.sync;
 
 import java.nio.charset.StandardCharsets;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -45,6 +52,9 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 class OwnedSyncStoreIntegrationTest {
 
@@ -85,6 +95,114 @@ class OwnedSyncStoreIntegrationTest {
     void noOpenTransactions() {
         assertThat(jdbc.queryForObject("SELECT count(*) FROM pg_stat_activity WHERE pid = pg_backend_pid()",
                 Integer.class)).isEqualTo(1);
+    }
+
+    @Test
+    void historyHydrationCursorRequiresTransactionAndUsesSmallForwardOnlyFetchWindow() throws Exception {
+        String sql = "SELECT ?";
+        Connection connection = mock(Connection.class);
+        PreparedStatement statement = mock(PreparedStatement.class);
+        when(connection.getAutoCommit()).thenReturn(false);
+        when(connection.prepareStatement(sql, ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY))
+                .thenReturn(statement);
+
+        var creator = new OwnedSyncStore.HistoryHydrationStatement(sql, List.of(72));
+        assertThat(creator.createPreparedStatement(connection)).isSameAs(statement);
+
+        verify(connection).getAutoCommit();
+        verify(connection).prepareStatement(sql, ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY);
+        verify(statement).setFetchSize(OwnedSyncStore.HISTORY_HYDRATION_FETCH_SIZE);
+        verify(statement).setObject(1, 72);
+        assertThat(OwnedSyncStore.HISTORY_HYDRATION_FETCH_SIZE).isBetween(1, 80);
+
+        when(connection.getAutoCommit()).thenReturn(true);
+        assertThatThrownBy(() -> creator.createPreparedStatement(connection))
+                .isInstanceOf(SQLException.class).hasMessageContaining("active transaction");
+    }
+
+    @Test
+    void hydratesAllSeventyTwoHistoryBodiesOnceIntoFinalDocuments() {
+        String season = "2097-98";
+        Instant floor = clock.instant();
+        Run fixtureRun = store.enqueue(SyncKind.FIXTURE_VERIFICATION, season,
+                "fixture:9001", "fixture:9001", floor);
+        Lease fixtureLease = store.acquire("fixture-worker", Duration.ofMinutes(5))
+                .filter(candidate -> candidate.generation() == fixtureRun.generation()).orElseThrow();
+        int bodyBytes = 64 * 1024;
+        SourceRead read = new SourceRead(floor, floor);
+        Map<Integer, OwnedSyncStore.StagedPayloadMetadata> candidates = new LinkedHashMap<>();
+        for (int playerId = 1; playerId <= 72; playerId++) {
+            String key = HistoryFixtureDispatcher.playerHistoryPublicationKey(playerId);
+            Run historyRun = store.enqueue(SyncKind.PLAYER_HISTORY, season, key, key, floor);
+            Lease historyLease = store.acquire("history-worker", Duration.ofMinutes(5))
+                    .filter(candidate -> candidate.generation() == historyRun.generation()).orElseThrow();
+            store.stage(historyLease, Endpoint.elementSummary(playerId), read,
+                    Validation.valid(), historyBody(playerId));
+            store.completeStaged(historyLease, read, List.of(read));
+            candidates.put(playerId, store.latestValidPayloadMetadata(season,
+                    Endpoint.elementSummary(playerId), floor).orElseThrow());
+        }
+
+        PayloadReadProbe probe = new PayloadReadProbe(jdbc.getDataSource());
+        OwnedSyncStore tracked = new OwnedSyncStore(probe, tx, clock, TABLES);
+        var hydration = tracked.hydrateValidHistoryBatch(fixtureLease, candidates, floor);
+
+        assertThat(hydration.complete()).isTrue();
+        assertThat(hydration.documents()).hasSize(72);
+        for (int playerId = 1; playerId <= 72; playerId++) {
+            var document = hydration.documents().get(playerId);
+            assertThat(document.bytes()).containsExactly(historyBody(playerId));
+            assertThat(document.readInterval().startedAt()).isEqualTo(floor);
+            assertThat(document.readInterval().completedAt()).isEqualTo(floor);
+        }
+        var logicalRead = probe.snapshot().bodyFamily(PayloadReadProbe.BodyFamily.CROSS_RUN_HISTORIES);
+        assertThat(logicalRead).isEqualTo(new PayloadReadProbe.FamilyMetrics(1, 72, 72, 72L * bodyBytes));
+        assertThat(probe.snapshot().maxBodyBytesInSingleQuery(
+                PayloadReadProbe.BodyFamily.CROSS_RUN_HISTORIES)).isEqualTo(72L * bodyBytes);
+    }
+
+    @Test
+    void publicationBindsReceiptHashesToLockedDatabaseSourceBodies() {
+        String season = "2097-98";
+        Run run = store.enqueue(SyncKind.CATALOGUE_SCHEDULE, season,
+                CatalogueScheduleDispatcher.SCHEDULE_COALESCING_KEY,
+                CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY, clock.instant());
+        Lease lease = store.acquire("source-worker", Duration.ofMinutes(5))
+                .filter(candidate -> candidate.generation() == run.generation()).orElseThrow();
+        byte[] bootstrap = bytes("bootstrap source");
+        byte[] fixtures = bytes("fixtures source");
+        byte[] wrongBootstrap = bytes("wrong bootstrap source");
+        byte[] wrongFixtures = bytes("wrong fixtures source");
+        SourceRead sourceRead = new SourceRead(clock.instant(), clock.instant());
+        long bootstrapId = store.stage(lease, Endpoint.bootstrap(), sourceRead, Validation.valid(), bootstrap);
+        long fixturesId = store.stage(lease, Endpoint.fixtures(), sourceRead, Validation.valid(), fixtures);
+        var wrongPair = OwnedSyncStore.CanonicalSourcePair.from(
+                new OwnedSyncStore.StagedPayload(bootstrapId, run.generation(), EndpointKind.BOOTSTRAP_STATIC,
+                        sourceRead, ValidationState.VALID, null, wrongBootstrap),
+                new OwnedSyncStore.StagedPayload(fixturesId, run.generation(), EndpointKind.FIXTURES,
+                        sourceRead, ValidationState.VALID, null, wrongFixtures));
+
+        assertThatThrownBy(() -> store.publish(lease, sourceRead, List.of(sourceRead, sourceRead), wrongPair, () -> null))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("payload bodies changed");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.payload()
+                + " WHERE id IN (?,?) AND source_published", Integer.class, bootstrapId, fixturesId)).isZero();
+
+        var sourcePair = OwnedSyncStore.CanonicalSourcePair.from(
+                new OwnedSyncStore.StagedPayload(bootstrapId, run.generation(), EndpointKind.BOOTSTRAP_STATIC,
+                        sourceRead, ValidationState.VALID, null, bootstrap),
+                new OwnedSyncStore.StagedPayload(fixturesId, run.generation(), EndpointKind.FIXTURES,
+                        sourceRead, ValidationState.VALID, null, fixtures));
+        store.publish(lease, sourceRead, List.of(sourceRead, sourceRead), sourcePair, () -> null);
+
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.payload()
+                + " WHERE id IN (?,?) AND source_published", Integer.class, bootstrapId, fixturesId)).isEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT source_bootstrap_sha256 FROM " + TABLES.receipt()
+                + " WHERE season=? AND publication_key=?", String.class, season,
+                CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY)).isEqualTo(OwnedSyncStore.sha256(bootstrap));
+        assertThat(jdbc.queryForObject("SELECT source_fixtures_sha256 FROM " + TABLES.receipt()
+                + " WHERE season=? AND publication_key=?", String.class, season,
+                CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY)).isEqualTo(OwnedSyncStore.sha256(fixtures));
     }
 
     @Test
@@ -1317,6 +1435,82 @@ class OwnedSyncStoreIntegrationTest {
     }
 
     @Test
+    void leaseExpiryDuringLockedSourceValidationRollsBackWriterReceiptAndCompletion() throws Exception {
+        Run run = store.enqueue(SyncKind.CATALOGUE_SCHEDULE, "2097-98",
+                CatalogueScheduleDispatcher.SCHEDULE_COALESCING_KEY,
+                CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY, clock.instant());
+        Lease lease = store.acquire("source-worker", Duration.ofMinutes(1)).orElseThrow();
+        assertThat(lease.generation()).isEqualTo(run.generation());
+        SourceRead sourceRead = new SourceRead(clock.instant(), clock.instant());
+        byte[] bootstrap = bytes("lease-fenced bootstrap");
+        byte[] fixtures = bytes("lease-fenced fixtures");
+        long bootstrapId = store.stage(lease, Endpoint.bootstrap(), sourceRead, Validation.valid(), bootstrap);
+        long fixturesId = store.stage(lease, Endpoint.fixtures(), sourceRead, Validation.valid(), fixtures);
+        var sourcePair = OwnedSyncStore.CanonicalSourcePair.from(
+                new StagedPayload(bootstrapId, lease.generation(), EndpointKind.BOOTSTRAP_STATIC,
+                        sourceRead, ValidationState.VALID, null, bootstrap),
+                new StagedPayload(fixturesId, lease.generation(), EndpointKind.FIXTURES,
+                        sourceRead, ValidationState.VALID, null, fixtures));
+        CountDownLatch sourceLocked = new CountDownLatch(1);
+        CountDownLatch releaseSource = new CountDownLatch(1);
+        CountDownLatch callbackEntered = new CountDownLatch(1);
+        AtomicBoolean callbackRan = new AtomicBoolean();
+
+        try (var executor = Executors.newFixedThreadPool(2)) {
+            Future<?> blocker = executor.submit(() -> tx.executeWithoutResult(status -> {
+                jdbc.queryForObject("SELECT id FROM " + TABLES.payload() + " WHERE id=? FOR UPDATE",
+                        Long.class, bootstrapId);
+                sourceLocked.countDown();
+                try {
+                    if (!releaseSource.await(5, TimeUnit.SECONDS)) {
+                        throw new AssertionError("source lock release timed out");
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(e);
+                }
+            }));
+            assertThat(sourceLocked.await(5, TimeUnit.SECONDS)).isTrue();
+            Future<?> publisher = executor.submit(() -> store.publish(lease, sourceRead,
+                    List.of(sourceRead, sourceRead), sourcePair, () -> {
+                        callbackRan.set(true);
+                        jdbc.update("INSERT INTO " + PROBE + " VALUES ('lease-expiry-source', 1)");
+                        callbackEntered.countDown();
+                        return null;
+                    }));
+            assertThat(callbackEntered.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(publisher.isDone()).isFalse();
+            clock.advance(Duration.ofMinutes(2));
+            releaseSource.countDown();
+            blocker.get(5, TimeUnit.SECONDS);
+
+            assertThatThrownBy(() -> publisher.get(5, TimeUnit.SECONDS))
+                    .hasRootCauseInstanceOf(LeaseLostException.class);
+        } finally {
+            releaseSource.countDown();
+        }
+
+        assertThat(callbackRan).isTrue();
+        assertThat(count(PROBE)).isZero();
+        Map<String, Object> persisted = jdbc.queryForMap("SELECT state, runtime_mode, runtime_epoch, "
+                + "lease_owner, lease_token::text AS lease_token, lease_fence, lease_expires_at FROM "
+                + TABLES.run() + " WHERE generation=?", lease.generation());
+        assertThat(persisted.get("state")).isEqualTo("LEASED");
+        assertThat(persisted.get("runtime_mode")).isEqualTo("OFF");
+        assertThat(((Number) persisted.get("runtime_epoch")).longValue()).isZero();
+        assertThat(persisted.get("lease_owner")).isEqualTo(lease.owner());
+        assertThat(persisted.get("lease_token").toString()).isEqualTo(lease.token().toString());
+        assertThat(((Number) persisted.get("lease_fence")).longValue()).isEqualTo(lease.fence());
+        assertThat(((java.sql.Timestamp) persisted.get("lease_expires_at")).toInstant())
+                .isEqualTo(lease.expiresAt());
+        assertThat(jdbc.queryForObject("SELECT latest_generation FROM " + TABLES.receipt()
+                + " WHERE season=? AND publication_key=?", Long.class,
+                "2097-98", CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY)).isNull();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.payload()
+                + " WHERE id IN (?,?) AND source_published", Integer.class, bootstrapId, fixturesId)).isZero();
+    }
+
+    @Test
     void conditionalPendingInvokesCallbackOnceCompletesAndDoesNotAdvanceReceipt() {
         enqueue("fixture-conditional", "fixture:conditional");
         Lease lease = store.acquire("worker", Duration.ofMinutes(5)).orElseThrow();
@@ -2123,6 +2317,12 @@ class OwnedSyncStoreIntegrationTest {
 
     private SourceRead read() {
         return new SourceRead(clock.instant().minusSeconds(2), clock.instant().minusSeconds(1));
+    }
+
+    private static byte[] historyBody(int playerId) {
+        byte[] body = new byte[64 * 1024];
+        java.util.Arrays.fill(body, (byte) playerId);
+        return body;
     }
 
     private static byte[] bytes(String value) {

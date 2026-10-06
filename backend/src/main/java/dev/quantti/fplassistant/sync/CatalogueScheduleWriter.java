@@ -71,23 +71,24 @@ public final class CatalogueScheduleWriter {
     /** Parses the source documents again at the publication boundary, then atomically publishes. */
     public int publishCataloguePrice(Lease lease, Season season, SourceDocument bootstrap,
                                      SourceDocument fixtures) {
-        return publishCataloguePrice(lease, season, bootstrap, fixtures, false);
+        return publishCataloguePrice(lease, season, bootstrap, fixtures, false, null);
     }
 
     int publishCataloguePriceForDemand(Lease lease, Season season, SourceDocument bootstrap,
-                                       SourceDocument fixtures) {
-        return publishCataloguePrice(lease, season, bootstrap, fixtures, true);
+                                       SourceDocument fixtures, OwnedSyncStore.CanonicalSourcePair sourcePair) {
+        return publishCataloguePrice(lease, season, bootstrap, fixtures, true, sourcePair);
     }
 
     private int publishCataloguePrice(Lease lease, Season season, SourceDocument bootstrap,
-                                      SourceDocument fixtures, boolean enforceDemandFloor) {
+                                      SourceDocument fixtures, boolean enforceDemandFloor,
+                                      OwnedSyncStore.CanonicalSourcePair sourcePair) {
         requireLease(lease, season, CATALOGUE_PRICE_PUBLICATION_KEY);
         Snapshot snapshot = CatalogueScheduleParser.parse(season, bootstrap, fixtures);
         requirePublicationDay(snapshot, PRICE_CUTOVER, "catalogue-price");
         SourceRead read = sourceRead(snapshot.bootstrapRead());
         List<SourceRead> demandReads = enforceDemandFloor
                 ? List.of(sourceRead(snapshot.bootstrapRead()), sourceRead(snapshot.fixturesRead())) : List.of();
-        return store.publish(lease, read, demandReads, () -> {
+        return store.publish(lease, read, demandReads, sourcePair, () -> {
             lockAndValidateCurrentSeason(snapshot.season());
             recordSourceReceipt(lease, SHARED_TEAM_SOURCE_RECEIPT_KEY, snapshot.bootstrapRead());
             Instant publishedAt = clock.instant();
@@ -102,23 +103,24 @@ public final class CatalogueScheduleWriter {
     /** Parses one timestamp-coherent source batch, then publishes both schedule representations. */
     public int publishSchedule(Lease lease, Season season, SourceDocument bootstrap,
                                SourceDocument fixtures) {
-        return publishSchedule(lease, season, bootstrap, fixtures, false);
+        return publishSchedule(lease, season, bootstrap, fixtures, false, null);
     }
 
     int publishScheduleForDemand(Lease lease, Season season, SourceDocument bootstrap,
-                                 SourceDocument fixtures) {
-        return publishSchedule(lease, season, bootstrap, fixtures, true);
+                                 SourceDocument fixtures, OwnedSyncStore.CanonicalSourcePair sourcePair) {
+        return publishSchedule(lease, season, bootstrap, fixtures, true, sourcePair);
     }
 
     private int publishSchedule(Lease lease, Season season, SourceDocument bootstrap,
-                                SourceDocument fixtures, boolean enforceDemandFloor) {
+                                SourceDocument fixtures, boolean enforceDemandFloor,
+                                OwnedSyncStore.CanonicalSourcePair sourcePair) {
         requireLease(lease, season, SCHEDULE_PUBLICATION_KEY);
         Snapshot snapshot = CatalogueScheduleParser.parse(season, bootstrap, fixtures);
         requirePublicationDay(snapshot, SCHEDULE_CUTOVER, "schedule");
         SourceRead read = combinedRead(snapshot.bootstrapRead(), snapshot.fixturesRead());
         List<SourceRead> demandReads = enforceDemandFloor
                 ? List.of(sourceRead(snapshot.bootstrapRead()), sourceRead(snapshot.fixturesRead())) : List.of();
-        return store.publish(lease, read, demandReads, () -> {
+        return store.publish(lease, read, demandReads, sourcePair, () -> {
             lockAndValidateCurrentSeason(snapshot.season());
             recordSourceReceipt(lease, SHARED_TEAM_SOURCE_RECEIPT_KEY, snapshot.bootstrapRead());
             recordSourceReceipt(lease, FIXTURE_SOURCE_RECEIPT_KEY, snapshot.fixturesRead());

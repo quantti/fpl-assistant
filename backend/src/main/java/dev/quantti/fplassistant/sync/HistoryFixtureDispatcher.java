@@ -11,6 +11,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Supplier;
 
 import dev.quantti.fplassistant.sync.CatalogueScheduleParser.Season;
 import dev.quantti.fplassistant.sync.CatalogueScheduleParser.Snapshot;
@@ -21,6 +22,7 @@ import dev.quantti.fplassistant.sync.OwnedSyncHttpClient.Failure;
 import dev.quantti.fplassistant.sync.OwnedSyncHttpClient.FailureKind;
 import dev.quantti.fplassistant.sync.OwnedSyncHttpClient.Response;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.Endpoint;
+import dev.quantti.fplassistant.sync.OwnedSyncStore.FixtureDependencyManifest;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.Lease;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.PayloadRetentionLimitException;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.PublicPayloadPair;
@@ -183,6 +185,16 @@ public final class HistoryFixtureDispatcher {
 
     private DispatchResult processFixture(Lease lease, Season season) {
         int fixtureId = requireFixtureLease(lease, season);
+        Optional<FixtureDependencyManifest> dependencyManifest =
+                store.fixtureDependencyManifest(lease, fixtureId);
+        if (dependencyManifest.isPresent()) {
+            BlockedManifestRetry blocked = retryBlockedManifest(lease, season, fixtureId,
+                    dependencyManifest.get());
+            if (blocked.requeued()) {
+                return blocked.admitted() ? DispatchResult.waiting()
+                        : DispatchResult.retry(FailureType.HTTP_DEFERRED);
+            }
+        }
         if (publicationEnabled) {
             FixtureSyncRepository.AttemptAdmission admission = store.withinRunLease(lease,
                     () -> publisher.admitAttempt(season, fixtureId,
@@ -190,7 +202,8 @@ public final class HistoryFixtureDispatcher {
             if (!admission.admitted()) {
                 if (admission.parentRefreshRequired()) {
                     queueMissingCanonicalDependencies(season);
-                    store.retryForDependency(lease, clock.instant().plus(RETRY),
+                    Instant dueAt = later(clock.instant().plus(RETRY), admission.nextDueAt());
+                    store.retryForDependency(lease, dueAt,
                             "Waiting for a current published parent before overdue recovery");
                 } else if (admission.nextDueAt() == null) {
                     store.retry(lease, clock.instant().plus(RETRY),
@@ -258,7 +271,8 @@ public final class HistoryFixtureDispatcher {
         }
         store.validateStagedPayloads(lease, List.of(livePayload.id()), Validation.valid());
 
-        Instant historyFloor = pair.fixtures.read().finishedAt().plusMillis(1);
+        Instant historyFloor = later(store.requestedSourceAfter(lease),
+                pair.fixtures.read().finishedAt().plusMillis(1));
         Map<Integer, StagedPayloadMetadata> historyCheckpoints = new LinkedHashMap<>();
         for (int playerId : players) {
             Optional<StagedPayloadMetadata> evidence = store.latestValidPayloadMetadata(season.code(),
@@ -273,22 +287,21 @@ public final class HistoryFixtureDispatcher {
             waitForHistories(lease, pair, fixture, livePayload, players);
         }
 
-        Map<Integer, SourceDocument> histories = new LinkedHashMap<>();
-        for (Map.Entry<Integer, StagedPayloadMetadata> checkpoint : historyCheckpoints.entrySet()) {
-            int playerId = checkpoint.getKey();
-            store.hydrateLatestValidPayload(lease, season.code(), Endpoint.elementSummary(playerId),
-                    checkpoint.getValue(), historyFloor)
-                    .ifPresent(payload -> histories.put(playerId, document(payload)));
-        }
-        if (histories.size() != players.size()) {
-            players.stream().filter(playerId -> !histories.containsKey(playerId))
-                    .forEach(playerId -> store.ensurePlayerHistoryAtLeast(season.code(), playerId, historyFloor));
+        OwnedSyncStore.FixtureHistoryHydration hydratedHistories = store.hydrateValidHistoryBatch(
+                lease, historyCheckpoints, historyFloor);
+        if (!hydratedHistories.complete()) {
+            hydratedHistories.missingPlayerIds().forEach(playerId ->
+                    store.ensurePlayerHistoryAtLeast(season.code(), playerId, historyFloor));
             waitForHistories(lease, pair, fixture, livePayload, players);
         }
+        Map<Integer, SourceDocument> histories = hydratedHistories.documents();
 
         store.recordDependencyManifest(lease, fixtureId, fixture.gameweek(),
                 new PublicPayloadPair(pair.bootstrap.runGeneration(), pair.bootstrap, pair.fixtures),
                 livePayload, List.copyOf(players));
+        FixtureDependencyManifest publicationManifest = store.fixtureDependencyManifest(lease, fixtureId)
+                .filter(manifest -> manifest.missingPlayerIds().isEmpty()).orElse(null);
+        if (publicationManifest == null) waitForHistories(lease, pair, fixture, livePayload, players);
 
         // Re-read both public endpoints after the slow fan-out. Successful endpoint reads are
         // checkpointed so a durable admission deferral cannot restart this pair indefinitely.
@@ -327,8 +340,24 @@ public final class HistoryFixtureDispatcher {
             return DispatchResult.staged();
         }
 
-        Decision decision = publisher.publish(lease, season, fixtureId, pair.bootstrapDocument(),
-                pair.fixturesDocument(), live, Map.copyOf(histories));
+        Decision decision;
+        try {
+            decision = publisher.publish(lease, season, fixtureId, pair.bootstrapDocument(),
+                    pair.fixturesDocument(), live, Map.copyOf(histories), publicationManifest,
+                    Map.copyOf(historyCheckpoints));
+        } catch (OwnedSyncStore.FixtureEvidenceChangedException changed) {
+            Optional<FixtureDependencyManifest> current = store.fixtureDependencyManifest(lease, fixtureId);
+            if (current.isPresent() && !current.get().missingPlayerIds().isEmpty()) {
+                BlockedManifestRetry blocked = retryBlockedManifest(lease, season, fixtureId, current.get());
+                if (blocked.requeued()) {
+                    return blocked.admitted() ? DispatchResult.waiting()
+                            : DispatchResult.retry(FailureType.HTTP_DEFERRED);
+                }
+            }
+            retry(lease, clock.instant().plus(RETRY),
+                    "Fixture evidence changed before publication; retrying from current metadata");
+            return DispatchResult.retry(FailureType.TARGET_CHANGED);
+        }
         if (decision.state() == FixtureVerification.State.PENDING) {
             if (decision.reasons().contains(FixtureVerification.Reason.DATABASE_FIXTURE_MISMATCH)
                     || decision.reasons().contains(FixtureVerification.Reason.MISSING_DATABASE_FIXTURE)) {
@@ -340,6 +369,51 @@ public final class HistoryFixtureDispatcher {
             return DispatchResult.pending(decision);
         }
         return DispatchResult.published(decision);
+    }
+
+    private BlockedManifestRetry retryBlockedManifest(Lease lease, Season season, int fixtureId,
+                                                        FixtureDependencyManifest expected) {
+        return store.withinRunLease(lease, () -> {
+            Optional<FixtureDependencyManifest> current = store.fixtureDependencyManifest(lease, fixtureId);
+            if (current.isEmpty() || !expected.sameAnchorsAndDemand(current.get())) {
+                return new BlockedManifestRetry(false, true);
+            }
+            OwnedSyncStore.CanonicalParentEvidence parent = publicationEnabled
+                    ? store.currentCanonicalParentEvidence(season.code(), fixtureId, clock.instant())
+                    : OwnedSyncStore.CanonicalParentEvidence.MISSING;
+            FixtureSyncRepository.AttemptAdmission admission = publicationEnabled
+                    ? publisher.admitAttempt(season, fixtureId, parent.fixtureFinished()
+                            ? SourceStatus.FINISHED : SourceStatus.UNKNOWN) : null;
+            if (admission != null && admission.parentRefreshRequired() && !parent.currentPublished()) {
+                queueMissingCanonicalDependencies(season);
+            }
+            boolean missingHistories = !current.get().missingPlayerIds().isEmpty();
+            boolean admitted = admission == null || admission.admitted();
+            if (!missingHistories && admitted) return new BlockedManifestRetry(false, true);
+
+            Instant dependencyDueAt = clock.instant().plus(missingHistories ? Duration.ofMinutes(2) : RETRY);
+            Instant selectedDueAt = dependencyDueAt;
+            if (admission != null && admission.nextDueAt() != null
+                    && admission.nextDueAt().isAfter(selectedDueAt)) {
+                selectedDueAt = admission.nextDueAt();
+            }
+            String reason = missingHistories
+                    ? "Waiting for fresh player histories"
+                    : "Waiting for a current published parent before overdue recovery";
+            Instant genuineDependencyDueAt = dependencyDueAt;
+            Supplier<Instant> recordWait = publicationEnabled && missingHistories
+                    ? () -> publisher.recordDependencyWait(season.code(), fixtureId,
+                            genuineDependencyDueAt, reason)
+                    : null;
+            boolean requeued;
+            if (missingHistories) {
+                requeued = store.retryForDependency(lease, current.get(), selectedDueAt, reason, recordWait);
+            } else {
+                store.retry(lease, selectedDueAt, reason);
+                requeued = true;
+            }
+            return new BlockedManifestRetry(requeued, admitted);
+        });
     }
 
     private void invalidatePair(Lease lease, PayloadPair pair, String reason) {
@@ -421,7 +495,7 @@ public final class HistoryFixtureDispatcher {
         Instant now = clock.instant();
         return canonicalSnapshot(season)
                 .filter(canonical -> store.isCurrentPublishedCanonicalPair(
-                        season.code(), canonical.bootstrap().runGeneration(), now))
+                        season.code(), canonical.bootstrap().runGeneration(), canonical.sourcePair(), now))
                 .filter(canonical -> !canonical.bootstrap().read().finishedAt().isAfter(now)
                         && !canonical.fixtures().read().finishedAt().isAfter(now))
                 .flatMap(canonical -> canonical.snapshot().fixtures().stream()
@@ -435,7 +509,8 @@ public final class HistoryFixtureDispatcher {
             try {
                 return Optional.of(new CanonicalPair(pair.bootstrap(), pair.fixtures(),
                         CatalogueScheduleParser.parse(season,
-                                document(pair.bootstrap()), document(pair.fixtures()))));
+                                document(pair.bootstrap()), document(pair.fixtures())),
+                        OwnedSyncStore.CanonicalSourcePair.from(pair.bootstrap(), pair.fixtures())));
             } catch (IllegalArgumentException ignored) {
                 // VALID staging metadata never bypasses strict parsing in this dispatcher.
                 return Optional.empty();
@@ -647,7 +722,8 @@ public final class HistoryFixtureDispatcher {
     }
 
     private static Instant later(Instant first, Instant second) {
-        return first.isAfter(second) ? first : second;
+        if (second == null || first.isAfter(second)) return first;
+        return second;
     }
 
     private static String message(Throwable error) {
@@ -692,7 +768,10 @@ public final class HistoryFixtureDispatcher {
 
     private record FetchResult(Lease lease, StagedPayload payload) { }
 
-    private record CanonicalPair(StagedPayload bootstrap, StagedPayload fixtures, Snapshot snapshot) {
+    private record BlockedManifestRetry(boolean requeued, boolean admitted) { }
+
+    private record CanonicalPair(StagedPayload bootstrap, StagedPayload fixtures, Snapshot snapshot,
+                                 OwnedSyncStore.CanonicalSourcePair sourcePair) {
         boolean currentFor(CatalogueScheduleParser.ReadInterval child) {
             return !bootstrap.read().startedAt().isBefore(child.completedAt())
                     && !fixtures.read().startedAt().isBefore(child.completedAt());
