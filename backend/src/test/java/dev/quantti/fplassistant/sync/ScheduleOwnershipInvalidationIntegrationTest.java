@@ -55,8 +55,10 @@ class ScheduleOwnershipInvalidationIntegrationTest {
     private static final CatalogueScheduleTables CAPTURED = new CatalogueScheduleTables(
             "fpl_schown_price_test", "fpl_schown_gw_test", "fpl_schown_capture_fixture_test");
     private static final String FAIL_FIXTURE = "fpl_schown_fail_fixture_test";
-    private static final Season SEASON = new Season(29027, "2026-27",
-            LocalDate.of(2026, 8, 21), null);
+    private static final Season SEASON = new Season(29196, "2196-97",
+            LocalDate.of(2196, 8, 21), null);
+    private static final LocalDate RECOVERY_DAY = LocalDate.of(2196, 9, 13);
+    private static final Instant CLOCK_START = Instant.parse("2196-09-13T17:44:00Z");
     private static final String FIXTURES = "/owned-sync-source-fixtures/fixtures.json";
     private static final String BOOTSTRAP = "/owned-sync-source-fixtures/bootstrap-static.json";
     private static DataSource dataSource;
@@ -69,15 +71,17 @@ class ScheduleOwnershipInvalidationIntegrationTest {
         dataSource = new DriverManagerDataSource(requiredEnv("DATABASE_URL"),
                 requiredEnv("DB_USER"), requiredEnv("DB_PASSWORD"));
         jdbc = new JdbcTemplate(dataSource);
-        SharedStatsSeed.ensure(jdbc);
+        SharedStatsSeed.ensureOwnedSyncCaptureSeason(jdbc);
+        assertThat(jdbc.queryForObject("SELECT code FROM season WHERE id=27", String.class))
+                .isEqualTo("2026-27");
         new DefensiveStatsSchema(jdbc).ensureColumns();
+        previousCurrent = jdbc.queryForList("SELECT id FROM season WHERE is_current=true", Integer.class);
         jdbc.update("INSERT INTO season(id,code,name,start_date,end_date,is_current) "
-                        + "VALUES (?,?,?,DATE '2026-08-21',NULL,false) ON CONFLICT (id) DO NOTHING",
-                SEASON.id(), SEASON.code(), "Schedule ownership test");
+                        + "VALUES (?,?,?, ?,NULL,false) ON CONFLICT (id) DO NOTHING",
+                SEASON.id(), SEASON.code(), "Schedule ownership test", SEASON.startsOn());
         new OwnedSyncSchema(jdbc, OWNED).initialize();
         createCapturedTables();
         tx = new TransactionTemplate(new DataSourceTransactionManager(dataSource));
-        previousCurrent = jdbc.queryForList("SELECT id FROM season WHERE is_current=true", Integer.class);
     }
 
     @AfterAll
@@ -85,17 +89,22 @@ class ScheduleOwnershipInvalidationIntegrationTest {
         if (jdbc == null) return;
         cleanOwnedRows();
         cleanCoreRows();
+        jdbc.update("UPDATE season SET is_current=false WHERE id=?", SEASON.id());
         jdbc.update("DELETE FROM season WHERE id=?", SEASON.id());
-        jdbc.update("UPDATE season SET is_current=false");
         previousCurrent.forEach(id -> jdbc.update("UPDATE season SET is_current=true WHERE id=?", id));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM season WHERE id=?", Integer.class, SEASON.id()))
+                .isZero();
+        assertThat(jdbc.queryForObject("SELECT code FROM season WHERE id=27", String.class))
+                .isEqualTo("2026-27");
     }
 
     @Test
     void changedScheduleRetainsFirstObservationOwnershipQueuesAtomicallyAndNeedsTwoFreshBatches() throws Exception {
         cleanOwnedRows();
         cleanCoreRows();
-        jdbc.update("UPDATE season SET is_current=(id=?)", SEASON.id());
-        MutableClock clock = new MutableClock(Instant.parse("2026-09-13T17:44:00Z"));
+        jdbc.update("UPDATE season SET is_current=false WHERE is_current=true");
+        jdbc.update("UPDATE season SET is_current=true WHERE id=?", SEASON.id());
+        MutableClock clock = new MutableClock(CLOCK_START);
         RuntimeFence fence = new PlannerRuntimeRepository(jdbc, tx, clock, OWNED)
                 .activate(SEASON.code(), OwnedSyncMode.ACTIVE);
         OwnedSyncStore store = new OwnedSyncStore(jdbc, tx, clock, OWNED, fence);
@@ -109,6 +118,7 @@ class ScheduleOwnershipInvalidationIntegrationTest {
         Lease originalSchedule = enqueueSchedule(store, clock);
         clock.set(original.fixtures().readInterval().completedAt().plusSeconds(1));
         writer.publishSchedule(originalSchedule, SEASON, original.bootstrap(), original.fixtures());
+        assertThat(capturedFrame(29)).isEqualTo(original.fixtures().readInterval().completedAt());
 
         FixtureRow originalFixture = fixture(original, 29);
         int homePlayer = playerForTeam(original.bootstrap(), originalFixture.homeTeamId());
@@ -129,7 +139,7 @@ class ScheduleOwnershipInvalidationIntegrationTest {
         jdbc.update("UPDATE " + OWNED.fixtureSync() + " SET first_finished_observed_at=?, recovery_day=?, "
                         + "recovery_started_at=?, recovery_until=?, due_reason='DEPENDENCY', "
                         + "dependency_retry_at=?, transport_retry_at=? WHERE season_id=? AND fixture_id=?",
-                Timestamp.from(clock.instant().minusSeconds(60)), LocalDate.of(2026, 9, 13),
+                Timestamp.from(clock.instant().minusSeconds(60)), RECOVERY_DAY,
                 Timestamp.from(clock.instant().minusSeconds(30)), Timestamp.from(clock.instant().plusSeconds(600)),
                 Timestamp.from(clock.instant().plusSeconds(200)), Timestamp.from(clock.instant().plusSeconds(300)),
                 SEASON.id(), originalFixture.id());
@@ -293,8 +303,10 @@ class ScheduleOwnershipInvalidationIntegrationTest {
 
     private static Batch scheduleDocuments(Instant start, boolean changed, boolean removeHeader) throws Exception {
         ReadInterval interval = interval(start);
-        SourceDocument bootstrap = document(BOOTSTRAP, interval);
-        ArrayNode fixtures = (ArrayNode) JSON.readTree(resource(FIXTURES));
+        SourceDocument bootstrap = new SourceDocument(localizedScheduleResource(BOOTSTRAP, "events",
+                "deadline_time"), interval);
+        ArrayNode fixtures = (ArrayNode) JSON.readTree(localizedScheduleResource(FIXTURES, null,
+                "kickoff_time"));
         ObjectNode target = byFixture(fixtures, 29);
         int home = playerForTeam(bootstrap, target.required("team_h").intValue());
         int oldAwayTeam = target.required("team_a").intValue();
@@ -409,6 +421,11 @@ class ScheduleOwnershipInvalidationIntegrationTest {
                 + " WHERE season=? AND id=?", SEASON.code(), fixtureId);
     }
 
+    private static Instant capturedFrame(int fixtureId) {
+        return jdbc.queryForObject("SELECT captured_at FROM " + CAPTURED.fixture()
+                + " WHERE season=? AND id=?", Timestamp.class, SEASON.code(), fixtureId).toInstant();
+    }
+
     private static Map<String, Object> sourceState(String key) {
         return jdbc.queryForMap("SELECT latest_generation,source_read_started_at,source_read_finished_at "
                 + "FROM " + OWNED.receipt() + " WHERE season=? AND publication_key=?",
@@ -498,8 +515,22 @@ class ScheduleOwnershipInvalidationIntegrationTest {
         return new ReadInterval(start, start.plusSeconds(1));
     }
 
-    private static SourceDocument document(String resource, ReadInterval interval) throws IOException {
-        return new SourceDocument(resource(resource), interval);
+    private static byte[] localizedScheduleResource(String resource, String collection, String dateField)
+            throws IOException {
+        JsonNode root = JSON.readTree(resource(resource));
+        JsonNode rows = collection == null ? root : root.path(collection);
+        for (JsonNode row : rows) {
+            if (row.hasNonNull(dateField)) {
+                ObjectNode object = (ObjectNode) row;
+                String timestamp = object.required(dateField).textValue();
+                int year = Integer.parseInt(timestamp.substring(0, 4));
+                if (year != 2026 && year != 2027) {
+                    throw new IllegalStateException("unexpected fixture season year: " + year);
+                }
+                object.put(dateField, (year + 170) + timestamp.substring(4));
+            }
+        }
+        return JSON.writeValueAsBytes(root);
     }
 
     private static byte[] resource(String file) throws IOException {
