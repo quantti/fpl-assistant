@@ -11,6 +11,7 @@ import java.time.ZoneId;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 import org.springframework.jdbc.core.JdbcTemplate;
 
@@ -127,7 +128,11 @@ public final class CatalogueScheduleWriter {
             Instant publishedAt = clock.instant();
             int written = writeTeams(snapshot.teams(), publishedAt);
             written += writeCoreGameweeks(snapshot.gameweeks(), publishedAt);
-            fixtureSync.invalidateCorrections(snapshot.fixtures(), publishedAt);
+            Set<Integer> correctedFixtures = fixtureSync.invalidateCorrections(snapshot.fixtures(), publishedAt);
+            correctedFixtures.stream().sorted().forEach(fixtureId -> {
+                String key = FixtureSyncPublisher.publicationKey(fixtureId);
+                store.enqueue(SyncKind.FIXTURE_VERIFICATION, season.code(), key, key, read.finishedAt());
+            });
             written += writeCoreFixtures(snapshot.fixtures(), publishedAt);
             written += writeCapturedGameweeks(snapshot.gameweeks(), read.finishedAt());
             written += writeCapturedFixtures(snapshot.fixtures(), read.finishedAt());
