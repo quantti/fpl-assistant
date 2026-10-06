@@ -20,7 +20,9 @@ import fi.karivanttinen.fplassistant.sync.FixtureVerification.Decision;
 import fi.karivanttinen.fplassistant.sync.HistoryParser.HistoryBatch;
 import fi.karivanttinen.fplassistant.sync.HistoryParser.HistoryRow;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.ConditionalPublication;
+import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.FixtureDependencyManifest;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.Lease;
+import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.StagedPayloadMetadata;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.SourceRead;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.SyncKind;
 import fi.karivanttinen.fplassistant.sync.SharedFixtureRecoveryPolicy.SourceStatus;
@@ -56,6 +58,15 @@ public final class FixtureSyncPublisher {
     public Decision publish(Lease lease, Season season, int fixtureId, SourceDocument bootstrap,
                             SourceDocument fixtures, SourceDocument liveDocument,
                             Map<Integer, SourceDocument> elementSummaries) {
+        return publish(lease, season, fixtureId, bootstrap, fixtures, liveDocument,
+                elementSummaries, null, Map.of());
+    }
+
+    Decision publish(Lease lease, Season season, int fixtureId, SourceDocument bootstrap,
+                     SourceDocument fixtures, SourceDocument liveDocument,
+                     Map<Integer, SourceDocument> elementSummaries,
+                     FixtureDependencyManifest manifest,
+                     Map<Integer, StagedPayloadMetadata> historyPayloads) {
         Objects.requireNonNull(elementSummaries, "elementSummaries");
         var snapshot = CatalogueScheduleParser.parse(season, bootstrap, fixtures);
         FixtureRow fixture = snapshot.fixtures().stream().filter(row -> row.id() == fixtureId)
@@ -77,7 +88,7 @@ public final class FixtureSyncPublisher {
         Set<Integer> cataloguePlayers = snapshot.players().stream()
                 .map(CatalogueScheduleParser.PlayerRow::id).collect(java.util.stream.Collectors.toSet());
         return publishParsed(lease, season, fixture, fixtures.readInterval(), liveDocument,
-                histories, allReads, List.copyOf(demandReads), cataloguePlayers);
+                histories, allReads, List.copyOf(demandReads), cataloguePlayers, manifest, historyPayloads);
     }
 
     Decision publishParsed(Lease lease, Season season, FixtureRow fixture, ReadInterval fixtureRead,
@@ -88,17 +99,23 @@ public final class FixtureSyncPublisher {
     Decision publishParsed(Lease lease, Season season, FixtureRow fixture, ReadInterval fixtureRead,
                            SourceDocument liveDocument, Collection<HistoryBatch> histories,
                            Set<Integer> cataloguePlayers) {
-        return publishParsed(lease, season, fixture, fixtureRead, liveDocument, histories,
-                combined(fixtureRead, liveDocument.readInterval(), histories), List.of(), cataloguePlayers);
+        return publishParsed(lease, season, fixture, fixtureRead, liveDocument,
+                histories, combined(fixtureRead, liveDocument.readInterval(), histories), List.of(),
+                cataloguePlayers, null, Map.of());
     }
 
     private Decision publishParsed(Lease lease, Season season, FixtureRow fixture,
                                    ReadInterval fixtureRead, SourceDocument liveDocument,
                                    Collection<HistoryBatch> histories, SourceRead combined,
-                                   List<SourceRead> demandReads, Set<Integer> cataloguePlayers) {
+                                   List<SourceRead> demandReads, Set<Integer> cataloguePlayers,
+                                   FixtureDependencyManifest manifest,
+                                   Map<Integer, StagedPayloadMetadata> historyPayloads) {
         requireLease(lease, season, fixture);
         Objects.requireNonNull(histories);
         return store.publishConditionally(lease, combined, demandReads, () -> {
+            if (manifest != null) {
+                store.validateFixtureManifestForPublication(lease, manifest, historyPayloads);
+            }
             Decision decision = publishInsideFence(lease, season, fixture, fixtureRead,
                     liveDocument, histories, cataloguePlayers);
             return new ConditionalPublication<>(decision,

@@ -1,8 +1,14 @@
 package fi.karivanttinen.fplassistant.sync;
 
+import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -19,6 +25,8 @@ import java.util.function.Supplier;
 
 import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.PreparedStatementCreator;
+import org.springframework.jdbc.core.ResultSetExtractor;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
@@ -39,6 +47,7 @@ public final class OwnedSyncStore {
     public static final int MAX_ERROR_CHARS = 1_000;
     private static final Duration MAX_LEASE = Duration.ofHours(1);
     private static final int PUBLIC_PAIR_CACHE_ENTRIES = 2;
+    static final int HISTORY_HYDRATION_FETCH_SIZE = 8;
     private static final Set<Integer> PREFERENTIAL_HISTORY_TURNS = Set.of(0, 4);
     private static final List<ClaimClass> FAIR_CYCLE = List.of(
             ClaimClass.HISTORY, ClaimClass.READY_FIXTURE,
@@ -172,35 +181,205 @@ public final class OwnedSyncStore {
         return runtimeFence != null && runtimeFence.season().equals(season);
     }
 
-    /** Whether a canonical parent pair came from a completed, receipt-backed current ACTIVE run. */
-    boolean isCurrentPublishedCanonicalPair(String season, long generation, Instant now) {
+    /** Whether a source pair has an exact completed publication in the current ACTIVE epoch. */
+    boolean isCurrentPublishedCanonicalPair(String season, long sourceGeneration, Instant now) {
+        return currentPublishedCanonicalPair(season, sourceGeneration, null, now).isPresent();
+    }
+
+    boolean isCurrentPublishedCanonicalPair(String season, long sourceGeneration,
+                                             CanonicalSourcePair expectedSource, Instant now) {
+        return currentPublishedCanonicalPair(season, sourceGeneration, expectedSource, now).isPresent();
+    }
+
+    Optional<CanonicalPublication> currentPublishedCanonicalPair(String season,
+            CanonicalSourcePair expectedSource, Instant now) {
+        Objects.requireNonNull(expectedSource);
+        return currentPublishedCanonicalPair(season, expectedSource.bootstrap().runGeneration(),
+                expectedSource, now);
+    }
+
+    private Optional<CanonicalPublication> currentPublishedCanonicalPair(String season, long sourceGeneration,
+            CanonicalSourcePair expectedSource, Instant now) {
         if (runtimeFence == null || runtimeFence.mode() != OwnedSyncMode.ACTIVE
-                || !runtimeFence.season().equals(season)) return false;
-        Boolean published = jdbc.queryForObject("""
-                SELECT EXISTS (
-                    SELECT 1 FROM %s r
-                    JOIN %s p ON p.season=r.season AND p.publication_key=r.publication_key
-                        AND p.latest_generation=r.generation
-                    WHERE r.generation=? AND r.season=? AND r.kind='CATALOGUE_SCHEDULE'
-                      AND ((r.coalescing_key=? AND r.publication_key=?)
-                           OR (r.coalescing_key=? AND r.publication_key=?))
-                      AND r.runtime_mode='ACTIVE' AND r.runtime_epoch=? AND r.state='COMPLETED'
-                      AND r.completed_at IS NOT NULL AND r.completed_at<=p.published_at
-                      AND p.published_at<=?
-                      AND r.source_read_started_at IS NOT NULL AND r.source_read_finished_at IS NOT NULL
-                      AND r.source_read_started_at<=r.source_read_finished_at
-                      AND r.source_read_finished_at<=p.published_at
-                      AND p.source_read_started_at=r.source_read_started_at
-                      AND p.source_read_finished_at=r.source_read_finished_at
-                )
-                """.formatted(tables.run(), tables.receipt()), Boolean.class,
-                generation, season,
+                || !runtimeFence.season().equals(season)) return Optional.empty();
+        String expected = expectedSource == null ? "" : "AND p.source_pair_fingerprint=? "
+                + "AND p.source_bootstrap_payload_id=? AND p.source_fixtures_payload_id=? "
+                + "AND p.source_bootstrap_read_started_at=? AND p.source_bootstrap_read_finished_at=? "
+                + "AND p.source_fixtures_read_started_at=? AND p.source_fixtures_read_finished_at=? "
+                + "AND p.source_bootstrap_sha256=? AND p.source_fixtures_sha256=? ";
+        String sql = """
+                SELECT r.generation AS publication_generation, b.run_generation AS source_generation
+                FROM %s r
+                JOIN %s p ON p.season=r.season AND p.publication_key=r.publication_key
+                    AND p.latest_generation=r.generation
+                JOIN %s b ON b.id=p.source_bootstrap_payload_id
+                    AND b.endpoint_kind='BOOTSTRAP_STATIC' AND b.event_id IS NULL AND b.player_id IS NULL
+                    AND b.validation_state='VALID' AND b.source_published IS TRUE
+                    AND b.read_started_at=p.source_bootstrap_read_started_at
+                    AND b.read_finished_at=p.source_bootstrap_read_finished_at
+                JOIN %s f ON f.id=p.source_fixtures_payload_id
+                    AND f.endpoint_kind='FIXTURES' AND f.event_id IS NULL AND f.player_id IS NULL
+                    AND f.validation_state='VALID' AND f.source_published IS TRUE
+                    AND f.read_started_at=p.source_fixtures_read_started_at
+                    AND f.read_finished_at=p.source_fixtures_read_finished_at
+                JOIN %s br ON br.generation=b.run_generation AND br.season=r.season
+                    AND br.kind='CATALOGUE_SCHEDULE' AND br.runtime_mode='ACTIVE'
+                    AND br.runtime_epoch=r.runtime_epoch
+                    AND ((br.coalescing_key=? AND br.publication_key=?)
+                         OR (br.coalescing_key=? AND br.publication_key=?))
+                JOIN %s fr ON fr.generation=f.run_generation AND fr.season=r.season
+                    AND fr.kind='CATALOGUE_SCHEDULE' AND fr.runtime_mode='ACTIVE'
+                    AND fr.runtime_epoch=r.runtime_epoch
+                    AND ((fr.coalescing_key=? AND fr.publication_key=?)
+                         OR (fr.coalescing_key=? AND fr.publication_key=?))
+                WHERE r.season=? AND r.kind='CATALOGUE_SCHEDULE'
+                  AND ((r.coalescing_key=? AND r.publication_key=?)
+                       OR (r.coalescing_key=? AND r.publication_key=?))
+                  AND r.runtime_mode='ACTIVE' AND r.runtime_epoch=? AND r.state='COMPLETED'
+                  AND r.completed_at IS NOT NULL AND r.completed_at<=p.published_at
+                  AND p.published_at<=?
+                  AND r.source_read_started_at IS NOT NULL AND r.source_read_finished_at IS NOT NULL
+                  AND r.source_read_started_at<=r.source_read_finished_at
+                  AND r.source_read_finished_at<=p.published_at
+                  AND p.source_read_started_at=r.source_read_started_at
+                  AND p.source_read_finished_at=r.source_read_finished_at
+                  AND p.source_pair_fingerprint IS NOT NULL
+                  AND p.source_bootstrap_sha256 IS NOT NULL AND p.source_fixtures_sha256 IS NOT NULL
+                  AND b.run_generation=f.run_generation AND b.run_generation=?
+                  AND b.read_finished_at<=p.published_at AND f.read_finished_at<=p.published_at
+                  %s
+                ORDER BY p.published_at DESC, r.generation DESC
+                LIMIT 1
+                """.formatted(tables.run(), tables.receipt(), tables.payload(), tables.payload(),
+                tables.run(), tables.run(), expected);
+        List<Object> parameters = new ArrayList<>(List.of(
                 CatalogueScheduleDispatcher.CATALOGUE_PRICE_COALESCING_KEY,
                 CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY,
                 CatalogueScheduleDispatcher.SCHEDULE_COALESCING_KEY,
                 CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY,
-                runtimeFence.epoch(), timestamp(now));
-        return Boolean.TRUE.equals(published);
+                CatalogueScheduleDispatcher.CATALOGUE_PRICE_COALESCING_KEY,
+                CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY,
+                CatalogueScheduleDispatcher.SCHEDULE_COALESCING_KEY,
+                CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY,
+                season, CatalogueScheduleDispatcher.CATALOGUE_PRICE_COALESCING_KEY,
+                CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY,
+                CatalogueScheduleDispatcher.SCHEDULE_COALESCING_KEY,
+                CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY,
+                runtimeFence.epoch(), timestamp(now), sourceGeneration));
+        if (expectedSource != null) {
+            parameters.add(expectedSource.fingerprint());
+            parameters.add(expectedSource.bootstrap().id());
+            parameters.add(expectedSource.fixtures().id());
+            parameters.add(timestamp(expectedSource.bootstrap().read().startedAt()));
+            parameters.add(timestamp(expectedSource.bootstrap().read().finishedAt()));
+            parameters.add(timestamp(expectedSource.fixtures().read().startedAt()));
+            parameters.add(timestamp(expectedSource.fixtures().read().finishedAt()));
+            parameters.add(expectedSource.bootstrap().sha256());
+            parameters.add(expectedSource.fixtures().sha256());
+        }
+        return jdbc.query(sql, (rs, row) -> new CanonicalPublication(
+                rs.getLong("source_generation"), rs.getLong("publication_generation"),
+                expectedSource == null ? null : expectedSource.fingerprint()), parameters.toArray())
+                .stream().findFirst();
+    }
+
+    /** Returns metadata-only evidence for the newest current-epoch canonical parent pair. */
+    CanonicalParentEvidence currentCanonicalParentEvidence(String season, int fixtureId, Instant now) {
+        if (runtimeFence == null || runtimeFence.mode() != OwnedSyncMode.ACTIVE
+                || !runtimeFence.season().equals(season)) return CanonicalParentEvidence.MISSING;
+        return jdbc.query("""
+                WITH candidate AS (
+                    SELECT r.generation, b.run_generation AS source_generation, r.season,
+                           r.coalescing_key, r.publication_key, r.runtime_mode, r.runtime_epoch,
+                           r.state, r.completed_at, r.source_read_started_at, r.source_read_finished_at,
+                           p.latest_generation, p.published_at, p.source_read_started_at AS receipt_started,
+                           p.source_read_finished_at AS receipt_finished,
+                           p.source_bootstrap_payload_id, p.source_fixtures_payload_id,
+                           p.source_bootstrap_read_started_at, p.source_bootstrap_read_finished_at,
+                           p.source_fixtures_read_started_at, p.source_fixtures_read_finished_at,
+                           p.source_bootstrap_sha256, p.source_fixtures_sha256,
+                           p.source_pair_fingerprint,
+                           (b.id IS NOT NULL AND f.id IS NOT NULL AND br.generation IS NOT NULL
+                               AND fr.generation IS NOT NULL AND b.run_generation=f.run_generation) AS source_valid
+                    FROM %s r
+                    JOIN %s p ON p.season=r.season AND p.publication_key=r.publication_key
+                        AND p.latest_generation=r.generation
+                    LEFT JOIN %s b ON b.id=p.source_bootstrap_payload_id
+                        AND b.endpoint_kind='BOOTSTRAP_STATIC' AND b.event_id IS NULL AND b.player_id IS NULL
+                        AND b.validation_state='VALID' AND b.source_published IS TRUE
+                        AND b.read_started_at=p.source_bootstrap_read_started_at
+                        AND b.read_finished_at=p.source_bootstrap_read_finished_at
+                        AND b.read_finished_at<=p.published_at
+                    LEFT JOIN %s f ON f.id=p.source_fixtures_payload_id
+                        AND f.endpoint_kind='FIXTURES' AND f.event_id IS NULL AND f.player_id IS NULL
+                        AND f.validation_state='VALID' AND f.source_published IS TRUE
+                        AND f.read_started_at=p.source_fixtures_read_started_at
+                        AND f.read_finished_at=p.source_fixtures_read_finished_at
+                        AND f.read_finished_at<=p.published_at
+                    LEFT JOIN %s br ON br.generation=b.run_generation AND br.season=r.season
+                        AND br.kind='CATALOGUE_SCHEDULE' AND br.runtime_mode='ACTIVE'
+                        AND br.runtime_epoch=r.runtime_epoch
+                        AND ((br.coalescing_key=? AND br.publication_key=?)
+                          OR (br.coalescing_key=? AND br.publication_key=?))
+                    LEFT JOIN %s fr ON fr.generation=f.run_generation AND fr.season=r.season
+                        AND fr.kind='CATALOGUE_SCHEDULE' AND fr.runtime_mode='ACTIVE'
+                        AND fr.runtime_epoch=r.runtime_epoch
+                        AND ((fr.coalescing_key=? AND fr.publication_key=?)
+                          OR (fr.coalescing_key=? AND fr.publication_key=?))
+                    WHERE r.kind='CATALOGUE_SCHEDULE' AND r.season=?
+                      AND r.runtime_mode='ACTIVE' AND r.runtime_epoch=?
+                      AND ((r.coalescing_key=? AND r.publication_key=?)
+                           OR (r.coalescing_key=? AND r.publication_key=?))
+                    ORDER BY p.published_at DESC, r.generation DESC
+                    LIMIT 1
+                ), proof AS (
+                    SELECT c.generation,
+                           c.latest_generation=c.generation AND c.state='COMPLETED'
+                               AND c.completed_at IS NOT NULL AND c.published_at IS NOT NULL
+                               AND c.completed_at<=c.published_at AND c.published_at<=?
+                               AND c.source_read_started_at IS NOT NULL
+                               AND c.source_read_finished_at IS NOT NULL
+                               AND c.source_read_started_at<=c.source_read_finished_at
+                               AND c.source_read_finished_at<=c.published_at
+                               AND c.receipt_started=c.source_read_started_at
+                               AND c.receipt_finished=c.source_read_finished_at
+                               AND c.source_pair_fingerprint IS NOT NULL
+                               AND c.source_bootstrap_sha256 IS NOT NULL
+                               AND c.source_fixtures_sha256 IS NOT NULL
+                               AND c.source_valid AS current_published,
+                           fs.first_finished_observed_at IS NOT NULL
+                               AND fs.finished_parent_generation=c.source_generation
+                               AND fs.finished_parent_publication_generation=c.generation
+                               AND fs.finished_parent_bootstrap_payload_id=c.source_bootstrap_payload_id
+                               AND fs.finished_parent_fixtures_payload_id=c.source_fixtures_payload_id
+                               AND fs.finished_parent_source_fingerprint=c.source_pair_fingerprint
+                               AND fs.finished_parent_fixture_fingerprint ~ '^[0-9a-f]{64}$'
+                               AND fs.finished_parent_finished IS TRUE AS fixture_finished
+                    FROM candidate c
+                    LEFT JOIN %s fs ON fs.season_code=c.season AND fs.fixture_id=?
+                )
+                SELECT current_published,
+                       current_published AND COALESCE(fixture_finished,FALSE) AS fixture_finished
+                FROM proof
+                """.formatted(tables.run(), tables.receipt(), tables.payload(), tables.payload(),
+                tables.run(), tables.run(), tables.fixtureSync()), (rs, row) ->
+                new CanonicalParentEvidence(rs.getBoolean("current_published"),
+                        rs.getBoolean("fixture_finished")),
+                CatalogueScheduleDispatcher.CATALOGUE_PRICE_COALESCING_KEY,
+                CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY,
+                CatalogueScheduleDispatcher.SCHEDULE_COALESCING_KEY,
+                CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY,
+                CatalogueScheduleDispatcher.CATALOGUE_PRICE_COALESCING_KEY,
+                CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY,
+                CatalogueScheduleDispatcher.SCHEDULE_COALESCING_KEY,
+                CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY,
+                season, runtimeEpoch(),
+                CatalogueScheduleDispatcher.CATALOGUE_PRICE_COALESCING_KEY,
+                CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY,
+                CatalogueScheduleDispatcher.SCHEDULE_COALESCING_KEY,
+                CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY,
+                timestamp(now), fixtureId)
+                .stream().findFirst().orElse(CanonicalParentEvidence.MISSING);
     }
 
     /** Executes a non-run runtime mutation while holding the durable activation fence. */
@@ -221,6 +400,104 @@ public final class OwnedSyncStore {
             T result = callback.get();
             requireNotExpired(run, now());
             return result;
+        });
+    }
+
+    /** Returns a fixture's exact, reusable dependency manifest and missing histories without reading bodies. */
+    Optional<FixtureDependencyManifest> fixtureDependencyManifest(Lease lease, int fixtureId) {
+        Objects.requireNonNull(lease);
+        if (fixtureId <= 0) throw new IllegalArgumentException("fixture id must be positive");
+        return tx.execute(status -> {
+            lockAndValidate(lease);
+            return fixtureDependencyManifestLocked(lease, fixtureId);
+        });
+    }
+
+    private Optional<FixtureDependencyManifest> fixtureDependencyManifestLocked(Lease lease, int fixtureId) {
+        Instant checkedAt = now();
+        String sql = """
+                SELECT m.run_generation, m.bootstrap_payload_id, m.fixtures_payload_id, m.live_payload_id,
+                       m.required_player_ids, m.source_floor, r.requested_source_after, l.event_id,
+                       b.read_started_at AS b_started, b.read_finished_at AS b_finished,
+                       f.read_started_at AS f_started, f.read_finished_at AS f_finished,
+                       l.read_started_at AS l_started, l.read_finished_at AS l_finished,
+                       GREATEST(r.requested_source_after, m.source_floor,
+                           f.read_finished_at + INTERVAL '1 millisecond') AS effective_floor,
+                       ARRAY(SELECT required.player_id FROM unnest(m.required_player_ids)
+                                 AS required(player_id)
+                             WHERE %s ORDER BY required.player_id) AS missing_player_ids
+                FROM %s r
+                JOIN %s m ON m.run_generation = r.generation
+                JOIN %s b ON b.id = m.bootstrap_payload_id AND b.run_generation = r.generation
+                JOIN %s f ON f.id = m.fixtures_payload_id AND f.run_generation = r.generation
+                JOIN %s l ON l.id = m.live_payload_id AND l.run_generation = r.generation
+                WHERE r.generation = ? AND r.kind = 'FIXTURE_VERIFICATION'
+                  AND r.season = ? AND r.runtime_mode = ? AND r.runtime_epoch = ?
+                  AND r.coalescing_key = ? AND r.publication_key = ?
+                  AND m.source_floor = r.requested_source_after
+                  AND r.requested_source_after <= ?
+                  AND GREATEST(r.requested_source_after, m.source_floor,
+                      f.read_finished_at + INTERVAL '1 millisecond') <= ?
+                  AND %s
+                """.formatted(missingHistoryEvidencePredicate("r", "required.player_id"),
+                tables.run(), tables.fixtureDependencyManifest(), tables.payload(), tables.payload(),
+                tables.payload(), fixtureManifestAnchorConditions("r"));
+        return jdbc.query(sql, (rs, row) -> {
+            Integer[] required = (Integer[]) rs.getArray("required_player_ids").getArray();
+            Integer[] missing = (Integer[]) rs.getArray("missing_player_ids").getArray();
+            SourceRead bootstrapRead = new SourceRead(instant(rs, "b_started"), instant(rs, "b_finished"));
+            SourceRead fixturesRead = new SourceRead(instant(rs, "f_started"), instant(rs, "f_finished"));
+            SourceRead liveRead = new SourceRead(instant(rs, "l_started"), instant(rs, "l_finished"));
+            long generation = rs.getLong("run_generation");
+            return new FixtureDependencyManifest(generation, lease.season(), runtimeMode(), runtimeEpoch(),
+                    fixtureId, rs.getInt("event_id"), rs.getLong("bootstrap_payload_id"),
+                    rs.getLong("fixtures_payload_id"), rs.getLong("live_payload_id"),
+                    List.of(required), List.of(missing), rs.getTimestamp("source_floor").toInstant(),
+                    rs.getTimestamp("requested_source_after").toInstant(),
+                    rs.getTimestamp("effective_floor").toInstant(),
+                    new StagedPayloadMetadata(rs.getLong("bootstrap_payload_id"), generation,
+                            Endpoint.bootstrap(), bootstrapRead, ValidationState.VALID),
+                    new StagedPayloadMetadata(rs.getLong("fixtures_payload_id"), generation,
+                            Endpoint.fixtures(), fixturesRead, ValidationState.VALID),
+                    new StagedPayloadMetadata(rs.getLong("live_payload_id"), generation,
+                            Endpoint.eventLive(rs.getInt("event_id")), liveRead, ValidationState.VALID));
+        }, lease.generation(), lease.season(), runtimeMode(), runtimeEpoch(),
+                FixtureSyncPublisher.publicationKey(fixtureId), FixtureSyncPublisher.publicationKey(fixtureId),
+                timestamp(checkedAt), timestamp(checkedAt)).stream().findFirst();
+    }
+
+    /** Persists a metadata-only dependency retry, atomically refreshing only currently missing histories. */
+    boolean retryForDependency(Lease lease, FixtureDependencyManifest expected, Instant dueAt,
+                               String error, Supplier<Instant> retryMutation) {
+        Objects.requireNonNull(lease);
+        Objects.requireNonNull(expected);
+        Objects.requireNonNull(dueAt);
+        return tx.execute(status -> {
+            LockedRun run = lockAndValidate(lease);
+            Optional<FixtureDependencyManifest> current = fixtureDependencyManifestLocked(lease,
+                    expected.fixtureId());
+            if (current.isEmpty() || !expected.sameAnchorsAndDemand(current.get())
+                    || current.get().missingPlayerIds().isEmpty()) return false;
+            FixtureDependencyManifest manifest = current.get();
+            for (int playerId : manifest.missingPlayerIds()) {
+                ensurePlayerHistoryAtLeast(run.season, playerId, manifest.effectiveFloor());
+            }
+            Instant callbackDueAt = retryMutation == null ? dueAt
+                    : Objects.requireNonNull(retryMutation.get(), "retry mutation due time");
+            Instant selectedDueAt = dueAt.isAfter(callbackDueAt) ? dueAt : callbackDueAt;
+            Instant requeuedAt = now();
+            requireNotExpired(run, requeuedAt);
+            int released = jdbc.update("""
+                    UPDATE %s SET state = 'PENDING', priority = ?, due_at = ?, last_error = ?,
+                        failed_at = NULL, lease_owner = NULL, lease_token = NULL,
+                        lease_expires_at = NULL, updated_at = ?
+                    WHERE generation = ? AND state = 'LEASED' AND lease_owner = ?
+                      AND lease_token = ? AND lease_fence = ?
+                    """.formatted(tables.run()), SyncKind.DEPENDENCY_WAITING_PRIORITY,
+                    timestamp(selectedDueAt), boundedNullable(error, MAX_ERROR_CHARS), timestamp(requeuedAt),
+                    run.generation, lease.owner(), lease.token(), lease.fence());
+            if (released != 1) throw new LeaseLostException("Lease is stale for generation " + run.generation);
+            return true;
         });
     }
 
@@ -700,18 +977,22 @@ public final class OwnedSyncStore {
         Objects.requireNonNull(endpoint);
         Objects.requireNonNull(requestedSourceAfter);
         validateEndpoint(endpoint);
+        if (endpoint.kind() != EndpointKind.ELEMENT_SUMMARY) {
+            throw new IllegalArgumentException("Cross-run valid metadata requires an element-summary endpoint");
+        }
         return jdbc.query("""
                 SELECT p.id, p.run_generation, p.endpoint_kind, p.event_id, p.player_id,
                        p.read_started_at, p.read_finished_at, p.validation_state
                 FROM %s p JOIN %s r ON r.generation=p.run_generation
-                WHERE r.season=? AND p.endpoint_kind=?
-                  AND p.event_id IS NOT DISTINCT FROM ? AND p.player_id IS NOT DISTINCT FROM ?
+                WHERE r.kind='PLAYER_HISTORY' AND r.season=? AND p.endpoint_kind=?
+                  AND p.event_id IS NULL AND p.player_id=?
+                  AND r.coalescing_key='player-history:' || p.player_id::text
+                  AND r.publication_key='player-history:' || p.player_id::text
                   AND p.validation_state='VALID' AND p.read_started_at >= ?
-                  AND (? = FALSE OR (r.runtime_mode=? AND r.runtime_epoch=?))
+                  AND r.runtime_mode=? AND r.runtime_epoch=?
                 ORDER BY p.read_finished_at DESC, p.id DESC LIMIT 1
                 """.formatted(tables.payload(), tables.run()), this::stagedPayloadMetadata, validSeason,
-                endpoint.kind().name(), endpoint.eventId(), endpoint.playerId(),
-                timestamp(requestedSourceAfter), runtimeFence != null,
+                endpoint.kind().name(), endpoint.playerId(), timestamp(requestedSourceAfter),
                 runtimeMode(), runtimeEpoch()).stream().findFirst();
     }
 
@@ -777,15 +1058,111 @@ public final class OwnedSyncStore {
                     SELECT p.id, p.run_generation, p.endpoint_kind, p.read_started_at,
                            p.read_finished_at, p.validation_state, p.validation_error, p.body
                     FROM %s p JOIN %s r ON r.generation=p.run_generation
-                    WHERE p.id = ? AND p.run_generation = ? AND r.season = ?
-                      AND p.endpoint_kind = ?
+                    WHERE p.id = ? AND p.run_generation = ? AND r.kind='PLAYER_HISTORY' AND r.season = ?
+                      AND p.endpoint_kind = ? AND p.event_id IS NULL
                       AND p.event_id IS NOT DISTINCT FROM ? AND p.player_id IS NOT DISTINCT FROM ?
+                      AND r.coalescing_key='player-history:' || p.player_id::text
+                      AND r.publication_key='player-history:' || p.player_id::text
                       AND p.validation_state = 'VALID' AND p.read_started_at >= ?
-                      AND (? = FALSE OR (r.runtime_mode=? AND r.runtime_epoch=?))
+                      AND r.runtime_mode=? AND r.runtime_epoch=?
                     """.formatted(tables.payload(), tables.run()), this::stagedPayload, candidate.id(),
                     candidate.runGeneration(), validSeason, endpoint.kind().name(), endpoint.eventId(),
-                    endpoint.playerId(), timestamp(effectiveFloor), runtimeFence != null,
-                    runtimeMode(), runtimeEpoch()).stream().findFirst();
+                    endpoint.playerId(), timestamp(effectiveFloor), runtimeMode(), runtimeEpoch())
+                    .stream().findFirst();
+        });
+    }
+
+    /** Hydrates a complete set of previously selected histories, returning no bodies on any miss. */
+    FixtureHistoryHydration hydrateValidHistoryBatch(Lease lease,
+            Map<Integer, StagedPayloadMetadata> candidates, Instant requestedSourceAfter) {
+        Objects.requireNonNull(lease);
+        Objects.requireNonNull(candidates);
+        Objects.requireNonNull(requestedSourceAfter);
+        if (candidates.isEmpty() || candidates.size() > HistoryFixtureDispatcher.MAX_FIXTURE_PLAYERS) {
+            throw new IllegalArgumentException("History hydration requires 1 to 80 candidates");
+        }
+        List<Integer> playerIds = candidates.keySet().stream().sorted().toList();
+        for (int playerId : playerIds) {
+            StagedPayloadMetadata candidate = candidates.get(playerId);
+            if (candidate == null || candidate.validationState() != ValidationState.VALID
+                    || !candidate.endpoint().equals(Endpoint.elementSummary(playerId))) {
+                throw new IllegalArgumentException("History candidate does not match its player id");
+            }
+        }
+        return tx.execute(status -> {
+            lockAndValidate(lease);
+            Instant effectiveFloor = effectiveSourceFloor(lease, requestedSourceAfter);
+            String wantedRows = String.join(",", java.util.Collections.nCopies(playerIds.size(),
+                    "(?::integer,?::bigint,?::bigint,?::timestamptz,?::timestamptz)"));
+            String sql = """
+                    WITH wanted(player_id,payload_id,run_generation,read_started_at,read_finished_at) AS (
+                        VALUES %s
+                    ), eligible AS MATERIALIZED (
+                        SELECT p.id, p.run_generation, w.player_id, p.read_started_at,
+                               p.read_finished_at, p.body AS history_body
+                        FROM wanted w JOIN %s p ON p.id=w.payload_id
+                            AND p.run_generation=w.run_generation AND p.player_id=w.player_id
+                        JOIN %s r ON r.generation=p.run_generation
+                        WHERE p.endpoint_kind='ELEMENT_SUMMARY' AND p.event_id IS NULL
+                          AND p.validation_state='VALID'
+                          AND p.read_started_at=w.read_started_at
+                          AND p.read_finished_at=w.read_finished_at
+                          AND p.read_started_at>=?
+                          AND r.kind='PLAYER_HISTORY' AND r.season=?
+                          AND r.runtime_mode=? AND r.runtime_epoch=?
+                          AND r.coalescing_key='player-history:' || w.player_id::text
+                          AND r.publication_key='player-history:' || w.player_id::text
+                    )
+                    SELECT id,run_generation,player_id,read_started_at,read_finished_at,
+                           history_body,ARRAY[]::integer[] AS missing_player_ids
+                    FROM eligible WHERE (SELECT count(*) FROM eligible)=?
+                    UNION ALL
+                    SELECT NULL::bigint,NULL::bigint,NULL::integer,NULL::timestamptz,
+                           NULL::timestamptz,NULL::bytea,
+                           ARRAY(SELECT w.player_id FROM wanted w LEFT JOIN eligible e
+                                     ON e.player_id=w.player_id
+                                 WHERE e.id IS NULL ORDER BY w.player_id)
+                    WHERE (SELECT count(*) FROM eligible)<>?
+                    ORDER BY player_id NULLS LAST
+                    """.formatted(wantedRows, tables.payload(), tables.run());
+            List<Object> parameters = new ArrayList<>();
+            for (int playerId : playerIds) {
+                StagedPayloadMetadata candidate = candidates.get(playerId);
+                parameters.add(playerId);
+                parameters.add(candidate.id());
+                parameters.add(candidate.runGeneration());
+                parameters.add(timestamp(candidate.read().startedAt()));
+                parameters.add(timestamp(candidate.read().finishedAt()));
+            }
+            parameters.add(timestamp(effectiveFloor));
+            parameters.add(lease.season());
+            parameters.add(runtimeMode());
+            parameters.add(runtimeEpoch());
+            parameters.add(playerIds.size());
+            parameters.add(playerIds.size());
+            Map<Integer, CatalogueScheduleParser.SourceDocument> documents = new LinkedHashMap<>();
+            List<Integer> missing = new ArrayList<>();
+            jdbc.query(new HistoryHydrationStatement(sql, parameters), (ResultSetExtractor<Void>) rs -> {
+                while (rs.next()) {
+                    Long id = rs.getObject("id", Long.class);
+                    if (id == null) {
+                        Integer[] absent = (Integer[]) rs.getArray("missing_player_ids").getArray();
+                        missing.addAll(List.of(absent));
+                    } else {
+                        int playerId = rs.getInt("player_id");
+                        SourceRead read = new SourceRead(instant(rs, "read_started_at"),
+                                instant(rs, "read_finished_at"));
+                        documents.put(playerId, new CatalogueScheduleParser.SourceDocument(
+                                rs.getBytes("history_body"), new CatalogueScheduleParser.ReadInterval(
+                                        read.startedAt(), read.finishedAt())));
+                    }
+                }
+                return null;
+            });
+            if (documents.size() != playerIds.size() && missing.isEmpty()) {
+                missing.addAll(playerIds.stream().filter(id -> !documents.containsKey(id)).toList());
+            }
+            return new FixtureHistoryHydration(documents, missing);
         });
     }
 
@@ -898,6 +1275,107 @@ public final class OwnedSyncStore {
                 runtimeMode(), runtimeEpoch()).stream().findFirst();
     }
 
+    /** Locks and rechecks the exact fixture anchors and cross-run histories used for publication. */
+    void validateFixtureManifestForPublication(Lease lease, FixtureDependencyManifest expected,
+                                               Map<Integer, StagedPayloadMetadata> histories) {
+        Objects.requireNonNull(lease);
+        Objects.requireNonNull(expected);
+        Objects.requireNonNull(histories);
+        lockAndValidate(lease);
+        Optional<FixtureDependencyManifest> current = fixtureDependencyManifestLocked(lease,
+                expected.fixtureId());
+        if (current.isEmpty() || !expected.sameAnchorsAndDemand(current.get())
+                || !current.get().missingPlayerIds().isEmpty()
+                || !expected.requiredPlayerIds().equals(histories.keySet().stream().sorted().toList())) {
+            throw new FixtureEvidenceChangedException("Fixture dependency manifest changed before publication");
+        }
+        FixtureDependencyManifest manifest = current.get();
+        String anchorSql = """
+                SELECT m.run_generation, m.bootstrap_payload_id, m.fixtures_payload_id, m.live_payload_id,
+                       m.source_floor, r.requested_source_after, l.event_id,
+                       b.read_started_at AS b_started, b.read_finished_at AS b_finished,
+                       f.read_started_at AS f_started, f.read_finished_at AS f_finished,
+                       l.read_started_at AS l_started, l.read_finished_at AS l_finished
+                FROM %s r JOIN %s m ON m.run_generation=r.generation
+                JOIN %s b ON b.id=m.bootstrap_payload_id AND b.run_generation=r.generation
+                JOIN %s f ON f.id=m.fixtures_payload_id AND f.run_generation=r.generation
+                JOIN %s l ON l.id=m.live_payload_id AND l.run_generation=r.generation
+                WHERE r.generation=? AND r.kind='FIXTURE_VERIFICATION' AND r.season=?
+                  AND r.runtime_mode=? AND r.runtime_epoch=?
+                  AND r.coalescing_key=? AND r.publication_key=?
+                  AND m.bootstrap_payload_id=? AND m.fixtures_payload_id=? AND m.live_payload_id=?
+                  AND m.source_floor=? AND r.requested_source_after=?
+                  AND %s
+                FOR SHARE OF m,b,f,l
+                """.formatted(tables.run(), tables.fixtureDependencyManifest(), tables.payload(),
+                tables.payload(), tables.payload(), fixtureManifestAnchorConditions("r"));
+        List<AnchorIdentity> anchors = jdbc.query(anchorSql, (rs, row) -> new AnchorIdentity(
+                rs.getLong("run_generation"), rs.getLong("bootstrap_payload_id"),
+                rs.getLong("fixtures_payload_id"), rs.getLong("live_payload_id"),
+                rs.getInt("event_id"), instant(rs, "b_started"), instant(rs, "b_finished"),
+                instant(rs, "f_started"), instant(rs, "f_finished"), instant(rs, "l_started"),
+                instant(rs, "l_finished")), lease.generation(), lease.season(), runtimeMode(), runtimeEpoch(),
+                FixtureSyncPublisher.publicationKey(expected.fixtureId()),
+                FixtureSyncPublisher.publicationKey(expected.fixtureId()), expected.bootstrapPayloadId(),
+                expected.fixturesPayloadId(), expected.livePayloadId(), timestamp(expected.manifestSourceFloor()),
+                timestamp(expected.requestedSourceAfter()));
+        if (anchors.size() != 1) {
+            throw new FixtureEvidenceChangedException("Fixture anchors changed before publication");
+        }
+        AnchorIdentity anchor = anchors.getFirst();
+        if (anchor.eventId() != expected.eventId()
+                || !anchor.bootstrapRead().equals(expected.bootstrap().read())
+                || !anchor.fixturesRead().equals(expected.fixtures().read())
+                || !anchor.liveRead().equals(expected.live().read())) {
+            throw new FixtureEvidenceChangedException("Fixture anchor metadata changed before publication");
+        }
+
+        List<Integer> playerIds = expected.requiredPlayerIds();
+        String wanted = String.join(",", java.util.Collections.nCopies(playerIds.size(), "(?,?)"));
+        String historySql = """
+                SELECT hp.id, hp.run_generation, hp.player_id, hp.read_started_at, hp.read_finished_at
+                FROM (VALUES %s) AS wanted(player_id,payload_id)
+                JOIN %s hp ON hp.id=wanted.payload_id AND hp.player_id=wanted.player_id
+                JOIN %s hr ON hr.generation=hp.run_generation
+                WHERE hp.endpoint_kind='ELEMENT_SUMMARY' AND hp.event_id IS NULL
+                  AND hp.validation_state='VALID' AND hp.read_started_at>=?
+                  AND hr.kind='PLAYER_HISTORY' AND hr.season=?
+                  AND hr.runtime_mode=? AND hr.runtime_epoch=?
+                  AND hr.coalescing_key='player-history:' || wanted.player_id::text
+                  AND hr.publication_key='player-history:' || wanted.player_id::text
+                ORDER BY hp.player_id
+                FOR SHARE OF hp,hr
+                """.formatted(wanted, tables.payload(), tables.run());
+        List<Object> parameters = new ArrayList<>();
+        for (int playerId : playerIds) {
+            StagedPayloadMetadata metadata = histories.get(playerId);
+            if (metadata == null || metadata.validationState() != ValidationState.VALID
+                    || !metadata.endpoint().equals(Endpoint.elementSummary(playerId))) {
+                throw new FixtureEvidenceChangedException("History metadata changed before publication");
+            }
+            parameters.add(playerId);
+            parameters.add(metadata.id());
+        }
+        parameters.add(timestamp(manifest.effectiveFloor()));
+        parameters.add(lease.season());
+        parameters.add(runtimeMode());
+        parameters.add(runtimeEpoch());
+        List<HistoryIdentity> selected = jdbc.query(historySql, (rs, row) -> new HistoryIdentity(
+                rs.getLong("id"), rs.getLong("run_generation"), rs.getInt("player_id"),
+                new SourceRead(instant(rs, "read_started_at"), instant(rs, "read_finished_at"))),
+                parameters.toArray());
+        if (selected.size() != playerIds.size()) {
+            throw new FixtureEvidenceChangedException("Required histories changed before publication");
+        }
+        for (HistoryIdentity identity : selected) {
+            StagedPayloadMetadata metadata = histories.get(identity.playerId());
+            if (identity.id() != metadata.id() || identity.runGeneration() != metadata.runGeneration()
+                    || !identity.read().equals(metadata.read())) {
+                throw new FixtureEvidenceChangedException("Required history metadata changed before publication");
+            }
+        }
+    }
+
     /** Changes validation only for payloads owned by the current fenced run. */
     public void validateStagedPayloads(Lease lease, List<Long> payloadIds, Validation validation) {
         Objects.requireNonNull(payloadIds);
@@ -970,8 +1448,13 @@ public final class OwnedSyncStore {
 
     public <T> T publish(Lease lease, SourceRead read, List<SourceRead> demandReads,
                          Supplier<T> callback) {
+        return publish(lease, read, demandReads, null, callback);
+    }
+
+    <T> T publish(Lease lease, SourceRead read, List<SourceRead> demandReads,
+                  CanonicalSourcePair sourcePair, Supplier<T> callback) {
         Objects.requireNonNull(callback);
-        return publishConditionally(lease, read, demandReads,
+        return publishConditionally(lease, read, demandReads, sourcePair,
                 () -> ConditionalPublication.published(callback.get()));
     }
 
@@ -987,6 +1470,12 @@ public final class OwnedSyncStore {
 
     public <T> T publishConditionally(Lease lease, SourceRead read, List<SourceRead> demandReads,
                                       Supplier<ConditionalPublication<T>> callback) {
+        return publishConditionally(lease, read, demandReads, null, callback);
+    }
+
+    private <T> T publishConditionally(Lease lease, SourceRead read, List<SourceRead> demandReads,
+                                       CanonicalSourcePair sourcePair,
+                                       Supplier<ConditionalPublication<T>> callback) {
         Objects.requireNonNull(read);
         Objects.requireNonNull(demandReads);
         Objects.requireNonNull(callback);
@@ -1012,15 +1501,38 @@ public final class OwnedSyncStore {
                 throw new StaleGenerationException(run.generation, latest, run.season, run.publicationKey);
             }
             ConditionalPublication<T> outcome = Objects.requireNonNull(callback.get(), "callback outcome");
+            CanonicalSourcePair persistedSourcePair = null;
+            if (outcome.published() && sourcePair != null) {
+                requireNotExpired(run, now());
+                persistedSourcePair = lockAndMarkCanonicalSourcePublished(run, sourcePair);
+            }
             Instant completedAt = now();
             requireNotExpired(run, completedAt);
             if (outcome.published()) {
                 jdbc.update("""
                         UPDATE %s SET latest_generation = ?, source_read_started_at = ?,
-                            source_read_finished_at = ?, published_at = ?
+                            source_read_finished_at = ?, published_at = ?,
+                            source_bootstrap_payload_id=?, source_fixtures_payload_id=?,
+                            source_bootstrap_read_started_at=?, source_bootstrap_read_finished_at=?,
+                            source_fixtures_read_started_at=?, source_fixtures_read_finished_at=?,
+                            source_bootstrap_sha256=?, source_fixtures_sha256=?, source_pair_fingerprint=?
                         WHERE season = ? AND publication_key = ?
                         """.formatted(tables.receipt()), run.generation, timestamp(read.startedAt()),
-                        timestamp(read.finishedAt()), timestamp(completedAt), run.season, run.publicationKey);
+                        timestamp(read.finishedAt()), timestamp(completedAt),
+                        persistedSourcePair == null ? null : persistedSourcePair.bootstrap().id(),
+                        persistedSourcePair == null ? null : persistedSourcePair.fixtures().id(),
+                        persistedSourcePair == null ? null
+                                : timestamp(persistedSourcePair.bootstrap().read().startedAt()),
+                        persistedSourcePair == null ? null
+                                : timestamp(persistedSourcePair.bootstrap().read().finishedAt()),
+                        persistedSourcePair == null ? null
+                                : timestamp(persistedSourcePair.fixtures().read().startedAt()),
+                        persistedSourcePair == null ? null
+                                : timestamp(persistedSourcePair.fixtures().read().finishedAt()),
+                        persistedSourcePair == null ? null : persistedSourcePair.bootstrap().sha256(),
+                        persistedSourcePair == null ? null : persistedSourcePair.fixtures().sha256(),
+                        persistedSourcePair == null ? null : persistedSourcePair.fingerprint(),
+                        run.season, run.publicationKey);
             }
             jdbc.update("""
                     UPDATE %s SET state = 'COMPLETED', lease_owner = NULL, lease_token = NULL,
@@ -1030,6 +1542,71 @@ public final class OwnedSyncStore {
                     timestamp(completedAt), timestamp(completedAt), run.generation);
             return outcome.value();
         });
+    }
+
+    private CanonicalSourcePair lockAndMarkCanonicalSourcePublished(LockedRun publicationRun,
+                                                                      CanonicalSourcePair pair) {
+        List<CanonicalSourceMetadata> rows = jdbc.query("""
+                SELECT b.id AS b_id, b.run_generation AS b_generation, b.read_started_at AS b_started,
+                       b.read_finished_at AS b_finished, f.id AS f_id,
+                       f.run_generation AS f_generation, f.read_started_at AS f_started,
+                       f.read_finished_at AS f_finished
+                FROM %s b JOIN %s f ON f.id=? AND f.run_generation=b.run_generation
+                    AND f.endpoint_kind='FIXTURES' AND f.event_id IS NULL AND f.player_id IS NULL
+                    AND f.read_started_at=? AND f.read_finished_at=? AND f.validation_state='VALID'
+                JOIN %s source_run ON source_run.generation=b.run_generation
+                WHERE b.id=? AND b.run_generation=? AND b.endpoint_kind='BOOTSTRAP_STATIC'
+                  AND b.event_id IS NULL AND b.player_id IS NULL
+                  AND b.read_started_at=? AND b.read_finished_at=? AND b.validation_state='VALID'
+                  AND source_run.season=? AND source_run.kind='CATALOGUE_SCHEDULE'
+                  AND source_run.runtime_mode=? AND source_run.runtime_epoch=?
+                  AND ((source_run.coalescing_key=? AND source_run.publication_key=?)
+                    OR (source_run.coalescing_key=? AND source_run.publication_key=?))
+                FOR UPDATE OF b,f,source_run
+                """.formatted(tables.payload(), tables.payload(), tables.run()), (rs, row) ->
+                new CanonicalSourceMetadata(rs.getLong("b_id"), rs.getLong("b_generation"),
+                        new SourceRead(instant(rs, "b_started"), instant(rs, "b_finished")),
+                        rs.getLong("f_id"), rs.getLong("f_generation"),
+                        new SourceRead(instant(rs, "f_started"), instant(rs, "f_finished"))),
+                pair.fixtures().id(), timestamp(pair.fixtures().read().startedAt()),
+                timestamp(pair.fixtures().read().finishedAt()), pair.bootstrap().id(),
+                pair.bootstrap().runGeneration(), timestamp(pair.bootstrap().read().startedAt()),
+                timestamp(pair.bootstrap().read().finishedAt()), publicationRun.season,
+                publicationRun.runtimeMode, publicationRun.runtimeEpoch,
+                CatalogueScheduleDispatcher.CATALOGUE_PRICE_COALESCING_KEY,
+                CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY,
+                CatalogueScheduleDispatcher.SCHEDULE_COALESCING_KEY,
+                CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY);
+        if (rows.size() != 1) throw new IllegalStateException("Canonical source payload pair changed before publish");
+        CanonicalSourceMetadata metadata = rows.getFirst();
+        String bootstrapHash = canonicalSourceBodyHash(metadata.bootstrapId());
+        String fixturesHash = canonicalSourceBodyHash(metadata.fixturesId());
+        if (metadata.bootstrapGeneration() != pair.bootstrap().runGeneration()
+                || metadata.fixturesGeneration() != pair.fixtures().runGeneration()
+                || !metadata.bootstrapRead().equals(postgresTimestampPrecision(pair.bootstrap().read()))
+                || !metadata.fixturesRead().equals(postgresTimestampPrecision(pair.fixtures().read()))) {
+            throw new IllegalStateException("Canonical source payload metadata changed before publish");
+        }
+        if (!bootstrapHash.equals(pair.bootstrap().sha256())
+                || !fixturesHash.equals(pair.fixtures().sha256())) {
+            throw new IllegalStateException("Canonical source payload bodies changed before publish");
+        }
+        CanonicalSourcePair persistedPair = CanonicalSourcePair.of(
+                new CanonicalSourcePayload(metadata.bootstrapId(), metadata.bootstrapGeneration(),
+                        EndpointKind.BOOTSTRAP_STATIC, metadata.bootstrapRead(), bootstrapHash),
+                new CanonicalSourcePayload(metadata.fixturesId(), metadata.fixturesGeneration(),
+                        EndpointKind.FIXTURES, metadata.fixturesRead(), fixturesHash));
+        int updated = jdbc.update("UPDATE %s SET source_published=TRUE WHERE id IN (?,?) AND validation_state='VALID'"
+                .formatted(tables.payload()), metadata.bootstrapId(), metadata.fixturesId());
+        if (updated != 2) throw new IllegalStateException("Canonical source payloads were invalidated before publish");
+        return persistedPair;
+    }
+
+    private String canonicalSourceBodyHash(long payloadId) {
+        List<String> hashes = jdbc.query("SELECT body AS source_body_digest FROM %s WHERE id=?"
+                .formatted(tables.payload()), (rs, row) -> sha256(rs.getBytes("source_body_digest")), payloadId);
+        if (hashes.size() != 1) throw new IllegalStateException("Locked canonical source payload disappeared");
+        return hashes.getFirst();
     }
 
     /** Requeues work without treating admission or scheduling delay as a failed source fetch. */
@@ -1141,12 +1718,13 @@ public final class OwnedSyncStore {
         jdbc.update(connection -> {
             var statement = connection.prepareStatement("""
                     INSERT INTO %s(run_generation, bootstrap_payload_id, fixtures_payload_id,
-                                   live_payload_id, required_player_ids, source_floor)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                                   live_payload_id, event_id, required_player_ids, source_floor)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT (run_generation) DO UPDATE SET
                         bootstrap_payload_id = EXCLUDED.bootstrap_payload_id,
                         fixtures_payload_id = EXCLUDED.fixtures_payload_id,
                         live_payload_id = EXCLUDED.live_payload_id,
+                        event_id = EXCLUDED.event_id,
                         required_player_ids = EXCLUDED.required_player_ids,
                         source_floor = EXCLUDED.source_floor
                     """.formatted(tables.fixtureDependencyManifest()));
@@ -1154,9 +1732,10 @@ public final class OwnedSyncStore {
             statement.setLong(2, bootstrap.id());
             statement.setLong(3, fixtures.id());
             statement.setLong(4, livePayload.id());
-            statement.setArray(5, connection.createArrayOf("integer",
+            statement.setInt(5, eventId);
+            statement.setArray(6, connection.createArrayOf("integer",
                     sortedPlayerIds.toArray(Integer[]::new)));
-            statement.setTimestamp(6, timestamp(sourceFloor));
+            statement.setTimestamp(7, timestamp(sourceFloor));
             return statement;
         });
         return recordedAt;
@@ -1269,16 +1848,18 @@ public final class OwnedSyncStore {
                 AND b.endpoint_kind = 'BOOTSTRAP_STATIC'
                 AND b.event_id IS NULL AND b.player_id IS NULL
                 AND b.validation_state = 'VALID'
+                AND m.source_floor = %1$s.requested_source_after
                 AND b.read_started_at >= %1$s.requested_source_after
                 AND f.endpoint_kind = 'FIXTURES'
                 AND f.event_id IS NULL AND f.player_id IS NULL
                 AND f.validation_state = 'VALID'
                 AND f.read_started_at >= %1$s.requested_source_after
                 AND l.endpoint_kind = 'EVENT_LIVE'
-                AND l.event_id > 0 AND l.player_id IS NULL
+                AND m.event_id > 0 AND l.event_id = m.event_id AND l.player_id IS NULL
                 AND l.validation_state = 'VALID'
                 AND l.read_started_at >= GREATEST(
                     %1$s.requested_source_after,
+                    m.source_floor,
                     f.read_finished_at + INTERVAL '1 millisecond')
                 AND fpl_sync_required_ids_valid(m.required_player_ids)
                 """.formatted(runAlias);
@@ -1401,7 +1982,7 @@ public final class OwnedSyncStore {
                 postgresTimestampPrecision(read.finishedAt()));
     }
 
-    private static Instant postgresTimestampPrecision(Instant value) {
+    static Instant postgresTimestampPrecision(Instant value) {
         // PostgreSQL rounds timestamptz to microseconds, carrying into the next second when needed.
         long roundedMicros = (value.getNano() + 500L) / 1_000L;
         return Instant.ofEpochSecond(value.getEpochSecond(), roundedMicros * 1_000L);
@@ -1542,7 +2123,7 @@ public final class OwnedSyncStore {
     }
 
     private static Timestamp timestamp(Instant value) {
-        return Timestamp.from(value);
+        return Timestamp.from(postgresTimestampPrecision(value));
     }
 
     private static Duration leaseDuration(Duration duration) {
@@ -1677,6 +2258,81 @@ public final class OwnedSyncStore {
                         String publicationKey, String owner, UUID token, long fence,
                         Instant expiresAt, int attemptCount) { }
 
+    interface SqlPreparedStatementCreator extends PreparedStatementCreator {
+        String sql();
+    }
+
+    static final class HistoryHydrationStatement implements SqlPreparedStatementCreator {
+        private final String sql;
+        private final List<Object> parameters;
+
+        HistoryHydrationStatement(String sql, List<Object> parameters) {
+            this.sql = Objects.requireNonNull(sql);
+            this.parameters = List.copyOf(parameters);
+        }
+
+        @Override public String sql() { return sql; }
+        List<Object> parameters() { return parameters; }
+
+        @Override public PreparedStatement createPreparedStatement(Connection connection) throws SQLException {
+            if (connection.getAutoCommit()) {
+                throw new SQLException("History hydration cursor requires an active transaction");
+            }
+            PreparedStatement statement = connection.prepareStatement(sql,
+                    ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY);
+            statement.setFetchSize(HISTORY_HYDRATION_FETCH_SIZE);
+            for (int index = 0; index < parameters.size(); index++) {
+                statement.setObject(index + 1, parameters.get(index));
+            }
+            return statement;
+        }
+    }
+
+    record FixtureHistoryHydration(Map<Integer, CatalogueScheduleParser.SourceDocument> documents,
+                                    List<Integer> missingPlayerIds) {
+        FixtureHistoryHydration {
+            documents = java.util.Collections.unmodifiableMap(documents);
+            missingPlayerIds = List.copyOf(missingPlayerIds);
+        }
+
+        boolean complete() { return missingPlayerIds.isEmpty(); }
+    }
+
+    record CanonicalParentEvidence(boolean currentPublished, boolean fixtureFinished) {
+        static final CanonicalParentEvidence MISSING = new CanonicalParentEvidence(false, false);
+    }
+
+    public record FixtureDependencyManifest(long runGeneration, String season, String runtimeMode,
+                                            long runtimeEpoch, int fixtureId, int eventId,
+                                            long bootstrapPayloadId, long fixturesPayloadId, long livePayloadId,
+                                            List<Integer> requiredPlayerIds, List<Integer> missingPlayerIds,
+                                            Instant manifestSourceFloor, Instant requestedSourceAfter,
+                                            Instant effectiveFloor, StagedPayloadMetadata bootstrap,
+                                            StagedPayloadMetadata fixtures, StagedPayloadMetadata live) {
+        public FixtureDependencyManifest {
+            requiredPlayerIds = List.copyOf(requiredPlayerIds);
+            missingPlayerIds = List.copyOf(missingPlayerIds);
+            Objects.requireNonNull(bootstrap);
+            Objects.requireNonNull(fixtures);
+            Objects.requireNonNull(live);
+        }
+
+        boolean sameAnchorsAndDemand(FixtureDependencyManifest other) {
+            return runGeneration == other.runGeneration && season.equals(other.season)
+                    && runtimeMode.equals(other.runtimeMode) && runtimeEpoch == other.runtimeEpoch
+                    && fixtureId == other.fixtureId && eventId == other.eventId
+                    && bootstrapPayloadId == other.bootstrapPayloadId
+                    && fixturesPayloadId == other.fixturesPayloadId && livePayloadId == other.livePayloadId
+                    && requiredPlayerIds.equals(other.requiredPlayerIds)
+                    && manifestSourceFloor.equals(other.manifestSourceFloor)
+                    && requestedSourceAfter.equals(other.requestedSourceAfter)
+                    && effectiveFloor.equals(other.effectiveFloor)
+                    && bootstrap.read().equals(other.bootstrap.read())
+                    && fixtures.read().equals(other.fixtures.read())
+                    && live.read().equals(other.live.read());
+        }
+    }
+
     public sealed interface HttpFenceResult permits Ready, FutureFloor { }
 
     public record Ready(Instant expiresAt, Instant sourceFloor) implements HttpFenceResult {
@@ -1714,6 +2370,68 @@ public final class OwnedSyncStore {
         @Override public byte[] body() { return body.clone(); }
     }
 
+    record CanonicalSourcePayload(long id, long runGeneration, EndpointKind endpointKind,
+                                  SourceRead read, String sha256) {
+        CanonicalSourcePayload {
+            if (id <= 0 || runGeneration <= 0) throw new IllegalArgumentException("invalid source payload identity");
+            Objects.requireNonNull(endpointKind);
+            read = postgresTimestampPrecision(Objects.requireNonNull(read));
+            if (sha256 == null || !sha256.matches("[0-9a-f]{64}")) {
+                throw new IllegalArgumentException("invalid source payload hash");
+            }
+        }
+    }
+
+    record CanonicalSourcePair(CanonicalSourcePayload bootstrap, CanonicalSourcePayload fixtures,
+                               String fingerprint) {
+        CanonicalSourcePair {
+            Objects.requireNonNull(bootstrap);
+            Objects.requireNonNull(fixtures);
+            if (bootstrap.endpointKind() != EndpointKind.BOOTSTRAP_STATIC
+                    || fixtures.endpointKind() != EndpointKind.FIXTURES
+                    || bootstrap.runGeneration() != fixtures.runGeneration()
+                    || fingerprint == null || !fingerprint.matches("[0-9a-f]{64}")
+                    || !fingerprint.equals(canonicalFingerprint(bootstrap, fixtures))) {
+                throw new IllegalArgumentException("invalid canonical source pair");
+            }
+        }
+
+        static CanonicalSourcePair from(StagedPayload bootstrap, StagedPayload fixtures) {
+            CanonicalSourcePayload b = new CanonicalSourcePayload(bootstrap.id(), bootstrap.runGeneration(),
+                    bootstrap.endpointKind(), bootstrap.read(), sha256(bootstrap.body()));
+            CanonicalSourcePayload f = new CanonicalSourcePayload(fixtures.id(), fixtures.runGeneration(),
+                    fixtures.endpointKind(), fixtures.read(), sha256(fixtures.body()));
+            return of(b, f);
+        }
+
+        static CanonicalSourcePair of(CanonicalSourcePayload bootstrap, CanonicalSourcePayload fixtures) {
+            return new CanonicalSourcePair(bootstrap, fixtures, canonicalFingerprint(bootstrap, fixtures));
+        }
+
+        private static String canonicalFingerprint(CanonicalSourcePayload bootstrap,
+                                                   CanonicalSourcePayload fixtures) {
+            String canonical = String.join("|", Long.toString(bootstrap.id()),
+                    Long.toString(bootstrap.runGeneration()), bootstrap.endpointKind().name(),
+                    bootstrap.read().startedAt().toString(), bootstrap.read().finishedAt().toString(),
+                    bootstrap.sha256(), Long.toString(fixtures.id()), Long.toString(fixtures.runGeneration()),
+                    fixtures.endpointKind().name(), fixtures.read().startedAt().toString(),
+                    fixtures.read().finishedAt().toString(), fixtures.sha256());
+            return sha256(canonical);
+        }
+    }
+
+    static String sha256(String text) {
+        return sha256(text.getBytes(StandardCharsets.UTF_8));
+    }
+
+    static String sha256(byte[] bytes) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 is unavailable", impossible);
+        }
+    }
+
     public record PublicPayloadPair(long runGeneration, StagedPayload bootstrap,
                                     StagedPayload fixtures) {
         public PublicPayloadPair {
@@ -1741,6 +2459,26 @@ public final class OwnedSyncStore {
     private record DependencyPayload(long id, long runGeneration, EndpointKind endpointKind,
                                      Integer eventId, Integer playerId, SourceRead read,
                                      ValidationState validationState) { }
+
+    private record CanonicalSourceMetadata(long bootstrapId, long bootstrapGeneration, SourceRead bootstrapRead,
+                                           long fixturesId, long fixturesGeneration, SourceRead fixturesRead) { }
+
+    record CanonicalPublication(long sourceGeneration, long publicationGeneration, String sourceFingerprint) { }
+
+    private record AnchorIdentity(long generation, long bootstrapId, long fixturesId, long liveId,
+                                  int eventId, Instant bootstrapStarted, Instant bootstrapFinished,
+                                  Instant fixturesStarted, Instant fixturesFinished,
+                                  Instant liveStarted, Instant liveFinished) {
+        SourceRead bootstrapRead() { return new SourceRead(bootstrapStarted, bootstrapFinished); }
+        SourceRead fixturesRead() { return new SourceRead(fixturesStarted, fixturesFinished); }
+        SourceRead liveRead() { return new SourceRead(liveStarted, liveFinished); }
+    }
+
+    private record HistoryIdentity(long id, long runGeneration, int playerId, SourceRead read) { }
+
+    public static class FixtureEvidenceChangedException extends IllegalStateException {
+        public FixtureEvidenceChangedException(String message) { super(message); }
+    }
 
     public static class LeaseLostException extends IllegalStateException {
         public LeaseLostException(String message) { super(message); }

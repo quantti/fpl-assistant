@@ -159,9 +159,11 @@ public final class CatalogueScheduleDispatcher {
             return Outcome.STAGED;
         }
         if (CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY.equals(lease.publicationKey())) {
-            writer.publishCataloguePriceForDemand(lease, season, documents.bootstrap, documents.fixtures);
+            writer.publishCataloguePriceForDemand(lease, season, documents.bootstrap, documents.fixtures,
+                    documents.sourcePair);
         } else {
-            writer.publishScheduleForDemand(lease, season, documents.bootstrap, documents.fixtures);
+            writer.publishScheduleForDemand(lease, season, documents.bootstrap, documents.fixtures,
+                    documents.sourcePair);
         }
         return Outcome.PUBLISHED;
     }
@@ -431,7 +433,8 @@ public final class CatalogueScheduleDispatcher {
     }
 
     private static Documents documents(StagedPayload bootstrap, StagedPayload fixtures) {
-        return new Documents(document(bootstrap), document(fixtures));
+        return new Documents(document(bootstrap), document(fixtures),
+                OwnedSyncStore.CanonicalSourcePair.from(bootstrap, fixtures));
     }
 
     private static SourceDocument document(StagedPayload payload) {
@@ -479,7 +482,8 @@ public final class CatalogueScheduleDispatcher {
         }
     }
 
-    private record Documents(SourceDocument bootstrap, SourceDocument fixtures) { }
+    private record Documents(SourceDocument bootstrap, SourceDocument fixtures,
+                             OwnedSyncStore.CanonicalSourcePair sourcePair) { }
     private record ReadIntervals(ReadInterval bootstrap, ReadInterval fixtures) { }
     private record PairLease(Lease lease, Documents documents) { }
     private record FetchResult(Lease lease, StagedPayload payload) { }
