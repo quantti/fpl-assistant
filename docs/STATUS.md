@@ -16,6 +16,256 @@ The interval-only proof restores the exact stored publication fingerprint after 
 
 CI run [37414896787](https://github.com/quantti/fpl-assistant/actions/runs/37414896787) completed 1,466 tests with one failure: `ScheduleOwnershipInvalidationIntegrationTest` tried to insert id 29027 with code `2026-27`, already seeded as id 27 by `TapasSeed.ensureOwnedSyncCaptureSeason`. The test now keeps that shared seed, uses its own season id 29196/code `2196-97`, and localizes only this class's in-memory bootstrap deadlines and fixture kickoffs to 2196/2197. Its frozen clock, recovery day and persisted capture source frame use the same future season. Teardown asserts the owned season is removed and id 27 remains. The focused class passes **1/1** on the disposable `localhost:55432` database. This is test isolation only: no runtime source, shared fixture resource or Tapas schema changed. The absent private-PFS cleanup error in the CI log was secondary to setup aborting; no generic cleanup guard was needed. No full-suite run or CI rerun; the repaired changes remain local and fresh head CI is pending. No production query/activation, commit or push.
 
+## Owned sync — Task 4 focused acceptance complete locally (2026-10-06; CI/review pending)
+
+The exact filtered method `combinedActiveRecoveryPublishesAllTenNeverPublishedFixturesAfterRestart`
+passed on guarded `backend/.env.test` (`localhost:55432`): **1 test, 0 skipped, 0 failures**; JUnit
+593.845 s, suite XML 596.206 s, Gradle 10m20s. The seeded source preflight passed with 657 players,
+20 clubs and 50 finished fixtures. First new claim: fixture 41, generation 319566, attempt 1, worker 1,
+`2026-10-01T02:00:00Z`. First-pending generations 319566–319575 all recorded coherent
+`NEEDS_SECOND_OBSERVATION`; their reads started `02:00:01.100Z`–`02:01:44.500Z` and finished
+`02:03:07.100Z`–`02:13:00Z`. All ten independent second batches began at least 10 minutes after the
+first batch completed (minimum exactly 600 s); source, parent, participant, manifest and receipt proofs
+passed for every target.
+
+The final ACTIVE epoch-3 receipts were `{41=322484, 42=322546, 43=322617, 44=322679, 45=322750,
+46=322815, 47=322888, 48=322889, 49=323032, 50=323098}`: **10/10**, IDs 41–50, no missing receipts,
+history or participants, bad manifests/batches, skipped targets or failed runs. The driver drained at
+`2026-10-01T03:00:13.400Z`; first verification was `02:16:20.800Z`, last `03:00:12.300Z`. It used
+`PT1H13.4S/48H`, 2,406/6,000 claims, 2,412/6,000 dispatches, 2,411 admissions and 592.2/1,500 s
+work wall. The due legacy path published its distinct schedule receipt at its asserted 03:00 UK
+boundary; ready/blocked/untouched coverage, FIFO/preferential history lanes, canonical preemption and
+all acceptance goals passed.
+
+The decomposed component oracle passed. All 40 same-fingerprint baseline correction receipts survived
+reactivation with zero replay: the 35 unchanged fixtures (6–40) remained served and retained validity,
+receipt identity/generation, source header, physical PFS/evidence and run history exactly; the five
+changed corrections (1–5) retained receipt identity/generation and physical PFS/evidence while becoming
+invalid/unverified, retaining last-verified ownership. Their only source-header change was
+`team_h_score` **0→1**. Post-recovery observations for
+those five legitimately advanced to coherent `NEEDS_SECOND_OBSERVATION` generations; no test requires
+the invalidated incoherent observation to persist after a newer observation. Each had
+`completedCorrections=[]`; fixture 4 also had an active pending run, while the others had a real pending
+observation. For all five the actual coordinator next wake equalled the future planner deadline
+`2026-10-01T03:00:15.500Z` (driver clock `03:00:13.400Z`); a planner-ledger row alone was not accepted
+as queue or publication proof. OFF/ACTIVE PFS masking, optional-component masking and the canonical
+parent recheck also passed.
+
+The blocked retry read zero logical JDBC body values/bytes in every family. Complete-publication
+logical JDBC reads (attempts/rows/values/raw bytes) were `OWN_ANCHORS=79/79/79/50,757,432`,
+`CROSS_RUN_HISTORIES=25/1,651/1,651/13,524,992`, `CANONICAL_PAIRS=1/1/2/1,875,506`, and zero for
+published-source-digests/other. These are logical result-set body bytes, not heap, wire or billed
+traffic; the separately measured mock HTTP response bytes are not used as a substitute.
+
+After the combined pass, five named standalone methods passed **5/5, 0 skipped** (suite 156.689 s;
+Gradle 3m01s): the compact ACTIVE baseline/oracle, fixture-3 real-writer correction, and the three
+bounded original STAGING driver regressions (`twoWorkerFixtureFanoutDoesNotStarveDueHistories`,
+`finiteDrainStagesAllPinnedFixturesAndHistoryDependencies`,
+`fullRosterTwoWorkersStageSourceCompleteFixtureWithinBudget`). No whole test class or full suite ran.
+The full harness limits stayed 48 h / 6,000 claims / 6,000 dispatches / 1,500 s. This is seeded local
+verification only: production remains OFF and no production gain is claimed. Branch CI and independent
+review remain pending; no runtime change, production action, full suite, commit or push occurred.
+Raw evidence: `/tmp/owned-sync-task4-decomposed-combined-final.log`,
+`/tmp/owned-sync-task4-decomposed-combined-final.xml`,
+`/tmp/owned-sync-task4-decomposed-standalone-staging-final.log`, and
+`/tmp/owned-sync-task4-decomposed-standalone-staging-final.xml`.
+
+## Owned sync — Task 4 prior aggregate-checksum failure (historical; superseded)
+
+Before the decomposed-oracle rerun above, the exact method
+`combinedActiveRecoveryPublishesAllTenNeverPublishedFixturesAfterRestart` ran once against guarded
+`backend/.env.test` (`localhost:55432`): **1 test, 0 skipped, 1 failure**. JUnit method time was
+639.693 s, suite XML 642.009 s, Gradle 11m06s; harness work wall was 638.272/1,500 s. The corrected
+fixture-3 immediate transition passed: verified generation 310324 retained its observation/fingerprint
+and last-verified marker while coherence became false and current verification cleared. All assertions before that aggregate checksum passed, including the complete ownership, read-source,
+optional-PFS masking and canonical-parent checks described below; the checksum itself failed.
+
+The 02:00 UK price and 02:10 UK schedule captures were both read from the expected roots; the separate
+schedule receipt (generation 310372) published at 03:00 UK, with the required schedule capture source
+interval. The current immutable canonical schedule parent was generation 312517 (payloads 55626/55627),
+and the old daily-only target gates were not admitted before their 03:00 UK due. Recovery first claimed
+fixture 41, generation 311850, attempt 1, worker 1, at `2026-10-01T02:00:00Z`. First-pending generations
+were 41–50 → 311850–311859, all coherent `NEEDS_SECOND_OBSERVATION`; reads started
+`02:00:01.100Z`–`02:01:44.500Z` and finished `02:03:07.100Z`–`02:13:00Z`. Final receipt generations
+were `{41=314768, 42=314830, 43=314901, 44=314963, 45=315034, 46=315100, 47=315173, 48=315174,
+49=315317, 50=315383}`. All ten source proofs were `verified`, in ACTIVE epoch 3, with current/latest
+receipt/manifest generations matching, exact participant membership and source intervals, current
+immutable parent, and independent batches separated by 10m09.9s–11m59.9s. Manifest participant counts
+were `60,65,61,67,63,72,67,75,65,62` (657 total); each fixture's 4/4 fixture participants had zero
+missing. Receipt completion times span `02:16:20.800Z`–`02:30:31.300Z`.
+
+The driver drained at `2026-10-01T02:30:31.300Z` (`PT30M31.3S` from due), with 2,403 claims,
+2,408 admissions, 2,414 dispatches and zero target work pending, all within 48h/6,000/6,000/1,500s.
+Proof counters were `verified=10/10`, `missingReceipts=0`, `badManifests=0`, `badBatches=0`,
+`missingHistory=0`, `failedRuns=0`, `zeroSkipped=0`, `targetRows=10/10`; all ready/blocked/untouched,
+preferential/FIFO, canonical-preemption and source assertions passed. All 40 baseline correction receipts
+remained served, correction replays were zero, and changed-source corrections 1–5 remained unverified.
+The blocked retry had zero logical reads/bytes in every family. Complete-publication logical JDBC
+body reads (attempts/rows/values/raw bytes) were `OWN_ANCHORS=81/81/81/52,632,938`,
+`CROSS_RUN_HISTORIES=25/1,651/1,651/13,524,992`, `CANONICAL_PAIRS=1/1/2/1,875,506`, and zero for
+published-source-digests/other. These are logical result-set bytes, not wire/billed bytes or heap.
+
+The sole failure was `baselinePublicationChecksum` at test line 835: expected
+`8b84655fe3c8e30e1f6e4317300a07e6278728cc445d928a0e800c3a42f0e09f`, actual
+`bf33d6542e6e891df54de1eadb39ed65a5d14e4aa9c81e9e9ae49287fd4f6f02`. That 40-fixture digest matched
+immediately after OFF→ACTIVE, then differed after recovery. Its input includes receipt/core/evidence
+state **and** `fixture_sync.observation->>'fingerprint'` for changed fixtures 1–5, so it can treat a
+legitimate new pending observation as baseline corruption even when those fixtures remain unverified.
+The test emitted only aggregate hashes, not a component diff, and its `finally` cleanup removed the
+seeded rows; this run therefore cannot distinguish that over-broad oracle input from a real receipt/core/
+evidence mutation. Do not weaken the assertion or claim either cause without component-level evidence.
+The subsequent history-fingerprint checksum was not reached. Separately, the combined method's
+`assertScheduleCorrectionsArePending` checks only revoked/current and retained/last-verified generations;
+its final `unservedChangedCorrections` metric proves fixtures 1–5 are unverified, not that a correction
+run remains queued after recovery. The separate schedule-writer regression proves enqueue at invalidation,
+but this combined run did not reassert post-recovery queue retention. No representative STAGING subset
+was run because the combined method was red. Task 4 remains incomplete; branch CI and independent review
+remain pending, production remains OFF with no restore, and no full suite, production action, commit or
+push ran.
+Raw evidence: `/tmp/owned-sync-task4-combined-active-final.log` and
+`backend/build/test-results/test/TEST-fi.karivanttinen.fplassistant.sync.OwnedMatchdayAdmissionProgressIntegrationTest.xml`.
+
+## Owned sync — Task 4 previous ACTIVE acceptance (local, 2026-10-06; 10/10 proofs, still not accepted)
+
+The one authorized exact-method run used guarded `backend/.env.test` (`localhost:55432`) from
+`2026-10-06T17:07:01Z` to `17:17:55Z`: 1 test, 0 skipped, 1 failure; 624.908 s JUnit test time,
+626.665 s suite XML and 654.140 s Gradle wall. The driver completed **10/10** current-epoch ACTIVE
+(epoch 3) receipt-backed targets `{41..50}` with generations `{41=308966, 42=309028, 43=309099,
+44=309161, 45=309232, 46=309297, 47=309370, 48=309371, 49=309514, 50=309580}`. The source
+oracle passed using the production-selected newest eligible canonical price-or-schedule receipt,
+with exact source/root identity, epoch and immutable-payload checks. Every
+receipt/source/epoch/manifest/participant/batch proof passed: `missingReceipts=0`, `badManifests=0`,
+`badBatches=0`, `missingHistory=0`, `failedRuns=0`, `zeroSkipped=0`, `targetRows=10/10`. All ten
+first observations were coherent `NEEDS_SECOND_OBSERVATION`; their reads began from
+`02:00:01.100Z` to `02:01:44.500Z` and finished from `02:03:07.100Z` to `02:13:00Z`. The driver
+started fixture 41, generation 306048, attempt 1, worker 1 at `02:00:00Z`; it drained at
+`2026-10-01T03:00:13.400Z` (`PT1H13.4S` virtual), with 2,406/6,000 claims, 2,412/6,000
+dispatches, 2,411 admissions and 623.995/1,500 measured wall seconds. No bound was raised or hit.
+
+The failed assertion was a **second, stale-time ownership oracle**, not loss of the schedule
+invalidation marker. The real schedule publication immediately followed fixture 3's VERIFIED
+baseline at generation 304522: the before row was coherent/current/last-verified at 304522, and the
+invalidation snapshot retained that exact observation/generation and last-verified marker, set
+`coherent=false`, and cleared only current verification. Later, ACTIVE work recorded a new coherent
+first observation at generation 305231; current verification remained null and last-verified remained
+304522. The final assertion incorrectly required the earlier invalidation snapshot's generation and
+`coherent=false` to survive that legitimate newer pending observation. It failed before the later
+ACTIVE PFS/optional-component/canonical-parent and post-recovery baseline/fingerprint assertions, so
+this is **not a green Task 4 acceptance** and none of those unreached assertions are claimed.
+
+A compact regression on the same guarded DB exercises fixture 3's VERIFIED → real schedule writer
+correction → fresh pending observation path. Its latest run passed 1/1 (11.826 s test time, 0 skipped;
+13.944 s suite XML): before `{state=VERIFIED, observation_generation=310228, current=310228,
+last=310228, coherent=true, fingerprint=62baed3c…}`; immediately after schedule invalidation the
+same fingerprint/generation/last marker remained, coherence became false and current became null;
+after a fresh pending observation `{state=VERIFYING, observation_generation=310232, current=NULL,
+last=310228, coherent=true, fingerprint=4fdbdb76…}`. Physical PFS remained stored and was masked
+through OFF and ACTIVE `PfsReadSource`. The post-run full-test oracle now checks
+the exact conditional before/after marker at the schedule publication, then checks only the stable
+end-state requirements (not VERIFIED, current NULL, original last-verified generation) after later
+observations. This semantic correction was **not** followed by another full acceptance run.
+First-pending retained-pair assertions remain unchanged.
+
+Other assertions reached before the stale final check passed: all 40 correction receipts served,
+zero correction replay, changed corrections `{1,2,3,4,5}` remained unverified, ready/blocked/untouched
+and preferential/FIFO lanes progressed, source floors and 10-minute batch checks held. Logical JDBC
+body reads (attempts/rows/values/raw bytes) were `OWN_ANCHORS=79/79/79/50,757,432`,
+`CROSS_RUN_HISTORIES=25/1,651/1,651/13,524,992`, `CANONICAL_PAIRS=1/1/2/1,875,506`, and zero for
+published-source-digest/other families; these totals exactly match the preceding 10/10 run.
+Blocked-retry reads were zero in every family. Logical body bytes are not network/billed bytes or
+heap. No full suite, STAGING subset driver, production work, commit or push was run; Task 4 remains
+incomplete pending an authorized full green acceptance. The subset driver is a separate later unit.
+
+## Owned sync — earlier Task 4 combined ACTIVE acceptance (local, 2026-10-06; 10/10 proofs, method fails afterward)
+
+After correcting the test oracle to use production's newest eligible canonical-price **or** schedule receipt, exact source identity/current epoch and immutability, the exact filtered method `combinedActiveRecoveryPublishesAllTenNeverPublishedFixturesAfterRestart` ran once on guarded `backend/.env.test` (`localhost:55432`): 1 test, 0 skipped, 1 failure. The prior 5/10 result is superseded as source-proof evidence: this run produced 10/10 receipt-backed proofs, with `missingReceipts=0`, `badManifests=0`, `badBatches=0`, `missingHistory=0`, `failedRuns=0`, `zeroSkipped=0` and `targetRows=10/10`.
+
+Target receipt generations were `{41=303170, 42=303232, 43=303303, 44=303365, 45=303436, 46=303501, 47=303574, 48=303575, 49=303718, 50=303784}`; each matched its target's current verified generation, ACTIVE epoch 3, manifest/run generation and latest fixture receipt. All ten source-parent proofs selected the canonical `schedule` lane: source/publication generation 300919, immutable current-published pair payloads 50748/50749. For every target, the selected parent matched production's actual price-or-schedule selection and root marker (`actualRuleCurrentPublished`, `parentProofMatchesProduction`, `parentRootMarkerMatches`, `parentImmutable`, source/epoch/key gates and `publishedManifestProof` all true). First coherent observation generations were 300252–300261, all `NEEDS_SECOND_OBSERVATION`. Each target had two completed independent source batches; the later source read began 10m09.9s–11m59.9s after the first batch ended. First-observation reads started between `02:00:01.1Z` and `02:01:44.5Z`, finishing between `02:03:07.1Z` and `02:13:00Z`; the latest receipt reads followed by `02:14Z`–`02:24Z`.
+
+The test did **not** pass as a whole. After the 10/10, receipt, source, batch, fairness and read assertions passed, it failed at `OwnedMatchdayAdmissionProgressIntegrationTest.java:762` on the fixture-3 schedule-invalidation predicate requiring `coherent=false` and a non-null `observation_generation`. That run did not snapshot the real row immediately before and after the schedule publication, so it could not distinguish a missing pre-change pair from a later observation replacing the invalidation snapshot. The subsequent run at the top of STATUS resolves the ambiguity: the immediate invalidation retained fixture 3's real pair; the final row was a newer coherent pending observation. The failure was a time-scoped test-oracle defect, not evidence of runtime ownership loss. No runtime code was changed.
+
+The acceptance stayed inside every declared bound: 616.340 s JUnit test time (618.249 s suite XML; 615.438 s measured work wall / 1,500 s), 1h13m24s virtual / 48h, 2,406/6,000 claims and 2,412/6,000 dispatches. It stopped `DRAINED` at `2026-10-01T03:00:13.400Z`; no bound was reached. First-pending target transitions were logged individually. The driver recorded 53 advances while target generations were ready, but all ten targets completed; the final wake was a 0.1-second response wait with no ready target and worker 1 active, so this is not evidence of an overclaimable-work skip or a need for a timing/fairness change.
+
+Logical JDBC body-read totals (attempts/result rows/body values/raw bytes) were `OWN_ANCHORS=79/79/79/50,757,432`, `CROSS_RUN_HISTORIES=25/1,651/1,651/13,524,992`, and `CANONICAL_PAIRS=1/1/2/1,875,506`; published-source-digest and other families were zero. Blocked-retry reads were `0/0/0/0` in every family. These are logical result-set body bytes, not network/billed bytes or heap use. No full suite, commit or push was run.
+
+## Owned sync — Task 4 harness repair checkpoint (local, 2026-10-06; before the combined rerun)
+
+The dirty acceptance harness now gives the legacy observation an honest 16-hour lead over its preserved 03:00 UK due boundary, exercises the old unknown-parent refusal before a current schedule receipt, and checks the real planner's due-time recovery slot separately from a first coherent `NEEDS_SECOND_OBSERVATION` decision. The ACTIVE baseline now reconciles source history fingerprints through the publisher callback, publishes complete current-club candidate histories (including known zero-minute rows) through the real fixture publisher, and checks receipt/source/core/evidence plus fingerprint checksums across reactivation and the qualifying source transition. All 40 baseline checks passed complete candidate/evidence coverage, independent-batch timing, and the 48-hour/data-checked source floors; restart receipt/core/evidence/fingerprint checksum assertions passed. A compact real-ACTIVE regression exercises that baseline and verifies source-derived header/stat/observation fingerprints against stored values. The full acceptance oracle derives candidate sets and role-specific combined/observation source intervals from pinned source documents; it records the first pending generation and requires the final receipt to be newer rather than equating it with the first claim generation.
+
+Bounded verification passed on guarded `localhost:55432`: the due-schedule, compact ACTIVE baseline/oracle, and real-planner/first-pending regressions **3/3** (15.9 seconds test time; 43 seconds build); the explicit `compileTestJava` check passed. The 48-hour virtual, 6,000-claim, 6,000-dispatch and 1,500-second wall limits are unchanged. At this checkpoint, the `ManualDriver` first-pending capture/assertions remained compile-only and the prior long acceptance result was 0/10 below; the subsequent exact filtered rerun is recorded above. No full suite, production work, commit or push.
+
+## Owned sync — Task 4 preceding ACTIVE acceptance (local, 2026-10-06; failed 0/10)
+
+The exact filtered method `combinedActiveRecoveryPublishesAllTenNeverPublishedFixturesAfterRestart`
+ran against guarded `localhost:55432`: 1 test, 0 skipped, 1 failed, 1,501.354 s test time.
+The price root began at 02:00 UK and the distinct schedule root began at
+`2026-10-01T01:10:01.700Z` (02:10:01.700 UK); it finished at 02:10:04 UK and published at
+03:00 UK. The preparation driver stopped `DRAINED` only after that canonical run was no longer
+claimable, with all ten target runs still pending. The source-freshness and pending-goal assertions
+passed. No schedule-root aliasing or early-goal failure remains in this run.
+
+The full recovery driver stopped at its unchanged 1,500 s wall ceiling (`WALL_LIMIT`) at
+`2026-10-02T01:08:36Z`, 23 h 08 m 36 s after the due boundary and about 51 minutes before the
+next daily recovery boundary. It recorded 5,442 claim attempts, 5,451 dispatch starts and an
+`admitted` counter of 2,953; the declared 48 h virtual, 6,000-claim and 6,000-dispatch limits were
+not increased or reached. The exact expected receipt set `{41..50}` was empty: 0/10 current-epoch
+ACTIVE receipts, no first/last verified time, and no two-batch receipt proof. All ten target fixture
+runs had completed, but their current verified generations remained null. Their manifests showed
+fresh history coverage equal to each required-player count (60/60, 67/67, 65/65, 67/67, 72/72,
+62/62, 61/61, 65/65, 63/63, 75/75); this is not a substitute for the missing fixture receipts.
+
+The first target claim was fixture 41, generation 221235, attempt 5, at
+`2026-10-01T02:00:02.300Z`; its first verification time is absent. The fixture-48 run's last
+recorded attempt was `2026-10-01T02:15:51.800Z`; the last listed global driver claim was fixture 10
+at `2026-10-02T01:06:36.100Z`. Neither is a verification time. The trace also reported 0/40 served unchanged-correction receipts and 107 correction replay runs. Canonical preemption at the 03:00 boundary
+passed; FIFO/preferential and ready/blocked/untouched assertions were not reached after the earlier
+0/10 assertion. The blocked-manifest retry asserted zero logical JDBC body values/bytes, but the
+final logical body-read summary was after the failing assertion and was not emitted; HTTP returned
+bytes are not being treated as logical JDBC reads. No production runtime, weights, queue policy,
+pinning, activation, commit or push changed. No full suite, production run or billing forecast.
+
+## Owned sync — Task 4 initial ACTIVE acceptance (local, 2026-10-06)
+
+The exact combined acceptance method ran twice with zero skips against guarded `localhost:55432`;
+`compileTestJava` passed. Both runs failed before the main 10/10 receipt-proof driver. The latest
+schedule receipt still began at `2026-09-30T18:00:00Z`, so no `2026-10-01 02:10 UK` schedule
+capture is evidenced. In the second trace, the virtual clock reached `2026-10-01T02:00:00Z`
+(03:00 UK) with ten target runs pending and zero verified receipts; ACTIVE totals were 3,248 claim
+attempts, 3,203 durable admissions and 3,250 dispatch starts. That test took 899.639 seconds,
+inside the unchanged 1,500-second wall ceiling. The first attempt stopped at its exact preparation
+virtual boundary; the second reached the boundary but still had no fresh schedule receipt. The
+48-hour, 6,000-claim and 6,000-dispatch criteria were not raised, and Task 4 is **not passed**.
+
+No production code, activation, commit or push occurred. The Task 4 plan records the owner proposal:
+inspect planner-slot materialization, fair-queue claim and publication/receipt state for the due
+02:10 UK schedule capture under the full backlog, without changing canonical preemption or bounds.
+At that checkpoint, Task 4 remained at **0/10**; this was a pre-proof driver stop, not acceptance evidence. The subsequent 5/10 result is recorded at the top of STATUS.
+
+**Bounded receipt-path diagnosis (2026-10-06; no full acceptance rerun):** A focused ACTIVE test
+replayed the old-root/current-epoch schedule path through the real coordinator, slot ledger, queue,
+lease, dispatcher and writer. At 02:09:59 UK the planner returns the Sep 30 schedule slot and
+`nextDueAt=02:10`; at 02:10 it materializes the distinct Oct 1 `DAILY_SCHEDULE` slot. The active
+`schedule` run coalesces under its existing canonical key, advances `requested_source_after` to the
+capture instant, and keeps its generation. The actual HTTP `SourceRead` uses `MutableClock`; its
+staged bootstrap begins exactly `2026-10-01T01:10:00Z` (02:10 UK). The schedule writer correctly
+leaves the schedule receipt at the old Sep 30 root until its 03:00 UK publication cutoff. At that
+instant the retained run is due with the fresh source pair, but the preparation driver's pending-only
+goal sees the current price publication plus ten pending target runs and returns before starting a
+worker: `run()` tests `focusSatisfied()` before `startReadyWorkers()`. The distinct `schedule` receipt
+is not advanced by the successful `catalogue-price` root. This isolates the first lost transition to
+the test driver's early-exit predicate—not planner materialization, source timestamps, queue fairness,
+receipt aliasing or a runtime freshness-floor bug.
+
+A test-only goal guard now waits while a current-epoch canonical run is claimable; no runtime code,
+weights, queue policy, source floor or acceptance bound changed. The focused regression passed **1/1**
+on guarded `localhost:55432` in 12.2 seconds (under 300 claims / 5 minutes); it proves the staged
+02:10 source becomes the schedule receipt after dispatch at 03:00 UK and that the pending-only goal
+then becomes true. At that point the 10/10 acceptance had not been rerun; the later full run is recorded above, and
+At that checkpoint Task 4 remained **0/10 and incomplete**; the subsequent 5/10 result is recorded at the top of STATUS.
+Owner proposal: review this test-only correction; keep the exact source-frame and receipt assertions,
+and require a separately authorized full acceptance run under the existing limits before claiming
+Task 4.
+
 ## Owned sync — schedule correction ownership repair (local)
 
 Schedule invalidation now preserves the observation/generation pair as its ownership marker and sets
@@ -35,7 +285,7 @@ individually on guarded `localhost:55432`: `ScheduleOwnershipInvalidationIntegra
 and `OwnedMatchdayEndToEndIntegrationTest` **5/5** (**36 total**). No full suite, production query,
 production activation, Fly action, commit or push. Separate review and branch CI for this follow-up
 remain pending; PR #151 is the baseline only (post-push review clear, CI pending). This is not Task 4 acceptance: at this checkpoint the separate ACTIVE 10/10 driver remained a
-later bounded unit. Its subsequent PR #153 CI attempt and local canonical-pair repair are recorded
+later bounded unit. Its subsequent PR #153 CI attempt and canonical-pair repair are recorded
 at the top of this status. Recovery Tasks 2c/3 remain locally implemented and pending their
 acceptance CI.
 
