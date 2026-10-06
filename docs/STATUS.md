@@ -1,5 +1,9 @@
 # Status — Phase 1
 
+## PR #152 CI season-collision repair (local, 2026-10-06)
+
+CI run [37414896787](https://github.com/quantti/fpl-assistant/actions/runs/37414896787) completed 1,466 tests with one failure: `ScheduleOwnershipInvalidationIntegrationTest` tried to insert id 29027 with code `2026-27`, already seeded as id 27 by `TapasSeed.ensureOwnedSyncCaptureSeason`. The test now keeps that shared seed, uses its own season id 29196/code `2196-97`, and localizes only this class's in-memory bootstrap deadlines and fixture kickoffs to 2196/2197. Its frozen clock, recovery day and persisted capture source frame use the same future season. Teardown asserts the owned season is removed and id 27 remains. The focused class passes **1/1** on the disposable `localhost:55432` database. This is test isolation only: no runtime source, shared fixture resource or Tapas schema changed. The absent private-PFS cleanup error in the CI log was secondary to setup aborting; no generic cleanup guard was needed. No full-suite run or CI rerun; the repaired changes remain local and fresh head CI is pending. No production query/activation, commit or push.
+
 ## Owned sync — schedule correction ownership repair (local)
 
 Schedule invalidation now preserves the observation/generation pair as its ownership marker and sets
