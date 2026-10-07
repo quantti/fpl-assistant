@@ -86,17 +86,19 @@ public final class CatalogueScheduleWriter {
         requireLease(lease, season, CATALOGUE_PRICE_PUBLICATION_KEY);
         Snapshot snapshot = CatalogueScheduleParser.parse(season, bootstrap, fixtures);
         requirePublicationDay(snapshot, PRICE_CUTOVER, "catalogue-price");
-        SourceRead read = sourceRead(snapshot.bootstrapRead());
+        SourceRead priceRead = sourceRead(snapshot.bootstrapRead());
+        SourceRead publicationRead = sourcePair == null ? priceRead
+                : combinedRead(snapshot.bootstrapRead(), snapshot.fixturesRead());
         List<SourceRead> demandReads = enforceDemandFloor
-                ? List.of(sourceRead(snapshot.bootstrapRead()), sourceRead(snapshot.fixturesRead())) : List.of();
-        return store.publish(lease, read, demandReads, sourcePair, () -> {
+                ? List.of(priceRead, sourceRead(snapshot.fixturesRead())) : List.of();
+        return store.publish(lease, publicationRead, demandReads, sourcePair, () -> {
             lockAndValidateCurrentSeason(snapshot.season());
             recordSourceReceipt(lease, SHARED_TEAM_SOURCE_RECEIPT_KEY, snapshot.bootstrapRead());
             Instant publishedAt = clock.instant();
             int written = writeTeams(snapshot.teams(), publishedAt);
             written += writePlayers(snapshot.players(), publishedAt);
-            written += writeDailyPrices(snapshot.dailyPrices(), read.finishedAt());
-            deleteAbsentDailyPrices(season.code(), date(read.finishedAt()), snapshot.dailyPrices());
+            written += writeDailyPrices(snapshot.dailyPrices(), priceRead.finishedAt());
+            deleteAbsentDailyPrices(season.code(), date(priceRead.finishedAt()), snapshot.dailyPrices());
             return written;
         });
     }
