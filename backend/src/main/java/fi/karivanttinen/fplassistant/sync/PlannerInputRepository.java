@@ -45,12 +45,12 @@ public final class PlannerInputRepository {
     public PlannerSnapshot load(Season season) {
         Objects.requireNonNull(season);
         OwnedSnapshot fresh = latestOwnedSnapshot(season);
-        boolean currentPublishedParent = fresh != null && store.isCurrentPublishedCanonicalPair(
-                season.code(), fresh.generation(), clock.instant());
+        Optional<OwnedSyncStore.CanonicalPublication> publication = fresh == null ? Optional.empty()
+                : store.currentPublishedCanonicalPair(season.code(), fresh.sourcePair(), clock.instant());
         SourceState source = fresh == null ? capturedSnapshot(season)
-                : sourceState(fresh.snapshot(), currentPublishedParent);
+                : sourceState(fresh.snapshot(), publication.orElse(null), fresh.generation(), fresh.sourcePair());
         store.withinRuntimeFence(() -> {
-            observeTransitions(season, source.fixtures());
+            observeTransitions(season, source);
             return null;
         });
         return new PlannerSnapshot(source.playerIds(), source.fixtures(), progress(season), fresh != null);
@@ -61,7 +61,8 @@ public final class PlannerInputRepository {
             try {
                 Snapshot snapshot = CatalogueScheduleParser.parse(
                         season, document(pair.bootstrap()), document(pair.fixtures()));
-                return Optional.of(new OwnedSnapshot(pair.runGeneration(), snapshot));
+                return Optional.of(new OwnedSnapshot(pair.runGeneration(), snapshot,
+                        OwnedSyncStore.CanonicalSourcePair.from(pair.bootstrap(), pair.fixtures())));
             } catch (IllegalArgumentException ignored) {
                 // Validation metadata never bypasses the strict parser.
                 return Optional.empty();
@@ -72,7 +73,9 @@ public final class PlannerInputRepository {
     // The parser validates discovery flags for ordinary planning; overdue recovery additionally
     // requires this exact pair to be the current completed ACTIVE publication. Neither proves that
     // a fixture correction was published: progress gets that solely from its last-generation receipt.
-    private SourceState sourceState(Snapshot snapshot, boolean currentPublishedParent) {
+    private SourceState sourceState(Snapshot snapshot, OwnedSyncStore.CanonicalPublication publication,
+                                    long sourceGeneration, OwnedSyncStore.CanonicalSourcePair sourcePair) {
+        boolean currentPublishedParent = publication != null;
         Map<Integer, Boolean> checked = new HashMap<>();
         snapshot.gameweeks().forEach(row -> checked.put(row.id(), row.dataChecked()));
         Map<Integer, Set<Integer>> playersByTeam = new HashMap<>();
@@ -83,8 +86,14 @@ public final class PlannerInputRepository {
                 snapshot.fixturesRead().completedAt(), union(playersByTeam.get(row.homeTeamId()),
                 playersByTeam.get(row.awayTeamId())), currentPublishedParent
                 ? row.finished() ? SourceStatus.FINISHED : SourceStatus.UNFINISHED : SourceStatus.UNKNOWN)).toList();
+        Map<Integer, String> fixtureFingerprints = new HashMap<>();
+        snapshot.fixtures().forEach(row -> fixtureFingerprints.put(row.id(),
+                OwnedSyncStore.sha256(FixtureVerification.verifiedHeader(row))));
         return new SourceState(snapshot.players().stream().map(CatalogueScheduleParser.PlayerRow::id)
-                .collect(java.util.stream.Collectors.toUnmodifiableSet()), fixtures);
+                .collect(java.util.stream.Collectors.toUnmodifiableSet()), fixtures,
+                currentPublishedParent ? sourceGeneration : null,
+                currentPublishedParent ? publication.publicationGeneration() : null,
+                currentPublishedParent ? sourcePair : null, fixtureFingerprints);
     }
 
     private SourceState capturedSnapshot(Season season) {
@@ -111,15 +120,20 @@ public final class PlannerInputRepository {
                 rs.getBoolean("started"), rs.getBoolean("finished"), rs.getBoolean("data_checked"),
                 rs.getTimestamp("captured_at").toInstant(), union(playersByTeam.get(rs.getInt("team_h")),
                 playersByTeam.get(rs.getInt("team_a"))), SourceStatus.UNKNOWN), season.code());
-        return new SourceState(Set.copyOf(playerIds), fixtures);
+        return new SourceState(Set.copyOf(playerIds), fixtures, null, null, null, Map.of());
     }
 
-    private void observeTransitions(Season season, List<Fixture> fixtures) {
+    private void observeTransitions(Season season, SourceState source) {
+        List<Fixture> fixtures = source.fixtures();
         Instant now = clock.instant();
         String sql = """
                 INSERT INTO %s(season_id, season_code, fixture_id, state,
-                    first_finished_observed_at, data_checked_transition_at, last_data_checked, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (season_id, fixture_id) DO UPDATE SET
+                    first_finished_observed_at, finished_parent_generation,
+                    finished_parent_publication_generation,
+                    finished_parent_bootstrap_payload_id, finished_parent_fixtures_payload_id,
+                    finished_parent_source_fingerprint, finished_parent_fixture_fingerprint,
+                    finished_parent_finished, data_checked_transition_at, last_data_checked, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (season_id, fixture_id) DO UPDATE SET
                     state=CASE WHEN %s.state='VERIFIED' THEN %s.state ELSE EXCLUDED.state END,
                     next_due_at=CASE WHEN %s.first_finished_observed_at IS NULL
                         AND EXCLUDED.first_finished_observed_at IS NOT NULL
@@ -132,6 +146,13 @@ public final class PlannerInputRepository {
                         THEN NULL ELSE %s.last_error END,
                     first_finished_observed_at=COALESCE(%s.first_finished_observed_at,
                         EXCLUDED.first_finished_observed_at),
+                    finished_parent_generation=EXCLUDED.finished_parent_generation,
+                    finished_parent_publication_generation=EXCLUDED.finished_parent_publication_generation,
+                    finished_parent_bootstrap_payload_id=EXCLUDED.finished_parent_bootstrap_payload_id,
+                    finished_parent_fixtures_payload_id=EXCLUDED.finished_parent_fixtures_payload_id,
+                    finished_parent_source_fingerprint=EXCLUDED.finished_parent_source_fingerprint,
+                    finished_parent_fixture_fingerprint=EXCLUDED.finished_parent_fixture_fingerprint,
+                    finished_parent_finished=EXCLUDED.finished_parent_finished,
                     data_checked_transition_at=CASE
                         WHEN NOT %s.last_data_checked AND EXCLUDED.last_data_checked
                         THEN EXCLUDED.data_checked_transition_at
@@ -148,12 +169,28 @@ public final class PlannerInputRepository {
                 // follows it is about how long we have been trying, so a backlog fixture seen for
                 // the first time at cutover still gets the normal follow-up cadence.
                 fixture.finished() ? timestamp(now) : null,
+                fixture.recoverySourceStatus() == SourceStatus.FINISHED
+                        ? source.currentPublishedSourceGeneration() : null,
+                fixture.recoverySourceStatus() == SourceStatus.FINISHED
+                        ? source.currentPublishedPublicationGeneration() : null,
+                fixture.recoverySourceStatus() == SourceStatus.FINISHED && source.canonicalSourcePair() != null
+                        ? source.canonicalSourcePair().bootstrap().id() : null,
+                fixture.recoverySourceStatus() == SourceStatus.FINISHED && source.canonicalSourcePair() != null
+                        ? source.canonicalSourcePair().fixtures().id() : null,
+                fixture.recoverySourceStatus() == SourceStatus.FINISHED && source.canonicalSourcePair() != null
+                        ? source.canonicalSourcePair().fingerprint() : null,
+                fixture.recoverySourceStatus() == SourceStatus.FINISHED
+                        ? source.fixtureFingerprints().get(fixture.id()) : null,
+                fixture.recoverySourceStatus() == SourceStatus.FINISHED && source.canonicalSourcePair() != null,
                 fixture.dataChecked() ? timestamp(fixture.sourceObservedAt()) : null,
                 fixture.dataChecked(), timestamp(now)
         }).toList();
         jdbc.batchUpdate(sql, observations, new int[] {
                 java.sql.Types.INTEGER, java.sql.Types.VARCHAR, java.sql.Types.INTEGER, java.sql.Types.VARCHAR,
-                java.sql.Types.TIMESTAMP, java.sql.Types.TIMESTAMP, java.sql.Types.BOOLEAN, java.sql.Types.TIMESTAMP
+                java.sql.Types.TIMESTAMP, java.sql.Types.BIGINT, java.sql.Types.BIGINT,
+                java.sql.Types.BIGINT, java.sql.Types.BIGINT, java.sql.Types.VARCHAR, java.sql.Types.VARCHAR,
+                java.sql.Types.BOOLEAN,
+                java.sql.Types.TIMESTAMP, java.sql.Types.BOOLEAN, java.sql.Types.TIMESTAMP
         });
     }
 
@@ -276,7 +313,12 @@ public final class PlannerInputRepository {
         return new PlannerSnapshot(playerIds, fixtures, progress, false);
     }
 
-    private record OwnedSnapshot(long generation, Snapshot snapshot) { }
+    private record OwnedSnapshot(long generation, Snapshot snapshot,
+                                 OwnedSyncStore.CanonicalSourcePair sourcePair) { }
 
-    private record SourceState(Set<Integer> playerIds, List<Fixture> fixtures) { }
+    private record SourceState(Set<Integer> playerIds, List<Fixture> fixtures,
+                               Long currentPublishedSourceGeneration,
+                               Long currentPublishedPublicationGeneration,
+                               OwnedSyncStore.CanonicalSourcePair canonicalSourcePair,
+                               Map<Integer, String> fixtureFingerprints) { }
 }
