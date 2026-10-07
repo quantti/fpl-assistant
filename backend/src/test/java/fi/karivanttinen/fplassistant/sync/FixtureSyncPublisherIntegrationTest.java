@@ -537,7 +537,7 @@ class FixtureSyncPublisherIntegrationTest {
             Future<?> correction = executor.submit(() -> correctionTx.executeWithoutResult(status -> {
                 correctionRepository.lockAndValidatePlayingSeason(SEASON);
                 assertThat(correctionRepository.invalidateCorrections(List.of(corrected), clock.instant()))
-                        .isOne();
+                        .containsExactly(98101);
                 correctionJdbc.update("UPDATE fixture SET stats=?::jsonb WHERE season_id=? AND id=?",
                         corrected.fields().get("stats"), SEASON.id(), corrected.id());
                 correctionWritten.countDown();
@@ -643,20 +643,20 @@ class FixtureSyncPublisherIntegrationTest {
                     "[ { \"a\": [ { \"value\": 90, \"element\": 98202 } ],"
                             + " \"h\": [ { \"value\": 90, \"element\": 98201 } ],"
                             + " \"identifier\": \"minutes\" } ]");
-            assertThat(repository.invalidateCorrections(List.of(reordered), clock.instant())).isZero();
+            assertThat(repository.invalidateCorrections(List.of(reordered), clock.instant())).isEmpty();
 
             FixtureRow corrected = fixture(true, 2,
                     "[{\"identifier\":\"minutes\",\"h\":[{\"element\":98201,\"value\":89}],"
                             + "\"a\":[{\"element\":98202,\"value\":90}]}]");
-            int changed = repository.invalidateCorrections(List.of(corrected), clock.instant());
-            Map<String, Object> row = jdbc.queryForMap("SELECT state, observation, observation_generation,"
+            Set<Integer> changed = repository.invalidateCorrections(List.of(corrected), clock.instant());
+            Map<String, Object> row = jdbc.queryForMap("SELECT state, observation::text observation, observation_generation,"
                     + " current_verified_generation, last_verified_generation, verified_header,"
                     + " verified_stats_fingerprint, last_verified_at, next_due_at FROM "
                     + TABLES.fixtureSync() + " WHERE fixture_id=98101");
-            assertThat(changed).isOne();
+            assertThat(changed).containsExactly(98101);
             assertThat(row.get("state")).isEqualTo("VERIFYING");
-            assertThat(row.get("observation")).isNull();
-            assertThat(row.get("observation_generation")).isNull();
+            assertThat(FixtureObservationCodec.decode((String) row.get("observation")).coherent()).isFalse();
+            assertThat(row.get("observation_generation")).isEqualTo(row.get("last_verified_generation"));
             assertThat(row.get("current_verified_generation")).isNull();
             assertThat(row.get("last_verified_generation")).isNotNull();
             assertThat(row.get("verified_header")).isEqualTo(verifiedHeader);

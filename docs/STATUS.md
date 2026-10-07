@@ -1,5 +1,31 @@
 # Status — Phase 1
 
+## PR #152 CI season-collision repair (local, 2026-10-06)
+
+CI run [37414896787](https://github.com/quantti/fpl-assistant/actions/runs/37414896787) completed 1,466 tests with one failure: `ScheduleOwnershipInvalidationIntegrationTest` tried to insert id 29027 with code `2026-27`, already seeded as id 27 by `TapasSeed.ensureOwnedSyncCaptureSeason`. The test now keeps that shared seed, uses its own season id 29196/code `2196-97`, and localizes only this class's in-memory bootstrap deadlines and fixture kickoffs to 2196/2197. Its frozen clock, recovery day and persisted capture source frame use the same future season. Teardown asserts the owned season is removed and id 27 remains. The focused class passes **1/1** on the disposable `localhost:55432` database. This is test isolation only: no runtime source, shared fixture resource or Tapas schema changed. The absent private-PFS cleanup error in the CI log was secondary to setup aborting; no generic cleanup guard was needed. No full-suite run or CI rerun; the repaired changes remain local and fresh head CI is pending. No production query/activation, commit or push.
+
+## Owned sync — schedule correction ownership repair (local)
+
+Schedule invalidation now preserves the observation/generation pair as its ownership marker and sets
+`observation.coherent=false`, matching history-correction invalidation. It revokes only the current
+verification, leaves `last_verified_generation` as actual-only evidence, and retains consumed recovery
+and typed dependency/transport deadlines. The real `CatalogueScheduleWriter` now queues affected
+fixture verification at the combined schedule source floor inside its fenced publication callback;
+source receipts, core/captured nodes, invalidation and queue insertion roll back together.
+
+The regression uses class-private `fpl_schown_*` owned and capture tables. It covers a first-pending
+observation over retained legacy PFS, an unchanged schedule publication as a no-op, a two-club/team/
+kickoff/header change, failed callback rollback, OFF masking without a prior verified generation, two
+fresh complete observations before a new receipt, optional-component masking, and source-header removal
+leaving no current verification or ACTIVE rows. Focused classes passed
+individually on guarded `localhost:55432`: `ScheduleOwnershipInvalidationIntegrationTest` **1/1**,
+`FixtureSyncPublisherIntegrationTest` **17/17**, `CatalogueScheduleWriterIntegrationTest` **13/13**,
+and `OwnedMatchdayEndToEndIntegrationTest` **5/5** (**36 total**). No full suite, production query,
+production activation, Fly action, commit or push. Separate review and branch CI for this follow-up
+remain pending; PR #151 is the baseline only (post-push review clear, CI pending). This is not Task 4
+acceptance: the separate ACTIVE 10/10 driver is the next bounded unit. Recovery Tasks 2c/3 remain
+locally implemented and pending their acceptance CI.
+
 ## Authorised recovery PR merges (2026-10-05)
 
 The owner authorised merging the three open PRs: #146 → `bc2b284`, #147 → `f9afbef`, #148 → `ff6b8df`. Squash-history documentation conflicts were resolved in isolated worktrees; the new #147/#148 heads retained identical whole trees to their previously reviewed heads, passed independent post-push review and fresh PR CI. All three master deployment workflows passed, most recently [37318935908](https://github.com/quantti/fpl-assistant/actions/runs/37318935908). The read-only postflight at 14:45:46 UTC confirmed persisted and configured OFF83, health UP, zero active runs/unresolved exchanges and database size 169,258,131 bytes. No ACTIVE run, writer reactivation or manual deploy was performed. Task 2b was excluded from these merges and remains a separate feature change.
