@@ -170,8 +170,12 @@ class OwnedMatchdayEndToEndIntegrationTest {
         publishSchedule(harness, clock);
         observeTwice(harness, fpl, DELAYED, clock);
         assertVerified(DELAYED);
-        assertThat(lastTwoReads(DELAYED)).satisfies(reads ->
-                assertThat(reads.get(1).started()).isAfterOrEqualTo(reads.get(0).finished().plus(Duration.ofMinutes(10))));
+        assertThat(lastTwoReads(DELAYED)).satisfies(reads -> {
+            assertThat(reads.get(1).started()).isAfterOrEqualTo(
+                    reads.get(0).finished().plus(Duration.ofMinutes(10)));
+            assertThat(reads.get(0).started()).isAfterOrEqualTo(reads.get(0).sourceFloor());
+            assertThat(reads.get(1).started()).isAfterOrEqualTo(reads.get(1).sourceFloor());
+        });
 
         watchdog.check(SEASON.code());
         watchdog.deliver();
@@ -527,9 +531,12 @@ class OwnedMatchdayEndToEndIntegrationTest {
         observe(restarted, INDEPENDENT);
         assertVerified(INDEPENDENT);
         assertThat(currentGeneration(INDEPENDENT)).isGreaterThan(changedPendingGeneration);
-        assertThat(lastTwoReads(INDEPENDENT)).satisfies(reads ->
-                assertThat(reads.get(1).started()).isAfterOrEqualTo(
-                        reads.get(0).finished().plus(Duration.ofMinutes(10))));
+        assertThat(lastTwoReads(INDEPENDENT)).satisfies(reads -> {
+            assertThat(reads.get(1).started()).isAfterOrEqualTo(
+                    reads.get(0).finished().plus(Duration.ofMinutes(10)));
+            assertThat(reads.get(0).started()).isAfterOrEqualTo(reads.get(0).sourceFloor());
+            assertThat(reads.get(1).started()).isAfterOrEqualTo(reads.get(1).sourceFloor());
+        });
         assertThat(jdbc.queryForObject("SELECT expected_goals FROM player_fixture_stats "
                 + "WHERE season_id=? AND fixture_id=? AND player_id=?", BigDecimal.class,
                 SEASON.id(), INDEPENDENT, historyPlayer)).isEqualByComparingTo("0.99");
@@ -669,10 +676,12 @@ class OwnedMatchdayEndToEndIntegrationTest {
     }
 
     private static List<Read> lastTwoReads(int fixture) {
-        return jdbc.query("SELECT source_read_started_at,source_read_finished_at FROM " + TABLES.run()
+        return jdbc.query("SELECT requested_source_after,source_read_started_at,source_read_finished_at FROM "
+                        + TABLES.run()
                         + " WHERE publication_key=? AND state='COMPLETED' AND source_read_started_at IS NOT NULL"
                         + " ORDER BY generation DESC LIMIT 2",
-                (rs, row) -> new Read(rs.getTimestamp(1).toInstant(), rs.getTimestamp(2).toInstant()),
+                (rs, row) -> new Read(rs.getTimestamp(2).toInstant(), rs.getTimestamp(3).toInstant(),
+                        rs.getTimestamp(1).toInstant()),
                 "fixture:" + fixture).reversed();
     }
 
@@ -771,7 +780,7 @@ class OwnedMatchdayEndToEndIntegrationTest {
         }
     }
 
-    private record Read(Instant started, Instant finished) { }
+    private record Read(Instant started, Instant finished, Instant sourceFloor) { }
 
     private static final class FakeFpl implements CatalogueScheduleDispatcher.Fetch,
             HistoryFixtureDispatcher.Fetch {

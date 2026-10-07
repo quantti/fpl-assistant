@@ -115,6 +115,7 @@ public final class FixtureSyncRepository {
         RetryState state = lockRetryState(seasonCode, fixtureId);
         if (state == null) return dueAt;
         Instant selected = later(later(dueAt, state.dependencyRetryAt()), state.transportRetryAt());
+        if (state.dueReason() == null) selected = later(selected, state.nextDueAt());
         String boundedError = boundedError(error);
         jdbc.update("UPDATE " + tables.fixtureSync()
                         + " SET next_due_at=?, due_reason='DEPENDENCY', dependency_retry_at=?, last_error=?, updated_at=?"
@@ -181,7 +182,11 @@ public final class FixtureSyncRepository {
         var decision = SharedFixtureRecoveryPolicy.decide(input);
         if (decision.action() == Action.NORMAL) return normalAdmission(state, season, fixtureId, now);
         if (decision.action() == Action.WAIT_FOR_PARENT) {
-            return new AttemptAdmission(false, null, true);
+            Instant persistedGate = state.dueReason() == DueReason.POLICY ? null : state.nextDue();
+            Instant parentWait = laterFuture(now, persistedGate, state.transportRetryAt());
+            parentWait = laterFuture(now, parentWait, state.dependencyRetryAt());
+            parentWait = laterFuture(now, parentWait, cooldown);
+            return new AttemptAdmission(false, parentWait, true);
         }
         if (decision.action() == Action.WAIT_FOR_SOURCE) {
             return new AttemptAdmission(false, null);
@@ -304,13 +309,15 @@ public final class FixtureSyncRepository {
     private RetryState lockRetryState(String seasonCode, int fixtureId) {
         return jdbc.query("""
                 SELECT season_id, first_finished_observed_at, attempt_count, alert_state,
-                       recovery_started_at, recovery_until, transport_retry_at, dependency_retry_at
+                       recovery_started_at, recovery_until, transport_retry_at, dependency_retry_at,
+                       next_due_at, due_reason
                 FROM %s WHERE season_code=? AND fixture_id=? FOR UPDATE
                 """.formatted(tables.fixtureSync()), (rs, row) -> new RetryState(rs.getInt("season_id"),
                 instant(rs.getTimestamp("first_finished_observed_at")), rs.getInt("attempt_count"),
                 rs.getString("alert_state"), instant(rs.getTimestamp("recovery_started_at")),
                 instant(rs.getTimestamp("recovery_until")), instant(rs.getTimestamp("transport_retry_at")),
-                instant(rs.getTimestamp("dependency_retry_at"))),
+                instant(rs.getTimestamp("dependency_retry_at")), instant(rs.getTimestamp("next_due_at")),
+                dueReason(rs.getString("due_reason"))),
                 seasonCode, fixtureId).stream().findFirst().orElse(null);
     }
 
@@ -686,7 +693,7 @@ public final class FixtureSyncRepository {
                                 Instant recoveryUntil, Long currentVerifiedGeneration, Long lastVerifiedGeneration) { }
     private record RetryState(int seasonId, Instant firstFinished, int attempts, String alertState,
                               Instant recoveryStartedAt, Instant recoveryUntil, Instant transportRetryAt,
-                              Instant dependencyRetryAt) { }
+                              Instant dependencyRetryAt, Instant nextDueAt, DueReason dueReason) { }
 
     public record StoredObservation(Observation observation, long generation) {
         public StoredObservation { Objects.requireNonNull(observation); }
