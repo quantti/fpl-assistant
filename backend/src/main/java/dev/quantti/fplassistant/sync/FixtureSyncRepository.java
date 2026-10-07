@@ -557,11 +557,13 @@ public final class FixtureSyncRepository {
 
     /**
      * Revokes current verification when a schedule publication changes fixture identity/state.
+     * The observation/generation pair remains as the ownership marker, with its baseline incoherent;
+     * returned fixture ids are queued for fresh verification by the same publication callback.
      * This method starts no transaction and is intended to run before the core fixture upsert in
      * {@link CatalogueScheduleWriter}'s already-fenced publication callback.
      */
-    public int invalidateCorrections(Collection<FixtureRow> incoming, Instant updatedAt) {
-        int invalidated = 0;
+    public Set<Integer> invalidateCorrections(Collection<FixtureRow> incoming, Instant updatedAt) {
+        Set<Integer> invalidated = new HashSet<>();
         for (FixtureRow row : incoming) {
             List<StoredFixture> baselines = jdbc.query("""
                     SELECT f.id, f.season_id, f.gameweek, f.code, f.team_h, f.team_a,
@@ -590,8 +592,8 @@ public final class FixtureSyncRepository {
                     || !FixtureStatsFingerprint.of(row).equals(
                             FixtureStatsFingerprint.of(baselines.getFirst().stats())));
             if (changed) {
-                invalidated += jdbc.update("UPDATE " + tables.fixtureSync() + " SET state=?, "
-                                + "observation=NULL, observation_generation=NULL, "
+                int updated = jdbc.update("UPDATE " + tables.fixtureSync() + " SET state=?, "
+                                + "observation=jsonb_set(observation, '{coherent}', 'false'::jsonb), "
                                 + "current_verified_generation=NULL, first_verified_at=NULL, "
                                 + "expected_participants=NULL, received_participants=NULL, "
                                 + "source_read_started_at=NULL, source_read_finished_at=NULL, "
@@ -599,9 +601,10 @@ public final class FixtureSyncRepository {
                                 + "updated_at=? WHERE season_id=? AND fixture_id=?",
                         correctionState(row), timestamp(updatedAt), timestamp(updatedAt),
                         row.seasonId(), row.id());
+                if (updated == 1) invalidated.add(row.id());
             }
         }
-        return invalidated;
+        return Set.copyOf(invalidated);
     }
 
     private static String correctionState(FixtureRow row) {

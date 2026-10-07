@@ -199,14 +199,17 @@ class OwnedMatchdayEndToEndIntegrationTest {
                 .findFirst().orElseThrow();
         assertThat(invalidated.verifiedAt()).isNull();
         assertThat(invalidated.completedCorrections()).isEmpty();
-        var invalidatedPlan = new AdaptiveMatchdayPlanner(clock).plan(new AdaptiveMatchdayPlanner.Input(
-                SEASON.code(), 1, List.of(new AdaptiveMatchdayPlanner.Fixture(DELAYED, 1,
-                clock.instant().minus(Duration.ofHours(1)), true, true, false, clock.instant(), Set.of(1))),
-                List.of(invalidated), List.of()));
-        assertThat(invalidatedPlan.dueSlots()).anySatisfy(slot -> {
-            assertThat(slot.kind()).isEqualTo(AdaptiveMatchdayPlanner.WorkKind.FIXTURE_VERIFICATION);
-            assertThat(slot.fixtureIds()).contains(DELAYED);
-        });
+        Map<String, Object> scheduleCorrection = jdbc.queryForMap("SELECT generation,state,due_at,"
+                + "requested_source_after FROM " + TABLES.run()
+                + " WHERE kind='FIXTURE_VERIFICATION' AND publication_key=? AND state='PENDING' "
+                + "ORDER BY generation DESC LIMIT 1", "fixture:" + DELAYED);
+        assertThat(scheduleCorrection.get("state")).isEqualTo("PENDING");
+        assertThat(((Number) scheduleCorrection.get("generation")).longValue()).isGreaterThan(oldGeneration);
+        Timestamp scheduleSourceFinished = jdbc.queryForObject("SELECT source_read_finished_at FROM "
+                + TABLES.receipt() + " WHERE season=? AND publication_key=?", Timestamp.class,
+                SEASON.code(), CatalogueScheduleWriter.FIXTURE_SOURCE_RECEIPT_KEY);
+        assertThat(((Timestamp) scheduleCorrection.get("requested_source_after")).toInstant())
+                .isAfterOrEqualTo(scheduleSourceFinished.toInstant());
 
         observeTwice(harness, fpl, DELAYED, clock);
         assertThat(currentGeneration(DELAYED)).isGreaterThan(oldGeneration);
