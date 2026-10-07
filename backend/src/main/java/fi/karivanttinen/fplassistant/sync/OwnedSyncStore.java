@@ -243,10 +243,16 @@ public final class OwnedSyncStore {
                   AND r.source_read_finished_at<=p.published_at
                   AND p.source_read_started_at=r.source_read_started_at
                   AND p.source_read_finished_at=r.source_read_finished_at
-                  AND p.source_pair_fingerprint IS NOT NULL
-                  AND p.source_bootstrap_sha256 IS NOT NULL AND p.source_fixtures_sha256 IS NOT NULL
+                  AND p.source_pair_fingerprint ~ '^[0-9a-f]{64}$'
+                  AND p.source_bootstrap_sha256 ~ '^[0-9a-f]{64}$'
+                  AND p.source_fixtures_sha256 ~ '^[0-9a-f]{64}$'
                   AND b.run_generation=f.run_generation AND b.run_generation=?
+                  AND b.read_started_at<=b.read_finished_at AND f.read_started_at<=f.read_finished_at
                   AND b.read_finished_at<=p.published_at AND f.read_finished_at<=p.published_at
+                  AND r.source_read_started_at<=b.read_started_at
+                  AND r.source_read_started_at<=f.read_started_at
+                  AND r.source_read_finished_at>=b.read_finished_at
+                  AND r.source_read_finished_at>=f.read_finished_at
                   %s
                 ORDER BY p.published_at DESC, r.generation DESC
                 LIMIT 1
@@ -300,7 +306,8 @@ public final class OwnedSyncStore {
                            p.source_bootstrap_sha256, p.source_fixtures_sha256,
                            p.source_pair_fingerprint,
                            (b.id IS NOT NULL AND f.id IS NOT NULL AND br.generation IS NOT NULL
-                               AND fr.generation IS NOT NULL AND b.run_generation=f.run_generation) AS source_valid
+                               AND fr.generation IS NOT NULL AND b.run_generation=f.run_generation)
+                               AS source_valid
                     FROM %s r
                     JOIN %s p ON p.season=r.season AND p.publication_key=r.publication_key
                         AND p.latest_generation=r.generation
@@ -330,10 +337,32 @@ public final class OwnedSyncStore {
                       AND r.runtime_mode='ACTIVE' AND r.runtime_epoch=?
                       AND ((r.coalescing_key=? AND r.publication_key=?)
                            OR (r.coalescing_key=? AND r.publication_key=?))
-                    ORDER BY p.published_at DESC, r.generation DESC
-                    LIMIT 1
+                      AND r.state='COMPLETED' AND r.completed_at IS NOT NULL
+                      AND r.completed_at<=p.published_at AND p.published_at IS NOT NULL
+                      AND p.published_at<=?
+                      AND r.source_read_started_at IS NOT NULL AND r.source_read_finished_at IS NOT NULL
+                      AND r.source_read_started_at<=r.source_read_finished_at
+                      AND r.source_read_finished_at<=p.published_at
+                      AND p.source_read_started_at=r.source_read_started_at
+                      AND p.source_read_finished_at=r.source_read_finished_at
+                      AND b.id IS NOT NULL AND f.id IS NOT NULL
+                      AND br.generation IS NOT NULL AND fr.generation IS NOT NULL
+                      AND b.run_generation=f.run_generation
+                      AND b.read_started_at<=b.read_finished_at AND f.read_started_at<=f.read_finished_at
+                      AND b.read_finished_at<=p.published_at AND f.read_finished_at<=p.published_at
+                      AND r.source_read_started_at<=b.read_started_at
+                      AND r.source_read_started_at<=f.read_started_at
+                      AND r.source_read_finished_at>=b.read_finished_at
+                      AND r.source_read_finished_at>=f.read_finished_at
+                      AND p.source_pair_fingerprint ~ '^[0-9a-f]{64}$'
+                      AND p.source_bootstrap_sha256 ~ '^[0-9a-f]{64}$'
+                      AND p.source_fixtures_sha256 ~ '^[0-9a-f]{64}$'
                 ), proof AS (
-                    SELECT c.generation,
+                    SELECT c.generation, c.published_at, c.source_generation,
+                           c.source_bootstrap_payload_id, c.source_fixtures_payload_id,
+                           c.source_bootstrap_read_started_at, c.source_bootstrap_read_finished_at,
+                           c.source_fixtures_read_started_at, c.source_fixtures_read_finished_at,
+                           c.source_bootstrap_sha256, c.source_fixtures_sha256, c.source_pair_fingerprint,
                            c.latest_generation=c.generation AND c.state='COMPLETED'
                                AND c.completed_at IS NOT NULL AND c.published_at IS NOT NULL
                                AND c.completed_at<=c.published_at AND c.published_at<=?
@@ -359,12 +388,31 @@ public final class OwnedSyncStore {
                     LEFT JOIN %s fs ON fs.season_code=c.season AND fs.fixture_id=?
                 )
                 SELECT current_published,
-                       current_published AND COALESCE(fixture_finished,FALSE) AS fixture_finished
+                       current_published AND COALESCE(fixture_finished,FALSE) AS fixture_finished,
+                       source_generation, source_bootstrap_payload_id, source_fixtures_payload_id,
+                       source_bootstrap_read_started_at, source_bootstrap_read_finished_at,
+                       source_fixtures_read_started_at, source_fixtures_read_finished_at,
+                       source_bootstrap_sha256, source_fixtures_sha256, source_pair_fingerprint
                 FROM proof
+                ORDER BY published_at DESC, generation DESC
                 """.formatted(tables.run(), tables.receipt(), tables.payload(), tables.payload(),
-                tables.run(), tables.run(), tables.fixtureSync()), (rs, row) ->
-                new CanonicalParentEvidence(rs.getBoolean("current_published"),
-                        rs.getBoolean("fixture_finished")),
+                tables.run(), tables.run(), tables.fixtureSync()), (rs, row) -> {
+                    long sourceGeneration = rs.getLong("source_generation");
+                    CanonicalSourcePair sourcePair = CanonicalSourcePair.of(
+                            new CanonicalSourcePayload(rs.getLong("source_bootstrap_payload_id"), sourceGeneration,
+                                    EndpointKind.BOOTSTRAP_STATIC,
+                                    new SourceRead(rs.getTimestamp("source_bootstrap_read_started_at").toInstant(),
+                                            rs.getTimestamp("source_bootstrap_read_finished_at").toInstant()),
+                                    rs.getString("source_bootstrap_sha256")),
+                            new CanonicalSourcePayload(rs.getLong("source_fixtures_payload_id"), sourceGeneration,
+                                    EndpointKind.FIXTURES,
+                                    new SourceRead(rs.getTimestamp("source_fixtures_read_started_at").toInstant(),
+                                            rs.getTimestamp("source_fixtures_read_finished_at").toInstant()),
+                                    rs.getString("source_fixtures_sha256")));
+                    return new CanonicalParentCandidate(sourcePair, rs.getString("source_pair_fingerprint"),
+                            new CanonicalParentEvidence(rs.getBoolean("current_published"),
+                                    rs.getBoolean("fixture_finished")));
+                },
                 CatalogueScheduleDispatcher.CATALOGUE_PRICE_COALESCING_KEY,
                 CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY,
                 CatalogueScheduleDispatcher.SCHEDULE_COALESCING_KEY,
@@ -378,8 +426,10 @@ public final class OwnedSyncStore {
                 CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY,
                 CatalogueScheduleDispatcher.SCHEDULE_COALESCING_KEY,
                 CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY,
-                timestamp(now), fixtureId)
-                .stream().findFirst().orElse(CanonicalParentEvidence.MISSING);
+                timestamp(now), timestamp(now), fixtureId)
+                .stream().filter(CanonicalParentCandidate::fingerprintMatches)
+                .map(CanonicalParentCandidate::evidence)
+                .findFirst().orElse(CanonicalParentEvidence.MISSING);
     }
 
     /** Executes a non-run runtime mutation while holding the durable activation fence. */
@@ -1500,6 +1550,7 @@ public final class OwnedSyncStore {
             if (latest != null && latest >= run.generation) {
                 throw new StaleGenerationException(run.generation, latest, run.season, run.publicationKey);
             }
+            if (sourcePair != null) requireCanonicalPairCoverage(read, sourcePair);
             ConditionalPublication<T> outcome = Objects.requireNonNull(callback.get(), "callback outcome");
             CanonicalSourcePair persistedSourcePair = null;
             if (outcome.published() && sourcePair != null) {
@@ -1542,6 +1593,16 @@ public final class OwnedSyncStore {
                     timestamp(completedAt), timestamp(completedAt), run.generation);
             return outcome.value();
         });
+    }
+
+    private static void requireCanonicalPairCoverage(SourceRead publicationRead, CanonicalSourcePair pair) {
+        SourceRead persistedRead = postgresTimestampPrecision(publicationRead);
+        if (persistedRead.startedAt().isAfter(pair.bootstrap().read().startedAt())
+                || persistedRead.startedAt().isAfter(pair.fixtures().read().startedAt())
+                || persistedRead.finishedAt().isBefore(pair.bootstrap().read().finishedAt())
+                || persistedRead.finishedAt().isBefore(pair.fixtures().read().finishedAt())) {
+            throw new IllegalArgumentException("Publication source interval must cover both canonical reads");
+        }
     }
 
     private CanonicalSourcePair lockAndMarkCanonicalSourcePublished(LockedRun publicationRun,
@@ -2300,6 +2361,13 @@ public final class OwnedSyncStore {
 
     record CanonicalParentEvidence(boolean currentPublished, boolean fixtureFinished) {
         static final CanonicalParentEvidence MISSING = new CanonicalParentEvidence(false, false);
+    }
+
+    private record CanonicalParentCandidate(CanonicalSourcePair sourcePair, String persistedFingerprint,
+                                            CanonicalParentEvidence evidence) {
+        private boolean fingerprintMatches() {
+            return sourcePair.fingerprint().equals(persistedFingerprint);
+        }
     }
 
     public record FixtureDependencyManifest(long runGeneration, String season, String runtimeMode,

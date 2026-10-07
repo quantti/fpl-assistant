@@ -384,7 +384,8 @@ public final class HistoryFixtureDispatcher {
             FixtureSyncRepository.AttemptAdmission admission = publicationEnabled
                     ? publisher.admitAttempt(season, fixtureId, parent.fixtureFinished()
                             ? SourceStatus.FINISHED : SourceStatus.UNKNOWN) : null;
-            if (admission != null && admission.parentRefreshRequired() && !parent.currentPublished()) {
+            if (admission != null && admission.parentRefreshRequired()) {
+                // UNKNOWN also covers a current publication without this fixture's exact finish marker.
                 queueMissingCanonicalDependencies(season);
             }
             boolean missingHistories = !current.get().missingPlayerIds().isEmpty();
