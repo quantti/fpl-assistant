@@ -920,6 +920,117 @@ class HistoryFixtureDispatcherIntegrationTest {
     }
 
     @Test
+    void blockedManifestWakesCurrentPublishedParentWithoutItsExactFinishMarker() {
+        TrackingJdbcTemplate tracking = new TrackingJdbcTemplate(jdbc.getDataSource());
+        OwnedSyncStore.RuntimeFence fence = new PlannerRuntimeRepository(jdbc, tx, clock, TABLES)
+                .activate(SEASON.code(), OwnedSyncMode.ACTIVE);
+        store = new OwnedSyncStore(tracking, tx, clock, TABLES, fence);
+        dispatcher = new HistoryFixtureDispatcher(store, publisher(), fetch, clock);
+        seedCurrentCanonicalPair();
+        assertThat(store.currentCanonicalParentEvidence(SEASON.code(), 21, clock.instant()))
+                .isEqualTo(new OwnedSyncStore.CanonicalParentEvidence(true, false));
+
+        FixtureManifestSeed seed = seedBlockedManifest();
+        jdbc.update("INSERT INTO season(id, code, name, start_date, end_date, is_current)"
+                        + " VALUES (27, '2026-27', 'Runtime test', '2026-08-21', '2027-05-23', false)"
+                        + " ON CONFLICT (id) DO NOTHING");
+        Instant transportDue = clock.instant().plus(Duration.ofHours(1));
+        jdbc.update("INSERT INTO " + TABLES.fixtureSync()
+                        + "(season_id,season_code,fixture_id,state,first_finished_observed_at,next_due_at,"
+                        + "due_reason,transport_retry_at,alert_state,updated_at)"
+                        + " VALUES (27,'2026-27',21,'WAITING_STATS',?,?,'TRANSPORT',?,'DAILY_ONLY',?)",
+                java.sql.Timestamp.from(clock.instant().minus(Duration.ofHours(13))),
+                java.sql.Timestamp.from(transportDue), java.sql.Timestamp.from(transportDue),
+                java.sql.Timestamp.from(clock.instant()));
+        Instant canonicalFloor = clock.instant().plus(Duration.ofHours(2));
+        store.enqueue(SyncKind.CATALOGUE_SCHEDULE, SEASON.code(),
+                CatalogueScheduleDispatcher.CATALOGUE_PRICE_COALESCING_KEY,
+                CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY, canonicalFloor);
+        store.enqueue(SyncKind.CATALOGUE_SCHEDULE, SEASON.code(),
+                CatalogueScheduleDispatcher.SCHEDULE_COALESCING_KEY,
+                CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY, canonicalFloor);
+        dispatcher.enqueuePersistedFixtureRetry(SEASON, 21, clock.instant());
+
+        tracking.resetBodyQueries();
+        DispatchResult blocked = dispatcher.process(acquire(seed.generation()), SEASON);
+
+        assertThat(blocked.outcome()).isEqualTo(Outcome.RETRY_SCHEDULED);
+        assertThat(blocked.failure()).isEqualTo(FailureType.HTTP_DEFERRED);
+        assertThat(fetch.endpoints).isEmpty();
+        assertThat(tracking.bodyQueries()).isZero();
+        assertThat(tracking.snapshot().bodyValues()).isZero();
+        assertThat(jdbc.queryForObject("""
+                SELECT count(DISTINCT coalescing_key) FROM %s
+                WHERE kind='CATALOGUE_SCHEDULE' AND coalescing_key IN (?,?) AND state='PENDING'
+                  AND due_at=? AND requested_source_after=? AND runtime_mode='ACTIVE' AND runtime_epoch=?
+                  AND lease_token IS NULL
+                """.formatted(TABLES.run()), Integer.class,
+                CatalogueScheduleDispatcher.CATALOGUE_PRICE_COALESCING_KEY,
+                CatalogueScheduleDispatcher.SCHEDULE_COALESCING_KEY,
+                java.sql.Timestamp.from(clock.instant()), java.sql.Timestamp.from(canonicalFloor), fence.epoch()))
+                .isEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT next_due_at FROM " + TABLES.fixtureSync()
+                + " WHERE season_id=27 AND fixture_id=21", java.sql.Timestamp.class).toInstant())
+                .isEqualTo(transportDue);
+    }
+
+    @Test
+    void blockedManifestCreatesBothCanonicalJobsWhenNeitherExists() {
+        TrackingJdbcTemplate tracking = new TrackingJdbcTemplate(jdbc.getDataSource());
+        OwnedSyncStore.RuntimeFence fence = new PlannerRuntimeRepository(jdbc, tx, clock, TABLES)
+                .activate(SEASON.code(), OwnedSyncMode.ACTIVE);
+        store = new OwnedSyncStore(tracking, tx, clock, TABLES, fence);
+        dispatcher = new HistoryFixtureDispatcher(store, publisher(), fetch, clock);
+        seedCurrentCanonicalPair();
+        assertThat(store.currentCanonicalParentEvidence(SEASON.code(), 21, clock.instant()))
+                .isEqualTo(new OwnedSyncStore.CanonicalParentEvidence(true, false));
+
+        FixtureManifestSeed seed = seedBlockedManifest();
+        jdbc.update("INSERT INTO season(id, code, name, start_date, end_date, is_current)"
+                        + " VALUES (27, '2026-27', 'Runtime test', '2026-08-21', '2027-05-23', false)"
+                        + " ON CONFLICT (id) DO NOTHING");
+        Instant transportDue = clock.instant().plus(Duration.ofHours(1));
+        jdbc.update("INSERT INTO " + TABLES.fixtureSync()
+                        + "(season_id,season_code,fixture_id,state,first_finished_observed_at,next_due_at,"
+                        + "due_reason,transport_retry_at,alert_state,updated_at)"
+                        + " VALUES (27,'2026-27',21,'WAITING_STATS',?,?,'TRANSPORT',?,'DAILY_ONLY',?)",
+                java.sql.Timestamp.from(clock.instant().minus(Duration.ofHours(13))),
+                java.sql.Timestamp.from(transportDue), java.sql.Timestamp.from(transportDue),
+                java.sql.Timestamp.from(clock.instant()));
+        dispatcher.enqueuePersistedFixtureRetry(SEASON, 21, clock.instant());
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
+                + " WHERE kind='CATALOGUE_SCHEDULE' AND coalescing_key IN (?,?)"
+                + " AND state IN ('PENDING','LEASED')", Integer.class,
+                CatalogueScheduleDispatcher.CATALOGUE_PRICE_COALESCING_KEY,
+                CatalogueScheduleDispatcher.SCHEDULE_COALESCING_KEY)).isZero();
+
+        tracking.resetBodyQueries();
+        DispatchResult blocked = dispatcher.process(acquire(seed.generation()), SEASON);
+
+        assertThat(blocked.outcome()).isEqualTo(Outcome.RETRY_SCHEDULED);
+        assertThat(blocked.failure()).isEqualTo(FailureType.HTTP_DEFERRED);
+        assertThat(fetch.endpoints).isEmpty();
+        assertThat(tracking.bodyQueries()).isZero();
+        assertThat(tracking.snapshot().bodyValues()).isZero();
+        assertThat(jdbc.queryForObject("""
+                SELECT count(DISTINCT coalescing_key) FROM %s
+                WHERE kind='CATALOGUE_SCHEDULE' AND coalescing_key IN (?,?) AND state='PENDING'
+                  AND due_at=? AND requested_source_after=? AND runtime_mode='ACTIVE' AND runtime_epoch=?
+                  AND lease_token IS NULL
+                """.formatted(TABLES.run()), Integer.class,
+                CatalogueScheduleDispatcher.CATALOGUE_PRICE_COALESCING_KEY,
+                CatalogueScheduleDispatcher.SCHEDULE_COALESCING_KEY,
+                java.sql.Timestamp.from(clock.instant()), java.sql.Timestamp.from(clock.instant()), fence.epoch()))
+                .isEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT next_due_at FROM " + TABLES.fixtureSync()
+                + " WHERE season_id=27 AND fixture_id=21", java.sql.Timestamp.class).toInstant())
+                .isEqualTo(transportDue);
+        assertThat(jdbc.queryForObject("SELECT transport_retry_at FROM " + TABLES.fixtureSync()
+                + " WHERE season_id=27 AND fixture_id=21", java.sql.Timestamp.class).toInstant())
+                .isEqualTo(transportDue);
+    }
+
+    @Test
     void blockedManifestRetryKeepsAdmissionCooldownOnFixtureRunDue() {
         activateStore(OwnedSyncMode.ACTIVE);
         jdbc.update("INSERT INTO season(id, code, name, start_date, end_date, is_current)"

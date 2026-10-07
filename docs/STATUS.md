@@ -1,5 +1,17 @@
 # Status — Phase 1
 
+## PR #153 CI — canonical pair source-span repair (local, 2026-10-07)
+
+CI run [37666002969](https://github.com/quantti/fpl-assistant/actions/runs/37666002969) ran 1,530 tests and failed the combined ACTIVE acceptance. The physical fixture rows showed **six VERIFIED and four still unverified**, but the exact-source oracle rejected the canonical parent evidence for all ten: a price-lane publication attached a bootstrap/fixtures pair while its run and receipt ended at bootstrap completion, before the fixture read ended. This is a publication-evidence defect, not a reason to relax queue bounds or fairness; the 10/10 criterion remains unmet and must not be claimed.
+
+The local repair makes a price publication's run/receipt interval span both canonical reads when it attaches that pair, while `source:bootstrap-static` and daily-price `captured_at` remain tied to bootstrap alone. Store publication now rejects a source span that fails to cover either exact payload interval; both ACTIVE proof paths require ordered, known, non-future payload reads, exact current-epoch publication/receipt/source identities, valid source hashes and a recomputed source-pair fingerprint; parent lookup skips an ineligible newest candidate to find an older still-valid one. A blocked UNKNOWN fixture with a current publication but no exact finish marker now wakes the existing coalesced canonical queue while preserving source floors and avoiding HTTP/body hydration; a valid FINISHED marker still avoids redundant parent work.
+
+Ten focused test methods passed individually on guarded `localhost:55432`: 2 catalogue-dispatch, 5 fixture-recovery, and 3 history/fixture cases, including actual pending-donor price publication, bootstrap-only daily capture time, interval rejection/fallback, missing-marker wake, and valid-finished no-requeue. No Task 4 acceptance rerun, full suite, production query, activation, Fly action, commit or push was performed; PR #153's full CI remains red until a separate acceptance rerun.
+
+The two review-warning follow-ups then passed exactly **3 method-filtered tests** on the disposable `localhost:55432` DB: 2 history/fixture wake variants and 1 fixture-recovery proof. The existing-job variant proves due time advances from future to now while preserving the future `requested_source_after`; the absent-job variant proves both current ACTIVE-epoch canonical jobs are created, with no body reads or HTTP and the transport retry deadline intact. These assertions distinguish the prior `parentRefreshRequired && !parent.currentPublished()` guard: the seeded parent is published but lacks its exact finish marker, so without wake the existing jobs stay future and absent jobs stay absent.
+
+The interval-only proof restores the exact stored publication fingerprint after separately proving that a corrupted fingerprint skips the newer source-pair frame. With valid hashes, payload roles and source identity retained, shortening only the run/receipt interval excludes that publication through both `currentPublishedCanonicalPair` and `currentCanonicalParentEvidence`, falling back to the older valid parent without body reads. The initial 10-fixture acceptance remains nondispositive (six VERIFIED, four unverified); this test-only follow-up is not Task 4 acceptance. No full suite or Task 4 acceptance rerun, production query, activation, Fly action, commit or push was performed.
+
 ## PR #152 CI season-collision repair (local, 2026-10-06)
 
 CI run [37414896787](https://github.com/quantti/fpl-assistant/actions/runs/37414896787) completed 1,466 tests with one failure: `ScheduleOwnershipInvalidationIntegrationTest` tried to insert id 29027 with code `2026-27`, already seeded as id 27 by `TapasSeed.ensureOwnedSyncCaptureSeason`. The test now keeps that shared seed, uses its own season id 29196/code `2196-97`, and localizes only this class's in-memory bootstrap deadlines and fixture kickoffs to 2196/2197. Its frozen clock, recovery day and persisted capture source frame use the same future season. Teardown asserts the owned season is removed and id 27 remains. The focused class passes **1/1** on the disposable `localhost:55432` database. This is test isolation only: no runtime source, shared fixture resource or Tapas schema changed. The absent private-PFS cleanup error in the CI log was secondary to setup aborting; no generic cleanup guard was needed. No full-suite run or CI rerun; the repaired changes remain local and fresh head CI is pending. No production query/activation, commit or push.
@@ -22,9 +34,10 @@ individually on guarded `localhost:55432`: `ScheduleOwnershipInvalidationIntegra
 `FixtureSyncPublisherIntegrationTest` **17/17**, `CatalogueScheduleWriterIntegrationTest` **13/13**,
 and `OwnedMatchdayEndToEndIntegrationTest` **5/5** (**36 total**). No full suite, production query,
 production activation, Fly action, commit or push. Separate review and branch CI for this follow-up
-remain pending; PR #151 is the baseline only (post-push review clear, CI pending). This is not Task 4
-acceptance: the separate ACTIVE 10/10 driver is the next bounded unit. Recovery Tasks 2c/3 remain
-locally implemented and pending their acceptance CI.
+remain pending; PR #151 is the baseline only (post-push review clear, CI pending). This is not Task 4 acceptance: at this checkpoint the separate ACTIVE 10/10 driver remained a
+later bounded unit. Its subsequent PR #153 CI attempt and local canonical-pair repair are recorded
+at the top of this status. Recovery Tasks 2c/3 remain locally implemented and pending their
+acceptance CI.
 
 ## Authorised recovery PR merges (2026-10-05)
 
