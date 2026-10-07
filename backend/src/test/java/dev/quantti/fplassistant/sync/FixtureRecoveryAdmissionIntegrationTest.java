@@ -1000,6 +1000,153 @@ class FixtureRecoveryAdmissionIntegrationTest {
     }
 
     @Test
+    void canonicalPublicationMustCoverBothReadsAndFallsBackToAnOlderEligibleParent() throws Exception {
+        clock.set(NOW.minusSeconds(20));
+        var fence = activate();
+        store = new OwnedSyncStore(jdbc, tx, clock, TABLES, fence);
+        var sourceRun = store.enqueue(SyncKind.CATALOGUE_SCHEDULE, SEASON.code(),
+                CatalogueScheduleDispatcher.SCHEDULE_COALESCING_KEY,
+                CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY, clock.instant());
+        var priceRun = store.enqueue(SyncKind.CATALOGUE_SCHEDULE, SEASON.code(),
+                CatalogueScheduleDispatcher.CATALOGUE_PRICE_COALESCING_KEY,
+                CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY, clock.instant());
+        Lease sourceLease = store.acquire("split-source", Duration.ofMinutes(5)).orElseThrow();
+        clock.set(NOW);
+        SourceRead bootstrapRead = new SourceRead(NOW.minusSeconds(10), NOW.minusMillis(9_900));
+        SourceRead fixturesRead = new SourceRead(NOW.minusSeconds(8), NOW.minusMillis(7_900));
+        byte[] bootstrapBody = resource("bootstrap-static.json");
+        byte[] fixturesBody = resource("fixtures.json");
+        long bootstrapId = store.stage(sourceLease, Endpoint.bootstrap(), bootstrapRead,
+                Validation.valid(), bootstrapBody);
+        long fixturesId = store.stage(sourceLease, Endpoint.fixtures(), fixturesRead,
+                Validation.valid(), fixturesBody);
+        var sourcePair = OwnedSyncStore.CanonicalSourcePair.from(
+                new StagedPayload(bootstrapId, sourceRun.generation(), OwnedSyncStore.EndpointKind.BOOTSTRAP_STATIC,
+                        bootstrapRead, ValidationState.VALID, null, bootstrapBody),
+                new StagedPayload(fixturesId, sourceRun.generation(), OwnedSyncStore.EndpointKind.FIXTURES,
+                        fixturesRead, ValidationState.VALID, null, fixturesBody));
+        SourceRead combinedRead = new SourceRead(bootstrapRead.startedAt(), fixturesRead.finishedAt());
+        store.publish(sourceLease, combinedRead, List.of(bootstrapRead, fixturesRead), sourcePair, () -> null);
+        jdbc.update("INSERT INTO season(id, code, name, start_date, end_date, is_current)"
+                        + " VALUES (27, '2026-27', 'Runtime test', '2026-08-21', '2027-05-23', false)"
+                        + " ON CONFLICT (id) DO NOTHING");
+        new PlannerInputRepository(jdbc, store, TABLES, CAPTURED, clock).load(SEASON);
+        assertThat(store.currentCanonicalParentEvidence(SEASON.code(), FIXTURE_ID, clock.instant()))
+                .isEqualTo(new OwnedSyncStore.CanonicalParentEvidence(true, true));
+
+        Lease priceLease = store.acquire("price-publisher", Duration.ofMinutes(5)).orElseThrow();
+        assertThat(priceLease.generation()).isEqualTo(priceRun.generation());
+        store.publish(priceLease, combinedRead, List.of(bootstrapRead, fixturesRead), sourcePair, () -> null);
+        String originalFingerprint = jdbc.queryForObject("SELECT source_pair_fingerprint FROM " + TABLES.receipt()
+                + " WHERE season=? AND publication_key=?", String.class,
+                SEASON.code(), CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY);
+        assertThat(originalFingerprint).isEqualTo(sourcePair.fingerprint());
+        PayloadReadProbe proofProbe = new PayloadReadProbe(jdbc.getDataSource());
+        store = new OwnedSyncStore(proofProbe, tx, clock, TABLES, fence);
+
+        jdbc.update("UPDATE " + TABLES.receipt()
+                        + " SET source_pair_fingerprint=repeat('a',64) WHERE season=? AND publication_key=?",
+                SEASON.code(), CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY);
+        assertThat(jdbc.queryForObject("SELECT source_pair_fingerprint FROM " + TABLES.receipt()
+                + " WHERE season=? AND publication_key=?", String.class,
+                SEASON.code(), CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY)).isEqualTo("a".repeat(64));
+        assertThat(store.currentPublishedCanonicalPair(SEASON.code(), sourcePair, clock.instant()))
+                .contains(new OwnedSyncStore.CanonicalPublication(sourceRun.generation(),
+                        sourceRun.generation(), sourcePair.fingerprint()));
+        assertThat(store.currentCanonicalParentEvidence(SEASON.code(), FIXTURE_ID, clock.instant()))
+                .isEqualTo(new OwnedSyncStore.CanonicalParentEvidence(true, true));
+
+        jdbc.update("UPDATE " + TABLES.receipt()
+                        + " SET source_pair_fingerprint=? WHERE season=? AND publication_key=?",
+                originalFingerprint, SEASON.code(), CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY);
+        assertThat(jdbc.queryForObject("SELECT source_pair_fingerprint FROM " + TABLES.receipt()
+                + " WHERE season=? AND publication_key=?", String.class,
+                SEASON.code(), CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY)).isEqualTo(originalFingerprint);
+        assertThat(store.currentPublishedCanonicalPair(SEASON.code(), sourcePair, clock.instant()))
+                .contains(new OwnedSyncStore.CanonicalPublication(sourceRun.generation(),
+                        priceRun.generation(), originalFingerprint));
+
+        jdbc.update("UPDATE " + TABLES.run()
+                        + " SET source_read_finished_at=? WHERE generation=?",
+                timestamp(bootstrapRead.finishedAt()), priceRun.generation());
+        jdbc.update("UPDATE " + TABLES.receipt()
+                        + " SET source_read_finished_at=? WHERE season=? AND publication_key=?",
+                timestamp(bootstrapRead.finishedAt()), SEASON.code(),
+                CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY);
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM %s r
+                JOIN %s p ON p.season=r.season AND p.latest_generation=r.generation
+                JOIN %s b ON b.id=p.source_bootstrap_payload_id
+                JOIN %s f ON f.id=p.source_fixtures_payload_id
+                WHERE r.generation=? AND p.source_pair_fingerprint=?
+                  AND p.source_bootstrap_payload_id=? AND p.source_fixtures_payload_id=?
+                  AND p.source_bootstrap_sha256=? AND p.source_fixtures_sha256=?
+                  AND r.source_read_started_at=p.source_read_started_at
+                  AND r.source_read_finished_at=p.source_read_finished_at
+                  AND p.source_read_started_at=b.read_started_at
+                  AND p.source_read_finished_at=b.read_finished_at
+                  AND p.source_fixtures_read_started_at=f.read_started_at
+                  AND p.source_fixtures_read_finished_at=f.read_finished_at
+                  AND b.endpoint_kind='BOOTSTRAP_STATIC' AND f.endpoint_kind='FIXTURES'
+                  AND b.validation_state='VALID' AND f.validation_state='VALID'
+                  AND b.source_published AND f.source_published
+                  AND p.source_read_finished_at < f.read_finished_at
+                """.formatted(TABLES.run(), TABLES.receipt(), TABLES.payload(), TABLES.payload()),
+                Integer.class, priceRun.generation(), originalFingerprint, bootstrapId, fixturesId,
+                sourcePair.bootstrap().sha256(), sourcePair.fixtures().sha256())).isOne();
+        assertThat(store.currentPublishedCanonicalPair(SEASON.code(), sourcePair, clock.instant()))
+                .contains(new OwnedSyncStore.CanonicalPublication(sourceRun.generation(),
+                        sourceRun.generation(), sourcePair.fingerprint()));
+        assertThat(store.currentCanonicalParentEvidence(SEASON.code(), FIXTURE_ID, clock.instant()))
+                .isEqualTo(new OwnedSyncStore.CanonicalParentEvidence(true, true));
+        assertThat(proofProbe.snapshot().attempts()).isZero();
+
+        jdbc.update("UPDATE " + TABLES.receipt()
+                        + " SET source_fixtures_sha256=repeat('a',64) WHERE season=? AND publication_key=?",
+                SEASON.code(), CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY);
+        assertThat(store.currentPublishedCanonicalPair(SEASON.code(), sourcePair, clock.instant())).isEmpty();
+        assertThat(store.currentCanonicalParentEvidence(SEASON.code(), FIXTURE_ID, clock.instant()))
+                .isEqualTo(OwnedSyncStore.CanonicalParentEvidence.MISSING);
+        jdbc.update("UPDATE " + TABLES.receipt()
+                        + " SET source_fixtures_sha256=NULL WHERE season=? AND publication_key=?",
+                SEASON.code(), CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY);
+        assertThat(store.currentCanonicalParentEvidence(SEASON.code(), FIXTURE_ID, clock.instant()))
+                .isEqualTo(OwnedSyncStore.CanonicalParentEvidence.MISSING);
+    }
+
+    @Test
+    void publicationRejectsACombinedReadThatEndsBeforeTheFixturePayload() throws Exception {
+        clock.set(NOW.minusSeconds(20));
+        var fence = activate();
+        store = new OwnedSyncStore(jdbc, tx, clock, TABLES, fence);
+        var run = store.enqueue(SyncKind.CATALOGUE_SCHEDULE, SEASON.code(),
+                CatalogueScheduleDispatcher.SCHEDULE_COALESCING_KEY,
+                CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY, clock.instant());
+        Lease lease = store.acquire("short-publication", Duration.ofMinutes(5)).orElseThrow();
+        clock.set(NOW);
+        SourceRead bootstrapRead = new SourceRead(NOW.minusSeconds(10), NOW.minusMillis(9_900));
+        SourceRead fixturesRead = new SourceRead(NOW.minusSeconds(8), NOW.minusMillis(7_900));
+        byte[] bootstrapBody = resource("bootstrap-static.json");
+        byte[] fixturesBody = resource("fixtures.json");
+        long bootstrapId = store.stage(lease, Endpoint.bootstrap(), bootstrapRead, Validation.valid(), bootstrapBody);
+        long fixturesId = store.stage(lease, Endpoint.fixtures(), fixturesRead, Validation.valid(), fixturesBody);
+        var sourcePair = OwnedSyncStore.CanonicalSourcePair.from(
+                new StagedPayload(bootstrapId, run.generation(), OwnedSyncStore.EndpointKind.BOOTSTRAP_STATIC,
+                        bootstrapRead, ValidationState.VALID, null, bootstrapBody),
+                new StagedPayload(fixturesId, run.generation(), OwnedSyncStore.EndpointKind.FIXTURES,
+                        fixturesRead, ValidationState.VALID, null, fixturesBody));
+
+        assertThatThrownBy(() -> store.publish(lease, bootstrapRead,
+                List.of(bootstrapRead, fixturesRead), sourcePair, () -> null))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("cover both canonical reads");
+        assertThat(jdbc.queryForObject("SELECT latest_generation FROM " + TABLES.receipt()
+                + " WHERE season=? AND publication_key=?", Long.class, SEASON.code(),
+                CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY)).isNull();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.payload()
+                + " WHERE source_published", Integer.class)).isZero();
+    }
+
+    @Test
     void freshUnfinishedParentObservationClearsAnOlderFinishedProof() throws Exception {
         var fence = seedCurrentCanonicalParent();
         seedFixture(NOW.minus(Duration.ofHours(13)), NOW.plus(Duration.ofDays(1)), "DAILY_ONLY");

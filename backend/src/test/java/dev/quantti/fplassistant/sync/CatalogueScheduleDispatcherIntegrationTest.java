@@ -347,6 +347,13 @@ class CatalogueScheduleDispatcherIntegrationTest {
         Lease[] leases = acquireBoth();
         Lease schedule = forGeneration(leases, cycle.schedule().generation());
         Lease price = forGeneration(leases, cycle.cataloguePrice().generation());
+        SourceRead bootstrapRead = new SourceRead(Instant.parse("2026-09-13T01:30:00.100Z"),
+                Instant.parse("2026-09-13T01:30:00.200Z"));
+        SourceRead fixturesRead = new SourceRead(Instant.parse("2026-09-13T01:30:02.200Z"),
+                Instant.parse("2026-09-13T01:30:02.300Z"));
+        fetch.results.add(new Response(200, bootstrap, null, bootstrapRead));
+        fetch.results.add(new Response(200, fixtures, null, fixturesRead));
+        clock.set(fixturesRead.finishedAt().plusMillis(1));
 
         assertThat(dispatcher.process(schedule, SEASON)).isEqualTo(Outcome.RETRY_SCHEDULED);
         assertThat(jdbc.queryForObject("SELECT state FROM " + OWNED.run()
@@ -373,6 +380,26 @@ class CatalogueScheduleDispatcherIntegrationTest {
         assertThat(store.currentPublishedCanonicalPair(SEASON.code(), sourcePair, clock.instant()))
                 .contains(new OwnedSyncStore.CanonicalPublication(schedule.generation(),
                         cycle.cataloguePrice().generation(), sourcePair.fingerprint()));
+        SourceRead publicationRead = new SourceRead(bootstrapRead.startedAt(), fixturesRead.finishedAt());
+        assertThat(jdbc.queryForObject("SELECT source_read_started_at FROM " + OWNED.run()
+                + " WHERE generation=?", java.sql.Timestamp.class, cycle.cataloguePrice().generation()).toInstant())
+                .isEqualTo(publicationRead.startedAt());
+        assertThat(jdbc.queryForObject("SELECT source_read_finished_at FROM " + OWNED.run()
+                + " WHERE generation=?", java.sql.Timestamp.class, cycle.cataloguePrice().generation()).toInstant())
+                .isEqualTo(publicationRead.finishedAt());
+        assertThat(jdbc.queryForObject("SELECT source_read_started_at FROM " + OWNED.receipt()
+                + " WHERE season=? AND publication_key=?", java.sql.Timestamp.class,
+                SEASON.code(), CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY).toInstant())
+                .isEqualTo(publicationRead.startedAt());
+        assertThat(jdbc.queryForObject("SELECT source_read_finished_at FROM " + OWNED.receipt()
+                + " WHERE season=? AND publication_key=?", java.sql.Timestamp.class,
+                SEASON.code(), CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY).toInstant())
+                .isEqualTo(publicationRead.finishedAt());
+        assertThat(store.sourceReceipt(SEASON.code(), CatalogueScheduleWriter.SHARED_TEAM_SOURCE_RECEIPT_KEY))
+                .contains(bootstrapRead);
+        assertThat(jdbc.queryForObject("SELECT MIN(captured_at) FROM " + CAPTURED.dailyPrice()
+                + " WHERE season=?", java.sql.Timestamp.class, SEASON.code()).toInstant())
+                .isEqualTo(bootstrapRead.finishedAt());
         var planned = new PlannerInputRepository(jdbc, store, OWNED, CAPTURED, clock).load(SEASON);
         var finishedFixture = planned.fixtures().stream().filter(fixture -> fixture.id() == 21)
                 .findFirst().orElseThrow();
