@@ -1,5 +1,7 @@
 package dev.quantti.fplassistant.sync;
 
+import java.util.List;
+
 import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
@@ -38,6 +40,18 @@ public final class OwnedSyncSchema {
                 )
                 """.formatted(tables.receipt(), tables.receipt()));
         migrateReceiptIdentity();
+        for (String column : List.of(
+                "source_bootstrap_payload_id BIGINT",
+                "source_fixtures_payload_id BIGINT",
+                "source_bootstrap_read_started_at TIMESTAMPTZ",
+                "source_bootstrap_read_finished_at TIMESTAMPTZ",
+                "source_fixtures_read_started_at TIMESTAMPTZ",
+                "source_fixtures_read_finished_at TIMESTAMPTZ",
+                "source_bootstrap_sha256 VARCHAR(64)",
+                "source_fixtures_sha256 VARCHAR(64)",
+                "source_pair_fingerprint VARCHAR(64)")) {
+            jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s".formatted(tables.receipt(), column));
+        }
         jdbc.execute("""
                 CREATE TABLE IF NOT EXISTS %s (
                     generation BIGINT PRIMARY KEY DEFAULT nextval('%s_generation_seq'),
@@ -121,6 +135,7 @@ public final class OwnedSyncSchema {
                     read_finished_at TIMESTAMPTZ NOT NULL,
                     validation_state VARCHAR(20) NOT NULL,
                     validation_error VARCHAR(1000),
+                    source_published BOOLEAN NOT NULL DEFAULT FALSE,
                     body BYTEA NOT NULL,
                     staged_at TIMESTAMPTZ NOT NULL,
                     CONSTRAINT ck_%s_validation CHECK (validation_state IN ('UNCHECKED', 'VALID', 'INVALID')),
@@ -142,6 +157,41 @@ public final class OwnedSyncSchema {
                     OR (endpoint_kind = 'ELEMENT_SUMMARY' AND event_id IS NULL
                         AND player_id IS NOT NULL AND player_id > 0))
                 """.formatted(tables.payload(), tables.payload()));
+        jdbc.execute("""
+                CREATE OR REPLACE FUNCTION fpl_owned_payload_source_guard()
+                RETURNS trigger LANGUAGE plpgsql AS $$
+                BEGIN
+                    IF (OLD.source_published AND (
+                            NEW.run_generation IS DISTINCT FROM OLD.run_generation
+                            OR NEW.endpoint_kind IS DISTINCT FROM OLD.endpoint_kind
+                            OR NEW.event_id IS DISTINCT FROM OLD.event_id
+                            OR NEW.player_id IS DISTINCT FROM OLD.player_id
+                            OR NEW.read_started_at IS DISTINCT FROM OLD.read_started_at
+                            OR NEW.read_finished_at IS DISTINCT FROM OLD.read_finished_at
+                            OR NEW.body IS DISTINCT FROM OLD.body
+                            OR NEW.validation_state IS DISTINCT FROM 'VALID'
+                            OR NEW.source_published IS DISTINCT FROM TRUE))
+                        OR NEW.run_generation IS DISTINCT FROM OLD.run_generation
+                        OR NEW.endpoint_kind IS DISTINCT FROM OLD.endpoint_kind
+                        OR NEW.event_id IS DISTINCT FROM OLD.event_id
+                        OR NEW.player_id IS DISTINCT FROM OLD.player_id
+                        OR NEW.read_started_at IS DISTINCT FROM OLD.read_started_at
+                        OR NEW.read_finished_at IS DISTINCT FROM OLD.read_finished_at
+                        OR NEW.body IS DISTINCT FROM OLD.body
+                        OR (OLD.validation_state='VALID' AND NEW.validation_state IS DISTINCT FROM 'VALID')
+                        OR (OLD.validation_state='INVALID' AND NEW.validation_state='VALID') THEN
+                        NEW.validation_state := 'INVALID';
+                        NEW.source_published := OLD.source_published;
+                        NEW.validation_error := 'Source payload was mutated or invalidated';
+                    END IF;
+                    RETURN NEW;
+                END
+                $$
+                """);
+        jdbc.execute("DROP TRIGGER IF EXISTS trg_owned_payload_source_guard ON %s".formatted(tables.payload()));
+        jdbc.execute("CREATE TRIGGER trg_owned_payload_source_guard BEFORE UPDATE ON %s "
+                .formatted(tables.payload())
+                + "FOR EACH ROW EXECUTE FUNCTION fpl_owned_payload_source_guard()");
         jdbc.execute("CREATE INDEX IF NOT EXISTS idx_%s_run ON %s(run_generation)"
                 .formatted(tables.payload(), tables.payload()));
         jdbc.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_%s_id_run ON %s(id, run_generation)"
@@ -174,6 +224,7 @@ public final class OwnedSyncSchema {
                     bootstrap_payload_id BIGINT NOT NULL,
                     fixtures_payload_id BIGINT NOT NULL,
                     live_payload_id BIGINT NOT NULL,
+                    event_id INTEGER NOT NULL,
                     required_player_ids INTEGER[] NOT NULL,
                     source_floor TIMESTAMPTZ NOT NULL,
                     CONSTRAINT fk_%s_run FOREIGN KEY (run_generation)
@@ -185,13 +236,25 @@ public final class OwnedSyncSchema {
                     CONSTRAINT fk_%s_live FOREIGN KEY (live_payload_id, run_generation)
                         REFERENCES %s(id, run_generation) ON DELETE CASCADE,
                     CONSTRAINT ck_%s_required_players CHECK (
-                        fpl_sync_required_ids_valid(required_player_ids))
+                        fpl_sync_required_ids_valid(required_player_ids)),
+                    CONSTRAINT ck_%s_event_id CHECK (event_id > 0)
                 )
                 """.formatted(tables.fixtureDependencyManifest(), tables.fixtureDependencyManifest(),
                 tables.run(), tables.fixtureDependencyManifest(), tables.payload(),
                 tables.fixtureDependencyManifest(), tables.payload(),
                 tables.fixtureDependencyManifest(), tables.payload(),
-                tables.fixtureDependencyManifest()));
+                tables.fixtureDependencyManifest(), tables.fixtureDependencyManifest()));
+        jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS event_id INTEGER"
+                .formatted(tables.fixtureDependencyManifest()));
+        jdbc.update("UPDATE %s m SET event_id=p.event_id FROM %s p WHERE p.id=m.live_payload_id "
+                        .formatted(tables.fixtureDependencyManifest(), tables.payload())
+                + "AND p.run_generation=m.run_generation AND m.event_id IS NULL");
+        jdbc.execute("ALTER TABLE %s ALTER COLUMN event_id SET NOT NULL"
+                .formatted(tables.fixtureDependencyManifest()));
+        jdbc.execute("ALTER TABLE %s DROP CONSTRAINT IF EXISTS ck_%s_event_id"
+                .formatted(tables.fixtureDependencyManifest(), tables.fixtureDependencyManifest()));
+        jdbc.execute("ALTER TABLE %s ADD CONSTRAINT ck_%s_event_id CHECK (event_id > 0)"
+                .formatted(tables.fixtureDependencyManifest(), tables.fixtureDependencyManifest()));
 
         jdbc.execute("""
                 CREATE TABLE IF NOT EXISTS %s (
@@ -237,6 +300,8 @@ public final class OwnedSyncSchema {
                     last_verified_at TIMESTAMPTZ,
                     first_verified_at TIMESTAMPTZ,
                     first_finished_observed_at TIMESTAMPTZ,
+                    finished_parent_generation BIGINT REFERENCES %s(generation),
+                    finished_parent_publication_generation BIGINT REFERENCES %s(generation),
                     data_checked_transition_at TIMESTAMPTZ,
                     last_data_checked BOOLEAN NOT NULL DEFAULT FALSE,
                     expected_participants INTEGER,
@@ -262,8 +327,10 @@ public final class OwnedSyncSchema {
                     CONSTRAINT ck_%s_verified CHECK (
                         (state = 'VERIFIED') = (current_verified_generation IS NOT NULL))
                 )
-                """.formatted(tables.fixtureSync(), tables.run(), tables.run(), tables.run(),
-                tables.fixtureSync(), tables.fixtureSync(), tables.fixtureSync(), tables.fixtureSync()));
+                """.formatted(tables.fixtureSync(), tables.run(), tables.run(), tables.run(), tables.run(),
+                tables.run(), tables.fixtureSync(), tables.fixtureSync(), tables.fixtureSync(), tables.fixtureSync()));
+        jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS source_published BOOLEAN NOT NULL DEFAULT FALSE"
+                .formatted(tables.payload()));
         jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS verified_header VARCHAR(64)"
                 .formatted(tables.fixtureSync()));
         jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS verified_stats_fingerprint VARCHAR(64)"
@@ -273,6 +340,20 @@ public final class OwnedSyncSchema {
         jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS first_verified_at TIMESTAMPTZ"
                 .formatted(tables.fixtureSync()));
         jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS first_finished_observed_at TIMESTAMPTZ"
+                .formatted(tables.fixtureSync()));
+        jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS finished_parent_generation BIGINT REFERENCES %s(generation)"
+                .formatted(tables.fixtureSync(), tables.run()));
+        jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS finished_parent_publication_generation BIGINT REFERENCES %s(generation)"
+                .formatted(tables.fixtureSync(), tables.run()));
+        jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS finished_parent_bootstrap_payload_id BIGINT"
+                .formatted(tables.fixtureSync()));
+        jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS finished_parent_fixtures_payload_id BIGINT"
+                .formatted(tables.fixtureSync()));
+        jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS finished_parent_source_fingerprint VARCHAR(64)"
+                .formatted(tables.fixtureSync()));
+        jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS finished_parent_fixture_fingerprint VARCHAR(64)"
+                .formatted(tables.fixtureSync()));
+        jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS finished_parent_finished BOOLEAN"
                 .formatted(tables.fixtureSync()));
         jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS data_checked_transition_at TIMESTAMPTZ"
                 .formatted(tables.fixtureSync()));
