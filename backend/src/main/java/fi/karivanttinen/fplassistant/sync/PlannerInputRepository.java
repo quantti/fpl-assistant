@@ -3,6 +3,7 @@ package fi.karivanttinen.fplassistant.sync;
 import java.sql.Timestamp;
 import java.time.Clock;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -15,10 +16,13 @@ import org.springframework.jdbc.core.JdbcTemplate;
 
 import fi.karivanttinen.fplassistant.sync.AdaptiveMatchdayPlanner.Fixture;
 import fi.karivanttinen.fplassistant.sync.AdaptiveMatchdayPlanner.FixtureProgress;
+import fi.karivanttinen.fplassistant.sync.AdaptiveMatchdayPlanner.RecoveryMetadata;
 import fi.karivanttinen.fplassistant.sync.CatalogueScheduleParser.ReadInterval;
 import fi.karivanttinen.fplassistant.sync.CatalogueScheduleParser.Season;
 import fi.karivanttinen.fplassistant.sync.CatalogueScheduleParser.Snapshot;
 import fi.karivanttinen.fplassistant.sync.CatalogueScheduleParser.SourceDocument;
+import fi.karivanttinen.fplassistant.sync.SharedFixtureRecoveryPolicy.DueReason;
+import fi.karivanttinen.fplassistant.sync.SharedFixtureRecoveryPolicy.SourceStatus;
 
 /** Builds planner input from durable source staging, falling back to the existing FPL captures. */
 public final class PlannerInputRepository {
@@ -40,8 +44,11 @@ public final class PlannerInputRepository {
 
     public PlannerSnapshot load(Season season) {
         Objects.requireNonNull(season);
-        Snapshot fresh = latestOwnedSnapshot(season);
-        SourceState source = fresh == null ? capturedSnapshot(season) : sourceState(fresh);
+        OwnedSnapshot fresh = latestOwnedSnapshot(season);
+        boolean currentPublishedParent = fresh != null && store.isCurrentPublishedCanonicalPair(
+                season.code(), fresh.generation(), clock.instant());
+        SourceState source = fresh == null ? capturedSnapshot(season)
+                : sourceState(fresh.snapshot(), currentPublishedParent);
         store.withinRuntimeFence(() -> {
             observeTransitions(season, source.fixtures());
             return null;
@@ -49,11 +56,12 @@ public final class PlannerInputRepository {
         return new PlannerSnapshot(source.playerIds(), source.fixtures(), progress(season), fresh != null);
     }
 
-    private Snapshot latestOwnedSnapshot(Season season) {
+    private OwnedSnapshot latestOwnedSnapshot(Season season) {
         return store.findInLatestValidPublicPayloadPairs(season.code(), 20, pair -> {
             try {
-                return Optional.of(CatalogueScheduleParser.parse(
-                        season, document(pair.bootstrap()), document(pair.fixtures())));
+                Snapshot snapshot = CatalogueScheduleParser.parse(
+                        season, document(pair.bootstrap()), document(pair.fixtures()));
+                return Optional.of(new OwnedSnapshot(pair.runGeneration(), snapshot));
             } catch (IllegalArgumentException ignored) {
                 // Validation metadata never bypasses the strict parser.
                 return Optional.empty();
@@ -61,7 +69,10 @@ public final class PlannerInputRepository {
         }).orElse(null);
     }
 
-    private SourceState sourceState(Snapshot snapshot) {
+    // The parser validates discovery flags for ordinary planning; overdue recovery additionally
+    // requires this exact pair to be the current completed ACTIVE publication. Neither proves that
+    // a fixture correction was published: progress gets that solely from its last-generation receipt.
+    private SourceState sourceState(Snapshot snapshot, boolean currentPublishedParent) {
         Map<Integer, Boolean> checked = new HashMap<>();
         snapshot.gameweeks().forEach(row -> checked.put(row.id(), row.dataChecked()));
         Map<Integer, Set<Integer>> playersByTeam = new HashMap<>();
@@ -70,7 +81,8 @@ public final class PlannerInputRepository {
         List<Fixture> fixtures = snapshot.fixtures().stream().map(row -> new Fixture(row.id(), row.gameweek(),
                 row.kickoff(), row.started(), row.finished(), checked.getOrDefault(row.gameweek(), false),
                 snapshot.fixturesRead().completedAt(), union(playersByTeam.get(row.homeTeamId()),
-                playersByTeam.get(row.awayTeamId())))).toList();
+                playersByTeam.get(row.awayTeamId())), currentPublishedParent
+                ? row.finished() ? SourceStatus.FINISHED : SourceStatus.UNFINISHED : SourceStatus.UNKNOWN)).toList();
         return new SourceState(snapshot.players().stream().map(CatalogueScheduleParser.PlayerRow::id)
                 .collect(java.util.stream.Collectors.toUnmodifiableSet()), fixtures);
     }
@@ -98,7 +110,7 @@ public final class PlannerInputRepository {
                 rs.getTimestamp("kickoff_time") == null ? null : rs.getTimestamp("kickoff_time").toInstant(),
                 rs.getBoolean("started"), rs.getBoolean("finished"), rs.getBoolean("data_checked"),
                 rs.getTimestamp("captured_at").toInstant(), union(playersByTeam.get(rs.getInt("team_h")),
-                playersByTeam.get(rs.getInt("team_a")))), season.code());
+                playersByTeam.get(rs.getInt("team_a"))), SourceStatus.UNKNOWN), season.code());
         return new SourceState(Set.copyOf(playerIds), fixtures);
     }
 
@@ -150,6 +162,9 @@ public final class PlannerInputRepository {
         return jdbc.query("""
                 SELECT fs.fixture_id, fs.state, fs.first_finished_observed_at, fs.updated_at, fs.attempt_count,
                        fs.next_due_at, fs.first_verified_at, fs.data_checked_transition_at,
+                       fs.due_reason, fs.transport_retry_at, fs.dependency_retry_at, fs.recovery_day,
+                       fs.recovery_started_at, fs.recovery_until,
+                       (SELECT cooldown_until FROM %s WHERE singleton=TRUE) AS cooldown_until,
                        CASE WHEN fs.state='VERIFIED' AND fs.current_verified_generation IS NOT NULL
                                   AND fs.first_verified_at IS NOT NULL
                                   AND publication.latest_generation=fs.current_verified_generation
@@ -167,7 +182,25 @@ public final class PlannerInputRepository {
                                   AND run.source_read_finished_at IS NOT NULL
                                   AND run.source_read_started_at<=run.source_read_finished_at
                                   AND run.source_read_finished_at<=publication.published_at
-                            THEN publication.source_read_started_at END AS completed_source_started_at
+                            THEN publication.source_read_started_at END AS completed_source_started_at,
+                       CASE WHEN recovery_publication.latest_generation=fs.last_verified_generation
+                                  AND recovery_publication.published_at IS NOT NULL
+                                  AND recovery_publication.published_at<=?
+                                  AND recovery_publication.source_read_started_at IS NOT NULL
+                                  AND recovery_publication.source_read_finished_at IS NOT NULL
+                                  AND recovery_publication.source_read_started_at<=recovery_publication.source_read_finished_at
+                                  AND recovery_publication.source_read_finished_at<=recovery_publication.published_at
+                                  AND recovery_run.kind='FIXTURE_VERIFICATION'
+                                  AND recovery_run.state='COMPLETED' AND recovery_run.runtime_mode='ACTIVE'
+                                  AND recovery_run.runtime_epoch>0 AND recovery_run.completed_at IS NOT NULL
+                                  AND recovery_run.completed_at<=recovery_publication.published_at
+                                  AND recovery_run.source_read_started_at IS NOT NULL
+                                  AND recovery_run.source_read_finished_at IS NOT NULL
+                                  AND recovery_run.source_read_started_at<=recovery_run.source_read_finished_at
+                                  AND recovery_run.source_read_finished_at<=recovery_publication.published_at
+                                  AND recovery_run.source_read_started_at=recovery_publication.source_read_started_at
+                                  AND recovery_run.source_read_finished_at=recovery_publication.source_read_finished_at
+                            THEN recovery_publication.published_at END AS recovery_published_at
                 FROM %s fs
                 JOIN season s ON s.id=fs.season_id AND s.code=fs.season_code
                 LEFT JOIN %s publication ON publication.season=fs.season_code
@@ -177,20 +210,36 @@ public final class PlannerInputRepository {
                     AND run.season=fs.season_code
                     AND run.coalescing_key='fixture:' || fs.fixture_id::text
                     AND run.publication_key='fixture:' || fs.fixture_id::text
+                LEFT JOIN %s recovery_publication ON recovery_publication.season=fs.season_code
+                    AND recovery_publication.publication_key='fixture:' || fs.fixture_id::text
+                    AND recovery_publication.latest_generation=fs.last_verified_generation
+                LEFT JOIN %s recovery_run ON recovery_run.generation=fs.last_verified_generation
+                    AND recovery_run.season=fs.season_code
+                    AND recovery_run.coalescing_key='fixture:' || fs.fixture_id::text
+                    AND recovery_run.publication_key='fixture:' || fs.fixture_id::text
                 WHERE fs.season_id=? AND fs.season_code=?
-                """.formatted(owned.fixtureSync(), owned.receipt(), owned.run()), (rs, row) -> {
+                """.formatted(owned.requestState(), owned.fixtureSync(), owned.receipt(), owned.run(),
+                owned.receipt(), owned.run()), (rs, row) -> {
             Instant firstVerified = "VERIFIED".equals(rs.getString("state"))
                     ? instant(rs.getTimestamp("first_verified_at")) : null;
             Instant sourceStarted = instant(rs.getTimestamp("completed_source_started_at"));
             Set<String> completedCorrections = AdaptiveMatchdayPlanner.completedCorrections(firstVerified,
                     instant(rs.getTimestamp("data_checked_transition_at")), sourceStarted);
+            RecoveryMetadata recovery = new RecoveryMetadata(dueReason(rs.getString("due_reason")),
+                    instant(rs.getTimestamp("transport_retry_at")),
+                    instant(rs.getTimestamp("dependency_retry_at")),
+                    instant(rs.getTimestamp("cooldown_until")),
+                    rs.getObject("recovery_day", LocalDate.class),
+                    instant(rs.getTimestamp("recovery_started_at")),
+                    instant(rs.getTimestamp("recovery_until")),
+                    instant(rs.getTimestamp("recovery_published_at")));
             return new FixtureProgress(rs.getInt("fixture_id"),
                     Set.of("WAITING_FINISH", "WAITING_STATS", "VERIFYING").contains(rs.getString("state")),
                     instant(rs.getTimestamp("first_finished_observed_at")),
                     rs.getInt("attempt_count") == 0 ? null : instant(rs.getTimestamp("updated_at")),
                     rs.getInt("attempt_count"), instant(rs.getTimestamp("next_due_at")), firstVerified,
-                    instant(rs.getTimestamp("data_checked_transition_at")), completedCorrections);
-        }, timestamp(now), season.id(), season.code());
+                    instant(rs.getTimestamp("data_checked_transition_at")), completedCorrections, recovery);
+        }, timestamp(now), timestamp(now), season.id(), season.code());
     }
 
     private static SourceDocument document(OwnedSyncStore.StagedPayload payload) {
@@ -203,6 +252,10 @@ public final class PlannerInputRepository {
         if (first != null) result.addAll(first);
         if (second != null) result.addAll(second);
         return Set.copyOf(result);
+    }
+
+    private static DueReason dueReason(String value) {
+        return value == null ? null : DueReason.valueOf(value);
     }
 
     private static Timestamp timestamp(Instant value) { return value == null ? null : Timestamp.from(value); }
@@ -222,6 +275,8 @@ public final class PlannerInputRepository {
                                            List<FixtureProgress> progress) {
         return new PlannerSnapshot(playerIds, fixtures, progress, false);
     }
+
+    private record OwnedSnapshot(long generation, Snapshot snapshot) { }
 
     private record SourceState(Set<Integer> playerIds, List<Fixture> fixtures) { }
 }
