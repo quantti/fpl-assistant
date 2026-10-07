@@ -2,6 +2,9 @@ package dev.quantti.fplassistant.sync;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import java.io.InputStream;
 import java.math.BigDecimal;
@@ -58,6 +61,8 @@ class FixtureRecoveryAdmissionIntegrationTest {
             "fpl_recov_adm_req_state", "fpl_recov_adm_req_attempt", "fpl_recov_adm_fixture",
             "fpl_recov_adm_evidence", "fpl_recov_adm_plan_slot", "fpl_recov_adm_plan_runtime",
             "fpl_recov_adm_fixture_manifest");
+    private static final CatalogueScheduleTables CAPTURED = new CatalogueScheduleTables(
+            "fpl_recov_adm_price_test", "fpl_recov_adm_gw_test", "fpl_recov_adm_capture_fixture_test");
     private static final Season SEASON = new Season(27, "2026-27", LocalDate.of(2026, 8, 21), null);
     private static final int FIXTURE_ID = 21;
     private static final Instant NOW = Instant.parse("2026-09-20T08:00:00Z");
@@ -76,11 +81,13 @@ class FixtureRecoveryAdmissionIntegrationTest {
         TapasSeed.ensureOwnedSyncCaptureSeason(jdbc);
         TapasSeed.ensureOwnedSyncFixture(jdbc);
         new OwnedSyncSchema(jdbc, TABLES).initialize();
+        createCapturedTables();
     }
 
     @AfterAll
     static void cleanUp() {
         if (jdbc == null) return;
+        cleanCapturedRows();
         jdbc.execute("TRUNCATE " + TABLES.playerFixtureEvidence() + ", " + TABLES.fixtureSync() + ", "
                 + TABLES.historyFingerprint() + ", " + TABLES.payload() + ", " + TABLES.run() + ", "
                 + TABLES.receipt() + ", " + TABLES.plannerSlot() + ", " + TABLES.plannerRuntime() + ", "
@@ -89,6 +96,7 @@ class FixtureRecoveryAdmissionIntegrationTest {
 
     @BeforeEach
     void reset() {
+        cleanCapturedRows();
         jdbc.execute("TRUNCATE " + TABLES.playerFixtureEvidence() + ", " + TABLES.fixtureSync() + ", "
                 + TABLES.historyFingerprint() + ", " + TABLES.payload() + ", " + TABLES.run() + ", "
                 + TABLES.receipt() + ", " + TABLES.plannerSlot() + ", " + TABLES.plannerRuntime() + ", "
@@ -124,6 +132,69 @@ class FixtureRecoveryAdmissionIntegrationTest {
                 SEASON, FIXTURE_ID, clock.instant(), SourceStatus.FINISHED));
         assertThat(resumed.admitted()).isTrue();
         assertEpisode(legacyDue);
+    }
+
+    @Test
+    void coordinatorKeepsLegacyDueThenDispatcherReservesAndCoalescesOneRecoveryAttempt() throws Exception {
+        Instant legacyDue = Instant.parse("2026-09-21T02:00:00Z");
+        seedFixture(NOW.minus(Duration.ofHours(13)), legacyDue, "DAILY_ONLY");
+        var fence = seedCurrentCanonicalParent();
+        store = new OwnedSyncStore(jdbc, tx, clock, TABLES, fence);
+        repository = new FixtureSyncRepository(jdbc, TABLES);
+        var publisher = new FixtureSyncPublisher(jdbc, clock, store, repository, TABLES);
+        var fetch = new SingleFailureFetch(new OwnedSyncHttpClient.Response(500, new byte[0], null,
+                new SourceRead(legacyDue, legacyDue), legacyDue.plusSeconds(5)));
+        var histories = new HistoryFixtureDispatcher(store, publisher, fetch, clock);
+        var catalogue = new CatalogueScheduleDispatcher(store, null,
+                (endpoint, attempt) -> { throw new AssertionError("canonical run is delayed in this test"); },
+                clock, false);
+        var realInputs = new PlannerInputRepository(jdbc, store, TABLES, CAPTURED, clock);
+        var inputs = mock(PlannerInputRepository.class);
+        when(inputs.load(any())).thenAnswer(ignored -> {
+            var full = realInputs.load(SEASON);
+            return new PlannerInputRepository.PlannerSnapshot(Set.of(98201),
+                    full.fixtures().stream().filter(fixture -> fixture.id() == FIXTURE_ID).toList(),
+                    full.progress().stream().filter(progress -> progress.fixtureId() == FIXTURE_ID).toList(),
+                    false);
+        });
+        var runtime = new PlannerRuntimeRepository(jdbc, tx, clock, TABLES, fence);
+        var coordinator = new OwnedMatchdayCoordinator(SEASON, new AdaptiveMatchdayPlanner(clock), inputs,
+                runtime, store, catalogue, histories, "recovery-planner");
+
+        coordinator.tick();
+        assertThat(runtime.loadSlots(SEASON.code()).stream().map(row -> row.slot())
+                .filter(slot -> slot.kind() == AdaptiveMatchdayPlanner.WorkKind.FIXTURE_VERIFICATION)).isEmpty();
+        assertThat(jdbc.queryForObject("SELECT next_due_at FROM " + TABLES.fixtureSync()
+                + " WHERE fixture_id=?", java.sql.Timestamp.class, FIXTURE_ID).toInstant()).isEqualTo(legacyDue);
+
+        clock.set(legacyDue);
+        tickTogether(coordinator);
+        var recoverySlot = runtime.loadSlots(SEASON.code()).stream().map(row -> row.slot())
+                .filter(slot -> slot.kind() == AdaptiveMatchdayPlanner.WorkKind.FIXTURE_VERIFICATION)
+                .filter(slot -> slot.fixtureIds().contains(FIXTURE_ID)).toList();
+        assertThat(recoverySlot).hasSize(1);
+        assertThat(recoverySlot.getFirst().dueAt()).isEqualTo(legacyDue);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
+                + " WHERE kind='FIXTURE_VERIFICATION' AND publication_key=? AND state='PENDING'",
+                Integer.class, "fixture:" + FIXTURE_ID)).isOne();
+        jdbc.update("UPDATE " + TABLES.run() + " SET due_at=? WHERE kind='CATALOGUE_SCHEDULE' AND state='PENDING'",
+                timestamp(legacyDue.plus(Duration.ofDays(1))));
+
+        assertThat(coordinator.dispatchOne("legacy-recovery")).isTrue();
+        assertThat(fetch.endpoints).containsExactly(Endpoint.bootstrap());
+        assertThat(jdbc.queryForObject("SELECT recovery_started_at FROM " + TABLES.fixtureSync()
+                + " WHERE fixture_id=?", java.sql.Timestamp.class, FIXTURE_ID).toInstant()).isEqualTo(legacyDue);
+        Instant transportDue = jdbc.queryForObject("SELECT transport_retry_at FROM " + TABLES.fixtureSync()
+                + " WHERE fixture_id=?", java.sql.Timestamp.class, FIXTURE_ID).toInstant();
+        assertThat(transportDue).isAfter(legacyDue);
+
+        clock.advance(Duration.ofMinutes(1));
+        coordinator.tick();
+        assertThat(runtime.loadSlots(SEASON.code()).stream().map(row -> row.slot())
+                .filter(slot -> slot.kind() == AdaptiveMatchdayPlanner.WorkKind.FIXTURE_VERIFICATION)
+                .filter(slot -> slot.fixtureIds().contains(FIXTURE_ID))).hasSize(1);
+        assertThat(coordinator.dispatchOne("before-transport-retry")).isFalse();
+        assertThat(fetch.endpoints).containsExactly(Endpoint.bootstrap());
     }
 
     @Test
@@ -799,6 +870,27 @@ class FixtureRecoveryAdmissionIntegrationTest {
                 clock.instant())).isFalse();
     }
 
+    private static void tickTogether(OwnedMatchdayCoordinator coordinator) throws Exception {
+        var ready = new CountDownLatch(2);
+        var start = new CountDownLatch(1);
+        try (var workers = Executors.newFixedThreadPool(2)) {
+            var first = workers.submit(() -> {
+                ready.countDown();
+                if (!start.await(5, TimeUnit.SECONDS)) throw new AssertionError("tick start timed out");
+                return coordinator.tick();
+            });
+            var second = workers.submit(() -> {
+                ready.countDown();
+                if (!start.await(5, TimeUnit.SECONDS)) throw new AssertionError("tick start timed out");
+                return coordinator.tick();
+            });
+            if (!ready.await(5, TimeUnit.SECONDS)) throw new AssertionError("tick workers were not ready");
+            start.countDown();
+            first.get(15, TimeUnit.SECONDS);
+            second.get(15, TimeUnit.SECONDS);
+        }
+    }
+
     private OwnedSyncStore.RuntimeFence seedCurrentCanonicalParent() throws Exception {
         clock.set(NOW.minusSeconds(20));
         var fence = activate();
@@ -834,6 +926,45 @@ class FixtureRecoveryAdmissionIntegrationTest {
         store.stage(lease, Endpoint.fixtures(), read, Validation.valid(), resource("fixtures.json"));
         store.publish(lease, read, () -> null);
         return lease.generation();
+    }
+
+    private static void createCapturedTables() {
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS %s (
+                    season varchar(10) NOT NULL, price_date date NOT NULL, element_id integer NOT NULL,
+                    web_name varchar(100) NOT NULL, full_name varchar(200), team_id integer,
+                    team_short varchar(10), team_name varchar(100), element_type smallint,
+                    now_cost integer NOT NULL, cost_change_event integer NOT NULL DEFAULT 0,
+                    cost_change_start integer NOT NULL DEFAULT 0, selected_by_percent numeric(5,2),
+                    status varchar(4), news text, penalties_order smallint, direct_fk_order smallint,
+                    corners_order smallint, captured_at timestamptz NOT NULL DEFAULT now(),
+                    PRIMARY KEY(season, price_date, element_id))
+                """.formatted(CAPTURED.dailyPrice()));
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS %s (
+                    season varchar(10) NOT NULL, id integer NOT NULL, name varchar(50),
+                    deadline_time timestamptz NOT NULL, finished boolean NOT NULL DEFAULT false,
+                    data_checked boolean NOT NULL DEFAULT false, is_current boolean NOT NULL DEFAULT false,
+                    is_next boolean NOT NULL DEFAULT false, average_entry_score integer,
+                    highest_score integer, most_captained integer, most_transferred_in integer,
+                    captured_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(season,id))
+                """.formatted(CAPTURED.gameweek()));
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS %s (
+                    season varchar(10) NOT NULL, id integer NOT NULL, gameweek integer,
+                    team_h integer NOT NULL, team_a integer NOT NULL, team_h_name varchar(100),
+                    team_h_short varchar(10), team_a_name varchar(100), team_a_short varchar(10),
+                    team_h_difficulty smallint, team_a_difficulty smallint, kickoff_time timestamptz,
+                    started boolean NOT NULL DEFAULT false, finished boolean NOT NULL DEFAULT false,
+                    team_h_score integer, team_a_score integer,
+                    captured_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(season,id))
+                """.formatted(CAPTURED.fixture()));
+    }
+
+    private static void cleanCapturedRows() {
+        jdbc.update("DELETE FROM " + CAPTURED.fixture());
+        jdbc.update("DELETE FROM " + CAPTURED.gameweek());
+        jdbc.update("DELETE FROM " + CAPTURED.dailyPrice());
     }
 
     private static byte[] resource(String name) throws Exception {
