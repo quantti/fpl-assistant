@@ -1,5 +1,42 @@
 # Status — Phase 1
 
+## Task 153 review-2 P1 oracle repair (local pass, 2026-10-08)
+
+The earlier P1/P2 follow-up was incomplete: target acceptance selected the latest two completed runs
+without tying the first to the captured first-pending generation, correction proof equated its capture
+to `min(generation)`, and compact negatives exercised only `receiptIntervalProof`, not jointly
+shortened persisted run/receipt fields. The runtime, policy and acceptance bounds were not the issue.
+
+A shared full-source batch proof now validates the exact captured first-pending generation and current
+receipt generation as two completed ACTIVE epoch-3 runs. Both batches require exact source season/key,
+manifest and anchor generations, BOOTSTRAP/fixtures/live identities and `VALID` bodies, source-body
+hashes, complete candidate roster/participants, histories and the effective requested floor. The first
+batch requires captured `current_verified_generation IS NULL` and does not require a publication receipt;
+the second must be the current receipt with a strictly newer generation. Targets 41–50 and corrections
+1–5 use this same proof. Pairing no longer selects an arbitrary/latest two runs or assumes the capture is
+the earliest completed generation. Negative checks prove invalid generation, season, epoch, anchor/body,
+roster/history and floor evidence still fails when both run intervals satisfy the gap.
+
+The compact disposable-DB test also jointly shortened the actual canonical publisher run/receipt start
+to the later fixtures-body start: the local receipt predicate remained true while the full source-body
+min/max predicate rejected it. It restored the timestamps and preserved both body hashes and the pair
+fingerprint. A second joint run/receipt finish shortening before the latest history read likewise kept
+the local receipt predicate true and failed full source-interval proof. Compact regression passed **1/1,
+zero skipped** (46 s Gradle).
+
+One exact bounded ACTIVE acceptance then passed **1/1, zero skipped** (741.897 s JUnit; 12m48s Gradle),
+with the original 48 h / 6,000 claims / 6,000 dispatches / 1,500 s wall bounds: **10/10 targets** and
+**5/5 corrected fixtures** passed full source proof. Targets 41–50 map first-pending → current receipt as
+`41 431855→436389; 42 431856→436390; 43 431857→436516; 44 431858→436597; 45 431859→436667;`
+`46 431860→436732; 47 431861→436733; 48 431862→436734; 49 431863→436735; 50 431864→436736`.
+Their minimum first-finish-to-second-start gap was **10m51.3s**. Corrected fixtures map
+`1 431169→433775; 2 431168→434277; 3 431167→434557; 4 431166→435133; 5 431165→435134`;
+the minimum gap was **1h00m49s**. The acceptance drained at 2,576 claims, 2,577 dispatches and
+2,056.7 virtual seconds (738.037/1,500 wall seconds), with zero skips, bad manifests/batches, missing
+history, failed runs or correction replays. Source changes were prepared before the acceptance driver;
+no source mutation occurred during it. No full suite, production query/activation, commit or push was run;
+independent review and CI remain pending, and production remains OFF83.
+
 ## Task 153 — correction-baseline semantics and bounded acceptance (local, pass, 2026-10-08)
 
 The earlier 35/40 mismatch was caused by the five intentional source corrections replacing their
@@ -46,7 +83,7 @@ This is a local bounded acceptance pass, not a full-suite or CI result. Fresh br
 review remain pending. No commit, push, production query, activation or full suite was run;
 production remains OFF83 and the approved 60-minute/500-MB run remains unused.
 
-**Task 153 P1/P2 oracle follow-up (2026-10-08; local pass, review/CI pending):** The corrected-fixture
+**Task 153 P1/P2 oracle follow-up (2026-10-08; earlier local pass; first-pending pairing/compact-negative coverage superseded below):** The corrected-fixture
 oracle now requires all five fixtures 1–5 to be republished, not merely scheduled. For each it identifies
 the first coherent post-invalidation generation as the earliest completed fixture run after the old
 receipt, rejects the incoherent pre-correction observation as a batch, and proves both that run and the

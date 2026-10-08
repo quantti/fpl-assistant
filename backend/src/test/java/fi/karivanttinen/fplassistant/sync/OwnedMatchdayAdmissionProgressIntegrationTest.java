@@ -1236,8 +1236,11 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                         driver.admissions.subList(Math.max(0, driver.admissions.size() - 10),
                                 driver.admissions.size()), driver.completions.size(),
                         pendingFixtureRuns(resumed.fence.epoch(), neverPublished), fixtureGateTrace(neverPublished));
+                Map<Integer, FirstPendingObservation> firstPendingObservations = new TreeMap<>(
+                        preparationDriver.firstPendingObservations);
+                driver.firstPendingObservations.forEach(firstPendingObservations::putIfAbsent);
                 accepted = activeAcceptanceMetrics(resumed, preparationDriver, driver, neverPublished,
-                        servedCorrectionReceipts);
+                        servedCorrectionReceipts, firstPendingObservations);
                 Map<Integer, FixturePublicationComponents> finalComponents = fixturePublicationComponents(
                         java.util.stream.IntStream.rangeClosed(1, 40).boxed()
                                 .collect(java.util.stream.Collectors.toUnmodifiableSet()));
@@ -1260,11 +1263,11 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                 assertThat(accepted.firstNewClaim()).isNotNull().isAfterOrEqualTo(LEGACY_DAILY_DUE);
                 assertThat(neverPublished).contains(accepted.firstNewFixture());
                 assertThat(accepted.firstNewGeneration()).isPositive();
-                assertThat(driver.firstPendingObservations.keySet())
+                assertThat(firstPendingObservations.keySet())
                         .as("each target has a recorded coherent first-pending generation")
                         .containsAll(neverPublished);
                 for (int fixtureId : neverPublished) {
-                    FirstPendingObservation firstPending = driver.firstPendingObservations.get(fixtureId);
+                    FirstPendingObservation firstPending = firstPendingObservations.get(fixtureId);
                     long receiptGeneration = accepted.verifiedReceiptGenerations().get(fixtureId);
                     assertThat(firstPending.generation())
                             .as("fixture %d publishes a newer-generation receipt than its first pending observation",
@@ -1315,13 +1318,10 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                 }
                 assertPostRecoveryPublicationComponents(baselineComponents, finalComponents,
                         changedCorrections, accepted.republishedChangedCorrections(), resumed, activeSource);
-                Map<Integer, FirstPendingObservation> correctionFirstPending = new TreeMap<>(
-                        preparationDriver.firstPendingObservations);
-                driver.firstPendingObservations.forEach(correctionFirstPending::putIfAbsent);
                 Map<Integer, Map<String, Object>> correctionPublicationProofs =
                         assertChangedCorrectionPublicationProofs(resumed, activeSource, changedCorrections,
                                 accepted.republishedChangedCorrections(), servedCorrectionReceipts,
-                                correctionFirstPending, correctionEffectiveFloor);
+                                firstPendingObservations, correctionEffectiveFloor);
                 System.out.println("OWNED_TASK153_CORRECTION_PUBLICATION_PROOFS " + correctionPublicationProofs);
                 Map<Integer, String> changedFixtureTrace = changedCorrectionTrace(baselineComponents,
                         finalComponents, servedCorrectionReceipts, accepted.republishedChangedCorrections(),
@@ -3004,6 +3004,83 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
         }
     }
 
+    private static FixtureSourceBatchProof fullSourceObservationProof(Harness harness, int fixtureId,
+                                                                          FixtureOracle oracle, SourceData source,
+                                                                          CanonicalParentProof parent, long generation,
+                                                                          FixtureVerification.Observation observation,
+                                                                          int expectedParticipants,
+                                                                          int receivedParticipants,
+                                                                          int missingParticipants,
+                                                                          boolean requireCurrentReceipt) {
+        Map<String, Object> trace = fixtureManifestPredicateTrace(harness, fixtureId, oracle, parent,
+                generation, observation, expectedParticipants, receivedParticipants, missingParticipants,
+                requireCurrentReceipt);
+        boolean sourceBodyHashesMatch = fixtureGenerationBodiesMatchSource(harness, fixtureId, generation,
+                oracle, source, observation);
+        boolean sourceProof = Boolean.TRUE.equals(trace.get("sourceObservationProof"))
+                && sourceBodyHashesMatch;
+        trace.put("sourceBodyHashesMatch", sourceBodyHashesMatch);
+        trace.put("sourceObservationProof", sourceProof);
+        Map<String, Object> run = fixtureRunSourceFrame(generation);
+        return new FixtureSourceBatchProof(generation, sourceRunInterval(run),
+                ((Timestamp) run.get("requested_source_after")).toInstant(), sourceProof,
+                java.util.Collections.unmodifiableMap(trace));
+    }
+
+    private static FixtureSourcePairProof fullSourceObservationPairProof(Harness harness, int fixtureId,
+                                                                           FixtureOracle oracle, SourceData source,
+                                                                           CanonicalParentProof parent,
+                                                                           FirstPendingObservation firstPending,
+                                                                           long currentGeneration,
+                                                                           FixtureVerification.Observation currentObservation,
+                                                                           Instant effectiveFloor) {
+        FixtureSourceBatchProof first = fullSourceObservationProof(harness, fixtureId, oracle, source, parent,
+                firstPending.generation(), firstPending.observation(), firstPending.expectedParticipants(),
+                firstPending.receivedParticipants(), firstPending.missingParticipants(), false);
+        Map<String, Object> participants = jdbc.queryForMap("SELECT expected_participants,received_participants,"
+                + "cardinality(missing_player_ids) missing_count FROM " + TABLES.fixtureSync()
+                + " WHERE season_id=? AND fixture_id=?", SEASON.id(), fixtureId);
+        FixtureSourceBatchProof second = fullSourceObservationProof(harness, fixtureId, oracle, source, parent,
+                currentGeneration, currentObservation, Math.toIntExact(numberLong(participants.get("expected_participants"))),
+                Math.toIntExact(numberLong(participants.get("received_participants"))),
+                Math.toIntExact(numberLong(participants.get("missing_count"))),
+                true);
+        boolean capturedFirstPending = firstPendingCaptureMatches(firstPending, fixtureId, first.generation(),
+                first.interval(), first.requestedFloor(), effectiveFloor);
+        boolean generationOrder = first.generation() < second.generation();
+        boolean independentIntervals = correctionBatchesValid(first.interval(), second.interval(), effectiveFloor);
+        boolean activeEpochThree = harness.fence.mode() == OwnedSyncMode.ACTIVE && harness.fence.epoch() == 3;
+        return new FixtureSourcePairProof(first, second, capturedFirstPending, generationOrder,
+                independentIntervals, activeEpochThree);
+    }
+
+    private static boolean firstPendingCaptureMatches(FirstPendingObservation first, int fixtureId,
+                                                       long sourceGeneration, SourceRead sourceInterval,
+                                                       Instant requestedFloor, Instant effectiveFloor) {
+        return first != null && first.observation() != null
+                && firstPendingIdentityMatches(first.generation(), sourceGeneration, first.seasonId(),
+                        first.seasonCode(), first.currentVerifiedGeneration(), first.observation().fixtureId(),
+                        first.observation().seasonId(), first.observation().seasonCode(),
+                        first.observation().coherent(), first.observation().finished(), first.reasons())
+                && fixtureId == first.observation().fixtureId()
+                && first.reads().equals(observationInterval(first.observation()))
+                && !requestedFloor.isBefore(effectiveFloor)
+                && !sourceInterval.startedAt().isBefore(effectiveFloor)
+                && !sourceInterval.finishedAt().isBefore(sourceInterval.startedAt());
+    }
+
+    private static boolean firstPendingIdentityMatches(long capturedGeneration, long sourceGeneration,
+                                                        int capturedSeasonId, String capturedSeasonCode,
+                                                        Long currentVerifiedGeneration, int observationFixtureId,
+                                                        int observationSeasonId, String observationSeasonCode,
+                                                        boolean coherent, boolean finished, String reasons) {
+        return capturedGeneration > 0 && capturedGeneration == sourceGeneration
+                && capturedSeasonId == SEASON.id() && SEASON.code().equals(capturedSeasonCode)
+                && currentVerifiedGeneration == null && observationFixtureId > 0
+                && observationSeasonId == SEASON.id() && SEASON.code().equals(observationSeasonCode)
+                && coherent && finished && reasons.contains("NEEDS_SECOND_OBSERVATION");
+    }
+
     private static Map<Integer, Map<String, Object>> assertChangedCorrectionPublicationProofs(
             Harness harness, SourceData source, Set<Integer> changedFixtures, Set<Integer> republished,
             Map<Integer, Long> baselineReceipts, Map<Integer, FirstPendingObservation> firstPending,
@@ -3035,71 +3112,44 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
             FirstPendingObservation first = firstPending.get(fixtureId);
             assertThat(first).as("fixture %d captured its first post-invalidation observation", fixtureId)
                     .isNotNull();
-            assertThat(first.generation()).as("fixture %d first source generation follows invalidated receipt", fixtureId)
+            assertThat(first.generation()).as("fixture %d captured first source generation follows invalidated receipt", fixtureId)
                     .isGreaterThan(oldGeneration).isLessThan(currentGeneration);
-            assertThat(first.reasons()).contains("NEEDS_SECOND_OBSERVATION");
-            assertThat(first.observation().coherent()).isTrue();
-            assertThat(first.observation().finished()).isTrue();
             assertThat(first.observation().fingerprint()).isEqualTo(oracles.get(fixtureId).observationFingerprint());
-            Long earliestCompleted = jdbc.queryForObject("SELECT min(generation) FROM " + TABLES.run()
-                    + " WHERE season=? AND runtime_mode='ACTIVE' AND runtime_epoch=?"
-                    + " AND kind='FIXTURE_VERIFICATION' AND publication_key=? AND state='COMPLETED'"
-                    + " AND generation>? AND generation<?", Long.class, SEASON.code(), harness.fence.epoch(),
-                    "fixture:" + fixtureId, oldGeneration, currentGeneration);
-            assertThat(earliestCompleted).as("fixture %d first post-correction completed source run", fixtureId)
-                    .isEqualTo(first.generation());
 
             FixtureOracle oracle = oracles.get(fixtureId);
-            Map<String, Object> firstProof = fixtureManifestPredicateTrace(harness, fixtureId, oracle, parent,
-                    first.generation(), first.observation(), first.expectedParticipants(), first.receivedParticipants(),
-                    first.missingParticipants(), false);
+            FixtureVerification.Observation currentObservation = fixtureObservation(fixtureId);
+            FixtureSourcePairProof pair = fullSourceObservationPairProof(harness, fixtureId, oracle, source,
+                    parent, first, currentGeneration, currentObservation, correctionEffectiveFloor);
+            Map<String, Object> firstProof = pair.first().trace();
+            Map<String, Object> finalProof = pair.second().trace();
+            SourceRead firstSourceRun = pair.first().interval();
+            SourceRead finalSourceRun = pair.second().interval();
+            Instant firstWanted = pair.first().requestedFloor();
+            Instant finalWanted = pair.second().requestedFloor();
             assertThat(firstProof.get("sourceObservationProof"))
-                    .as("fixture %d first fresh corrected source batch proof=%s", fixtureId, firstProof)
+                    .as("fixture %d exact captured first corrected source batch proof=%s", fixtureId, firstProof)
                     .isEqualTo(true);
             assertThat(firstProof.get("publishedManifestProof"))
                     .as("fixture %d first batch is not independently treated as a publication", fixtureId)
                     .isEqualTo(false);
-            assertFixtureGenerationBodiesMatchSource(harness, fixtureId, first.generation(), oracle, source,
-                    first.observation());
-
-            Map<String, Object> firstRun = fixtureRunSourceFrame(first.generation());
-            SourceRead firstSourceRun = sourceRunInterval(firstRun);
-            Instant firstWanted = ((Timestamp) firstRun.get("requested_source_after")).toInstant();
-            assertThat(firstWanted).as("fixture %d first correction floor", fixtureId)
-                    .isAfterOrEqualTo(correctionEffectiveFloor);
-            assertThat(firstSourceRun.startedAt()).as("fixture %d first full source read follows correction", fixtureId)
-                    .isAfterOrEqualTo(correctionEffectiveFloor);
-            assertThat(firstSourceRun.finishedAt()).isAfterOrEqualTo(firstSourceRun.startedAt());
-
-            FixtureVerification.Observation currentObservation = fixtureObservation(fixtureId);
-            Map<String, Object> participants = jdbc.queryForMap("SELECT expected_participants,received_participants,"
-                    + "cardinality(missing_player_ids) missing_count FROM " + TABLES.fixtureSync()
-                    + " WHERE season_id=? AND fixture_id=?", SEASON.id(), fixtureId);
-            Map<String, Object> finalProof = fixtureManifestPredicateTrace(harness, fixtureId, oracle, parent,
-                    currentGeneration, currentObservation, numberLong(participants.get("expected_participants")),
-                    numberLong(participants.get("received_participants")), numberLong(participants.get("missing_count")),
-                    true);
             assertThat(finalProof.get("sourceObservationProof"))
-                    .as("fixture %d final corrected source batch", fixtureId).isEqualTo(true);
+                    .as("fixture %d current corrected source batch", fixtureId).isEqualTo(true);
             assertThat(finalProof.get("publishedManifestProof"))
                     .as("fixture %d full current-receipt publication proof", fixtureId).isEqualTo(true);
-            assertFixtureGenerationBodiesMatchSource(harness, fixtureId, currentGeneration, oracle, source,
-                    currentObservation);
+            assertThat(pair.capturedFirstPending()).as("fixture %d map generation is exactly the first pair", fixtureId)
+                    .isTrue();
+            assertThat(pair.generationOrder()).as("fixture %d current receipt follows first pending generation", fixtureId)
+                    .isTrue();
+            assertThat(pair.independentIntervals())
+                    .as("fixture %d two corrected source intervals have the required ten-minute gap", fixtureId)
+                    .isTrue();
+            assertThat(pair.activeEpochThree()).as("fixture %d proof uses ACTIVE epoch 3", fixtureId).isTrue();
             assertThat(ownership.lastVerifiedGeneration()).isEqualTo(currentGeneration);
             assertThat(ownership.verifiedHeader()).isEqualTo(oracle.headerFingerprint());
             assertThat(firstProof.get("requiredIdsMatchSource")).isEqualTo(true);
             assertThat(finalProof.get("requiredIdsMatchSource")).isEqualTo(true);
-
-            Map<String, Object> finalRun = fixtureRunSourceFrame(currentGeneration);
-            SourceRead finalSourceRun = sourceRunInterval(finalRun);
-            Instant finalWanted = ((Timestamp) finalRun.get("requested_source_after")).toInstant();
-            assertThat(finalWanted).as("fixture %d final correction floor", fixtureId)
-                    .isAfterOrEqualTo(correctionEffectiveFloor);
-            assertThat(finalSourceRun.startedAt()).as("fixture %d second full source read follows correction", fixtureId)
-                    .isAfterOrEqualTo(correctionEffectiveFloor);
-            assertThat(correctionBatchesValid(firstSourceRun, finalSourceRun, correctionEffectiveFloor))
-                    .as("fixture %d two corrected source batches have the required ten-minute gap", fixtureId)
-                    .isTrue();
+            assertThat(firstProof.get("sourceBodyHashesMatch")).isEqualTo(true);
+            assertThat(finalProof.get("sourceBodyHashesMatch")).isEqualTo(true);
             Duration gap = Duration.between(firstSourceRun.finishedAt(), finalSourceRun.startedAt());
             if (minimumGap == null || gap.compareTo(minimumGap) < 0) minimumGap = gap;
 
@@ -3148,7 +3198,8 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                                                                   ManualDriver preparationDriver,
                                                                   ManualDriver driver,
                                                                   Set<Integer> targetFixtures,
-                                                                  Map<Integer, Long> expectedCorrectionReceipts) throws IOException {
+                                                                  Map<Integer, Long> expectedCorrectionReceipts,
+                                                                  Map<Integer, FirstPendingObservation> firstPendingObservations) throws IOException {
         Set<Integer> verified = new java.util.TreeSet<>();
         Map<Integer, Long> verifiedReceiptGenerations = new TreeMap<>();
         List<Map<String, Object>> fixtureProofs = new ArrayList<>();
@@ -3198,33 +3249,25 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
             boolean stagedSources = Boolean.TRUE.equals(proof.get("publishedManifestProof"));
             boolean participantCounts = Boolean.TRUE.equals(proof.get("participantCounts"));
             boolean sourceFloor = Boolean.TRUE.equals(proof.get("sourceFloorWanted"));
-
-            List<SourceRead> batches = jdbc.query("SELECT source_read_started_at,source_read_finished_at FROM "
-                            + TABLES.run() + " WHERE season=? AND runtime_mode='ACTIVE' AND runtime_epoch=?"
-                            + " AND kind='FIXTURE_VERIFICATION' AND publication_key=? AND state='COMPLETED'"
-                            + " AND source_read_started_at IS NOT NULL AND source_read_finished_at IS NOT NULL"
-                            + " ORDER BY completed_at DESC,generation DESC LIMIT 2",
-                    (rs, row) -> new SourceRead(rs.getTimestamp(1).toInstant(), rs.getTimestamp(2).toInstant()),
-                    SEASON.code(), harness.fence.epoch(), "fixture:" + fixtureId);
-            boolean batchValid = batches.size() >= 2 && !batches.getFirst().startedAt()
-                    .isBefore(batches.getLast().finishedAt().plus(Duration.ofMinutes(10)))
-                    && batches.stream().noneMatch(batch -> batch.startedAt().getNano() % 1_000 != 0
-                            || batch.finishedAt().getNano() % 1_000 != 0);
+            FirstPendingObservation firstPending = firstPendingObservations.get(fixtureId);
+            assertThat(firstPending).as("fixture %d exact first-pending observation is captured", fixtureId)
+                    .isNotNull();
+            FixtureSourcePairProof pair = fullSourceObservationPairProof(harness, fixtureId, oracle,
+                    harness.source, canonicalParent, firstPending, generation, fixtureObservation(fixtureId),
+                    LEGACY_DAILY_DUE);
+            proof.put("firstPendingPairProof", pair.trace());
+            boolean batchValid = pair.valid();
             if (!batchValid) badBatchPairs++;
             boolean latestGeneration = numberLong(proof.get("latestTargetGeneration")) == generation;
+            boolean fullCurrentSource = pair.second().valid();
             boolean validManifest = requiredIdsMatch && fixtureEvidence && stagedSources
-                    && participantCounts && sourceFloor && latestGeneration;
+                    && participantCounts && sourceFloor && latestGeneration && fullCurrentSource;
             if (!validManifest) badManifests++;
             boolean validProof = validManifest && batchValid;
             proof.put("status", validProof ? "verified"
                     : validManifest ? "bad_batch_pair" : "bad_published_manifest");
             proof.put("batchProof", batchValid);
-            proof.put("latestTwoBatchIntervals", jdbc.queryForList("SELECT generation,source_read_started_at,"
-                    + "source_read_finished_at,completed_at FROM " + TABLES.run()
-                    + " WHERE season=? AND runtime_mode='ACTIVE' AND runtime_epoch=?"
-                    + " AND kind='FIXTURE_VERIFICATION' AND publication_key=? AND state='COMPLETED'"
-                    + " ORDER BY completed_at DESC,generation DESC LIMIT 2",
-                    SEASON.code(), harness.fence.epoch(), "fixture:" + fixtureId));
+            proof.put("firstPendingGeneration", firstPending.generation());
             proof.put("requiredIdsMatch", requiredIdsMatch);
             proof.put("fixtureReadEvidenceProof", fixtureEvidence);
             proof.put("receiptGeneration", generation);
@@ -3491,16 +3534,9 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                     && bFinishedValue.equals(rs.getTimestamp("source_bootstrap_read_finished_at"))
                     && fStartedValue.equals(rs.getTimestamp("source_fixtures_read_started_at"))
                     && fFinishedValue.equals(rs.getTimestamp("source_fixtures_read_finished_at"));
-            Timestamp combinedStarted = earlier(bStartedValue, fStartedValue);
-            Timestamp combinedFinished = later(bFinishedValue, fFinishedValue);
-            boolean sourceRolesOrdered = bStartedValue != null && bFinishedValue != null
-                    && fStartedValue != null && fFinishedValue != null
-                    && !bStartedValue.after(bFinishedValue) && !fStartedValue.after(fFinishedValue);
-            boolean sourceInterval = sourceRolesOrdered && runStartedValue != null && runFinishedValue != null
-                    && runStartedValue.equals(combinedStarted) && runFinishedValue.equals(combinedFinished)
-                    && receiptIntervalProof(runStartedValue, runFinishedValue, receiptStartedValue,
-                            receiptFinishedValue, completedAtValue, publishedAtValue, harness.clock.instant())
-                    && databaseMicroseconds(bStartedValue, bFinishedValue, fStartedValue, fFinishedValue);
+            boolean sourceInterval = canonicalSourceSpanProof(runStartedValue, runFinishedValue,
+                    receiptStartedValue, receiptFinishedValue, completedAtValue, publishedAtValue,
+                    bStartedValue, bFinishedValue, fStartedValue, fFinishedValue, harness.clock.instant());
             boolean currentPublished = rs.getLong("latest_generation") == publicationGeneration
                     && "COMPLETED".equals(rs.getString("publication_state"))
                     && publicationIdentity && sourceIdentity && payloadIdentity && sourceInterval
@@ -3562,6 +3598,23 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                 CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY);
         return rows.stream().filter(CanonicalParentProof::currentPublished)
                 .filter(CanonicalParentProof::immutable).findFirst().orElseGet(CanonicalParentProof::missing);
+    }
+
+    private static boolean canonicalSourceSpanProof(Timestamp runStarted, Timestamp runFinished,
+                                                     Timestamp receiptStarted, Timestamp receiptFinished,
+                                                     Timestamp completedAt, Timestamp publishedAt,
+                                                     Timestamp bootstrapStarted, Timestamp bootstrapFinished,
+                                                     Timestamp fixturesStarted, Timestamp fixturesFinished,
+                                                     Instant asOf) {
+        if (bootstrapStarted == null || bootstrapFinished == null || fixturesStarted == null
+                || fixturesFinished == null || runStarted == null || runFinished == null) return false;
+        Timestamp expectedStarted = earlier(bootstrapStarted, fixturesStarted);
+        Timestamp expectedFinished = later(bootstrapFinished, fixturesFinished);
+        return !bootstrapStarted.after(bootstrapFinished) && !fixturesStarted.after(fixturesFinished)
+                && runStarted.equals(expectedStarted) && runFinished.equals(expectedFinished)
+                && receiptIntervalProof(runStarted, runFinished, receiptStarted, receiptFinished,
+                        completedAt, publishedAt, asOf)
+                && databaseMicroseconds(bootstrapStarted, bootstrapFinished, fixturesStarted, fixturesFinished);
     }
 
     private static Timestamp earlier(Timestamp first, Timestamp second) {
@@ -3806,10 +3859,27 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
         boolean committedEvidenceProof = requireCurrentReceipt
                 && fixtureReadEvidenceProof(harness, fixtureId, generation, oracle.requiredPlayers(), observation);
         boolean evidenceProof = historyPayloadProof && (!requireCurrentReceipt || committedEvidenceProof);
-        boolean sourceObservationProof = generationRolesMatch && epochCurrent && seasonCurrent && keyCurrent
-                && runCompleted && sourceFloorWanted && readIdentity && anchorValidation && bodyPresent && timeOrder
-                && eventHeader && membershipKnown && requiredIdsMatch && coherent && participantsMatch
-                && observationIntervalMatches && sourceIntervals && timestampPrecision && historyPayloadProof;
+        Map<String, Boolean> sourceObservationChecks = new TreeMap<>();
+        sourceObservationChecks.put("generationRolesMatch", generationRolesMatch);
+        sourceObservationChecks.put("epochCurrent", epochCurrent);
+        sourceObservationChecks.put("seasonCurrent", seasonCurrent);
+        sourceObservationChecks.put("keyCurrent", keyCurrent);
+        sourceObservationChecks.put("runCompleted", runCompleted);
+        sourceObservationChecks.put("sourceFloorWanted", sourceFloorWanted);
+        sourceObservationChecks.put("readIdentity", readIdentity);
+        sourceObservationChecks.put("anchorValidation", anchorValidation);
+        sourceObservationChecks.put("bodyPresent", bodyPresent);
+        sourceObservationChecks.put("timeOrder", timeOrder);
+        sourceObservationChecks.put("eventHeader", eventHeader);
+        sourceObservationChecks.put("membershipKnown", membershipKnown);
+        sourceObservationChecks.put("requiredIdsMatch", requiredIdsMatch);
+        sourceObservationChecks.put("coherent", coherent);
+        sourceObservationChecks.put("participantsMatch", participantsMatch);
+        sourceObservationChecks.put("observationIntervalMatches", observationIntervalMatches);
+        sourceObservationChecks.put("sourceIntervals", sourceIntervals);
+        sourceObservationChecks.put("timestampPrecision", timestampPrecision);
+        sourceObservationChecks.put("historyPayloadProof", historyPayloadProof);
+        boolean sourceObservationProof = sourceObservationProof(sourceObservationChecks);
         boolean publishedManifestProof = sourceObservationProof && evidenceProof && generationGate && markerMatches
                 && recoveryWindow && targetReceiptInterval && parentCurrent && parentProofMatchesProduction
                 && actualParent.fixtureFinished();
@@ -3868,11 +3938,77 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
         result.put("participantCounts", participantsMatch);
         result.put("historyPayloadProof", historyPayloadProof);
         result.put("fixtureReadEvidenceProof", committedEvidenceProof);
+        result.put("sourceObservationChecks", java.util.Collections.unmodifiableMap(sourceObservationChecks));
         result.put("sourceObservationProof", sourceObservationProof);
         result.put("publishedManifestProof", publishedManifestProof);
         result.put("manifestPlayerCount", numberLong(row.get("manifest_player_count")));
         result.put("batchIntervals", fixtureBatchTrace(harness, fixtureId));
         return result;
+    }
+
+    private static boolean sourceObservationProof(Map<String, Boolean> checks) {
+        return List.of("generationRolesMatch", "epochCurrent", "seasonCurrent", "keyCurrent", "runCompleted",
+                "sourceFloorWanted", "readIdentity", "anchorValidation", "bodyPresent", "timeOrder",
+                "eventHeader", "membershipKnown", "requiredIdsMatch", "coherent", "participantsMatch",
+                "observationIntervalMatches", "sourceIntervals", "timestampPrecision", "historyPayloadProof")
+                .stream().allMatch(key -> Boolean.TRUE.equals(checks.get(key)));
+    }
+
+    private static void assertSourceObservationProofNegativeCases() {
+        List<String> checks = List.of("generationRolesMatch", "epochCurrent", "seasonCurrent", "keyCurrent",
+                "runCompleted", "sourceFloorWanted", "readIdentity", "anchorValidation", "bodyPresent",
+                "timeOrder", "eventHeader", "membershipKnown", "requiredIdsMatch", "coherent",
+                "participantsMatch", "observationIntervalMatches", "sourceIntervals", "timestampPrecision",
+                "historyPayloadProof");
+        Map<String, Boolean> valid = new TreeMap<>();
+        checks.forEach(key -> valid.put(key, true));
+        assertThat(sourceObservationProof(valid)).isTrue();
+        assertThat(firstPendingIdentityMatches(42, 42, SEASON.id(), SEASON.code(), null, 41,
+                SEASON.id(), SEASON.code(), true, true, "{NEEDS_SECOND_OBSERVATION}")).isTrue();
+        assertThat(firstPendingIdentityMatches(42, 43, SEASON.id(), SEASON.code(), null, 41,
+                SEASON.id(), SEASON.code(), true, true, "{NEEDS_SECOND_OBSERVATION}")).isFalse();
+        assertThat(firstPendingIdentityMatches(42, 42, SEASON.id() + 1, SEASON.code(), null, 41,
+                SEASON.id(), SEASON.code(), true, true, "{NEEDS_SECOND_OBSERVATION}")).isFalse();
+        assertThat(firstPendingIdentityMatches(42, 42, SEASON.id(), SEASON.code(), 42L, 41,
+                SEASON.id(), SEASON.code(), true, true, "{NEEDS_SECOND_OBSERVATION}"))
+                .as("first pending evidence must be captured before any current receipt").isFalse();
+        Instant pairFloor = Instant.parse("2026-09-30T12:00:00Z");
+        SourceRead pairFirstInterval = new SourceRead(pairFloor, pairFloor.plus(Duration.ofMinutes(1)));
+        SourceRead pairSecondInterval = new SourceRead(pairFloor.plus(Duration.ofMinutes(11)),
+                pairFloor.plus(Duration.ofMinutes(12)));
+        FixtureSourceBatchProof pairFirst = new FixtureSourceBatchProof(42, pairFirstInterval, pairFloor,
+                true, new TreeMap<String, Object>(valid));
+        FixtureSourceBatchProof pairSecond = new FixtureSourceBatchProof(43, pairSecondInterval,
+                pairSecondInterval.startedAt(), true, new TreeMap<String, Object>(valid));
+        assertThat(correctionBatchesValid(pairFirstInterval, pairSecondInterval, pairFloor)).isTrue();
+        assertThat(new FixtureSourcePairProof(pairFirst, pairSecond, false, true, true, true).valid())
+                .as("a different captured generation cannot substitute for the first pair").isFalse();
+        assertThat(new FixtureSourcePairProof(pairFirst, pairSecond, true, true, true, false).valid())
+                .as("the pair must belong to ACTIVE epoch 3").isFalse();
+        for (String failedCheck : List.of("generationRolesMatch", "epochCurrent", "seasonCurrent",
+                "readIdentity", "anchorValidation", "bodyPresent", "sourceFloorWanted", "requiredIdsMatch",
+                "participantsMatch", "historyPayloadProof")) {
+            Map<String, Boolean> invalid = new TreeMap<>(valid);
+            invalid.put(failedCheck, false);
+            assertThat(sourceObservationProof(invalid))
+                    .as("first pending source proof rejects %s", failedCheck).isFalse();
+            Instant floor = Instant.parse("2026-09-30T12:00:00Z");
+            SourceRead firstInterval = new SourceRead(floor, floor.plus(Duration.ofMinutes(1)));
+            SourceRead secondInterval = new SourceRead(floor.plus(Duration.ofMinutes(11)),
+                    floor.plus(Duration.ofMinutes(12)));
+            assertThat(correctionBatchesValid(firstInterval, secondInterval, floor)).isTrue();
+            FixtureSourceBatchProof invalidFirst = new FixtureSourceBatchProof(1, firstInterval, floor,
+                    sourceObservationProof(invalid), new TreeMap<String, Object>(invalid));
+            FixtureSourceBatchProof validSecond = new FixtureSourceBatchProof(2, secondInterval,
+                    secondInterval.startedAt(), true, new TreeMap<String, Object>(valid));
+            FixtureSourcePairProof pair = new FixtureSourcePairProof(invalidFirst, validSecond,
+                    true, true, true, true);
+            assertThat(pair.valid()).as("two valid intervals cannot excuse first-proof %s", failedCheck).isFalse();
+        }
+        Map<String, Boolean> incomplete = new TreeMap<>(valid);
+        incomplete.remove("historyPayloadProof");
+        assertThat(sourceObservationProof(incomplete))
+                .as("missing source proof evidence cannot pass by omission").isFalse();
     }
 
     private static Timestamp rTimestamp(Map<String, Object> row, String key) {
@@ -3897,26 +4033,44 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                 || fStarted == null || fFinished == null || lStarted == null || lFinished == null
                 || evidenceStarted == null || evidenceFinished == null
                 || fixtureStarted == null || fixtureFinished == null) return false;
-        Instant expectedStarted = List.of(bStarted.toInstant(), fStarted.toInstant(), lStarted.toInstant(),
-                evidenceStarted.toInstant()).stream().min(Instant::compareTo).orElseThrow();
-        Instant expectedFinished = List.of(bFinished.toInstant(), fFinished.toInstant(), lFinished.toInstant(),
-                evidenceFinished.toInstant()).stream().max(Instant::compareTo).orElseThrow();
-        Instant expectedFixtureStarted = List.of(fStarted.toInstant(), lStarted.toInstant(),
-                evidenceStarted.toInstant()).stream().min(Instant::compareTo).orElseThrow();
-        Instant expectedFixtureFinished = List.of(fFinished.toInstant(), lFinished.toInstant(),
-                evidenceFinished.toInstant()).stream().max(Instant::compareTo).orElseThrow();
-        boolean rolesOrdered = !bStarted.after(bFinished) && !fStarted.after(fFinished)
-                && !lStarted.after(lFinished) && !evidenceStarted.after(evidenceFinished);
-        return rolesOrdered && runStarted.toInstant().equals(expectedStarted)
-                && runFinished.toInstant().equals(expectedFinished)
-                && fixtureStarted.toInstant().equals(expectedFixtureStarted)
-                && fixtureFinished.toInstant().equals(expectedFixtureFinished)
-                && !fixtureStarted.before(runStarted) && !fixtureFinished.after(runFinished)
-                && !runStarted.after(runFinished) && !runFinished.after(completedAt)
-                && databaseMicroseconds(runStarted, runFinished, completedAt, bStarted, bFinished,
-                        fStarted, fFinished, lStarted, lFinished, evidenceStarted, evidenceFinished,
-                        fixtureStarted, fixtureFinished)
-                && generation == numberLong(row.get("run_generation"));
+        SourceRead bootstrap = new SourceRead(bStarted.toInstant(), bFinished.toInstant());
+        SourceRead fixtures = new SourceRead(fStarted.toInstant(), fFinished.toInstant());
+        SourceRead live = new SourceRead(lStarted.toInstant(), lFinished.toInstant());
+        SourceRead histories = new SourceRead(evidenceStarted.toInstant(), evidenceFinished.toInstant());
+        return fullSourceIntervalProof(generation, numberLong(row.get("run_generation")),
+                new SourceRead(runStarted.toInstant(), runFinished.toInstant()), completedAt.toInstant(),
+                List.of(bootstrap, fixtures, live, histories), List.of(fixtures, live, histories),
+                new SourceRead(fixtureStarted.toInstant(), fixtureFinished.toInstant()));
+    }
+
+    private static boolean fullSourceIntervalProof(long generation, long expectedGeneration, SourceRead runInterval,
+                                                   Instant completedAt, List<SourceRead> allSourceReads,
+                                                   List<SourceRead> fixtureSourceReads,
+                                                   SourceRead expectedFixtureInterval) {
+        if (completedAt == null || allSourceReads.isEmpty() || fixtureSourceReads.isEmpty()) return false;
+        Instant expectedStarted = allSourceReads.stream().map(SourceRead::startedAt)
+                .min(Instant::compareTo).orElseThrow();
+        Instant expectedFinished = allSourceReads.stream().map(SourceRead::finishedAt)
+                .max(Instant::compareTo).orElseThrow();
+        Instant fixtureStarted = fixtureSourceReads.stream().map(SourceRead::startedAt)
+                .min(Instant::compareTo).orElseThrow();
+        Instant fixtureFinished = fixtureSourceReads.stream().map(SourceRead::finishedAt)
+                .max(Instant::compareTo).orElseThrow();
+        return generation == expectedGeneration
+                && allSourceReads.stream().allMatch(read -> !read.startedAt().isAfter(read.finishedAt()))
+                && runInterval.startedAt().equals(expectedStarted) && runInterval.finishedAt().equals(expectedFinished)
+                && expectedFixtureInterval.startedAt().equals(fixtureStarted)
+                && expectedFixtureInterval.finishedAt().equals(fixtureFinished)
+                && !expectedFixtureInterval.startedAt().isBefore(runInterval.startedAt())
+                && !expectedFixtureInterval.finishedAt().isAfter(runInterval.finishedAt())
+                && !runInterval.startedAt().isAfter(runInterval.finishedAt())
+                && !runInterval.finishedAt().isAfter(completedAt)
+                && java.util.stream.Stream.concat(allSourceReads.stream(), fixtureSourceReads.stream())
+                        .allMatch(read -> isDatabaseMicrosecond(read.startedAt())
+                                && isDatabaseMicrosecond(read.finishedAt()))
+                && isDatabaseMicrosecond(runInterval.startedAt()) && isDatabaseMicrosecond(runInterval.finishedAt())
+                && isDatabaseMicrosecond(completedAt) && isDatabaseMicrosecond(expectedFixtureInterval.startedAt())
+                && isDatabaseMicrosecond(expectedFixtureInterval.finishedAt());
     }
 
     private static boolean timestampPrecision(Map<String, Object> row, Timestamp... values) {
@@ -4271,6 +4425,13 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
     private static void assertFixtureGenerationBodiesMatchSource(Harness harness, int fixtureId, long generation,
                                                                   FixtureOracle oracle, SourceData source,
                                                                   FixtureVerification.Observation observation) {
+        assertThat(fixtureGenerationBodiesMatchSource(harness, fixtureId, generation, oracle, source, observation))
+                .as("fixture %d generation %d source bodies and hashes", fixtureId, generation).isTrue();
+    }
+
+    private static boolean fixtureGenerationBodiesMatchSource(Harness harness, int fixtureId, long generation,
+                                                                FixtureOracle oracle, SourceData source,
+                                                                FixtureVerification.Observation observation) {
         List<Map<String, Object>> anchors = jdbc.queryForList("SELECT p.endpoint_kind,p.event_id,p.player_id,"
                 + "p.validation_state,p.read_started_at,p.read_finished_at,p.body FROM "
                 + TABLES.fixtureDependencyManifest() + " m JOIN " + TABLES.payload()
@@ -4282,37 +4443,41 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                 + " FROM " + TABLES.fixtureDependencyManifest() + " m JOIN " + TABLES.payload()
                 + " p ON p.id=m.live_payload_id WHERE m.run_generation=? ORDER BY endpoint_kind",
                 generation, generation, generation);
-        assertThat(anchors).hasSize(3);
-        assertAnchorBody(anchors, "BOOTSTRAP_STATIC", null, source.bootstrapBytes());
-        assertAnchorBody(anchors, "FIXTURES", null, source.fixtureBytes());
-        assertAnchorBody(anchors, "EVENT_LIVE", oracle.gameweek(), source.liveBytes(oracle.gameweek()));
-
+        if (anchors.size() != 3
+                || !anchorBodyMatches(anchors, "BOOTSTRAP_STATIC", null, source.bootstrapBytes())
+                || !anchorBodyMatches(anchors, "FIXTURES", null, source.fixtureBytes())
+                || !anchorBodyMatches(anchors, "EVENT_LIVE", oracle.gameweek(), source.liveBytes(oracle.gameweek()))) {
+            return false;
+        }
         List<Map<String, Object>> histories = fixtureHistoryPayloadRows(harness, oracle.requiredPlayers(), observation);
-        assertThat(histories).hasSize(oracle.requiredPlayers().size());
-        assertThat(histories.stream().map(row -> ((Number) row.get("expected_player_id")).intValue()).toList())
-                .containsExactlyElementsOf(oracle.requiredPlayers().stream().sorted().toList());
+        if (histories.size() != oracle.requiredPlayers().size()) return false;
         for (Map<String, Object> row : histories) {
             int playerId = ((Number) row.get("expected_player_id")).intValue();
-            assertThat(row.get("endpoint_kind")).isEqualTo("ELEMENT_SUMMARY");
-            assertThat(row.get("event_id")).isNull();
-            assertThat(row.get("validation_state")).isEqualTo("VALID");
-            assertThat(row.get("body")).isEqualTo(source.historyBytes(playerId));
-            assertThat(row.get("read_started_at")).isEqualTo(Timestamp.from(
-                    observation.reads().histories().get(playerId).startedAt()));
-            assertThat(row.get("read_finished_at")).isEqualTo(Timestamp.from(
-                    observation.reads().histories().get(playerId).completedAt()));
+            var read = observation.reads().histories().get(playerId);
+            if (read == null || row.get("payload_id") == null
+                    || !"ELEMENT_SUMMARY".equals(row.get("endpoint_kind")) || row.get("event_id") != null
+                    || !"VALID".equals(row.get("validation_state"))
+                    || !bodyMatches((byte[]) row.get("body"), source.historyBytes(playerId))
+                    || !Timestamp.from(read.startedAt()).equals(row.get("read_started_at"))
+                    || !Timestamp.from(read.completedAt()).equals(row.get("read_finished_at"))) return false;
         }
+        return true;
     }
 
-    private static void assertAnchorBody(List<Map<String, Object>> anchors, String role,
-                                         Integer eventId, byte[] expectedBody) {
-        assertThat(anchors).filteredOn(row -> role.equals(row.get("endpoint_kind")))
-                .singleElement().satisfies(row -> {
-                    assertThat(row.get("event_id")).isEqualTo(eventId);
-                    assertThat(row.get("player_id")).isNull();
-                    assertThat(row.get("validation_state")).isEqualTo("VALID");
-                    assertThat(row.get("body")).isEqualTo(expectedBody);
-                });
+    private static boolean anchorBodyMatches(List<Map<String, Object>> anchors, String role,
+                                             Integer eventId, byte[] expectedBody) {
+        List<Map<String, Object>> matches = anchors.stream()
+                .filter(row -> role.equals(row.get("endpoint_kind"))).toList();
+        if (matches.size() != 1) return false;
+        Map<String, Object> row = matches.getFirst();
+        return java.util.Objects.equals(row.get("event_id"), eventId) && row.get("player_id") == null
+                && "VALID".equals(row.get("validation_state"))
+                && bodyMatches((byte[]) row.get("body"), expectedBody);
+    }
+
+    private static boolean bodyMatches(byte[] actualBody, byte[] expectedBody) {
+        return actualBody != null && java.util.Arrays.equals(actualBody, expectedBody)
+                && OwnedSyncStore.sha256(actualBody).equals(OwnedSyncStore.sha256(expectedBody));
     }
 
     private static boolean correctionBatchesValid(SourceRead first, SourceRead second, Instant correctionFloor) {
@@ -4450,8 +4615,9 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
         return result;
     }
 
-    private static void assertTargetReceiptIntervalNegativeCases(Harness harness, int fixtureId) {
+    private static void assertTargetReceiptIntervalNegativeCases(Harness harness, int fixtureId) throws IOException {
         assertCorrectionBatchPairNegativeCases();
+        assertSourceObservationProofNegativeCases();
         Map<String, Object> receipt = jdbc.queryForMap("SELECT r.source_read_started_at run_started,"
                 + "r.source_read_finished_at run_finished,r.completed_at,p.source_read_started_at receipt_started,"
                 + "p.source_read_finished_at receipt_finished,p.published_at receipt_published FROM "
@@ -4481,6 +4647,153 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
         assertThat(receiptIntervalProof(runStarted, runFinished, receiptStarted, receiptFinished,
                 completedAt, Timestamp.from(now.plusNanos(1_000)), now))
                 .as("a future publication timestamp is rejected").isFalse();
+        assertJointlyShortenedFixtureFinishIsRejected(harness, fixtureId);
+        assertJointlyShortenedCanonicalStartIsRejected(harness);
+    }
+
+    private static void assertJointlyShortenedFixtureFinishIsRejected(Harness harness, int fixtureId) {
+        Map<String, Object> row = jdbc.queryForMap("SELECT fs.current_verified_generation,r.source_read_started_at,"
+                + "r.source_read_finished_at,p.source_read_started_at receipt_started,"
+                + "p.source_read_finished_at receipt_finished,r.completed_at,p.published_at FROM "
+                + TABLES.fixtureSync() + " fs JOIN " + TABLES.receipt()
+                + " p ON p.season=fs.season_code AND p.publication_key='fixture:' || fs.fixture_id::text"
+                + " AND p.latest_generation=fs.current_verified_generation JOIN " + TABLES.run()
+                + " r ON r.generation=p.latest_generation AND r.season=p.season"
+                + " WHERE fs.season_id=? AND fs.fixture_id=? AND fs.state='VERIFIED'",
+                SEASON.id(), fixtureId);
+        long generation = numberLong(row.get("current_verified_generation"));
+        Timestamp runStarted = rTimestamp(row, "source_read_started_at");
+        Timestamp runFinished = rTimestamp(row, "source_read_finished_at");
+        Timestamp receiptStarted = rTimestamp(row, "receipt_started");
+        Timestamp receiptFinished = rTimestamp(row, "receipt_finished");
+        Timestamp completedAt = rTimestamp(row, "completed_at");
+        Timestamp publishedAt = rTimestamp(row, "published_at");
+        RootDocuments root = currentCanonicalDocuments(harness, fixtureId);
+        FixtureVerification.Observation observation = fixtureObservation(fixtureId);
+        SourceRead bootstrap = sourceRead(root.bootstrap());
+        SourceRead fixtures = new SourceRead(observation.reads().fixture().startedAt(),
+                observation.reads().fixture().completedAt());
+        SourceRead live = new SourceRead(observation.reads().live().startedAt(),
+                observation.reads().live().completedAt());
+        List<SourceRead> histories = observation.reads().histories().values().stream()
+                .map(read -> new SourceRead(read.startedAt(), read.completedAt())).toList();
+        List<SourceRead> allReads = new ArrayList<>(List.of(bootstrap, fixtures, live));
+        allReads.addAll(histories);
+        List<SourceRead> fixtureReads = new ArrayList<>(List.of(fixtures, live));
+        fixtureReads.addAll(histories);
+        SourceRead fixtureInterval = observationInterval(observation);
+        assertThat(fullSourceIntervalProof(generation, generation,
+                new SourceRead(runStarted.toInstant(), runFinished.toInstant()), completedAt.toInstant(),
+                allReads, fixtureReads, fixtureInterval))
+                .as("actual fixture run spans bootstrap, fixture, live and every history read").isTrue();
+        Timestamp shortenedFinish = Timestamp.from(fixtures.finishedAt());
+        assertThat(shortenedFinish).isBefore(runFinished);
+        try {
+            jdbc.update("UPDATE " + TABLES.run() + " SET source_read_finished_at=? WHERE generation=?",
+                    shortenedFinish, generation);
+            jdbc.update("UPDATE " + TABLES.receipt() + " SET source_read_finished_at=?"
+                    + " WHERE season=? AND publication_key=? AND latest_generation=?",
+                    shortenedFinish, SEASON.code(), "fixture:" + fixtureId, generation);
+            Map<String, Object> shortened = jdbc.queryForMap("SELECT r.source_read_started_at run_started,"
+                    + "r.source_read_finished_at run_finished,p.source_read_started_at receipt_started,"
+                    + "p.source_read_finished_at receipt_finished,r.completed_at,p.published_at FROM "
+                    + TABLES.run() + " r JOIN " + TABLES.receipt()
+                    + " p ON p.season=r.season AND p.publication_key=r.publication_key"
+                    + " AND p.latest_generation=r.generation WHERE r.generation=?", generation);
+            assertThat(receiptIntervalProof(rTimestamp(shortened, "run_started"),
+                    rTimestamp(shortened, "run_finished"), rTimestamp(shortened, "receipt_started"),
+                    rTimestamp(shortened, "receipt_finished"), rTimestamp(shortened, "completed_at"),
+                    rTimestamp(shortened, "published_at"), harness.clock.instant()))
+                    .as("jointly shortened run and receipt retain the local receipt predicate").isTrue();
+            assertThat(fullSourceIntervalProof(generation, generation,
+                    new SourceRead(rTimestamp(shortened, "run_started").toInstant(),
+                            rTimestamp(shortened, "run_finished").toInstant()),
+                    rTimestamp(shortened, "completed_at").toInstant(), allReads, fixtureReads, fixtureInterval))
+                    .as("a receipt ending before its latest history read is not full-source proof").isFalse();
+        } finally {
+            jdbc.update("UPDATE " + TABLES.run() + " SET source_read_finished_at=? WHERE generation=?",
+                    runFinished, generation);
+            jdbc.update("UPDATE " + TABLES.receipt() + " SET source_read_finished_at=?"
+                    + " WHERE season=? AND publication_key=? AND latest_generation=?",
+                    receiptFinished, SEASON.code(), "fixture:" + fixtureId, generation);
+        }
+    }
+
+    private static void assertJointlyShortenedCanonicalStartIsRejected(Harness harness) {
+        CanonicalParentProof selected = currentCanonicalParentProof(harness);
+        assertThat(selected.currentPublished()).isTrue();
+        Map<String, Object> row = jdbc.queryForMap("SELECT p.publication_key,p.latest_generation,"
+                + "p.source_read_started_at receipt_started,p.source_read_finished_at receipt_finished,"
+                + "p.published_at,r.source_read_started_at run_started,r.source_read_finished_at run_finished,"
+                + "r.completed_at,b.read_started_at bootstrap_started,b.read_finished_at bootstrap_finished,"
+                + "f.read_started_at fixtures_started,f.read_finished_at fixtures_finished,"
+                + "p.source_bootstrap_sha256,p.source_fixtures_sha256,p.source_pair_fingerprint FROM "
+                + TABLES.receipt() + " p JOIN " + TABLES.run() + " r ON r.generation=p.latest_generation"
+                + " AND r.season=p.season JOIN " + TABLES.payload() + " b ON b.id=p.source_bootstrap_payload_id"
+                + " JOIN " + TABLES.payload() + " f ON f.id=p.source_fixtures_payload_id"
+                + " WHERE p.season=? AND p.publication_key=? AND p.latest_generation=?",
+                SEASON.code(), selected.publicationKey(), selected.publicationGeneration());
+        long generation = numberLong(row.get("latest_generation"));
+        Timestamp runStarted = rTimestamp(row, "run_started");
+        Timestamp receiptStarted = rTimestamp(row, "receipt_started");
+        Timestamp runFinished = rTimestamp(row, "run_finished");
+        Timestamp receiptFinished = rTimestamp(row, "receipt_finished");
+        Timestamp completedAt = rTimestamp(row, "completed_at");
+        Timestamp publishedAt = rTimestamp(row, "published_at");
+        Timestamp bootstrapStarted = rTimestamp(row, "bootstrap_started");
+        Timestamp bootstrapFinished = rTimestamp(row, "bootstrap_finished");
+        Timestamp fixturesStarted = rTimestamp(row, "fixtures_started");
+        Timestamp fixturesFinished = rTimestamp(row, "fixtures_finished");
+        String bootstrapHash = (String) row.get("source_bootstrap_sha256");
+        String fixturesHash = (String) row.get("source_fixtures_sha256");
+        String fingerprint = (String) row.get("source_pair_fingerprint");
+        assertThat(fixturesStarted).isAfter(bootstrapStarted);
+        assertThat(canonicalSourceSpanProof(runStarted, runFinished, receiptStarted, receiptFinished,
+                completedAt, publishedAt, bootstrapStarted, bootstrapFinished, fixturesStarted, fixturesFinished,
+                harness.clock.instant())).isTrue();
+        try {
+            jdbc.update("UPDATE " + TABLES.run() + " SET source_read_started_at=? WHERE generation=?",
+                    fixturesStarted, generation);
+            jdbc.update("UPDATE " + TABLES.receipt() + " SET source_read_started_at=?"
+                    + " WHERE season=? AND publication_key=? AND latest_generation=?",
+                    fixturesStarted, SEASON.code(), selected.publicationKey(), generation);
+            Map<String, Object> shortened = jdbc.queryForMap("SELECT p.source_read_started_at receipt_started,"
+                    + "p.source_read_finished_at receipt_finished,p.published_at,"
+                    + "r.source_read_started_at run_started,r.source_read_finished_at run_finished,r.completed_at,"
+                    + "b.read_started_at bootstrap_started,b.read_finished_at bootstrap_finished,"
+                    + "f.read_started_at fixtures_started,f.read_finished_at fixtures_finished,"
+                    + "p.source_bootstrap_sha256,p.source_fixtures_sha256,p.source_pair_fingerprint FROM "
+                    + TABLES.receipt() + " p JOIN " + TABLES.run()
+                    + " r ON r.generation=p.latest_generation AND r.season=p.season JOIN " + TABLES.payload()
+                    + " b ON b.id=p.source_bootstrap_payload_id JOIN " + TABLES.payload()
+                    + " f ON f.id=p.source_fixtures_payload_id WHERE p.season=? AND p.publication_key=?"
+                    + " AND p.latest_generation=?", SEASON.code(), selected.publicationKey(), generation);
+            assertThat(receiptIntervalProof(rTimestamp(shortened, "run_started"),
+                    rTimestamp(shortened, "run_finished"), rTimestamp(shortened, "receipt_started"),
+                    rTimestamp(shortened, "receipt_finished"), rTimestamp(shortened, "completed_at"),
+                    rTimestamp(shortened, "published_at"), harness.clock.instant()))
+                    .as("jointly shortened canonical run and receipt retain the local receipt predicate").isTrue();
+            assertThat(canonicalSourceSpanProof(rTimestamp(shortened, "run_started"),
+                    rTimestamp(shortened, "run_finished"), rTimestamp(shortened, "receipt_started"),
+                    rTimestamp(shortened, "receipt_finished"), rTimestamp(shortened, "completed_at"),
+                    rTimestamp(shortened, "published_at"), rTimestamp(shortened, "bootstrap_started"),
+                    rTimestamp(shortened, "bootstrap_finished"), rTimestamp(shortened, "fixtures_started"),
+                    rTimestamp(shortened, "fixtures_finished"), harness.clock.instant()))
+                    .as("full published-source proof includes the actual earliest body start").isFalse();
+            assertThat(shortened.get("source_bootstrap_sha256")).isEqualTo(bootstrapHash);
+            assertThat(shortened.get("source_fixtures_sha256")).isEqualTo(fixturesHash);
+            assertThat(shortened.get("source_pair_fingerprint")).isEqualTo(fingerprint);
+        } finally {
+            jdbc.update("UPDATE " + TABLES.run() + " SET source_read_started_at=? WHERE generation=?",
+                    runStarted, generation);
+            jdbc.update("UPDATE " + TABLES.receipt() + " SET source_read_started_at=?"
+                    + " WHERE season=? AND publication_key=? AND latest_generation=?",
+                    receiptStarted, SEASON.code(), selected.publicationKey(), generation);
+        }
+    }
+
+    private static SourceRead sourceRead(CatalogueScheduleParser.SourceDocument document) {
+        return new SourceRead(document.readInterval().startedAt(), document.readInterval().completedAt());
     }
 
     private static void assertCanonicalPairProof(Harness harness, SourceData source) {
@@ -4984,10 +5297,43 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
         }
     }
 
-    private record FirstPendingObservation(long generation, SourceRead reads, String reasons,
+    private record FirstPendingObservation(long generation, int seasonId, String seasonCode,
+                                           Long currentVerifiedGeneration, SourceRead reads, String reasons,
                                            FixtureVerification.Observation observation,
                                            int expectedParticipants, int receivedParticipants,
                                            int missingParticipants) { }
+
+    private record FixtureSourceBatchProof(long generation, SourceRead interval, Instant requestedFloor,
+                                           boolean valid, Map<String, Object> trace) { }
+
+    private record FixtureSourcePairProof(FixtureSourceBatchProof first, FixtureSourceBatchProof second,
+                                          boolean capturedFirstPending, boolean generationOrder,
+                                          boolean independentIntervals, boolean activeEpochThree) {
+        boolean valid() {
+            return first.valid() && second.valid() && capturedFirstPending && generationOrder
+                    && independentIntervals && activeEpochThree;
+        }
+
+        Map<String, Object> trace() {
+            Map<String, Object> trace = new TreeMap<>();
+            trace.put("firstPendingGeneration", first.generation());
+            trace.put("currentReceiptGeneration", second.generation());
+            trace.put("firstInterval", first.interval());
+            trace.put("secondInterval", second.interval());
+            trace.put("firstRequestedFloor", first.requestedFloor());
+            trace.put("secondRequestedFloor", second.requestedFloor());
+            trace.put("capturedFirstPendingMatches", capturedFirstPending);
+            trace.put("generationOrder", generationOrder);
+            trace.put("independentIntervals", independentIntervals);
+            trace.put("activeEpochThree", activeEpochThree);
+            trace.put("pairProof", valid());
+            trace.put("firstSourceProof", first.valid());
+            trace.put("secondSourceProof", second.valid());
+            trace.put("firstProof", first.trace());
+            trace.put("secondProof", second.trace());
+            return java.util.Collections.unmodifiableMap(trace);
+        }
+    }
 
     private record FixtureOwnershipSnapshot(String state, String observation, String observationCoherent,
                                             String observationFingerprint, Long observationGeneration,
@@ -6925,9 +7271,10 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
             if (observedFixtureIds.isEmpty()) return;
             String keys = observedFixtureIds.stream().sorted().map(String::valueOf)
                     .collect(java.util.stream.Collectors.joining(","));
-            jdbc.query("SELECT fs.fixture_id,fs.observation_generation,fs.source_read_started_at,"
-                            + "fs.source_read_finished_at,fs.validation_failures::text validation_failures,"
-                            + "fs.observation::text observation,fs.expected_participants,fs.received_participants,"
+            jdbc.query("SELECT fs.fixture_id,fs.season_id,fs.season_code,fs.current_verified_generation,"
+                            + "fs.observation_generation,fs.source_read_started_at,fs.source_read_finished_at,"
+                            + "fs.validation_failures::text validation_failures,fs.observation::text observation,"
+                            + "fs.expected_participants,fs.received_participants,"
                             + "cardinality(fs.missing_player_ids) missing_participants FROM "
                             + TABLES.fixtureSync() + " fs JOIN "
                             + TABLES.run() + " r ON r.generation=fs.observation_generation"
@@ -6938,6 +7285,8 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                             + " AND r.state='COMPLETED' AND r.runtime_mode=? AND r.runtime_epoch=?",
                     (rs, row) -> firstPendingObservations.putIfAbsent(rs.getInt("fixture_id"),
                             new FirstPendingObservation(rs.getLong("observation_generation"),
+                                    rs.getInt("season_id"), rs.getString("season_code"),
+                                    nullableLong(rs.getObject("current_verified_generation")),
                                     new SourceRead(rs.getTimestamp("source_read_started_at").toInstant(),
                                             rs.getTimestamp("source_read_finished_at").toInstant()),
                                     rs.getString("validation_failures"),
