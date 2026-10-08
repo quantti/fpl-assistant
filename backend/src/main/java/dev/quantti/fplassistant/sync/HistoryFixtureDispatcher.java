@@ -494,11 +494,7 @@ public final class HistoryFixtureDispatcher {
     private SourceStatus currentParentFixtureStatus(Season season, int fixtureId) {
         if (!store.hasCurrentRuntimeEpoch(season.code())) return SourceStatus.UNKNOWN;
         Instant now = clock.instant();
-        return canonicalSnapshot(season)
-                .filter(canonical -> store.isCurrentPublishedCanonicalPair(
-                        season.code(), canonical.bootstrap().runGeneration(), canonical.sourcePair(), now))
-                .filter(canonical -> !canonical.bootstrap().read().finishedAt().isAfter(now)
-                        && !canonical.fixtures().read().finishedAt().isAfter(now))
+        return currentPublishedCanonicalSnapshot(season, now)
                 .flatMap(canonical -> canonical.snapshot().fixtures().stream()
                         .filter(fixture -> fixture.id() == fixtureId).findFirst())
                 .map(fixture -> fixture.finished() ? SourceStatus.FINISHED : SourceStatus.UNFINISHED)
@@ -506,17 +502,24 @@ public final class HistoryFixtureDispatcher {
     }
 
     private Optional<CanonicalPair> canonicalSnapshot(Season season) {
-        return store.findInLatestValidPublicPayloadPairs(season.code(), PUBLIC_PAIR_LIMIT, pair -> {
-            try {
-                return Optional.of(new CanonicalPair(pair.bootstrap(), pair.fixtures(),
-                        CatalogueScheduleParser.parse(season,
-                                document(pair.bootstrap()), document(pair.fixtures())),
-                        OwnedSyncStore.CanonicalSourcePair.from(pair.bootstrap(), pair.fixtures())));
-            } catch (IllegalArgumentException ignored) {
-                // VALID staging metadata never bypasses strict parsing in this dispatcher.
-                return Optional.empty();
-            }
-        });
+        return store.findInLatestValidPublicPayloadPairs(season.code(), PUBLIC_PAIR_LIMIT,
+                pair -> parseCanonicalPair(season, pair));
+    }
+
+    private Optional<CanonicalPair> currentPublishedCanonicalSnapshot(Season season, Instant now) {
+        return store.findInLatestCurrentPublishedCanonicalPairs(season.code(), PUBLIC_PAIR_LIMIT, now,
+                selected -> parseCanonicalPair(season, selected.pair()));
+    }
+
+    private Optional<CanonicalPair> parseCanonicalPair(Season season, PublicPayloadPair pair) {
+        try {
+            return Optional.of(new CanonicalPair(pair.bootstrap(), pair.fixtures(),
+                    CatalogueScheduleParser.parse(season, document(pair.bootstrap()), document(pair.fixtures())),
+                    OwnedSyncStore.CanonicalSourcePair.from(pair.bootstrap(), pair.fixtures())));
+        } catch (IllegalArgumentException ignored) {
+            // VALID staging metadata never bypasses strict parsing in this dispatcher.
+            return Optional.empty();
+        }
     }
 
     private FetchResult fetchAndStage(Lease lease, Endpoint endpoint, Instant sourceFloor) {
