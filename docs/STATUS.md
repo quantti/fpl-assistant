@@ -1,5 +1,147 @@
 # Status — Phase 1
 
+## Task 153 — correction-baseline semantics and bounded acceptance (local, pass, 2026-10-08)
+
+The earlier 35/40 mismatch was caused by the five intentional source corrections replacing their
+baseline receipt generations, not by lost or replayed unchanged fixtures. The acceptance now classifies
+each changed fixture as either safely pending with last-good proof retained or republished from fresh
+source; it no longer requires every old receipt generation to remain current.
+
+The actual-writer/coordinator fixture-3 regression passed **1/1, zero skipped** (39.702 s JUnit;
+1m21s Gradle). Fixture 3 changed `team_h_score` 0→1: baseline receipt 368524 was invalidated while
+its last-good header/stat fingerprints remained recorded, then a coherent fresh pending observation
+368528 kept the current generation null and the OFF read masked. Its two complete observation spans
+were `12:11:11.423–12:12:19.723Z` and `12:53:14.923–12:54:23.223Z` (40m55.2s apart, over the
+10-minute minimum); current-source publication was receipt 368591. The source header fingerprint
+changed to `8a2e439b…e3ec52a`, while the statistics fingerprint stayed
+`a00594cd…208cc522`. All 61 physical PFS rows matched source history metrics, the score-only
+correction changed no PFS metric values (ignoring the write timestamp), and 61 fresh per-player
+evidence rows were appended to the retained 61. A negative unrelated schedule publication changed
+the receipt/pair identity but preserved both payload hashes and fixture-3's source header; receipt
+368524 remained current and no fixture verification was replayed by that publication.
+
+A separate diff preflight passed **1/1, zero skipped** (8.833 s JUnit; 49 s Gradle). Core headers,
+captured headers and authoritative source fingerprints changed for exactly fixtures **1–5**, with
+only `team_h_score` changing; fixtures 6–40 and all metric fingerprints were unchanged. The fixture
+payload hash changed while the bootstrap hash did not.
+
+The exact bounded ACTIVE acceptance then passed **1/1, zero skipped** (749.233 s JUnit; 12m56s
+Gradle). Original 48-hour / 6,000-claim / 6,000-dispatch / 1,500-second work-wall limits were
+unchanged. Targets 41–50 all had receipt-backed fresh proof (generations
+`{41=367486, 42=367487, 43=367613, 44=367694, 45=367762, 46=367826, 47=367827, 48=367828,
+49=367829, 50=367830}`); the run used 2,576 claims, 2,577 dispatches and 1,996.7 virtual seconds.
+All five changed fixtures were genuinely republished in ACTIVE epoch 3 from corrected source:
+`1: 361553→364872`, `2: 361554→365374`, `3: 361555→365654`, `4: 361556→366230`,
+`5: 361557→366231`. Fixtures 6–40 retained their baseline receipt, PFS and evidence components
+exactly, with **zero correction replay runs**. Thus the observed 35 old receipts were the 35
+unchanged fixtures, not a blanket-accepted shortfall; the five changed receipts each have current
+source/header, participant, batch, metric and evidence proof. All target/source assertions, all
+ready/blocked/untouched and FIFO/preferential lane checks passed. Blocked-retry worker body reads
+remained zero; complete-publication logical JDBC bytes were anchors 50,757,432, histories 13,524,992,
+canonical pairs zero. The latest compact-regression XML is
+`backend/build/test-results/test/TEST-fi.karivanttinen.fplassistant.sync.OwnedMatchdayAdmissionProgressIntegrationTest.xml`;
+the combined acceptance metrics and outcome are recorded above.
+
+This is a local bounded acceptance pass, not a full-suite or CI result. Fresh branch CI and independent
+review remain pending. No commit, push, production query, activation or full suite was run;
+production remains OFF83 and the approved 60-minute/500-MB run remains unused.
+
+**Task 153 P1/P2 oracle follow-up (2026-10-08; local pass, review/CI pending):** The corrected-fixture
+oracle now requires all five fixtures 1–5 to be republished, not merely scheduled. For each it identifies
+the first coherent post-invalidation generation as the earliest completed fixture run after the old
+receipt, rejects the incoherent pre-correction observation as a batch, and proves both that run and the
+current receipt generation against the corrected source. Each batch checks the effective source floor,
+exact run/manifest/season/key/epoch, complete source participant IDs, all three exact anchor payload IDs
+and bodies, and every required player's exact history payload/read interval. The first pending batch is
+proved from its staged raw history payloads (the committed per-player evidence table is only required on
+the final published receipt); the final batch additionally requires complete committed evidence and an
+exact current receipt interval through completion/publication. The two receipt-backed source intervals
+must start after the correction floor and be at least ten minutes apart. Negative checks accept the exact
+ten-minute boundary and reject pre-floor, sub-ten-minute and reversed intervals, alongside NULL/mismatched
+receipt and future-publication cases. These checks ran before the correction source mutation. Intermediate
+bounded runs exposed only oracle gaps: first-pending observations have raw history payloads but no committed
+per-player evidence yet, retries can leave extra anchor payload attempts in one run, and fixture receipts do
+not carry canonical-parent payload IDs. The proof now uses each run's manifest-selected anchors, raw history
+payloads and exact fixture receipt fields; no runtime code changed.
+
+The independent ACTIVE parent SQL oracle now orders eligible pairs by
+`GREATEST(bootstrap.read_finished_at, fixtures.read_finished_at) DESC`, then publication time and
+publication generation; its crossed-price regression proves the fresher schedule read wins even though
+its price receipt was published earlier. On guarded `backend/.env.test` (`localhost:55432`), the compact
+oracle tests passed before the bounded acceptance; the exact combined ACTIVE method passed **1/1, zero
+skipped** (Gradle 12m50s) with the original bounds unchanged. Then five standalone methods passed
+sequentially, **1/1, zero skipped each**: compact ACTIVE baseline/oracle, fixture-3 real-writer correction,
+`twoWorkerFixtureFanoutDoesNotStarveDueHistories`,
+`finiteDrainStagesAllPinnedFixturesAndHistoryDependencies`, and
+`fullRosterTwoWorkersStageSourceCompleteFixtureWithinBudget`. The parent-selection class passed **13/13**
+after the explicit crossed-price assertion was added. No full suite ran; CI and independent review remain
+pending. Production remains OFF83, the approved 60-minute/500-MB envelope remains unused, and no commit,
+push or production action occurred.
+
+## Task 153 — initial exact combined ACTIVE acceptance failure (superseded, 2026-10-08)
+
+### Initial failure details
+
+One exact filtered run of `combinedActiveRecoveryPublishesAllTenNeverPublishedFixturesAfterRestart`
+used the guarded `backend/.env.test` URL (`localhost:55432/postgres`): **1 test, 0 skipped, 1
+failure**. JUnit test time was 744.997 s; Gradle wall was 12m50s. The seeded preflight assertions
+passed for 657 unique players, 20 clubs and 50 finished fixtures. The original 48 h / 6,000 claim /
+6,000 dispatch / 1,500 s work-wall bounds were unchanged. The driver drained at
+`2026-10-01T02:34:16.700Z` after 34m16.7s virtual time, 2,576 claims, 2,577 dispatches and 2,580
+admissions; work wall was 743.967/1,500 s. It did not hit `WALL_LIMIT`. The resumed mock server
+recorded 2,578 GETs: 2,418 element summaries, 65 fixtures, 30 event-live and 65 bootstrap requests;
+the combined trace does not emit a planner-tick count. Preparation receipts were price generation
+354330 (02:00 UK capture) and schedule generation 354331 (02:10 UK capture); the schedule receipt
+published at 03:00 UK. First target claim was fixture 41, generation 355680, attempt
+1, worker `active-fixture-manifest-0`, at
+`2026-10-01T02:00:01.200Z`. All ten first observations (generations 355680–355689) were coherent
+`NEEDS_SECOND_OBSERVATION`; the minimum later-batch start after the first read finished was 651.3 s.
+The last target's source reads were bootstrap `05:27:06.6–05:27:06.7`, fixtures
+`05:27:08.8–05:27:08.9`, live `05:27:11.0–05:27:11.1` and history
+`05:32:00.3–05:33:07.5` in the trace's host-local timestamp format; its receipt completed and
+published at `2026-10-01T02:34:16.700Z`, the driver end. The exact `last_verified_at` value was not
+printed separately.
+
+The physical fixture rows **and** exact-source acceptance metric reported fixtures 41–50 VERIFIED,
+with current-epoch-3 receipts `{41=360214, 42=360215, 43=360341, 44=360422, 45=360492,
+46=360557, 47=360558, 48=360559, 49=360560, 50=360561}`. All ten source proof entries had valid
+anchor roles, source floors/intervals, current published parent and finished-fixture evidence,
+matching finish-marker proof, participant/manifests and batch proof; no missing history, bad
+manifest/batch, failed run or skipped target was reported. The selected canonical parent recorded
+in the trace was the current schedule pair: source/publication generation 356347, payload ids
+69405/69406, fingerprint `a540da4f933ac04860204c521317e6d73d2037a6d6805b3acc49931c74c629b7`,
+with current-epoch/current-publication/immutable/hash checks true. The trace records marker-match
+booleans, not raw `finished_parent_*` values or the full rejected-candidate set. It also does not
+list the exact five receipt keys behind the 35/40 aggregate.
+
+The **first failure** was `OwnedMatchdayAdmissionProgressIntegrationTest.java:1060`:
+`servedCorrectionReceipts` expected 40 but was **35**. This counts exact current `latest_generation`
+equality against the 40 saved baseline correction generations after the target recovery. The run
+logs only the count, not which five fixture keys differed; test cleanup then removed the seeded rows,
+so their identities and source-work/queue transitions cannot be recovered from this run. The five
+intentional source changes were `team_h_score` 0→1; initial invalidation enqueued their correction
+work, and the OFF→ACTIVE pre-recovery check retained all 40 expected receipt generations. The
+recovery driver and 10/10 target proofs passed, but the remaining 40-receipt, changed-correction
+queue/epoch and post-recovery immutable-35/changed-5 assertions were not reached. The earlier
+`OWNED_TASK4_POST_RECOVERY_COMPONENT_DIFF {}` was emitted before the target recovery and is not
+post-recovery evidence. The OFF-mode PFS mask assertion passed before reactivation; the later ACTIVE
+mask and optional-component assertions were not reached. At that checkpoint, the 35/40 aggregate
+could not be attributed to an oracle defect or confirmed runtime mutation without per-fixture evidence;
+the follow-up above supplies that attribution.
+
+Blocked-retry worker body reads were zero in every family. Complete-publication worker JDBC reads
+(attempts/rows/values/raw bytes) were anchors `79/79/79/50,757,432`, histories
+`25/1,651/1,651/13,524,992`, canonical pairs and other families zero. The separate canonical-parent
+diagnostic was one query / 1,875,506 raw body bytes and is not worker I/O; mock HTTP response bytes
+are not used as a substitute. Full captured log, complete XML and the raw acceptance trace are
+`/tmp/owned-sync-task153-combined-20261008T100629Z.log`,
+`/tmp/owned-sync-task153-combined-20261008T100629Z.xml` and
+`/tmp/owned-sync-task153-combined-20261008T100629Z-trace.txt`. At that checkpoint no second combined
+run or fixture follow-up had run because the exact combined gate was red; the bounded follow-up and
+resolution are recorded above. No runtime-source edit or bounds change,
+production query/activation, full suite, commit or push occurred at that checkpoint; fresh branch CI
+and independent review remain pending, and production remains OFF.
+
 ## ACTIVE published-parent ordering follow-up (local, 2026-10-08)
 
 The post-push P1 exposed two eligible current-ACTIVE parents whose order disagreed: a newer source
@@ -22,6 +164,37 @@ publication-generation tie-break with source-generation order reversed. Focused 
 `HistoryFixtureDispatcherIntegrationTest.blockedManifest*` methods **5/5** (**18 total**). No full
 suite, Task 4 10/10 acceptance rerun, production query/activation, Fly action, commit or push; Task 4
 acceptance and independent review/branch CI remain pending.
+
+## ACTIVE planner-parent ManualDriver follow-up (local, 2026-10-08; no acceptance)
+
+The unstable fixed-delay diagnostic was test-driver-only: `nextEvent()` scheduled an idle second
+worker at the current virtual instant even when `maxActiveWorkers=1`, so the driver spun at T while
+the real HTTP request timeout expired. Worker-start event eligibility now uses the same concurrency
+and acknowledged-state gate as `startReadyWorkers()`. The test installs its wait observer before
+starting dispatch. Response assignment requires exactly one active owner and a live leased
+season/epoch-matched generation; missing or ambiguous ownership fails immediately. Thread-to-worker
+mappings are asserted present at dispatch start and removed exactly once on completion, while the
+worker-to-generation mapping remains available through response-release/completion checks.
+
+The same two targeted methods passed **2/2, zero skipped on each of two executed runs** against the
+guarded disposable `localhost:55432` database. Gradle wall times were **59 s** and **130 s** (the
+second used `--rerun-tasks`; JUnit reported 20.496 s). The unpublished-pair case selected newer
+valid-but-unpublished B (source generation 353886, read finished `12:00:01.201Z`) as the newest
+valid candidate while retaining published A (source generation 353884, publication generation
+353885, fixtures read finished `12:00:01.200Z`) as the current parent; `PlannerInputRepository.load()`
+classified the target FINISHED and the exact marker remained on A. A temporary direct
+`coordinator.tick()` in that B case returned UNKNOWN and was reverted; B is tested at repository
+selection, while the independent minute case below exercises an actual coordinator tick. That
+interaction remains unverified. In the minute-tick case, at `2026-10-01T02:01:00Z`
+worker 1 held an `ELEMENT_SUMMARY` callback until `02:01:00.100Z`; generation 353934 remained
+mapped to that worker, no worker was completed, and the tick's planner snapshot retained published
+schedule source/publication generation 353891 (payloads 68348/68349) with the finish marker set.
+
+The separate bounded driver stopped at `VIRTUAL_LIMIT` after 14 claims/15 dispatches and 15 virtual
+minutes; fixtures 41–50 had zero attempts and no coherent first-pending observation was reached.
+This verifies neither target recovery nor Task 4 acceptance. No bounds were raised and no production
+or runtime code, full suite, commit or push was touched. The original 48-hour/6,000-claim/6,000-
+dispatch/1,500-second acceptance and fresh branch CI remain separate gates.
 
 ## ACTIVE canonical-source demand-floor P1 follow-up (local, 2026-10-08)
 
@@ -56,17 +229,69 @@ The bounded ACTIVE recovery lookup now filters the current publication receipt, 
 
 This is the pre-P1 checkpoint. Its **5/5** result records the earlier receipt-only behavior; the claim that A remains reusable behind any newer unpublished valid pair is superseded by the demand-floor follow-up above. Do not count this checkpoint as Task 4 acceptance: its 10/10 run was not repeated, and remains not accepted. The test used only its owned/capture tables and preserved the shared season seed. No production query/activation, Fly action, commit or push occurred; independent review and branch CI remain pending. Whether this failure shape persists in production after the source-span repair is unknown; no production evidence was collected.
 
-## PR #153 CI — canonical pair source-span repair (local, 2026-10-07)
+## ACTIVE planner-parent diagnostic (local, 2026-10-07; no acceptance)
 
-CI run [37666002969](https://github.com/quantti/fpl-assistant/actions/runs/37666002969) ran 1,472 tests and failed the combined ACTIVE acceptance. The physical fixture rows showed **six VERIFIED and four still unverified**, but the exact-source oracle rejected the canonical parent evidence for all ten: a price-lane publication attached a bootstrap/fixtures pair while its run and receipt ended at bootstrap completion, before the fixture read ended. This is a publication-evidence defect, not a reason to relax queue bounds or fairness; the 10/10 criterion remains unmet and must not be claimed.
+The test-driver-only fixed-delay diagnostic passed **2/2, 0 skipped** on guarded `localhost:55432`
+(56.472 s JUnit; 1m31s Gradle). At `2026-10-01T02:01:00Z`, the modeled one-minute tick ran with
+worker 2 active and its `ELEMENT_SUMMARY` response pending until `02:01:00.100Z`; the clock did not
+advance past that callback. The tick's `PlannerInputRepository` snapshot selected the same published
+schedule source/publication generation 349543, payloads 68034/68035 (bootstrap read
+01:10:00–01:10:00.100Z; fixtures 01:10:01.100Z–01:10:01.200Z), and the raw target marker became
+complete. Before the tick all `finished_parent_*` fields were NULL and
+`finished_parent_finished=false`; after it, source generation/publication generation were both
+349543, payload ids were 68034/68035, source fingerprint was
+`325c1a29bb7e0a743e6e0105278788840ee839d849f61105fee8bd7757ab6f9e`, fixture fingerprint was
+`edbcf8476c577898a6e5fddabd5be018bdb00079a98bdd99966bd72c0ac4de07`, and
+`finished_parent_finished=true`. The prior `first_finished_observed_at` stayed unchanged. Both
+canonical root receipt rows/keys were unchanged, with zero canonical attempts after the minute tick.
 
-The local repair makes a price publication's run/receipt interval span both canonical reads when it attaches that pair, while `source:bootstrap-static` and daily-price `captured_at` remain tied to bootstrap alone. Store publication now rejects a source span that fails to cover either exact payload interval; both ACTIVE proof paths require ordered, known, non-future payload reads, exact current-epoch publication/receipt/source identities, valid source hashes and a recomputed source-pair fingerprint; parent lookup skips an ineligible newest candidate to find an older still-valid one. A blocked UNKNOWN fixture with a current publication but no exact finish marker now wakes the existing coalesced canonical queue while preserving source floors and avoiding HTTP/body hydration; a valid FINISHED marker still avoids redundant parent work.
+The diagnostic's separate 15-minute/200-claim FIFO run stopped at `VIRTUAL_LIMIT` after 160 claims
+and 162 dispatches: **no target reached a coherent first-pending observation** and fixtures 41–50 had
+zero attempts. This does not verify first-pending target work and is not acceptance. The original
+48-hour/6,000-claim/6,000-dispatch/1,500-second acceptance bounds were not changed or run. Two
+separate focused blocked-manifest tests passed **2/2**; both assert zero body queries/values and no
+HTTP fetch on the blocked retry path. The 2/2 diagnostic pass has not been stable on rerun: one
+repeat failed in `ManualDriver.collectCompleted` because worker 2 completed before its controlled
+response release (virtual time was still 02:00), and another failed in `assignPendingResponses`
+when its selected generation had no matching run row. A short 5-second-response/start-time variant
+hit the missing-row failure and was reverted. These are test-driver failures; first-pending work
+remains unverified, and the successful diagnostic is not acceptance evidence.
 
-Ten focused test methods passed individually on guarded `localhost:55432`: 2 catalogue-dispatch, 5 fixture-recovery, and 3 history/fixture cases, including actual pending-donor price publication, bootstrap-only daily capture time, interval rejection/fallback, missing-marker wake, and valid-finished no-requeue. No Task 4 acceptance rerun, full suite, production query, activation, Fly action, commit or push was performed; PR #153's full CI remains red until a separate acceptance rerun.
+A separate seeded test confirms the suspected `PlannerInputRepository.latestOwnedSnapshot` defect. A
+newer valid-but-unpublished source pair (generation 349538, payloads 68026/68027, both read at
+`2026-09-26T12:00:01.200Z`) was selected ahead of the still-current published pair (source
+349536/publication 349537, payloads 68024/68025; bootstrap `12:00:00Z–12:00:00.100Z`, fixtures
+`12:00:01.100Z–12:00:01.200Z`). `PlannerInputRepository.load()` therefore classified fixture 41 as
+`UNKNOWN` and cleared the exact finish marker despite the older finished publication remaining
+available. **Source proposal only; no production code changed:** filter ACTIVE recovery-parent
+candidates by their exact current publication before returning the newest candidate, or separate
+ordinary source discovery from published-parent selection. This reproduction is concrete but does
+not alone prove the cause of the earlier combined 0/10 run. Production remains OFF; one production
+approval remains unspent. No full suite, production action, commit or push occurred. The checkpoint
+now lives in `docs/superpowers/plans/2026-10-04-owned-sync-recovery-fixes.md`; the
+2026-09-13 plan retains its historical Tasks 1–10 progress line.
 
-The two review-warning follow-ups then passed exactly **3 method-filtered tests** on the disposable `localhost:55432` DB: 2 history/fixture wake variants and 1 fixture-recovery proof. The existing-job variant proves due time advances from future to now while preserving the future `requested_source_after`; the absent-job variant proves both current ACTIVE-epoch canonical jobs are created, with no body reads or HTTP and the transport retry deadline intact. These assertions distinguish the prior `parentRefreshRequired && !parent.currentPublished()` guard: the seeded parent is published but lacks its exact finish marker, so without wake the existing jobs stay future and absent jobs stay absent.
+## Task 153 — acceptance fixture isolation (local, 2026-10-07)
 
-The interval-only proof restores the exact stored publication fingerprint after separately proving that a corrupted fingerprint skips the newer source-pair frame. With valid hashes, payload roles and source identity retained, shortening only the run/receipt interval excludes that publication through both `currentPublishedCanonicalPair` and `currentCanonicalParentEvidence`, falling back to the older valid parent without body reads. The initial 10-fixture acceptance remains nondispositive (six VERIFIED, four unverified); this test-only follow-up is not Task 4 acceptance. No full suite or Task 4 acceptance rerun, production query, activation, Fly action, commit or push was performed.
+A preceding zero-skipped focused-class run failed during setup: `cleanActiveAcceptanceSeason` deleted shared `season.id=27`, which was still referenced by `fpl_fixture_sync_test` from another owned-sync test class. This was a test-isolation setup failure, not source acceptance. The helper now validates and retains the shared `2026-27`/`2026-08-21` season row, clears only this class's `fpl_acc_*` queue/evidence and capture rows plus its core test data, and uses `TapasSeed` to preserve the intended current-season test flag. A regression seeded a foreign `fpl_fixture_sync_test` row for season 27 and proved setup and cleanup preserve both it and the season; it deletes only that dummy row.
+
+The focused regression plus `compactActiveBaselineAndOracleRetainRealReceiptsAcrossReactivation` passed **2/2, 0 skipped** (JUnit 10.152 s; Gradle 35 s) on guarded `localhost:55432`.
+
+The single requested combined acceptance rerun used the unchanged 48-hour / 6,000-claim / 6,000-dispatch / 1,500-second bounds. It failed **1 test, 0 skipped** after 1,502.051 s: the harness stopped at `WALL_LIMIT`, reached 24h19m33.7s virtual time, and verified **0/10** target fixtures (0 target receipts). The last assertion failed at `OwnedMatchdayAdmissionProgressIntegrationTest.java:872`: actual verified IDs `[]`, expected 41–50. The combined source/receipt assertions after this point were not reached; no 10/10 source-proof acceptance is claimed. The original first-finished/daily-due values, 48-hour requirement, and source/body/receipt assertions were not changed or weakened. No second combined run or full suite was started.
+
+The prior CI run [37666002969](https://github.com/quantti/fpl-assistant/actions/runs/37666002969) was red before the canonical source-span repair: physical rows showed six VERIFIED/four unverified while its exact-source oracle rejected all ten because a price publication's run/receipt interval ended before the fixture payload read. That source defect was fixed in `4f7e830` and merged to `master`; the existing focused source-gate regressions cover combined price-read span, bootstrap-only daily capture time, UNKNOWN missing-finish-marker wake, and valid-FINISHED no-requeue. Fresh full CI is pending. Production remains OFF (last known epoch 83); no production query, activation, Fly action, full suite, commit or push occurred.
+
+## PR #153 prior CI evidence — canonical pair source-span repair (historical, 2026-10-07)
+
+CI run [37666002969](https://github.com/quantti/fpl-assistant/actions/runs/37666002969) ran 1,472 tests and failed the combined ACTIVE acceptance. The physical fixture rows showed **six VERIFIED and four still unverified**, but the exact-source oracle rejected the canonical parent evidence for all ten: a price-lane publication attached a bootstrap/fixtures pair while its run and receipt ended at bootstrap completion, before the fixture read ended. This was a publication-evidence defect, not a reason to relax queue bounds or fairness; the 10/10 criterion was unmet and was not claimed.
+
+The repair, now merged to `master` as `4f7e830`, makes a price publication's run/receipt interval span both canonical reads when it attaches that pair, while `source:bootstrap-static` and daily-price `captured_at` remain tied to bootstrap alone. Store publication rejects a source span that fails to cover either exact payload interval; both ACTIVE proof paths require ordered, known, non-future payload reads, exact current-epoch publication/receipt/source identities, valid source hashes and a recomputed source-pair fingerprint; parent lookup skips an ineligible newest candidate to find an older still-valid one. A blocked UNKNOWN fixture with a current publication but no exact finish marker wakes the existing coalesced canonical queue while preserving source floors and avoiding HTTP/body hydration; a valid FINISHED marker still avoids redundant parent work.
+
+Ten focused test methods passed individually on guarded `localhost:55432`: 2 catalogue-dispatch, 5 fixture-recovery, and 3 history/fixture cases, including actual pending-donor price publication, bootstrap-only daily capture time, interval rejection/fallback, missing-marker wake, and valid-finished no-requeue. The later combined attempt and its non-acceptance are recorded above; fresh full CI remains pending.
+
+The two review-warning follow-ups passed exactly **3 method-filtered tests** on the disposable `localhost:55432` DB: 2 history/fixture wake variants and 1 fixture-recovery proof. The existing-job variant proves due time advances from future to now while preserving the future `requested_source_after`; the absent-job variant proves both current ACTIVE-epoch canonical jobs are created, with no body reads or HTTP and the transport retry deadline intact. These assertions distinguish the prior `parentRefreshRequired && !parent.currentPublished()` guard: the seeded parent is published but lacks its exact finish marker, so without wake the existing jobs stay future and absent jobs stay absent.
+
+The interval-only proof restores the exact stored publication fingerprint after separately proving that a corrupted fingerprint skips the newer source-pair frame. With valid hashes, payload roles and source identity retained, shortening only the run/receipt interval excludes that publication through both `currentPublishedCanonicalPair` and `currentCanonicalParentEvidence`, falling back to the older valid parent without body reads. This source-gate follow-up is not Task 4 acceptance.
 
 ## Owned sync — PR #153 review-3 acceptance-oracle P1 repairs (local, 2026-10-06; CI/review pending)
 
@@ -80,7 +305,7 @@ Final current-epoch receipt generations were `{41=336916, 42=336978, 43=337049, 
 
 Worker logical JDBC body reads (attempts/rows/values/raw bytes) were `OWN_ANCHORS=81/81/81/52,632,938`, `CROSS_RUN_HISTORIES=25/1,651/1,651/13,524,992`, `CANONICAL_PAIRS=0/0/0/0`, and zero for other families. The blocked retry remained zero in every worker family. The canonical-parent diagnostic was separately reported as **1 oracle query / 1,875,506 raw body bytes**. The earlier `CANONICAL_PAIRS=1/1/2/1,875,506` “worker” positive was contaminated by that oracle query through `PayloadReadProbe`; it was diagnostic I/O, not worker I/O. The regression now snapshots the probe before oracle work and checks that the metadata/JDBC diagnostic leaves the snapshot unchanged.
 
-Task 4 is **not fully accepted yet**: local focused and combined verification is green, but fresh branch CI and independent review remain pending. Production remains OFF; no full suite, activation, production query, commit or push occurred. Raw evidence: `backend/build/test-results/test/TEST-fi.karivanttinen.fplassistant.sync.OwnedMatchdayAdmissionProgressIntegrationTest.xml`.
+At this 2026-10-06 checkpoint, Task 4 was **not fully accepted**: the then-current focused and combined verification was green, but fresh branch CI and independent review remained pending. The later 2026-10-07 combined rerun hit `WALL_LIMIT`; see the current checkpoint at the top of this file. Production remains OFF; no full suite, activation, production query, commit or push occurred. Raw evidence for the earlier green run: `backend/build/test-results/test/TEST-fi.karivanttinen.fplassistant.sync.OwnedMatchdayAdmissionProgressIntegrationTest.xml`.
 
 ## PR #152 CI season-collision repair (local, 2026-10-06)
 

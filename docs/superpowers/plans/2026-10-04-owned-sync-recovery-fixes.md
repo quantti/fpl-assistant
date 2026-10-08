@@ -1,6 +1,6 @@
 # Owned-sync recovery fixes
 
-**PROGRESS:** Tasks 1–3 and the schedule ownership prerequisite are merged. PR #153 CI run 37666002969 failed one of 1,472 tests; its canonical source-span repair is merged in PR #154. PR #155 now fixes ACTIVE published-parent selection, matching source floors and winner ordering across planner/admission/metadata. Task 4 must rerun with that code and faithful minute ticks, without changing its bounds. Review, fresh CI and production restoration remain separate gates; the single approved production run is unused, and production remains OFF83.
+**PROGRESS:** Tasks 1–3 and the schedule ownership prerequisite are merged. PR #153 CI run 37666002969 failed one of 1,472 tests; its canonical source-span repair is merged in PR #154. PR #155 fixes ACTIVE published-parent selection, matching source floors and winner ordering across planner/admission/metadata. Task 4's bounded ACTIVE acceptance and Task 153 P1/P2 oracle follow-up pass locally: corrected fixtures 1–5 require two exact fresh source batches and current-receipt evidence; the independent parent oracle uses source-read-first ordering. Compact oracles, bounded acceptance and five standalone regressions passed. Independent review and fresh branch CI remain pending; production remains OFF83 and the approved 60-minute/500-MB run remains unused.
 
 ## Goal and evidence
 
@@ -140,6 +140,14 @@ Schedule/header invalidation retains the observation/generation ownership pair w
 
 **P1 ordering follow-up (local, 2026-10-08):** The selector, exact current-publication proof and metadata finish evidence now share one parent winner order: maximum bootstrap/fixtures payload read completion, then publication time, then publication generation. Source-run generation remains the donor identity; publication-run generation remains the receipt owner. Regression pairs use valid price/schedule publications in crossed read/publication order, including a PENDING source donor; planner marker and metadata agree on the same source/publication generations. Different finished/un-finished source payloads prove the older FINISHED parent cannot mask the newer UNFINISHED parent, and a blocked manifest admits from the fresher FINISHED winner without canonical re-enqueue or body hydration. Equal source/publication times exercise publication-generation tie-breaking with source-generation order reversed. Guarded disposable `localhost:55432` focused tests passed: private selection class **13/13**, five blocked-manifest methods **5/5** (**18 total**). No full suite, Task 4 10/10 acceptance rerun, production query/activation, Fly action, commit or push. This does not complete Task 4; independent review and branch CI remain pending.
 
+**Task 4 exact combined rerun (local, failed final gate, 2026-10-08):** One exact filtered run on guarded `backend/.env.test` (`localhost:55432/postgres`) completed **1 test, 0 skipped, 1 failure**; JUnit 744.997 s and Gradle 12m50s. The seeded roster/club/fixture preflight passed (657/20/50). With unchanged 48 h / 6,000-claim / 6,000-dispatch / 1,500 s work-wall limits, the driver drained after 34m16.7s virtual time at 2,576 claims, 2,577 dispatches and 743.967/1,500 s work wall. The resumed mock server recorded 2,578 GETs (2,418 element-summary, 65 fixtures, 30 event-live, 65 bootstrap); the combined trace does not emit a planner-tick count. The 02:00/02:10 UK captures and 03:00 UK schedule publication passed. The first target claim was fixture 41, generation 355680, attempt 1, at `2026-10-01T02:00:01.200Z`. First-pending generations 355680–355689 were coherent; all ten current-epoch-3 fixture rows and exact-source proofs passed, with receipt generations `{41=360214, 42=360215, 43=360341, 44=360422, 45=360492, 46=360557, 47=360558, 48=360559, 49=360560, 50=360561}`. The minimum independent-batch gap was 651.3 s; fixture 50's receipt completed and published at `2026-10-01T02:34:16.700Z` (the exact `last_verified_at` column was not printed). The selected current schedule parent was source/publication generation 356347, payloads 69405/69406, with marker-match/current-finished checks true.
+
+The first failure was line 1060: expected 40 baseline correction receipt generations still current, actual **35**. The trace contained only this aggregate count, not the five fixture keys; the test's `finally` cleanup removed the seeded rows. That first run alone could not attribute those receipts. Its follow-up and resolution are recorded next; the earlier empty component diff was taken before target recovery. No bounds, implementation, production state or runtime mode changed. Full initial log/XML/raw trace: [`docs/STATUS.md`](../../STATUS.md).
+
+**Task 4 correction-baseline follow-up and bounded acceptance (local, 2026-10-08):** The fixture-3 actual-writer/coordinator regression passed **1/1, zero skipped** (39.702 s JUnit; 1m21s Gradle). It corrected score 0→1, retained the last-good header/stat fingerprints while a fresh first observation remained pending/masked, and published only after two coherent source-observation intervals: `12:11:11.423–12:12:19.723Z` then `12:53:14.923–12:54:23.223Z`, 40m55.2s apart. Receipt 368524 advanced only after the verified fresh correction, through first observation generation 368528 to receipt 368591. All 61 physical PFS rows matched current source metrics with no score-only metric change; a fresh 61-row evidence generation was appended. The negative unrelated schedule publication changed publication identity but left source hashes/header unchanged, did not advance the fixture receipt, and did not replay verification.
+
+A separate diff preflight passed **1/1, zero skipped** (8.833 s JUnit; 49 s Gradle): exactly fixtures **1–5** changed in core, captured and authoritative source headers, each only `team_h_score`; fixtures 6–40 and all metric fingerprints stayed unchanged. Only after that proof, the exact bounded ACTIVE acceptance passed **1/1, zero skipped** (749.233 s JUnit; 12m56s Gradle) within the original 48-hour / 6,000-claim / 6,000-dispatch / 1,500-second limits. Fixtures 41–50 obtained 10/10 current receipt-backed proofs after 2,576 claims, 2,577 dispatches and 1,996.7 virtual seconds. All five corrected fixtures were genuinely republished in ACTIVE epoch 3 (`1: 361553→364872`, `2: 361554→365374`, `3: 361555→365654`, `4: 361556→366230`, `5: 361557→366231`); fixtures 6–40 retained their receipt/PFS/evidence baseline exactly, and correction replay runs were zero. Blocked-retry reads were zero; complete-publication logical JDBC bytes were anchors 50,757,432, histories 13,524,992 and canonical pairs zero. The 35 old generations therefore describe the unchanged fixtures, not a tolerated five-receipt loss. All lane/fairness and exact-source assertions passed. This is local focused verification only: no full suite, commit, push, production query/activation or approved-run use. Review and fresh branch CI remain required; see [`docs/STATUS.md`](../../STATUS.md).
+
 **Pass:** all 10/10 initially unpublished fixtures achieve receipt-backed ACTIVE verification within the declared finite bound, with unchanged integrity rules, no correction replay solely on restart, and proven blocked-body savings. If the full-queue test still leaves unverified work behind routine corrections, report the trace and propose a general fairness-preserving work-class adjustment separately; do not sneak in fixture pinning or a production experiment.
 
 **Task 4 initial ACTIVE acceptance (2026-10-06; not passed, 0/10):** The exact focused method ran twice with zero skips against guarded `localhost:55432`; `compileTestJava` passed. Both runs stopped before the main 10/10 driver and receipt/source/participant/batch metrics. The source-frame assertion found that the latest schedule receipt still began at `2026-09-30T18:00:00Z`, not at/after the scheduled `2026-10-01 02:10 UK` capture. In the second trace, the preparation driver reached `2026-10-01T02:00:00Z` (03:00 UK), with 10 target runs pending but zero verified receipts; it recorded 3,248 ACTIVE claim attempts, 3,203 durable admissions and 3,250 dispatch starts. The focused test took 899.639 seconds, below the unchanged 1,500-second wall ceiling; the first attempt stopped at the exact preparation virtual boundary. The 48-hour, 6,000-claim, 6,000-dispatch and wall limits were not raised. No acceptance pass is claimed.
@@ -197,6 +205,87 @@ The current exact target receipt is now compared to its `COMPLETED`, current-epo
 After `compileTestJava`, focused regressions passed **3/3, 0 skipped** (JUnit 21.052 s, Gradle 46 s). The one exact combined ACTIVE method then passed **1/1, 0 skipped** on guarded `backend/.env.test` (`localhost:55432`): 631.849 s JUnit, 634.001 s suite XML, 11m02s Gradle. Receipts were `{41=336916, 42=336978, 43=337049, 44=337111, 45=337182, 46=337248, 47=337321, 48=337322, 49=337465, 50=337531}`. It drained in `PT30M31.3S` with 2,403/6,000 claims, 2,414/6,000 dispatches and 630.197/1,500 s work wall; 48 h / 6,000 / 6,000 / 1,500 limits did not change.
 
 Worker logical reads (attempts/rows/values/raw bytes) were anchors `81/81/81/52,632,938`, histories `25/1,651/1,651/13,524,992`, canonical pairs `0/0/0/0`, and zero other; blocked-retry worker reads remained zero in all families. The diagnostic current-parent body query was separately reported as 1 query / 1,875,506 bytes and no longer enters worker counts. Thus the earlier `CANONICAL_PAIRS=1/1/2/1,875,506` positive was oracle contamination, not worker evidence. The worker snapshot now occurs before any oracle and the focused regression asserts the diagnostic leaves it unchanged. Production remains OFF; no full suite, production action, commit or push ran. Branch CI and independent review are pending; Task 4 is not fully accepted until those gates pass. Full detail and raw XML are in [`docs/STATUS.md`](../../STATUS.md).
+
+## ACTIVE parent-selection diagnostic checkpoint (2026-10-07; not acceptance)
+
+Two focused diagnostics passed 2/2 on the disposable `localhost:55432` database (56.472 s JUnit;
+1m31s Gradle). The manual driver now schedules its planner tick at a real one-minute fixed delay,
+acknowledges active-worker state, and releases no callback early. At `2026-10-01T02:01:00Z`, worker
+2 was active with an `ELEMENT_SUMMARY` response pending until `02:01:00.100Z`; the exact published
+schedule pair (source/publication generation 349543, payloads 68034/68035, source reads
+01:10:00–01:10:01.200Z) stayed selected and its raw `finished_parent_*` marker became complete,
+including `finished_parent_finished=true`. Both canonical root receipt keys remained unchanged, and
+no canonical attempt followed that tick. This verifies the marker wake only.
+
+The bounded 15-minute/200-claim driver did **not** reach a coherent first-pending target observation:
+it stopped at `VIRTUAL_LIMIT` after 160 claims/162 dispatches, with no target first-pending record;
+target runs 41–50 had zero attempts. This is not acceptance, does not establish 10/10, and does not
+replace the unchanged 48-hour/6,000-claim/6,000-dispatch/1,500-second limits. The two focused blocked-
+manifest methods passed 2/2 separately; each asserts zero body queries/values and no HTTP fetch on the
+blocked path. Follow-up repeats were unstable: one `ManualDriver.collectCompleted` failure found worker 2
+complete before its controlled response release while virtual time was still 02:00; another failed
+in `assignPendingResponses` because the selected generation had no matching run row. A short
+5-second-response/start-time experiment hit the missing-row failure and was reverted. These are
+test-driver failures, not acceptance outcomes; the successful 2/2 run has not been reproduced
+reliably, and first-pending work remains unverified.
+
+A separate seeded reproduction confirms a `PlannerInputRepository` selection defect. With published
+pair source generation 349536/publication 349537 (payloads 68024/68025), staging a newer valid but
+unpublished pair (generation 349538, payloads 68026/68027) makes `load()` select the unpublished pair
+and report `UNKNOWN`, even though the older exact pair remains current-published and finished. No
+production source was changed. Source proposal only: filter ACTIVE recovery-parent candidates by the
+exact current publication before returning the newest candidate, or separate ordinary discovery from
+published-parent selection. This reproduction does not alone prove the cause of the earlier 0/10
+combined run. Production remains OFF; one production approval remains unspent. Full acceptance,
+independent review and fresh CI remain pending; see [`docs/STATUS.md`](../../STATUS.md).
+
+## ManualDriver stabilization follow-up (2026-10-08; no acceptance)
+
+The repeat failure was a zero-time `WORKER_START` event for an idle second worker while the
+bounded driver allowed only one active worker. Since `startReadyWorkers()` could not consume that
+event, the loop failed to advance to the minute tick and the real HTTP timeout won. `nextEvent()`
+now shares the active-worker and acknowledged-state gate; the minute test also installs the wait
+observer before dispatch. Callback assignment requires exactly one active owner and the exact live
+leased generation; missing/ambiguous owner rows fail rather than waiting or being skipped. Dispatch
+thread mappings are validated on install/removal, and generation ownership stays on the dispatch
+until its controlled response has been released and completion collected.
+
+The two targeted diagnostics each passed **2/2, zero skipped on two executed runs**, guarded to
+`localhost:55432`: Gradle wall **59 s** and **130 s** (`--rerun-tasks` on the second; JUnit 20.496 s).
+The source case had newer valid unpublished B (generation 353886, read through 12:00:01.201Z) but
+kept current-published A (source 353884/publication 353885, read through 12:00:01.200Z);
+`PlannerInputRepository.load()` classified the target FINISHED and the exact marker remained on A.
+A temporary direct `coordinator.tick()` in that B case returned UNKNOWN and was reverted; B is
+covered at repository selection, while the independent minute case exercises an actual coordinator
+tick. That interaction remains unverified. At virtual T+60 (`02:01:00Z`), worker 1
+held `ELEMENT_SUMMARY` generation 353934 until T+60.1; the tick recorded no completed worker and
+retained published schedule generation 353891/payloads 68348/68349. The bounded driver then stopped
+at `VIRTUAL_LIMIT` after 14 claims, 15 dispatches and 15 virtual minutes; targets 41–50 had zero
+attempts and no first-pending observation. This is a stable driver diagnostic, **not** target
+recovery, 10/10, or Task 4 acceptance. No bound or runtime code changed; full acceptance, CI and
+independent review remain pending. Current detail is in [`docs/STATUS.md`](../../STATUS.md).
+
+**Task 153 P1/P2 oracle follow-up (2026-10-08; local pass, review/CI pending):** The bounded
+acceptance now requires republished receipts for all five corrected fixtures 1–5 and proves, per fixture,
+the earliest coherent post-invalidation source generation and final current receipt against exact source
+floors, complete participants/history payloads, three anchor IDs/bodies, run intervals and receipt
+completion/publication intervals. It explicitly excludes the incoherent pre-correction baseline from the
+independent pair. The first batch is proven from raw history payloads because per-player publication
+evidence is written only after verification; the final batch also requires that committed evidence. Pair
+negative cases cover the exact ten-minute boundary, early floor, short gap and reversed intervals, before
+correction source mutation. The independent SQL winner oracle uses the same source-read-first tuple as
+production without calling its winner helper. A crossed-lane/price test passes with the fresher schedule
+read winning despite its earlier price-receipt publication. Intermediate combined attempts identified
+and corrected test-only assumptions about pending-batch evidence, retried anchor payloads and nullable
+fixture-receipt parent fields; no runtime behavior changed.
+
+Compact oracle checks passed, followed by the exact bounded combined ACTIVE method **1/1, zero skipped**
+(12m50s Gradle; bounds unchanged). Five standalone methods then passed sequentially, **1/1, zero skipped
+each**: compact baseline/oracle, fixture-3 real-writer correction, and the three named STAGING driver
+regressions. The parent-selection class passed **13/13** after the crossed-price assertion was made
+explicit. All verification used the guarded disposable `backend/.env.test` database. No full suite, commit,
+push, production query or activation occurred. Independent review and branch CI remain pending;
+production remains OFF83 and the approved 60-minute/500-MB envelope remains unused.
 
 ## Delivery and rollout
 
