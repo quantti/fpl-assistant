@@ -57,7 +57,8 @@ class HistoryFixtureDispatcherIntegrationTest {
 
     private static final OwnedSyncTables TABLES = OwnedSyncTables.tests();
     private static final CatalogueScheduleTables CAPTURED = CatalogueScheduleTables.tests();
-    private static final Season SEASON = new Season(27, "2026-27", LocalDate.of(2026, 8, 21), null);
+    private static final int CAPTURE_SEASON_ID = 27;
+    private static Season SEASON;
     private static final ObjectMapper JSON = new ObjectMapper();
     private static JdbcTemplate jdbc;
     private static TransactionTemplate tx;
@@ -78,7 +79,13 @@ class HistoryFixtureDispatcherIntegrationTest {
                 required("DB_PASSWORD"));
         jdbc = new JdbcTemplate(dataSource);
         tx = new TransactionTemplate(new DataSourceTransactionManager(dataSource));
-        SharedStatsSeed.ensure(jdbc);
+        SharedStatsSeed.ensureOwnedSyncCaptureSeason(jdbc);
+        SEASON = jdbc.queryForObject("SELECT id, code, start_date, end_date FROM season WHERE id=?",
+                (rs, row) -> new Season(rs.getInt("id"), rs.getString("code"),
+                        rs.getDate("start_date").toLocalDate(),
+                        rs.getDate("end_date") == null ? null : rs.getDate("end_date").toLocalDate()),
+                CAPTURE_SEASON_ID);
+        assertThat(SEASON).isEqualTo(new Season(27, "2026-27", LocalDate.of(2026, 8, 21), null));
         new OwnedSyncSchema(jdbc, TABLES).initialize();
         bootstrap = resource("bootstrap-static.json");
         fixtures = resource("fixtures.json");
@@ -1041,14 +1048,18 @@ class HistoryFixtureDispatcherIntegrationTest {
         jdbc.update("UPDATE " + TABLES.fixtureSync() + " SET state='WAITING_STATS', first_finished_observed_at=?,"
                         + " next_due_at=NULL, due_reason=NULL, transport_retry_at=NULL, dependency_retry_at=NULL,"
                         + " recovery_day=NULL, recovery_started_at=NULL, recovery_until=NULL"
-                        + " WHERE season_id=? AND fixture_id=21",
-                java.sql.Timestamp.from(firstFinished), SEASON.id());
+                        + " WHERE season_id=? AND season_code=? AND fixture_id=21",
+                java.sql.Timestamp.from(firstFinished), SEASON.id(), SEASON.code());
         FixtureManifestSeed manifest = seedBlockedManifest();
+        FixtureParentMetadata expectedParent = new FixtureParentMetadata(
+                firstFinished, freshSource.generation(), stale.sourceGeneration());
+        assertThat(fixtureParentMetadata(21)).isEqualTo(expectedParent);
         assertThat(store.currentCanonicalParentEvidence(SEASON.code(), 21, clock.instant()))
                 .isEqualTo(new OwnedSyncStore.CanonicalParentEvidence(true, true));
 
         tracking.resetBodyQueries();
         fetch.endpoints.clear();
+        Instant admissionAt = clock.instant();
         DispatchResult blocked = dispatcher.process(acquire(manifest.generation()), SEASON);
 
         assertThat(blocked.outcome()).isEqualTo(Outcome.WAITING_FOR_HISTORIES);
@@ -1061,7 +1072,9 @@ class HistoryFixtureDispatcherIntegrationTest {
                 CatalogueScheduleDispatcher.CATALOGUE_PRICE_COALESCING_KEY,
                 CatalogueScheduleDispatcher.SCHEDULE_COALESCING_KEY)).isZero();
         assertThat(jdbc.queryForObject("SELECT recovery_started_at FROM " + TABLES.fixtureSync()
-                + " WHERE season_id=? AND fixture_id=21", java.sql.Timestamp.class, SEASON.id())).isNotNull();
+                + " WHERE season_id=? AND season_code=? AND fixture_id=21", java.sql.Timestamp.class,
+                SEASON.id(), SEASON.code()).toInstant()).isEqualTo(admissionAt);
+        assertThat(fixtureParentMetadata(21)).isEqualTo(expectedParent);
     }
 
     @Test
@@ -1106,12 +1119,16 @@ class HistoryFixtureDispatcherIntegrationTest {
         new PlannerInputRepository(jdbc, store, TABLES, CAPTURED, clock).load(SEASON);
         assertThat(store.currentCanonicalParentEvidence(SEASON.code(), 21, clock.instant()))
                 .isEqualTo(new OwnedSyncStore.CanonicalParentEvidence(true, true));
+        Instant firstFinished = clock.instant().minus(Duration.ofHours(13));
         jdbc.update("UPDATE " + TABLES.fixtureSync() + " SET state='WAITING_STATS', first_finished_observed_at=?,"
                         + " next_due_at=NULL, due_reason=NULL, transport_retry_at=NULL, dependency_retry_at=NULL,"
                         + " recovery_day=NULL, recovery_started_at=NULL, recovery_until=NULL"
-                        + " WHERE season_id=? AND fixture_id=21",
-                java.sql.Timestamp.from(clock.instant().minus(Duration.ofHours(13))), SEASON.id());
+                        + " WHERE season_id=? AND season_code=? AND fixture_id=21",
+                java.sql.Timestamp.from(firstFinished), SEASON.id(), SEASON.code());
         FixtureManifestSeed manifest = seedBlockedManifest();
+        FixtureParentMetadata expectedParent = new FixtureParentMetadata(
+                firstFinished, fresher.sourceGeneration(), fresher.publicationGeneration());
+        assertThat(fixtureParentMetadata(21)).isEqualTo(expectedParent);
         assertThat(store.currentCanonicalParentEvidence(SEASON.code(), 21, clock.instant()))
                 .isEqualTo(new OwnedSyncStore.CanonicalParentEvidence(true, true));
         int pendingCanonicalBefore = jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
@@ -1126,6 +1143,7 @@ class HistoryFixtureDispatcherIntegrationTest {
 
         tracking.resetBodyQueries();
         fetch.endpoints.clear();
+        Instant admissionAt = clock.instant();
         DispatchResult blocked = dispatcher.process(acquire(manifest.generation()), SEASON);
 
         assertThat(blocked.outcome()).isEqualTo(Outcome.WAITING_FOR_HISTORIES);
@@ -1143,7 +1161,9 @@ class HistoryFixtureDispatcherIntegrationTest {
                 + " WHERE generation=?", java.sql.Timestamp.class, fresher.sourceGeneration()))
                 .isEqualTo(donorFloorBefore);
         assertThat(jdbc.queryForObject("SELECT recovery_started_at FROM " + TABLES.fixtureSync()
-                + " WHERE season_id=? AND fixture_id=21", java.sql.Timestamp.class, SEASON.id())).isNotNull();
+                + " WHERE season_id=? AND season_code=? AND fixture_id=21", java.sql.Timestamp.class,
+                SEASON.id(), SEASON.code()).toInstant()).isEqualTo(admissionAt);
+        assertThat(fixtureParentMetadata(21)).isEqualTo(expectedParent);
     }
 
     @Test
@@ -1782,6 +1802,8 @@ class HistoryFixtureDispatcherIntegrationTest {
     }
 
     private record HttpFetchRequest(Lease lease, Endpoint endpoint, Instant sourceFloor) { }
+    private record FixtureParentMetadata(Instant firstFinishedObservedAt, Long sourceGeneration,
+                                         Long publicationGeneration) { }
     private record LaneReuse(long sourceGeneration, long publicationGeneration,
                              OwnedSyncStore.CanonicalSourcePair sourcePair) { }
     private record HistoryJob(long generation, int playerId) { }
@@ -1851,6 +1873,18 @@ class HistoryFixtureDispatcherIntegrationTest {
                         + " WHERE kind='PLAYER_HISTORY' AND state='PENDING' ORDER BY generation",
                 (rs, row) -> new HistoryJob(rs.getLong("generation"), Integer.parseInt(
                         rs.getString("publication_key").substring("player-history:".length()))));
+    }
+
+    private FixtureParentMetadata fixtureParentMetadata(int fixtureId) {
+        return jdbc.queryForObject("""
+                SELECT first_finished_observed_at, finished_parent_generation,
+                       finished_parent_publication_generation
+                FROM %s WHERE season_id=? AND season_code=? AND fixture_id=?
+                """.formatted(TABLES.fixtureSync()), (rs, row) -> new FixtureParentMetadata(
+                rs.getTimestamp("first_finished_observed_at").toInstant(),
+                rs.getObject("finished_parent_generation", Long.class),
+                rs.getObject("finished_parent_publication_generation", Long.class)),
+                SEASON.id(), SEASON.code(), fixtureId);
     }
 
     private FixtureManifestSeed seedBlockedManifest() {
