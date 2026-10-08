@@ -142,6 +142,14 @@ resolution are recorded above. No runtime-source edit or bounds change,
 production query/activation, full suite, commit or push occurred at that checkpoint; fresh branch CI
 and independent review remain pending, and production remains OFF.
 
+## PR #155 CI test-fixture repair (local, 2026-10-08)
+
+CI run [37749672492](https://github.com/quantti/fpl-assistant/actions/runs/37749672492) completed 1,485 tests with two failures, both new `HistoryFixtureDispatcherIntegrationTest` blocked-manifest regressions. Their `fpl_fixture_sync_test` rows referenced season id 27 (`2026-27`) without a matching `season` row; the class had only seeded Tapas' general test seasons, while an earlier focused run inherited id 27 from another test. This is a test-fixture defect, not a runtime failure.
+
+The class now calls `TapasSeed.ensureOwnedSyncCaptureSeason`, loads the exact id/code/date row into the `Season` passed to planner/dispatcher callers, and asserts that identity against the 2026 source fixture calendar. Both regressions assert the exact season/fixture row's `first_finished_observed_at` and source/publication generations before and after native dispatcher admission, plus the persisted recovery start time; a missing row can no longer pass as an admitted wait. The two methods ran first in a filtered invocation on the guarded `127.0.0.1:55432` disposable database with id 27 present and id 1 absent: **2/2 passed**. No shared fixture rows or season 27 were deleted or altered.
+
+Fresh-head CI remains pending. This is test-fixture repair only and is not Task 4's 10/10 acceptance; no full suite, production query/activation, Fly action, commit or push was performed.
+
 ## ACTIVE published-parent ordering follow-up (local, 2026-10-08)
 
 The post-push P1 exposed two eligible current-ACTIVE parents whose order disagreed: a newer source
