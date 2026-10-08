@@ -1,5 +1,69 @@
 # Status — Phase 1
 
+## PR #155 CI test-fixture repair (local, 2026-10-08)
+
+CI run [37749672492](https://github.com/quantti/fpl-assistant/actions/runs/37749672492) completed 1,485 tests with two failures, both new `HistoryFixtureDispatcherIntegrationTest` blocked-manifest regressions. Their `fpl_fixture_sync_test` rows referenced season id 27 (`2026-27`) without a matching `season` row; the class had only seeded Tapas' general test seasons, while an earlier focused run inherited id 27 from another test. This is a test-fixture defect, not a runtime failure.
+
+The class now calls `TapasSeed.ensureOwnedSyncCaptureSeason`, loads the exact id/code/date row into the `Season` passed to planner/dispatcher callers, and asserts that identity against the 2026 source fixture calendar. Both regressions assert the exact season/fixture row's `first_finished_observed_at` and source/publication generations before and after native dispatcher admission, plus the persisted recovery start time; a missing row can no longer pass as an admitted wait. The two methods ran first in a filtered invocation on the guarded `127.0.0.1:55432` disposable database with id 27 present and id 1 absent: **2/2 passed**. No shared fixture rows or season 27 were deleted or altered.
+
+Fresh-head CI remains pending. This is test-fixture repair only and is not Task 4's 10/10 acceptance; no full suite, production query/activation, Fly action, commit or push was performed.
+
+## ACTIVE published-parent ordering follow-up (local, 2026-10-08)
+
+The post-push P1 exposed two eligible current-ACTIVE parents whose order disagreed: a newer source
+pair attached to the price-lane publication published first, and an older source pair attached to the
+schedule-lane publication published later.
+The selector used maximum payload-read completion, while metadata used publication time. Source run
+generation identifies the donor; publication run generation identifies the receipt owner. The shared
+winner key is now `GREATEST(bootstrap.read_finished_at, fixtures.read_finished_at) DESC`, then
+`published_at DESC`, then publication generation DESC across candidate selection, exact publication
+proof and metadata finish evidence; compatibility/write timestamps do not participate. Ordinary
+newest-VALID planner discovery is unchanged.
+
+The private-table selection class now verifies both eligible crossed-order pairs, exact source and
+publication generations in the planner marker, metadata/selector agreement, the newer-unfinished vs
+older-finished marker-clear case, and generation tie-breaking when source and publication times are
+equal. A blocked-manifest regression proves the fresher FINISHED winner admits without a canonical
+re-enqueue or body reads, including a valid PENDING donor. Equal read/publication times exercise the
+publication-generation tie-break with source-generation order reversed. Focused tests passed on guarded
+`localhost:55432`: `OwnedPublishedParentSelectionIntegrationTest` **13/13** and five
+`HistoryFixtureDispatcherIntegrationTest.blockedManifest*` methods **5/5** (**18 total**). No full
+suite, Task 4 10/10 acceptance rerun, production query/activation, Fly action, commit or push; Task 4
+acceptance and independent review/branch CI remain pending.
+
+## ACTIVE canonical-source demand-floor P1 follow-up (local, 2026-10-08)
+
+The source chooser, exact `currentPublishedCanonicalPair` proof and metadata-only
+`currentCanonicalParentEvidence` now share one demanded-floor predicate. Both source and publisher
+lanes compare both payload reads with the maximum `requested_source_after` across matching current
+ACTIVE-epoch runs. This rejects an attached pending donor whose demand advanced after its reads and
+an unchanged completed receipt superseded by a newer pending generation. It does not erase the
+published receipt or alter fixture verification/correction receipts; it only limits reuse as current
+source evidence. Planner finish markers and blocked-manifest admission therefore use the same
+eligible pair, without body hydration on the blocked path.
+
+Five new private-table integration methods cover valid pending-donor reuse, donor advancement through
+the real enqueue API, later completed-donor and publisher demands, and epoch/future-publication
+negatives without inferring finish from `first_finished_observed_at`. The 12 invalid-publication
+variants now keep the fallback pair inside the current demanded floors. The blocked-manifest
+regression advances the pending donor floor, publishes a fresh eligible fallback A, then proves the
+metadata marker binds its exact source/publication generations and native admission neither
+requeues canonical roots nor reads bodies/HTTP. Focused passes on guarded `localhost:55432`:
+`OwnedPublishedParentSelectionIntegrationTest` **10/10**,
+`HistoryFixtureDispatcherIntegrationTest` **30/30**,
+`FixtureRecoveryAdmissionIntegrationTest` **29/29**,
+`PlannerInputRepositoryIntegrationTest` **4/4**, and
+`CatalogueScheduleDispatcherIntegrationTest` **54/54** (**127 total**). This is not the Task 4
+10/10 acceptance and must not be represented as such. No full suite, production query/activation,
+Fly action, commit or push; branch CI and independent review remain pending. `backend/.env.test`
+was absent, so each test command explicitly guarded `DATABASE_URL` to the disposable localhost port.
+
+## ACTIVE published-parent selection follow-up (local, 2026-10-08)
+
+The bounded ACTIVE recovery lookup now filters the current publication receipt, owner/donor keys and epochs, source IDs/intervals, payload validity, source floors, hashes and non-future completion before hydrating a candidate. It then rechecks the exact pair through the existing proof/cache path. `PlannerInputRepository` still discovers ordinary planning inputs from the newest VALID pair; only recovery status/finish markers use the eligible published parent. `HistoryFixtureDispatcher` retains ordinary VALID-pair history discovery and uses the new published-pair traversal only for ACTIVE parent admission.
+
+This is the pre-P1 checkpoint. Its **5/5** result records the earlier receipt-only behavior; the claim that A remains reusable behind any newer unpublished valid pair is superseded by the demand-floor follow-up above. Do not count this checkpoint as Task 4 acceptance: its 10/10 run was not repeated, and remains not accepted. The test used only its owned/capture tables and preserved the shared season seed. No production query/activation, Fly action, commit or push occurred; independent review and branch CI remain pending. Whether this failure shape persists in production after the source-span repair is unknown; no production evidence was collected.
+
 ## PR #153 CI — canonical pair source-span repair (local, 2026-10-07)
 
 CI run [37666002969](https://github.com/quantti/fpl-assistant/actions/runs/37666002969) ran 1,530 tests and failed the combined ACTIVE acceptance. The physical fixture rows showed **six VERIFIED and four still unverified**, but the exact-source oracle rejected the canonical parent evidence for all ten: a price-lane publication attached a bootstrap/fixtures pair while its run and receipt ended at bootstrap completion, before the fixture read ended. This is a publication-evidence defect, not a reason to relax queue bounds or fairness; the 10/10 criterion remains unmet and must not be claimed.
