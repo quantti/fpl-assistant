@@ -44,11 +44,9 @@ public final class PlannerInputRepository {
 
     public PlannerSnapshot load(Season season) {
         Objects.requireNonNull(season);
-        OwnedSnapshot fresh = latestOwnedSnapshot(season);
-        Optional<OwnedSyncStore.CanonicalPublication> publication = fresh == null ? Optional.empty()
-                : store.currentPublishedCanonicalPair(season.code(), fresh.sourcePair(), clock.instant());
-        SourceState source = fresh == null ? capturedSnapshot(season)
-                : sourceState(fresh.snapshot(), publication.orElse(null), fresh.generation(), fresh.sourcePair());
+        Snapshot fresh = latestOwnedSnapshot(season);
+        PublishedOwnedSnapshot publishedParent = fresh == null ? null : latestCurrentPublishedSnapshot(season);
+        SourceState source = fresh == null ? capturedSnapshot(season) : sourceState(fresh, publishedParent);
         store.withinRuntimeFence(() -> {
             observeTransitions(season, source);
             return null;
@@ -56,13 +54,11 @@ public final class PlannerInputRepository {
         return new PlannerSnapshot(source.playerIds(), source.fixtures(), progress(season), fresh != null);
     }
 
-    private OwnedSnapshot latestOwnedSnapshot(Season season) {
+    private Snapshot latestOwnedSnapshot(Season season) {
         return store.findInLatestValidPublicPayloadPairs(season.code(), 20, pair -> {
             try {
-                Snapshot snapshot = CatalogueScheduleParser.parse(
-                        season, document(pair.bootstrap()), document(pair.fixtures()));
-                return Optional.of(new OwnedSnapshot(pair.runGeneration(), snapshot,
-                        OwnedSyncStore.CanonicalSourcePair.from(pair.bootstrap(), pair.fixtures())));
+                return Optional.of(CatalogueScheduleParser.parse(
+                        season, document(pair.bootstrap()), document(pair.fixtures())));
             } catch (IllegalArgumentException ignored) {
                 // Validation metadata never bypasses the strict parser.
                 return Optional.empty();
@@ -70,30 +66,48 @@ public final class PlannerInputRepository {
         }).orElse(null);
     }
 
-    // The parser validates discovery flags for ordinary planning; overdue recovery additionally
-    // requires this exact pair to be the current completed ACTIVE publication. Neither proves that
-    // a fixture correction was published: progress gets that solely from its last-generation receipt.
-    private SourceState sourceState(Snapshot snapshot, OwnedSyncStore.CanonicalPublication publication,
-                                    long sourceGeneration, OwnedSyncStore.CanonicalSourcePair sourcePair) {
-        boolean currentPublishedParent = publication != null;
+    private PublishedOwnedSnapshot latestCurrentPublishedSnapshot(Season season) {
+        return store.findInLatestCurrentPublishedCanonicalPairs(season.code(), 20, clock.instant(), selected -> {
+            try {
+                Snapshot snapshot = CatalogueScheduleParser.parse(
+                        season, document(selected.pair().bootstrap()), document(selected.pair().fixtures()));
+                return Optional.of(new PublishedOwnedSnapshot(snapshot, selected.sourcePair(),
+                        selected.publication()));
+            } catch (IllegalArgumentException ignored) {
+                return Optional.empty();
+            }
+        }).orElse(null);
+    }
+
+    // Ordinary planner inputs still use the newest valid pair; only recovery status and its finish
+    // marker come from the newest exact current-ACTIVE publication. Correction completion remains
+    // separately receipt-backed in progress().
+    private SourceState sourceState(Snapshot snapshot, PublishedOwnedSnapshot publishedParent) {
         Map<Integer, Boolean> checked = new HashMap<>();
         snapshot.gameweeks().forEach(row -> checked.put(row.id(), row.dataChecked()));
         Map<Integer, Set<Integer>> playersByTeam = new HashMap<>();
         snapshot.players().forEach(player -> playersByTeam
                 .computeIfAbsent(player.teamId(), ignored -> new HashSet<>()).add(player.id()));
-        List<Fixture> fixtures = snapshot.fixtures().stream().map(row -> new Fixture(row.id(), row.gameweek(),
-                row.kickoff(), row.started(), row.finished(), checked.getOrDefault(row.gameweek(), false),
-                snapshot.fixturesRead().completedAt(), union(playersByTeam.get(row.homeTeamId()),
-                playersByTeam.get(row.awayTeamId())), currentPublishedParent
-                ? row.finished() ? SourceStatus.FINISHED : SourceStatus.UNFINISHED : SourceStatus.UNKNOWN)).toList();
+        Map<Integer, CatalogueScheduleParser.FixtureRow> publishedFixtures = new HashMap<>();
+        if (publishedParent != null) {
+            publishedParent.snapshot().fixtures().forEach(row -> publishedFixtures.put(row.id(), row));
+        }
+        List<Fixture> fixtures = snapshot.fixtures().stream().map(row -> {
+            CatalogueScheduleParser.FixtureRow published = publishedFixtures.get(row.id());
+            SourceStatus status = published == null ? SourceStatus.UNKNOWN
+                    : published.finished() ? SourceStatus.FINISHED : SourceStatus.UNFINISHED;
+            return new Fixture(row.id(), row.gameweek(), row.kickoff(), row.started(), row.finished(),
+                    checked.getOrDefault(row.gameweek(), false), snapshot.fixturesRead().completedAt(),
+                    union(playersByTeam.get(row.homeTeamId()), playersByTeam.get(row.awayTeamId())), status);
+        }).toList();
         Map<Integer, String> fixtureFingerprints = new HashMap<>();
-        snapshot.fixtures().forEach(row -> fixtureFingerprints.put(row.id(),
+        publishedFixtures.forEach((id, row) -> fixtureFingerprints.put(id,
                 OwnedSyncStore.sha256(FixtureVerification.verifiedHeader(row))));
         return new SourceState(snapshot.players().stream().map(CatalogueScheduleParser.PlayerRow::id)
                 .collect(java.util.stream.Collectors.toUnmodifiableSet()), fixtures,
-                currentPublishedParent ? sourceGeneration : null,
-                currentPublishedParent ? publication.publicationGeneration() : null,
-                currentPublishedParent ? sourcePair : null, fixtureFingerprints);
+                publishedParent == null ? null : publishedParent.sourcePair().bootstrap().runGeneration(),
+                publishedParent == null ? null : publishedParent.publication().publicationGeneration(),
+                publishedParent == null ? null : publishedParent.sourcePair(), fixtureFingerprints);
     }
 
     private SourceState capturedSnapshot(Season season) {
@@ -313,8 +327,9 @@ public final class PlannerInputRepository {
         return new PlannerSnapshot(playerIds, fixtures, progress, false);
     }
 
-    private record OwnedSnapshot(long generation, Snapshot snapshot,
-                                 OwnedSyncStore.CanonicalSourcePair sourcePair) { }
+    private record PublishedOwnedSnapshot(Snapshot snapshot,
+                                          OwnedSyncStore.CanonicalSourcePair sourcePair,
+                                          OwnedSyncStore.CanonicalPublication publication) { }
 
     private record SourceState(Set<Integer> playerIds, List<Fixture> fixtures,
                                Long currentPublishedSourceGeneration,
