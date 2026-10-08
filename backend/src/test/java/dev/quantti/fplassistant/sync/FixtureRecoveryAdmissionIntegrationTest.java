@@ -140,10 +140,13 @@ class FixtureRecoveryAdmissionIntegrationTest {
     }
 
     @Test
-    void coordinatorKeepsLegacyDueThenDispatcherReservesAndCoalescesOneRecoveryAttempt() throws Exception {
+    void coordinatorKeepsLegacyDueButWaitsWhenNewDemandStalesThePublishedParent() throws Exception {
         Instant legacyDue = Instant.parse("2026-09-21T02:00:00Z");
         seedFixture(NOW.minus(Duration.ofHours(13)), legacyDue, "DAILY_ONLY");
         var fence = seedCurrentCanonicalParent();
+        Long publishedGeneration = jdbc.queryForObject("SELECT latest_generation FROM " + TABLES.receipt()
+                + " WHERE season=? AND publication_key=?", Long.class, SEASON.code(),
+                CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY);
         store = new OwnedSyncStore(jdbc, tx, clock, TABLES, fence);
         repository = new FixtureSyncRepository(jdbc, TABLES);
         var publisher = new FixtureSyncPublisher(jdbc, clock, store, repository, TABLES);
@@ -177,29 +180,31 @@ class FixtureRecoveryAdmissionIntegrationTest {
         var recoverySlot = runtime.loadSlots(SEASON.code()).stream().map(row -> row.slot())
                 .filter(slot -> slot.kind() == AdaptiveMatchdayPlanner.WorkKind.FIXTURE_VERIFICATION)
                 .filter(slot -> slot.fixtureIds().contains(FIXTURE_ID)).toList();
-        assertThat(recoverySlot).hasSize(1);
-        assertThat(recoverySlot.getFirst().dueAt()).isEqualTo(legacyDue);
+        assertThat(recoverySlot).isEmpty();
         assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
                 + " WHERE kind='FIXTURE_VERIFICATION' AND publication_key=? AND state='PENDING'",
-                Integer.class, "fixture:" + FIXTURE_ID)).isOne();
+                Integer.class, "fixture:" + FIXTURE_ID)).isZero();
         jdbc.update("UPDATE " + TABLES.run() + " SET due_at=? WHERE kind='CATALOGUE_SCHEDULE' AND state='PENDING'",
                 timestamp(legacyDue.plus(Duration.ofDays(1))));
 
-        assertThat(coordinator.dispatchOne("legacy-recovery")).isTrue();
-        assertThat(fetch.endpoints).containsExactly(Endpoint.bootstrap());
+        assertThat(coordinator.dispatchOne("legacy-recovery")).isFalse();
+        assertThat(fetch.endpoints).isEmpty();
         assertThat(jdbc.queryForObject("SELECT recovery_started_at FROM " + TABLES.fixtureSync()
-                + " WHERE fixture_id=?", java.sql.Timestamp.class, FIXTURE_ID).toInstant()).isEqualTo(legacyDue);
-        Instant transportDue = jdbc.queryForObject("SELECT transport_retry_at FROM " + TABLES.fixtureSync()
-                + " WHERE fixture_id=?", java.sql.Timestamp.class, FIXTURE_ID).toInstant();
-        assertThat(transportDue).isAfter(legacyDue);
+                + " WHERE fixture_id=?", java.sql.Timestamp.class, FIXTURE_ID)).isNull();
+        assertThat(jdbc.queryForObject("SELECT first_finished_observed_at FROM " + TABLES.fixtureSync()
+                + " WHERE fixture_id=?", java.sql.Timestamp.class, FIXTURE_ID).toInstant())
+                .isEqualTo(NOW.minus(Duration.ofHours(13)));
+        assertThat(jdbc.queryForObject("SELECT latest_generation FROM " + TABLES.receipt()
+                + " WHERE season=? AND publication_key=?", Long.class, SEASON.code(),
+                CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY)).isEqualTo(publishedGeneration);
 
         clock.advance(Duration.ofMinutes(1));
         coordinator.tick();
         assertThat(runtime.loadSlots(SEASON.code()).stream().map(row -> row.slot())
                 .filter(slot -> slot.kind() == AdaptiveMatchdayPlanner.WorkKind.FIXTURE_VERIFICATION)
-                .filter(slot -> slot.fixtureIds().contains(FIXTURE_ID))).hasSize(1);
-        assertThat(coordinator.dispatchOne("before-transport-retry")).isFalse();
-        assertThat(fetch.endpoints).containsExactly(Endpoint.bootstrap());
+                .filter(slot -> slot.fixtureIds().contains(FIXTURE_ID))).isEmpty();
+        assertThat(coordinator.dispatchOne("before-parent-refresh")).isFalse();
+        assertThat(fetch.endpoints).isEmpty();
     }
 
     @Test

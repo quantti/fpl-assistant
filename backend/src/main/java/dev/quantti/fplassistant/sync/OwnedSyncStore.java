@@ -241,6 +241,7 @@ public final class OwnedSyncStore {
                   AND r.source_read_started_at IS NOT NULL AND r.source_read_finished_at IS NOT NULL
                   AND r.source_read_started_at<=r.source_read_finished_at
                   AND r.source_read_finished_at<=p.published_at
+                  AND %s
                   AND p.source_read_started_at=r.source_read_started_at
                   AND p.source_read_finished_at=r.source_read_finished_at
                   AND p.source_pair_fingerprint ~ '^[0-9a-f]{64}$'
@@ -254,10 +255,12 @@ public final class OwnedSyncStore {
                   AND r.source_read_finished_at>=b.read_finished_at
                   AND r.source_read_finished_at>=f.read_finished_at
                   %s
-                ORDER BY p.published_at DESC, r.generation DESC
+                ORDER BY %s
                 LIMIT 1
                 """.formatted(tables.run(), tables.receipt(), tables.payload(), tables.payload(),
-                tables.run(), tables.run(), expected);
+                tables.run(), tables.run(), canonicalDemandFloorPredicate("r", "br", "fr", "b", "f"), expected,
+                canonicalParentWinnerOrder("b.read_finished_at", "f.read_finished_at", "p.published_at",
+                        "r.generation"));
         List<Object> parameters = new ArrayList<>(List.of(
                 CatalogueScheduleDispatcher.CATALOGUE_PRICE_COALESCING_KEY,
                 CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY,
@@ -287,6 +290,38 @@ public final class OwnedSyncStore {
                 rs.getLong("source_generation"), rs.getLong("publication_generation"),
                 expectedSource == null ? null : expectedSource.fingerprint()), parameters.toArray())
                 .stream().findFirst();
+    }
+
+    private String canonicalParentWinnerOrder(String bootstrapFinishedAt, String fixturesFinishedAt,
+                                              String publishedAt, String publicationGeneration) {
+        return "GREATEST(" + bootstrapFinishedAt + ", " + fixturesFinishedAt + ") DESC, "
+                + publishedAt + " DESC, " + publicationGeneration + " DESC";
+    }
+
+    /**
+     * Requires every current-epoch demand for each source/publisher lane to be covered by both reads.
+     * A completed receipt can remain latest while a later coalesced generation is pending, so the
+     * maximum lane demand is the source floor; checking only the attached completed run would reuse stale data.
+     */
+    private String canonicalDemandFloorPredicate(String publicationRun, String bootstrapRun, String fixturesRun,
+                                                 String bootstrapPayload, String fixturesPayload) {
+        return String.join(" AND ", List.of(
+                canonicalDemandFloor(publicationRun, bootstrapPayload),
+                canonicalDemandFloor(publicationRun, fixturesPayload),
+                canonicalDemandFloor(bootstrapRun, bootstrapPayload),
+                canonicalDemandFloor(bootstrapRun, fixturesPayload),
+                canonicalDemandFloor(fixturesRun, bootstrapPayload),
+                canonicalDemandFloor(fixturesRun, fixturesPayload)));
+    }
+
+    private String canonicalDemandFloor(String runAlias, String payloadAlias) {
+        return """
+                (SELECT MAX(demand.requested_source_after) FROM %s demand
+                 WHERE demand.kind='CATALOGUE_SCHEDULE' AND demand.season=%s.season
+                   AND demand.runtime_mode=%s.runtime_mode AND demand.runtime_epoch=%s.runtime_epoch
+                   AND demand.coalescing_key=%s.coalescing_key
+                   AND demand.publication_key=%s.publication_key) <= %s.read_started_at
+                """.formatted(tables.run(), runAlias, runAlias, runAlias, runAlias, runAlias, payloadAlias);
     }
 
     /** Returns metadata-only evidence for the newest current-epoch canonical parent pair. */
@@ -357,6 +392,7 @@ public final class OwnedSyncStore {
                       AND p.source_pair_fingerprint ~ '^[0-9a-f]{64}$'
                       AND p.source_bootstrap_sha256 ~ '^[0-9a-f]{64}$'
                       AND p.source_fixtures_sha256 ~ '^[0-9a-f]{64}$'
+                      AND %s
                 ), proof AS (
                     SELECT c.generation, c.published_at, c.source_generation,
                            c.source_bootstrap_payload_id, c.source_fixtures_payload_id,
@@ -394,9 +430,11 @@ public final class OwnedSyncStore {
                        source_fixtures_read_started_at, source_fixtures_read_finished_at,
                        source_bootstrap_sha256, source_fixtures_sha256, source_pair_fingerprint
                 FROM proof
-                ORDER BY published_at DESC, generation DESC
+                ORDER BY %s
                 """.formatted(tables.run(), tables.receipt(), tables.payload(), tables.payload(),
-                tables.run(), tables.run(), tables.fixtureSync()), (rs, row) -> {
+                tables.run(), tables.run(), canonicalDemandFloorPredicate("r", "br", "fr", "b", "f"),
+                tables.fixtureSync(), canonicalParentWinnerOrder("source_bootstrap_read_finished_at",
+                        "source_fixtures_read_finished_at", "published_at", "generation")), (rs, row) -> {
                     long sourceGeneration = rs.getLong("source_generation");
                     CanonicalSourcePair sourcePair = CanonicalSourcePair.of(
                             new CanonicalSourcePayload(rs.getLong("source_bootstrap_payload_id"), sourceGeneration,
@@ -1255,10 +1293,109 @@ public final class OwnedSyncStore {
                 new PublicPayloadPairMetadata(rs.getLong("generation"), rs.getLong("b_id"),
                         rs.getLong("f_id"), instant(rs, "b_started"), instant(rs, "f_started")),
                 validSeason, runtimeFence != null, runtimeMode(), runtimeEpoch(), limit);
+        return visitPublicPayloadPairs(validSeason, candidates, minimumReadStart, visitor);
+    }
+
+    /** Visits only exact current-ACTIVE publications before hydrating any candidate pair. */
+    <T> Optional<T> findInLatestCurrentPublishedCanonicalPairs(String season, int limit, Instant now,
+            Function<CurrentPublishedCanonicalPair, Optional<T>> visitor) {
+        String validSeason = bounded("season", season, 10);
+        if (limit < 1 || limit > 20) throw new IllegalArgumentException("limit must be between 1 and 20");
+        Objects.requireNonNull(now);
+        Objects.requireNonNull(visitor);
+        if (runtimeFence == null || runtimeFence.mode() != OwnedSyncMode.ACTIVE
+                || !runtimeFence.season().equals(validSeason)) return Optional.empty();
+        List<PublicPayloadPairMetadata> candidates = jdbc.query("""
+                SELECT generation, publication_generation, b_id, f_id, b_started, f_started FROM (
+                    SELECT DISTINCT ON (b.id, f.id)
+                           source_run.generation, publication_run.generation AS publication_generation,
+                           b.id AS b_id, f.id AS f_id,
+                           b.read_started_at AS b_started, f.read_started_at AS f_started,
+                           b.read_finished_at AS b_finished, f.read_finished_at AS f_finished,
+                           p.published_at
+                    FROM %s p
+                    JOIN %s publication_run ON publication_run.generation=p.latest_generation
+                        AND publication_run.season=p.season
+                    JOIN %s b ON b.id=p.source_bootstrap_payload_id
+                        AND b.endpoint_kind='BOOTSTRAP_STATIC' AND b.event_id IS NULL AND b.player_id IS NULL
+                        AND b.validation_state='VALID' AND b.source_published IS TRUE
+                        AND b.read_started_at=p.source_bootstrap_read_started_at
+                        AND b.read_finished_at=p.source_bootstrap_read_finished_at
+                    JOIN %s f ON f.id=p.source_fixtures_payload_id
+                        AND f.endpoint_kind='FIXTURES' AND f.event_id IS NULL AND f.player_id IS NULL
+                        AND f.validation_state='VALID' AND f.source_published IS TRUE
+                        AND f.read_started_at=p.source_fixtures_read_started_at
+                        AND f.read_finished_at=p.source_fixtures_read_finished_at
+                    JOIN %s source_run ON source_run.generation=b.run_generation
+                        AND source_run.season=p.season AND f.run_generation=source_run.generation
+                    WHERE p.season=? AND publication_run.publication_key=p.publication_key
+                      AND p.published_at IS NOT NULL AND p.published_at<=?
+                      AND publication_run.kind='CATALOGUE_SCHEDULE'
+                      AND publication_run.runtime_mode='ACTIVE' AND publication_run.runtime_epoch=?
+                      AND publication_run.state='COMPLETED' AND publication_run.completed_at IS NOT NULL
+                      AND publication_run.completed_at<=p.published_at
+                      AND ((publication_run.coalescing_key=? AND publication_run.publication_key=?)
+                           OR (publication_run.coalescing_key=? AND publication_run.publication_key=?))
+                      AND source_run.kind='CATALOGUE_SCHEDULE'
+                      AND source_run.runtime_mode='ACTIVE' AND source_run.runtime_epoch=?
+                      AND ((source_run.coalescing_key=? AND source_run.publication_key=?)
+                           OR (source_run.coalescing_key=? AND source_run.publication_key=?))
+                      AND b.run_generation=f.run_generation
+                      AND b.read_started_at<=b.read_finished_at AND f.read_started_at<=f.read_finished_at
+                      AND b.read_finished_at<=p.published_at AND f.read_finished_at<=p.published_at
+                      AND publication_run.source_read_started_at IS NOT NULL
+                      AND publication_run.source_read_finished_at IS NOT NULL
+                      AND publication_run.source_read_started_at<=publication_run.source_read_finished_at
+                      AND publication_run.source_read_finished_at<=p.published_at
+                      AND p.source_read_started_at=publication_run.source_read_started_at
+                      AND p.source_read_finished_at=publication_run.source_read_finished_at
+                      AND publication_run.source_read_started_at<=b.read_started_at
+                      AND publication_run.source_read_started_at<=f.read_started_at
+                      AND publication_run.source_read_finished_at>=b.read_finished_at
+                      AND publication_run.source_read_finished_at>=f.read_finished_at
+                      AND %s
+                      AND p.source_pair_fingerprint ~ '^[0-9a-f]{64}$'
+                      AND p.source_bootstrap_sha256 ~ '^[0-9a-f]{64}$'
+                      AND p.source_fixtures_sha256 ~ '^[0-9a-f]{64}$'
+                    ORDER BY b.id, f.id, %s
+                ) published_pairs
+                ORDER BY %s
+                LIMIT ?
+                """.formatted(tables.receipt(), tables.run(), tables.payload(), tables.payload(), tables.run(),
+                        canonicalDemandFloorPredicate("publication_run", "source_run", "source_run", "b", "f"),
+                        canonicalParentWinnerOrder("b.read_finished_at", "f.read_finished_at", "p.published_at",
+                                "publication_run.generation"),
+                        canonicalParentWinnerOrder("b_finished", "f_finished", "published_at",
+                                "publication_generation")),
+                (rs, row) -> new PublicPayloadPairMetadata(rs.getLong("generation"), rs.getLong("b_id"),
+                        rs.getLong("f_id"), instant(rs, "b_started"), instant(rs, "f_started")),
+                validSeason, timestamp(now), runtimeFence.epoch(),
+                CatalogueScheduleDispatcher.CATALOGUE_PRICE_COALESCING_KEY,
+                CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY,
+                CatalogueScheduleDispatcher.SCHEDULE_COALESCING_KEY,
+                CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY,
+                runtimeFence.epoch(),
+                CatalogueScheduleDispatcher.CATALOGUE_PRICE_COALESCING_KEY,
+                CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY,
+                CatalogueScheduleDispatcher.SCHEDULE_COALESCING_KEY,
+                CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY, limit);
+        return visitPublicPayloadPairs(validSeason, candidates, null, pair -> {
+            CanonicalSourcePair sourcePair = CanonicalSourcePair.from(pair.bootstrap(), pair.fixtures());
+            Optional<CanonicalPublication> publication = currentPublishedCanonicalPair(
+                    validSeason, sourcePair, now);
+            if (publication.isEmpty()) return Optional.empty();
+            return Objects.requireNonNull(visitor.apply(new CurrentPublishedCanonicalPair(
+                    pair, sourcePair, publication.get())), "published canonical pair visitor result");
+        });
+    }
+
+    private <T> Optional<T> visitPublicPayloadPairs(String season,
+            List<PublicPayloadPairMetadata> candidates, Instant minimumReadStart,
+            Function<PublicPayloadPair, Optional<T>> visitor) {
         for (PublicPayloadPairMetadata candidate : candidates) {
             if (minimumReadStart != null && (candidate.bootstrapStartedAt().isBefore(minimumReadStart)
                     || candidate.fixturesStartedAt().isBefore(minimumReadStart))) continue;
-            Optional<PublicPayloadPair> pair = cachedOrLoadPublicPayloadPair(validSeason, candidate);
+            Optional<PublicPayloadPair> pair = cachedOrLoadPublicPayloadPair(season, candidate);
             if (pair.isEmpty()) continue;
             Optional<T> mapped = Objects.requireNonNull(visitor.apply(pair.get()),
                     "public payload pair visitor result");
@@ -2518,6 +2655,9 @@ public final class OwnedSyncStore {
     private record PublicPayloadPairCacheKey(String season, long runGeneration, long bootstrapId,
                                              long fixturesId, boolean fenced,
                                              String runtimeMode, long runtimeEpoch) { }
+
+    record CurrentPublishedCanonicalPair(PublicPayloadPair pair, CanonicalSourcePair sourcePair,
+                                         CanonicalPublication publication) { }
 
     private record LockedRun(long generation, SyncKind kind, String season, String coalescingKey,
                              String publicationKey, String state, String owner, UUID token,
