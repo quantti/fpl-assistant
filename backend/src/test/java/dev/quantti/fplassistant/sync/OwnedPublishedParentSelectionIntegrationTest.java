@@ -293,6 +293,109 @@ class OwnedPublishedParentSelectionIntegrationTest {
     }
 
     @Test
+    void freshestPublishedSourceWinsWhenAnOlderSourcePublishesLater() {
+        PairSeed olderLaterPublication = seedPublishedPair(bootstrap, unfinishedFixtures, BASE.plusSeconds(10),
+                Lane.PRICE, Lane.SCHEDULE, false);
+        PairSeed fresherEarlierPublication = seedPublishedPair(bootstrap, fixtures, BASE.plusSeconds(60),
+                Lane.SCHEDULE, Lane.PRICE, true);
+        movePublicationLater(olderLaterPublication, BASE.plusSeconds(90), BASE.plusSeconds(100));
+        resetCanonicalDemands(olderLaterPublication, fresherEarlierPublication);
+        clock.set(BASE.plusSeconds(200));
+        assertThat(olderLaterPublication.fixturesRead().finishedAt())
+                .isBefore(fresherEarlierPublication.fixturesRead().finishedAt());
+        assertThat(publicationTime(fresherEarlierPublication)).isBefore(publicationTime(olderLaterPublication));
+        assertThat(jdbc.queryForObject("SELECT state FROM " + TABLES.run() + " WHERE generation=?",
+                String.class, fresherEarlierPublication.sourceGeneration())).isEqualTo("PENDING");
+
+        assertThat(store.currentPublishedCanonicalPair(SEASON.code(), olderLaterPublication.sourcePair(),
+                clock.instant())).contains(new OwnedSyncStore.CanonicalPublication(
+                        olderLaterPublication.sourceGeneration(), olderLaterPublication.publicationGeneration(),
+                        olderLaterPublication.sourcePair().fingerprint()));
+        assertThat(store.currentPublishedCanonicalPair(SEASON.code(), fresherEarlierPublication.sourcePair(),
+                clock.instant())).contains(new OwnedSyncStore.CanonicalPublication(
+                        fresherEarlierPublication.sourceGeneration(), fresherEarlierPublication.publicationGeneration(),
+                        fresherEarlierPublication.sourcePair().fingerprint()));
+        var selected = store.findInLatestCurrentPublishedCanonicalPairs(SEASON.code(), 20, clock.instant(),
+                candidate -> Optional.of(candidate)).orElseThrow();
+        assertThat(selected.sourcePair()).isEqualTo(fresherEarlierPublication.sourcePair());
+        assertThat(selected.publication().sourceGeneration()).isEqualTo(fresherEarlierPublication.sourceGeneration());
+        assertThat(selected.publication().publicationGeneration())
+                .isEqualTo(fresherEarlierPublication.publicationGeneration());
+
+        new PlannerInputRepository(jdbc, store, TABLES, CAPTURED, clock).load(SEASON);
+
+        assertMarker(fresherEarlierPublication);
+        assertThat(store.currentCanonicalParentEvidence(SEASON.code(), FIXTURE_ID, clock.instant()))
+                .isEqualTo(new OwnedSyncStore.CanonicalParentEvidence(true, true));
+    }
+
+    @Test
+    void newerEligibleUnfinishedSourceClearsOlderFinishedParentMarker() {
+        PairSeed olderFinished = seedPublishedPair(bootstrap, fixtures, BASE.plusSeconds(10),
+                Lane.PRICE, Lane.SCHEDULE, false);
+        movePublicationLater(olderFinished, BASE.plusSeconds(90), BASE.plusSeconds(100));
+        resetCanonicalDemands(olderFinished);
+        clock.set(BASE.plusSeconds(200));
+        PlannerInputRepository inputs = new PlannerInputRepository(jdbc, store, TABLES, CAPTURED, clock);
+        inputs.load(SEASON);
+        assertMarker(olderFinished);
+        jdbc.update("UPDATE " + TABLES.fixtureSync() + " SET first_finished_observed_at=?"
+                        + " WHERE season_id=? AND fixture_id=?",
+                timestamp(clock.instant().minus(Duration.ofHours(13))), SEASON.id(), FIXTURE_ID);
+
+        PairSeed newerUnfinished = seedPublishedPair(bootstrap, unfinishedFixtures, BASE.plusSeconds(60),
+                Lane.SCHEDULE, Lane.PRICE, true);
+        resetCanonicalDemands(olderFinished, newerUnfinished);
+        clock.set(BASE.plusSeconds(200));
+
+        var planner = inputs.load(SEASON);
+        var fixture = planner.fixtures().stream().filter(row -> row.id() == FIXTURE_ID).findFirst().orElseThrow();
+
+        assertThat(fixture.recoverySourceStatus()).isEqualTo(SourceStatus.UNFINISHED);
+        assertThat(jdbc.queryForObject("SELECT finished_parent_generation FROM " + TABLES.fixtureSync()
+                + " WHERE season_id=? AND fixture_id=?", Long.class, SEASON.id(), FIXTURE_ID)).isNull();
+        assertThat(jdbc.queryForObject("SELECT finished_parent_publication_generation FROM " + TABLES.fixtureSync()
+                + " WHERE season_id=? AND fixture_id=?", Long.class, SEASON.id(), FIXTURE_ID)).isNull();
+        assertThat(store.currentPublishedCanonicalPair(SEASON.code(), newerUnfinished.sourcePair(), clock.instant()))
+                .contains(new OwnedSyncStore.CanonicalPublication(newerUnfinished.sourceGeneration(),
+                        newerUnfinished.publicationGeneration(), newerUnfinished.sourcePair().fingerprint()));
+        assertThat(store.currentCanonicalParentEvidence(SEASON.code(), FIXTURE_ID, clock.instant()))
+                .isEqualTo(new OwnedSyncStore.CanonicalParentEvidence(true, false));
+    }
+
+    @Test
+    void equalSourceAndPublicationTimesUsePublicationGenerationAsTieBreak() {
+        PairSeed olderSource = seedUnpublishedPair(bootstrap, fixtures, BASE.plusSeconds(10), Lane.SCHEDULE);
+        PairSeed newerSource = seedUnpublishedPair(bootstrap, fixtures, BASE.plusSeconds(10), Lane.PRICE);
+        clock.set(BASE);
+        Run newerSourcePublication = store.enqueue(SyncKind.CATALOGUE_SCHEDULE, SEASON.code(),
+                Lane.PRICE.coalescingKey(), Lane.PRICE.publicationKey(), clock.instant());
+        Run olderSourcePublication = store.enqueue(SyncKind.CATALOGUE_SCHEDULE, SEASON.code(),
+                Lane.SCHEDULE.coalescingKey(), Lane.SCHEDULE.publicationKey(), clock.instant());
+        clock.set(BASE.plusSeconds(12).plusMillis(101));
+        PairSeed newerSourceParent = publishSourcePair(newerSource, Lane.PRICE, newerSourcePublication);
+        PairSeed olderSourceParent = publishSourcePair(olderSource, Lane.SCHEDULE, olderSourcePublication);
+        resetCanonicalDemands(newerSourceParent, olderSourceParent);
+        clock.set(BASE.plusSeconds(100));
+        assertThat(newerSourceParent.sourceGeneration()).isGreaterThan(olderSourceParent.sourceGeneration());
+        assertThat(newerSourceParent.publicationGeneration()).isLessThan(olderSourceParent.publicationGeneration());
+        assertThat(newerSourceParent.fixturesRead().finishedAt())
+                .isEqualTo(olderSourceParent.fixturesRead().finishedAt());
+        assertThat(publicationTime(newerSourceParent)).isEqualTo(publicationTime(olderSourceParent));
+
+        var selected = store.findInLatestCurrentPublishedCanonicalPairs(SEASON.code(), 20, clock.instant(),
+                candidate -> Optional.of(candidate)).orElseThrow();
+
+        assertThat(selected.sourcePair()).isEqualTo(olderSourceParent.sourcePair());
+        assertThat(selected.sourcePair().bootstrap().runGeneration()).isEqualTo(olderSourceParent.sourceGeneration());
+        assertThat(selected.publication().publicationGeneration()).isEqualTo(olderSourceParent.publicationGeneration());
+        new PlannerInputRepository(jdbc, store, TABLES, CAPTURED, clock).load(SEASON);
+        assertMarker(olderSourceParent);
+        assertThat(store.currentCanonicalParentEvidence(SEASON.code(), FIXTURE_ID, clock.instant()))
+                .isEqualTo(new OwnedSyncStore.CanonicalParentEvidence(true, true));
+    }
+
+    @Test
     void currentActivePublicationMayReuseAValidPendingDonorPair() {
         PairSeed published = seedPublishedPair(bootstrap, fixtures, BASE.plusSeconds(10),
                 Lane.SCHEDULE, Lane.PRICE, true);
@@ -520,6 +623,18 @@ class OwnedPublishedParentSelectionIntegrationTest {
                 null, sourcePair, bootstrapRead, fixturesRead, bootstrapBody, fixtureBody);
     }
 
+    private PairSeed publishSourcePair(PairSeed source, Lane publicationLane, Run publicationRun) {
+        Lease publicationLease = store.acquireForSeason(SEASON.code(), "tie-break-publication",
+                Duration.ofMinutes(5)).orElseThrow();
+        assertThat(publicationLease.generation()).isEqualTo(publicationRun.generation());
+        SourceRead combined = new SourceRead(source.bootstrapRead().startedAt(), source.fixturesRead().finishedAt());
+        store.publish(publicationLease, combined,
+                List.of(source.bootstrapRead(), source.fixturesRead()), source.sourcePair(), () -> null);
+        return new PairSeed(source.sourceGeneration(), publicationRun.generation(), source.bootstrapId(),
+                source.fixturesId(), publicationLane, source.sourcePair(), source.bootstrapRead(),
+                source.fixturesRead(), source.bootstrapBody(), source.fixtureBody());
+    }
+
     private void assertMarker(PairSeed expected) {
         var marker = jdbc.queryForMap("SELECT finished_parent_generation,"
                 + "finished_parent_publication_generation, finished_parent_bootstrap_payload_id,"
@@ -537,6 +652,31 @@ class OwnedPublishedParentSelectionIntegrationTest {
         assertThat(marker.get("finished_parent_source_fingerprint")).isEqualTo(expected.sourcePair().fingerprint());
         assertThat(marker.get("finished_parent_fixture_fingerprint")).isEqualTo(fixtureFingerprint(expected));
         assertThat(marker.get("finished_parent_finished")).isEqualTo(true);
+    }
+
+    private Instant publicationTime(PairSeed pair) {
+        return jdbc.queryForObject("SELECT published_at FROM " + TABLES.receipt()
+                + " WHERE season=? AND publication_key=?", Timestamp.class,
+                SEASON.code(), pair.publicationLane().publicationKey()).toInstant();
+    }
+
+    private void movePublicationLater(PairSeed pair, Instant completedAt, Instant publishedAt) {
+        jdbc.update("UPDATE " + TABLES.run() + " SET completed_at=? WHERE generation=?",
+                timestamp(completedAt), pair.publicationGeneration());
+        jdbc.update("UPDATE " + TABLES.receipt() + " SET published_at=? WHERE season=? AND publication_key=?",
+                timestamp(publishedAt), SEASON.code(), pair.publicationLane().publicationKey());
+    }
+
+    private void resetCanonicalDemands(PairSeed... pairs) {
+        List<Object> parameters = new ArrayList<>();
+        parameters.add(timestamp(BASE));
+        for (PairSeed pair : pairs) {
+            parameters.add(pair.sourceGeneration());
+            parameters.add(pair.publicationGeneration());
+        }
+        jdbc.update("UPDATE " + TABLES.run() + " SET requested_source_after=? WHERE generation IN ("
+                + String.join(",", java.util.Collections.nCopies(parameters.size() - 1, "?")) + ")",
+                parameters.toArray());
     }
 
     private void assertReceiptStillPublished(PairSeed expected) {

@@ -255,10 +255,12 @@ public final class OwnedSyncStore {
                   AND r.source_read_finished_at>=b.read_finished_at
                   AND r.source_read_finished_at>=f.read_finished_at
                   %s
-                ORDER BY p.published_at DESC, r.generation DESC
+                ORDER BY %s
                 LIMIT 1
                 """.formatted(tables.run(), tables.receipt(), tables.payload(), tables.payload(),
-                tables.run(), tables.run(), canonicalDemandFloorPredicate("r", "br", "fr", "b", "f"), expected);
+                tables.run(), tables.run(), canonicalDemandFloorPredicate("r", "br", "fr", "b", "f"), expected,
+                canonicalParentWinnerOrder("b.read_finished_at", "f.read_finished_at", "p.published_at",
+                        "r.generation"));
         List<Object> parameters = new ArrayList<>(List.of(
                 CatalogueScheduleDispatcher.CATALOGUE_PRICE_COALESCING_KEY,
                 CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY,
@@ -288,6 +290,12 @@ public final class OwnedSyncStore {
                 rs.getLong("source_generation"), rs.getLong("publication_generation"),
                 expectedSource == null ? null : expectedSource.fingerprint()), parameters.toArray())
                 .stream().findFirst();
+    }
+
+    private String canonicalParentWinnerOrder(String bootstrapFinishedAt, String fixturesFinishedAt,
+                                              String publishedAt, String publicationGeneration) {
+        return "GREATEST(" + bootstrapFinishedAt + ", " + fixturesFinishedAt + ") DESC, "
+                + publishedAt + " DESC, " + publicationGeneration + " DESC";
     }
 
     /**
@@ -422,10 +430,11 @@ public final class OwnedSyncStore {
                        source_fixtures_read_started_at, source_fixtures_read_finished_at,
                        source_bootstrap_sha256, source_fixtures_sha256, source_pair_fingerprint
                 FROM proof
-                ORDER BY published_at DESC, generation DESC
+                ORDER BY %s
                 """.formatted(tables.run(), tables.receipt(), tables.payload(), tables.payload(),
                 tables.run(), tables.run(), canonicalDemandFloorPredicate("r", "br", "fr", "b", "f"),
-                tables.fixtureSync()), (rs, row) -> {
+                tables.fixtureSync(), canonicalParentWinnerOrder("source_bootstrap_read_finished_at",
+                        "source_fixtures_read_finished_at", "published_at", "generation")), (rs, row) -> {
                     long sourceGeneration = rs.getLong("source_generation");
                     CanonicalSourcePair sourcePair = CanonicalSourcePair.of(
                             new CanonicalSourcePayload(rs.getLong("source_bootstrap_payload_id"), sourceGeneration,
@@ -1297,9 +1306,10 @@ public final class OwnedSyncStore {
         if (runtimeFence == null || runtimeFence.mode() != OwnedSyncMode.ACTIVE
                 || !runtimeFence.season().equals(validSeason)) return Optional.empty();
         List<PublicPayloadPairMetadata> candidates = jdbc.query("""
-                SELECT generation, b_id, f_id, b_started, f_started FROM (
+                SELECT generation, publication_generation, b_id, f_id, b_started, f_started FROM (
                     SELECT DISTINCT ON (b.id, f.id)
-                           source_run.generation, b.id AS b_id, f.id AS f_id,
+                           source_run.generation, publication_run.generation AS publication_generation,
+                           b.id AS b_id, f.id AS f_id,
                            b.read_started_at AS b_started, f.read_started_at AS f_started,
                            b.read_finished_at AS b_finished, f.read_finished_at AS f_finished,
                            p.published_at
@@ -1347,12 +1357,16 @@ public final class OwnedSyncStore {
                       AND p.source_pair_fingerprint ~ '^[0-9a-f]{64}$'
                       AND p.source_bootstrap_sha256 ~ '^[0-9a-f]{64}$'
                       AND p.source_fixtures_sha256 ~ '^[0-9a-f]{64}$'
-                    ORDER BY b.id, f.id, p.published_at DESC, publication_run.generation DESC
+                    ORDER BY b.id, f.id, %s
                 ) published_pairs
-                ORDER BY GREATEST(b_finished, f_finished) DESC, generation DESC, published_at DESC
+                ORDER BY %s
                 LIMIT ?
                 """.formatted(tables.receipt(), tables.run(), tables.payload(), tables.payload(), tables.run(),
-                        canonicalDemandFloorPredicate("publication_run", "source_run", "source_run", "b", "f")),
+                        canonicalDemandFloorPredicate("publication_run", "source_run", "source_run", "b", "f"),
+                        canonicalParentWinnerOrder("b.read_finished_at", "f.read_finished_at", "p.published_at",
+                                "publication_run.generation"),
+                        canonicalParentWinnerOrder("b_finished", "f_finished", "published_at",
+                                "publication_generation")),
                 (rs, row) -> new PublicPayloadPairMetadata(rs.getLong("generation"), rs.getLong("b_id"),
                         rs.getLong("f_id"), instant(rs, "b_started"), instant(rs, "f_started")),
                 validSeason, timestamp(now), runtimeFence.epoch(),

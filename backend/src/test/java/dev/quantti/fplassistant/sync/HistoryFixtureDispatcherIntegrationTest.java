@@ -63,6 +63,7 @@ class HistoryFixtureDispatcherIntegrationTest {
     private static TransactionTemplate tx;
     private static byte[] bootstrap;
     private static byte[] fixtures;
+    private static byte[] unfinishedFixture21;
     private static byte[] historyOne;
     private static byte[] liveThree;
 
@@ -81,6 +82,7 @@ class HistoryFixtureDispatcherIntegrationTest {
         new OwnedSyncSchema(jdbc, TABLES).initialize();
         bootstrap = resource("bootstrap-static.json");
         fixtures = resource("fixtures.json");
+        unfinishedFixture21 = withFixtureUnfinished(fixtures, 21);
         historyOne = resource("element-summary-1.json");
         liveThree = resource("event-3-live.json");
     }
@@ -1063,6 +1065,88 @@ class HistoryFixtureDispatcherIntegrationTest {
     }
 
     @Test
+    void blockedManifestUsesFreshestFinishedParentDespiteLaterOlderPublication() {
+        TrackingJdbcTemplate tracking = new TrackingJdbcTemplate(jdbc.getDataSource());
+        OwnedSyncStore.RuntimeFence fence = new PlannerRuntimeRepository(jdbc, tx, clock, TABLES)
+                .activate(SEASON.code(), OwnedSyncMode.ACTIVE);
+        store = new OwnedSyncStore(tracking, tx, clock, TABLES, fence);
+        dispatcher = new HistoryFixtureDispatcher(store, publisher(), fetch, clock);
+        Instant base = clock.instant();
+        LaneReuse older = seedPublishedParent(unfinishedFixture21, CatalogueLane.PRICE,
+                CatalogueLane.SCHEDULE, false, base.plusSeconds(10));
+        LaneReuse fresher = seedPublishedParent(fixtures, CatalogueLane.SCHEDULE,
+                CatalogueLane.PRICE, true, base.plusSeconds(60));
+        jdbc.update("UPDATE " + TABLES.run() + " SET completed_at=? WHERE generation=?",
+                java.sql.Timestamp.from(base.plusSeconds(90)), older.publicationGeneration());
+        jdbc.update("UPDATE " + TABLES.receipt() + " SET published_at=? WHERE season=? AND publication_key=?",
+                java.sql.Timestamp.from(base.plusSeconds(100)), SEASON.code(),
+                CatalogueLane.SCHEDULE.publicationKey());
+        jdbc.update("UPDATE " + TABLES.run() + " SET requested_source_after=? WHERE generation IN (?,?,?,?)",
+                java.sql.Timestamp.from(base), older.sourceGeneration(), older.publicationGeneration(),
+                fresher.sourceGeneration(), fresher.publicationGeneration());
+        clock.set(base.plusSeconds(200));
+        assertThat(older.sourcePair().fixtures().read().finishedAt())
+                .isBefore(fresher.sourcePair().fixtures().read().finishedAt());
+        assertThat(jdbc.queryForObject("SELECT published_at FROM " + TABLES.receipt()
+                + " WHERE season=? AND publication_key=?", java.sql.Timestamp.class, SEASON.code(),
+                CatalogueLane.PRICE.publicationKey()).toInstant()).isBefore(base.plusSeconds(100));
+        assertThat(jdbc.queryForObject("SELECT published_at FROM " + TABLES.receipt()
+                + " WHERE season=? AND publication_key=?", java.sql.Timestamp.class, SEASON.code(),
+                CatalogueLane.SCHEDULE.publicationKey()).toInstant()).isAfter(base.plusSeconds(90));
+        assertThat(jdbc.queryForObject("SELECT state FROM " + TABLES.run() + " WHERE generation=?",
+                String.class, fresher.sourceGeneration())).isEqualTo("PENDING");
+        assertThat(store.currentPublishedCanonicalPair(SEASON.code(), older.sourcePair(), clock.instant())).isPresent();
+        assertThat(store.currentPublishedCanonicalPair(SEASON.code(), fresher.sourcePair(), clock.instant())).isPresent();
+
+        var selected = store.findInLatestCurrentPublishedCanonicalPairs(SEASON.code(), 20, clock.instant(),
+                candidate -> java.util.Optional.of(candidate)).orElseThrow();
+        assertThat(selected.sourcePair()).isEqualTo(fresher.sourcePair());
+        assertThat(selected.publication().sourceGeneration()).isEqualTo(fresher.sourceGeneration());
+        assertThat(selected.publication().publicationGeneration()).isEqualTo(fresher.publicationGeneration());
+        new PlannerInputRepository(jdbc, store, TABLES, CAPTURED, clock).load(SEASON);
+        assertThat(store.currentCanonicalParentEvidence(SEASON.code(), 21, clock.instant()))
+                .isEqualTo(new OwnedSyncStore.CanonicalParentEvidence(true, true));
+        jdbc.update("UPDATE " + TABLES.fixtureSync() + " SET state='WAITING_STATS', first_finished_observed_at=?,"
+                        + " next_due_at=NULL, due_reason=NULL, transport_retry_at=NULL, dependency_retry_at=NULL,"
+                        + " recovery_day=NULL, recovery_started_at=NULL, recovery_until=NULL"
+                        + " WHERE season_id=? AND fixture_id=21",
+                java.sql.Timestamp.from(clock.instant().minus(Duration.ofHours(13))), SEASON.id());
+        FixtureManifestSeed manifest = seedBlockedManifest();
+        assertThat(store.currentCanonicalParentEvidence(SEASON.code(), 21, clock.instant()))
+                .isEqualTo(new OwnedSyncStore.CanonicalParentEvidence(true, true));
+        int pendingCanonicalBefore = jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
+                + " WHERE kind='CATALOGUE_SCHEDULE' AND coalescing_key IN (?,?)"
+                + " AND state IN ('PENDING','LEASED')", Integer.class,
+                CatalogueScheduleDispatcher.CATALOGUE_PRICE_COALESCING_KEY,
+                CatalogueScheduleDispatcher.SCHEDULE_COALESCING_KEY);
+        java.sql.Timestamp donorDueBefore = jdbc.queryForObject("SELECT due_at FROM " + TABLES.run()
+                + " WHERE generation=?", java.sql.Timestamp.class, fresher.sourceGeneration());
+        java.sql.Timestamp donorFloorBefore = jdbc.queryForObject("SELECT requested_source_after FROM "
+                + TABLES.run() + " WHERE generation=?", java.sql.Timestamp.class, fresher.sourceGeneration());
+
+        tracking.resetBodyQueries();
+        fetch.endpoints.clear();
+        DispatchResult blocked = dispatcher.process(acquire(manifest.generation()), SEASON);
+
+        assertThat(blocked.outcome()).isEqualTo(Outcome.WAITING_FOR_HISTORIES);
+        assertThat(fetch.endpoints).isEmpty();
+        assertThat(tracking.bodyQueries()).isZero();
+        assertThat(tracking.snapshot().bodyValues()).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
+                + " WHERE kind='CATALOGUE_SCHEDULE' AND coalescing_key IN (?,?)"
+                + " AND state IN ('PENDING','LEASED')", Integer.class,
+                CatalogueScheduleDispatcher.CATALOGUE_PRICE_COALESCING_KEY,
+                CatalogueScheduleDispatcher.SCHEDULE_COALESCING_KEY)).isEqualTo(pendingCanonicalBefore);
+        assertThat(jdbc.queryForObject("SELECT due_at FROM " + TABLES.run() + " WHERE generation=?",
+                java.sql.Timestamp.class, fresher.sourceGeneration())).isEqualTo(donorDueBefore);
+        assertThat(jdbc.queryForObject("SELECT requested_source_after FROM " + TABLES.run()
+                + " WHERE generation=?", java.sql.Timestamp.class, fresher.sourceGeneration()))
+                .isEqualTo(donorFloorBefore);
+        assertThat(jdbc.queryForObject("SELECT recovery_started_at FROM " + TABLES.fixtureSync()
+                + " WHERE season_id=? AND fixture_id=21", java.sql.Timestamp.class, SEASON.id())).isNotNull();
+    }
+
+    @Test
     void blockedManifestCreatesBothCanonicalJobsWhenNeitherExists() {
         TrackingJdbcTemplate tracking = new TrackingJdbcTemplate(jdbc.getDataSource());
         OwnedSyncStore.RuntimeFence fence = new PlannerRuntimeRepository(jdbc, tx, clock, TABLES)
@@ -1486,6 +1570,39 @@ class HistoryFixtureDispatcherIntegrationTest {
         return run.generation();
     }
 
+    private LaneReuse seedPublishedParent(byte[] fixtureBody, CatalogueLane sourceLane,
+                                          CatalogueLane publicationLane, boolean pendingDonor,
+                                          Instant readStarted) {
+        if (sourceLane == publicationLane) throw new IllegalArgumentException("source and publisher lanes differ");
+        clock.set(readStarted.minusSeconds(10));
+        Run sourceRun = store.enqueue(SyncKind.CATALOGUE_SCHEDULE, SEASON.code(), sourceLane.coalescingKey(),
+                sourceLane.publicationKey(), clock.instant());
+        Run publicationRun = store.enqueue(SyncKind.CATALOGUE_SCHEDULE, SEASON.code(),
+                publicationLane.coalescingKey(), publicationLane.publicationKey(), clock.instant());
+        Lease sourceLease = acquire(sourceRun.generation());
+        SourceRead bootstrapRead = new SourceRead(readStarted, readStarted.plusMillis(100));
+        SourceRead fixturesRead = new SourceRead(readStarted.plusSeconds(2), readStarted.plusMillis(2100));
+        clock.set(fixturesRead.finishedAt().plusMillis(1));
+        long bootstrapId = store.stage(sourceLease, Endpoint.bootstrap(), bootstrapRead,
+                Validation.valid(), bootstrap);
+        long fixturesId = store.stage(sourceLease, Endpoint.fixtures(), fixturesRead,
+                Validation.valid(), fixtureBody);
+        var sourcePair = OwnedSyncStore.CanonicalSourcePair.from(
+                new StagedPayload(bootstrapId, sourceRun.generation(), OwnedSyncStore.EndpointKind.BOOTSTRAP_STATIC,
+                        bootstrapRead, ValidationState.VALID, null, bootstrap),
+                new StagedPayload(fixturesId, sourceRun.generation(), OwnedSyncStore.EndpointKind.FIXTURES,
+                        fixturesRead, ValidationState.VALID, null, fixtureBody));
+        SourceRead combined = new SourceRead(bootstrapRead.startedAt(), fixturesRead.finishedAt());
+        if (pendingDonor) {
+            store.retry(sourceLease, clock.instant().plus(Duration.ofDays(1)), "valid pending source donor");
+        } else {
+            store.completeStaged(sourceLease, combined, List.of(bootstrapRead, fixturesRead));
+        }
+        Lease publicationLease = acquire(publicationRun.generation());
+        store.publish(publicationLease, combined, List.of(bootstrapRead, fixturesRead), sourcePair, () -> null);
+        return new LaneReuse(sourceRun.generation(), publicationRun.generation(), sourcePair);
+    }
+
     private LaneReuse seedPendingDonorPublishedPair() {
         Run sourceRun = store.enqueue(SyncKind.CATALOGUE_SCHEDULE, SEASON.code(),
                 CatalogueScheduleDispatcher.SCHEDULE_COALESCING_KEY,
@@ -1673,6 +1790,24 @@ class HistoryFixtureDispatcherIntegrationTest {
     private record ManifestMutation(String label, java.util.function.Consumer<FixtureManifestSeed> mutate,
                                     Endpoint expectedFetch) { }
 
+    private enum CatalogueLane {
+        PRICE(CatalogueScheduleDispatcher.CATALOGUE_PRICE_COALESCING_KEY,
+                CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY),
+        SCHEDULE(CatalogueScheduleDispatcher.SCHEDULE_COALESCING_KEY,
+                CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY);
+
+        private final String coalescingKey;
+        private final String publicationKey;
+
+        CatalogueLane(String coalescingKey, String publicationKey) {
+            this.coalescingKey = coalescingKey;
+            this.publicationKey = publicationKey;
+        }
+
+        String coalescingKey() { return coalescingKey; }
+        String publicationKey() { return publicationKey; }
+    }
+
     private final class Loopback implements AutoCloseable {
         private final HttpServer server;
         private final OwnedSyncHttpClient http;
@@ -1762,6 +1897,18 @@ class HistoryFixtureDispatcherIntegrationTest {
         minutes.put("points_modification", 0);
         ((ArrayNode) root.get("elements")).add(player);
         return JSON.writeValueAsBytes(root);
+    }
+
+    private static byte[] withFixtureUnfinished(byte[] source, int fixtureId) throws Exception {
+        ArrayNode rows = (ArrayNode) JSON.readTree(source);
+        for (var row : rows) {
+            if (row.get("id").intValue() == fixtureId) {
+                ((ObjectNode) row).put("finished", false).put("finished_provisional", false)
+                        .put("started", false).put("minutes", 0).putNull("team_h_score").putNull("team_a_score");
+                return JSON.writeValueAsBytes(rows);
+            }
+        }
+        throw new IllegalStateException("Fixture " + fixtureId + " is missing from the test source");
     }
 
     private static byte[] resource(String name) throws Exception {
@@ -1866,6 +2013,7 @@ class HistoryFixtureDispatcherIntegrationTest {
         private Instant value;
         private MutableClock(Instant value) { this.value = value; }
         private void advance(Duration duration) { value = value.plus(duration); }
+        private void set(Instant instant) { value = instant; }
         @Override public ZoneId getZone() { return ZoneId.of("UTC"); }
         @Override public Clock withZone(ZoneId zone) { return this; }
         @Override public Instant instant() { return value; }
