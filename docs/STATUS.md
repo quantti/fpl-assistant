@@ -1,5 +1,28 @@
 # Status — Phase 1
 
+## ACTIVE published-parent ordering follow-up (local, 2026-10-08)
+
+The post-push P1 exposed two eligible current-ACTIVE parents whose order disagreed: a newer source
+pair attached to the price-lane publication published first, and an older source pair attached to the
+schedule-lane publication published later.
+The selector used maximum payload-read completion, while metadata used publication time. Source run
+generation identifies the donor; publication run generation identifies the receipt owner. The shared
+winner key is now `GREATEST(bootstrap.read_finished_at, fixtures.read_finished_at) DESC`, then
+`published_at DESC`, then publication generation DESC across candidate selection, exact publication
+proof and metadata finish evidence; compatibility/write timestamps do not participate. Ordinary
+newest-VALID planner discovery is unchanged.
+
+The private-table selection class now verifies both eligible crossed-order pairs, exact source and
+publication generations in the planner marker, metadata/selector agreement, the newer-unfinished vs
+older-finished marker-clear case, and generation tie-breaking when source and publication times are
+equal. A blocked-manifest regression proves the fresher FINISHED winner admits without a canonical
+re-enqueue or body reads, including a valid PENDING donor. Equal read/publication times exercise the
+publication-generation tie-break with source-generation order reversed. Focused tests passed on guarded
+`localhost:55432`: `OwnedPublishedParentSelectionIntegrationTest` **13/13** and five
+`HistoryFixtureDispatcherIntegrationTest.blockedManifest*` methods **5/5** (**18 total**). No full
+suite, Task 4 10/10 acceptance rerun, production query/activation, Fly action, commit or push; Task 4
+acceptance and independent review/branch CI remain pending.
+
 ## ACTIVE canonical-source demand-floor P1 follow-up (local, 2026-10-08)
 
 The source chooser, exact `currentPublishedCanonicalPair` proof and metadata-only
