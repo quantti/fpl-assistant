@@ -74,6 +74,22 @@ public final class SharedStatsSeed {
                 VALUES (27, '2026-27', 'Owned sync capture test', DATE '2026-08-21', false)
                 ON CONFLICT (id) DO NOTHING
                 """);
+        String code = jdbc.queryForObject("SELECT code FROM season WHERE id=27", String.class);
+        java.sql.Date startDate = jdbc.queryForObject("SELECT start_date FROM season WHERE id=27", java.sql.Date.class);
+        if (!"2026-27".equals(code) || !java.sql.Date.valueOf("2026-08-21").equals(startDate)) {
+            throw new IllegalStateException("Owned-sync capture season id 27 must remain 2026-27 starting 2026-08-21; "
+                    + "found code=" + code + ", start_date=" + startDate);
+        }
+    }
+
+    /** Selects one test season as current without assigning meaning to the real playing season. */
+    public static void setCurrentSeason(JdbcTemplate jdbc, int seasonId) {
+        ensure(jdbc);
+        if (!Boolean.TRUE.equals(jdbc.queryForObject(
+                "SELECT EXISTS(SELECT 1 FROM season WHERE id=?)", Boolean.class, seasonId))) {
+            throw new IllegalArgumentException("Test season does not exist: " + seasonId);
+        }
+        jdbc.update("UPDATE season SET is_current=(id=?)", seasonId);
     }
 
     /** Dedicated canonical-code rows for owned-sync publication tests. */
