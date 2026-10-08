@@ -1,5 +1,38 @@
 # Status — Phase 1
 
+## ACTIVE canonical-source demand-floor P1 follow-up (local, 2026-10-08)
+
+The source chooser, exact `currentPublishedCanonicalPair` proof and metadata-only
+`currentCanonicalParentEvidence` now share one demanded-floor predicate. Both source and publisher
+lanes compare both payload reads with the maximum `requested_source_after` across matching current
+ACTIVE-epoch runs. This rejects an attached pending donor whose demand advanced after its reads and
+an unchanged completed receipt superseded by a newer pending generation. It does not erase the
+published receipt or alter fixture verification/correction receipts; it only limits reuse as current
+source evidence. Planner finish markers and blocked-manifest admission therefore use the same
+eligible pair, without body hydration on the blocked path.
+
+Five new private-table integration methods cover valid pending-donor reuse, donor advancement through
+the real enqueue API, later completed-donor and publisher demands, and epoch/future-publication
+negatives without inferring finish from `first_finished_observed_at`. The 12 invalid-publication
+variants now keep the fallback pair inside the current demanded floors. The blocked-manifest
+regression advances the pending donor floor, publishes a fresh eligible fallback A, then proves the
+metadata marker binds its exact source/publication generations and native admission neither
+requeues canonical roots nor reads bodies/HTTP. Focused passes on guarded `localhost:55432`:
+`OwnedPublishedParentSelectionIntegrationTest` **10/10**,
+`HistoryFixtureDispatcherIntegrationTest` **30/30**,
+`FixtureRecoveryAdmissionIntegrationTest` **29/29**,
+`PlannerInputRepositoryIntegrationTest` **4/4**, and
+`CatalogueScheduleDispatcherIntegrationTest` **54/54** (**127 total**). This is not the Task 4
+10/10 acceptance and must not be represented as such. No full suite, production query/activation,
+Fly action, commit or push; branch CI and independent review remain pending. `backend/.env.test`
+was absent, so each test command explicitly guarded `DATABASE_URL` to the disposable localhost port.
+
+## ACTIVE published-parent selection follow-up (local, 2026-10-08)
+
+The bounded ACTIVE recovery lookup now filters the current publication receipt, owner/donor keys and epochs, source IDs/intervals, payload validity, source floors, hashes and non-future completion before hydrating a candidate. It then rechecks the exact pair through the existing proof/cache path. `PlannerInputRepository` still discovers ordinary planning inputs from the newest VALID pair; only recovery status/finish markers use the eligible published parent. `HistoryFixtureDispatcher` retains ordinary VALID-pair history discovery and uses the new published-pair traversal only for ACTIVE parent admission.
+
+This is the pre-P1 checkpoint. Its **5/5** result records the earlier receipt-only behavior; the claim that A remains reusable behind any newer unpublished valid pair is superseded by the demand-floor follow-up above. Do not count this checkpoint as Task 4 acceptance: its 10/10 run was not repeated, and remains not accepted. The test used only its owned/capture tables and preserved the shared season seed. No production query/activation, Fly action, commit or push occurred; independent review and branch CI remain pending. Whether this failure shape persists in production after the source-span repair is unknown; no production evidence was collected.
+
 ## PR #153 CI — canonical pair source-span repair (local, 2026-10-07)
 
 CI run [37666002969](https://github.com/quantti/fpl-assistant/actions/runs/37666002969) ran 1,530 tests and failed the combined ACTIVE acceptance. The physical fixture rows showed **six VERIFIED and four still unverified**, but the exact-source oracle rejected the canonical parent evidence for all ten: a price-lane publication attached a bootstrap/fixtures pair while its run and receipt ended at bootstrap completion, before the fixture read ended. This is a publication-evidence defect, not a reason to relax queue bounds or fairness; the 10/10 criterion remains unmet and must not be claimed.
