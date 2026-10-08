@@ -293,7 +293,7 @@ class OwnedPublishedParentSelectionIntegrationTest {
     }
 
     @Test
-    void freshestPublishedSourceWinsWhenAnOlderSourcePublishesLater() {
+    void fresherScheduleReadWinsDespiteEarlierPriceReceipt() {
         PairSeed olderLaterPublication = seedPublishedPair(bootstrap, unfinishedFixtures, BASE.plusSeconds(10),
                 Lane.PRICE, Lane.SCHEDULE, false);
         PairSeed fresherEarlierPublication = seedPublishedPair(bootstrap, fixtures, BASE.plusSeconds(60),
@@ -301,8 +301,10 @@ class OwnedPublishedParentSelectionIntegrationTest {
         movePublicationLater(olderLaterPublication, BASE.plusSeconds(90), BASE.plusSeconds(100));
         resetCanonicalDemands(olderLaterPublication, fresherEarlierPublication);
         clock.set(BASE.plusSeconds(200));
-        assertThat(olderLaterPublication.fixturesRead().finishedAt())
-                .isBefore(fresherEarlierPublication.fixturesRead().finishedAt());
+        assertThat(sourceReadFinishedAt(olderLaterPublication))
+                .isBefore(sourceReadFinishedAt(fresherEarlierPublication));
+        assertThat(olderLaterPublication.publicationLane()).isEqualTo(Lane.SCHEDULE);
+        assertThat(fresherEarlierPublication.publicationLane()).isEqualTo(Lane.PRICE);
         assertThat(publicationTime(fresherEarlierPublication)).isBefore(publicationTime(olderLaterPublication));
         assertThat(jdbc.queryForObject("SELECT state FROM " + TABLES.run() + " WHERE generation=?",
                 String.class, fresherEarlierPublication.sourceGeneration())).isEqualTo("PENDING");
@@ -321,6 +323,23 @@ class OwnedPublishedParentSelectionIntegrationTest {
         assertThat(selected.publication().sourceGeneration()).isEqualTo(fresherEarlierPublication.sourceGeneration());
         assertThat(selected.publication().publicationGeneration())
                 .isEqualTo(fresherEarlierPublication.publicationGeneration());
+        Map<String, Object> sqlWinner = independentlySelectedPublishedParent();
+        assertThat(((Number) sqlWinner.get("source_generation")).longValue())
+                .as("independent SQL source-read winner despite the crossed publication times")
+                .isEqualTo(fresherEarlierPublication.sourceGeneration());
+        assertThat(((Number) sqlWinner.get("publication_generation")).longValue())
+                .isEqualTo(fresherEarlierPublication.publicationGeneration());
+        assertThat(sqlWinner.get("publication_key")).isEqualTo(Lane.PRICE.publicationKey());
+        assertThat(((Number) sqlWinner.get("bootstrap_id")).longValue())
+                .isEqualTo(fresherEarlierPublication.bootstrapId());
+        assertThat(((Number) sqlWinner.get("fixtures_id")).longValue())
+                .isEqualTo(fresherEarlierPublication.fixturesId());
+        assertThat(sqlWinner.get("source_pair_fingerprint"))
+                .isEqualTo(fresherEarlierPublication.sourcePair().fingerprint());
+        assertThat(OwnedSyncStore.sha256((byte[]) sqlWinner.get("bootstrap_body")))
+                .isEqualTo(sqlWinner.get("bootstrap_sha256"));
+        assertThat(OwnedSyncStore.sha256((byte[]) sqlWinner.get("fixtures_body")))
+                .isEqualTo(sqlWinner.get("fixtures_sha256"));
 
         new PlannerInputRepository(jdbc, store, TABLES, CAPTURED, clock).load(SEASON);
 
@@ -633,6 +652,67 @@ class OwnedPublishedParentSelectionIntegrationTest {
         return new PairSeed(source.sourceGeneration(), publicationRun.generation(), source.bootstrapId(),
                 source.fixturesId(), publicationLane, source.sourcePair(), source.bootstrapRead(),
                 source.fixturesRead(), source.bootstrapBody(), source.fixtureBody());
+    }
+
+    private Instant sourceReadFinishedAt(PairSeed pair) {
+        return pair.bootstrapRead().finishedAt().isAfter(pair.fixturesRead().finishedAt())
+                ? pair.bootstrapRead().finishedAt() : pair.fixturesRead().finishedAt();
+    }
+
+    private Map<String, Object> independentlySelectedPublishedParent() {
+        String sql = "SELECT p.publication_key,p.latest_generation publication_generation,"
+                + "r.generation,r.source_read_started_at,r.source_read_finished_at,p.published_at,"
+                + "b.run_generation source_generation,b.id bootstrap_id,f.id fixtures_id,"
+                + "b.body bootstrap_body,f.body fixtures_body,"
+                + "p.source_bootstrap_sha256 bootstrap_sha256,p.source_fixtures_sha256 fixtures_sha256,"
+                + "p.source_pair_fingerprint "
+                + "FROM " + TABLES.receipt() + " p JOIN " + TABLES.run() + " r"
+                + " ON r.generation=p.latest_generation AND r.season=p.season"
+                + " JOIN " + TABLES.payload() + " b ON b.id=p.source_bootstrap_payload_id"
+                + " JOIN " + TABLES.payload() + " f ON f.id=p.source_fixtures_payload_id"
+                + " JOIN " + TABLES.run() + " sr ON sr.generation=b.run_generation AND sr.season=p.season"
+                + " WHERE p.season=? AND p.publication_key IN (?,?) AND p.latest_generation=r.generation"
+                + " AND r.kind='CATALOGUE_SCHEDULE' AND r.state='COMPLETED' AND r.runtime_mode='ACTIVE'"
+                + " AND r.runtime_epoch=? AND r.completed_at<=p.published_at AND p.published_at<=?"
+                + " AND ((p.publication_key=? AND r.coalescing_key=? AND r.publication_key=?)"
+                + " OR (p.publication_key=? AND r.coalescing_key=? AND r.publication_key=?))"
+                + " AND sr.kind='CATALOGUE_SCHEDULE' AND sr.runtime_mode='ACTIVE' AND sr.runtime_epoch=?"
+                + " AND ((sr.coalescing_key=? AND sr.publication_key=?)"
+                + " OR (sr.coalescing_key=? AND sr.publication_key=?))"
+                + " AND b.run_generation=f.run_generation AND b.endpoint_kind='BOOTSTRAP_STATIC'"
+                + " AND b.event_id IS NULL AND b.player_id IS NULL AND b.validation_state='VALID'"
+                + " AND b.source_published IS TRUE AND f.endpoint_kind='FIXTURES' AND f.event_id IS NULL"
+                + " AND f.player_id IS NULL AND f.validation_state='VALID' AND f.source_published IS TRUE"
+                + " AND b.read_started_at=p.source_bootstrap_read_started_at"
+                + " AND b.read_finished_at=p.source_bootstrap_read_finished_at"
+                + " AND f.read_started_at=p.source_fixtures_read_started_at"
+                + " AND f.read_finished_at=p.source_fixtures_read_finished_at"
+                + " AND p.source_bootstrap_sha256 IS NOT NULL AND p.source_fixtures_sha256 IS NOT NULL"
+                + " AND p.source_pair_fingerprint IS NOT NULL"
+                + " AND b.read_started_at<=b.read_finished_at AND f.read_started_at<=f.read_finished_at"
+                + " AND r.source_read_started_at=p.source_read_started_at"
+                + " AND r.source_read_finished_at=p.source_read_finished_at"
+                + " AND r.source_read_started_at=LEAST(b.read_started_at,f.read_started_at)"
+                + " AND r.source_read_finished_at=GREATEST(b.read_finished_at,f.read_finished_at)"
+                + " AND (SELECT max(d.requested_source_after) FROM " + TABLES.run() + " d"
+                + " WHERE d.kind='CATALOGUE_SCHEDULE' AND d.season=r.season"
+                + " AND d.runtime_mode=r.runtime_mode AND d.runtime_epoch=r.runtime_epoch"
+                + " AND ((d.coalescing_key=r.coalescing_key AND d.publication_key=r.publication_key)"
+                + " OR (d.coalescing_key=sr.coalescing_key AND d.publication_key=sr.publication_key)))"
+                + " <= b.read_started_at"
+                + " AND (SELECT max(d.requested_source_after) FROM " + TABLES.run() + " d"
+                + " WHERE d.kind='CATALOGUE_SCHEDULE' AND d.season=r.season"
+                + " AND d.runtime_mode=r.runtime_mode AND d.runtime_epoch=r.runtime_epoch"
+                + " AND ((d.coalescing_key=r.coalescing_key AND d.publication_key=r.publication_key)"
+                + " OR (d.coalescing_key=sr.coalescing_key AND d.publication_key=sr.publication_key)))"
+                + " <= f.read_started_at"
+                + " ORDER BY GREATEST(b.read_finished_at,f.read_finished_at) DESC,"
+                + "p.published_at DESC,r.generation DESC LIMIT 1";
+        return jdbc.queryForMap(sql, SEASON.code(), Lane.PRICE.publicationKey(), Lane.SCHEDULE.publicationKey(),
+                fence.epoch(), timestamp(clock.instant()), Lane.PRICE.publicationKey(), Lane.PRICE.coalescingKey(),
+                Lane.PRICE.publicationKey(), Lane.SCHEDULE.publicationKey(), Lane.SCHEDULE.coalescingKey(),
+                Lane.SCHEDULE.publicationKey(), fence.epoch(), Lane.PRICE.coalescingKey(), Lane.PRICE.publicationKey(),
+                Lane.SCHEDULE.coalescingKey(), Lane.SCHEDULE.publicationKey());
     }
 
     private void assertMarker(PairSeed expected) {
