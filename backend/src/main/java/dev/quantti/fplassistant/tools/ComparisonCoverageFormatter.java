@@ -14,7 +14,7 @@ public final class ComparisonCoverageFormatter {
 
     public static String refusal(ComparisonCoverage coverage, Instant asOf) {
         return "COMPARISON_DATA_INCOMPLETE: I cannot fairly compare the whole league as of "
-                + asOf + ". " + affected(coverage)
+                + asOf + ". " + evidenceStatus(coverage) + " " + affected(coverage)
                 + " This is a data exclusion, not evidence that those clubs are weak or that"
                 + " their players carry rotation risk. No budget, pin, formation, quota or"
                 + " exclusion can bypass it; a complete 15-player recommendation requires a new"
@@ -24,13 +24,14 @@ public final class ComparisonCoverageFormatter {
     public static String restricted(ComparisonCoverage coverage, Instant asOf) {
         if (!coverage.assessed()) {
             return "Comparison coverage: not assessed because the current ranking sources were"
-                    + " unavailable or season-incompatible. " + playerCounts(coverage);
+                    + " unavailable or season-incompatible. " + evidenceStatus(coverage) + " "
+                    + playerCounts(coverage);
         }
         if (coverage.complete()) {
             return success(coverage);
         }
         return "RESTRICTED COMPARISON POPULATION as of " + asOf + ": "
-                + affected(coverage)
+                + evidenceStatus(coverage) + " " + affected(coverage)
                 + " The eligible-only rows below are not a league-wide best list and must not be"
                 + " used to hand-build a fallback squad. " + playerCounts(coverage);
     }
@@ -38,10 +39,21 @@ public final class ComparisonCoverageFormatter {
     public static String success(ComparisonCoverage coverage) {
         if (!coverage.assessed()) {
             return "Comparison coverage: not assessed because the current ranking sources were"
-                    + " unavailable or season-incompatible. " + playerCounts(coverage);
+                    + " unavailable or season-incompatible. " + evidenceStatus(coverage) + " "
+                    + playerCounts(coverage);
         }
         return "Comparison coverage: all clubs with relevant current-role fixtures have played-side"
-                + " core evidence. " + playerCounts(coverage);
+                + " core evidence. " + evidenceStatus(coverage) + " " + playerCounts(coverage);
+    }
+
+    private static String evidenceStatus(ComparisonCoverage coverage) {
+        return switch (coverage.evidenceStatus()) {
+            case INCOMPLETE -> "Match evidence status: incomplete; missing current evidence is not treated as zero. ";
+            case PROVISIONAL -> "Match evidence status: provisional incremental-page evidence is present; no"
+                    + " FPL-checked or final-import claim is inferred. ";
+            case CHECKED_FINAL -> "Match evidence status: FPL checked and final import complete. ";
+            case LEGACY -> "Match evidence status: legacy stored rows; incremental finality is not asserted. ";
+        };
     }
 
     private static String affected(ComparisonCoverage coverage) {
@@ -65,7 +77,7 @@ public final class ComparisonCoverageFormatter {
         String windowCounts = windows.isEmpty() ? "none" : windows.entrySet().stream()
                 .map(entry -> entry.getKey() + " " + entry.getValue())
                 .collect(java.util.stream.Collectors.joining(", "));
-        return "Player comparison receipt: " + coverage.eligiblePlayers() + " eligible of "
+        return "Player comparison population: " + coverage.eligiblePlayers() + " eligible of "
                 + coverage.capturePlayers() + "; grouped exclusions — availability risk "
                 + counts.getOrDefault(MinutesModel.Eligibility.AVAILABILITY_RISK, 0)
                 + ", unknown current evidence "

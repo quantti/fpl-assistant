@@ -248,7 +248,7 @@ class PickToolsIntegrationTest {
                     .contains("RESTRICTED COMPARISON POPULATION")
                     .contains("fixture " + incident.id() + " (GW4)")
                     .contains("not a league-wide best list")
-                    .contains("Player comparison receipt:");
+                    .contains("Player comparison population:");
             int coverage = result.indexOf("RESTRICTED COMPARISON POPULATION");
             int firstRow = result.indexOf("  ", result.indexOf("Differential picks"));
             if (firstRow < 0) {

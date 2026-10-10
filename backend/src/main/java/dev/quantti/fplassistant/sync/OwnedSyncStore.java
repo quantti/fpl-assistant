@@ -491,6 +491,126 @@ public final class OwnedSyncStore {
         });
     }
 
+    /**
+     * Publishes one already-parsed player page without completing its run or advancing a fixture
+     * receipt. The page must still be owned by the current ACTIVE PLAYER_HISTORY lease, match the
+     * locked database playing season and meet its source-demand/page watermark; all writes share
+     * this short transaction, including the dedicated incremental-page receipt for empty pages.
+     */
+    <T> T publishPlayerHistoryPage(Lease lease, int playerId, int seasonId, String seasonCode,
+                                   SourceRead read, Supplier<T> publication) {
+        Objects.requireNonNull(lease);
+        Objects.requireNonNull(seasonCode);
+        Objects.requireNonNull(read);
+        Objects.requireNonNull(publication);
+        if (playerId <= 0 || seasonId <= 0 || !lease.season().equals(seasonCode)) {
+            throw new IllegalArgumentException("Player page must identify the leased season and player");
+        }
+        String expectedKey = HistoryFixtureDispatcher.playerHistoryPublicationKey(playerId);
+        String pageReceiptKey = IncrementalPlayerFixturePublisher.pageReceiptKey(playerId);
+        return tx.execute(status -> {
+            LockedRun run = lockAndValidate(lease);
+            if (run.kind != SyncKind.PLAYER_HISTORY || lease.kind() != run.kind
+                    || !lease.season().equals(run.season)
+                    || !lease.coalescingKey().equals(run.coalescingKey)
+                    || !lease.publicationKey().equals(run.publicationKey)
+                    || !expectedKey.equals(run.publicationKey)) {
+                throw new LeaseLostException("Lease does not own this player-history page");
+            }
+            Instant requestedAfter = jdbc.queryForObject(
+                    "SELECT requested_source_after FROM %s WHERE generation = ?"
+                            .formatted(tables.run()), Timestamp.class, lease.generation()).toInstant();
+            if (read.startedAt().isBefore(requestedAfter)) {
+                throw new SourceDemandAdvancedException(lease.generation(), requestedAfter);
+            }
+            if (runtimeFence == null || runtimeFence.mode() != OwnedSyncMode.ACTIVE
+                    || !runtimeFence.season().equals(seasonCode)) {
+                throw new RuntimeFenceLostException("Player-history publication requires its ACTIVE season fence");
+            }
+            lockCurrentPlayingSeason(seasonId, seasonCode);
+            Instant publishingAt = now();
+            requireNotExpired(run, publishingAt);
+            requireReadNotFuture(read, publishingAt);
+            jdbc.update("INSERT INTO %s(season, publication_key) VALUES (?, ?) ON CONFLICT DO NOTHING"
+                    .formatted(tables.receipt()), run.season, pageReceiptKey);
+            PageWatermark watermark = lockPlayerPageWatermark(run.season, pageReceiptKey, expectedKey);
+            verifyPlayerPageOrder(lease.generation(), read, watermark);
+            T result = publication.get();
+            Instant publishedAt = now();
+            requireNotExpired(run, publishedAt);
+            int receiptUpdated = jdbc.update("""
+                    UPDATE %s SET latest_generation=?, source_read_started_at=?,
+                        source_read_finished_at=?, published_at=?
+                    WHERE season=? AND publication_key=?
+                    """.formatted(tables.receipt()), lease.generation(), timestamp(read.startedAt()),
+                    timestamp(read.finishedAt()), timestamp(publishedAt), run.season, pageReceiptKey);
+            if (receiptUpdated != 1) {
+                throw new IllegalStateException("Player-history receipt disappeared during page publication");
+            }
+            return result;
+        });
+    }
+
+    private void lockCurrentPlayingSeason(int seasonId, String seasonCode) {
+        List<SeasonIdentity> current = jdbc.query("""
+                SELECT id, code FROM season WHERE is_current=true ORDER BY id FOR UPDATE
+                """, (rs, row) -> new SeasonIdentity(rs.getInt("id"), rs.getString("code")));
+        if (current.size() != 1 || current.getFirst().id() != seasonId
+                || !seasonCode.equals(current.getFirst().code())
+                || !runtimeFence.season().equals(current.getFirst().code())) {
+            throw new RuntimeFenceLostException("Player-history season is not the locked database playing season");
+        }
+    }
+
+    private PageWatermark lockPlayerPageWatermark(String season, String pageReceiptKey,
+                                                    String runPublicationKey) {
+        List<PageWatermark> rows = jdbc.query("""
+                SELECT receipt.latest_generation, receipt.source_read_started_at,
+                       receipt.source_read_finished_at, run.requested_source_after
+                FROM %s receipt
+                LEFT JOIN %s run ON run.generation=receipt.latest_generation
+                    AND run.season=receipt.season AND run.kind='PLAYER_HISTORY'
+                    AND run.publication_key=?
+                WHERE receipt.season=? AND receipt.publication_key=? FOR UPDATE OF receipt
+                """.formatted(tables.receipt(), tables.run()), (rs, row) -> new PageWatermark(
+                rs.getObject("latest_generation", Long.class), instant(rs, "source_read_started_at"),
+                instant(rs, "source_read_finished_at"), instant(rs, "requested_source_after")),
+                runPublicationKey, season, pageReceiptKey);
+        if (rows.size() != 1) {
+            throw new IllegalStateException("Player-history receipt disappeared before page publication");
+        }
+        return rows.getFirst();
+    }
+
+    private static void verifyPlayerPageOrder(long generation, SourceRead read, PageWatermark watermark) {
+        if (watermark.generation() == null) {
+            if (watermark.startedAt() != null || watermark.finishedAt() != null || watermark.sourceFloor() != null) {
+                throw new IllegalStateException("Player-history receipt has an incomplete page watermark");
+            }
+            return;
+        }
+        if (watermark.startedAt() == null || watermark.finishedAt() == null || watermark.sourceFloor() == null) {
+            throw new IllegalStateException("Player-history receipt has an incomplete page watermark");
+        }
+        if (generation < watermark.generation()) {
+            throw new IncrementalPfsRepository.SourceOrderConflictException(
+                    "Older player-history generation cannot replace the latest completed page, including an empty page");
+        }
+        if (generation == watermark.generation()) {
+            if (!read.startedAt().equals(watermark.startedAt())
+                    || !read.finishedAt().equals(watermark.finishedAt())) {
+                throw new IncrementalPfsRepository.SourceOrderConflictException(
+                        "One player-history generation cannot publish conflicting page intervals");
+            }
+            return;
+        }
+        if (read.startedAt().isBefore(watermark.finishedAt())
+                || read.startedAt().isBefore(watermark.sourceFloor())) {
+            throw new IncrementalPfsRepository.SourceOrderConflictException(
+                    "Player-history page predates the latest source watermark or its source floor");
+        }
+    }
+
     /** Returns a fixture's exact, reusable dependency manifest and missing histories without reading bodies. */
     Optional<FixtureDependencyManifest> fixtureDependencyManifest(Lease lease, int fixtureId) {
         Objects.requireNonNull(lease);
@@ -2658,6 +2778,10 @@ public final class OwnedSyncStore {
 
     record CurrentPublishedCanonicalPair(PublicPayloadPair pair, CanonicalSourcePair sourcePair,
                                          CanonicalPublication publication) { }
+
+    private record SeasonIdentity(int id, String code) { }
+
+    private record PageWatermark(Long generation, Instant startedAt, Instant finishedAt, Instant sourceFloor) { }
 
     private record LockedRun(long generation, SyncKind kind, String season, String coalescingKey,
                              String publicationKey, String state, String owner, UUID token,
