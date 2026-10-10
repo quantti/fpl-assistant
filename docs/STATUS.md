@@ -1,5 +1,22 @@
 # Status — Phase 1
 
+## Incremental sync simplification proposal (2026-10-10; documentation only)
+
+[New plan](superpowers/plans/2026-10-10-incremental-fpl-sync.md): publish valid provisional
+player-fixture rows as they arrive, update only changed values, and complete a fresh final sweep
+when FPL reports the event finished/data-checked. The owner now accepts later corrections; the
+old two-observation stability gate is a design choice being proposed for retirement, not an FPL
+requirement. The original missing-Arsenal/whole-club comparison incident remains a required
+regression: provisional availability must not turn missing coverage or optional defaults into facts.
+
+The proposal separates row publication, comparison coverage and gameweek finality, includes reader
+migration and single-writer rollback, and explicitly limits what can be known about corrections
+after FPL's checked signal. Seven bounded implementation units are proposed; none is implemented.
+No production mode, runtime, DB or monitor was changed. The owner's 2026-10-09 continuous ACTIVE92
+and observation-only monitoring authorisation stands; older OFF83 notes below are historical.
+The earlier GW5 recovery reached 10 VERIFIED fixtures/667 physical rows; that outcome is not a
+claim that the separate full source-body audit or a real checked-GW final-sweep test was completed.
+
 ## Task 153 review-2 P1 oracle repair (local pass, 2026-10-08)
 
 The earlier P1/P2 follow-up was incomplete: target acceptance selected the latest two completed runs
