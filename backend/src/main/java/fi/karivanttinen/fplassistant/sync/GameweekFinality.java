@@ -14,6 +14,7 @@ import java.util.TreeSet;
 
 import fi.karivanttinen.fplassistant.sync.CatalogueScheduleParser.FixtureRow;
 import fi.karivanttinen.fplassistant.sync.CatalogueScheduleParser.GameweekRow;
+import fi.karivanttinen.fplassistant.sync.CatalogueScheduleParser.PlayerRow;
 import fi.karivanttinen.fplassistant.sync.CatalogueScheduleParser.Snapshot;
 
 /** Immutable source/finality contract for the incremental player-fixture path. */
@@ -167,12 +168,199 @@ public final class GameweekFinality {
             return OwnedSyncStore.sha256(canonical.toString());
         }
 
-        public boolean canResume(SweepCheckpoint checkpoint, CurrentInvalidation invalidation) {
+        public boolean canResume(SweepCheckpoint checkpoint, CurrentInvalidation invalidation,
+                                 String populationFingerprint) {
             Objects.requireNonNull(invalidation, "invalidation");
             return finalSweepEligible() && checkpoint != null
                     && signature().equals(checkpoint.sourceSignature())
+                    && Objects.equals(populationFingerprint, checkpoint.populationFingerprint())
                     && checkpoint.invalidationRevision() == invalidation.revision()
                     && !checkpoint.sourceFloor().isBefore(invalidation.floor());
+        }
+    }
+
+    public static String catalogueFingerprint(Snapshot snapshot, List<FixtureRow> fixtures) {
+        Objects.requireNonNull(snapshot);
+        Set<Integer> teams = new HashSet<>();
+        fixtures.forEach(fixture -> {
+            teams.add(fixture.homeTeamId());
+            teams.add(fixture.awayTeamId());
+        });
+        String canonical = snapshot.players().stream().filter(player -> teams.contains(player.teamId()))
+                .sorted(java.util.Comparator.comparingInt(PlayerRow::id))
+                .map(player -> player.id() + ":" + player.teamId())
+                .collect(java.util.stream.Collectors.joining("|"));
+        return OwnedSyncStore.sha256(canonical);
+    }
+
+    /** Exact source-derived page population; numeric stats remain in PFS, not in this manifest. */
+    public record RequiredPopulation(String bootstrapFingerprint,
+                                     Map<Integer, Set<Integer>> cataloguePlayerIdsByFixture,
+                                     Map<Integer, Set<Integer>> participantPlayerIdsByFixture,
+                                     Map<Integer, Set<Integer>> knownPlayerIdsByFixture,
+                                     Map<Integer, FixtureVerification.FixtureEvidence> participantEvidenceByFixture) {
+        public RequiredPopulation(String bootstrapFingerprint,
+                                  Map<Integer, Set<Integer>> cataloguePlayerIdsByFixture,
+                                  Map<Integer, Set<Integer>> participantPlayerIdsByFixture,
+                                  Map<Integer, Set<Integer>> knownPlayerIdsByFixture) {
+            this(bootstrapFingerprint, cataloguePlayerIdsByFixture, participantPlayerIdsByFixture,
+                    knownPlayerIdsByFixture, Map.of());
+        }
+
+        public RequiredPopulation {
+            requireFingerprint(bootstrapFingerprint, "bootstrap fingerprint");
+            cataloguePlayerIdsByFixture = immutableFixturePlayerIds(cataloguePlayerIdsByFixture);
+            participantPlayerIdsByFixture = immutableFixturePlayerIds(participantPlayerIdsByFixture);
+            knownPlayerIdsByFixture = immutableFixturePlayerIds(knownPlayerIdsByFixture);
+            Objects.requireNonNull(participantEvidenceByFixture, "participant evidence");
+            participantEvidenceByFixture = Map.copyOf(participantEvidenceByFixture);
+            if (participantEvidenceByFixture.values().stream().anyMatch(Objects::isNull)) {
+                throw new IllegalArgumentException("Participant evidence cannot contain null values");
+            }
+            Set<Integer> ids = new HashSet<>();
+            cataloguePlayerIdsByFixture.values().forEach(ids::addAll);
+            participantPlayerIdsByFixture.values().forEach(ids::addAll);
+            knownPlayerIdsByFixture.values().forEach(ids::addAll);
+            if (ids.size() > MAX_CHECKPOINT_PLAYER_IDS) {
+                throw new IllegalArgumentException("Required page population exceeds its bound");
+            }
+        }
+
+        public Set<Integer> requiredPlayerIds() {
+            Set<Integer> result = new TreeSet<>();
+            requiredPlayerIdsByFixture().values().forEach(result::addAll);
+            return Collections.unmodifiableSet(result);
+        }
+
+        public Map<Integer, Set<Integer>> requiredPlayerIdsByFixture() {
+            Map<Integer, Set<Integer>> result = new java.util.TreeMap<>();
+            mergePopulation(result, cataloguePlayerIdsByFixture);
+            mergePopulation(result, participantPlayerIdsByFixture);
+            mergePopulation(result, knownPlayerIdsByFixture);
+            Map<Integer, Set<Integer>> immutable = new java.util.TreeMap<>();
+            result.forEach((fixture, ids) -> immutable.put(fixture,
+                    Collections.unmodifiableSet(new TreeSet<>(ids))));
+            return Collections.unmodifiableMap(immutable);
+        }
+
+        public RequiredPopulation withAdditionalPopulation(Map<Integer, Set<Integer>> catalogue,
+                                                           Map<Integer, Set<Integer>> participants,
+                                                           Map<Integer, Set<Integer>> known) {
+            return new RequiredPopulation(bootstrapFingerprint,
+                    union(cataloguePlayerIdsByFixture, catalogue),
+                    union(participantPlayerIdsByFixture, participants),
+                    union(knownPlayerIdsByFixture, known), participantEvidenceByFixture);
+        }
+
+        private static void mergePopulation(Map<Integer, Set<Integer>> target,
+                                            Map<Integer, Set<Integer>> source) {
+            source.forEach((fixture, ids) -> target.computeIfAbsent(fixture, ignored -> new TreeSet<>())
+                    .addAll(ids));
+        }
+
+        private static Map<Integer, Set<Integer>> union(Map<Integer, Set<Integer>> first,
+                                                        Map<Integer, Set<Integer>> second) {
+            Map<Integer, Set<Integer>> result = new java.util.TreeMap<>();
+            mergePopulation(result, first);
+            mergePopulation(result, second);
+            return result;
+        }
+
+        public void validateFor(SourceSnapshot source) {
+            Objects.requireNonNull(source, "source");
+            Set<Integer> fixtureIds = source.assignedFixtures().stream().map(FixtureRow::id)
+                    .collect(java.util.stream.Collectors.toSet());
+            for (Map<Integer, Set<Integer>> category : List.of(cataloguePlayerIdsByFixture,
+                    participantPlayerIdsByFixture, knownPlayerIdsByFixture)) {
+                if (!fixtureIds.containsAll(category.keySet())) {
+                    throw new IllegalArgumentException("Required population contains a fixture outside the source");
+                }
+            }
+            if (!fixtureIds.containsAll(participantEvidenceByFixture.keySet())) {
+                throw new IllegalArgumentException("Participant evidence contains a fixture outside the source");
+            }
+            Map<Integer, Set<Integer>> requiredByFixture = requiredPlayerIdsByFixture();
+            participantEvidenceByFixture.forEach((fixtureId, evidence) -> {
+                if (!requiredByFixture.getOrDefault(fixtureId, Set.of()).containsAll(evidence.positivePlayerIds())) {
+                    throw new IllegalArgumentException("Positive appearances must be required history pages");
+                }
+            });
+        }
+
+        public String fingerprint(SourceSnapshot source) {
+            validateFor(source);
+            StringBuilder canonical = new StringBuilder();
+            append(canonical, source.signature());
+            append(canonical, bootstrapFingerprint);
+            appendPopulation(canonical, "catalogue", cataloguePlayerIdsByFixture);
+            appendPopulation(canonical, "participant", participantPlayerIdsByFixture);
+            appendPopulation(canonical, "known", knownPlayerIdsByFixture);
+            return OwnedSyncStore.sha256(canonical.toString());
+        }
+
+        public String finalizedFingerprint(SourceSnapshot source) {
+            return OwnedSyncStore.sha256(fingerprint(source) + "|" + evidenceFingerprint(source));
+        }
+
+        public String evidenceFingerprint(SourceSnapshot source) {
+            validateFor(source);
+            StringBuilder canonical = new StringBuilder();
+            participantEvidenceByFixture.entrySet().stream().sorted(Map.Entry.comparingByKey()).forEach(entry -> {
+                append(canonical, entry.getKey());
+                FixtureVerification.FixtureEvidence evidence = entry.getValue();
+                append(canonical, evidence.complete());
+                append(canonical, evidence.liveRead().startedAt());
+                append(canonical, evidence.liveRead().completedAt());
+                evidence.positivePlayerIds().stream().sorted().forEach(player -> {
+                    append(canonical, player);
+                    FixtureVerification.Appearance appearance = evidence.appearances().get(player);
+                    append(canonical, appearance == null ? null : appearance.side());
+                    append(canonical, appearance == null ? null : appearance.minutes());
+                });
+            });
+            return OwnedSyncStore.sha256(canonical.toString());
+        }
+
+        public boolean hasCompleteAppearanceEvidence(SourceSnapshot source, Instant sourceFloor) {
+            validateFor(source);
+            for (FixtureRow fixture : source.assignedFixtures()) {
+                FixtureVerification.FixtureEvidence evidence = participantEvidenceByFixture.get(fixture.id());
+                if (evidence == null || !evidence.complete()
+                        || evidence.liveRead().startedAt().isBefore(sourceFloor)
+                        || evidence.appearances().keySet().size() != evidence.positivePlayerIds().size()
+                        || evidence.appearances().values().stream().noneMatch(row ->
+                                row.side() == FixtureVerification.Side.HOME)
+                        || evidence.appearances().values().stream().noneMatch(row ->
+                                row.side() == FixtureVerification.Side.AWAY)) return false;
+            }
+            return true;
+        }
+
+        private static Map<Integer, Set<Integer>> immutableFixturePlayerIds(Map<Integer, Set<Integer>> source) {
+            Objects.requireNonNull(source, "fixture player ids");
+            Map<Integer, Set<Integer>> copy = new java.util.TreeMap<>();
+            source.forEach((fixtureId, playerIds) -> {
+                if (fixtureId == null || fixtureId <= 0 || playerIds == null
+                        || playerIds.stream().anyMatch(id -> id == null || id <= 0)) {
+                    throw new IllegalArgumentException("Invalid fixture player population");
+                }
+                copy.put(fixtureId, Collections.unmodifiableSet(new TreeSet<>(playerIds)));
+            });
+            return Collections.unmodifiableMap(copy);
+        }
+
+        private static void appendPopulation(StringBuilder canonical, String label,
+                                             Map<Integer, Set<Integer>> population) {
+            append(canonical, label);
+            append(canonical, population.size());
+            population.forEach((fixtureId, playerIds) -> {
+                append(canonical, "fixture");
+                append(canonical, fixtureId);
+                append(canonical, playerIds.size());
+                playerIds.forEach(playerId -> append(canonical, playerId));
+                append(canonical, "end-fixture");
+            });
+            append(canonical, "end-population");
         }
     }
 
@@ -222,7 +410,8 @@ public final class GameweekFinality {
      */
     public record FinalReceipt(String sourceSignature, String rowRevisionFingerprint,
                                long runGeneration, Instant sourceFloor, long invalidationRevision,
-                               Instant completedAt, boolean mandatoryManifestComplete,
+                               Instant completedAt, OwnedSyncStore.SourceRead sourceReadInterval,
+                               boolean mandatoryManifestComplete,
                                Map<HistoryParser.Component, ComponentCoverage> optionalCoverage) {
         public FinalReceipt {
             requireFingerprint(sourceSignature, "source signature");
@@ -231,8 +420,12 @@ public final class GameweekFinality {
             Objects.requireNonNull(sourceFloor, "sourceFloor");
             if (invalidationRevision < 0) throw new IllegalArgumentException("Invalid receipt invalidation revision");
             Objects.requireNonNull(completedAt, "completedAt");
+            Objects.requireNonNull(sourceReadInterval, "sourceReadInterval");
             if (completedAt.isBefore(sourceFloor)) {
                 throw new IllegalArgumentException("Final completion precedes its source floor");
+            }
+            if (sourceReadInterval.finishedAt().isAfter(completedAt)) {
+                throw new IllegalArgumentException("Final source read interval exceeds completion");
             }
             if (!mandatoryManifestComplete) {
                 throw new IllegalArgumentException("An incomplete mandatory manifest cannot be finalized");
@@ -280,11 +473,12 @@ public final class GameweekFinality {
      * Per-event resume checkpoint. Completed and outstanding element-summary pages partition the
      * required IDs, and the checkpoint is reusable only against its exact eligible source revision.
      */
-    public record SweepCheckpoint(String sourceSignature, Instant sourceFloor, long invalidationRevision,
-                                  Set<Integer> requiredPlayerIds, Set<Integer> completedPlayerIds,
-                                  Set<Integer> outstandingPlayerIds) {
+    public record SweepCheckpoint(String sourceSignature, String populationFingerprint, Instant sourceFloor,
+                                  long invalidationRevision, Set<Integer> requiredPlayerIds,
+                                  Set<Integer> completedPlayerIds, Set<Integer> outstandingPlayerIds) {
         public SweepCheckpoint {
             requireFingerprint(sourceSignature, "checkpoint source signature");
+            requireFingerprint(populationFingerprint, "checkpoint population fingerprint");
             Objects.requireNonNull(sourceFloor, "sourceFloor");
             if (invalidationRevision < 0) throw new IllegalArgumentException("Invalid checkpoint invalidation revision");
             requiredPlayerIds = immutablePlayerIds(requiredPlayerIds);

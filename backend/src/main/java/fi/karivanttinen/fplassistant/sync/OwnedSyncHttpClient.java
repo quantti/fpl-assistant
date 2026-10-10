@@ -842,7 +842,9 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
         Thread thread = Thread.currentThread();
         waitObserver.onWait(new WaitObservation(WaitPhase.START, kind, nextDue, thread, token));
         try {
-            waitOn(turnGate, nanos);
+            if (kind != WaitKind.SPACING || clock.instant().isBefore(nextDue)) {
+                waitOn(turnGate, nanos);
+            }
         } finally {
             waitObserver.onWait(new WaitObservation(WaitPhase.RESUME, kind, nextDue, thread, token));
         }

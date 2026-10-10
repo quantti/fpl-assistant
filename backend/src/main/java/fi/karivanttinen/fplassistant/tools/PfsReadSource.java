@@ -13,9 +13,9 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
 import fi.karivanttinen.fplassistant.sync.HistoryParser;
+import fi.karivanttinen.fplassistant.sync.IncrementalPfsEvidenceSql;
 import fi.karivanttinen.fplassistant.sync.IncrementalPlayerFixturePublisher;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncMode;
-import fi.karivanttinen.fplassistant.sync.PlayerFixtureFingerprint;
 
 /**
  * Shared SQL boundary for PFS readers. Legacy fixtures retain their existing receipt contract;
@@ -189,32 +189,8 @@ public final class PfsReadSource {
                 ? "EXISTS (SELECT 1 FROM " + playerFixtureCurrent + " own_fixture"
                     + " WHERE own_fixture.season_id=p.season_id AND own_fixture.fixture_id=p.fixture_id)"
                 : "FALSE";
-        String incrementalReceiptMatch = receiptTable
-                ? "EXISTS (SELECT 1 FROM " + pageReceipt + " page_receipt"
-                    + " WHERE page_receipt.season=s.code AND page_receipt.publication_key='"
-                    + sqlLiteral(IncrementalPlayerFixturePublisher.PAGE_RECEIPT_PREFIX)
-                    + "' || p.player_id::text AND page_receipt.latest_generation>=c.source_run_generation"
-                    + " AND page_receipt.source_read_started_at IS NOT NULL"
-                    + " AND page_receipt.source_read_finished_at IS NOT NULL"
-                    + " AND page_receipt.source_read_started_at<=page_receipt.source_read_finished_at"
-                    + " AND page_receipt.source_read_finished_at>=c.source_read_finished_at"
-                    + " AND (page_receipt.latest_generation>c.source_run_generation"
-                    + " OR (page_receipt.source_read_started_at=c.source_read_started_at"
-                    + " AND page_receipt.source_read_finished_at=c.source_read_finished_at))"
-                    + " AND (page_receipt.latest_generation=c.source_run_generation"
-                    + " OR page_receipt.source_read_started_at>=c.source_read_finished_at))"
-                : "FALSE";
-        String physicalFingerprint = currentTable
-                ? "c.physical_fingerprint=" + PlayerFixtureFingerprint.physicalSqlExpression(
-                        "p", "s", "ie.component_presence")
-                : "FALSE";
-        String currentEvidence = currentTable ? "(c.fixture_id IS NOT NULL AND c.row_state='VALID'"
-                + " AND c.season_code=s.code AND c.evidence_generation IS NOT NULL"
-                + " AND c.evidence_generation=c.source_run_generation"
-                + " AND c.source_read_started_at=ie.source_read_started_at"
-                + " AND c.source_read_finished_at=ie.source_read_finished_at"
-                + " AND ie.generation=c.evidence_generation AND (" + incrementalReceiptMatch + ")"
-                + " AND (" + physicalFingerprint + "))"
+        String currentEvidence = currentTable && receiptTable
+                ? IncrementalPfsEvidenceSql.currentRowProof("c", "p", "s", "ie", pageReceipt)
                 : "FALSE";
         String legacyVisible = "(c.fixture_id IS NULL AND NOT (" + fixtureMarker + ") AND NOT ("
                 + pageMarker + ") AND (((fs.fixture_id IS NULL OR NOT " + oldOwned + ")"

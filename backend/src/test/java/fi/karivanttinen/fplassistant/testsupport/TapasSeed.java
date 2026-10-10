@@ -82,6 +82,25 @@ public final class TapasSeed {
         }
     }
 
+    /** Adds a PFS key outside the recorded catalogue so owned-sync discovery can test departed players. */
+    public static void seedOwnedSyncKnownHistoryKey(JdbcTemplate jdbc, int seasonId, int fixtureId,
+                                                     int gameweek, int playerId, int playerTeamId,
+                                                     int opponentTeamId, boolean wasHome,
+                                                     java.time.Instant kickoff) {
+        ensureOwnedSyncCaptureSeason(jdbc);
+        if (seasonId != 27 || fixtureId <= 0 || gameweek < 1 || gameweek > 38 || playerId <= 0
+                || playerTeamId <= 0 || opponentTeamId <= 0 || playerTeamId == opponentTeamId) {
+            throw new IllegalArgumentException("Invalid owned-sync known-history test key");
+        }
+        jdbc.update("""
+                INSERT INTO player_fixture_stats(fixture_id, player_id, season_id, gameweek,
+                    player_team_id, opponent_team_id, was_home, kickoff_time, value)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 45)
+                ON CONFLICT (fixture_id, player_id, season_id) DO NOTHING
+                """, fixtureId, playerId, seasonId, gameweek, playerTeamId, opponentTeamId,
+                wasHome, java.sql.Timestamp.from(kickoff));
+    }
+
     /** Selects one test season as current without assigning meaning to the real playing season. */
     public static void setCurrentSeason(JdbcTemplate jdbc, int seasonId) {
         ensure(jdbc);

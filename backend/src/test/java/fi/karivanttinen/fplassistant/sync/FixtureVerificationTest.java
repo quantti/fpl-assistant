@@ -281,6 +281,54 @@ class FixtureVerificationTest {
     }
 
     @Test
+    void finalityAppearanceEvidenceIgnoresZeroMinuteFixtureAndLiveIdentities() throws Exception {
+        String stats = "[{\"identifier\":\"minutes\",\"h\":[{\"element\":1,\"value\":90},"
+                + "{\"element\":9,\"value\":0}],\"a\":[{\"element\":2,\"value\":90},"
+                + "{\"element\":658,\"value\":0}]}]";
+        Inputs input = inputs(BASE, true, live(player(1, 90, 2, 0), player(2, 90, 3, 0),
+                player(9, 0, 0, 0), player(557, 0, 0, 0)), List.of(), stats);
+
+        var evidence = FixtureVerification.fixtureEvidenceByFixture(List.of(input.fixture), input.live)
+                .get(input.fixture.id());
+
+        assertThat(evidence.complete()).isTrue();
+        assertThat(evidence.positivePlayerIds()).containsExactlyInAnyOrder(1, 2);
+        assertThat(evidence.appearances()).containsEntry(1,
+                new FixtureVerification.Appearance(FixtureVerification.Side.HOME, 90));
+        assertThat(evidence.appearances()).containsEntry(2,
+                new FixtureVerification.Appearance(FixtureVerification.Side.AWAY, 90));
+    }
+
+    @Test
+    void finalityAppearanceEvidenceAbstainsWhenPositiveLivePlayerHasNoFixtureSide() throws Exception {
+        Inputs input = inputs(BASE, true, live(player(1, 90, 2, 0), player(2, 90, 3, 0),
+                player(3, 45, 1, 0)), List.of(), MANIFEST);
+
+        var evidence = FixtureVerification.fixtureEvidenceByFixture(List.of(input.fixture), input.live)
+                .get(input.fixture.id());
+
+        assertThat(evidence.complete()).isFalse();
+        assertThat(evidence.positivePlayerIds()).containsExactlyInAnyOrder(1, 2, 3);
+        assertThat(evidence.appearances()).doesNotContainKey(3);
+    }
+
+    @Test
+    void recordedFixture29StatUnionMatchesPositiveLiveForThatCaptureOnly() throws Exception {
+        byte[] bootstrap = resource("bootstrap-static.json");
+        byte[] fixtures = resource("fixtures.json");
+        ReadInterval read = interval(Instant.parse("2026-09-13T17:45:06Z"));
+        var snapshot = CatalogueScheduleParser.parse(SEASON, new SourceDocument(bootstrap, read),
+                new SourceDocument(fixtures, read));
+        FixtureRow fixture = snapshot.fixtures().stream().filter(row -> row.id() == 29).findFirst().orElseThrow();
+        var evidence = FixtureVerification.fixtureEvidenceByFixture(List.of(fixture),
+                new SourceDocument(resource("event-3-live.json"), read)).get(fixture.id());
+
+        assertThat(evidence.complete()).isTrue();
+        assertThat(evidence.positivePlayerIds())
+                .containsExactlyInAnyOrderElementsOf(FixtureVerification.fixtureStatParticipantIds(fixture));
+    }
+
+    @Test
     void capturedLiveAndCatalogueFixtureStayPendingWhenMostAppearedHistoriesAreAbsent() throws Exception {
         byte[] bootstrap = resource("bootstrap-static.json");
         byte[] fixtures = resource("fixtures.json");

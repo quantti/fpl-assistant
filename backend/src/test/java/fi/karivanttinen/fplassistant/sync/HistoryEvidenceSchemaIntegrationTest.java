@@ -217,6 +217,13 @@ class HistoryEvidenceSchemaIntegrationTest {
         assertThatThrownBy(() -> tx.executeWithoutResult(status -> {
             insertBlankFinalGameweek(37, optionalCoverageJson());
             jdbc.update("UPDATE " + TABLES.gameweekStatSync()
+                    + " SET final_attempt_population_fingerprint=NULL WHERE season_id=? AND gameweek=37",
+                    ISOLATED_SEASON_ID);
+        })).as("SQL NULL cannot detach a checkpoint from its population fingerprint")
+                .isInstanceOf(DataAccessException.class);
+        assertThatThrownBy(() -> tx.executeWithoutResult(status -> {
+            insertBlankFinalGameweek(37, optionalCoverageJson());
+            jdbc.update("UPDATE " + TABLES.gameweekStatSync()
                             + " SET final_attempt_required_player_ids=ARRAY[10],"
                             + " final_attempt_completed_player_ids=ARRAY[],"
                             + " final_attempt_outstanding_player_ids=ARRAY[10]"
@@ -283,6 +290,130 @@ class HistoryEvidenceSchemaIntegrationTest {
                 .as("reinitialized schema must reject SQL NULL from the STRICT coverage validator")
                 .isInstanceOf(DataAccessException.class);
     }
+
+    @Test
+    void initializationSafelyRetiresOldPendingAndFinalizedGameweekProofs() {
+        OwnedSyncTables oldTables = new OwnedSyncTables("fpl_gwmig_run", "fpl_gwmig_payload",
+                "fpl_gwmig_receipt", "fpl_gwmig_reqstate", "fpl_gwmig_reqattempt",
+                "fpl_gwmig_fixture", "fpl_gwmig_pfsevidence", "fpl_gwmig_slot",
+                "fpl_gwmig_runtime", "fpl_gwmig_deps");
+        String table = oldTables.gameweekStatSync();
+        jdbc.execute("DROP TABLE IF EXISTS " + table);
+        jdbc.execute("""
+                CREATE TABLE %s (
+                    season_id INTEGER NOT NULL,
+                    season_code VARCHAR(10) NOT NULL,
+                    gameweek INTEGER NOT NULL,
+                    state VARCHAR(20) NOT NULL,
+                    event_finished BOOLEAN,
+                    data_checked BOOLEAN,
+                    fixture_manifest_complete BOOLEAN NOT NULL,
+                    all_assigned_fixtures_finished BOOLEAN NOT NULL,
+                    source_signature VARCHAR(64),
+                    first_checked_at TIMESTAMPTZ,
+                    current_invalidation_revision BIGINT NOT NULL DEFAULT 0,
+                    current_invalidation_floor TIMESTAMPTZ,
+                    final_attempt_source_signature VARCHAR(64),
+                    final_attempt_source_floor TIMESTAMPTZ,
+                    final_attempt_invalidation_revision BIGINT,
+                    final_attempt_required_player_ids INTEGER[] NOT NULL DEFAULT '{}',
+                    final_attempt_completed_player_ids INTEGER[] NOT NULL DEFAULT '{}',
+                    final_attempt_outstanding_player_ids INTEGER[] NOT NULL DEFAULT '{}',
+                    final_attempt_page_read_started_at TIMESTAMPTZ,
+                    final_attempt_page_read_finished_at TIMESTAMPTZ,
+                    finalized_source_signature VARCHAR(64),
+                    finalized_row_revision_fingerprint VARCHAR(64),
+                    finalized_source_floor TIMESTAMPTZ,
+                    finalized_invalidation_revision BIGINT,
+                    finalized_run_generation BIGINT,
+                    finalized_at TIMESTAMPTZ,
+                    finalized_mandatory_manifest_complete BOOLEAN,
+                    finalized_optional_component_coverage JSONB,
+                    updated_at TIMESTAMPTZ NOT NULL,
+                    PRIMARY KEY (season_id, gameweek)
+                )
+                """.formatted(table));
+        java.time.Instant writtenAt = java.time.Instant.parse("2026-09-01T12:00:00Z");
+        jdbc.update("""
+                INSERT INTO %s(season_id,season_code,gameweek,state,event_finished,data_checked,
+                    fixture_manifest_complete,all_assigned_fixtures_finished,source_signature,
+                    first_checked_at,current_invalidation_revision,current_invalidation_floor,
+                    final_attempt_source_signature,final_attempt_source_floor,final_attempt_invalidation_revision,
+                    final_attempt_required_player_ids,final_attempt_completed_player_ids,
+                    final_attempt_outstanding_player_ids,updated_at)
+                VALUES (?,?,31,'FINAL_PENDING',TRUE,TRUE,TRUE,TRUE,?,?,0,?,?,?,?,ARRAY[10,11],ARRAY[10],ARRAY[11],?)
+                """.formatted(table), ISOLATED_SEASON_ID, ISOLATED_SEASON_CODE, "a".repeat(64),
+                java.sql.Timestamp.from(writtenAt), java.sql.Timestamp.from(writtenAt), "a".repeat(64),
+                java.sql.Timestamp.from(writtenAt), 0, java.sql.Timestamp.from(writtenAt));
+        jdbc.update("""
+                INSERT INTO %s(season_id,season_code,gameweek,state,event_finished,data_checked,
+                    fixture_manifest_complete,all_assigned_fixtures_finished,source_signature,
+                    first_checked_at,current_invalidation_revision,current_invalidation_floor,
+                    final_attempt_source_signature,final_attempt_source_floor,final_attempt_invalidation_revision,
+                    final_attempt_required_player_ids,final_attempt_completed_player_ids,
+                    final_attempt_outstanding_player_ids,finalized_source_signature,
+                    finalized_row_revision_fingerprint,finalized_source_floor,finalized_invalidation_revision,
+                    finalized_run_generation,finalized_at,finalized_mandatory_manifest_complete,
+                    finalized_optional_component_coverage,updated_at)
+                VALUES (?,?,32,'FINALIZED',TRUE,TRUE,TRUE,TRUE,?,?,0,?,?,?,?,ARRAY[12],ARRAY[12],ARRAY[]::INTEGER[],
+                    ?,?,?,0,?,?,TRUE,?::jsonb,?)
+                """.formatted(table), ISOLATED_SEASON_ID, ISOLATED_SEASON_CODE, "b".repeat(64),
+                java.sql.Timestamp.from(writtenAt), java.sql.Timestamp.from(writtenAt), "b".repeat(64),
+                java.sql.Timestamp.from(writtenAt), 0, "b".repeat(64), "c".repeat(64),
+                java.sql.Timestamp.from(writtenAt), incrementalGeneration, java.sql.Timestamp.from(writtenAt),
+                optionalCoverageJson(), java.sql.Timestamp.from(writtenAt));
+
+        new OwnedSyncSchema(jdbc, oldTables).initialize();
+        assertInvalidatedOldGameweeks(table, writtenAt);
+        String archivedProof = jdbc.queryForObject("SELECT legacy_finality_evidence::text FROM " + table
+                + " WHERE season_id=? AND gameweek=32", String.class, ISOLATED_SEASON_ID);
+        assertThat(archivedProof).contains("FINALIZED", "c".repeat(64), "finalized_at");
+
+        new OwnedSyncSchema(jdbc, oldTables).initialize();
+        assertInvalidatedOldGameweeks(table, writtenAt);
+        assertThat(jdbc.queryForObject("SELECT legacy_finality_evidence::text FROM " + table
+                + " WHERE season_id=? AND gameweek=32", String.class, ISOLATED_SEASON_ID))
+                .isEqualTo(archivedProof);
+        jdbc.update("DELETE FROM " + table + " WHERE season_id=?", ISOLATED_SEASON_ID);
+    }
+
+    private void assertInvalidatedOldGameweeks(String table, java.time.Instant writtenAt) {
+        assertThat(jdbc.query("""
+                SELECT gameweek,state,final_attempt_source_signature,final_attempt_source_floor,
+                       final_attempt_required_player_ids,finalized_source_signature,finalized_at,
+                       legacy_finality_evidence,updated_at
+                FROM %s WHERE season_id=? ORDER BY gameweek
+                """.formatted(table), (rs, row) ->
+                new LegacyGameweek(rs.getInt("gameweek"), rs.getString("state"),
+                        rs.getString("final_attempt_source_signature"),
+                        rs.getTimestamp("final_attempt_source_floor"), rs.getArray("final_attempt_required_player_ids"),
+                        rs.getString("finalized_source_signature"), rs.getTimestamp("finalized_at"),
+                        rs.getString("legacy_finality_evidence"), rs.getTimestamp("updated_at")), ISOLATED_SEASON_ID))
+                .hasSize(2).allSatisfy(row -> {
+                    assertThat(row.state()).isEqualTo("FINAL_PENDING");
+                    assertThat(row.attemptSignature()).isNull();
+                    assertThat(row.attemptFloor()).isNull();
+                    assertThat(row.requiredIds()).isNotNull();
+                    assertThat(row.finalizedSignature()).isNull();
+                    assertThat(row.finalizedAt()).isNull();
+                    assertThat(row.legacyEvidence()).isNotBlank();
+                    assertThat(row.updatedAt().toInstant()).isEqualTo(writtenAt);
+                });
+        assertThat(jdbc.queryForList("SELECT cardinality(final_attempt_required_player_ids) FROM " + table
+                + " WHERE season_id=? ORDER BY gameweek", Integer.class, ISOLATED_SEASON_ID))
+                .containsExactly(0, 0);
+        assertThat(jdbc.queryForList("SELECT final_attempt_source_read_started_at FROM " + table
+                + " WHERE season_id=? ORDER BY gameweek", java.sql.Timestamp.class, ISOLATED_SEASON_ID))
+                .containsExactly(null, null);
+        assertThat(jdbc.queryForList("SELECT final_attempt_initial_source_read_finished_at FROM " + table
+                + " WHERE season_id=? ORDER BY gameweek", java.sql.Timestamp.class, ISOLATED_SEASON_ID))
+                .containsExactly(null, null);
+    }
+
+    private record LegacyGameweek(int gameweek, String state, String attemptSignature,
+                                  java.sql.Timestamp attemptFloor, java.sql.Array requiredIds,
+                                  String finalizedSignature, java.sql.Timestamp finalizedAt,
+                                  String legacyEvidence, java.sql.Timestamp updatedAt) { }
 
     @Test
     void generationsAreAppendOnlyAndDuplicateEvidenceIsRejected() {
@@ -381,15 +512,23 @@ class HistoryEvidenceSchemaIntegrationTest {
                 INSERT INTO %s(season_id, season_code, gameweek, state, event_finished, data_checked,
                     fixture_manifest_complete, all_assigned_fixtures_finished, source_signature,
                     final_attempt_source_signature, final_attempt_source_floor,
-                    final_attempt_invalidation_revision, finalized_source_signature,
-                    finalized_row_revision_fingerprint, finalized_source_floor,
+                    final_attempt_invalidation_revision, final_attempt_population_fingerprint,
+                    final_attempt_population_manifest,final_attempt_source_read_started_at,
+                    final_attempt_initial_source_read_finished_at,final_attempt_source_read_finished_at,
+                    finalized_source_signature,
+                    finalized_population_fingerprint,finalized_row_revision_fingerprint,finalized_source_floor,
+                    finalized_validation_read_started_at,finalized_validation_read_finished_at,
+                    finalized_source_read_started_at,finalized_source_read_finished_at,
                     finalized_invalidation_revision, finalized_run_generation, finalized_at,
                     finalized_mandatory_manifest_complete, finalized_optional_component_coverage,
                     updated_at)
-                VALUES (?, ?, ?, 'FINALIZED', TRUE, TRUE, TRUE, TRUE, ?, ?, now(), 0, ?, ?, now(), 0,
-                    ?, now(), TRUE, ?::jsonb, now())
+                VALUES (?, ?, ?, 'FINALIZED', TRUE, TRUE, TRUE, TRUE, ?, ?, now(), 0, ?,
+                    ('{"bootstrapFingerprint":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",'
+                    || '"catalogue":{},"participants":{},"known":{},"fixtureIdentities":{}}')::jsonb,
+                    now(),now(),now(),?, ?, ?, now(), now(), now(), now(), now(), 0, ?, now(), TRUE, ?::jsonb, now())
                 """.formatted(TABLES.gameweekStatSync()), ISOLATED_SEASON_ID, ISOLATED_SEASON_CODE,
-                gameweek, signature, signature, signature, rowFingerprint, incrementalGeneration, coverage);
+                gameweek, signature, signature, "f".repeat(64), signature, "f".repeat(64), rowFingerprint,
+                incrementalGeneration, coverage);
     }
 
     private static String optionalCoverageJson() {

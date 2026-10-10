@@ -56,6 +56,7 @@ public final class OwnedSyncSchema {
                 CREATE TABLE IF NOT EXISTS %s (
                     generation BIGINT PRIMARY KEY DEFAULT nextval('%s_generation_seq'),
                     kind VARCHAR(40) NOT NULL,
+                    producer_key VARCHAR(40) NOT NULL DEFAULT 'LEGACY',
                     season VARCHAR(10) NOT NULL,
                     coalescing_key VARCHAR(200) NOT NULL,
                     publication_key VARCHAR(200) NOT NULL,
@@ -93,6 +94,14 @@ public final class OwnedSyncSchema {
                 )
                 """.formatted(tables.run(), tables.run(), tables.run(), tables.receipt(),
                 tables.run(), tables.run(), tables.run()));
+        jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS producer_key VARCHAR(40)"
+                .formatted(tables.run()));
+        jdbc.execute("UPDATE %s SET producer_key='LEGACY' WHERE producer_key IS NULL"
+                .formatted(tables.run()));
+        jdbc.execute("ALTER TABLE %s ALTER COLUMN producer_key SET DEFAULT 'LEGACY'"
+                .formatted(tables.run()));
+        jdbc.execute("ALTER TABLE %s ALTER COLUMN producer_key SET NOT NULL"
+                .formatted(tables.run()));
         jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS requested_source_after TIMESTAMPTZ"
                 .formatted(tables.run()));
         jdbc.execute("UPDATE %s SET requested_source_after = GREATEST(created_at, due_at) "
@@ -601,17 +610,30 @@ public final class OwnedSyncSchema {
                     final_attempt_source_signature VARCHAR(64),
                     final_attempt_source_floor TIMESTAMPTZ,
                     final_attempt_invalidation_revision BIGINT,
+                    final_attempt_population_fingerprint VARCHAR(64),
+                    final_attempt_population_manifest JSONB,
+                    final_attempt_source_read_started_at TIMESTAMPTZ,
+                    final_attempt_initial_source_read_finished_at TIMESTAMPTZ,
+                    final_attempt_source_read_finished_at TIMESTAMPTZ,
                     final_attempt_required_player_ids INTEGER[] NOT NULL DEFAULT '{}',
                     final_attempt_completed_player_ids INTEGER[] NOT NULL DEFAULT '{}',
                     final_attempt_outstanding_player_ids INTEGER[] NOT NULL DEFAULT '{}',
+                    final_attempt_page_read_started_at TIMESTAMPTZ,
+                    final_attempt_page_read_finished_at TIMESTAMPTZ,
                     finalized_source_signature VARCHAR(64),
+                    finalized_population_fingerprint VARCHAR(64),
                     finalized_row_revision_fingerprint VARCHAR(64),
                     finalized_source_floor TIMESTAMPTZ,
+                    finalized_validation_read_started_at TIMESTAMPTZ,
+                    finalized_validation_read_finished_at TIMESTAMPTZ,
+                    finalized_source_read_started_at TIMESTAMPTZ,
+                    finalized_source_read_finished_at TIMESTAMPTZ,
                     finalized_invalidation_revision BIGINT,
                     finalized_run_generation BIGINT,
                     finalized_at TIMESTAMPTZ,
                     finalized_mandatory_manifest_complete BOOLEAN,
                     finalized_optional_component_coverage JSONB,
+                    legacy_finality_evidence JSONB,
                     updated_at TIMESTAMPTZ NOT NULL,
                     PRIMARY KEY (season_id, gameweek),
                     CONSTRAINT fk_%s_final_run_season FOREIGN KEY (finalized_run_generation, season_code)
@@ -689,26 +711,140 @@ public final class OwnedSyncSchema {
                 tables.gameweekStatSync(), tables.gameweekStatSync(), tables.gameweekStatSync(),
                 tables.gameweekStatSync(), tables.gameweekStatSync(), tables.gameweekStatSync(),
                 tables.gameweekStatSync(), tables.gameweekStatSync(), tables.gameweekStatSync()));
+        for (String column : List.of(
+                "final_attempt_population_fingerprint VARCHAR(64)",
+                "final_attempt_population_manifest JSONB",
+                "final_attempt_source_read_started_at TIMESTAMPTZ",
+                "final_attempt_initial_source_read_finished_at TIMESTAMPTZ",
+                "final_attempt_source_read_finished_at TIMESTAMPTZ",
+                "final_attempt_page_read_started_at TIMESTAMPTZ",
+                "final_attempt_page_read_finished_at TIMESTAMPTZ",
+                "finalized_population_fingerprint VARCHAR(64)",
+                "finalized_validation_read_started_at TIMESTAMPTZ",
+                "finalized_validation_read_finished_at TIMESTAMPTZ",
+                "finalized_source_read_started_at TIMESTAMPTZ",
+                "finalized_source_read_finished_at TIMESTAMPTZ",
+                "legacy_finality_evidence JSONB")) {
+            jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s"
+                    .formatted(tables.gameweekStatSync(), column));
+        }
+        retireUnsupportedGameweekFinality();
+        jdbc.execute("ALTER TABLE %s DROP CONSTRAINT IF EXISTS ck_%s_signatures"
+                .formatted(tables.gameweekStatSync(), tables.gameweekStatSync()));
+        jdbc.execute("ALTER TABLE %s ADD CONSTRAINT ck_%s_signatures CHECK ("
+                .formatted(tables.gameweekStatSync(), tables.gameweekStatSync())
+                + "(source_signature IS NULL OR source_signature ~ '^[0-9a-f]{64}$')"
+                + " AND (final_attempt_source_signature IS NULL OR final_attempt_source_signature ~ '^[0-9a-f]{64}$')"
+                + " AND (final_attempt_population_fingerprint IS NULL OR final_attempt_population_fingerprint ~ '^[0-9a-f]{64}$')"
+                + " AND (finalized_source_signature IS NULL OR finalized_source_signature ~ '^[0-9a-f]{64}$')"
+                + " AND (finalized_population_fingerprint IS NULL OR finalized_population_fingerprint ~ '^[0-9a-f]{64}$')"
+                + " AND (finalized_row_revision_fingerprint IS NULL OR finalized_row_revision_fingerprint ~ '^[0-9a-f]{64}$'))");
+        jdbc.execute("ALTER TABLE %s DROP CONSTRAINT IF EXISTS ck_%s_checkpoint"
+                .formatted(tables.gameweekStatSync(), tables.gameweekStatSync()));
+        jdbc.execute("ALTER TABLE %s ADD CONSTRAINT ck_%s_checkpoint CHECK ("
+                .formatted(tables.gameweekStatSync(), tables.gameweekStatSync())
+                + "(final_attempt_source_signature IS NULL) = (final_attempt_source_floor IS NULL)"
+                + " AND (final_attempt_source_signature IS NULL) = (final_attempt_invalidation_revision IS NULL)"
+                + " AND (final_attempt_source_signature IS NULL) = (final_attempt_population_fingerprint IS NULL)"
+                + " AND (final_attempt_source_signature IS NULL) = (final_attempt_population_manifest IS NULL)"
+                + " AND (final_attempt_source_signature IS NULL) = (final_attempt_source_read_started_at IS NULL)"
+                + " AND (final_attempt_source_signature IS NULL) = (final_attempt_initial_source_read_finished_at IS NULL)"
+                + " AND (final_attempt_source_signature IS NULL) = (final_attempt_source_read_finished_at IS NULL)"
+                + " AND ((final_attempt_source_read_started_at IS NULL) = (final_attempt_source_read_finished_at IS NULL))"
+                + " AND (final_attempt_source_read_started_at IS NULL OR"
+                + " (final_attempt_source_read_started_at <= final_attempt_initial_source_read_finished_at"
+                + " AND final_attempt_initial_source_read_finished_at <= final_attempt_source_read_finished_at))"
+                + " AND (final_attempt_population_manifest IS NULL OR"
+                + " (jsonb_typeof(final_attempt_population_manifest)='object'"
+                + " AND final_attempt_population_manifest ?& ARRAY['bootstrapFingerprint','catalogue',"
+                + " 'participants','known','fixtureIdentities']))"
+                + " AND fpl_owned_sync_checkpoint_ids_valid(final_attempt_required_player_ids)"
+                + " AND fpl_owned_sync_checkpoint_ids_valid(final_attempt_completed_player_ids)"
+                + " AND fpl_owned_sync_checkpoint_ids_valid(final_attempt_outstanding_player_ids)"
+                + " AND final_attempt_completed_player_ids <@ final_attempt_required_player_ids"
+                + " AND final_attempt_outstanding_player_ids <@ final_attempt_required_player_ids"
+                + " AND NOT (final_attempt_completed_player_ids && final_attempt_outstanding_player_ids)"
+                + " AND cardinality(final_attempt_completed_player_ids)"
+                + " + cardinality(final_attempt_outstanding_player_ids) = cardinality(final_attempt_required_player_ids)"
+                + " AND ((final_attempt_page_read_started_at IS NULL) = (final_attempt_page_read_finished_at IS NULL))"
+                + " AND (final_attempt_source_signature IS NOT NULL OR final_attempt_page_read_started_at IS NULL)"
+                + " AND (final_attempt_page_read_started_at IS NULL OR"
+                + " (final_attempt_page_read_started_at <= final_attempt_page_read_finished_at"
+                + " AND final_attempt_page_read_started_at >= final_attempt_source_floor"
+                + " AND final_attempt_page_read_started_at >= final_attempt_source_read_started_at"
+                + " AND final_attempt_page_read_finished_at <= final_attempt_source_read_finished_at)))");
         jdbc.execute("ALTER TABLE %s DROP CONSTRAINT IF EXISTS ck_%s_receipt"
                 .formatted(tables.gameweekStatSync(), tables.gameweekStatSync()));
         jdbc.execute("""
                 ALTER TABLE %s ADD CONSTRAINT ck_%s_receipt CHECK (
-                    (finalized_source_signature IS NULL AND finalized_row_revision_fingerprint IS NULL
-                        AND finalized_source_floor IS NULL AND finalized_invalidation_revision IS NULL
-                        AND finalized_run_generation IS NULL AND finalized_at IS NULL
-                        AND finalized_mandatory_manifest_complete IS NULL
+                    (finalized_source_signature IS NULL AND finalized_population_fingerprint IS NULL
+                        AND finalized_row_revision_fingerprint IS NULL AND finalized_source_floor IS NULL
+                        AND finalized_source_read_started_at IS NULL AND finalized_source_read_finished_at IS NULL
+                        AND finalized_validation_read_started_at IS NULL
+                        AND finalized_validation_read_finished_at IS NULL
+                        AND finalized_invalidation_revision IS NULL AND finalized_run_generation IS NULL
+                        AND finalized_at IS NULL AND finalized_mandatory_manifest_complete IS NULL
                         AND finalized_optional_component_coverage IS NULL)
                     OR (finalized_source_signature IS NOT NULL
+                        AND finalized_population_fingerprint IS NOT NULL
                         AND finalized_row_revision_fingerprint IS NOT NULL
                         AND finalized_row_revision_fingerprint ~ '^[0-9a-f]{64}$'
                         AND finalized_source_floor IS NOT NULL
+                        AND finalized_source_read_started_at IS NOT NULL
+                        AND finalized_source_read_finished_at IS NOT NULL
+                        AND finalized_source_read_started_at <= finalized_source_read_finished_at
+                        AND finalized_source_read_started_at = final_attempt_source_read_started_at
+                        AND finalized_source_read_finished_at = final_attempt_source_read_finished_at
+                        AND finalized_validation_read_started_at IS NOT NULL
+                        AND finalized_validation_read_finished_at IS NOT NULL
+                        AND finalized_validation_read_started_at <= finalized_validation_read_finished_at
+                        AND finalized_source_read_started_at <= finalized_validation_read_started_at
+                        AND finalized_source_read_finished_at >= finalized_validation_read_finished_at
+                        AND (final_attempt_page_read_started_at IS NULL OR
+                            (finalized_source_read_started_at <= final_attempt_page_read_started_at
+                                AND finalized_source_read_finished_at >= final_attempt_page_read_finished_at))
                         AND finalized_invalidation_revision IS NOT NULL
                         AND finalized_run_generation IS NOT NULL AND finalized_at IS NOT NULL
                         AND finalized_source_floor <= finalized_at
+                        AND finalized_validation_read_started_at >= finalized_source_floor
+                        AND finalized_validation_read_finished_at <= finalized_at
                         AND finalized_mandatory_manifest_complete IS TRUE
                         AND fpl_owned_sync_optional_coverage_valid(
                             finalized_optional_component_coverage) IS TRUE))
                 """.formatted(tables.gameweekStatSync(), tables.gameweekStatSync()));
+        jdbc.execute("ALTER TABLE %s ADD CONSTRAINT ck_%s_final_pending CHECK (state <> 'FINAL_PENDING' OR "
+                .formatted(tables.gameweekStatSync(), tables.gameweekStatSync())
+                + "(event_finished IS TRUE AND data_checked IS TRUE AND fixture_manifest_complete "
+                + "AND all_assigned_fixtures_finished AND source_signature IS NOT NULL))");
+        jdbc.execute("ALTER TABLE %s DROP CONSTRAINT IF EXISTS ck_%s_finalized"
+                .formatted(tables.gameweekStatSync(), tables.gameweekStatSync()));
+        jdbc.execute("ALTER TABLE %s ADD CONSTRAINT ck_%s_finalized CHECK (state <> 'FINALIZED' OR ("
+                .formatted(tables.gameweekStatSync(), tables.gameweekStatSync())
+                + "event_finished IS TRUE AND data_checked IS TRUE AND fixture_manifest_complete"
+                + " AND all_assigned_fixtures_finished AND source_signature IS NOT NULL"
+                + " AND final_attempt_source_signature = source_signature"
+                + " AND final_attempt_source_floor IS NOT NULL"
+                + " AND final_attempt_invalidation_revision = current_invalidation_revision"
+                + " AND (current_invalidation_floor IS NULL OR final_attempt_source_floor >= current_invalidation_floor)"
+                + " AND finalized_source_signature = source_signature"
+                + " AND finalized_row_revision_fingerprint ~ '^[0-9a-f]{64}$'"
+                + " AND finalized_source_floor = final_attempt_source_floor"
+                + " AND finalized_invalidation_revision = current_invalidation_revision"
+                + " AND finalized_run_generation IS NOT NULL AND finalized_at IS NOT NULL"
+                + " AND finalized_validation_read_started_at >= final_attempt_source_floor"
+                + " AND finalized_validation_read_finished_at <= finalized_at"
+                + " AND finalized_source_read_started_at = final_attempt_source_read_started_at"
+                + " AND finalized_source_read_finished_at = final_attempt_source_read_finished_at"
+                + " AND finalized_source_read_started_at <= finalized_validation_read_started_at"
+                + " AND finalized_source_read_finished_at >= finalized_validation_read_finished_at"
+                + " AND (final_attempt_page_read_started_at IS NULL OR"
+                + " (finalized_source_read_started_at <= final_attempt_page_read_started_at"
+                + " AND finalized_source_read_finished_at >= final_attempt_page_read_finished_at))"
+                + " AND (final_attempt_page_read_finished_at IS NULL OR"
+                + " finalized_validation_read_started_at >= final_attempt_page_read_finished_at)"
+                + " AND finalized_mandatory_manifest_complete IS TRUE"
+                + " AND cardinality(final_attempt_outstanding_player_ids) = 0"
+                + " AND final_attempt_completed_player_ids = final_attempt_required_player_ids))");
         jdbc.execute("""
                 CREATE OR REPLACE FUNCTION fpl_owned_sync_invalidation_guard() RETURNS trigger AS $$
                 BEGIN
@@ -836,6 +972,67 @@ public final class OwnedSyncSchema {
         jdbc.execute("ALTER TABLE %s ENABLE ROW LEVEL SECURITY".formatted(tables.plannerSlot()));
         jdbc.execute("ALTER TABLE %s ENABLE ROW LEVEL SECURITY".formatted(tables.plannerRuntime()));
         jdbc.execute("ALTER TABLE %s ENABLE ROW LEVEL SECURITY".formatted(tables.alert()));
+    }
+
+    /** Retires old proofs that predate population and actual source-read interval evidence. */
+    private void retireUnsupportedGameweekFinality() {
+        String table = tables.gameweekStatSync();
+        for (String constraint : List.of("checkpoint", "receipt", "finalized", "final_pending")) {
+            jdbc.execute("ALTER TABLE %s DROP CONSTRAINT IF EXISTS ck_%s_%s"
+                    .formatted(table, table, constraint));
+        }
+        jdbc.update("""
+                UPDATE %s AS g SET
+                    legacy_finality_evidence=COALESCE(g.legacy_finality_evidence,
+                        to_jsonb(g) - 'legacy_finality_evidence'),
+                    state=CASE WHEN g.event_finished IS TRUE AND g.data_checked IS TRUE
+                        AND g.fixture_manifest_complete AND g.all_assigned_fixtures_finished
+                        AND g.source_signature IS NOT NULL THEN 'FINAL_PENDING' ELSE 'OPEN' END,
+                    final_attempt_source_signature=NULL,
+                    final_attempt_source_floor=NULL,
+                    final_attempt_invalidation_revision=NULL,
+                    final_attempt_population_fingerprint=NULL,
+                    final_attempt_population_manifest=NULL,
+                    final_attempt_source_read_started_at=NULL,
+                    final_attempt_initial_source_read_finished_at=NULL,
+                    final_attempt_source_read_finished_at=NULL,
+                    final_attempt_required_player_ids='{}',
+                    final_attempt_completed_player_ids='{}',
+                    final_attempt_outstanding_player_ids='{}',
+                    final_attempt_page_read_started_at=NULL,
+                    final_attempt_page_read_finished_at=NULL,
+                    finalized_source_signature=NULL,
+                    finalized_population_fingerprint=NULL,
+                    finalized_row_revision_fingerprint=NULL,
+                    finalized_source_floor=NULL,
+                    finalized_validation_read_started_at=NULL,
+                    finalized_validation_read_finished_at=NULL,
+                    finalized_source_read_started_at=NULL,
+                    finalized_source_read_finished_at=NULL,
+                    finalized_invalidation_revision=NULL,
+                    finalized_run_generation=NULL,
+                    finalized_at=NULL,
+                    finalized_mandatory_manifest_complete=NULL,
+                    finalized_optional_component_coverage=NULL
+                WHERE (g.final_attempt_source_signature IS NOT NULL AND (
+                        g.final_attempt_population_fingerprint IS NULL
+                        OR g.final_attempt_population_manifest IS NULL
+                        OR g.final_attempt_source_read_started_at IS NULL
+                        OR g.final_attempt_initial_source_read_finished_at IS NULL
+                        OR g.final_attempt_source_read_finished_at IS NULL))
+                   OR (g.state='FINALIZED' AND (
+                        g.final_attempt_source_signature IS NULL
+                        OR g.final_attempt_population_fingerprint IS NULL
+                        OR g.final_attempt_population_manifest IS NULL
+                        OR g.final_attempt_source_read_started_at IS NULL
+                        OR g.final_attempt_initial_source_read_finished_at IS NULL
+                        OR g.final_attempt_source_read_finished_at IS NULL
+                        OR g.finalized_population_fingerprint IS NULL
+                        OR g.finalized_validation_read_started_at IS NULL
+                        OR g.finalized_validation_read_finished_at IS NULL
+                        OR g.finalized_source_read_started_at IS NULL
+                        OR g.finalized_source_read_finished_at IS NULL))
+                """.formatted(table));
     }
 
     /** Upgrades the pre-review publication-key-only receipt without deleting runs or evidence. */

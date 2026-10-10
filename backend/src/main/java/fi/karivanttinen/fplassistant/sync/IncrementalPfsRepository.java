@@ -210,6 +210,7 @@ public final class IncrementalPfsRepository {
 
         for (int fixtureId : observedFixtures) revokeObsoleteFixtureVerification(batch.seasonId(), fixtureId,
                 publishedAt);
+        if (!changed.isEmpty()) store.invalidateIncrementalGameweeks(lease, changed, read);
 
         return new PublicationResult(changed, pfsRowsWritten, evidenceRowsWritten, currentPointersUpdated);
     }

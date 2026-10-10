@@ -13,6 +13,8 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -45,6 +47,12 @@ public final class OwnedSyncStore {
     public static final int MAX_RETAINED_PAYLOAD_BYTES_PER_RUN =
             OwnedSyncSchema.MAX_RETAINED_PAYLOAD_BYTES_PER_RUN;
     public static final int MAX_ERROR_CHARS = 1_000;
+    static final String INCREMENTAL_CORE_PRODUCER = "INCREMENTAL_CORE";
+    static final String INCREMENTAL_CORE_KEY = "incremental-core-import";
+    static final String FINISHED_FIXTURE_RECEIPT_PREFIX = "incremental-finished-fixture:";
+    static final String INCREMENTAL_LIVE_EVENT_RECEIPT_PREFIX = "incremental-live-event:";
+    static final String INCREMENTAL_PARTICIPANT_RECEIPT_PREFIX = "incremental-participant:fixture:";
+    static final String INCREMENTAL_POPULATION_RECEIPT_PREFIX = "incremental-population:fixture:";
     private static final Duration MAX_LEASE = Duration.ofHours(1);
     private static final int PUBLIC_PAIR_CACHE_ENTRIES = 2;
     static final int HISTORY_HYDRATION_FETCH_SIZE = 8;
@@ -81,6 +89,10 @@ public final class OwnedSyncStore {
         this.clock = Objects.requireNonNull(clock);
         this.tables = Objects.requireNonNull(tables);
         this.runtimeFence = runtimeFence;
+    }
+
+    GameweekFinalityRepository gameweekFinalityRepository() {
+        return new GameweekFinalityRepository(jdbc, this, tables, clock);
     }
 
     public Run enqueue(SyncKind kind, String season, String coalescingKey,
@@ -132,6 +144,92 @@ public final class OwnedSyncStore {
     public Run enqueuePreservingActiveDemand(SyncKind kind, String season, String coalescingKey,
                                              String publicationKey, Instant dueAt) {
         return enqueue(kind, season, coalescingKey, publicationKey, dueAt, false);
+    }
+
+    /** Creates or returns the one producer-isolated core-import run for this season. */
+    Run enqueueIncrementalCoreImport(CatalogueScheduleParser.Season season, Instant dueAt) {
+        Objects.requireNonNull(season);
+        Objects.requireNonNull(dueAt);
+        return tx.execute(status -> {
+            requireIncrementalRuntime(season);
+            List<Run> active = jdbc.query("""
+                    SELECT generation, kind, season, coalescing_key, publication_key,
+                           due_at, state, attempt_count
+                    FROM %s WHERE kind='PLAYER_HISTORY' AND producer_key=? AND season=?
+                      AND coalescing_key=? AND publication_key=?
+                      AND state IN ('PENDING','LEASED') FOR UPDATE
+                    """.formatted(tables.run()), this::run, INCREMENTAL_CORE_PRODUCER,
+                    season.code(), INCREMENTAL_CORE_KEY, INCREMENTAL_CORE_KEY);
+            if (!active.isEmpty()) return active.getFirst();
+
+            Instant createdAt = now();
+            Instant sourceFloor = dueAt.isAfter(createdAt) ? dueAt : createdAt;
+            jdbc.update("INSERT INTO %s(season, publication_key) VALUES (?, ?) ON CONFLICT DO NOTHING"
+                    .formatted(tables.receipt()), season.code(), INCREMENTAL_CORE_KEY);
+            return jdbc.queryForObject("""
+                    INSERT INTO %s(kind, producer_key, season, coalescing_key, publication_key, priority,
+                                   due_at, requested_source_after, runtime_mode, runtime_epoch,
+                                   created_at, updated_at)
+                    VALUES ('PLAYER_HISTORY', ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?)
+                    RETURNING generation, kind, season, coalescing_key, publication_key,
+                              due_at, state, attempt_count
+                    """.formatted(tables.run()), this::run, INCREMENTAL_CORE_PRODUCER, season.code(),
+                    INCREMENTAL_CORE_KEY, INCREMENTAL_CORE_KEY, SyncKind.PLAYER_HISTORY.priority,
+                    timestamp(dueAt), timestamp(sourceFloor), runtimeEpoch(), timestamp(createdAt),
+                    timestamp(createdAt));
+        });
+    }
+
+    /** Claims only this collector's active-season run; legacy dispatchers cannot see it. */
+    Optional<Lease> acquireIncrementalCoreImport(String season, String owner, Duration duration) {
+        String validSeason = bounded("season", season, 10);
+        String validOwner = bounded("owner", owner, 128);
+        Duration validDuration = leaseDuration(duration);
+        return tx.execute(status -> {
+            requireIncrementalRuntime(validSeason);
+            Instant checkedAt = now();
+            List<Long> generations = jdbc.queryForList("""
+                    SELECT generation FROM %s
+                    WHERE kind='PLAYER_HISTORY' AND producer_key=? AND season=?
+                      AND coalescing_key=? AND publication_key=?
+                      AND runtime_mode='ACTIVE' AND runtime_epoch=? AND due_at<=?
+                      AND (state='PENDING' OR (state='LEASED' AND lease_expires_at<=?))
+                    ORDER BY due_at,generation LIMIT 1 FOR UPDATE SKIP LOCKED
+                    """.formatted(tables.run()), Long.class, INCREMENTAL_CORE_PRODUCER, validSeason,
+                    INCREMENTAL_CORE_KEY, INCREMENTAL_CORE_KEY, runtimeEpoch(), timestamp(checkedAt),
+                    timestamp(checkedAt));
+            if (generations.isEmpty()) return Optional.empty();
+            return Optional.of(leaseGeneration(generations.getFirst(), validOwner, validDuration, checkedAt));
+        });
+    }
+
+    private void requireIncrementalRuntime(CatalogueScheduleParser.Season season) {
+        Objects.requireNonNull(season);
+        if (runtimeFence == null || runtimeFence.mode() != OwnedSyncMode.ACTIVE
+                || !runtimeFence.season().equals(season.code())) {
+            throw new RuntimeFenceLostException("Incremental core import requires its configured ACTIVE season");
+        }
+        requireIncrementalRuntime(season.code());
+        List<SeasonIdentity> current = jdbc.query("""
+                SELECT id, code FROM season WHERE is_current=true ORDER BY id FOR UPDATE
+                """, (rs, row) -> new SeasonIdentity(rs.getInt("id"), rs.getString("code")));
+        if (current.size() != 1 || current.getFirst().id() != season.id()
+                || !current.getFirst().code().equals(season.code())) {
+            throw new RuntimeFenceLostException("Incremental core import season is not the database playing season");
+        }
+    }
+
+    private void requireIncrementalRuntime(String season) {
+        if (runtimeFence == null || runtimeFence.mode() != OwnedSyncMode.ACTIVE
+                || !runtimeFence.season().equals(season)) {
+            throw new RuntimeFenceLostException("Incremental core import requires its configured ACTIVE season");
+        }
+        assertRuntimeFence(season);
+        List<String> current = jdbc.query("SELECT code FROM season WHERE is_current=true",
+                (rs, row) -> rs.getString(1));
+        if (current.size() != 1 || !season.equals(current.getFirst())) {
+            throw new RuntimeFenceLostException("Incremental core import season is not the database playing season");
+        }
     }
 
     private Run enqueue(SyncKind kind, String season, String coalescingKey,
@@ -470,6 +568,467 @@ public final class OwnedSyncStore {
                 .findFirst().orElse(CanonicalParentEvidence.MISSING);
     }
 
+    /** Records one compact source fingerprint per leased cycle without retaining either body. */
+    boolean recordIncrementalSourceSnapshot(Lease lease, String fingerprint, SourceRead read) {
+        if (fingerprint == null || !fingerprint.matches("[0-9a-f]{64}")) {
+            throw new IllegalArgumentException("Invalid incremental source fingerprint");
+        }
+        Objects.requireNonNull(read);
+        return tx.execute(status -> {
+            LockedRun run = lockAndValidate(lease);
+            requireIncrementalRun(run);
+            List<SnapshotReceipt> prior = jdbc.query("""
+                    SELECT latest_generation, source_pair_fingerprint
+                    FROM %s WHERE season=? AND publication_key=? FOR UPDATE
+                    """.formatted(tables.receipt()), (rs, row) -> new SnapshotReceipt(
+                    (Long) rs.getObject("latest_generation"), rs.getString("source_pair_fingerprint")),
+                    run.season, INCREMENTAL_CORE_KEY);
+            if (prior.size() != 1) throw new IllegalStateException("Incremental runner receipt is missing");
+            SnapshotReceipt current = prior.getFirst();
+            if (current.generation() != null && current.generation() == run.generation) {
+                if (!fingerprint.equals(current.fingerprint())) return false;
+                includeIncrementalSourceRead(run, read);
+                return true;
+            }
+            if (current.generation() != null && current.generation() > run.generation) {
+                throw new StaleGenerationException(run.generation, current.generation(), run.season,
+                        INCREMENTAL_CORE_KEY);
+            }
+            Instant recordedAt = now();
+            jdbc.update("""
+                    UPDATE %s SET latest_generation=?, source_read_started_at=?, source_read_finished_at=?,
+                        source_pair_fingerprint=?, published_at=?
+                    WHERE season=? AND publication_key=?
+                    """.formatted(tables.receipt()), run.generation, timestamp(read.startedAt()),
+                    timestamp(read.finishedAt()), fingerprint, timestamp(recordedAt), run.season,
+                    INCREMENTAL_CORE_KEY);
+            includeIncrementalSourceRead(run, read);
+            return true;
+        });
+    }
+
+    /** Stores source-discovery checkpoints and returns only compact metadata for this snapshot. */
+    IncrementalDiscovery observeIncrementalSnapshot(Lease lease,
+            CatalogueScheduleParser.Snapshot snapshot) {
+        Objects.requireNonNull(snapshot);
+        return tx.execute(status -> {
+            LockedRun run = lockAndValidate(lease);
+            requireIncrementalRun(run);
+            requireIncrementalRuntime(snapshot.season());
+            Map<Integer, IncrementalEvent> events = new LinkedHashMap<>();
+            Instant observedAt = max(snapshot.bootstrapRead().completedAt(), snapshot.fixturesRead().completedAt());
+            for (CatalogueScheduleParser.GameweekRow event : snapshot.gameweeks()) {
+                GameweekFinality.SourceSnapshot source = GameweekFinality.SourceSnapshot.from(snapshot, event.id());
+                IncrementalEvent state = observeIncrementalEvent(snapshot, source, event, observedAt);
+                events.put(event.id(), state);
+            }
+
+            List<CatalogueScheduleParser.FixtureRow> finished = snapshot.fixtures().stream()
+                    .filter(CatalogueScheduleParser.FixtureRow::finished).toList();
+            Instant recordedAt = now();
+            for (CatalogueScheduleParser.FixtureRow fixture : finished) {
+                String key = finishedFixtureReceiptKey(fixture.id());
+                jdbc.update("""
+                        INSERT INTO %s(season, publication_key, latest_generation,
+                            source_read_started_at, source_read_finished_at, source_pair_fingerprint, published_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT (season, publication_key) DO UPDATE SET
+                            latest_generation=EXCLUDED.latest_generation,
+                            source_read_started_at=EXCLUDED.source_read_started_at,
+                            source_read_finished_at=EXCLUDED.source_read_finished_at,
+                            source_pair_fingerprint=EXCLUDED.source_pair_fingerprint,
+                            published_at=EXCLUDED.published_at
+                        WHERE %s.latest_generation<=EXCLUDED.latest_generation
+                          AND %s.source_pair_fingerprint IS DISTINCT FROM EXCLUDED.source_pair_fingerprint
+                        """.formatted(tables.receipt(), tables.receipt(), tables.receipt()), run.season, key,
+                        run.generation, timestamp(snapshot.fixturesRead().startedAt()),
+                        timestamp(snapshot.fixturesRead().completedAt()),
+                        FixtureVerification.verifiedHeader(fixture), timestamp(recordedAt));
+            }
+            List<CatalogueScheduleParser.FixtureRow> notFinished = snapshot.fixtures().stream()
+                    .filter(fixture -> !fixture.finished()).toList();
+            deleteFinishedMarkers(run.season, notFinished);
+            Map<Integer, Instant> finishedFloors = readFinishedMarkers(run.season, finished);
+            return new IncrementalDiscovery(events, finishedFloors);
+        });
+    }
+
+    private IncrementalEvent observeIncrementalEvent(CatalogueScheduleParser.Snapshot schedule,
+            GameweekFinality.SourceSnapshot source, CatalogueScheduleParser.GameweekRow event,
+            Instant observedAt) {
+        String signature = source.signature();
+        List<GameweekSyncRow> rows = jdbc.query("""
+                SELECT state, source_signature, first_checked_at, current_invalidation_revision,
+                       current_invalidation_floor, finalized_source_signature, finalized_invalidation_revision
+                FROM %s WHERE season_id=? AND gameweek=? FOR UPDATE
+                """.formatted(tables.gameweekStatSync()), (rs, row) -> new GameweekSyncRow(
+                rs.getString("state"), rs.getString("source_signature"), instant(rs, "first_checked_at"),
+                rs.getLong("current_invalidation_revision"), instant(rs, "current_invalidation_floor"),
+                rs.getString("finalized_source_signature"),
+                (Long) rs.getObject("finalized_invalidation_revision")), schedule.season().id(), event.id());
+        GameweekSyncRow prior = rows.stream().findFirst().orElse(null);
+        boolean eligible = source.finalSweepEligible();
+        boolean changed = prior == null || !signature.equals(prior.sourceSignature());
+        boolean finalized = eligible && prior != null && !changed && "FINALIZED".equals(prior.state())
+                && signature.equals(prior.finalizedSourceSignature())
+                && Objects.equals(prior.finalizedInvalidationRevision(), prior.invalidationRevision());
+        String state = finalized ? "FINALIZED" : eligible ? "FINAL_PENDING" : "OPEN";
+        Instant firstCheckedAt = eligible
+                ? prior != null && !changed && prior.firstCheckedAt() != null
+                    ? prior.firstCheckedAt() : observedAt
+                : null;
+        long invalidationRevision = prior == null ? 0
+                : prior.invalidationRevision() + (changed ? 1 : 0);
+        Instant invalidationFloor = prior == null
+                ? eligible ? observedAt : null
+                : changed ? max(prior.invalidationFloor(), observedAt) : prior.invalidationFloor();
+
+        if (prior == null) {
+            jdbc.update("""
+                    INSERT INTO %s(season_id, season_code, gameweek, state, event_finished, data_checked,
+                        fixture_manifest_complete, all_assigned_fixtures_finished, source_signature,
+                        first_checked_at, current_invalidation_revision, current_invalidation_floor, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, TRUE, ?, ?, ?, ?, ?, ?)
+                    """.formatted(tables.gameweekStatSync()), schedule.season().id(), schedule.season().code(),
+                    event.id(), state, event.finished(), event.dataChecked(), source.allAssignedFixturesFinished(),
+                    signature, nullableTimestamp(firstCheckedAt), invalidationRevision,
+                    nullableTimestamp(invalidationFloor), timestamp(now()));
+        } else if (changed || !state.equals(prior.state())
+                || !Objects.equals(firstCheckedAt, prior.firstCheckedAt())) {
+            jdbc.update("""
+                    UPDATE %s SET state=?, event_finished=?, data_checked=?, fixture_manifest_complete=TRUE,
+                        all_assigned_fixtures_finished=?, source_signature=?, first_checked_at=?,
+                        current_invalidation_revision=?, current_invalidation_floor=?,
+                        finalized_source_signature=NULL, finalized_population_fingerprint=NULL,
+                        finalized_row_revision_fingerprint=NULL, finalized_source_floor=NULL,
+                        finalized_validation_read_started_at=NULL, finalized_validation_read_finished_at=NULL,
+                        finalized_source_read_started_at=NULL, finalized_source_read_finished_at=NULL,
+                        finalized_invalidation_revision=NULL, finalized_run_generation=NULL, finalized_at=NULL,
+                        finalized_mandatory_manifest_complete=NULL, finalized_optional_component_coverage=NULL,
+                        updated_at=?
+                    WHERE season_id=? AND gameweek=?
+                    """.formatted(tables.gameweekStatSync()), state, event.finished(), event.dataChecked(),
+                    source.allAssignedFixturesFinished(), signature, nullableTimestamp(firstCheckedAt),
+                    invalidationRevision, nullableTimestamp(invalidationFloor), timestamp(now()),
+                    schedule.season().id(), event.id());
+        }
+        return new IncrementalEvent(event.id(), state, firstCheckedAt, signature);
+    }
+
+    private void deleteFinishedMarkers(String season, List<CatalogueScheduleParser.FixtureRow> fixtures) {
+        if (fixtures.isEmpty()) return;
+        String placeholders = String.join(",", java.util.Collections.nCopies(fixtures.size(), "?"));
+        List<Object> parameters = new ArrayList<>(fixtures.size() + 1);
+        parameters.add(season);
+        fixtures.stream().map(fixture -> finishedFixtureReceiptKey(fixture.id())).forEach(parameters::add);
+        jdbc.update("DELETE FROM %s WHERE season=? AND publication_key IN (%s)"
+                .formatted(tables.receipt(), placeholders), parameters.toArray());
+    }
+
+    private Map<Integer, Instant> readFinishedMarkers(String season,
+            List<CatalogueScheduleParser.FixtureRow> fixtures) {
+        if (fixtures.isEmpty()) return Map.of();
+        String placeholders = String.join(",", java.util.Collections.nCopies(fixtures.size(), "?"));
+        List<Object> parameters = new ArrayList<>(fixtures.size() + 1);
+        parameters.add(season);
+        fixtures.stream().map(fixture -> finishedFixtureReceiptKey(fixture.id())).forEach(parameters::add);
+        Map<Integer, Instant> result = new LinkedHashMap<>();
+        jdbc.query("SELECT publication_key, source_read_finished_at FROM %s WHERE season=? "
+                .formatted(tables.receipt()) + "AND publication_key IN (" + placeholders + ")",
+                rs -> {
+                    result.put(Integer.parseInt(rs.getString("publication_key")
+                            .substring(FINISHED_FIXTURE_RECEIPT_PREFIX.length())),
+                            instant(rs, "source_read_finished_at"));
+                }, parameters.toArray());
+        return Map.copyOf(result);
+    }
+
+    Map<Integer, Set<Integer>> knownPlayerIds(Lease lease, int seasonId, List<Integer> fixtureIds) {
+        if (fixtureIds.isEmpty()) return Map.of();
+        return tx.execute(status -> {
+            LockedRun run = lockAndValidate(lease);
+            requireIncrementalRun(run);
+            String placeholders = String.join(",", java.util.Collections.nCopies(fixtureIds.size(), "?"));
+            String sql = "SELECT fixture_id, player_id FROM player_fixture_stats WHERE season_id=? AND fixture_id IN ("
+                    + placeholders + ") UNION SELECT fixture_id, player_id FROM " + tables.playerFixtureCurrent()
+                    + " WHERE season_id=? AND fixture_id IN (" + placeholders + ")";
+            List<Object> parameters = new ArrayList<>(fixtureIds.size() * 2 + 2);
+            parameters.add(seasonId);
+            parameters.addAll(fixtureIds);
+            parameters.add(seasonId);
+            parameters.addAll(fixtureIds);
+            Map<Integer, Set<Integer>> result = new LinkedHashMap<>();
+            jdbc.query(sql, rs -> {
+                result.computeIfAbsent(rs.getInt("fixture_id"), ignored -> new java.util.TreeSet<>())
+                        .add(rs.getInt("player_id"));
+            }, parameters.toArray());
+            mergeDiscoveredPlayerIds(result, readParticipantLedger(run.season, fixtureIds));
+            return immutablePlayerIds(result);
+        });
+    }
+
+    Map<Integer, Set<Integer>> incrementalDiscoveredPlayerIds(Lease lease, List<Integer> fixtureIds) {
+        if (fixtureIds.isEmpty()) return Map.of();
+        return tx.execute(status -> {
+            LockedRun run = lockAndValidate(lease);
+            requireIncrementalRun(run);
+            return immutablePlayerIds(readParticipantLedger(run.season, fixtureIds));
+        });
+    }
+
+    Set<Integer> incrementalFixturesNeedingDiscovery(Lease lease, Map<Integer, String> sourceFingerprints) {
+        if (sourceFingerprints.isEmpty()) return Set.of();
+        sourceFingerprints.forEach((fixtureId, fingerprint) -> {
+            if (fixtureId == null || fixtureId <= 0 || fingerprint == null
+                    || !fingerprint.matches("[0-9a-f]{64}")) {
+                throw new IllegalArgumentException("Invalid fixture population checkpoint");
+            }
+        });
+        return tx.execute(status -> {
+            LockedRun run = lockAndValidate(lease);
+            requireIncrementalRun(run);
+            List<Integer> ids = sourceFingerprints.keySet().stream().sorted().toList();
+            String placeholders = String.join(",", java.util.Collections.nCopies(ids.size(), "?"));
+            List<Object> parameters = new ArrayList<>(ids.size() + 1);
+            parameters.add(run.season);
+            ids.stream().map(id -> INCREMENTAL_POPULATION_RECEIPT_PREFIX + id).forEach(parameters::add);
+            Map<Integer, String> stored = new HashMap<>();
+            jdbc.query("SELECT publication_key, source_pair_fingerprint FROM " + tables.receipt()
+                    + " WHERE season=? AND publication_key IN (" + placeholders + ")", rs -> {
+                String key = rs.getString("publication_key");
+                stored.put(Integer.parseInt(key.substring(INCREMENTAL_POPULATION_RECEIPT_PREFIX.length())),
+                        rs.getString("source_pair_fingerprint"));
+            }, parameters.toArray());
+            Set<Integer> needsDiscovery = new HashSet<>();
+            sourceFingerprints.forEach((id, fingerprint) -> {
+                if (!fingerprint.equals(stored.get(id))) needsDiscovery.add(id);
+            });
+            return Set.copyOf(needsDiscovery);
+        });
+    }
+
+    void recordIncrementalPopulation(Lease lease, Map<Integer, Set<Integer>> playersByFixture,
+                                     Map<Integer, String> sourceFingerprints, SourceRead sourceRead) {
+        Objects.requireNonNull(playersByFixture);
+        Objects.requireNonNull(sourceFingerprints);
+        Objects.requireNonNull(sourceRead);
+        if (!playersByFixture.keySet().equals(sourceFingerprints.keySet())) {
+            throw new IllegalArgumentException("Fixture population and checkpoint sets must match");
+        }
+        tx.executeWithoutResult(status -> {
+            LockedRun run = lockAndValidate(lease);
+            requireIncrementalRun(run);
+            Instant recordedAt = now();
+            for (int fixtureId : playersByFixture.keySet().stream().sorted().toList()) {
+                String participantPrefix = INCREMENTAL_PARTICIPANT_RECEIPT_PREFIX + fixtureId + ":player:";
+                for (int playerId : playersByFixture.get(fixtureId).stream().sorted().toList()) {
+                    insertIncrementalReceipt(run.season, participantPrefix + playerId, run.generation,
+                            sourceRead, null, recordedAt);
+                }
+                insertIncrementalReceipt(run.season, INCREMENTAL_POPULATION_RECEIPT_PREFIX + fixtureId,
+                        run.generation, sourceRead, sourceFingerprints.get(fixtureId), recordedAt);
+            }
+        });
+    }
+
+    private Map<Integer, Set<Integer>> readParticipantLedger(String season, List<Integer> fixtureIds) {
+        Set<Integer> requestedFixtures = Set.copyOf(fixtureIds);
+        Map<Integer, Set<Integer>> result = new LinkedHashMap<>();
+        String participantPattern = INCREMENTAL_PARTICIPANT_RECEIPT_PREFIX + "%:player:%";
+        jdbc.queryForList("SELECT publication_key FROM %s WHERE season=? AND publication_key LIKE ? "
+                .formatted(tables.receipt()), String.class, season, participantPattern).forEach(key -> {
+            int separator = key.indexOf(":player:", INCREMENTAL_PARTICIPANT_RECEIPT_PREFIX.length());
+            if (separator < 0) return;
+            try {
+                int fixtureId = Integer.parseInt(key.substring(INCREMENTAL_PARTICIPANT_RECEIPT_PREFIX.length(),
+                        separator));
+                int playerId = Integer.parseInt(key.substring(separator + ":player:".length()));
+                if (requestedFixtures.contains(fixtureId)) {
+                    result.computeIfAbsent(fixtureId, ignored -> new java.util.TreeSet<>()).add(playerId);
+                }
+            } catch (NumberFormatException invalidKey) {
+                throw new IllegalStateException("Invalid incremental participant receipt key", invalidKey);
+            }
+        });
+        return result;
+    }
+
+    private void insertIncrementalReceipt(String season, String key, long generation, SourceRead read,
+                                         String fingerprint, Instant publishedAt) {
+        jdbc.update("""
+                INSERT INTO %s(season, publication_key, latest_generation, source_read_started_at,
+                    source_read_finished_at, source_pair_fingerprint, published_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (season, publication_key) DO UPDATE SET
+                    latest_generation=EXCLUDED.latest_generation,
+                    source_read_started_at=EXCLUDED.source_read_started_at,
+                    source_read_finished_at=EXCLUDED.source_read_finished_at,
+                    source_pair_fingerprint=COALESCE(EXCLUDED.source_pair_fingerprint,
+                        %s.source_pair_fingerprint),
+                    published_at=EXCLUDED.published_at
+                WHERE %s.latest_generation<=EXCLUDED.latest_generation
+                  AND (%s.source_read_started_at IS NULL OR
+                       (%s.source_read_started_at,%s.source_read_finished_at)
+                           <= (EXCLUDED.source_read_started_at,EXCLUDED.source_read_finished_at))
+                """.formatted(tables.receipt(), tables.receipt(), tables.receipt(),
+                tables.receipt(), tables.receipt(), tables.receipt()), season, key, generation,
+                timestamp(read.startedAt()), timestamp(read.finishedAt()), fingerprint, timestamp(publishedAt));
+    }
+
+    private static void mergeDiscoveredPlayerIds(Map<Integer, Set<Integer>> target,
+                                                   Map<Integer, Set<Integer>> discovered) {
+        discovered.forEach((fixture, players) ->
+                target.computeIfAbsent(fixture, ignored -> new java.util.TreeSet<>()).addAll(players));
+    }
+
+    private static Map<Integer, Set<Integer>> immutablePlayerIds(Map<Integer, Set<Integer>> source) {
+        Map<Integer, Set<Integer>> result = new LinkedHashMap<>();
+        source.forEach((id, players) -> result.put(id, Set.copyOf(players)));
+        return Map.copyOf(result);
+    }
+
+    Map<Integer, PageReceipt> incrementalPageReceipts(Lease lease, Set<Integer> playerIds) {
+        return incrementalReceiptMap(lease, playerIds, IncrementalPlayerFixturePublisher.PAGE_RECEIPT_PREFIX);
+    }
+
+    Map<Integer, PageReceipt> incrementalLiveEventReceipts(Lease lease, Set<Integer> eventIds) {
+        return incrementalReceiptMap(lease, eventIds, INCREMENTAL_LIVE_EVENT_RECEIPT_PREFIX);
+    }
+
+    private Map<Integer, PageReceipt> incrementalReceiptMap(Lease lease, Set<Integer> ids, String prefix) {
+        if (ids.isEmpty()) return Map.of();
+        return tx.execute(status -> {
+            LockedRun run = lockAndValidate(lease);
+            requireIncrementalRun(run);
+            List<Integer> ordered = ids.stream().sorted().toList();
+            String placeholders = String.join(",", java.util.Collections.nCopies(ordered.size(), "?"));
+            List<Object> parameters = new ArrayList<>(ordered.size() + 1);
+            parameters.add(run.season);
+            ordered.stream().map(id -> prefix + id).forEach(parameters::add);
+            Map<Integer, PageReceipt> result = new LinkedHashMap<>();
+            jdbc.query("""
+                    SELECT publication_key, latest_generation, source_read_started_at, source_read_finished_at
+                    FROM %s WHERE season=? AND publication_key IN (%s)
+                      AND latest_generation IS NOT NULL AND source_read_started_at IS NOT NULL
+                      AND source_read_finished_at IS NOT NULL
+                    """.formatted(tables.receipt(), placeholders), rs -> {
+                String key = rs.getString("publication_key");
+                int id = Integer.parseInt(key.substring(prefix.length()));
+                result.put(id, new PageReceipt(rs.getLong("latest_generation"),
+                        new SourceRead(instant(rs, "source_read_started_at"),
+                                instant(rs, "source_read_finished_at"))));
+            }, parameters.toArray());
+            return Map.copyOf(result);
+        });
+    }
+
+    void recordIncrementalLiveEvent(Lease lease, int eventId,
+                                   Map<Integer, Set<Integer>> participants, SourceRead read) {
+        if (eventId <= 0) throw new IllegalArgumentException("event id must be positive");
+        Objects.requireNonNull(participants);
+        Objects.requireNonNull(read);
+        participants.forEach((fixture, playerIds) -> {
+            if (fixture == null || fixture <= 0 || playerIds == null
+                    || playerIds.size() > HistoryFixtureDispatcher.MAX_FIXTURE_PLAYERS
+                    || playerIds.stream().anyMatch(player -> player == null || player <= 0)) {
+                throw new IllegalArgumentException("Invalid incremental fixture participant manifest");
+            }
+        });
+        tx.executeWithoutResult(status -> {
+            LockedRun run = lockAndValidate(lease);
+            requireIncrementalRun(run);
+            Instant recordedAt = now();
+            String key = INCREMENTAL_LIVE_EVENT_RECEIPT_PREFIX + eventId;
+            jdbc.update("""
+                    INSERT INTO %s(season, publication_key, latest_generation, source_read_started_at,
+                        source_read_finished_at, published_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT (season, publication_key) DO UPDATE SET
+                        latest_generation=EXCLUDED.latest_generation,
+                        source_read_started_at=EXCLUDED.source_read_started_at,
+                        source_read_finished_at=EXCLUDED.source_read_finished_at,
+                        published_at=EXCLUDED.published_at
+                    WHERE %s.latest_generation<=EXCLUDED.latest_generation
+                    """.formatted(tables.receipt(), tables.receipt()), run.season, key, run.generation,
+                    timestamp(read.startedAt()), timestamp(read.finishedAt()), timestamp(recordedAt));
+            includeIncrementalSourceRead(run, read);
+            for (Map.Entry<Integer, Set<Integer>> fixture : participants.entrySet()) {
+                String fixturePrefix = INCREMENTAL_PARTICIPANT_RECEIPT_PREFIX
+                        + fixture.getKey() + ":player:";
+                for (int playerId : fixture.getValue().stream().sorted().toList()) {
+                    jdbc.update("""
+                            INSERT INTO %s(season, publication_key, latest_generation,
+                                source_read_started_at, source_read_finished_at, published_at)
+                            VALUES (?, ?, ?, ?, ?, ?)
+                            ON CONFLICT (season, publication_key) DO UPDATE SET
+                                latest_generation=EXCLUDED.latest_generation,
+                                source_read_started_at=EXCLUDED.source_read_started_at,
+                                source_read_finished_at=EXCLUDED.source_read_finished_at,
+                                published_at=EXCLUDED.published_at
+                            WHERE %s.latest_generation<=EXCLUDED.latest_generation
+                            """.formatted(tables.receipt(), tables.receipt()), run.season,
+                            fixturePrefix + playerId, run.generation, timestamp(read.startedAt()),
+                            timestamp(read.finishedAt()), timestamp(recordedAt));
+                }
+            }
+        });
+    }
+
+    private void includeIncrementalSourceRead(LockedRun run, SourceRead read) {
+        jdbc.update("""
+                UPDATE %s SET
+                    source_read_started_at=CASE WHEN source_read_started_at IS NULL THEN ?
+                        ELSE LEAST(source_read_started_at, ?) END,
+                    source_read_finished_at=CASE WHEN source_read_finished_at IS NULL THEN ?
+                        ELSE GREATEST(source_read_finished_at, ?) END
+                WHERE generation=? AND producer_key=?
+                """.formatted(tables.run()), timestamp(read.startedAt()), timestamp(read.startedAt()),
+                timestamp(read.finishedAt()), timestamp(read.finishedAt()), run.generation,
+                INCREMENTAL_CORE_PRODUCER);
+    }
+
+    void includeIncrementalSourceRead(Lease lease, SourceRead read) {
+        Objects.requireNonNull(read);
+        tx.executeWithoutResult(status -> {
+            LockedRun run = lockAndValidate(lease);
+            requireIncrementalRun(run);
+            requireReadNotFuture(read, now());
+            includeIncrementalSourceRead(run, read);
+        });
+    }
+
+    SourceRead incrementalSourceInterval(Lease lease) {
+        return tx.execute(status -> {
+            LockedRun run = lockAndValidate(lease);
+            requireIncrementalRun(run);
+            List<SourceRead> reads = jdbc.query("""
+                    SELECT source_read_started_at, source_read_finished_at FROM %s WHERE generation=?
+                    """.formatted(tables.run()), (rs, row) -> {
+                Instant started = instant(rs, "source_read_started_at");
+                Instant finished = instant(rs, "source_read_finished_at");
+                return started == null || finished == null ? null : new SourceRead(started, finished);
+            }, run.generation);
+            if (reads.size() != 1 || reads.getFirst() == null) {
+                throw new IllegalStateException("Incremental run has no durable successful source reads");
+            }
+            return reads.getFirst();
+        });
+    }
+
+    private static String finishedFixtureReceiptKey(int fixtureId) {
+        if (fixtureId <= 0) throw new IllegalArgumentException("fixture id must be positive");
+        return FINISHED_FIXTURE_RECEIPT_PREFIX + fixtureId;
+    }
+
+    private static void requireIncrementalRun(LockedRun run) {
+        if (run.kind() != SyncKind.PLAYER_HISTORY || !INCREMENTAL_CORE_PRODUCER.equals(run.producerKey())
+                || !INCREMENTAL_CORE_KEY.equals(run.coalescingKey())
+                || !INCREMENTAL_CORE_KEY.equals(run.publicationKey())
+                || !"ACTIVE".equals(run.runtimeMode())) {
+            throw new LeaseLostException("Lease does not own the incremental core-import runner");
+        }
+    }
+
     /** Executes a non-run runtime mutation while holding the durable activation fence. */
     public <T> T withinRuntimeFence(Supplier<T> callback) {
         Objects.requireNonNull(callback);
@@ -491,6 +1050,92 @@ public final class OwnedSyncStore {
         });
     }
 
+    <T> T withinIncrementalCoreLease(Lease lease, int seasonId, String seasonCode, Supplier<T> callback) {
+        Objects.requireNonNull(callback);
+        if (seasonId <= 0 || seasonCode == null || !lease.season().equals(seasonCode)) {
+            throw new IllegalArgumentException("Invalid incremental finality season");
+        }
+        return tx.execute(status -> {
+            LockedRun run = lockAndValidate(lease);
+            requireIncrementalRun(run);
+            requireIncrementalRuntime(seasonCode);
+            lockCurrentPlayingSeason(seasonId, seasonCode);
+            T result = callback.get();
+            requireNotExpired(run, now());
+            return result;
+        });
+    }
+
+    void invalidateIncrementalGameweeks(Lease lease,
+            Set<IncrementalPfsRepository.RowKey> changedKeys, SourceRead changedPageRead) {
+        if (changedKeys.isEmpty()) return;
+        tx.executeWithoutResult(status -> {
+            LockedRun run = lockAndValidate(lease);
+            if (!INCREMENTAL_CORE_PRODUCER.equals(run.producerKey())) return;
+            requireIncrementalRun(run);
+            Instant floor = postgresTimestampPrecision(changedPageRead.finishedAt());
+            Set<Integer> gameweeks = new java.util.TreeSet<>();
+            Integer seasonId = null;
+            for (IncrementalPfsRepository.RowKey key : changedKeys) {
+                if (key.seasonId() <= 0 || !run.season().equals(key.seasonCode()) || key.gameweek() <= 0
+                        || seasonId != null && seasonId != key.seasonId()) {
+                    throw new IllegalArgumentException("Changed player-fixture key is outside the leased season");
+                }
+                seasonId = key.seasonId();
+                gameweeks.add(key.gameweek());
+            }
+            int activeSeasonId = Objects.requireNonNull(seasonId);
+            for (int gameweek : gameweeks) {
+                List<GameweekSyncRow> rows = jdbc.query("""
+                        SELECT state, source_signature, first_checked_at, current_invalidation_revision,
+                               current_invalidation_floor, finalized_source_signature,
+                               finalized_invalidation_revision
+                        FROM %s WHERE season_id=? AND gameweek=? FOR UPDATE
+                        """.formatted(tables.gameweekStatSync()), (rs, row) -> new GameweekSyncRow(
+                        rs.getString("state"), rs.getString("source_signature"), instant(rs, "first_checked_at"),
+                        rs.getLong("current_invalidation_revision"), instant(rs, "current_invalidation_floor"),
+                        rs.getString("finalized_source_signature"),
+                        (Long) rs.getObject("finalized_invalidation_revision")), activeSeasonId, gameweek);
+                if (rows.isEmpty()) continue;
+                boolean checkedPage = changedKeys.stream().filter(key -> key.gameweek() == gameweek)
+                        .allMatch(key -> isCurrentFinalAttemptPage(activeSeasonId, gameweek,
+                                key.playerId(), changedPageRead));
+                if (checkedPage) continue;
+                Boolean finalPending = jdbc.queryForObject("SELECT event_finished IS TRUE AND data_checked IS TRUE "
+                        + "AND fixture_manifest_complete AND all_assigned_fixtures_finished FROM "
+                        + tables.gameweekStatSync() + " WHERE season_id=? AND gameweek=?",
+                        Boolean.class, activeSeasonId, gameweek);
+                String nextState = Boolean.TRUE.equals(finalPending) ? "FINAL_PENDING" : "OPEN";
+                jdbc.update("""
+                        UPDATE %s SET state=?, current_invalidation_revision=current_invalidation_revision+1,
+                            current_invalidation_floor=CASE WHEN current_invalidation_floor IS NULL THEN ?
+                                ELSE GREATEST(current_invalidation_floor, ?) END,
+                            finalized_source_signature=NULL, finalized_population_fingerprint=NULL,
+                            finalized_row_revision_fingerprint=NULL, finalized_source_floor=NULL,
+                            finalized_validation_read_started_at=NULL, finalized_validation_read_finished_at=NULL,
+                            finalized_source_read_started_at=NULL, finalized_source_read_finished_at=NULL,
+                            finalized_invalidation_revision=NULL, finalized_run_generation=NULL, finalized_at=NULL,
+                            finalized_mandatory_manifest_complete=NULL, finalized_optional_component_coverage=NULL,
+                            updated_at=?
+                        WHERE season_id=? AND gameweek=?
+                        """.formatted(tables.gameweekStatSync()), nextState, timestamp(floor), timestamp(floor),
+                        timestamp(now()), activeSeasonId, gameweek);
+            }
+        });
+    }
+
+    private boolean isCurrentFinalAttemptPage(int seasonId, int gameweek, int playerId, SourceRead read) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+                SELECT EXISTS (SELECT 1 FROM %s
+                    WHERE season_id=? AND gameweek=? AND state='FINAL_PENDING'
+                      AND event_finished IS TRUE AND data_checked IS TRUE
+                      AND final_attempt_source_signature=source_signature
+                      AND final_attempt_invalidation_revision=current_invalidation_revision
+                      AND final_attempt_source_floor<=? AND ?=ANY(final_attempt_required_player_ids))
+                """.formatted(tables.gameweekStatSync()), Boolean.class, seasonId, gameweek,
+                timestamp(read.startedAt()), playerId));
+    }
+
     /**
      * Publishes one already-parsed player page without completing its run or advancing a fixture
      * receipt. The page must still be owned by the current ACTIVE PLAYER_HISTORY lease, match the
@@ -510,11 +1155,17 @@ public final class OwnedSyncStore {
         String pageReceiptKey = IncrementalPlayerFixturePublisher.pageReceiptKey(playerId);
         return tx.execute(status -> {
             LockedRun run = lockAndValidate(lease);
+            boolean legacyPage = "LEGACY".equals(run.producerKey)
+                    && expectedKey.equals(run.publicationKey);
+            boolean incrementalPage = INCREMENTAL_CORE_PRODUCER.equals(run.producerKey)
+                    && INCREMENTAL_CORE_KEY.equals(run.coalescingKey)
+                    && INCREMENTAL_CORE_KEY.equals(run.publicationKey)
+                    && "ACTIVE".equals(run.runtimeMode);
             if (run.kind != SyncKind.PLAYER_HISTORY || lease.kind() != run.kind
                     || !lease.season().equals(run.season)
                     || !lease.coalescingKey().equals(run.coalescingKey)
                     || !lease.publicationKey().equals(run.publicationKey)
-                    || !expectedKey.equals(run.publicationKey)) {
+                    || !(legacyPage || incrementalPage)) {
                 throw new LeaseLostException("Lease does not own this player-history page");
             }
             Instant requestedAfter = jdbc.queryForObject(
@@ -533,9 +1184,10 @@ public final class OwnedSyncStore {
             requireReadNotFuture(read, publishingAt);
             jdbc.update("INSERT INTO %s(season, publication_key) VALUES (?, ?) ON CONFLICT DO NOTHING"
                     .formatted(tables.receipt()), run.season, pageReceiptKey);
-            PageWatermark watermark = lockPlayerPageWatermark(run.season, pageReceiptKey, expectedKey);
-            verifyPlayerPageOrder(lease.generation(), read, watermark);
+            PageWatermark watermark = lockPlayerPageWatermark(run.season, pageReceiptKey);
+            verifyPlayerPageOrder(lease.generation(), read, watermark, expectedKey);
             T result = publication.get();
+            if (INCREMENTAL_CORE_PRODUCER.equals(run.producerKey)) includeIncrementalSourceRead(run, read);
             Instant publishedAt = now();
             requireNotExpired(run, publishedAt);
             int receiptUpdated = jdbc.update("""
@@ -562,32 +1214,43 @@ public final class OwnedSyncStore {
         }
     }
 
-    private PageWatermark lockPlayerPageWatermark(String season, String pageReceiptKey,
-                                                    String runPublicationKey) {
+    private PageWatermark lockPlayerPageWatermark(String season, String pageReceiptKey) {
         List<PageWatermark> rows = jdbc.query("""
                 SELECT receipt.latest_generation, receipt.source_read_started_at,
-                       receipt.source_read_finished_at, run.requested_source_after
+                       receipt.source_read_finished_at, run.requested_source_after,
+                       run.producer_key, run.coalescing_key, run.publication_key
                 FROM %s receipt
                 LEFT JOIN %s run ON run.generation=receipt.latest_generation
                     AND run.season=receipt.season AND run.kind='PLAYER_HISTORY'
-                    AND run.publication_key=?
                 WHERE receipt.season=? AND receipt.publication_key=? FOR UPDATE OF receipt
                 """.formatted(tables.receipt(), tables.run()), (rs, row) -> new PageWatermark(
                 rs.getObject("latest_generation", Long.class), instant(rs, "source_read_started_at"),
-                instant(rs, "source_read_finished_at"), instant(rs, "requested_source_after")),
-                runPublicationKey, season, pageReceiptKey);
+                instant(rs, "source_read_finished_at"), instant(rs, "requested_source_after"),
+                rs.getString("producer_key"), rs.getString("coalescing_key"),
+                rs.getString("publication_key")), season, pageReceiptKey);
         if (rows.size() != 1) {
             throw new IllegalStateException("Player-history receipt disappeared before page publication");
         }
         return rows.getFirst();
     }
 
-    private static void verifyPlayerPageOrder(long generation, SourceRead read, PageWatermark watermark) {
+    private static void verifyPlayerPageOrder(long generation, SourceRead read, PageWatermark watermark,
+                                               String expectedLegacyKey) {
         if (watermark.generation() == null) {
-            if (watermark.startedAt() != null || watermark.finishedAt() != null || watermark.sourceFloor() != null) {
+            if (watermark.startedAt() != null || watermark.finishedAt() != null || watermark.sourceFloor() != null
+                    || watermark.producerKey() != null || watermark.coalescingKey() != null
+                    || watermark.publicationKey() != null) {
                 throw new IllegalStateException("Player-history receipt has an incomplete page watermark");
             }
             return;
+        }
+        boolean legacy = "LEGACY".equals(watermark.producerKey())
+                && expectedLegacyKey.equals(watermark.publicationKey());
+        boolean incremental = INCREMENTAL_CORE_PRODUCER.equals(watermark.producerKey())
+                && INCREMENTAL_CORE_KEY.equals(watermark.coalescingKey())
+                && INCREMENTAL_CORE_KEY.equals(watermark.publicationKey());
+        if (!legacy && !incremental) {
+            throw new IllegalStateException("Player-history watermark generation has an unknown producer");
         }
         if (watermark.startedAt() == null || watermark.finishedAt() == null || watermark.sourceFloor() == null) {
             throw new IllegalStateException("Player-history receipt has an incomplete page watermark");
@@ -773,7 +1436,7 @@ public final class OwnedSyncStore {
                 long attempts = jdbc.queryForObject("""
                         SELECT COALESCE(SUM(attempt_count), 0)
                         FROM %s
-                        WHERE season=? AND runtime_mode=? AND runtime_epoch=?
+                        WHERE season=? AND producer_key='LEGACY' AND runtime_mode=? AND runtime_epoch=?
                           AND kind IN ('PLAYER_HISTORY', 'FIXTURE_VERIFICATION')
                         """.formatted(tables.run()), Long.class, validSeason, runtimeMode(), runtimeEpoch());
                 int firstTurn = (int) (attempts % FAIR_CYCLE.size());
@@ -824,7 +1487,9 @@ public final class OwnedSyncStore {
                 CROSS JOIN LATERAL unnest(m.required_player_ids) AS required(player_id)
                 JOIN %s h ON h.coalescing_key = 'player-history:' || required.player_id::text
                          AND h.publication_key = 'player-history:' || required.player_id::text
+                         AND h.producer_key='LEGACY'
                 WHERE fr.season = ? AND fr.runtime_mode = ? AND fr.runtime_epoch = ?
+                  AND fr.producer_key='LEGACY'
                   AND fr.state IN ('PENDING', 'LEASED')
                   AND GREATEST(fr.requested_source_after, m.source_floor,
                       f.read_finished_at + INTERVAL '1 millisecond') <= ?
@@ -850,7 +1515,7 @@ public final class OwnedSyncStore {
         String sql = """
                 SELECT r.generation
                 FROM %s r
-                WHERE r.season=? AND r.runtime_mode=? AND r.runtime_epoch=?
+                WHERE r.season=? AND r.producer_key='LEGACY' AND r.runtime_mode=? AND r.runtime_epoch=?
                   AND r.due_at<=? AND r.requested_source_after<=?
                   AND (r.state='PENDING' OR (r.state='LEASED' AND r.lease_expires_at<=?))
                   AND (%s)
@@ -894,7 +1559,7 @@ public final class OwnedSyncStore {
                         : " AND runtime_mode = ? AND runtime_epoch = ?";
                 String sql = """
                         SELECT generation FROM %s
-                        WHERE due_at <= ?%s%s
+                        WHERE producer_key='LEGACY' AND due_at <= ?%s%s
                           AND (state = 'PENDING'
                                OR (state = 'LEASED' AND lease_expires_at <= ?))
                         ORDER BY priority, due_at, generation
@@ -968,6 +1633,10 @@ public final class OwnedSyncStore {
             }
             if (runtimeFence != null && !runtimeFence.season().equals(run.season)) {
                 throw new RuntimeFenceLostException("Run belongs to another configured season");
+            }
+            if (INCREMENTAL_CORE_PRODUCER.equals(run.producerKey)
+                    && (runtimeFence == null || runtimeFence.mode() != OwnedSyncMode.ACTIVE)) {
+                throw new RuntimeFenceLostException("Incremental core import HTTP requires ACTIVE mode");
             }
             requireHttpEndpoint(run, endpoint);
             Instant sourceFloor = effectiveSourceFloor(lease, endpointFloor);
@@ -2219,6 +2888,13 @@ public final class OwnedSyncStore {
     private static void requireHttpEndpoint(LockedRun run, Endpoint endpoint) {
         // A fixture publication key holds the fixture id, not the selected event id. The dispatcher
         // owns that association; validate EVENT_LIVE's positive id without equating those domains.
+        if (INCREMENTAL_CORE_PRODUCER.equals(run.producerKey)) {
+            if (run.kind != SyncKind.PLAYER_HISTORY || !INCREMENTAL_CORE_KEY.equals(run.coalescingKey)
+                    || !INCREMENTAL_CORE_KEY.equals(run.publicationKey) || !"ACTIVE".equals(run.runtimeMode)) {
+                throw new IllegalArgumentException("Invalid incremental core-import lease");
+            }
+            return;
+        }
         boolean matches = switch (run.kind) {
             case CATALOGUE_SCHEDULE -> isCatalogueRun(run)
                     && (endpoint.kind == EndpointKind.BOOTSTRAP_STATIC
@@ -2326,7 +3002,7 @@ public final class OwnedSyncStore {
         LockedRun run;
         try {
             run = jdbc.queryForObject("""
-                    SELECT generation, kind, season, coalescing_key, publication_key, state,
+                    SELECT generation, kind, season, coalescing_key, publication_key, producer_key, state,
                            lease_owner, lease_token, lease_fence, lease_expires_at, attempt_count,
                            runtime_mode, runtime_epoch
                     FROM %s WHERE generation = ? FOR UPDATE
@@ -2382,7 +3058,8 @@ public final class OwnedSyncStore {
     private LockedRun lockedRun(ResultSet rs, int row) throws SQLException {
         return new LockedRun(rs.getLong("generation"), SyncKind.valueOf(rs.getString("kind")),
                 rs.getString("season"), rs.getString("coalescing_key"), rs.getString("publication_key"),
-                rs.getString("state"), rs.getString("lease_owner"), rs.getObject("lease_token", UUID.class),
+                rs.getString("producer_key"), rs.getString("state"), rs.getString("lease_owner"),
+                rs.getObject("lease_token", UUID.class),
                 rs.getLong("lease_fence"), instant(rs, "lease_expires_at"), rs.getInt("attempt_count"),
                 rs.getString("runtime_mode"), rs.getLong("runtime_epoch"));
     }
@@ -2442,6 +3119,14 @@ public final class OwnedSyncStore {
 
     private static Timestamp timestamp(Instant value) {
         return Timestamp.from(postgresTimestampPrecision(value));
+    }
+
+    private static Timestamp nullableTimestamp(Instant value) {
+        return value == null ? null : timestamp(value);
+    }
+
+    private static Instant max(Instant first, Instant second) {
+        return first == null || second.isAfter(first) ? second : first;
     }
 
     private static Duration leaseDuration(Duration duration) {
@@ -2781,10 +3466,30 @@ public final class OwnedSyncStore {
 
     private record SeasonIdentity(int id, String code) { }
 
-    private record PageWatermark(Long generation, Instant startedAt, Instant finishedAt, Instant sourceFloor) { }
+    private record PageWatermark(Long generation, Instant startedAt, Instant finishedAt, Instant sourceFloor,
+                                 String producerKey, String coalescingKey, String publicationKey) { }
+    private record SnapshotReceipt(Long generation, String fingerprint) { }
+    private record GameweekSyncRow(String state, String sourceSignature, Instant firstCheckedAt,
+                                   long invalidationRevision, Instant invalidationFloor,
+                                   String finalizedSourceSignature, Long finalizedInvalidationRevision) { }
+
+    record IncrementalEvent(int gameweek, String state, Instant firstCheckedAt, String sourceSignature) {
+        boolean finalPending() { return "FINAL_PENDING".equals(state); }
+        boolean finalized() { return "FINALIZED".equals(state); }
+    }
+
+    record IncrementalDiscovery(Map<Integer, IncrementalEvent> events,
+                                Map<Integer, Instant> finishedObservationTimes) {
+        IncrementalDiscovery {
+            events = Map.copyOf(events);
+            finishedObservationTimes = Map.copyOf(finishedObservationTimes);
+        }
+    }
+
+    record PageReceipt(long generation, SourceRead read) { }
 
     private record LockedRun(long generation, SyncKind kind, String season, String coalescingKey,
-                             String publicationKey, String state, String owner, UUID token,
+                             String publicationKey, String producerKey, String state, String owner, UUID token,
                              long fence, Instant expiresAt, int attemptCount,
                              String runtimeMode, long runtimeEpoch) { }
 

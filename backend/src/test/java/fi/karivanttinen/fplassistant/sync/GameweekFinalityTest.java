@@ -23,6 +23,7 @@ import fi.karivanttinen.fplassistant.sync.GameweekFinality.FixtureProgress;
 import fi.karivanttinen.fplassistant.sync.GameweekFinality.OptionalCoverageState;
 import fi.karivanttinen.fplassistant.sync.GameweekFinality.RowRevision;
 import fi.karivanttinen.fplassistant.sync.GameweekFinality.RowState;
+import fi.karivanttinen.fplassistant.sync.GameweekFinality.RequiredPopulation;
 import fi.karivanttinen.fplassistant.sync.GameweekFinality.SourceSnapshot;
 import fi.karivanttinen.fplassistant.sync.GameweekFinality.State;
 import fi.karivanttinen.fplassistant.sync.GameweekFinality.SweepCheckpoint;
@@ -156,14 +157,15 @@ class GameweekFinalityTest {
         assertThat(checked.signature()).isEqualTo(oldReceipt.sourceSignature());
         assertThat(GameweekFinality.observe(checked, correctedRows, State.FINALIZED, oldReceipt, invalidated))
                 .isEqualTo(State.FINAL_PENDING);
-        SweepCheckpoint stale = new SweepCheckpoint(checked.signature(), DEADLINE, 0,
+        String populationFingerprint = "c".repeat(64);
+        SweepCheckpoint stale = new SweepCheckpoint(checked.signature(), populationFingerprint, DEADLINE, 0,
                 Set.of(10), Set.of(), Set.of(10));
-        assertThat(checked.canResume(stale, invalidated)).isFalse();
+        assertThat(checked.canResume(stale, invalidated, populationFingerprint)).isFalse();
         Instant freshReadsFloor = invalidated.floor().plusSeconds(1);
-        SweepCheckpoint fresh = new SweepCheckpoint(checked.signature(), freshReadsFloor,
+        SweepCheckpoint fresh = new SweepCheckpoint(checked.signature(), populationFingerprint, freshReadsFloor,
                 invalidated.revision(), Set.of(10), Set.of(10), Set.of());
         assertThat(fresh.sourceFloor()).isAfter(invalidated.floor());
-        assertThat(checked.canResume(fresh, invalidated)).isTrue();
+        assertThat(checked.canResume(fresh, invalidated, populationFingerprint)).isTrue();
 
         // Even if the row later returns to the old fingerprint, its receipt is still from the old revision.
         assertThat(GameweekFinality.observe(checked, originalRows, State.FINAL_PENDING, oldReceipt, invalidated))
@@ -213,18 +215,57 @@ class GameweekFinalityTest {
     @Test
     void checkpointResumesOnlyForTheExactEligibleSourceRevision() {
         SourceSnapshot source = snapshot(true, true, true, List.of(fixture(1, 1, true, false, 90, 1)));
-        SweepCheckpoint checkpoint = new SweepCheckpoint(source.signature(), DEADLINE, 0,
+        String populationFingerprint = "d".repeat(64);
+        SweepCheckpoint checkpoint = new SweepCheckpoint(source.signature(), populationFingerprint, DEADLINE, 0,
                 Set.of(10, 11), Set.of(10), Set.of(11));
-        assertThat(source.canResume(checkpoint, INITIAL_INVALIDATION)).isTrue();
+        assertThat(source.canResume(checkpoint, INITIAL_INVALIDATION, populationFingerprint)).isTrue();
 
         SourceSnapshot revision = snapshot(true, true, true, List.of(fixture(1, 1, true, false, 90, 2)));
-        assertThat(revision.canResume(checkpoint, INITIAL_INVALIDATION)).isFalse();
+        assertThat(revision.canResume(checkpoint, INITIAL_INVALIDATION, populationFingerprint)).isFalse();
         assertThat(snapshot(true, true, false, List.of(fixture(1, 1, true, false, 90, 1)))
-                .canResume(checkpoint, INITIAL_INVALIDATION)).isFalse();
-        assertThatThrownBy(() -> new SweepCheckpoint(source.signature(), DEADLINE, 0,
+                .canResume(checkpoint, INITIAL_INVALIDATION, populationFingerprint)).isFalse();
+        assertThatThrownBy(() -> new SweepCheckpoint(source.signature(), populationFingerprint, DEADLINE, 0,
                 Set.of(10, 11), Set.of(10), Set.of(10, 11)))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("both completed and outstanding");
+    }
+
+    @Test
+    void populationFingerprintUsesUnambiguousNestedFixtureAndPlayerBoundaries() {
+        SourceSnapshot source = snapshot(true, true, true, List.of(
+                fixture(1, 1, true, false, 90, 1), fixture(3, 1, true, false, 90, 1)));
+        RequiredPopulation grouped = new RequiredPopulation("b".repeat(64),
+                Map.of(1, Set.of(2, 3, 4)), Map.of(), Map.of());
+        RequiredPopulation split = new RequiredPopulation("b".repeat(64),
+                Map.of(1, Set.of(2), 3, Set.of(4)), Map.of(), Map.of());
+        String groupedFingerprint = grouped.fingerprint(source);
+        String splitFingerprint = split.fingerprint(source);
+        SweepCheckpoint checkpoint = new SweepCheckpoint(source.signature(), groupedFingerprint, DEADLINE, 0,
+                Set.of(2, 3, 4), Set.of(2), Set.of(3, 4));
+
+        assertThat(groupedFingerprint).isNotEqualTo(splitFingerprint);
+        assertThat(source.canResume(checkpoint, INITIAL_INVALIDATION, splitFingerprint)).isFalse();
+    }
+
+    @Test
+    void checkpointPopulationFingerprintBindsBootstrapParticipantsAndKnownKeys() {
+        SourceSnapshot source = snapshot(true, true, true, List.of(fixture(1, 1, true, false, 90, 1)));
+        RequiredPopulation population = new RequiredPopulation("b".repeat(64),
+                Map.of(1, Set.of(10)), Map.of(1, Set.of(11)), Map.of(1, Set.of(12)));
+        String identity = population.fingerprint(source);
+        SweepCheckpoint checkpoint = new SweepCheckpoint(source.signature(), identity, DEADLINE, 0,
+                Set.of(10, 11, 12), Set.of(10), Set.of(11, 12));
+
+        assertThat(source.canResume(checkpoint, INITIAL_INVALIDATION, identity)).isTrue();
+        assertThat(source.canResume(checkpoint, INITIAL_INVALIDATION,
+                new RequiredPopulation("c".repeat(64), Map.of(1, Set.of(10)),
+                        Map.of(1, Set.of(11)), Map.of(1, Set.of(12))).fingerprint(source))).isFalse();
+        assertThat(source.canResume(checkpoint, INITIAL_INVALIDATION,
+                new RequiredPopulation("b".repeat(64), Map.of(1, Set.of(10)),
+                        Map.of(1, Set.of(13)), Map.of(1, Set.of(12))).fingerprint(source))).isFalse();
+        assertThat(source.canResume(checkpoint, INITIAL_INVALIDATION,
+                new RequiredPopulation("b".repeat(64), Map.of(1, Set.of(10)),
+                        Map.of(1, Set.of(11)), Map.of(1, Set.of(14))).fingerprint(source))).isFalse();
     }
 
     @Test
@@ -248,10 +289,12 @@ class GameweekFinalityTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("cannot contain null");
         assertThatThrownBy(() -> new FinalReceipt("a".repeat(64), ROW_REVISION, 1, DEADLINE, 0, DEADLINE,
-                false, complete)).isInstanceOf(IllegalArgumentException.class)
+                new OwnedSyncStore.SourceRead(DEADLINE, DEADLINE), false, complete))
+                .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("incomplete mandatory manifest");
         assertThatThrownBy(() -> new FinalReceipt("a".repeat(64), ROW_REVISION, 1,
-                DEADLINE.plusSeconds(1), 0, DEADLINE, true, complete))
+                DEADLINE.plusSeconds(1), 0, DEADLINE,
+                new OwnedSyncStore.SourceRead(DEADLINE, DEADLINE), true, complete))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("precedes its source floor");
     }
@@ -300,7 +343,7 @@ class GameweekFinalityTest {
                                         Map<Component, ComponentCoverage> coverage,
                                         CurrentInvalidation invalidation, Instant sourceFloor) {
         return new FinalReceipt(signature, rowRevision, 1, sourceFloor, invalidation.revision(),
-                sourceFloor, true, coverage);
+                sourceFloor, new OwnedSyncStore.SourceRead(sourceFloor, sourceFloor), true, coverage);
     }
 
     private static Map<Component, ComponentCoverage> coverage() {
