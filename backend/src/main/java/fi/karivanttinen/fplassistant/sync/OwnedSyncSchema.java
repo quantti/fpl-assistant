@@ -124,6 +124,8 @@ public final class OwnedSyncSchema {
                 + "ON %s(season, runtime_mode, runtime_epoch) "
                 + "INCLUDE (attempt_count, kind, coalescing_key)")
                 .formatted(tables.run(), tables.run()));
+        jdbc.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_%s_gen_season ON %s(generation, season)"
+                .formatted(tables.run(), tables.run()));
         jdbc.execute("""
                 CREATE TABLE IF NOT EXISTS %s (
                     id BIGSERIAL PRIMARY KEY,
@@ -476,6 +478,263 @@ public final class OwnedSyncSchema {
 
         jdbc.execute("""
                 CREATE TABLE IF NOT EXISTS %s (
+                    season_id INTEGER NOT NULL REFERENCES season(id),
+                    season_code VARCHAR(10) NOT NULL,
+                    fixture_id INTEGER NOT NULL,
+                    player_id INTEGER NOT NULL,
+                    row_state VARCHAR(12) NOT NULL,
+                    source_run_generation BIGINT NOT NULL,
+                    evidence_generation BIGINT,
+                    row_fingerprint VARCHAR(64),
+                    physical_fingerprint VARCHAR(64),
+                    source_read_started_at TIMESTAMPTZ NOT NULL,
+                    source_read_finished_at TIMESTAMPTZ NOT NULL,
+                    updated_at TIMESTAMPTZ NOT NULL,
+                    PRIMARY KEY (season_id, fixture_id, player_id),
+                    CONSTRAINT fk_%s_source_run_season FOREIGN KEY (source_run_generation, season_code)
+                        REFERENCES %s(generation, season),
+                    CONSTRAINT fk_%s_evidence FOREIGN KEY
+                        (season_id, fixture_id, player_id, evidence_generation)
+                        REFERENCES %s(season_id, fixture_id, player_id, generation),
+                    CONSTRAINT ck_%s_state CHECK (row_state IN ('VALID', 'WITHDRAWN')),
+                    CONSTRAINT ck_%s_pointer CHECK (
+                        (row_state='VALID' AND evidence_generation IS NOT NULL
+                            AND evidence_generation=source_run_generation
+                            AND row_fingerprint IS NOT NULL
+                            AND row_fingerprint ~ '^[0-9a-f]{64}$')
+                        OR (row_state='WITHDRAWN' AND evidence_generation IS NULL
+                            AND row_fingerprint IS NULL)),
+                    CONSTRAINT ck_%s_read_interval CHECK (
+                        source_read_started_at <= source_read_finished_at)
+                )
+                """.formatted(tables.playerFixtureCurrent(), tables.playerFixtureCurrent(), tables.run(),
+                tables.playerFixtureCurrent(), tables.playerFixtureEvidence(), tables.playerFixtureCurrent(),
+                tables.playerFixtureCurrent(), tables.playerFixtureCurrent()));
+        // Existing pointers have no proof tying their source fingerprint to the physical PFS row;
+        // leave this NULL so the reader fails closed rather than retroactively certifying them.
+        jdbc.execute("ALTER TABLE " + tables.playerFixtureCurrent()
+                + " ADD COLUMN IF NOT EXISTS physical_fingerprint VARCHAR(64)");
+        jdbc.execute("DROP TRIGGER IF EXISTS trg_validate_current_season ON " + tables.playerFixtureCurrent());
+        jdbc.execute("CREATE TRIGGER trg_validate_current_season BEFORE INSERT OR UPDATE ON "
+                + tables.playerFixtureCurrent()
+                + " FOR EACH ROW EXECUTE FUNCTION fpl_validate_evidence_season()");
+
+        jdbc.execute("""
+                CREATE OR REPLACE FUNCTION fpl_owned_sync_checkpoint_ids_valid(ids INTEGER[])
+                RETURNS BOOLEAN
+                LANGUAGE SQL IMMUTABLE PARALLEL SAFE STRICT
+                AS $$
+                    SELECT cardinality(ids) <= %d
+                       AND (cardinality(ids) = 0 OR
+                            (array_ndims(ids) = 1 AND array_lower(ids, 1) = 1))
+                       AND NOT EXISTS (
+                           SELECT 1 FROM generate_subscripts(ids, 1) AS i
+                           WHERE ids[i] IS NULL OR ids[i] <= 0
+                              OR (i > 1 AND ids[i] <= ids[i - 1])
+                       )
+                $$
+                """.formatted(GameweekFinality.MAX_CHECKPOINT_PLAYER_IDS));
+        jdbc.execute("""
+                CREATE OR REPLACE FUNCTION fpl_owned_sync_optional_coverage_valid(coverage JSONB)
+                RETURNS BOOLEAN LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE STRICT AS $$
+                DECLARE
+                    entry JSONB;
+                    source_text TEXT;
+                    present_text TEXT;
+                    source_rows BIGINT;
+                    present_rows BIGINT;
+                BEGIN
+                    IF jsonb_typeof(coverage) <> 'object'
+                        OR NOT (coverage ?& ARRAY[
+                            'EXPECTED_GOALS','EXPECTED_ASSISTS','EXPECTED_GOAL_INVOLVEMENTS',
+                            'EXPECTED_GOALS_CONCEDED','INFLUENCE','CREATIVITY','THREAT','ICT_INDEX',
+                            'CLEARANCES_BLOCKS_INTERCEPTIONS','RECOVERIES','TACKLES',
+                            'DEFENSIVE_CONTRIBUTION'])
+                        OR coverage - ARRAY[
+                            'EXPECTED_GOALS','EXPECTED_ASSISTS','EXPECTED_GOAL_INVOLVEMENTS',
+                            'EXPECTED_GOALS_CONCEDED','INFLUENCE','CREATIVITY','THREAT','ICT_INDEX',
+                            'CLEARANCES_BLOCKS_INTERCEPTIONS','RECOVERIES','TACKLES',
+                            'DEFENSIVE_CONTRIBUTION'] <> '{}'::jsonb THEN
+                        RETURN FALSE;
+                    END IF;
+                    FOR entry IN SELECT value FROM jsonb_each(coverage) LOOP
+                        IF jsonb_typeof(entry) <> 'object'
+                            OR NOT (entry ?& ARRAY['sourceRows','presentRows','supported'])
+                            OR entry - ARRAY['sourceRows','presentRows','supported'] <> '{}'::jsonb
+                            OR jsonb_typeof(entry->'sourceRows') IS DISTINCT FROM 'number'
+                            OR jsonb_typeof(entry->'presentRows') IS DISTINCT FROM 'number'
+                            OR jsonb_typeof(entry->'supported') IS DISTINCT FROM 'boolean' THEN
+                            RETURN FALSE;
+                        END IF;
+                        source_text := entry->>'sourceRows';
+                        present_text := entry->>'presentRows';
+                        IF source_text !~ '^(0|[1-9][0-9]*)$' OR length(source_text) > 10
+                            OR present_text !~ '^(0|[1-9][0-9]*)$' OR length(present_text) > 10 THEN
+                            RETURN FALSE;
+                        END IF;
+                        source_rows := source_text::BIGINT;
+                        present_rows := present_text::BIGINT;
+                        IF source_rows > 2147483647 OR present_rows > source_rows
+                            OR present_rows > 2147483647
+                            OR (entry->>'supported')::BOOLEAN IS FALSE AND present_rows <> 0 THEN
+                            RETURN FALSE;
+                        END IF;
+                    END LOOP;
+                    RETURN TRUE;
+                END
+                $$
+                """);
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS %s (
+                    season_id INTEGER NOT NULL REFERENCES season(id),
+                    season_code VARCHAR(10) NOT NULL,
+                    gameweek INTEGER NOT NULL,
+                    state VARCHAR(20) NOT NULL DEFAULT 'OPEN',
+                    event_finished BOOLEAN,
+                    data_checked BOOLEAN,
+                    fixture_manifest_complete BOOLEAN NOT NULL DEFAULT FALSE,
+                    all_assigned_fixtures_finished BOOLEAN NOT NULL DEFAULT FALSE,
+                    source_signature VARCHAR(64),
+                    first_checked_at TIMESTAMPTZ,
+                    current_invalidation_revision BIGINT NOT NULL DEFAULT 0,
+                    current_invalidation_floor TIMESTAMPTZ,
+                    final_attempt_source_signature VARCHAR(64),
+                    final_attempt_source_floor TIMESTAMPTZ,
+                    final_attempt_invalidation_revision BIGINT,
+                    final_attempt_required_player_ids INTEGER[] NOT NULL DEFAULT '{}',
+                    final_attempt_completed_player_ids INTEGER[] NOT NULL DEFAULT '{}',
+                    final_attempt_outstanding_player_ids INTEGER[] NOT NULL DEFAULT '{}',
+                    finalized_source_signature VARCHAR(64),
+                    finalized_row_revision_fingerprint VARCHAR(64),
+                    finalized_source_floor TIMESTAMPTZ,
+                    finalized_invalidation_revision BIGINT,
+                    finalized_run_generation BIGINT,
+                    finalized_at TIMESTAMPTZ,
+                    finalized_mandatory_manifest_complete BOOLEAN,
+                    finalized_optional_component_coverage JSONB,
+                    updated_at TIMESTAMPTZ NOT NULL,
+                    PRIMARY KEY (season_id, gameweek),
+                    CONSTRAINT fk_%s_final_run_season FOREIGN KEY (finalized_run_generation, season_code)
+                        REFERENCES %s(generation, season),
+                    CONSTRAINT ck_%s_gameweek CHECK (gameweek BETWEEN 1 AND 38),
+                    CONSTRAINT ck_%s_state CHECK (state IN ('OPEN', 'FINAL_PENDING', 'FINALIZED')),
+                    CONSTRAINT ck_%s_invalidation CHECK (current_invalidation_revision >= 0
+                        AND (current_invalidation_revision = 0 OR current_invalidation_floor IS NOT NULL)
+                        AND (final_attempt_invalidation_revision IS NULL
+                            OR final_attempt_invalidation_revision >= 0)
+                        AND (finalized_invalidation_revision IS NULL OR finalized_invalidation_revision >= 0)),
+                    CONSTRAINT ck_%s_signatures CHECK (
+                        (source_signature IS NULL OR source_signature ~ '^[0-9a-f]{64}$')
+                        AND (final_attempt_source_signature IS NULL
+                            OR final_attempt_source_signature ~ '^[0-9a-f]{64}$')
+                        AND (finalized_source_signature IS NULL
+                            OR finalized_source_signature ~ '^[0-9a-f]{64}$')
+                        AND (finalized_row_revision_fingerprint IS NULL
+                            OR finalized_row_revision_fingerprint ~ '^[0-9a-f]{64}$')),
+                    CONSTRAINT ck_%s_manifest_state CHECK (
+                        fixture_manifest_complete OR NOT all_assigned_fixtures_finished),
+                    CONSTRAINT ck_%s_receipt CHECK (
+                        (finalized_source_signature IS NULL AND finalized_row_revision_fingerprint IS NULL
+                            AND finalized_source_floor IS NULL AND finalized_invalidation_revision IS NULL
+                            AND finalized_run_generation IS NULL AND finalized_at IS NULL
+                            AND finalized_mandatory_manifest_complete IS NULL
+                            AND finalized_optional_component_coverage IS NULL)
+                        OR (finalized_source_signature IS NOT NULL
+                            AND finalized_row_revision_fingerprint IS NOT NULL
+                            AND finalized_row_revision_fingerprint ~ '^[0-9a-f]{64}$'
+                            AND finalized_source_floor IS NOT NULL
+                            AND finalized_invalidation_revision IS NOT NULL
+                            AND finalized_run_generation IS NOT NULL AND finalized_at IS NOT NULL
+                            AND finalized_source_floor <= finalized_at
+                            AND finalized_mandatory_manifest_complete IS TRUE
+                            AND fpl_owned_sync_optional_coverage_valid(
+                                finalized_optional_component_coverage) IS TRUE)),
+                    CONSTRAINT ck_%s_final_pending CHECK (
+                        state <> 'FINAL_PENDING' OR (event_finished IS TRUE AND data_checked IS TRUE
+                            AND fixture_manifest_complete AND all_assigned_fixtures_finished
+                            AND source_signature IS NOT NULL)),
+                    CONSTRAINT ck_%s_checkpoint CHECK (
+                        (final_attempt_source_signature IS NULL) = (final_attempt_source_floor IS NULL)
+                        AND (final_attempt_source_signature IS NULL)
+                            = (final_attempt_invalidation_revision IS NULL)
+                        AND fpl_owned_sync_checkpoint_ids_valid(final_attempt_required_player_ids)
+                        AND fpl_owned_sync_checkpoint_ids_valid(final_attempt_completed_player_ids)
+                        AND fpl_owned_sync_checkpoint_ids_valid(final_attempt_outstanding_player_ids)
+                        AND final_attempt_completed_player_ids <@ final_attempt_required_player_ids
+                        AND final_attempt_outstanding_player_ids <@ final_attempt_required_player_ids
+                        AND NOT (final_attempt_completed_player_ids && final_attempt_outstanding_player_ids)
+                        AND cardinality(final_attempt_completed_player_ids)
+                            + cardinality(final_attempt_outstanding_player_ids)
+                            = cardinality(final_attempt_required_player_ids)),
+                    CONSTRAINT ck_%s_finalized CHECK (
+                        state <> 'FINALIZED' OR (event_finished IS TRUE AND data_checked IS TRUE
+                            AND fixture_manifest_complete AND all_assigned_fixtures_finished
+                            AND source_signature IS NOT NULL
+                            AND final_attempt_source_signature = source_signature
+                            AND final_attempt_source_floor IS NOT NULL
+                            AND final_attempt_invalidation_revision = current_invalidation_revision
+                            AND (current_invalidation_floor IS NULL
+                                OR final_attempt_source_floor >= current_invalidation_floor)
+                            AND finalized_source_signature = source_signature
+                            AND finalized_row_revision_fingerprint IS NOT NULL
+                            AND finalized_row_revision_fingerprint ~ '^[0-9a-f]{64}$'
+                            AND finalized_source_floor = final_attempt_source_floor
+                            AND finalized_invalidation_revision = current_invalidation_revision
+                            AND finalized_run_generation IS NOT NULL AND finalized_at IS NOT NULL
+                            AND finalized_mandatory_manifest_complete IS TRUE
+                            AND cardinality(final_attempt_outstanding_player_ids) = 0
+                            AND final_attempt_completed_player_ids = final_attempt_required_player_ids))
+                )
+                """.formatted(tables.gameweekStatSync(), tables.gameweekStatSync(), tables.run(),
+                tables.gameweekStatSync(), tables.gameweekStatSync(), tables.gameweekStatSync(),
+                tables.gameweekStatSync(), tables.gameweekStatSync(), tables.gameweekStatSync(),
+                tables.gameweekStatSync(), tables.gameweekStatSync(), tables.gameweekStatSync()));
+        jdbc.execute("ALTER TABLE %s DROP CONSTRAINT IF EXISTS ck_%s_receipt"
+                .formatted(tables.gameweekStatSync(), tables.gameweekStatSync()));
+        jdbc.execute("""
+                ALTER TABLE %s ADD CONSTRAINT ck_%s_receipt CHECK (
+                    (finalized_source_signature IS NULL AND finalized_row_revision_fingerprint IS NULL
+                        AND finalized_source_floor IS NULL AND finalized_invalidation_revision IS NULL
+                        AND finalized_run_generation IS NULL AND finalized_at IS NULL
+                        AND finalized_mandatory_manifest_complete IS NULL
+                        AND finalized_optional_component_coverage IS NULL)
+                    OR (finalized_source_signature IS NOT NULL
+                        AND finalized_row_revision_fingerprint IS NOT NULL
+                        AND finalized_row_revision_fingerprint ~ '^[0-9a-f]{64}$'
+                        AND finalized_source_floor IS NOT NULL
+                        AND finalized_invalidation_revision IS NOT NULL
+                        AND finalized_run_generation IS NOT NULL AND finalized_at IS NOT NULL
+                        AND finalized_source_floor <= finalized_at
+                        AND finalized_mandatory_manifest_complete IS TRUE
+                        AND fpl_owned_sync_optional_coverage_valid(
+                            finalized_optional_component_coverage) IS TRUE))
+                """.formatted(tables.gameweekStatSync(), tables.gameweekStatSync()));
+        jdbc.execute("""
+                CREATE OR REPLACE FUNCTION fpl_owned_sync_invalidation_guard() RETURNS trigger AS $$
+                BEGIN
+                    IF NEW.current_invalidation_revision < OLD.current_invalidation_revision
+                        OR (OLD.current_invalidation_floor IS NOT NULL
+                            AND (NEW.current_invalidation_floor IS NULL
+                                OR NEW.current_invalidation_floor < OLD.current_invalidation_floor)) THEN
+                        RAISE EXCEPTION 'gameweek invalidation fence cannot move backwards';
+                    END IF;
+                    RETURN NEW;
+                END
+                $$ LANGUAGE plpgsql
+                """);
+        jdbc.execute("DROP TRIGGER IF EXISTS trg_validate_gameweek_sync_season ON "
+                + tables.gameweekStatSync());
+        jdbc.execute("CREATE TRIGGER trg_validate_gameweek_sync_season BEFORE INSERT OR UPDATE ON "
+                + tables.gameweekStatSync()
+                + " FOR EACH ROW EXECUTE FUNCTION fpl_validate_evidence_season()");
+        jdbc.execute("DROP TRIGGER IF EXISTS trg_gameweek_invalidation_guard ON "
+                + tables.gameweekStatSync());
+        jdbc.execute("CREATE TRIGGER trg_gameweek_invalidation_guard BEFORE UPDATE ON "
+                + tables.gameweekStatSync()
+                + " FOR EACH ROW EXECUTE FUNCTION fpl_owned_sync_invalidation_guard()");
+
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS %s (
                     slot_id VARCHAR(300) PRIMARY KEY,
                     season VARCHAR(10) NOT NULL,
                     kind VARCHAR(40) NOT NULL,
@@ -572,6 +831,8 @@ public final class OwnedSyncSchema {
         jdbc.execute("ALTER TABLE %s ENABLE ROW LEVEL SECURITY".formatted(tables.fixtureDependencyManifest()));
         jdbc.execute("ALTER TABLE %s ENABLE ROW LEVEL SECURITY".formatted(tables.historyFingerprint()));
         jdbc.execute("ALTER TABLE %s ENABLE ROW LEVEL SECURITY".formatted(tables.playerFixtureEvidence()));
+        jdbc.execute("ALTER TABLE %s ENABLE ROW LEVEL SECURITY".formatted(tables.playerFixtureCurrent()));
+        jdbc.execute("ALTER TABLE %s ENABLE ROW LEVEL SECURITY".formatted(tables.gameweekStatSync()));
         jdbc.execute("ALTER TABLE %s ENABLE ROW LEVEL SECURITY".formatted(tables.plannerSlot()));
         jdbc.execute("ALTER TABLE %s ENABLE ROW LEVEL SECURITY".formatted(tables.plannerRuntime()));
         jdbc.execute("ALTER TABLE %s ENABLE ROW LEVEL SECURITY".formatted(tables.alert()));

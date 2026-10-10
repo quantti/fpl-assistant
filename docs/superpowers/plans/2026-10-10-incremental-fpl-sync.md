@@ -1,6 +1,6 @@
 # Incremental FPL rows and a checked-gameweek final sweep
 
-**PROGRESS:** Investigation and proposed plan complete; implementation 0/7. No runtime, database, scheduler or production-mode change. Await owner approval of this replacement contract before implementation.
+**PROGRESS:** Tasks 1–2/7 complete; Task 3 PFS/Ranking core and one formatter slice implemented locally, with four review-critical Unit 2/3 fixes verified; remaining Task 3 output/finality follow-up and Tapas audit remain, as do units 4–7. Writers remain inert; no collector, final sweep, scheduler or production-mode change.
 
 ## Decision being proposed
 
@@ -353,6 +353,58 @@ by this planning document.
    an observed checked signal, changed-only final upserts and a subsequent no-op cycle, then
    remove the retired scheduling paths in a separate reviewed change.
 
+## Task 1 outcome (2026-10-10)
+
+`HistoryParser` now distinguishes mandatory fields from twelve optional components, including a
+present zero from missing/null; discovery retains zero-minute history rows and never synthesizes
+absent player-fixture rows. Later discovery can seed from current catalogue elements, fixture stats,
+event-live explain participants and retained known keys; a player absent from every source remains
+undiscoverable. Final sweep eligibility requires a complete fixture manifest, checked finished event
+and every assigned fixture finished (a complete blank GW qualifies; provisional alone
+does not). The source signature binds schedule revision. Checkpoints and terminal receipts also bind a
+monotonic current invalidation revision/floor, so flag regression and history-only corrections cannot
+resurrect old work; post-invalidation reads can complete the new revision. The finalized source floor
+is stored independently of the mutable attempt floor. Receipts bind sorted valid/withdrawn row
+fingerprints and validated optional-component coverage; FINALIZED requires no outstanding pages and
+an exact completed/required manifest match.
+
+The two additive metadata tables point to existing evidence/run generations and store GW finality,
+checkpoints and compact receipts; they duplicate no numeric stats and start with no backfilled legacy
+proof. Tapas readers could not be audited because that checkout is absent; compatibility remains a
+Task 3 follow-up. Focused disposable-DB tests passed **28/28, zero skipped**: `GameweekFinalityTest`
+(11), `HistoryParserTest` (9), `HistoryEvidenceSchemaIntegrationTest` (4),
+`SharedFixtureRecoveryPolicySchemaIntegrationTest` (3) and `ScheduleOwnershipInvalidationIntegrationTest`
+(1), including both affected namespace initializers. No full suite ran. No writer, reader migration,
+production mode, monitor, live DB or Tapas schema changed; ACTIVE92 is untouched.
+
+## Task 2 outcome (2026-10-10)
+
+The unit-1 receipt coverage CHECK requires the `STRICT` validator result `IS TRUE`, and schema initialization replaces the earlier NULL-permitting constraint on reused tables. The migration regression reinstalls the old CHECK, proves a FINALIZED row with SQL NULL coverage passes before reinitialization, then proves the tightened constraint rejects it. `HistoryEvidenceSchemaIntegrationTest` passed **5/5, zero skipped**.
+
+`IncrementalPlayerFixturePublisher` parses the whole page before `IncrementalPfsRepository` opens its writer transaction. Page publication now requires an explicit ACTIVE runtime fence and, inside the transaction, locks and matches the configured season to the unique database `is_current` row and the parsed season ID/code. OFF and STAGING modes, or an ACTIVE configured season that is not the database current season, reject before the callback. The transaction persists every successful page interval—including an empty page—in the existing receipt table under the distinct `incremental-page:player:<id>` key (`latest_generation` and read interval, linked to that run's durable source floor); the legacy `player-history:<id>` receipt is neither locked nor overwritten. Stale generations/read ends cannot resurrect absent rows. No metadata table or sentinel row was added.
+
+A successful page atomically writes named PFS columns, immutable component evidence, valid/withdrawn row pointers and the page watermark. It revokes any obsolete fixture `current_verified_generation` by moving that fixture to `WAITING_STATS`, while preserving `last_verified_generation` and historical evidence. The current row pointer is not gated by fixture verification. The legacy `PfsReadSource` OFF path treats current-row and successful player-page receipt markers as ownership: it masks old verified fixtures, incremental-only fixtures and retained physical values after presence-only changes or withdrawals. Reassigned fixtures return both previous and new gameweek keys. Conditional normalized-value upserts still avoid PFS UPDATEs for unchanged and presence-only pages.
+
+The focused guarded disposable-DB run on `localhost:55432` passed **26/26, zero skipped**: `IncrementalPlayerFixturePublisherIntegrationTest` **12/12** (including ACTIVE/OFF/STAGING/season fences, actual OFF-reader masking, empty-page concurrent serialization, reassignment keys, multirow rollback and lease expiry during callback), `HistoryEvidenceSchemaIntegrationTest` **5/5** (including the legacy-constraint migration), and `PfsReadSourceIntegrationTest` **9/9**. Test seasons restore the prior global `is_current` rows; owned runtime tables use a private namespace. No scheduler, Spring writer bean, automatic activation, production runtime, monitor, full suite, production DB or Tapas schema change occurred; ACTIVE92 remains untouched.
+
+## Task 3 bounded reader slice (2026-10-10; local, partial)
+
+The Unit 2 ownership regression is fixed first: the page publisher now writes its empty/non-empty watermark to `incremental-page:player:<id>`, leaving legacy `player-history:<id>` receipts independent. A focused writer regression seeds a newer/future legacy watermark and proves the incremental lease can publish without reading or overwriting it. The legacy verified fixture remains visible in both ACTIVE and OFF; the old generic receipt is not mistaken for an incremental page.
+
+`PfsReadSource` reads incremental rows only through a valid current pointer whose season, source/evidence generations and exact immutable source-read interval agree with matching evidence. The dedicated page receipt is validated as an ordered watermark: it may advance beyond an unchanged row pointer, but cannot predate that row or fence a newer withdrawal. A separate built-in PostgreSQL SHA-256 fingerprint binds the pointer to normalized physical named PFS values; absent optional values are masked from that fingerprint before aggregation. Invalid, tampered or withdrawn pointers, fixture ownership markers and successful player-page markers prevent raw physical fallback, including in OFF; provisional rows do not require the fixture-wide verified state or a FINALIZED gameweek. Legacy fixture visibility remains on its previous verified/active contract.
+
+`RankingMetrics` replaces receipt-only incremental coverage with daily-capture player population plus usable completed-side PFS rows. Missing pages and missing usable rows create explicit whole-club gaps; a whole-club gap still blocks pick/squad coverage. A fixture row with an elapsed kickoff but `finished=false` does not add to the completed window or season blend count. `ComparisonCoverageFormatter` is the one migrated representative formatter: it distinguishes incomplete coverage from provisional page evidence, avoids implying FPL/final-import confirmation, and calls the counted players a comparison population. It has a checked-final wording branch, but no current reader path emits that status yet; old fixture `VERIFIED` receipts are not promoted to gameweek finality.
+
+The guarded focused run on `localhost:55432` passed **91/91, zero skipped**: `PfsReadSourceIntegrationTest` 12, `IncrementalPlayerFixturePublisherIntegrationTest` 13, `RankingMetricsIntegrationTest` 23, `ComparisonCoverageFormatterTest` 2, `PickToolsIntegrationTest` 18 and `SquadToolsIntegrationTest` 23. This is not a full-suite result. Remaining Unit 3 work is: wire validated gameweek-final receipts to checked-final labels; migrate the other relevant output formats in `ExpectedStatsTools`, pick/squad component details and `DataAge`/source-age wording; audit `SeasonResolver` against provisional unfinished fixtures; and review actual Tapas readers (checkout unavailable here). No writer activation, API endpoint, monitor, production data/schema, full suite, commit or push was changed/run.
+
+## Unit 2/3 review-critical fixes (2026-10-10; local)
+
+Four bounded review findings are fixed. First, unchanged later player pages advance only the page watermark: they keep the actual row source interval, evidence generation and pointer revision, perform zero PFS writes, and remain visible in both ACTIVE and OFF; receipt validation accepts a same-or-newer ordered watermark while an older page still cannot reverse a withdrawal. Second, each current pointer carries a separate normalized physical-PFS SHA-256 fingerprint using PostgreSQL built-ins (no extension); reader-side validation masks absent optional values, and mandatory or present-optional physical tampering makes the owned row unreadable rather than falling back. Existing pointers are not backfilled with physical proof. Third, a player's first complete empty page discovers previously owned legacy PFS keys from owned fixture metadata, writes withdrawal pointers, returns their real gameweek keys, revokes only current fixture verification, and retains prior evidence and receipts; unowned seasons/rows are not swept. Fourth, the legacy `player-history:<id>` receipt regression now has a complete source interval and proves exact original values remain visible in both modes without being confused for the `incremental-page:player:<id>` watermark.
+
+The latest guarded focused disposable-DB run on `localhost:55432` passed **57/57, zero skipped**: `IncrementalPlayerFixturePublisherIntegrationTest` 15, `HistoryEvidenceSchemaIntegrationTest` 5, `PfsReadSourceIntegrationTest` 14, and `RankingMetricsIntegrationTest` 23. No full suite, collector/unit 4, final sweep, production/API/monitor work, production DB, commit or push was run. Writers remain inert and ACTIVE92 is untouched.
+
+## Rollback
+
 Rollback is a writer stop with compatible readers retained first, not silently re-enabling Tapas
 or treating the new rows as legacy. An older binary that understands only fixture verification may
 hide newly written rows; it must not accept them under an obsolete receipt. Re-enabling the old
@@ -361,9 +413,10 @@ just to change the active-season protocol.
 
 ## Approval and completion criteria
 
-Approve this **provisional-row contract**, the proposed hourly collection default, and the explicit
-limit on unseen post-final history-only corrections before implementation. The endpoint assumptions
-and optional-metric completion wording are pinned in Task 1, not inferred from a passing HTTP call.
+The owner approved this **provisional-row contract**, the hourly collection default, and the
+explicit limit on unseen post-final history-only corrections on 2026-10-10. Task 1 pins endpoint
+assumptions and optional-metric completion wording from the current parser/source evidence; later
+units remain gated by their own tests and cutover review.
 
 Success means: useful valid rows become available without a global verification barrier; missing
 clubs still cannot produce misleading recommendations; checked GWs receive fresh final upserts and

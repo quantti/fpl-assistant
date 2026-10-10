@@ -1,21 +1,18 @@
 # Status — Phase 1
 
-## Incremental sync simplification proposal (2026-10-10; documentation only)
+## Incremental sync — units 1–3 bounded reader slice (2026-10-10; local, partial)
 
-[New plan](superpowers/plans/2026-10-10-incremental-fpl-sync.md): publish valid provisional
-player-fixture rows as they arrive, update only changed values, and complete a fresh final sweep
-when FPL reports the event finished/data-checked. The owner now accepts later corrections; the
-old two-observation stability gate is a design choice being proposed for retirement, not an FPL
-requirement. The original missing-Arsenal/whole-club comparison incident remains a required
-regression: provisional availability must not turn missing coverage or optional defaults into facts.
+[Plan](superpowers/plans/2026-10-10-incremental-fpl-sync.md) unit 1 pins provisional-row and checked-gameweek contracts and adds inert current-row/finality metadata; no values are duplicated or backfilled. Its focused schema/parser tests passed 28/28. The `STRICT` optional-coverage validator is explicitly required to return `IS TRUE`, and reinitialization replaces the earlier NULL-permitting CHECK; its migration regression passed 5/5.
 
-The proposal separates row publication, comparison coverage and gameweek finality, includes reader
-migration and single-writer rollback, and explicitly limits what can be known about corrections
-after FPL's checked signal. Seven bounded implementation units are proposed; none is implemented.
-No production mode, runtime, DB or monitor was changed. The owner's 2026-10-09 continuous ACTIVE92
-and observation-only monitoring authorisation stands; older OFF83 notes below are historical.
-The earlier GW5 recovery reached 10 VERIFIED fixtures/667 physical rows; that outcome is not a
-claim that the separate full source-body audit or a real checked-GW final-sweep test was completed.
+Unit 2 adds the explicit `IncrementalPlayerFixturePublisher` / `IncrementalPfsRepository` page boundary. It requires the current ACTIVE runtime fence and matches the configured playing season against the locked database `is_current` row in the page transaction. Successful pages—including empty pages—use the distinct `incremental-page:player:<id>` receipt key in the existing receipt table; the legacy `player-history:<id>` watermark is neither locked nor overwritten. Page writes atomically update named PFS columns, immutable component evidence and valid/withdrawn pointers; changed-only writes preserve missing optional values as unknown. Each page revokes obsolete fixture-wide verification while retaining historical receipts. The legacy OFF reader masks old VERIFIED and new-only fixtures, including presence-only changes and withdrawals, using current-row/page markers. Reassigned fixtures return prior and new GW keys.
+
+The bounded Unit 3 slice adds valid-pointer/evidence/watermark reads and component masking in `PfsReadSource`, population/usable-row coverage in `RankingMetrics`, and provisional/incomplete wording in one shared comparison formatter. Provisional finished-match rows remain usable without a FINALIZED-gameweek requirement; elapsed unfinished rows do not count in completed ranking windows. The initial bounded Task 3 run passed **91/91, zero skipped** across PFS reader, incremental publisher, ranking metrics, comparison formatter, pick and squad integration tests. This is not a full-suite result. Unit 3 remains partial: checked-final manifest wiring, remaining `ExpectedStatsTools`/pick/squad and `DataAge` source-age wording, `SeasonResolver` review, and the actual Tapas-reader audit remain open. No writer activation, API endpoint, monitor, production data/schema, full suite, commit or push; ACTIVE92 remains untouched.
+
+### Unit 2/3 review-critical follow-up (2026-10-10; local)
+
+Fixed four bounded findings: unchanged later pages now advance only the ordered page watermark while preserving row revision/source interval and avoiding PFS/evidence/pointer churn; reader visibility accepts that newer watermark while fencing withdrawals and stale pages. Incremental pointers now carry a separate built-in PostgreSQL SHA-256 fingerprint of normalized physical PFS core values and present optional values; absent optionals are excluded, and tampering makes rows unreadable without fallback. A first empty page reconciles legacy owned PFS rows into current-batch withdrawals, returns their actual GW keys, revokes current verification while preserving older evidence/receipt, and does not sweep unowned rows/seasons. Complete legacy `player-history:<id>` receipt timestamps no longer risk being treated as an incremental page receipt; original values remain visible in ACTIVE and OFF.
+
+The latest guarded disposable-DB run on `localhost:55432` passed **57/57, zero skipped**: `IncrementalPlayerFixturePublisherIntegrationTest` 15, `HistoryEvidenceSchemaIntegrationTest` 5, `PfsReadSourceIntegrationTest` 14, and `RankingMetricsIntegrationTest` 23. This was not the full suite. No collector/unit 4, final sweep, production/API/monitor work, production DB, commit or push was run; writers remain inert and ACTIVE92 is untouched.
 
 ## Task 153 review-2 P1 oracle repair (local pass, 2026-10-08)
 

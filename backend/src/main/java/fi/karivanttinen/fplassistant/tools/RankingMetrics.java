@@ -199,7 +199,11 @@ public class RankingMetrics {
 
     private record CurrentBuild(Map<Integer, SeasonMetrics> metrics,
                                 List<ComparisonCoverage.ClubGap> gaps,
-                                boolean comparisonAssessed) {
+                                boolean comparisonAssessed, boolean provisionalEvidence) {
+    }
+
+    private record SideCoverage(List<ComparisonCoverage.ClubGap> gaps,
+                                boolean incrementalEvidence) {
     }
 
     private static final Comparator<ClubObservation> CHRONOLOGY = Comparator
@@ -273,12 +277,14 @@ public class RankingMetrics {
         Map<Integer, SeasonMetrics> currentMetrics;
         List<ComparisonCoverage.ClubGap> coverageGaps = List.of();
         boolean comparisonAssessed = false;
+        boolean provisionalEvidence = false;
         if (metric.played().currentSeason()) {
             CurrentBuild currentBuild = buildCurrentMetrics(capture, metric.played(), schedule,
                     capturePlayers, currentIds, currentPositions, asOf);
             currentMetrics = currentBuild.metrics();
             coverageGaps = currentBuild.gaps();
             comparisonAssessed = currentBuild.comparisonAssessed();
+            provisionalEvidence = currentBuild.provisionalEvidence();
         } else {
             CanonicalSource source = new CanonicalSource("fixture", "season_id",
                     metric.played().seasonId());
@@ -347,7 +353,7 @@ public class RankingMetrics {
                             metric.played().currentSeason())));
         }
         ComparisonCoverage comparisonCoverage = ComparisonCoverage.assemble(
-                candidates, coverageGaps, comparisonAssessed);
+                candidates, coverageGaps, comparisonAssessed, provisionalEvidence);
         return new Snapshot(asOf, capture, metric, schedule, candidates, clubRates,
                 DataAge.RANKING_METRIC_REFRESH, comparisonCoverage);
     }
@@ -407,7 +413,7 @@ public class RankingMetrics {
                             Map.of(), emptyWindow(sourceFailure, player.teamId())));
                 }
             }
-            return new CurrentBuild(unavailable, List.of(), false);
+            return new CurrentBuild(unavailable, List.of(), false, false);
         }
 
         ScheduleSource.Snapshot selected = schedule.snapshot().orElseThrow();
@@ -493,7 +499,8 @@ public class RankingMetrics {
             }
         }
 
-        coverageGaps.addAll(loadCompletedSideCoverage(season, source, expected, clubs));
+        SideCoverage sideCoverage = loadCompletedSideCoverage(season, source, expected, clubs);
+        coverageGaps.addAll(sideCoverage.gaps());
         Map<Integer, Aggregate> aggregates = loadTargetAggregates(season.seasonId(), expected);
         Map<Integer, List<FixtureOutcome>> outcomes = loadRecentOutcomes(season.seasonId(), expected);
         Map<Integer, SeasonMetrics> result = new HashMap<>();
@@ -510,11 +517,12 @@ public class RankingMetrics {
             result.put(playerId, new SeasonMetrics(season, playerId,
                     positions.get(player.elementId()), ability, window));
         }
-        return new CurrentBuild(result, List.copyOf(coverageGaps), true);
+        return new CurrentBuild(result, List.copyOf(coverageGaps), true,
+                sideCoverage.incrementalEvidence());
     }
 
     /** One set-based side-population read over the same expected windows as MinutesModel. */
-    private List<ComparisonCoverage.ClubGap> loadCompletedSideCoverage(
+    private SideCoverage loadCompletedSideCoverage(
             SeasonContext season, CanonicalSource source,
             Map<Integer, List<CanonicalFixture>> expectedByPlayer,
             Map<Integer, Integer> clubsByPlayer) {
@@ -527,11 +535,16 @@ public class RankingMetrics {
             }
         });
         if (unique.isEmpty()) {
-            return List.of();
+            return new SideCoverage(List.of(), false);
         }
         List<SideTarget> targets = new ArrayList<>(unique.values());
         Set<Integer> fixtureIds = new HashSet<>();
         targets.forEach(target -> fixtureIds.add(target.fixture().id()));
+        Map<Integer, Set<Integer>> playersByClub = new HashMap<>();
+        clubsByPlayer.forEach((playerId, clubId) -> playersByClub
+                .computeIfAbsent(clubId, ignored -> new HashSet<>()).add(playerId));
+        Set<Integer> allPlayers = Set.copyOf(clubsByPlayer.keySet());
+        Set<Integer> pagedPlayers = pfs.incrementalPagePlayers(season.code(), allPlayers);
         Map<Integer, PfsReadSource.FixtureReceipt> receipts = pfs.fixtureReceipts(
                 season.seasonId(), season.code(), fixtureIds);
 
@@ -563,20 +576,30 @@ public class RankingMetrics {
                     integer(row.get("played_rows")));
         }
         List<ComparisonCoverage.ClubGap> gaps = new ArrayList<>();
+        boolean incrementalEvidence = false;
         for (SideTarget target : targets) {
             PfsReadSource.FixtureReceipt receipt = receipts.getOrDefault(target.fixture().id(),
                     PfsReadSource.FixtureReceipt.LEGACY);
-            ComparisonCoverage.GapReason reason = receipt == PfsReadSource.FixtureReceipt.UNVERIFIED_OWNED
-                    ? ComparisonCoverage.GapReason.UNVERIFIED_OWNED_RECEIPT
-                    : playedRows.getOrDefault(target.clubId() + ":" + target.fixture().id(), 0) == 0
-                            ? ComparisonCoverage.GapReason.COMPLETED_SIDE_MISSING_USABLE_CORE_ROWS
-                            : null;
+            Set<Integer> population = playersByClub.getOrDefault(target.clubId(), Set.of());
+            boolean anyPlayerPage = population.stream().anyMatch(pagedPlayers::contains);
+            boolean incremental = receipt == PfsReadSource.FixtureReceipt.INCREMENTAL || anyPlayerPage;
+            incrementalEvidence |= incremental;
+            ComparisonCoverage.GapReason reason;
+            if (incremental && (population.isEmpty() || !pagedPlayers.containsAll(population))) {
+                reason = ComparisonCoverage.GapReason.INCREMENTAL_POPULATION_INCOMPLETE;
+            } else if (!incremental && receipt == PfsReadSource.FixtureReceipt.UNVERIFIED_OWNED) {
+                reason = ComparisonCoverage.GapReason.UNVERIFIED_OWNED_RECEIPT;
+            } else if (playedRows.getOrDefault(target.clubId() + ":" + target.fixture().id(), 0) == 0) {
+                reason = ComparisonCoverage.GapReason.COMPLETED_SIDE_MISSING_USABLE_CORE_ROWS;
+            } else {
+                reason = null;
+            }
             if (reason != null) {
                 gaps.add(new ComparisonCoverage.ClubGap(target.clubId(), target.fixture().id(),
                         target.fixture().gameweek(), reason));
             }
         }
-        return gaps;
+        return new SideCoverage(List.copyOf(gaps), incrementalEvidence);
     }
 
     private WindowReason currentSourceFailure(DailyPriceSource.Capture capture,

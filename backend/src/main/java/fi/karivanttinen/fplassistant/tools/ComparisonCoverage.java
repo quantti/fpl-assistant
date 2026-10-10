@@ -12,12 +12,20 @@ import java.util.Objects;
 public record ComparisonCoverage(List<AffectedClub> affectedClubs,
                                  List<PlayerExclusion> playerExclusions,
                                  int capturePlayers, int eligiblePlayers,
-                                 boolean assessed) {
+                                 boolean assessed, EvidenceStatus evidenceStatus) {
+
+    public enum EvidenceStatus {
+        INCOMPLETE,
+        PROVISIONAL,
+        CHECKED_FINAL,
+        LEGACY
+    }
 
     public enum GapReason {
         RELEVANT_ELAPSED_UNFINISHED_FIXTURE,
         COMPLETED_SIDE_MISSING_USABLE_CORE_ROWS,
-        UNVERIFIED_OWNED_RECEIPT
+        UNVERIFIED_OWNED_RECEIPT,
+        INCREMENTAL_POPULATION_INCOMPLETE
     }
 
     public record FixtureGap(int fixtureId, Integer gameweek, GapReason reason) {
@@ -44,6 +52,7 @@ public record ComparisonCoverage(List<AffectedClub> affectedClubs,
     public ComparisonCoverage {
         affectedClubs = List.copyOf(affectedClubs);
         playerExclusions = List.copyOf(playerExclusions);
+        Objects.requireNonNull(evidenceStatus);
     }
 
     public boolean complete() {
@@ -64,6 +73,12 @@ public record ComparisonCoverage(List<AffectedClub> affectedClubs,
 
     static ComparisonCoverage assemble(List<RankingMetrics.Candidate> candidates,
                                        List<ClubGap> gaps, boolean assessed) {
+        return assemble(candidates, gaps, assessed, false);
+    }
+
+    static ComparisonCoverage assemble(List<RankingMetrics.Candidate> candidates,
+                                       List<ClubGap> gaps, boolean assessed,
+                                       boolean provisionalEvidence) {
         Map<Integer, RankingMetrics.CapturePlayer> clubs = new LinkedHashMap<>();
         Map<Integer, Integer> clubCandidateCounts = new LinkedHashMap<>();
         List<PlayerExclusion> exclusions = new ArrayList<>();
@@ -108,7 +123,11 @@ public record ComparisonCoverage(List<AffectedClub> affectedClubs,
         affected.sort(Comparator.comparing(AffectedClub::teamName,
                 Comparator.nullsLast(String.CASE_INSENSITIVE_ORDER)));
         exclusions.sort(Comparator.comparingInt(PlayerExclusion::elementId));
-        return new ComparisonCoverage(affected, exclusions, candidates.size(), eligible, assessed);
+        boolean incomplete = !assessed || !affected.isEmpty() || exclusions.stream()
+                .anyMatch(row -> row.eligibility() == MinutesModel.Eligibility.UNKNOWN_CURRENT_EVIDENCE);
+        EvidenceStatus status = incomplete ? EvidenceStatus.INCOMPLETE
+                : provisionalEvidence ? EvidenceStatus.PROVISIONAL : EvidenceStatus.LEGACY;
+        return new ComparisonCoverage(affected, exclusions, candidates.size(), eligible, assessed, status);
     }
 
     record ClubGap(int clubId, int fixtureId, Integer gameweek, GapReason reason) {
