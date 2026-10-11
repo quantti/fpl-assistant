@@ -289,11 +289,12 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
         Map<Integer, Set<Integer>> sourceParticipants = new LinkedHashMap<>();
         Map<Integer, FixtureVerification.FixtureEvidence> participantEvidence = new LinkedHashMap<>();
         Map<Integer, String> discoveryFingerprints = discoveryFingerprints(snapshot, targets);
+        Map<Integer, Set<Integer>> discovered;
         Map<Integer, Set<Integer>> known;
         try {
             Set<Integer> needsDiscovery = store.incrementalFixturesNeedingDiscovery(lease, discoveryFingerprints);
             List<Integer> targetFixtureIds = targets.stream().map(FixtureRow::id).toList();
-            Map<Integer, Set<Integer>> discovered = store.incrementalDiscoveredPlayerIds(lease, targetFixtureIds);
+            discovered = store.incrementalDiscoveredPlayerIds(lease, targetFixtureIds);
             List<Integer> hydrationFixtures = targets.stream().map(FixtureRow::id)
                     .filter(needsDiscovery::contains).toList();
             known = store.knownPlayerIds(lease, season.id(), hydrationFixtures);
@@ -414,19 +415,21 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
         }
 
         Map<Integer, Set<Integer>> checkpointPlayers = new LinkedHashMap<>();
-        Map<Integer, String> checkpointFingerprints = new LinkedHashMap<>();
+        Map<Integer, Set<Integer>> checkpointCandidates = new LinkedHashMap<>();
+        Map<Integer, String> checkpointFingerprints = new LinkedHashMap<>(discoveryFingerprints);
         for (FixtureRow fixture : targets) {
             boolean liveFresh = fixture.gameweek() == null || refreshedLiveEvents.contains(fixture.gameweek())
                     || pageFresh(liveReceipts.get(fixture.gameweek()), fixtureFloors.get(fixture.id()));
             if (liveFresh) {
                 checkpointPlayers.put(fixture.id(),
                         new LinkedHashSet<>(sourceParticipants.getOrDefault(fixture.id(), Set.of())));
-                checkpointFingerprints.put(fixture.id(), discoveryFingerprints.get(fixture.id()));
             }
+            checkpointCandidates.put(fixture.id(), Set.copyOf(candidates.get(fixture.id())));
         }
-        if (!checkpointPlayers.isEmpty()) {
+        if (!checkpointCandidates.isEmpty()) {
             try {
-                store.recordIncrementalPopulation(lease, checkpointPlayers, checkpointFingerprints, snapshotRead);
+                store.recordIncrementalPopulation(lease, checkpointPlayers, checkpointCandidates, discovered,
+                        checkpointFingerprints, snapshotRead);
             } catch (RuntimeException failure) {
                 return fail(lease, bounded(failure.getMessage()), requestedPlayers, committedPlayers, failedPlayers,
                         finalPendingEvents, null);

@@ -54,9 +54,11 @@ public final class OwnedSyncStore {
     static final String FINISHED_FIXTURE_RECEIPT_PREFIX = "incremental-finished-fixture:";
     static final String INCREMENTAL_LIVE_EVENT_RECEIPT_PREFIX = "incremental-live-event:";
     static final String INCREMENTAL_PARTICIPANT_RECEIPT_PREFIX = "incremental-participant:fixture:";
+    static final String INCREMENTAL_DISCOVERY_RECEIPT_PREFIX = "incremental-discovery:fixture:";
     static final String INCREMENTAL_POPULATION_RECEIPT_PREFIX = "incremental-population:fixture:";
     private static final Duration MAX_LEASE = Duration.ofHours(1);
     private static final int PUBLIC_PAIR_CACHE_ENTRIES = 2;
+    private static final int INCREMENTAL_DISCOVERY_BATCH_SIZE = 500;
     static final int HISTORY_HYDRATION_FETCH_SIZE = 8;
     private static final Set<Integer> PREFERENTIAL_HISTORY_TURNS = Set.of(0, 4);
     private static final List<ClaimClass> FAIR_CYCLE = List.of(
@@ -1049,7 +1051,8 @@ public final class OwnedSyncStore {
         return tx.execute(status -> {
             LockedRun run = lockAndValidate(lease);
             requireIncrementalRun(run);
-            return immutablePlayerIds(readParticipantLedger(run.season, fixtureIds));
+            return readFixturePlayerReceipts(run.season, fixtureIds, INCREMENTAL_DISCOVERY_RECEIPT_PREFIX,
+                    INCREMENTAL_PARTICIPANT_RECEIPT_PREFIX);
         });
     }
 
@@ -1084,50 +1087,127 @@ public final class OwnedSyncStore {
         });
     }
 
-    void recordIncrementalPopulation(Lease lease, Map<Integer, Set<Integer>> playersByFixture,
+    void recordIncrementalPopulation(Lease lease, Map<Integer, Set<Integer>> sourceParticipantsByFixture,
+                                     Map<Integer, Set<Integer>> candidatePlayerIdsByFixture,
+                                     Map<Integer, Set<Integer>> previouslyDiscoveredPlayerIdsByFixture,
                                      Map<Integer, String> sourceFingerprints, SourceRead sourceRead) {
-        Objects.requireNonNull(playersByFixture);
+        Objects.requireNonNull(sourceParticipantsByFixture);
+        Objects.requireNonNull(candidatePlayerIdsByFixture);
+        Objects.requireNonNull(previouslyDiscoveredPlayerIdsByFixture);
         Objects.requireNonNull(sourceFingerprints);
         Objects.requireNonNull(sourceRead);
-        if (!playersByFixture.keySet().equals(sourceFingerprints.keySet())) {
+        if (!candidatePlayerIdsByFixture.keySet().equals(sourceFingerprints.keySet())
+                || !sourceFingerprints.keySet().containsAll(sourceParticipantsByFixture.keySet())) {
             throw new IllegalArgumentException("Fixture population and checkpoint sets must match");
         }
         tx.executeWithoutResult(status -> {
             LockedRun run = lockAndValidate(lease);
             requireIncrementalRun(run);
             Instant recordedAt = now();
-            for (int fixtureId : playersByFixture.keySet().stream().sorted().toList()) {
+            List<Object[]> newDiscoveryCandidates = new ArrayList<>();
+            for (int fixtureId : candidatePlayerIdsByFixture.keySet().stream().sorted().toList()) {
                 String participantPrefix = INCREMENTAL_PARTICIPANT_RECEIPT_PREFIX + fixtureId + ":player:";
-                for (int playerId : playersByFixture.get(fixtureId).stream().sorted().toList()) {
+                for (int playerId : sourceParticipantsByFixture.getOrDefault(fixtureId, Set.of())
+                        .stream().sorted().toList()) {
                     insertIncrementalReceipt(run.season, participantPrefix + playerId, run.generation,
                             sourceRead, null, recordedAt);
                 }
-                insertIncrementalReceipt(run.season, INCREMENTAL_POPULATION_RECEIPT_PREFIX + fixtureId,
+                Set<Integer> existing = previouslyDiscoveredPlayerIdsByFixture.getOrDefault(fixtureId, Set.of());
+                for (int playerId : candidatePlayerIdsByFixture.get(fixtureId).stream().sorted().toList()) {
+                    if (existing.contains(playerId)) continue;
+                    String discoveryKey = INCREMENTAL_DISCOVERY_RECEIPT_PREFIX + fixtureId + ":player:" + playerId;
+                    newDiscoveryCandidates.add(new Object[] {run.season, discoveryKey, run.generation,
+                            timestamp(sourceRead.startedAt()), timestamp(sourceRead.finishedAt()), timestamp(recordedAt)});
+                }
+                insertIncrementalPopulationReceipt(run.season, INCREMENTAL_POPULATION_RECEIPT_PREFIX + fixtureId,
                         run.generation, sourceRead, sourceFingerprints.get(fixtureId), recordedAt);
             }
+            insertIncrementalDiscoveryCandidates(newDiscoveryCandidates);
         });
     }
 
+    void recordIncrementalPopulation(Lease lease, Map<Integer, Set<Integer>> sourceParticipantsByFixture,
+                                     Map<Integer, Set<Integer>> candidatePlayerIdsByFixture,
+                                     Map<Integer, String> sourceFingerprints, SourceRead sourceRead) {
+        Map<Integer, Set<Integer>> existing = incrementalDiscoveredPlayerIds(lease,
+                candidatePlayerIdsByFixture.keySet().stream().sorted().toList());
+        recordIncrementalPopulation(lease, sourceParticipantsByFixture, candidatePlayerIdsByFixture,
+                existing, sourceFingerprints, sourceRead);
+    }
+
+    void recordIncrementalPopulation(Lease lease, Map<Integer, Set<Integer>> playersByFixture,
+                                     Map<Integer, String> sourceFingerprints, SourceRead sourceRead) {
+        recordIncrementalPopulation(lease, playersByFixture, playersByFixture, sourceFingerprints, sourceRead);
+    }
+
     private Map<Integer, Set<Integer>> readParticipantLedger(String season, List<Integer> fixtureIds) {
+        return readFixturePlayerReceipts(season, fixtureIds, INCREMENTAL_PARTICIPANT_RECEIPT_PREFIX);
+    }
+
+    private Map<Integer, Set<Integer>> readFixturePlayerReceipts(String season, List<Integer> fixtureIds,
+                                                                  String... prefixes) {
         Set<Integer> requestedFixtures = Set.copyOf(fixtureIds);
         Map<Integer, Set<Integer>> result = new LinkedHashMap<>();
-        String participantPattern = INCREMENTAL_PARTICIPANT_RECEIPT_PREFIX + "%:player:%";
-        jdbc.queryForList("SELECT publication_key FROM %s WHERE season=? AND publication_key LIKE ? "
-                .formatted(tables.receipt()), String.class, season, participantPattern).forEach(key -> {
-            int separator = key.indexOf(":player:", INCREMENTAL_PARTICIPANT_RECEIPT_PREFIX.length());
+        List<Object> parameters = new ArrayList<>(prefixes.length + 1);
+        parameters.add(season);
+        for (String prefix : prefixes) parameters.add(prefix + "%:player:%");
+        String matchesPrefix = String.join(" OR ", java.util.Collections.nCopies(prefixes.length,
+                "publication_key LIKE ?"));
+        jdbc.queryForList("SELECT publication_key FROM %s WHERE season=? AND (%s)"
+                .formatted(tables.receipt(), matchesPrefix), String.class, parameters.toArray()).forEach(key -> {
+            String matchingPrefix = null;
+            for (String prefix : prefixes) {
+                if (key.startsWith(prefix)) {
+                    matchingPrefix = prefix;
+                    break;
+                }
+            }
+            if (matchingPrefix == null) return;
+            int separator = key.indexOf(":player:", matchingPrefix.length());
             if (separator < 0) return;
             try {
-                int fixtureId = Integer.parseInt(key.substring(INCREMENTAL_PARTICIPANT_RECEIPT_PREFIX.length(),
-                        separator));
+                int fixtureId = Integer.parseInt(key.substring(matchingPrefix.length(), separator));
                 int playerId = Integer.parseInt(key.substring(separator + ":player:".length()));
                 if (requestedFixtures.contains(fixtureId)) {
                     result.computeIfAbsent(fixtureId, ignored -> new java.util.TreeSet<>()).add(playerId);
                 }
             } catch (NumberFormatException invalidKey) {
-                throw new IllegalStateException("Invalid incremental participant receipt key", invalidKey);
+                throw new IllegalStateException("Invalid incremental fixture player receipt key", invalidKey);
             }
         });
-        return result;
+        return immutablePlayerIds(result);
+    }
+
+    private void insertIncrementalDiscoveryCandidates(List<Object[]> candidates) {
+        String sql = """
+                /* incremental discovery candidate batch */
+                INSERT INTO %s(season, publication_key, latest_generation, source_read_started_at,
+                    source_read_finished_at, published_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT (season, publication_key) DO NOTHING
+                """.formatted(tables.receipt());
+        for (int offset = 0; offset < candidates.size(); offset += INCREMENTAL_DISCOVERY_BATCH_SIZE) {
+            jdbc.batchUpdate(sql, candidates.subList(offset,
+                    Math.min(offset + INCREMENTAL_DISCOVERY_BATCH_SIZE, candidates.size())));
+        }
+    }
+
+    private void insertIncrementalPopulationReceipt(String season, String key, long generation,
+                                                     SourceRead read, String fingerprint, Instant publishedAt) {
+        jdbc.update("""
+                INSERT INTO %s(season, publication_key, latest_generation, source_read_started_at,
+                    source_read_finished_at, source_pair_fingerprint, published_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (season, publication_key) DO UPDATE SET
+                    latest_generation=EXCLUDED.latest_generation,
+                    source_read_started_at=EXCLUDED.source_read_started_at,
+                    source_read_finished_at=EXCLUDED.source_read_finished_at,
+                    source_pair_fingerprint=EXCLUDED.source_pair_fingerprint,
+                    published_at=EXCLUDED.published_at
+                WHERE %s.latest_generation<=EXCLUDED.latest_generation
+                  AND %s.source_pair_fingerprint IS DISTINCT FROM EXCLUDED.source_pair_fingerprint
+                """.formatted(tables.receipt(), tables.receipt(), tables.receipt()), season, key, generation,
+                timestamp(read.startedAt()), timestamp(read.finishedAt()), fingerprint, timestamp(publishedAt));
     }
 
     private void insertIncrementalReceipt(String season, String key, long generation, SourceRead read,
