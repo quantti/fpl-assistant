@@ -13,6 +13,7 @@ import java.nio.charset.StandardCharsets;
 import java.sql.CallableStatement;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.SQLFeatureNotSupportedException;
 import java.sql.Statement;
@@ -23,6 +24,7 @@ import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -30,6 +32,7 @@ import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
@@ -64,6 +67,7 @@ import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.RuntimeFence;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.SourceRead;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.SyncKind;
 import fi.karivanttinen.fplassistant.testsupport.TapasSeed;
+import fi.karivanttinen.fplassistant.tools.PfsReadSource;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -96,6 +100,10 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
     private static TransactionTemplate tx;
     private static Season season;
     private static List<Integer> originalCurrentSeasons;
+    private static boolean disposableDatabaseValidated;
+    private static boolean seasonBaselineCaptured;
+    private static boolean seasonFlagsChanged;
+    private static boolean cleanupAuthorized;
     private static byte[] bootstrap;
     private static byte[] fixtures;
     private static byte[] eventThreeLive;
@@ -109,14 +117,25 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
 
     @BeforeAll
     static void initialize() throws Exception {
-        dataSource = new DriverManagerDataSource(required("DATABASE_URL"), required("DB_USER"),
-                required("DB_PASSWORD"));
-        jdbc = new JdbcTemplate(dataSource);
+        String url = required("DATABASE_URL");
+        String user = required("DB_USER");
+        String password = required("DB_PASSWORD");
+        initialize(url, user, password,
+                () -> new JdbcTemplate(new DriverManagerDataSource(url, user, password)));
+    }
+
+    static void initialize(String url, String user, String password, Supplier<JdbcTemplate> jdbcSupplier)
+            throws Exception {
+        jdbc = TapasSeed.openDisposableTestJdbc(url, user, password, jdbcSupplier);
+        dataSource = jdbc.getDataSource();
         tx = new TransactionTemplate(new DataSourceTransactionManager(dataSource));
         TapasSeed.ensureOwnedSyncCaptureSeason(jdbc);
+        disposableDatabaseValidated = true;
         originalCurrentSeasons = jdbc.query("SELECT id FROM season WHERE is_current=true ORDER BY id",
                 (rs, row) -> rs.getInt(1));
+        seasonBaselineCaptured = true;
         TapasSeed.setCurrentSeason(jdbc, SEASON_ID);
+        seasonFlagsChanged = true;
         season = jdbc.queryForObject("SELECT id, code, start_date, end_date FROM season WHERE id=?",
                 (rs, row) -> new Season(rs.getInt("id"), rs.getString("code"),
                         rs.getDate("start_date").toLocalDate(),
@@ -128,25 +147,38 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         fixtures = resource("fixtures.json");
         eventThreeLive = resource("event-3-live.json");
         eventFourLive = resource("event-4-live.json");
+        cleanupAuthorized = true;
     }
 
     @AfterAll
     static void restoreCurrentSeason() {
-        if (jdbc == null) return;
-        new PlannerRuntimeRepository(jdbc, tx, Clock.systemUTC(), TABLES)
-                .deactivate(new RuntimeFence(season.code(), OwnedSyncMode.ACTIVE,
-                        jdbc.queryForObject("SELECT runtime_epoch FROM " + TABLES.plannerRuntime()
-                                + " WHERE instance_id=?", Long.class, "mode:" + season.code()), START));
-        jdbc.update("UPDATE season SET is_current=false");
-        for (int id : originalCurrentSeasons) jdbc.update("UPDATE season SET is_current=true WHERE id=?", id);
-        jdbc.update("DELETE FROM player_fixture_stats WHERE season_id=? AND fixture_id=29"
-                + " AND player_id IN (1, 2, 28, ?)", SEASON_ID, FINAL_PENDING_PLAYER);
-        jdbc.update("DELETE FROM player_fixture_stats WHERE season_id=? AND player_id IN (?, ?)",
-                SEASON_ID, KNOWN_PLAYER, 658);
+        if (cleanupAuthorized && jdbc != null) {
+            Long epoch = jdbc.queryForObject("SELECT runtime_epoch FROM " + TABLES.plannerRuntime()
+                    + " WHERE instance_id=?", Long.class, "mode:" + season.code());
+            if (epoch != null) {
+                new PlannerRuntimeRepository(jdbc, tx, Clock.systemUTC(), TABLES)
+                        .deactivate(new RuntimeFence(season.code(), OwnedSyncMode.ACTIVE, epoch, START));
+            }
+            jdbc.update("DELETE FROM player_fixture_stats WHERE season_id=? AND fixture_id=29"
+                    + " AND player_id IN (1, 2, 28, ?)", SEASON_ID, FINAL_PENDING_PLAYER);
+            jdbc.update("DELETE FROM player_fixture_stats WHERE season_id=? AND player_id IN (?, ?)",
+                    SEASON_ID, KNOWN_PLAYER, 658);
+        }
+        restoreCapturedCurrentSeasons();
+    }
+
+    private static void restoreCapturedCurrentSeasons() {
+        if (!disposableDatabaseValidated || !seasonBaselineCaptured || !seasonFlagsChanged || jdbc == null) return;
+        tx.executeWithoutResult(status -> {
+            jdbc.update("UPDATE season SET is_current=false");
+            originalCurrentSeasons.forEach(id -> jdbc.update("UPDATE season SET is_current=true WHERE id=?", id));
+        });
+        seasonFlagsChanged = false;
     }
 
     @BeforeEach
     void setUp() {
+        if (!cleanupAuthorized) throw new IllegalStateException("Disposable test database setup did not complete");
         clearOwnedTables();
         jdbc.update("DELETE FROM player_fixture_stats WHERE season_id=? AND fixture_id=29"
                 + " AND player_id IN (1, 2, 28, ?)", SEASON_ID, FINAL_PENDING_PLAYER);
@@ -164,15 +196,13 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
 
     @AfterEach
     void cleanUp() {
+        if (!cleanupAuthorized || jdbc == null) return;
         clearOwnedTables();
-        jdbc.update("DELETE FROM fixture WHERE season_id=? AND id=29", SEASON_ID);
-        jdbc.update("DELETE FROM gameweek WHERE season_id=? AND id=3", SEASON_ID);
-        jdbc.update("DELETE FROM player WHERE season_id=? AND id IN (1, 2)", SEASON_ID);
+        jdbc.update("DELETE FROM player_fixture_stats WHERE season_id=?", SEASON_ID);
+        jdbc.update("DELETE FROM fixture WHERE season_id=?", SEASON_ID);
+        jdbc.update("DELETE FROM gameweek WHERE season_id=?", SEASON_ID);
+        jdbc.update("DELETE FROM player WHERE season_id=?", SEASON_ID);
         jdbc.update("DELETE FROM team WHERE season_id=?", SEASON_ID);
-        jdbc.update("DELETE FROM player_fixture_stats WHERE season_id=? AND fixture_id=29"
-                + " AND player_id IN (1, 2, 28, ?)", SEASON_ID, FINAL_PENDING_PLAYER);
-        jdbc.update("DELETE FROM player_fixture_stats WHERE season_id=? AND player_id IN (?, ?, ?, ?, ?)",
-                SEASON_ID, KNOWN_PLAYER, FINAL_PENDING_PLAYER, LOCAL_HTTP_PLAYER, WATERMARK_PLAYER, 658);
     }
 
     @Test
@@ -218,14 +248,27 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         byte[] ordinaryBootstrap = markGameweekUnchecked(
                 markGameweekUnchecked(markGameweekUnchecked(bootstrap, 1), 2), 3);
         fetch.setSources(ordinaryBootstrap, source, eventThreeLive, eventFourLive);
+        fetch.setPlayerPage(1, onlyHistoryForFixture(resource("element-summary-1.json"), 29, 1));
+        fetch.setPlayerPage(28, historyForAwayPlayer28(29));
 
+        SqlRecordingDataSource recording = useRecordingJdbc();
+        installUnit6WriteCounters();
         AtomicReference<CycleResult> nested = new AtomicReference<>();
         AtomicReference<CoalescedPlayerHistoryCollector> collectorRef = new AtomicReference<>();
         fetch.onFirstRequest(() -> nested.set(collectorRef.get().runCycle()));
         CoalescedPlayerHistoryCollector collector = collector(true);
         collectorRef.set(collector);
-
-        CycleResult first = collector.runCycle();
+        CycleResult first;
+        long cycleMillis;
+        Map<String, Long> physicalWrites;
+        try {
+            long cycleStarted = System.nanoTime();
+            first = collector.runCycle();
+            cycleMillis = Duration.ofNanos(System.nanoTime() - cycleStarted).toMillis();
+            physicalWrites = unit6WriteCounts();
+        } finally {
+            removeUnit6WriteCounters();
+        }
 
         assertThat(first.state()).isEqualTo(State.COMPLETED);
         assertThat(nested.get().state()).isEqualTo(State.BUSY);
@@ -239,8 +282,21 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         assertThat(fetch.count(EndpointKind.BOOTSTRAP_STATIC)).isEqualTo(1);
         assertThat(fetch.count(EndpointKind.FIXTURES)).isEqualTo(1);
         assertThat(fetch.count(EndpointKind.EVENT_LIVE)).isEqualTo(4);
+        assertThat(physicalWrites.getOrDefault("player_fixture_stats/INSERT", 0L)).isEqualTo(2L);
         assertThat(fetch.playerIds()).hasSize(660);
         assertThat(new HashSet<>(fetch.playerIds())).hasSize(660);
+        assertThat(JSON.readTree(bootstrap).path("teams").size()).isEqualTo(20);
+        assertThat(JSON.readTree(bootstrap).path("elements").size()).isEqualTo(657);
+        System.out.printf("UNIT6_RECORDED_NORMAL league={clubs:20,cataloguePlayers:657,fixtures:380} "
+                        + "selected=%d unique=%d gets={bootstrap:%d,fixtures:%d,event-live:%d,history:%d} "
+                        + "bodyBytes=%d jdbc={statements:%d,queries:%d,updates:%d,rows:%d,logicalBytes~%d} "
+                        + "physicalWrites=%s cycleWallMs=%d%n",
+                first.selectedPlayerIds().size(), new HashSet<>(first.selectedPlayerIds()).size(),
+                fetch.count(EndpointKind.BOOTSTRAP_STATIC), fetch.count(EndpointKind.FIXTURES),
+                fetch.count(EndpointKind.EVENT_LIVE), fetch.count(EndpointKind.ELEMENT_SUMMARY),
+                fetch.returnedBodyBytes(), recording.statements().size(), recording.queryExecutions(),
+                recording.updateExecutions(), recording.returnedRows(),
+                recording.approximateLogicalReturnedBytes(), physicalWrites, cycleMillis);
 
         fetch.clearCalls();
         CycleResult idle = collector.runCycle();
@@ -516,6 +572,246 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
     }
 
     @Test
+    void compatibilityRetryReusesPublishedPairAndCorrectionUsesANewGeneration() throws Exception {
+        int fixtureId = 29;
+        byte[] source = fixtureStatsForPlayers(
+                onlyCollectorFixtureFinished(fixtures, fixtureId), fixtureId, 1, 28);
+        byte[] sourceBootstrap = markAllGameweeksUnchecked(bootstrapPlayers(bootstrap, Set.of(1)));
+        byte[] live = liveForFixturePlayers(eventThreeLive, fixtureId, Set.of(1, 28));
+        fetch.setSources(sourceBootstrap, source, live, eventFourLive);
+        fetch.setPlayerPage(1, onlyHistoryForFixture(resource("element-summary-1.json"), fixtureId, 1));
+        fetch.setPlayerPage(28, historyForAwayPlayer28(fixtureId));
+        fetch.failPlayer(28);
+        SqlRecordingDataSource recording = new SqlRecordingDataSource(dataSource);
+        JdbcTemplate recordedJdbc = new JdbcTemplate(recording);
+        TransactionTemplate recordedTx = new TransactionTemplate(new DataSourceTransactionManager(recording));
+        CoalescedPlayerHistoryCollector collector = compatibilityCollector(true, recordedJdbc, recordedTx);
+        AtomicReference<CycleResult> competingCycle = new AtomicReference<>();
+        fetch.onFirstRequest(() -> competingCycle.set(collector.runCycle()));
+        installUnit6WriteCounters();
+        CycleResult first;
+        long cycleMillis;
+        Map<String, Long> physicalWrites;
+        try {
+            long cycleStarted = System.nanoTime();
+            first = collector.runCycle();
+            cycleMillis = Duration.ofNanos(System.nanoTime() - cycleStarted).toMillis();
+            physicalWrites = unit6WriteCounts();
+        } finally {
+            removeUnit6WriteCounters();
+        }
+
+        assertThat(competingCycle.get().state()).isEqualTo(State.BUSY);
+        assertThat(first.state()).isEqualTo(State.RETRY_SCHEDULED);
+        assertThat(first.committedPlayerIds()).containsExactly(1);
+        assertThat(first.failedPlayerIds()).containsExactly(28);
+        System.out.printf("UNIT6_PARTIAL gets={bootstrap:%d,fixtures:%d,event-live:%d,history:%d} "
+                        + "successfulHistoryPlayers=%s bodyBytes=%d jdbc={statements:%d,queries:%d,updates:%d,"
+                        + "rows:%d,logicalBytes~%d} physicalWrites=%s cycleWallMs=%d%n",
+                fetch.count(EndpointKind.BOOTSTRAP_STATIC), fetch.count(EndpointKind.FIXTURES),
+                fetch.count(EndpointKind.EVENT_LIVE), fetch.count(EndpointKind.ELEMENT_SUMMARY),
+                fetch.successfulReads().stream().filter(read -> read.endpoint().kind() == EndpointKind.ELEMENT_SUMMARY)
+                        .map(read -> read.endpoint().playerId()).toList(), fetch.returnedBodyBytes(),
+                recording.statements().size(),
+                recording.queryExecutions(), recording.updateExecutions(), recording.returnedRows(),
+                recording.approximateLogicalReturnedBytes(), physicalWrites, cycleMillis);
+        Map<String, Object> originalReceipt = jdbc.queryForMap("SELECT latest_generation, "
+                + "source_bootstrap_payload_id, source_fixtures_payload_id, source_pair_fingerprint, "
+                + "source_read_started_at, source_read_finished_at FROM " + TABLES.receipt()
+                + " WHERE season=? AND publication_key=?", season.code(),
+                OwnedSyncStore.INCREMENTAL_COMPATIBILITY_PUBLICATION_KEY);
+        long firstGeneration = ((Number) originalReceipt.get("latest_generation")).longValue();
+        long bootstrapPayloadId = ((Number) originalReceipt.get("source_bootstrap_payload_id")).longValue();
+        long fixturePayloadId = ((Number) originalReceipt.get("source_fixtures_payload_id")).longValue();
+        Instant originalStart = ((java.sql.Timestamp) originalReceipt.get("source_read_started_at")).toInstant();
+        byte[] originalBootstrapBody = jdbc.queryForObject("SELECT body FROM " + TABLES.payload()
+                + " WHERE id=?", byte[].class, bootstrapPayloadId);
+        byte[] originalFixtureBody = jdbc.queryForObject("SELECT body FROM " + TABLES.payload()
+                + " WHERE id=?", byte[].class, fixturePayloadId);
+
+        fetch.clearCalls();
+        fetch.clearPageOutcomes();
+        clock.set(first.nextDue().plusSeconds(1));
+        CycleResult resumed = collector.runCycle();
+
+        assertThat(resumed.state()).isEqualTo(State.COMPLETED);
+        assertThat(resumed.selectedPlayerIds()).containsExactly(28);
+        assertThat(resumed.committedPlayerIds()).containsExactly(28);
+        assertThat(fetch.playerIds()).containsExactly(28);
+        assertThat(fetch.count(EndpointKind.BOOTSTRAP_STATIC)).isOne();
+        assertThat(fetch.count(EndpointKind.FIXTURES)).isOne();
+        assertThat(fetch.count(EndpointKind.ELEMENT_SUMMARY)).isOne();
+        assertThat(fetch.returnedBodyBytes()).isPositive();
+        Map<String, Object> resumedReceipt = jdbc.queryForMap("SELECT latest_generation, "
+                + "source_bootstrap_payload_id, source_fixtures_payload_id, source_pair_fingerprint, "
+                + "source_read_started_at, source_read_finished_at FROM " + TABLES.receipt()
+                + " WHERE season=? AND publication_key=?", season.code(),
+                OwnedSyncStore.INCREMENTAL_COMPATIBILITY_PUBLICATION_KEY);
+        assertThat(resumedReceipt.get("latest_generation")).isEqualTo(firstGeneration);
+        assertThat(resumedReceipt.get("source_bootstrap_payload_id")).isEqualTo(bootstrapPayloadId);
+        assertThat(resumedReceipt.get("source_fixtures_payload_id")).isEqualTo(fixturePayloadId);
+        assertThat(resumedReceipt.get("source_pair_fingerprint")).isEqualTo(originalReceipt.get("source_pair_fingerprint"));
+        assertThat(jdbc.queryForObject("SELECT body FROM " + TABLES.payload() + " WHERE id=?",
+                byte[].class, bootstrapPayloadId)).containsExactly(originalBootstrapBody);
+        assertThat(jdbc.queryForObject("SELECT body FROM " + TABLES.payload() + " WHERE id=?",
+                byte[].class, fixturePayloadId)).containsExactly(originalFixtureBody);
+        SourceRead resumedRunRead = jdbc.queryForObject("SELECT source_read_started_at, source_read_finished_at "
+                + "FROM " + TABLES.run() + " WHERE generation=?", (rs, row) -> new SourceRead(
+                rs.getTimestamp(1).toInstant(), rs.getTimestamp(2).toInstant()), firstGeneration);
+        assertThat(resumedRunRead.startedAt()).isEqualTo(originalStart);
+        assertThat(resumedRunRead.finishedAt()).isEqualTo(fetch.successfulReads().getLast().read().finishedAt());
+        System.out.printf("UNIT6_PARTIAL_RESUME gets={bootstrap:%d,fixtures:%d,event-live:%d,history:%d} "
+                        + "historyPlayers=%s bodyBytes=%d originalGeneration=%d sourceInterval=%s..%s%n",
+                fetch.count(EndpointKind.BOOTSTRAP_STATIC), fetch.count(EndpointKind.FIXTURES),
+                fetch.count(EndpointKind.EVENT_LIVE), fetch.count(EndpointKind.ELEMENT_SUMMARY),
+                fetch.playerIds(), fetch.returnedBodyBytes(), firstGeneration,
+                resumedRunRead.startedAt(), resumedRunRead.finishedAt());
+
+        byte[] correctedFixtures = changeFixtureScore(source, fixtureId, 3);
+        fetch.clearCalls();
+        fetch.setSources(sourceBootstrap, correctedFixtures, live, eventFourLive);
+        CycleResult corrected = collector.runCycle();
+
+        assertThat(corrected.state()).isEqualTo(State.COMPLETED);
+        long correctedGeneration = jdbc.queryForObject("SELECT generation FROM " + TABLES.run()
+                + " WHERE producer_key=? AND season=? AND state='COMPLETED' ORDER BY generation DESC LIMIT 1",
+                Long.class, OwnedSyncStore.INCREMENTAL_CORE_PRODUCER, season.code());
+        Map<String, Object> correctedReceipt = jdbc.queryForMap("SELECT latest_generation, "
+                + "source_bootstrap_payload_id, source_fixtures_payload_id, source_pair_fingerprint FROM "
+                + TABLES.receipt() + " WHERE season=? AND publication_key=?", season.code(),
+                OwnedSyncStore.INCREMENTAL_COMPATIBILITY_PUBLICATION_KEY);
+        assertThat(correctedGeneration).isGreaterThan(firstGeneration);
+        assertThat(correctedReceipt.get("latest_generation")).isEqualTo(correctedGeneration);
+        assertThat(correctedReceipt.get("source_bootstrap_payload_id")).isNotEqualTo(bootstrapPayloadId);
+        assertThat(correctedReceipt.get("source_fixtures_payload_id")).isNotEqualTo(fixturePayloadId);
+        assertThat(jdbc.queryForObject("SELECT source_published FROM " + TABLES.payload()
+                + " WHERE id=?", Boolean.class, bootstrapPayloadId)).isTrue();
+        assertThat(jdbc.queryForObject("SELECT source_published FROM " + TABLES.payload()
+                + " WHERE id=?", Boolean.class, fixturePayloadId)).isTrue();
+        assertThat(jdbc.queryForObject("SELECT body FROM " + TABLES.payload() + " WHERE id=?",
+                byte[].class, bootstrapPayloadId)).containsExactly(originalBootstrapBody);
+        assertThat(jdbc.queryForObject("SELECT body FROM " + TABLES.payload() + " WHERE id=?",
+                byte[].class, fixturePayloadId)).containsExactly(originalFixtureBody);
+    }
+
+    @Test
+    void correctedFixtureHeaderSupersedesPartialPairThenRefreshesAffectedPages() throws Exception {
+        int fixtureId = 29;
+        Instant correctedKickoff = Instant.parse("2026-09-13T17:00:00Z");
+        byte[] originalFixtures = fixtureStatsForPlayers(
+                onlyCollectorFixtureFinished(fixtures, fixtureId), fixtureId, 1, 28);
+        byte[] sourceBootstrap = markAllGameweeksUnchecked(bootstrapPlayers(bootstrap, Set.of(1)));
+        byte[] live = liveForFixturePlayers(eventThreeLive, fixtureId, Set.of(1, 28));
+        fetch.setSources(sourceBootstrap, originalFixtures, live, live);
+        fetch.setPlayerPage(1, onlyHistoryForFixture(resource("element-summary-1.json"), fixtureId, 1));
+        fetch.setPlayerPage(28, historyForAwayPlayer28(fixtureId));
+        fetch.failPlayer(28);
+        CoalescedPlayerHistoryCollector collector = compatibilityCollector(true);
+
+        CycleResult first = collector.runCycle();
+
+        assertThat(first.state()).isEqualTo(State.RETRY_SCHEDULED);
+        assertThat(first.committedPlayerIds()).containsExactly(1);
+        assertThat(first.failedPlayerIds()).containsExactly(28);
+        Map<String, Object> originalReceipt = jdbc.queryForMap("SELECT latest_generation, "
+                + "source_bootstrap_payload_id, source_fixtures_payload_id, source_pair_fingerprint, "
+                + "source_read_started_at, source_read_finished_at, source_bootstrap_read_started_at, "
+                + "source_bootstrap_read_finished_at, source_fixtures_read_started_at, "
+                + "source_fixtures_read_finished_at FROM " + TABLES.receipt()
+                + " WHERE season=? AND publication_key=?", season.code(),
+                OwnedSyncStore.INCREMENTAL_COMPATIBILITY_PUBLICATION_KEY);
+        long oldGeneration = ((Number) originalReceipt.get("latest_generation")).longValue();
+        long bootstrapPayloadId = ((Number) originalReceipt.get("source_bootstrap_payload_id")).longValue();
+        long fixturesPayloadId = ((Number) originalReceipt.get("source_fixtures_payload_id")).longValue();
+        byte[] oldBootstrapBody = jdbc.queryForObject("SELECT body FROM " + TABLES.payload()
+                + " WHERE id=?", byte[].class, bootstrapPayloadId);
+        byte[] oldFixturesBody = jdbc.queryForObject("SELECT body FROM " + TABLES.payload()
+                + " WHERE id=?", byte[].class, fixturesPayloadId);
+        Map<String, Object> oldRunInterval = jdbc.queryForMap("SELECT source_read_started_at, "
+                + "source_read_finished_at FROM " + TABLES.run() + " WHERE generation=?", oldGeneration);
+        Map<String, Object> oldPlayerRow = jdbc.queryForMap("SELECT gameweek,kickoff_time FROM player_fixture_stats "
+                + "WHERE season_id=? AND fixture_id=? AND player_id=1", SEASON_ID, fixtureId);
+        Long oldPlayerGeneration = jdbc.queryForObject("SELECT source_run_generation FROM "
+                + TABLES.playerFixtureCurrent() + " WHERE season_id=? AND fixture_id=? AND player_id=1",
+                Long.class, SEASON_ID, fixtureId);
+
+        byte[] correctedFixtures = reassignFixture(originalFixtures, fixtureId, 4);
+        fetch.clearCalls();
+        fetch.clearPageOutcomes();
+        fetch.setSources(sourceBootstrap, correctedFixtures, live, live);
+        clock.set(first.nextDue().plusSeconds(1));
+        CycleResult superseded = collector.runCycle();
+
+        assertThat(superseded.state()).isEqualTo(State.SUPERSEDED);
+        assertThat(superseded.committedPlayerIds()).isEmpty();
+        assertThat(fetch.playerIds()).isEmpty();
+        assertThat(fetch.count(EndpointKind.BOOTSTRAP_STATIC)).isOne();
+        assertThat(fetch.count(EndpointKind.FIXTURES)).isOne();
+        assertThat(jdbc.queryForObject("SELECT state FROM " + TABLES.run() + " WHERE generation=?",
+                String.class, oldGeneration)).isEqualTo("SUPERSEDED");
+        Map<String, Object> stillOldReceipt = jdbc.queryForMap("SELECT latest_generation, "
+                + "source_bootstrap_payload_id, source_fixtures_payload_id, source_pair_fingerprint, "
+                + "source_read_started_at, source_read_finished_at, source_bootstrap_read_started_at, "
+                + "source_bootstrap_read_finished_at, source_fixtures_read_started_at, "
+                + "source_fixtures_read_finished_at FROM " + TABLES.receipt()
+                + " WHERE season=? AND publication_key=?", season.code(),
+                OwnedSyncStore.INCREMENTAL_COMPATIBILITY_PUBLICATION_KEY);
+        assertThat(stillOldReceipt).isEqualTo(originalReceipt);
+        assertThat(jdbc.queryForObject("SELECT body FROM " + TABLES.payload() + " WHERE id=?",
+                byte[].class, bootstrapPayloadId)).containsExactly(oldBootstrapBody);
+        assertThat(jdbc.queryForObject("SELECT body FROM " + TABLES.payload() + " WHERE id=?",
+                byte[].class, fixturesPayloadId)).containsExactly(oldFixturesBody);
+        assertThat(jdbc.queryForObject("SELECT gameweek FROM fixture WHERE season_id=? AND id=?",
+                Integer.class, SEASON_ID, fixtureId)).isEqualTo(3);
+        assertThat(jdbc.queryForMap("SELECT source_read_started_at, source_read_finished_at FROM "
+                + TABLES.run() + " WHERE generation=?", oldGeneration)).isEqualTo(oldRunInterval);
+        assertThat(jdbc.queryForMap("SELECT gameweek,kickoff_time FROM player_fixture_stats "
+                + "WHERE season_id=? AND fixture_id=? AND player_id=1", SEASON_ID, fixtureId)).isEqualTo(oldPlayerRow);
+        assertThat(jdbc.queryForObject("SELECT source_run_generation FROM " + TABLES.playerFixtureCurrent()
+                + " WHERE season_id=? AND fixture_id=? AND player_id=1", Long.class, SEASON_ID, fixtureId))
+                .isEqualTo(oldPlayerGeneration);
+        assertThat(new PfsReadSource(jdbc, "ACTIVE", season.code(), TABLES.fixtureSync(),
+                TABLES.playerFixtureEvidence(), TABLES.playerFixtureCurrent(), TABLES.receipt())
+                .incrementalRowsByGameweek(SEASON_ID, Set.of(fixtureId)).get(3).incrementalRows()).isPositive();
+
+        byte[] correctedPlayerOne = rewriteHistoryFixture(
+                onlyHistoryForFixture(resource("element-summary-1.json"), fixtureId, 1),
+                fixtureId, 4, correctedKickoff);
+        byte[] correctedPlayerTwentyEight = rewriteHistoryFixture(
+                historyForAwayPlayer28(fixtureId), fixtureId, 4, correctedKickoff);
+        fetch.setPlayerPage(1, correctedPlayerOne);
+        fetch.setPlayerPage(28, correctedPlayerTwentyEight);
+        SqlRecordingDataSource recording = new SqlRecordingDataSource(dataSource);
+        JdbcTemplate recordedJdbc = new JdbcTemplate(recording);
+        TransactionTemplate recordedTx = new TransactionTemplate(new DataSourceTransactionManager(recording));
+        fetch.clearCalls();
+        CycleResult corrected = compatibilityCollector(true, recordedJdbc, recordedTx).runCycle();
+
+        assertThat(corrected.state()).isEqualTo(State.COMPLETED);
+        assertThat(corrected.committedPlayerIds()).containsExactly(1, 28);
+        assertThat(fetch.playerIds()).containsExactly(1, 28);
+        assertThat(fetch.count(EndpointKind.BOOTSTRAP_STATIC)).isOne();
+        assertThat(fetch.count(EndpointKind.FIXTURES)).isOne();
+        assertThat(recording.statements().stream().map(sql -> sql.toLowerCase(java.util.Locale.ROOT))
+                .filter(sql -> sql.contains("insert into player_fixture_stats"))).hasSize(2);
+        assertThat(jdbc.queryForObject("SELECT gameweek FROM fixture WHERE season_id=? AND id=?",
+                Integer.class, SEASON_ID, fixtureId)).isEqualTo(4);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM player_fixture_stats WHERE season_id=? "
+                + "AND fixture_id=? AND player_id IN (1,28) AND gameweek=4 AND kickoff_time=?",
+                Integer.class, SEASON_ID, fixtureId, java.sql.Timestamp.from(correctedKickoff))).isEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.fixtureSync()
+                + " WHERE season_id=? AND fixture_id=? AND current_verified_generation IS NOT NULL",
+                Integer.class, SEASON_ID, fixtureId)).isZero();
+        assertThat(jdbc.queryForObject("SELECT latest_generation FROM " + TABLES.receipt()
+                + " WHERE season=? AND publication_key=?", Long.class, season.code(),
+                OwnedSyncStore.INCREMENTAL_COMPATIBILITY_PUBLICATION_KEY)).isGreaterThan(oldGeneration);
+        assertThat(jdbc.queryForObject("SELECT body FROM " + TABLES.payload() + " WHERE id=?",
+                byte[].class, bootstrapPayloadId)).containsExactly(oldBootstrapBody);
+        assertThat(jdbc.queryForObject("SELECT body FROM " + TABLES.payload() + " WHERE id=?",
+                byte[].class, fixturesPayloadId)).containsExactly(oldFixturesBody);
+    }
+
+    @Test
     void elapsedUnstartedFixtureIsCollectedWithoutPromotingSourceFlags() throws Exception {
         int fixtureId = 40;
         Instant elapsedKickoff = Instant.parse("2026-09-13T13:00:00Z");
@@ -755,55 +1051,670 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
     @Test
     void checkedStartupFinalSweepFinalizesRealRowsAndNextCycleDoesNotRewriteThem() throws Exception {
         CheckedFixtureSetup setup = checkedSingleFixtureSetup();
+        SqlRecordingDataSource recording = useRecordingJdbc();
+        try {
+            installUnit6WriteCounters();
+            CoalescedPlayerHistoryCollector collector = collector(true);
+            long cycleStarted = System.nanoTime();
+            CycleResult first = collector.runCycle();
+            long cycleMillis = Duration.ofNanos(System.nanoTime() - cycleStarted).toMillis();
 
-        CycleResult first = collector(true).runCycle();
+            assertThat(first.state()).as("cycle: %s; last error: %s", first, latestRunError())
+                    .isEqualTo(State.COMPLETED);
+            assertThat(first.selectedPlayerIds()).containsExactly(setup.cataloguePlayer(), 28);
+            assertThat(first.committedPlayerIds()).containsExactly(setup.cataloguePlayer(), 28);
+            assertThat(jdbc.queryForObject("SELECT participant.source_read_started_at=live.source_read_started_at"
+                    + " AND participant.source_read_finished_at=live.source_read_finished_at FROM "
+                    + TABLES.receipt() + " participant JOIN " + TABLES.receipt()
+                    + " live ON live.season=participant.season WHERE participant.season=?"
+                    + " AND participant.publication_key=? AND live.publication_key=?", Boolean.class,
+                    season.code(), OwnedSyncStore.INCREMENTAL_PARTICIPANT_RECEIPT_PREFIX
+                            + setup.fixtureId() + ":player:28",
+                    OwnedSyncStore.INCREMENTAL_LIVE_EVENT_RECEIPT_PREFIX + 3)).isTrue();
+            assertThat(jdbc.queryForObject("SELECT state FROM " + TABLES.gameweekStatSync()
+                    + " WHERE season_id=? AND gameweek=3", String.class, SEASON_ID)).isEqualTo("FINALIZED");
+            assertThat(jdbc.queryForList("SELECT player_id FROM player_fixture_stats"
+                    + " WHERE season_id=? AND fixture_id=? ORDER BY player_id", Integer.class,
+                    SEASON_ID, setup.fixtureId())).containsExactly(1, 28);
+            java.sql.Timestamp rowUpdatedAt = jdbc.queryForObject("SELECT updated_at FROM player_fixture_stats"
+                    + " WHERE season_id=? AND fixture_id=? AND player_id=?", java.sql.Timestamp.class,
+                    SEASON_ID, setup.fixtureId(), 28);
+            int evidenceRows = jdbc.queryForObject("SELECT count(*) FROM " + TABLES.playerFixtureEvidence()
+                    + " WHERE season_id=? AND fixture_id=? AND player_id=?", Integer.class,
+                    SEASON_ID, setup.fixtureId(), 28);
+            Instant firstCanonicalStart = fetch.successfulReads().stream()
+                    .filter(read -> read.endpoint().kind() == EndpointKind.BOOTSTRAP_STATIC)
+                    .map(read -> read.read().startedAt()).findFirst().orElseThrow();
+            Instant terminalFinish = fetch.successfulReads().getLast().read().finishedAt();
+            var receipt = jdbc.queryForObject("SELECT finalized_source_read_started_at,"
+                    + " finalized_source_read_finished_at FROM " + TABLES.gameweekStatSync()
+                    + " WHERE season_id=? AND gameweek=3", (rs, row) -> new SourceRead(
+                            rs.getTimestamp(1).toInstant(), rs.getTimestamp(2).toInstant()), SEASON_ID);
+            assertThat(receipt).isEqualTo(new SourceRead(firstCanonicalStart, terminalFinish));
+            assertThat(Duration.between(firstCanonicalStart, terminalFinish)).isLessThan(Duration.ofMinutes(10));
+            assertThat(fetch.count(EndpointKind.BOOTSTRAP_STATIC)).isEqualTo(2);
+            assertThat(fetch.count(EndpointKind.FIXTURES)).isEqualTo(2);
+            assertThat(fetch.count(EndpointKind.EVENT_LIVE)).isOne();
+            assertThat(fetch.playerIds()).containsExactly(1, 28);
+            assertThat(fetch.returnedBodyBytes()).isPositive();
+            assertThat(unit6WriteCount("player_fixture_stats", "INSERT")).isEqualTo(2L);
+            Map<String, Long> firstWriteCounts = unit6WriteCounts();
 
-        assertThat(first.state()).as("cycle: %s; last error: %s", first, latestRunError())
-                .isEqualTo(State.COMPLETED);
-        assertThat(first.selectedPlayerIds()).containsExactly(setup.cataloguePlayer(), 28);
-        assertThat(first.committedPlayerIds()).containsExactly(setup.cataloguePlayer(), 28);
-        assertThat(jdbc.queryForObject("SELECT participant.source_read_started_at=live.source_read_started_at"
-                + " AND participant.source_read_finished_at=live.source_read_finished_at FROM "
-                + TABLES.receipt() + " participant JOIN " + TABLES.receipt()
-                + " live ON live.season=participant.season WHERE participant.season=?"
-                + " AND participant.publication_key=? AND live.publication_key=?", Boolean.class,
-                season.code(), OwnedSyncStore.INCREMENTAL_PARTICIPANT_RECEIPT_PREFIX
-                        + setup.fixtureId() + ":player:28",
-                OwnedSyncStore.INCREMENTAL_LIVE_EVENT_RECEIPT_PREFIX + 3)).isTrue();
-        assertThat(jdbc.queryForObject("SELECT state FROM " + TABLES.gameweekStatSync()
-                + " WHERE season_id=? AND gameweek=3", String.class, SEASON_ID)).isEqualTo("FINALIZED");
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM player_fixture_stats"
-                + " WHERE season_id=? AND fixture_id=? AND player_id=?", Integer.class,
-                SEASON_ID, setup.fixtureId(), 28)).isOne();
-        java.sql.Timestamp rowUpdatedAt = jdbc.queryForObject("SELECT updated_at FROM player_fixture_stats"
-                + " WHERE season_id=? AND fixture_id=? AND player_id=?", java.sql.Timestamp.class,
-                SEASON_ID, setup.fixtureId(), 28);
-        int evidenceRows = jdbc.queryForObject("SELECT count(*) FROM " + TABLES.playerFixtureEvidence()
-                + " WHERE season_id=? AND fixture_id=? AND player_id=?", Integer.class,
-                SEASON_ID, setup.fixtureId(), 28);
-        Instant firstCanonicalStart = fetch.successfulReads().stream()
-                .filter(read -> read.endpoint().kind() == EndpointKind.BOOTSTRAP_STATIC)
-                .map(read -> read.read().startedAt()).findFirst().orElseThrow();
-        Instant terminalFinish = fetch.successfulReads().getLast().read().finishedAt();
-        var receipt = jdbc.queryForObject("SELECT finalized_source_read_started_at,"
-                + " finalized_source_read_finished_at FROM " + TABLES.gameweekStatSync()
-                + " WHERE season_id=? AND gameweek=3", (rs, row) -> new SourceRead(
-                        rs.getTimestamp(1).toInstant(), rs.getTimestamp(2).toInstant()), SEASON_ID);
-        assertThat(receipt).isEqualTo(new SourceRead(firstCanonicalStart, terminalFinish));
+            System.out.printf("UNIT6_FINAL_CAPTURE source=recorded-fixture-29 controlled-participants=[1,28] "
+                            + "gets={bootstrap:%d,fixtures:%d,event-live:%d,history:%d} bodyBytes=%d "
+                            + "jdbc={statements:%d,queries:%d,updates:%d,rows:%d,logicalBytes~%d} "
+                            + "physicalWrites=%s cycleWallMs=%d%n",
+                    fetch.count(EndpointKind.BOOTSTRAP_STATIC), fetch.count(EndpointKind.FIXTURES),
+                    fetch.count(EndpointKind.EVENT_LIVE), fetch.count(EndpointKind.ELEMENT_SUMMARY),
+                    fetch.returnedBodyBytes(), recording.statements().size(), recording.queryExecutions(),
+                    recording.updateExecutions(), recording.returnedRows(),
+                    recording.approximateLogicalReturnedBytes(), firstWriteCounts, cycleMillis);
 
-        fetch.clearCalls();
-        CycleResult next = collector(true).runCycle();
+            Map<String, String> receiptsBeforeNoOp = unit6ReceiptSnapshot();
+            recording.clear();
+            fetch.clearCalls();
+            long noOpStarted = System.nanoTime();
+            CycleResult next = collector.runCycle();
+            long noOpCycleMillis = Duration.ofNanos(System.nanoTime() - noOpStarted).toMillis();
 
-        assertThat(next.state()).isEqualTo(State.COMPLETED);
-        assertThat(next.selectedPlayerIds()).isEmpty();
-        assertThat(fetch.count(EndpointKind.ELEMENT_SUMMARY)).isZero();
-        assertThat(fetch.count(EndpointKind.EVENT_LIVE)).isZero();
-        assertThat(jdbc.queryForObject("SELECT updated_at FROM player_fixture_stats"
-                + " WHERE season_id=? AND fixture_id=? AND player_id=?", java.sql.Timestamp.class,
-                SEASON_ID, setup.fixtureId(), 28)).isEqualTo(rowUpdatedAt);
+            assertThat(next.state()).isEqualTo(State.COMPLETED);
+            assertThat(next.selectedPlayerIds()).isEmpty();
+            assertThat(fetch.count(EndpointKind.BOOTSTRAP_STATIC)).isOne();
+            assertThat(fetch.count(EndpointKind.FIXTURES)).isOne();
+            assertThat(fetch.count(EndpointKind.ELEMENT_SUMMARY)).isZero();
+            assertThat(fetch.count(EndpointKind.EVENT_LIVE)).isZero();
+            assertThat(recording.queryExecutions()).isPositive();
+            assertThat(recording.approximateLogicalReturnedBytes()).isPositive();
+            Map<String, Long> noOpWriteCounts = unit6WriteCounts();
+            Map<String, Long> noOpCountsWithoutFreshnessReceipt = new java.util.TreeMap<>(noOpWriteCounts);
+            Map<String, Long> firstCountsWithoutFreshnessReceipt = new java.util.TreeMap<>(firstWriteCounts);
+            noOpCountsWithoutFreshnessReceipt.remove(TABLES.receipt() + "/UPDATE");
+            firstCountsWithoutFreshnessReceipt.remove(TABLES.receipt() + "/UPDATE");
+            assertThat(noOpCountsWithoutFreshnessReceipt).isEqualTo(firstCountsWithoutFreshnessReceipt);
+            assertThat(noOpWriteCounts.getOrDefault("player_fixture_stats/INSERT", 0L)).isEqualTo(2L);
+            assertThat(noOpWriteCounts.getOrDefault("player_fixture_stats/UPDATE", 0L)).isZero();
+            assertThat(noOpWriteCounts.getOrDefault(TABLES.playerFixtureEvidence() + "/INSERT", 0L)).isEqualTo(2L);
+            assertThat(noOpWriteCounts.getOrDefault(TABLES.playerFixtureCurrent() + "/INSERT", 0L)).isEqualTo(2L);
+            assertThat(noOpWriteCounts.getOrDefault(TABLES.gameweekStatSync() + "/UPDATE", 0L))
+                    .isEqualTo(firstWriteCounts.getOrDefault(TABLES.gameweekStatSync() + "/UPDATE", 0L));
+            Map<String, String> receiptsAfterNoOp = unit6ReceiptSnapshot();
+            Set<String> changedReceiptKeys = new java.util.TreeSet<>();
+            for (String key : receiptsBeforeNoOp.keySet()) {
+                if (!java.util.Objects.equals(receiptsBeforeNoOp.get(key), receiptsAfterNoOp.get(key))) {
+                    changedReceiptKeys.add(key);
+                }
+            }
+            for (String key : receiptsAfterNoOp.keySet()) {
+                if (!receiptsBeforeNoOp.containsKey(key)) changedReceiptKeys.add(key);
+            }
+            assertThat(changedReceiptKeys).hasSize(1);
+            assertThat(noOpWriteCounts.getOrDefault(TABLES.receipt() + "/UPDATE", 0L))
+                    .isEqualTo(firstWriteCounts.getOrDefault(TABLES.receipt() + "/UPDATE", 0L) + 1);
+            assertThat(jdbc.queryForObject("SELECT updated_at FROM player_fixture_stats"
+                    + " WHERE season_id=? AND fixture_id=? AND player_id=?", java.sql.Timestamp.class,
+                    SEASON_ID, setup.fixtureId(), 28)).isEqualTo(rowUpdatedAt);
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.playerFixtureEvidence()
+                    + " WHERE season_id=? AND fixture_id=? AND player_id=?", Integer.class,
+                    SEASON_ID, setup.fixtureId(), 28)).isEqualTo(evidenceRows);
+            System.out.printf("UNIT6_FINAL_NOOP gets={bootstrap:%d,fixtures:%d,event-live:%d,history:%d} "
+                            + "bodyBytes=%d jdbc={statements:%d,queries:%d,updates:%d,rows:%d,logicalBytes~%d} "
+                            + "physicalWrites=%s changedReceiptKeys=%s cycleWallMs=%d%n",
+                    fetch.count(EndpointKind.BOOTSTRAP_STATIC), fetch.count(EndpointKind.FIXTURES),
+                    fetch.count(EndpointKind.EVENT_LIVE), fetch.count(EndpointKind.ELEMENT_SUMMARY),
+                    fetch.returnedBodyBytes(), recording.statements().size(), recording.queryExecutions(),
+                    recording.updateExecutions(),
+                    recording.returnedRows(), recording.approximateLogicalReturnedBytes(), noOpWriteCounts,
+                    changedReceiptKeys, noOpCycleMillis);
+        } finally {
+            removeUnit6WriteCounters();
+        }
+    }
+
+    @Test
+    void checkedTenFixtureGameweekResumesNoopsAndCorrectsOnlyTheChangedRow() throws Exception {
+        MultiFixtureSetup setup = checkedMultiFixtureSetup();
+        assertThat(setup.fixtureIds()).hasSize(10);
+        assertThat(setup.participantIds()).hasSize(40);
+        assertThat(setup.participantsByFixture()).allSatisfy((fixtureId, ids) -> assertThat(ids).hasSize(4));
+
+        for (String table : List.of("team", "player", "gameweek", "fixture")) {
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM " + table + " WHERE season_id=?",
+                    Integer.class, SEASON_ID)).as("empty compatibility baseline for %s", table).isZero();
+        }
+        installUnit6WriteCounters();
+        try {
+            int failedPlayer = setup.participantIds().stream().min(Integer::compareTo).orElseThrow();
+            fetch.failPlayer(failedPlayer);
+            CycleResult partial = compatibilityCollector(true).runCycle();
+
+            assertThat(partial.state()).isEqualTo(State.RETRY_SCHEDULED);
+            assertThat(partial.finalPendingGameweeks()).containsExactly(3);
+            assertThat(partial.selectedPlayerIds()).hasSize(657);
+            assertThat(partial.failedPlayerIds()).containsExactly(failedPlayer);
+            assertThat(partial.committedPlayerIds()).hasSize(656);
+            assertThat(fetch.count(EndpointKind.BOOTSTRAP_STATIC)).isOne();
+            assertThat(fetch.count(EndpointKind.FIXTURES)).isOne();
+            assertThat(fetch.count(EndpointKind.EVENT_LIVE)).as("live events %s", fetch.calls().stream()
+                    .filter(endpoint -> endpoint.kind() == EndpointKind.EVENT_LIVE)
+                    .map(Endpoint::eventId).toList()).isOne();
+            assertThat(fetch.count(EndpointKind.ELEMENT_SUMMARY)).isEqualTo(657);
+            int initialHistoryGets = fetch.count(EndpointKind.ELEMENT_SUMMARY);
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM team WHERE season_id=?", Integer.class,
+                    SEASON_ID)).isEqualTo(20);
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM player WHERE season_id=?", Integer.class,
+                    SEASON_ID)).isEqualTo(657);
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM gameweek WHERE season_id=?", Integer.class,
+                    SEASON_ID)).isEqualTo(38);
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM fixture WHERE season_id=?", Integer.class,
+                    SEASON_ID)).isEqualTo(380);
+            Map<String, Long> catalogueWritesAfterFirstCycle = compatibilityCatalogueWriteCounts();
+            assertThat(catalogueWritesAfterFirstCycle).containsExactlyInAnyOrderEntriesOf(Map.of(
+                    "team/INSERT", 20L, "team/UPDATE", 0L,
+                    "player/INSERT", 657L, "player/UPDATE", 0L,
+                    "gameweek/INSERT", 38L, "gameweek/UPDATE", 0L,
+                    "fixture/INSERT", 380L, "fixture/UPDATE", 0L));
+            assertThat(jdbc.queryForObject("SELECT cardinality(final_attempt_required_player_ids) FROM "
+                    + TABLES.gameweekStatSync() + " WHERE season_id=? AND gameweek=3", Integer.class,
+                    SEASON_ID)).isEqualTo(657);
+            assertThat(jdbc.queryForObject("SELECT cardinality(final_attempt_outstanding_player_ids) FROM "
+                    + TABLES.gameweekStatSync() + " WHERE season_id=? AND gameweek=3", Integer.class,
+                    SEASON_ID)).isOne();
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM player_fixture_stats WHERE season_id=?"
+                    + " AND fixture_id IN (21,22,23,24,25,26,27,28,29,30)", Integer.class, SEASON_ID))
+                    .isEqualTo(39);
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.playerFixtureEvidence()
+                    + " WHERE season_id=? AND fixture_id IN (21,22,23,24,25,26,27,28,29,30)",
+                    Integer.class, SEASON_ID)).isEqualTo(39);
+            assertThat(new PfsReadSource(jdbc, "ACTIVE", season.code(), TABLES.fixtureSync(),
+                    TABLES.playerFixtureEvidence(), TABLES.playerFixtureCurrent(), TABLES.receipt())
+                    .incrementalRowsByGameweek(SEASON_ID, setup.fixtureIds()).get(3).incrementalRows())
+                    .isEqualTo(39);
+            assertThat(new GameweekFinalityReader(jdbc, clock, TABLES)
+                    .read(SEASON_ID, season.code(), Set.of(3)).get(3).state())
+                    .isEqualTo(GameweekFinality.State.FINAL_PENDING);
+
+            List<RecordedRead> firstAttemptReads = fetch.successfulReads();
+            fetch.clearCalls();
+            clock.set(partial.nextDue().plusSeconds(1));
+            CycleResult resumed = compatibilityCollector(true).runCycle();
+            int sourceOnlyRetries = 0;
+            while (resumed.state() == State.RETRY_SCHEDULED && resumed.selectedPlayerIds().isEmpty()
+                    && fetch.count(EndpointKind.ELEMENT_SUMMARY) == 0 && sourceOnlyRetries < 2) {
+                assertThat(resumed.failedPlayerIds()).isEmpty();
+                assertThat(fetch.count(EndpointKind.BOOTSTRAP_STATIC)).isOne();
+                assertThat(fetch.count(EndpointKind.FIXTURES)).isOne();
+                fetch.clearCalls();
+                clock.set(resumed.nextDue().plusSeconds(1));
+                resumed = compatibilityCollector(true).runCycle();
+                sourceOnlyRetries++;
+            }
+
+            assertThat(resumed.state()).as("cycle=%s last error=%s endpoints=%s", resumed, latestRunError(),
+                    fetch.calls().stream().map(endpoint -> endpoint.kind() + ":" + endpoint.eventId()
+                            + ":" + endpoint.playerId()).toList()).isEqualTo(State.COMPLETED);
+            assertThat(resumed.selectedPlayerIds()).containsExactly(failedPlayer);
+            assertThat(resumed.committedPlayerIds()).containsExactly(failedPlayer);
+            assertThat(fetch.playerIds()).containsExactly(failedPlayer);
+            assertThat(fetch.count(EndpointKind.BOOTSTRAP_STATIC)).isEqualTo(2);
+            assertThat(fetch.count(EndpointKind.FIXTURES)).isEqualTo(2);
+            assertThat(fetch.count(EndpointKind.EVENT_LIVE)).isOne();
+            assertThat(fetch.count(EndpointKind.ELEMENT_SUMMARY)).isOne();
+            int resumeHistoryGets = fetch.count(EndpointKind.ELEMENT_SUMMARY);
+            assertThat(compatibilityCatalogueWriteCounts()).isEqualTo(catalogueWritesAfterFirstCycle);
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM player_fixture_stats WHERE season_id=?"
+                    + " AND fixture_id IN (21,22,23,24,25,26,27,28,29,30)", Integer.class, SEASON_ID))
+                    .isEqualTo(40);
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.playerFixtureEvidence()
+                    + " WHERE season_id=? AND fixture_id IN (21,22,23,24,25,26,27,28,29,30)",
+                    Integer.class, SEASON_ID)).isEqualTo(40);
+            assertThat(new GameweekFinalityReader(jdbc, clock, TABLES)
+                    .read(SEASON_ID, season.code(), Set.of(3)).get(3).state())
+                    .isEqualTo(GameweekFinality.State.FINALIZED);
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.playerFixtureEvidence()
+                    + " WHERE season_id=? AND fixture_id IN (21,22,23,24,25,26,27,28,29,30)"
+                    + " AND (component_presence & ?) = ?", Integer.class, SEASON_ID,
+                    HistoryParser.Component.allMask(), HistoryParser.Component.allMask())).isEqualTo(40);
+
+            Map<String, Object> completedRun = jdbc.queryForMap("SELECT generation,state,source_read_started_at,"
+                    + "source_read_finished_at FROM " + TABLES.run() + " WHERE producer_key=? AND season=?"
+                    + " ORDER BY generation DESC LIMIT 1", OwnedSyncStore.INCREMENTAL_CORE_PRODUCER,
+                    season.code());
+            assertThat(completedRun.get("state")).isEqualTo("COMPLETED");
+            assertThat(((java.sql.Timestamp) completedRun.get("source_read_started_at")).toInstant()).isNotNull();
+            assertThat(((java.sql.Timestamp) completedRun.get("source_read_finished_at")).toInstant()).isNotNull();
+            Instant latestHistoryFinish = fetch.successfulReads().stream()
+                    .filter(read -> read.endpoint().kind() == EndpointKind.ELEMENT_SUMMARY)
+                    .map(read -> read.read().finishedAt()).max(Instant::compareTo).orElseThrow();
+            Instant terminalBootstrapStart = fetch.successfulReads().stream()
+                    .filter(read -> read.endpoint().kind() == EndpointKind.BOOTSTRAP_STATIC)
+                    .map(read -> read.read().startedAt()).max(Instant::compareTo).orElseThrow();
+            Instant terminalFixtureStart = fetch.successfulReads().stream()
+                    .filter(read -> read.endpoint().kind() == EndpointKind.FIXTURES)
+                    .map(read -> read.read().startedAt()).max(Instant::compareTo).orElseThrow();
+            Instant terminalFinish = fetch.successfulReads().getLast().read().finishedAt();
+            assertThat(terminalBootstrapStart).isAfter(latestHistoryFinish);
+            assertThat(terminalFixtureStart).isAfter(terminalBootstrapStart);
+            assertThat(terminalFinish).isAfter(terminalFixtureStart);
+            Instant firstCanonicalStart = firstAttemptReads.stream()
+                    .filter(read -> read.endpoint().kind() == EndpointKind.BOOTSTRAP_STATIC)
+                    .map(read -> read.read().startedAt()).findFirst().orElseThrow();
+            SourceRead finalizedInterval = jdbc.queryForObject("SELECT finalized_source_read_started_at,"
+                    + "finalized_source_read_finished_at FROM " + TABLES.gameweekStatSync()
+                    + " WHERE season_id=? AND gameweek=3", (rs, row) -> new SourceRead(
+                            rs.getTimestamp(1).toInstant(), rs.getTimestamp(2).toInstant()), SEASON_ID);
+            assertThat(finalizedInterval).isEqualTo(new SourceRead(firstCanonicalStart, terminalFinish));
+
+            Map<String, List<Object>> finalizedRows = pfsRowsSnapshot(setup.fixtureIds());
+            Map<String, List<Object>> finalizedProof = pfsProofSnapshot(setup.fixtureIds());
+            Map<String, String> finalizedPageWatermarks = pageWatermarkSnapshot();
+            Map<String, Object> finalityBeforeNoop = finalitySnapshot();
+            Map<String, Long> writesBeforeNoop = unit6WriteCounts();
+            fetch.clearCalls();
+            clock.set(clock.instant().plusSeconds(1));
+            CycleResult noOp = compatibilityCollector(true).runCycle();
+
+            assertThat(noOp.state()).isEqualTo(State.COMPLETED);
+            assertThat(noOp.selectedPlayerIds()).isEmpty();
+            assertThat(fetch.count(EndpointKind.BOOTSTRAP_STATIC)).isOne();
+            assertThat(fetch.count(EndpointKind.FIXTURES)).isOne();
+            assertThat(fetch.count(EndpointKind.EVENT_LIVE)).isZero();
+            assertThat(fetch.count(EndpointKind.ELEMENT_SUMMARY)).isZero();
+            int noOpHistoryGets = fetch.count(EndpointKind.ELEMENT_SUMMARY);
+            assertThat(compatibilityCatalogueWriteCounts()).isEqualTo(catalogueWritesAfterFirstCycle);
+            assertThat(pfsRowsSnapshot(setup.fixtureIds())).isEqualTo(finalizedRows);
+            assertThat(pfsProofSnapshot(setup.fixtureIds())).isEqualTo(finalizedProof);
+            assertThat(pageWatermarkSnapshot()).isEqualTo(finalizedPageWatermarks);
+            assertThat(finalitySnapshot()).isEqualTo(finalityBeforeNoop);
+            Map<String, Long> writesAfterNoop = unit6WriteCounts();
+            for (String key : List.of("player_fixture_stats/INSERT", "player_fixture_stats/UPDATE",
+                    TABLES.playerFixtureEvidence() + "/INSERT", TABLES.playerFixtureEvidence() + "/UPDATE",
+                    TABLES.playerFixtureCurrent() + "/INSERT", TABLES.playerFixtureCurrent() + "/UPDATE",
+                    TABLES.gameweekStatSync() + "/UPDATE")) {
+                assertThat(writesAfterNoop.getOrDefault(key, 0L))
+                        .as("no-op does not rewrite %s", key).isEqualTo(writesBeforeNoop.getOrDefault(key, 0L));
+            }
+            assertThat(new GameweekFinalityReader(jdbc, clock, TABLES)
+                    .read(SEASON_ID, season.code(), Set.of(3)).get(3).state())
+                    .isEqualTo(GameweekFinality.State.FINALIZED);
+
+            int correctedFixture = setup.fixtureIds().stream().min(Integer::compareTo).orElseThrow();
+            int correctedPlayer = setup.participantsByFixture().get(correctedFixture).stream()
+                    .min(Integer::compareTo).orElseThrow();
+            byte[] correctedFixtures = incrementFixtureBps(setup.fixtureSource(), correctedFixture,
+                    correctedPlayer);
+            byte[] correctedPage = incrementHistoryBps(setup.historyPages().get(correctedPlayer), correctedFixture);
+            fetch.setSources(setup.bootstrapSource(), correctedFixtures, setup.liveSource(), eventFourLive);
+            fetch.setTerminalSources(setup.bootstrapSource(), correctedFixtures);
+            fetch.setPlayerPage(correctedPlayer, correctedPage);
+            Map<String, List<Object>> rowsBeforeCorrection = pfsRowsSnapshot(setup.fixtureIds());
+            Map<String, List<Object>> proofBeforeCorrection = pfsProofSnapshot(setup.fixtureIds());
+            Map<String, Long> writesBeforeCorrection = unit6WriteCounts();
+            Map<String, Long> catalogueWritesBeforeCorrection = compatibilityCatalogueWriteCounts();
+            fetch.clearCalls();
+            clock.set(clock.instant().plusSeconds(1));
+            CycleResult correction = compatibilityCollector(true).runCycle();
+
+            assertThat(correction.state()).as("last error: %s", latestRunError()).isEqualTo(State.COMPLETED);
+            Map<String, List<Object>> rowsAfterCorrection = pfsRowsSnapshot(setup.fixtureIds());
+            assertThat(rowsAfterCorrection.keySet()).isEqualTo(rowsBeforeCorrection.keySet());
+            for (String key : rowsBeforeCorrection.keySet()) {
+                if (key.equals(correctedFixture + "/" + correctedPlayer)) continue;
+                assertThat(rowsAfterCorrection.get(key)).as("unchanged row %s", key)
+                        .isEqualTo(rowsBeforeCorrection.get(key));
+                assertThat(pfsProofSnapshotForKey(setup.fixtureIds(), key))
+                        .as("unchanged pointer/evidence/timestamp %s", key)
+                        .isEqualTo(proofBeforeCorrection.get(key));
+            }
+            assertThat(rowsAfterCorrection.get(correctedFixture + "/" + correctedPlayer))
+                    .isNotEqualTo(rowsBeforeCorrection.get(correctedFixture + "/" + correctedPlayer));
+            assertThat(pfsProofSnapshotForKey(setup.fixtureIds(), correctedFixture + "/" + correctedPlayer))
+                    .isNotEqualTo(proofBeforeCorrection.get(correctedFixture + "/" + correctedPlayer));
+            Map<String, Long> writesAfterCorrection = unit6WriteCounts();
+            assertThat(writesAfterCorrection.getOrDefault("player_fixture_stats/UPDATE", 0L)
+                    - writesBeforeCorrection.getOrDefault("player_fixture_stats/UPDATE", 0L)).isOne();
+            assertThat(writesAfterCorrection.getOrDefault("player_fixture_stats/INSERT", 0L)
+                    - writesBeforeCorrection.getOrDefault("player_fixture_stats/INSERT", 0L)).isZero();
+            Map<String, Long> catalogueWritesAfterCorrection = compatibilityCatalogueWriteCounts();
+            assertThat(catalogueWriteDelta(catalogueWritesBeforeCorrection, catalogueWritesAfterCorrection))
+                    .containsExactlyInAnyOrderEntriesOf(Map.of(
+                            "team/INSERT", 0L, "team/UPDATE", 0L,
+                            "player/INSERT", 0L, "player/UPDATE", 0L,
+                            "gameweek/INSERT", 0L, "gameweek/UPDATE", 0L,
+                            "fixture/INSERT", 0L, "fixture/UPDATE", 1L));
+            GameweekFinalityReader reader = new GameweekFinalityReader(jdbc, clock, TABLES);
+            assertThat(reader.read(SEASON_ID, season.code(), Set.of(3)).get(3).state())
+                    .isEqualTo(GameweekFinality.State.FINALIZED);
+
+            Map<String, List<Object>> correctedRows = pfsRowsSnapshot(setup.fixtureIds());
+            Map<String, List<Object>> correctedProof = pfsProofSnapshot(setup.fixtureIds());
+            Map<String, Object> correctedFinality = finalitySnapshot();
+            Map<String, Long> writesBeforeCorrectionNoop = unit6WriteCounts();
+            fetch.clearCalls();
+            clock.set(clock.instant().plusSeconds(1));
+            CycleResult correctionNoop = compatibilityCollector(true).runCycle();
+            assertThat(correctionNoop.state()).isEqualTo(State.COMPLETED);
+            assertThat(correctionNoop.selectedPlayerIds()).isEmpty();
+            assertThat(fetch.count(EndpointKind.BOOTSTRAP_STATIC)).isOne();
+            assertThat(fetch.count(EndpointKind.FIXTURES)).isOne();
+            assertThat(fetch.count(EndpointKind.EVENT_LIVE)).isZero();
+            assertThat(fetch.count(EndpointKind.ELEMENT_SUMMARY)).isZero();
+            assertThat(pfsRowsSnapshot(setup.fixtureIds())).isEqualTo(correctedRows);
+            assertThat(pfsProofSnapshot(setup.fixtureIds())).isEqualTo(correctedProof);
+            assertThat(finalitySnapshot()).isEqualTo(correctedFinality);
+            assertThat(reader.read(SEASON_ID, season.code(), Set.of(3)).get(3).state())
+                    .isEqualTo(GameweekFinality.State.FINALIZED);
+            Map<String, Long> writesAfterCorrectionNoop = unit6WriteCounts();
+            for (String key : List.of("player_fixture_stats/INSERT", "player_fixture_stats/UPDATE",
+                    TABLES.playerFixtureEvidence() + "/INSERT", TABLES.playerFixtureEvidence() + "/UPDATE",
+                    TABLES.playerFixtureCurrent() + "/INSERT", TABLES.playerFixtureCurrent() + "/UPDATE",
+                    TABLES.gameweekStatSync() + "/UPDATE")) {
+                assertThat(writesAfterCorrectionNoop.getOrDefault(key, 0L))
+                        .as("corrected no-op does not rewrite %s", key)
+                        .isEqualTo(writesBeforeCorrectionNoop.getOrDefault(key, 0L));
+            }
+            assertThat(compatibilityCatalogueWriteCounts()).isEqualTo(catalogueWritesAfterCorrection);
+
+            System.out.printf("UNIT6_MULTI_FIXTURE_SYNTHETIC gameweek=3 fixtures=%d clubs=20 cataloguePlayers=657 "
+                            + "sourceParticipants=%d initialHistoryGets=%d resumeHistoryGets=%d "
+                            + "sourceOnlyRetries=%d noopHistoryGets=%d correctionPfsUpdates=%d "
+                            + "catalogueWritesFirst=%s catalogueWritesCorrection=%s readerFinalizedAfterCorrectionAndNoop=%s%n",
+                    setup.fixtureIds().size(), setup.participantIds().size(), initialHistoryGets,
+                    resumeHistoryGets, sourceOnlyRetries, noOpHistoryGets,
+                    writesAfterCorrection.getOrDefault("player_fixture_stats/UPDATE", 0L)
+                            - writesBeforeCorrection.getOrDefault("player_fixture_stats/UPDATE", 0L),
+                    catalogueWritesAfterFirstCycle, catalogueWriteDelta(catalogueWritesBeforeCorrection,
+                            catalogueWritesAfterCorrection), reader.read(SEASON_ID, season.code(), Set.of(3))
+                            .get(3).state());
+        } finally {
+            removeUnit6WriteCounters();
+        }
+    }
+
+    @Test
+    void checkedDoubleFixtureGameweekFinalizesOverlappingPlayersOnceWithFixtureScopedRows() throws Exception {
+        MultiFixtureSetup setup = checkedDoubleFixtureSetup();
+        publishCompatibilitySnapshot(setup);
+        assertThat(setup.fixtureIds()).containsExactlyInAnyOrder(29, 36);
+        assertThat(setup.participantIds()).containsExactlyInAnyOrder(1, 4, 28, 40, 544, 545);
+        assertThat(setup.participantsByFixture()).containsEntry(29, Set.of(1, 4, 28, 40))
+                .containsEntry(36, Set.of(1, 4, 544, 545));
+        for (int repeatedPlayer : List.of(1, 4)) {
+            List<Integer> historyFixtureIds = new ArrayList<>();
+            for (JsonNode row : JSON.readTree(setup.historyPages().get(repeatedPlayer)).path("history")) {
+                historyFixtureIds.add(row.path("fixture").asInt());
+                assertThat(row.path("round").asInt()).isEqualTo(3);
+            }
+            assertThat(historyFixtureIds).containsExactlyInAnyOrder(29, 36);
+        }
+
+        CycleResult result = collector(true).runCycle();
+
+        assertThat(result.state()).isEqualTo(State.COMPLETED);
+        assertThat(result.finalPendingGameweeks()).containsExactly(3);
+        assertThat(result.committedPlayerIds()).containsExactlyInAnyOrderElementsOf(setup.participantIds());
+        assertThat(fetch.count(EndpointKind.EVENT_LIVE)).isOne();
+        assertThat(fetch.count(EndpointKind.ELEMENT_SUMMARY)).isEqualTo(setup.participantIds().size());
+        assertThat(fetch.playerIds()).containsExactlyInAnyOrderElementsOf(setup.participantIds());
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM player_fixture_stats WHERE season_id=?"
+                + " AND fixture_id IN (29,36)", Integer.class, SEASON_ID)).isEqualTo(8);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.playerFixtureEvidence()
-                + " WHERE season_id=? AND fixture_id=? AND player_id=?", Integer.class,
-                SEASON_ID, setup.fixtureId(), 28)).isEqualTo(evidenceRows);
+                + " WHERE season_id=? AND fixture_id IN (29,36) AND (component_presence & ?) = ?",
+                Integer.class, SEASON_ID, HistoryParser.Component.allMask(),
+                HistoryParser.Component.allMask())).isEqualTo(8);
+        assertThat(jdbc.queryForList("SELECT count(*) FROM player_fixture_stats WHERE season_id=?"
+                + " AND fixture_id IN (29,36) AND player_id IN (1,4) GROUP BY player_id",
+                Integer.class, SEASON_ID)).containsExactly(2, 2);
+        Map<String, List<Object>> repeatedPlayerRows = jdbc.query("SELECT fixture_id,player_id,bps,gameweek,"
+                + "player_team_id,opponent_team_id,was_home,kickoff_time FROM player_fixture_stats "
+                + "WHERE season_id=? AND fixture_id IN (29,36) AND player_id IN (1,4) "
+                + "ORDER BY player_id,fixture_id", rs -> {
+                    Map<String, List<Object>> rows = new java.util.TreeMap<>();
+                    while (rs.next()) rows.put(rs.getInt("fixture_id") + "/" + rs.getInt("player_id"),
+                            List.of(rs.getInt("bps"), rs.getInt("gameweek"), rs.getInt("player_team_id"),
+                                    rs.getInt("opponent_team_id"), rs.getBoolean("was_home"),
+                                    rs.getTimestamp("kickoff_time").toInstant()));
+                    return Map.copyOf(rows);
+                }, SEASON_ID);
+        assertThat(repeatedPlayerRows).containsExactlyInAnyOrderEntriesOf(Map.of(
+                "29/1", List.of(15, 3, 1, 6, true, Instant.parse("2026-09-06T15:30:00Z")),
+                "36/1", List.of(38, 3, 1, 20, false, Instant.parse("2026-09-07T17:00:00Z")),
+                "29/4", List.of(10, 3, 1, 6, true, Instant.parse("2026-09-06T15:30:00Z")),
+                "36/4", List.of(30, 3, 1, 20, false, Instant.parse("2026-09-07T17:00:00Z"))));
+        assertThat(new GameweekFinalityReader(jdbc, clock, TABLES)
+                .read(SEASON_ID, season.code(), Set.of(3)).get(3).state())
+                .isEqualTo(GameweekFinality.State.FINALIZED);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.gameweekStatSync()
+                + " WHERE season_id=? AND gameweek=3 AND state='FINALIZED'", Integer.class, SEASON_ID)).isOne();
+    }
+
+    @Test
+    void finalMetricCorrectionChangesOnlyItsRowAndRequiresFreshGameweekReproof() throws Exception {
+        CheckedFixtureSetup setup = checkedSingleFixtureSetup();
+        int fixtureId = setup.fixtureId();
+        byte[] variedHomePage = withOptionalHistoryValues(
+                onlyHistoryForFixture(resource("element-summary-1.json"), fixtureId, 1), fixtureId, 1,
+                Map.ofEntries(Map.entry("expected_goals", "0.87"), Map.entry("expected_assists", "0.34"),
+                        Map.entry("expected_goal_involvements", "1.21"),
+                        Map.entry("expected_goals_conceded", "1.09"), Map.entry("influence", "18.3"),
+                        Map.entry("creativity", "29.4"), Map.entry("threat", "41.2"),
+                        Map.entry("ict_index", "8.9"), Map.entry("clearances_blocks_interceptions", 2),
+                        Map.entry("recoveries", 3), Map.entry("tackles", 4),
+                        Map.entry("defensive_contribution", 9)));
+        byte[] knownZeroAwayPage = withOptionalHistoryValues(historyForAwayPlayer28(fixtureId), fixtureId, 28,
+                Map.ofEntries(Map.entry("expected_goals", "0.00"), Map.entry("expected_assists", "0.00"),
+                        Map.entry("expected_goal_involvements", "0.00"),
+                        Map.entry("expected_goals_conceded", "0.00"), Map.entry("influence", "0.0"),
+                        Map.entry("creativity", "0.0"), Map.entry("threat", "0.0"),
+                        Map.entry("ict_index", "0.0"), Map.entry("clearances_blocks_interceptions", 0),
+                        Map.entry("recoveries", 0), Map.entry("tackles", 0),
+                        Map.entry("defensive_contribution", 0)));
+        fetch.setPlayerPage(1, variedHomePage);
+        fetch.setPlayerPage(28, knownZeroAwayPage);
+        assertThat(compatibilityCollector(true).runCycle().state()).isEqualTo(State.COMPLETED);
+        assertThat(pfsOptionalMetrics(fixtureId, 1)).containsExactlyInAnyOrderEntriesOf(Map.ofEntries(
+                Map.entry("expected_goals", new java.math.BigDecimal("0.87")),
+                Map.entry("expected_assists", new java.math.BigDecimal("0.34")),
+                Map.entry("expected_goal_involvements", new java.math.BigDecimal("1.21")),
+                Map.entry("expected_goals_conceded", new java.math.BigDecimal("1.09")),
+                Map.entry("influence", new java.math.BigDecimal("18.3")),
+                Map.entry("creativity", new java.math.BigDecimal("29.4")),
+                Map.entry("threat", new java.math.BigDecimal("41.2")),
+                Map.entry("ict_index", new java.math.BigDecimal("8.9")),
+                Map.entry("clearances_blocks_interceptions", 2), Map.entry("recoveries", 3),
+                Map.entry("tackles", 4), Map.entry("defensive_contribution", 9)));
+        assertThat(pfsOptionalMetrics(fixtureId, 28)).containsExactlyInAnyOrderEntriesOf(Map.ofEntries(
+                Map.entry("expected_goals", new java.math.BigDecimal("0.00")),
+                Map.entry("expected_assists", new java.math.BigDecimal("0.00")),
+                Map.entry("expected_goal_involvements", new java.math.BigDecimal("0.00")),
+                Map.entry("expected_goals_conceded", new java.math.BigDecimal("0.00")),
+                Map.entry("influence", new java.math.BigDecimal("0.0")),
+                Map.entry("creativity", new java.math.BigDecimal("0.0")),
+                Map.entry("threat", new java.math.BigDecimal("0.0")),
+                Map.entry("ict_index", new java.math.BigDecimal("0.0")),
+                Map.entry("clearances_blocks_interceptions", 0), Map.entry("recoveries", 0),
+                Map.entry("tackles", 0), Map.entry("defensive_contribution", 0)));
+        assertThat(pfsComponentPresence(fixtureId, 1)).isEqualTo(HistoryParser.Component.allMask());
+        assertThat(pfsComponentPresence(fixtureId, 28)).isEqualTo(HistoryParser.Component.allMask());
+        Map<String, Object> playerOneBefore = jdbc.queryForMap("SELECT total_points,minutes,expected_goals,"
+                + "expected_assists,gameweek,kickoff_time,player_team_id,opponent_team_id,was_home,updated_at "
+                + "FROM player_fixture_stats WHERE season_id=? AND fixture_id=? AND player_id=1",
+                SEASON_ID, fixtureId);
+        Map<String, Object> playerTwentyEightBefore = jdbc.queryForMap("SELECT total_points,minutes,expected_goals,"
+                + "gameweek,kickoff_time,player_team_id,opponent_team_id,was_home,updated_at "
+                + "FROM player_fixture_stats WHERE season_id=? AND fixture_id=? AND player_id=28",
+                SEASON_ID, fixtureId);
+        Long playerTwentyEightGeneration = jdbc.queryForObject("SELECT source_run_generation FROM "
+                + TABLES.playerFixtureCurrent() + " WHERE season_id=? AND fixture_id=? AND player_id=28",
+                Long.class, SEASON_ID, fixtureId);
+        int playerTwentyEightEvidence = jdbc.queryForObject("SELECT count(*) FROM "
+                + TABLES.playerFixtureEvidence() + " WHERE season_id=? AND fixture_id=? AND player_id=28",
+                Integer.class, SEASON_ID, fixtureId);
+        Map<String, Object> unrelatedGameweekBefore = jdbc.queryForMap("SELECT state,"
+                + "current_invalidation_revision,current_invalidation_floor,finalized_source_signature,finalized_at "
+                + "FROM " + TABLES.gameweekStatSync() + " WHERE season_id=? AND gameweek=2", SEASON_ID);
+
+        Lease lease = nextCoreLease();
+        clock.set(jdbc.queryForObject("SELECT requested_source_after FROM " + TABLES.run()
+                + " WHERE generation=?", java.sql.Timestamp.class, lease.generation()).toInstant());
+        byte[] correctedPage = withoutOptionalHistoryComponent(changeHistoryPoints(
+                variedHomePage, fixtureId, 9), fixtureId, 1, "expected_assists");
+        SourceRead correctionRead = nextRead();
+        var correction = publisher.publish(lease, season, 1, document(correctedPage, correctionRead),
+                canonicalFixtures(setup.fixtureSource()));
+        assertThat(correction.pfsRowsWritten()).isEqualTo(1);
+        assertThat(correction.changedKeys()).containsExactly(new IncrementalPfsRepository.RowKey(
+                SEASON_ID, season.code(), 3, fixtureId, 1));
+        Map<String, Object> playerOneCorrected = jdbc.queryForMap("SELECT total_points,minutes,expected_goals,"
+                + "expected_assists,gameweek,kickoff_time,player_team_id,opponent_team_id,was_home,updated_at "
+                + "FROM player_fixture_stats WHERE season_id=? AND fixture_id=? AND player_id=1",
+                SEASON_ID, fixtureId);
+        assertThat(((Number) playerOneCorrected.get("total_points")).intValue()).isEqualTo(9);
+        for (String field : playerOneBefore.keySet()) {
+            if (!field.equals("total_points") && !field.equals("updated_at")) {
+                assertThat(playerOneCorrected.get(field)).as("unchanged corrected-row field %s", field)
+                        .isEqualTo(playerOneBefore.get(field));
+            }
+        }
+        assertThat(jdbc.queryForMap("SELECT total_points,minutes,expected_goals,gameweek,kickoff_time,"
+                + "player_team_id,opponent_team_id,was_home,updated_at FROM player_fixture_stats "
+                + "WHERE season_id=? AND fixture_id=? AND player_id=28", SEASON_ID, fixtureId))
+                .isEqualTo(playerTwentyEightBefore);
+        Map<String, Object> invalidated = jdbc.queryForMap("SELECT state,current_invalidation_revision,"
+                + "current_invalidation_floor FROM " + TABLES.gameweekStatSync()
+                + " WHERE season_id=? AND gameweek=3", SEASON_ID);
+        assertThat(invalidated.get("state")).isEqualTo("FINAL_PENDING");
+        assertThat(invalidated.get("current_invalidation_revision")).isEqualTo(1L);
+        assertThat(((java.sql.Timestamp) invalidated.get("current_invalidation_floor")).toInstant())
+                .isEqualTo(correctionRead.finishedAt());
+        assertThat(jdbc.queryForMap("SELECT state,current_invalidation_revision,current_invalidation_floor,"
+                + "finalized_source_signature,finalized_at FROM " + TABLES.gameweekStatSync()
+                + " WHERE season_id=? AND gameweek=2", SEASON_ID)).isEqualTo(unrelatedGameweekBefore);
+        store.completeStaged(lease, correctionRead, List.of(correctionRead));
+        lease = nextCoreLease();
+        clock.set(jdbc.queryForObject("SELECT requested_source_after FROM " + TABLES.run()
+                + " WHERE generation=?", java.sql.Timestamp.class, lease.generation()).toInstant());
+
+        Instant sourceStart = clock.instant();
+        SourceRead freshBootstrapRead = new SourceRead(sourceStart, sourceStart.plusMillis(1));
+        SourceRead freshFixturesRead = new SourceRead(sourceStart.plusMillis(2), sourceStart.plusMillis(3));
+        SourceRead freshSnapshotRead = new SourceRead(freshBootstrapRead.startedAt(), freshFixturesRead.finishedAt());
+        clock.set(freshSnapshotRead.finishedAt().plusMillis(1));
+        SourceDocument freshBootstrap = document(setup.bootstrapSource(), freshBootstrapRead);
+        SourceDocument freshFixtures = document(setup.fixtureSource(), freshFixturesRead);
+        var snapshot = CatalogueScheduleParser.parse(season, freshBootstrap, freshFixtures);
+        store.observeIncrementalSnapshot(lease, snapshot);
+        var fixture = snapshot.fixtures().stream().filter(row -> row.id() == fixtureId).findFirst().orElseThrow();
+        Instant liveStart = clock.instant();
+        SourceDocument live = document(setup.liveSource(), new SourceRead(liveStart, liveStart.plusMillis(1)));
+        clock.set(liveStart.plusMillis(2));
+        var evidence = FixtureVerification.fixtureEvidenceByFixture(List.of(fixture), live);
+        Set<Integer> cataloguePlayers = snapshot.players().stream()
+                .filter(player -> player.teamId() == fixture.homeTeamId() || player.teamId() == fixture.awayTeamId())
+                .map(PlayerRow::id).collect(java.util.stream.Collectors.toSet());
+        Set<Integer> participants = new LinkedHashSet<>(FixtureVerification.fixtureStatParticipantIds(fixture));
+        participants.addAll(evidence.get(fixtureId).positivePlayerIds());
+        var source = GameweekFinality.SourceSnapshot.from(snapshot, 3);
+        var population = new GameweekFinality.RequiredPopulation(
+                GameweekFinality.catalogueFingerprint(snapshot, source.assignedFixtures()),
+                Map.of(fixtureId, cataloguePlayers), Map.of(fixtureId, participants), Map.of(), evidence);
+        var finality = new GameweekFinalityRepository(jdbc, store, TABLES, clock);
+        var restarted = finality.beginOrResume(lease, season, source, population, freshSnapshotRead);
+        assertThat(restarted.state()).isEqualTo(GameweekFinality.State.FINAL_PENDING);
+        assertThat(restarted.invalidationRevision()).isGreaterThanOrEqualTo(1L);
+        assertThat(restarted.checkpoint().outstandingPlayerIds()).containsExactly(1, 28);
+
+        SourceRead freshPlayerOneRead = nextRead();
+        assertThat(publisher.publish(lease, season, 1, document(correctedPage, freshPlayerOneRead),
+                snapshot.fixtures().stream().map(HistoryParser::canonicalFixture).toList()).pfsRowsWritten()).isZero();
+        finality.recordCompletedPage(lease, season, 3, 1);
+        SourceRead freshPlayerTwentyEightRead = nextRead();
+        assertThat(publisher.publish(lease, season, 28,
+                document(knownZeroAwayPage, freshPlayerTwentyEightRead),
+                snapshot.fixtures().stream().map(HistoryParser::canonicalFixture).toList()).pfsRowsWritten()).isZero();
+        finality.recordCompletedPage(lease, season, 3, 28);
+        SourceRead afterPagesRead = nextRead();
+        var afterPages = finality.beginOrResume(lease, season, source, population, afterPagesRead);
+        assertThat(afterPages.invalidationRevision()).isGreaterThanOrEqualTo(1L);
+        assertThat(afterPages.checkpoint().outstandingPlayerIds()).isEmpty();
+
+        Instant terminalStart = clock.instant();
+        SourceRead terminalBootstrapRead = new SourceRead(terminalStart, terminalStart.plusMillis(1));
+        SourceRead terminalFixturesRead = new SourceRead(terminalStart.plusMillis(2), terminalStart.plusMillis(3));
+        SourceRead terminalRead = new SourceRead(terminalBootstrapRead.startedAt(), terminalFixturesRead.finishedAt());
+        clock.set(terminalRead.finishedAt().plusMillis(1));
+        var terminalSnapshot = CatalogueScheduleParser.parse(season,
+                document(setup.bootstrapSource(), terminalBootstrapRead),
+                document(setup.fixtureSource(), terminalFixturesRead));
+        var finalReceipt = finality.finalizeSweep(lease, season,
+                GameweekFinality.SourceSnapshot.from(terminalSnapshot, 3), population, terminalRead);
+        assertThat(finality.load(lease, season, 3).orElseThrow().state())
+                .isEqualTo(GameweekFinality.State.FINALIZED);
+        store.completeStaged(lease, store.incrementalSourceInterval(lease),
+                List.of(freshSnapshotRead, freshPlayerOneRead, freshPlayerTwentyEightRead,
+                        afterPagesRead, terminalRead));
+        assertThat(finalReceipt.invalidationRevision()).isEqualTo(
+                ((Number) jdbc.queryForMap("SELECT current_invalidation_revision FROM "
+                        + TABLES.gameweekStatSync() + " WHERE season_id=? AND gameweek=3", SEASON_ID)
+                        .get("current_invalidation_revision")).longValue());
+        assertThat(finalReceipt.sourceReadInterval()).isEqualTo(
+                new SourceRead(freshSnapshotRead.startedAt(), terminalRead.finishedAt()));
+        assertThat(finalReceipt.sourceReadInterval().startedAt()).isAfter(correctionRead.finishedAt());
+        assertThat(jdbc.queryForMap("SELECT total_points,minutes,expected_goals,gameweek,kickoff_time,"
+                + "player_team_id,opponent_team_id,was_home,updated_at FROM player_fixture_stats "
+                + "WHERE season_id=? AND fixture_id=? AND player_id=28", SEASON_ID, fixtureId))
+                .isEqualTo(playerTwentyEightBefore);
+        assertThat(jdbc.queryForObject("SELECT source_run_generation FROM " + TABLES.playerFixtureCurrent()
+                + " WHERE season_id=? AND fixture_id=? AND player_id=28", Long.class, SEASON_ID, fixtureId))
+                .isEqualTo(playerTwentyEightGeneration);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.playerFixtureEvidence()
+                + " WHERE season_id=? AND fixture_id=? AND player_id=28", Integer.class, SEASON_ID, fixtureId))
+                .isEqualTo(playerTwentyEightEvidence);
+        assertThat(pfsComponentPresence(fixtureId, 28)).isEqualTo(HistoryParser.Component.allMask());
+        assertThat(pfsOptionalMetrics(fixtureId, 28)).containsExactlyInAnyOrderEntriesOf(Map.ofEntries(
+                Map.entry("expected_goals", new java.math.BigDecimal("0.00")),
+                Map.entry("expected_assists", new java.math.BigDecimal("0.00")),
+                Map.entry("expected_goal_involvements", new java.math.BigDecimal("0.00")),
+                Map.entry("expected_goals_conceded", new java.math.BigDecimal("0.00")),
+                Map.entry("influence", new java.math.BigDecimal("0.0")),
+                Map.entry("creativity", new java.math.BigDecimal("0.0")),
+                Map.entry("threat", new java.math.BigDecimal("0.0")),
+                Map.entry("ict_index", new java.math.BigDecimal("0.0")),
+                Map.entry("clearances_blocks_interceptions", 0), Map.entry("recoveries", 0),
+                Map.entry("tackles", 0), Map.entry("defensive_contribution", 0)));
+        assertThat(pfsComponentPresence(fixtureId, 1))
+                .isEqualTo(HistoryParser.Component.allMask() & ~HistoryParser.Component.EXPECTED_ASSISTS.bit());
+        assertThat(pfsOptionalMetrics(fixtureId, 1).get("expected_assists"))
+                .isEqualTo(new java.math.BigDecimal("0.34"));
+        PfsReadSource maskedReader = new PfsReadSource(jdbc, "ACTIVE", season.code(),
+                TABLES.fixtureSync(), TABLES.playerFixtureEvidence(), TABLES.playerFixtureCurrent(), TABLES.receipt());
+        assertThat(jdbc.queryForObject("WITH " + maskedReader.cte()
+                + " SELECT expected_assists FROM pfs_read WHERE season_id=? AND fixture_id=? AND player_id=1",
+                java.math.BigDecimal.class, SEASON_ID, fixtureId)).isNull();
+        GameweekFinalityReader reader = new GameweekFinalityReader(jdbc, clock, TABLES);
+        assertThat(reader.read(SEASON_ID, season.code(), Set.of(3)).get(3).state())
+                .isEqualTo(GameweekFinality.State.FINALIZED);
+
+        Set<Integer> fixtureIds = Set.of(fixtureId);
+        Map<String, List<Object>> correctedRows = pfsRowsSnapshot(fixtureIds);
+        Map<String, List<Object>> correctedProof = pfsProofSnapshot(fixtureIds);
+        Map<String, String> correctedPageWatermarks = pageWatermarkSnapshot();
+        Map<String, Object> correctedFinality = finalitySnapshot();
+        fetch.clearCalls();
+        clock.set(clock.instant().plusSeconds(1));
+        CycleResult correctionNoop = compatibilityCollector(true).runCycle();
+
+        assertThat(correctionNoop.state()).isEqualTo(State.COMPLETED);
+        assertThat(correctionNoop.selectedPlayerIds()).isEmpty();
+        assertThat(fetch.count(EndpointKind.BOOTSTRAP_STATIC)).isOne();
+        assertThat(fetch.count(EndpointKind.FIXTURES)).isOne();
+        assertThat(fetch.count(EndpointKind.EVENT_LIVE)).isZero();
+        assertThat(fetch.count(EndpointKind.ELEMENT_SUMMARY)).isZero();
+        assertThat(pfsRowsSnapshot(fixtureIds)).isEqualTo(correctedRows);
+        assertThat(pfsProofSnapshot(fixtureIds)).isEqualTo(correctedProof);
+        assertThat(pageWatermarkSnapshot()).isEqualTo(correctedPageWatermarks);
+        assertThat(finalitySnapshot()).isEqualTo(correctedFinality);
+        assertThat(reader.read(SEASON_ID, season.code(), Set.of(3)).get(3).state())
+                .isEqualTo(GameweekFinality.State.FINALIZED);
     }
 
     @Test
@@ -1272,6 +2183,23 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
     }
 
     @Test
+    void importerAttachesOnlyToAnAlreadyActiveSeasonRuntime() {
+        assertThat(CoalescedPlayerHistoryImportConfiguration.existingActiveFence(jdbc, TABLES, season.code()))
+                .isEqualTo(runtimeFence);
+        jdbc.update("UPDATE " + TABLES.plannerRuntime()
+                + " SET runtime_mode='STAGING' WHERE instance_id=?", "mode:" + season.code());
+
+        assertThat(org.assertj.core.api.Assertions.catchThrowable(() ->
+                CoalescedPlayerHistoryImportConfiguration.existingActiveFence(jdbc, TABLES, season.code())))
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("already ACTIVE");
+        assertThat(fetch.calls()).isEmpty();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run(), Integer.class)).isZero();
+
+        runtimeFence = new PlannerRuntimeRepository(jdbc, tx, clock, TABLES)
+                .activate(season.code(), OwnedSyncMode.ACTIVE);
+    }
+
+    @Test
     void configuredSeasonMustStillBeTheDatabaseCurrentSeason() {
         fetch.setSources(bootstrap, fixtures, eventThreeLive, eventFourLive);
         TapasSeed.ensure(jdbc);
@@ -1485,6 +2413,411 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         }
     }
 
+    private MultiFixtureSetup checkedDoubleFixtureSetup() throws Exception {
+        byte[] bootstrap = resource("bootstrap-static.json");
+        byte[] originalFixtures = resource("fixtures.json");
+        byte[] eventThreeLive = resource("event-3-live.json");
+        byte[] eventFourLive = resource("event-4-live.json");
+        byte[] fixtureSource = reassignFixture(onlyCollectorFixtureFinished(originalFixtures, 29), 36, 3);
+        ArrayNode schedule = (ArrayNode) JSON.readTree(fixtureSource);
+        ((ObjectNode) findFixture(schedule, 36)).put("kickoff_time", "2026-09-07T17:00:00Z");
+        Map<Integer, Set<Integer>> participantsByFixture = new LinkedHashMap<>();
+        Map<Integer, byte[]> historyPages = new LinkedHashMap<>();
+        Map<Integer, byte[]> liveByFixture = Map.of(29, eventThreeLive, 36, eventFourLive);
+        Map<Integer, List<List<Integer>>> participantSides = Map.of(
+                29, List.of(List.of(1, 4), List.of(28, 40)),
+                36, List.of(List.of(544, 545), List.of(1, 4)));
+        Set<Integer> participants = new LinkedHashSet<>();
+        for (int fixtureId : List.of(29, 36)) {
+            JsonNode fixture = findFixture(schedule, fixtureId);
+            JsonNode original = findFixture(JSON.readTree(originalFixtures), fixtureId);
+            JsonNode bps = null;
+            for (JsonNode stat : original.path("stats")) {
+                if (stat.path("identifier").asText().equals("bps")) { bps = stat; break; }
+            }
+            if (bps == null) throw new IllegalStateException("Missing recorded BPS template for " + fixtureId);
+            ArrayNode home = JSON.createArrayNode();
+            ArrayNode away = JSON.createArrayNode();
+            Set<Integer> fixtureParticipants = new LinkedHashSet<>();
+            for (int side = 0; side < 2; side++) {
+                boolean isHome = side == 0;
+                ArrayNode controlledSide = isHome ? home : away;
+                for (int id : participantSides.get(fixtureId).get(side)) {
+                    int value = fixtureStatValue(bps, id);
+                    controlledSide.addObject().put("element", id).put("value", value);
+                    fixtureParticipants.add(id);
+                    participants.add(id);
+                    historyPages.putIfAbsent(id, emptyHistoryPage());
+                    addControlledHistory(historyPages, id, fixture, isHome, value,
+                            fixtureSpecificLiveMinutes(liveByFixture.get(fixtureId), fixtureId, id));
+                }
+            }
+            ObjectNode controlledBps = JSON.createObjectNode().put("identifier", "bps");
+            controlledBps.set("h", home);
+            controlledBps.set("a", away);
+            ((ObjectNode) fixture).set("stats", JSON.createArrayNode().add(controlledBps));
+            participantsByFixture.put(fixtureId, Set.copyOf(fixtureParticipants));
+        }
+        byte[] checkedBootstrap = markGameweekChecked(
+                markAllGameweeksUnchecked(bootstrapPlayers(bootstrap, participants)), 3);
+        byte[] live = liveForControlledFixtureSources(liveByFixture, participantsByFixture);
+        fixtureSource = JSON.writeValueAsBytes(schedule);
+        fetch.setSources(checkedBootstrap, fixtureSource, live, eventFourLive);
+        historyPages.forEach(fetch::setPlayerPage);
+        return new MultiFixtureSetup(Set.copyOf(participantsByFixture.keySet()), participantsByFixture,
+                Set.copyOf(participants), Map.copyOf(historyPages), fixtureSource, checkedBootstrap, live);
+    }
+
+    private void publishCompatibilitySnapshot(MultiFixtureSetup setup) {
+        Lease lease = nextCoreLease();
+        Instant sourceStart = clock.instant().plusMillis(1);
+        SourceRead bootstrapRead = new SourceRead(sourceStart, sourceStart.plusMillis(1));
+        SourceRead fixturesRead = new SourceRead(sourceStart.plusMillis(2), sourceStart.plusMillis(3));
+        SourceDocument bootstrapDocument = document(setup.bootstrapSource(), bootstrapRead);
+        SourceDocument fixtureDocument = document(setup.fixtureSource(), fixturesRead);
+        clock.set(fixturesRead.finishedAt().plusMillis(1));
+        long bootstrapPayload = store.stage(lease, Endpoint.bootstrap(), bootstrapRead,
+                OwnedSyncStore.Validation.unchecked(), setup.bootstrapSource());
+        long fixturesPayload = store.stage(lease, Endpoint.fixtures(), fixturesRead,
+                OwnedSyncStore.Validation.unchecked(), setup.fixtureSource());
+        store.validateStagedPayloads(lease, List.of(bootstrapPayload, fixturesPayload),
+                OwnedSyncStore.Validation.valid());
+        new CompatibilityCatalogueWriter(jdbc, clock, store, TABLES)
+                .publish(lease, season, bootstrapDocument, fixtureDocument);
+        store.completeStaged(lease, store.incrementalSourceInterval(lease), List.of(bootstrapRead, fixturesRead));
+    }
+
+    private MultiFixtureSetup checkedMultiFixtureSetup() throws Exception {
+        ArrayNode schedule = (ArrayNode) JSON.readTree(fixtures);
+        Map<Integer, Set<Integer>> participantsByFixture = new java.util.LinkedHashMap<>();
+        Map<Integer, byte[]> historyPages = new java.util.LinkedHashMap<>();
+        Set<Integer> participantIds = new java.util.TreeSet<>();
+        for (JsonNode node : schedule) {
+            int sourceGameweek = node.path("event").asInt(-1);
+            if (sourceGameweek != 3) {
+                ObjectNode unrelated = (ObjectNode) node;
+                unrelated.put("started", false);
+                unrelated.put("finished", false);
+                unrelated.put("finished_provisional", false);
+                unrelated.put("minutes", 0);
+                unrelated.putNull("kickoff_time");
+                unrelated.putNull("team_h_score");
+                unrelated.putNull("team_a_score");
+                continue;
+            }
+            ObjectNode fixture = (ObjectNode) node;
+            int fixtureId = fixture.path("id").asInt();
+            JsonNode bps = null;
+            for (JsonNode stat : fixture.path("stats")) {
+                if (stat.path("identifier").asText().equals("bps")) bps = stat;
+            }
+            if (bps == null || bps.path("h").size() < 2 || bps.path("a").size() < 2) {
+                throw new IllegalStateException("Recorded GW3 fixture lacks controlled BPS participants: " + fixtureId);
+            }
+            ArrayNode home = JSON.createArrayNode();
+            ArrayNode away = JSON.createArrayNode();
+            Set<Integer> fixtureParticipants = new java.util.TreeSet<>();
+            for (int i = 0; i < 2; i++) {
+                JsonNode homeBps = bps.path("h").get(i);
+                JsonNode awayBps = bps.path("a").get(i);
+                int homeId = homeBps.path("element").asInt();
+                int awayId = awayBps.path("element").asInt();
+                home.add(homeBps.deepCopy());
+                away.add(awayBps.deepCopy());
+                fixtureParticipants.add(homeId);
+                fixtureParticipants.add(awayId);
+                participantIds.add(homeId);
+                participantIds.add(awayId);
+                addControlledHistory(historyPages, homeId, fixture, true, homeBps.path("value").asInt(),
+                        fixtureSpecificLiveMinutes(eventThreeLive, fixtureId, homeId));
+                addControlledHistory(historyPages, awayId, fixture, false, awayBps.path("value").asInt(),
+                        fixtureSpecificLiveMinutes(eventThreeLive, fixtureId, awayId));
+            }
+            ObjectNode controlledBps = JSON.createObjectNode().put("identifier", "bps");
+            controlledBps.set("h", home);
+            controlledBps.set("a", away);
+            fixture.set("stats", JSON.createArrayNode().add(controlledBps));
+            participantsByFixture.put(fixtureId, Set.copyOf(fixtureParticipants));
+        }
+        if (participantsByFixture.size() != 10 || participantIds.size() != 40) {
+            throw new IllegalStateException("Expected a controlled ten-fixture GW3 source population");
+        }
+        byte[] fixtureSource = JSON.writeValueAsBytes(schedule);
+        byte[] checkedBootstrap = markGameweekChecked(markAllGameweeksUnchecked(bootstrap), 3);
+        byte[] live = liveForGameweekParticipants(eventThreeLive, participantsByFixture);
+        fetch.setSources(checkedBootstrap, fixtureSource, live, eventFourLive);
+        historyPages.forEach(fetch::setPlayerPage);
+        return new MultiFixtureSetup(Set.copyOf(participantsByFixture.keySet()), participantsByFixture,
+                Set.copyOf(participantIds), Map.copyOf(historyPages), fixtureSource, checkedBootstrap, live);
+    }
+
+    private static byte[] emptyHistoryPage() throws IOException {
+        ObjectNode page = (ObjectNode) JSON.readTree(resource("element-summary-1.json"));
+        page.set("history", JSON.createArrayNode());
+        return JSON.writeValueAsBytes(page);
+    }
+
+    private static JsonNode findFixture(JsonNode source, int fixtureId) {
+        for (JsonNode fixture : source) {
+            if (fixture.path("id").asInt() == fixtureId) return fixture;
+        }
+        throw new IllegalStateException("Missing recorded fixture " + fixtureId);
+    }
+
+    private static byte[] liveForControlledFixtureSources(Map<Integer, byte[]> sourceByFixture,
+            Map<Integer, Set<Integer>> participantsByFixture) throws IOException {
+        ObjectNode root = (ObjectNode) JSON.readTree(sourceByFixture.values().iterator().next());
+        Map<Integer, ObjectNode> elementsByPlayer = new LinkedHashMap<>();
+        Set<Integer> seen = new HashSet<>();
+        for (Map.Entry<Integer, Set<Integer>> fixture : participantsByFixture.entrySet()) {
+            int fixtureId = fixture.getKey();
+            JsonNode source = JSON.readTree(sourceByFixture.get(fixtureId));
+            for (int playerId : fixture.getValue()) {
+                JsonNode sourceElement = null;
+                for (JsonNode element : source.path("elements")) {
+                    if (element.path("id").asInt() == playerId) { sourceElement = element; break; }
+                }
+                if (sourceElement == null) throw new IllegalStateException("Missing live player " + playerId);
+                ArrayNode selectedExplanations = JSON.createArrayNode();
+                for (JsonNode explanation : sourceElement.path("explain")) {
+                    if (explanation.path("fixture").asInt() == fixtureId) {
+                        selectedExplanations.add(explanation.deepCopy());
+                    }
+                }
+                if (selectedExplanations.isEmpty()) {
+                    throw new IllegalStateException("Missing live fixture " + fixtureId);
+                }
+                ObjectNode selected = elementsByPlayer.get(playerId);
+                if (selected == null) {
+                    selected = ((ObjectNode) sourceElement).deepCopy();
+                    selected.set("explain", JSON.createArrayNode());
+                    elementsByPlayer.put(playerId, selected);
+                }
+                ((ArrayNode) selected.path("explain")).addAll(selectedExplanations);
+                seen.add(playerId);
+            }
+        }
+        Set<Integer> expected = participantsByFixture.values().stream().flatMap(Set::stream)
+                .collect(java.util.stream.Collectors.toSet());
+        if (!seen.equals(expected)) throw new IllegalStateException("Controlled live fixture set differs");
+        ArrayNode elements = JSON.createArrayNode();
+        elementsByPlayer.values().forEach(elements::add);
+        root.set("elements", elements);
+        return JSON.writeValueAsBytes(root);
+    }
+
+    private static int fixtureSpecificLiveMinutes(byte[] source, int fixtureId, int playerId) throws IOException {
+        for (JsonNode element : JSON.readTree(source).path("elements")) {
+            if (element.path("id").asInt() != playerId) continue;
+            for (JsonNode explanation : element.path("explain")) {
+                if (explanation.path("fixture").asInt() != fixtureId) continue;
+                for (JsonNode stat : explanation.path("stats")) {
+                    if (stat.path("identifier").asText().equals("minutes")) {
+                        return stat.path("value").asInt();
+                    }
+                }
+            }
+        }
+        throw new IllegalStateException("Missing controlled fixture minutes for player " + playerId);
+    }
+
+    private static void addControlledHistory(Map<Integer, byte[]> pages, int playerId, JsonNode fixture,
+                                             boolean home, int bps, int minutes) throws IOException {
+        ObjectNode page;
+        ArrayNode history;
+        if (pages.containsKey(playerId)) {
+            page = (ObjectNode) JSON.readTree(pages.get(playerId));
+            history = (ArrayNode) page.path("history");
+        } else {
+            page = (ObjectNode) JSON.readTree(resource("element-summary-1.json"));
+            history = JSON.createArrayNode();
+            page.set("history", history);
+        }
+        ObjectNode row = null;
+        for (JsonNode existing : history) {
+            if (existing.path("fixture").asInt() == fixture.path("id").asInt()) {
+                row = (ObjectNode) existing;
+                break;
+            }
+        }
+        if (row == null) {
+            JsonNode template = null;
+            for (JsonNode existing : JSON.readTree(resource("element-summary-1.json")).path("history")) {
+                if (existing.path("fixture").asInt() == 29) { template = existing; break; }
+            }
+            if (template == null) throw new IllegalStateException("Missing recorded history row template");
+            row = ((ObjectNode) template).deepCopy();
+            history.add(row);
+        }
+        int homeTeam = fixture.path("team_h").asInt();
+        int awayTeam = fixture.path("team_a").asInt();
+        row.put("element", playerId);
+        row.put("fixture", fixture.path("id").asInt());
+        row.put("opponent_team", home ? awayTeam : homeTeam);
+        row.put("was_home", home);
+        row.put("round", fixture.path("event").asInt());
+        row.put("kickoff_time", fixture.path("kickoff_time").asText());
+        row.put("team_h_score", fixture.path("team_h_score").asInt());
+        row.put("team_a_score", fixture.path("team_a_score").asInt());
+        row.put("minutes", minutes);
+        row.put("starts", minutes >= 60 ? 1 : 0);
+        row.put("total_points", 2);
+        row.put("bps", bps);
+        row.put("expected_goals", "0.00");
+        row.put("expected_assists", "0.00");
+        row.put("expected_goal_involvements", "0.00");
+        row.put("expected_goals_conceded", "0.00");
+        row.put("influence", "0.0");
+        row.put("creativity", "0.0");
+        row.put("threat", "0.0");
+        row.put("ict_index", "0.0");
+        row.put("clearances_blocks_interceptions", 0);
+        row.put("recoveries", 0);
+        row.put("tackles", 0);
+        row.put("defensive_contribution", 0);
+        pages.put(playerId, JSON.writeValueAsBytes(page));
+    }
+
+    private static byte[] liveForGameweekParticipants(byte[] source,
+                                                       Map<Integer, Set<Integer>> participantsByFixture)
+            throws IOException {
+        ObjectNode root = (ObjectNode) JSON.readTree(source);
+        ArrayNode elements = JSON.createArrayNode();
+        Set<Integer> seen = new HashSet<>();
+        for (JsonNode node : root.path("elements")) {
+            int playerId = node.path("id").asInt();
+            ArrayNode explanations = JSON.createArrayNode();
+            for (JsonNode explanation : node.path("explain")) {
+                int fixtureId = explanation.path("fixture").asInt();
+                if (participantsByFixture.getOrDefault(fixtureId, Set.of()).contains(playerId)) {
+                    explanations.add(explanation.deepCopy());
+                    seen.add(playerId);
+                }
+            }
+            if (!explanations.isEmpty()) {
+                ObjectNode selected = ((ObjectNode) node).deepCopy();
+                selected.set("explain", explanations);
+                elements.add(selected);
+            }
+        }
+        Set<Integer> expected = participantsByFixture.values().stream().flatMap(Set::stream)
+                .collect(java.util.stream.Collectors.toSet());
+        if (!seen.equals(expected)) throw new IllegalStateException("Controlled live manifest differs from participants");
+        root.set("elements", elements);
+        return JSON.writeValueAsBytes(root);
+    }
+
+    private static byte[] incrementFixtureBps(byte[] source, int fixtureId, int playerId) throws IOException {
+        ArrayNode schedule = (ArrayNode) JSON.readTree(source);
+        for (JsonNode node : schedule) {
+            if (node.path("id").asInt() != fixtureId) continue;
+            for (JsonNode stat : node.path("stats")) {
+                if (!stat.path("identifier").asText().equals("bps")) continue;
+                for (String side : List.of("h", "a")) {
+                    for (JsonNode entry : stat.path(side)) {
+                        if (entry.path("element").asInt() == playerId) {
+                            ((ObjectNode) entry).put("value", entry.path("value").asInt() + 1);
+                            return JSON.writeValueAsBytes(schedule);
+                        }
+                    }
+                }
+            }
+        }
+        throw new IllegalStateException("No fixture BPS row for correction target");
+    }
+
+    private static byte[] incrementHistoryBps(byte[] source, int fixtureId) throws IOException {
+        ObjectNode page = (ObjectNode) JSON.readTree(source);
+        for (JsonNode node : page.path("history")) {
+            if (node.path("fixture").asInt() == fixtureId) {
+                ((ObjectNode) node).put("bps", node.path("bps").asInt() + 1);
+                return JSON.writeValueAsBytes(page);
+            }
+        }
+        throw new IllegalStateException("No history row for correction target");
+    }
+
+    private Map<String, List<Object>> pfsRowsSnapshot(Set<Integer> fixtureIds) {
+        String placeholders = String.join(",", java.util.Collections.nCopies(fixtureIds.size(), "?"));
+        Object[] args = new Object[fixtureIds.size() + 1];
+        args[0] = SEASON_ID;
+        int index = 1;
+        for (int fixtureId : fixtureIds.stream().sorted().toList()) args[index++] = fixtureId;
+        return jdbc.query("SELECT fixture_id,player_id,total_points,bps,minutes,expected_goals,expected_assists,"
+                + "gameweek,kickoff_time,player_team_id,opponent_team_id,was_home,updated_at FROM "
+                + "player_fixture_stats WHERE season_id=? AND fixture_id IN (" + placeholders + ") "
+                + "ORDER BY fixture_id,player_id", rs -> {
+                    Map<String, List<Object>> rows = new java.util.TreeMap<>();
+                    while (rs.next()) rows.put(rs.getInt("fixture_id") + "/" + rs.getInt("player_id"),
+                            java.util.Arrays.asList(rs.getObject("total_points"), rs.getObject("bps"),
+                                    rs.getObject("minutes"), rs.getObject("expected_goals"),
+                                    rs.getObject("expected_assists"), rs.getObject("gameweek"),
+                                    rs.getObject("kickoff_time"), rs.getObject("player_team_id"),
+                                    rs.getObject("opponent_team_id"), rs.getObject("was_home"),
+                                    rs.getObject("updated_at")));
+                    return Map.copyOf(rows);
+                }, args);
+    }
+
+    private Map<String, List<Object>> pfsProofSnapshot(Set<Integer> fixtureIds) {
+        String placeholders = String.join(",", java.util.Collections.nCopies(fixtureIds.size(), "?"));
+        Object[] args = new Object[fixtureIds.size() + 1];
+        args[0] = SEASON_ID;
+        int index = 1;
+        for (int fixtureId : fixtureIds.stream().sorted().toList()) args[index++] = fixtureId;
+        return jdbc.query("SELECT c.fixture_id,c.player_id,c.source_run_generation,c.evidence_generation,"
+                + "c.row_state,p.updated_at,e.component_presence,e.source_read_started_at,e.source_read_finished_at,"
+                + "(SELECT count(*) FROM " + TABLES.playerFixtureEvidence() + " archived WHERE "
+                + "archived.season_id=c.season_id AND archived.fixture_id=c.fixture_id "
+                + "AND archived.player_id=c.player_id) AS evidence_count,(SELECT string_agg(archived.generation::text"
+                + " || ':' || archived.component_presence::text || ':' || archived.source_read_started_at::text"
+                + " || ':' || archived.source_read_finished_at::text,',' ORDER BY archived.generation) FROM "
+                + TABLES.playerFixtureEvidence() + " archived WHERE archived.season_id=c.season_id "
+                + "AND archived.fixture_id=c.fixture_id AND archived.player_id=c.player_id) AS evidence_archive "
+                + "FROM " + TABLES.playerFixtureCurrent() + " c JOIN player_fixture_stats p ON p.season_id=c.season_id"
+                + " AND p.fixture_id=c.fixture_id AND p.player_id=c.player_id JOIN "
+                + TABLES.playerFixtureEvidence() + " e ON e.season_id=c.season_id AND e.fixture_id=c.fixture_id"
+                + " AND e.player_id=c.player_id AND e.generation=c.evidence_generation WHERE c.season_id=?"
+                + " AND c.fixture_id IN (" + placeholders + ") ORDER BY c.fixture_id,c.player_id", rs -> {
+                    Map<String, List<Object>> rows = new java.util.TreeMap<>();
+                    while (rs.next()) rows.put(rs.getInt("fixture_id") + "/" + rs.getInt("player_id"),
+                            java.util.Arrays.asList(rs.getObject("source_run_generation"),
+                                    rs.getObject("evidence_generation"), rs.getObject("row_state"),
+                                    rs.getObject("updated_at"), rs.getObject("component_presence"),
+                                    rs.getObject("source_read_started_at"), rs.getObject("source_read_finished_at"),
+                                    rs.getObject("evidence_count"), rs.getObject("evidence_archive")));
+                    return Map.copyOf(rows);
+                }, args);
+    }
+
+    private List<Object> pfsProofSnapshotForKey(Set<Integer> fixtureIds, String key) {
+        return pfsProofSnapshot(fixtureIds).get(key);
+    }
+
+    private Map<String, String> pageWatermarkSnapshot() {
+        return jdbc.query("SELECT publication_key,latest_generation,source_read_started_at,source_read_finished_at "
+                + "FROM " + TABLES.receipt() + " WHERE season=? AND publication_key LIKE ? ORDER BY publication_key",
+                rs -> {
+                    Map<String, String> result = new java.util.TreeMap<>();
+                    while (rs.next()) result.put(rs.getString("publication_key"), rs.getString("latest_generation")
+                            + ":" + rs.getString("source_read_started_at") + ":"
+                            + rs.getString("source_read_finished_at"));
+                    return Map.copyOf(result);
+                }, season.code(), IncrementalPlayerFixturePublisher.PAGE_RECEIPT_PREFIX + "%");
+    }
+
+    private Map<String, Object> finalitySnapshot() {
+        return jdbc.queryForMap("SELECT state,finalized_at,finalized_source_read_started_at,"
+                + "finalized_source_read_finished_at,finalized_source_signature,finalized_row_revision_fingerprint,"
+                + "final_attempt_source_signature,final_attempt_source_floor,final_attempt_invalidation_revision,"
+                + "final_attempt_population_fingerprint,final_attempt_population_manifest::text,"
+                + "final_attempt_source_read_started_at,final_attempt_source_read_finished_at,"
+                + "final_attempt_required_player_ids::text,final_attempt_completed_player_ids::text,"
+                + "final_attempt_outstanding_player_ids::text,final_attempt_page_read_started_at,"
+                + "final_attempt_page_read_finished_at FROM " + TABLES.gameweekStatSync()
+                + " WHERE season_id=? AND gameweek=3", SEASON_ID);
+    }
+
     private CheckedFixtureSetup checkedSingleFixtureSetup() throws Exception {
         int fixtureId = 29;
         byte[] source = onlyCollectorFixtureFinished(fixtures, fixtureId);
@@ -1517,6 +2850,108 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         }
     }
 
+    private void installUnit6WriteCounters() {
+        jdbc.execute("CREATE TABLE IF NOT EXISTS fpl_unit6_write_count_test("
+                + "table_name text NOT NULL, operation text NOT NULL, writes bigint NOT NULL,"
+                + " PRIMARY KEY(table_name,operation))");
+        jdbc.update("DELETE FROM fpl_unit6_write_count_test");
+        jdbc.execute("""
+                CREATE OR REPLACE FUNCTION fpl_unit6_count_write_test() RETURNS trigger
+                LANGUAGE plpgsql AS $$
+                BEGIN
+                    INSERT INTO fpl_unit6_write_count_test(table_name,operation,writes)
+                    VALUES (TG_TABLE_NAME,TG_OP,1)
+                    ON CONFLICT (table_name,operation) DO UPDATE
+                        SET writes=fpl_unit6_write_count_test.writes+1;
+                    RETURN NULL;
+                END;
+                $$
+                """);
+        for (String table : unit6ObservedTables()) {
+            jdbc.execute("DROP TRIGGER IF EXISTS fpl_unit6_write_count_test ON " + table);
+            jdbc.execute("CREATE TRIGGER fpl_unit6_write_count_test"
+                    + " AFTER INSERT OR UPDATE OR DELETE ON " + table
+                    + " FOR EACH ROW EXECUTE FUNCTION fpl_unit6_count_write_test()");
+        }
+    }
+
+    private void removeUnit6WriteCounters() {
+        for (String table : unit6ObservedTables()) {
+            jdbc.execute("DROP TRIGGER IF EXISTS fpl_unit6_write_count_test ON " + table);
+        }
+        jdbc.execute("DROP FUNCTION IF EXISTS fpl_unit6_count_write_test()");
+        jdbc.execute("DROP TABLE IF EXISTS fpl_unit6_write_count_test");
+    }
+
+    private List<String> unit6ObservedTables() {
+        return List.of("team", "player", "gameweek", "fixture", "player_fixture_stats",
+                TABLES.playerFixtureEvidence(), TABLES.playerFixtureCurrent(), TABLES.gameweekStatSync(),
+                TABLES.fixtureSync(), TABLES.receipt());
+    }
+
+    private Map<String, String> unit6ReceiptSnapshot() {
+        return jdbc.query("SELECT publication_key,latest_generation,source_read_started_at,"
+                + "source_read_finished_at,published_at,source_pair_fingerprint FROM " + TABLES.receipt()
+                + " WHERE season=? ORDER BY publication_key", rs -> {
+                    Map<String, String> rows = new java.util.TreeMap<>();
+                    while (rs.next()) rows.put(rs.getString("publication_key"), rs.getString("latest_generation")
+                            + ":" + rs.getString("source_read_started_at") + ":"
+                            + rs.getString("source_read_finished_at") + ":" + rs.getString("published_at")
+                            + ":" + rs.getString("source_pair_fingerprint"));
+                    return Map.copyOf(rows);
+                }, season.code());
+    }
+
+    private Map<String, Long> unit6WriteCounts() {
+        return jdbc.query("SELECT table_name,operation,writes FROM fpl_unit6_write_count_test",
+                rs -> {
+                    Map<String, Long> counts = new java.util.TreeMap<>();
+                    while (rs.next()) counts.put(rs.getString("table_name") + "/" + rs.getString("operation"),
+                            rs.getLong("writes"));
+                    return Map.copyOf(counts);
+                });
+    }
+
+    private Map<String, Long> compatibilityCatalogueWriteCounts() {
+        Map<String, Long> all = unit6WriteCounts();
+        Map<String, Long> result = new java.util.TreeMap<>();
+        for (String table : List.of("team", "player", "gameweek", "fixture")) {
+            for (String operation : List.of("INSERT", "UPDATE")) {
+                String key = table + "/" + operation;
+                result.put(key, all.getOrDefault(key, 0L));
+            }
+        }
+        return Map.copyOf(result);
+    }
+
+    private static Map<String, Long> catalogueWriteDelta(Map<String, Long> before, Map<String, Long> after) {
+        Map<String, Long> result = new java.util.TreeMap<>();
+        before.forEach((key, value) -> result.put(key, after.getOrDefault(key, 0L) - value));
+        return Map.copyOf(result);
+    }
+
+    private Map<String, Object> pfsOptionalMetrics(int fixtureId, int playerId) {
+        return jdbc.queryForMap("SELECT expected_goals,expected_assists,expected_goal_involvements,"
+                + "expected_goals_conceded,influence,creativity,threat,ict_index,"
+                + "clearances_blocks_interceptions,recoveries,tackles,defensive_contribution "
+                + "FROM player_fixture_stats WHERE season_id=? AND fixture_id=? AND player_id=?",
+                SEASON_ID, fixtureId, playerId);
+    }
+
+    private long pfsComponentPresence(int fixtureId, int playerId) {
+        return jdbc.queryForObject("SELECT e.component_presence FROM " + TABLES.playerFixtureCurrent()
+                + " c JOIN " + TABLES.playerFixtureEvidence() + " e ON e.season_id=c.season_id"
+                + " AND e.fixture_id=c.fixture_id AND e.player_id=c.player_id"
+                + " AND e.generation=c.evidence_generation WHERE c.season_id=? AND c.fixture_id=?"
+                + " AND c.player_id=?", Long.class, SEASON_ID, fixtureId, playerId);
+    }
+
+    private long unit6WriteCount(String table, String operation) {
+        Long count = jdbc.queryForObject("SELECT writes FROM fpl_unit6_write_count_test"
+                + " WHERE table_name=? AND operation=?", Long.class, table, operation);
+        return count == null ? 0 : count;
+    }
+
     private SqlRecordingDataSource useRecordingJdbc() {
         SqlRecordingDataSource recording = new SqlRecordingDataSource(dataSource);
         JdbcTemplate recordedJdbc = new JdbcTemplate(recording);
@@ -1530,6 +2965,23 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
     private CoalescedPlayerHistoryCollector collector(boolean enabled) {
         return new CoalescedPlayerHistoryCollector(season, enabled, store, publisher, fetch, clock,
                 "collector-test");
+    }
+
+    private CoalescedPlayerHistoryCollector compatibilityCollector(boolean enabled) {
+        CompatibilityCatalogueWriter compatibility = new CompatibilityCatalogueWriter(jdbc, clock, store, TABLES);
+        return new CoalescedPlayerHistoryCollector(season, enabled, store, publisher, compatibility, fetch, clock,
+                "compatibility-collector-test");
+    }
+
+    private CoalescedPlayerHistoryCollector compatibilityCollector(boolean enabled, JdbcTemplate targetJdbc,
+                                                                   TransactionTemplate targetTx) {
+        store = new OwnedSyncStore(targetJdbc, targetTx, clock, TABLES, runtimeFence);
+        publisher = new IncrementalPlayerFixturePublisher(
+                new IncrementalPfsRepository(targetJdbc, clock, store, TABLES));
+        CompatibilityCatalogueWriter compatibility = new CompatibilityCatalogueWriter(targetJdbc, clock,
+                store, TABLES);
+        return new CoalescedPlayerHistoryCollector(season, enabled, store, publisher, compatibility, fetch, clock,
+                "compatibility-collector-test");
     }
 
     private Lease nextCoreLease() {
@@ -1663,6 +3115,12 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
 
     private static byte[] markGameweekChecked(byte[] source, int gameweek) throws IOException {
         return setGameweekDataChecked(source, gameweek, true);
+    }
+
+    private static byte[] markAllGameweeksUnchecked(byte[] source) throws IOException {
+        ObjectNode root = (ObjectNode) JSON.readTree(source);
+        for (JsonNode event : root.path("events")) ((ObjectNode) event).put("data_checked", false);
+        return JSON.writeValueAsBytes(root);
     }
 
     private static byte[] markGameweekUnchecked(byte[] source, int gameweek) throws IOException {
@@ -1851,6 +3309,41 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         row.put("was_home", false);
         row.put("opponent_team", 1);
         return JSON.writeValueAsBytes(root);
+    }
+
+    private static byte[] withOptionalHistoryValues(byte[] source, int fixtureId, int playerId,
+                                                     Map<String, ?> values) throws IOException {
+        ObjectNode root = (ObjectNode) JSON.readTree(source);
+        for (JsonNode node : root.path("history")) {
+            if (node.path("fixture").asInt() != fixtureId || node.path("element").asInt() != playerId) continue;
+            ObjectNode row = (ObjectNode) node;
+            values.forEach((field, value) -> row.set(field, JSON.valueToTree(value)));
+            return JSON.writeValueAsBytes(root);
+        }
+        throw new IllegalStateException("No history row for fixture " + fixtureId + " and player " + playerId);
+    }
+
+    private static byte[] withoutOptionalHistoryComponent(byte[] source, int fixtureId, int playerId,
+                                                           String component) throws IOException {
+        ObjectNode root = (ObjectNode) JSON.readTree(source);
+        for (JsonNode node : root.path("history")) {
+            if (node.path("fixture").asInt() != fixtureId || node.path("element").asInt() != playerId) continue;
+            ((ObjectNode) node).remove(component);
+            return JSON.writeValueAsBytes(root);
+        }
+        throw new IllegalStateException("No history row for fixture " + fixtureId + " and player " + playerId);
+    }
+
+    private static byte[] rewriteHistoryFixture(byte[] source, int fixtureId, int gameweek,
+                                                 Instant kickoff) throws IOException {
+        ObjectNode root = (ObjectNode) JSON.readTree(source);
+        for (JsonNode node : root.path("history")) {
+            if (node.path("fixture").asInt() != fixtureId) continue;
+            ((ObjectNode) node).put("round", gameweek);
+            ((ObjectNode) node).put("kickoff_time", kickoff.toString());
+            return JSON.writeValueAsBytes(root);
+        }
+        throw new IllegalStateException("No history row for fixture " + fixtureId);
     }
 
     private static byte[] onlyFixtureUnstartedPastKickoff(byte[] source, int fixtureId, Instant kickoff)
@@ -2047,6 +3540,7 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         private static final byte[] EMPTY_LIVE = "{\"elements\":[]}".getBytes(java.nio.charset.StandardCharsets.UTF_8);
         private final List<Endpoint> calls = new ArrayList<>();
         private final List<RecordedRead> successfulReads = new ArrayList<>();
+        private final List<Integer> successfulBodyBytes = new ArrayList<>();
         private byte[] bootstrap;
         private byte[] fixtures;
         private byte[] eventThree;
@@ -2123,6 +3617,7 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
             };
             SourceRead read = interval();
             successfulReads.add(new RecordedRead(endpoint, read));
+            successfulBodyBytes.add(body.length);
             return new Response(200, body, null, read);
         }
 
@@ -2143,9 +3638,11 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         }
 
         private List<Endpoint> calls() { return List.copyOf(calls); }
+        private int returnedBodyBytes() { return successfulBodyBytes.stream().mapToInt(Integer::intValue).sum(); }
         private void clearCalls() {
             calls.clear();
             successfulReads.clear();
+            successfulBodyBytes.clear();
             pageCalls = 0;
             firstRequestRun = false;
             firstRequest = null;
@@ -2165,6 +3662,11 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
     private static final class SqlRecordingDataSource implements DataSource {
         private final DataSource delegate;
         private final List<String> statements = new ArrayList<>();
+        private int queryExecutions;
+        private int updateExecutions;
+        private long updateRowsAffected;
+        private long returnedRows;
+        private long approximateLogicalReturnedBytes;
 
         private SqlRecordingDataSource(DataSource delegate) { this.delegate = delegate; }
 
@@ -2207,13 +3709,55 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
                     : target instanceof PreparedStatement ? PreparedStatement.class : Statement.class;
             return (Statement) Proxy.newProxyInstance(contract.getClassLoader(), new Class<?>[] { contract },
                     (proxy, method, args) -> {
-                        if (preparedSql == null && args != null && args.length > 0 && args[0] instanceof String sql
-                                && (method.getName().equals("execute") || method.getName().equals("executeQuery")
-                                    || method.getName().equals("executeUpdate") || method.getName().equals("addBatch"))) {
-                            statements.add(sql);
+                        String name = method.getName();
+                        String sql = preparedSql;
+                        if (sql == null && args != null && args.length > 0 && args[0] instanceof String query
+                                && (name.equals("execute") || name.equals("executeQuery")
+                                    || name.equals("executeUpdate") || name.equals("addBatch"))) {
+                            sql = query;
+                            statements.add(query);
                         }
-                        return invoke(target, method, args);
+                        if ((name.equals("executeQuery") || name.equals("execute")) && isReadSql(sql)) {
+                            queryExecutions++;
+                        }
+                        Object result = invoke(target, method, args);
+                        if (name.equals("executeUpdate") || name.equals("executeLargeUpdate")) {
+                            updateExecutions++;
+                            if (result instanceof Number affected) updateRowsAffected += affected.longValue();
+                        }
+                        if (result instanceof ResultSet resultSet) return resultSet(resultSet);
+                        return result;
                     });
+        }
+
+        private ResultSet resultSet(ResultSet target) {
+            return (ResultSet) Proxy.newProxyInstance(ResultSet.class.getClassLoader(),
+                    new Class<?>[] { ResultSet.class }, (proxy, method, args) -> {
+                        Object result = invoke(target, method, args);
+                        if (method.getName().equals("next") && Boolean.TRUE.equals(result)) returnedRows++;
+                        else if (method.getName().startsWith("get") && args != null && args.length > 0
+                                && (args[0] instanceof Integer || args[0] instanceof String)
+                                && result != null && !(result instanceof ResultSet)) {
+                            approximateLogicalReturnedBytes += approximateSize(result);
+                        }
+                        return result;
+                    });
+        }
+
+        private static boolean isReadSql(String sql) {
+            if (sql == null) return false;
+            String normalized = sql.stripLeading().toLowerCase(java.util.Locale.ROOT);
+            return normalized.startsWith("select") || normalized.startsWith("with")
+                    || normalized.startsWith("show") || normalized.startsWith("values");
+        }
+
+        private static long approximateSize(Object value) {
+            if (value instanceof byte[] bytes) return bytes.length;
+            if (value instanceof Boolean) return 1;
+            if (value instanceof Number number) {
+                return number.toString().getBytes(StandardCharsets.UTF_8).length;
+            }
+            return String.valueOf(value).getBytes(StandardCharsets.UTF_8).length;
         }
 
         private static Object invoke(Object target, Method method, Object[] args) throws Throwable {
@@ -2225,7 +3769,19 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         }
 
         private List<String> statements() { return List.copyOf(statements); }
-        private void clear() { statements.clear(); }
+        private int queryExecutions() { return queryExecutions; }
+        private int updateExecutions() { return updateExecutions; }
+        private long updateRowsAffected() { return updateRowsAffected; }
+        private long returnedRows() { return returnedRows; }
+        private long approximateLogicalReturnedBytes() { return approximateLogicalReturnedBytes; }
+        private void clear() {
+            statements.clear();
+            queryExecutions = 0;
+            updateExecutions = 0;
+            updateRowsAffected = 0;
+            returnedRows = 0;
+            approximateLogicalReturnedBytes = 0;
+        }
     }
 
     private static final class MutableClock extends Clock {
@@ -2242,6 +3798,10 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
 
     private record CheckedFixtureSetup(int fixtureId, int cataloguePlayer, byte[] fixtureSource,
                                        byte[] bootstrapSource, byte[] liveSource) { }
+    private record MultiFixtureSetup(Set<Integer> fixtureIds,
+                                     Map<Integer, Set<Integer>> participantsByFixture,
+                                     Set<Integer> participantIds, Map<Integer, byte[]> historyPages,
+                                     byte[] fixtureSource, byte[] bootstrapSource, byte[] liveSource) { }
     private record FixtureKey(int id, int gameweek, int homeTeam, int awayTeam, Instant kickoff,
                               boolean started, boolean finished) { }
     private record ActiveFixture(byte[] body, int id) { }

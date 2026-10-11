@@ -63,7 +63,7 @@ public final class OwnedSyncMonitoringDatabase implements AutoCloseable {
     @Override public void close() { dataSource.close(); }
 
     @Configuration(proxyBeanMethods = false)
-    @ConditionalOnExpression("!${fpl.owned-sync.importer.enabled:false} && (T(fi.karivanttinen.fplassistant.sync.OwnedSyncMode).valueOf('${fpl.owned-sync.mode:OFF}') != T(fi.karivanttinen.fplassistant.sync.OwnedSyncMode).OFF || ${fpl.owned-sync.ops.enabled:false} || ${fpl.owned-sync.external-health.enabled:false})")
+    @ConditionalOnExpression("(!${fpl.owned-sync.importer.enabled:false} && T(fi.karivanttinen.fplassistant.sync.OwnedSyncMode).valueOf('${fpl.owned-sync.mode:OFF}') != T(fi.karivanttinen.fplassistant.sync.OwnedSyncMode).OFF) || ${fpl.owned-sync.ops.enabled:false} || ${fpl.owned-sync.external-health.enabled:false}")
     static class DatabaseConfiguration {
         @Bean
         OwnedSyncMonitoringDatabase ownedSyncMonitoringDatabase(Environment environment) {

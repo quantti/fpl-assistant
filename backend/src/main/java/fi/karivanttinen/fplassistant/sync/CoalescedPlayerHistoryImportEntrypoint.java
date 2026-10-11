@@ -1,6 +1,6 @@
 package fi.karivanttinen.fplassistant.sync;
 
-/** Explicit manual boundary for one coalesced import cycle; it owns no Spring schedule. */
+/** Callable boundary for one coalesced import cycle, used by the manual and hourly adapters. */
 @FunctionalInterface
 public interface CoalescedPlayerHistoryImportEntrypoint {
     CoalescedPlayerHistoryCollector.CycleResult runCycle();

@@ -29,9 +29,10 @@ import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.Lease;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.PageReceipt;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.Run;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.SourceRead;
+import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.Validation;
 import fi.karivanttinen.fplassistant.sync.GameweekFinalityRepository.Progress;
 
-/** Explicit, inert hourly-style collector. It owns no scheduler, bean registration or endpoint. */
+/** Incremental collector; Spring wiring is opt-in and the default constructor remains disabled. */
 public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHistoryImportEntrypoint {
 
     public static final Duration CYCLE_INTERVAL = Duration.ofHours(1);
@@ -43,6 +44,7 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
     private final boolean enabled;
     private final OwnedSyncStore store;
     private final IncrementalPlayerFixturePublisher publisher;
+    private final CompatibilityCatalogueWriter compatibilityCatalogue;
     private final GameweekFinalityRepository finality;
     private final Fetch fetch;
     private final Clock clock;
@@ -51,25 +53,39 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
     /** The no-flag constructor is deliberately disabled; nothing in Spring constructs this class. */
     public CoalescedPlayerHistoryCollector(Season season, OwnedSyncStore store,
             IncrementalPlayerFixturePublisher publisher, OwnedSyncHttpClient http, Clock clock, String owner) {
-        this(season, false, store, publisher, fencedFetch(store, http), clock, owner);
+        this(season, false, store, publisher, null, fencedFetch(store, http), clock, owner);
     }
 
     CoalescedPlayerHistoryCollector(Season season, OwnedSyncStore store,
             IncrementalPlayerFixturePublisher publisher, Fetch fetch, Clock clock, String owner) {
-        this(season, false, store, publisher, fetch, clock, owner);
+        this(season, false, store, publisher, null, fetch, clock, owner);
     }
 
     public CoalescedPlayerHistoryCollector(Season season, boolean enabled, OwnedSyncStore store,
             IncrementalPlayerFixturePublisher publisher, OwnedSyncHttpClient http, Clock clock, String owner) {
-        this(season, enabled, store, publisher, fencedFetch(store, http), clock, owner);
+        this(season, enabled, store, publisher, null, fencedFetch(store, http), clock, owner);
+    }
+
+    public CoalescedPlayerHistoryCollector(Season season, boolean enabled, OwnedSyncStore store,
+            IncrementalPlayerFixturePublisher publisher, CompatibilityCatalogueWriter compatibilityCatalogue,
+            OwnedSyncHttpClient http, Clock clock, String owner) {
+        this(season, enabled, store, publisher, Objects.requireNonNull(compatibilityCatalogue),
+                fencedFetch(store, http), clock, owner);
     }
 
     CoalescedPlayerHistoryCollector(Season season, boolean enabled, OwnedSyncStore store,
             IncrementalPlayerFixturePublisher publisher, Fetch fetch, Clock clock, String owner) {
+        this(season, enabled, store, publisher, null, fetch, clock, owner);
+    }
+
+    CoalescedPlayerHistoryCollector(Season season, boolean enabled, OwnedSyncStore store,
+            IncrementalPlayerFixturePublisher publisher, CompatibilityCatalogueWriter compatibilityCatalogue,
+            Fetch fetch, Clock clock, String owner) {
         this.season = Objects.requireNonNull(season);
         this.enabled = enabled;
         this.store = Objects.requireNonNull(store);
         this.publisher = Objects.requireNonNull(publisher);
+        this.compatibilityCatalogue = compatibilityCatalogue;
         this.finality = store.gameweekFinalityRepository();
         this.fetch = Objects.requireNonNull(fetch);
         this.clock = Objects.requireNonNull(clock);
@@ -109,18 +125,75 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
                     finalPendingEvents, null);
         }
 
-        RequestResult bootstrapResult = request(lease, Endpoint.bootstrap(), cycleFloor);
-        lease = bootstrapResult.lease();
-        if (!bootstrapResult.succeeded()) return stop(bootstrapResult, requestedPlayers, committedPlayers,
-                failedPlayers, finalPendingEvents);
-        SourceDocument bootstrap = bootstrapResult.document();
-        reads.add(read(bootstrap));
+        OwnedSyncStore.IncrementalCompatibilitySnapshot persistedSnapshot = null;
+        SourceDocument bootstrap;
+        SourceDocument fixturesDocument;
+        if (compatibilityCatalogue != null) {
+            try {
+                persistedSnapshot = store.incrementalCompatibilitySnapshot(lease).orElse(null);
+            } catch (RuntimeException failure) {
+                return fail(lease, bounded(failure.getMessage()), requestedPlayers, committedPlayers, failedPlayers,
+                        finalPendingEvents, null);
+            }
+        }
+        boolean validationPairUsed = false;
+        if (persistedSnapshot != null) {
+            CanonicalPairRequest freshPair = requestCanonicalPair(lease, cycleFloor);
+            lease = freshPair.lease();
+            if (freshPair.failure() != null) return stop(freshPair.failure(), requestedPlayers, committedPlayers,
+                    failedPlayers, finalPendingEvents);
+            reads.add(read(freshPair.bootstrap()));
+            reads.add(read(freshPair.fixtures()));
+            boolean freshPairValid = true;
+            try {
+                CatalogueScheduleParser.parse(season, freshPair.bootstrap(), freshPair.fixtures());
+            } catch (RuntimeException invalidPair) {
+                freshPairValid = false;
+                validationPairUsed = true;
+                Instant validationFloor = max(freshPair.bootstrap().readInterval().completedAt(),
+                        freshPair.fixtures().readInterval().completedAt()).plusMillis(1);
+                CanonicalPairRequest validationPair = requestCanonicalPair(lease, later(cycleFloor, validationFloor));
+                lease = validationPair.lease();
+                if (validationPair.failure() != null) return stop(validationPair.failure(), requestedPlayers,
+                        committedPlayers, failedPlayers, finalPendingEvents);
+                reads.add(read(validationPair.bootstrap()));
+                reads.add(read(validationPair.fixtures()));
+                try {
+                    CatalogueScheduleParser.parse(season, validationPair.bootstrap(), validationPair.fixtures());
+                } catch (RuntimeException stillInvalid) {
+                    return retryInvalidSourcePair(lease, requestedPlayers, committedPlayers, failedPlayers,
+                            finalPendingEvents);
+                }
+                if (!sameSourceBodies(persistedSnapshot, validationPair.bootstrap(), validationPair.fixtures())) {
+                    return supersedeForSourceChange(lease, requestedPlayers, committedPlayers, failedPlayers,
+                            finalPendingEvents);
+                }
+            }
+            if (freshPairValid && !sameSourceBodies(persistedSnapshot,
+                    freshPair.bootstrap(), freshPair.fixtures())) {
+                return supersedeForSourceChange(lease, requestedPlayers, committedPlayers, failedPlayers,
+                        finalPendingEvents);
+            }
+            bootstrap = new SourceDocument(persistedSnapshot.bootstrap().body(),
+                    new ReadInterval(persistedSnapshot.bootstrap().read().startedAt(),
+                            persistedSnapshot.bootstrap().read().finishedAt()));
+            fixturesDocument = new SourceDocument(persistedSnapshot.fixtures().body(),
+                    new ReadInterval(persistedSnapshot.fixtures().read().startedAt(),
+                            persistedSnapshot.fixtures().read().finishedAt()));
+        } else {
+            RequestResult bootstrapResult = request(lease, Endpoint.bootstrap(), cycleFloor);
+            lease = bootstrapResult.lease();
+            if (!bootstrapResult.succeeded()) return stop(bootstrapResult, requestedPlayers, committedPlayers,
+                    failedPlayers, finalPendingEvents);
+            bootstrap = bootstrapResult.document();
 
-        RequestResult fixturesResult = request(lease, Endpoint.fixtures(), cycleFloor);
-        lease = fixturesResult.lease();
-        if (!fixturesResult.succeeded()) return stop(fixturesResult, requestedPlayers, committedPlayers,
-                failedPlayers, finalPendingEvents);
-        SourceDocument fixturesDocument = fixturesResult.document();
+            RequestResult fixturesResult = request(lease, Endpoint.fixtures(), cycleFloor);
+            lease = fixturesResult.lease();
+            if (!fixturesResult.succeeded()) return stop(fixturesResult, requestedPlayers, committedPlayers,
+                    failedPlayers, finalPendingEvents);
+            fixturesDocument = fixturesResult.document();
+        }
+        reads.add(read(bootstrap));
         reads.add(read(fixturesDocument));
 
         Snapshot snapshot;
@@ -131,25 +204,50 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
                     finalPendingEvents, null);
         }
 
+        String selectedSourceFingerprint = sourceBodyFingerprint(bootstrap, fixturesDocument);
         Instant snapshotStart = min(bootstrap.readInterval().startedAt(), fixturesDocument.readInterval().startedAt());
         Instant snapshotEnd = max(bootstrap.readInterval().completedAt(), fixturesDocument.readInterval().completedAt());
         SourceRead snapshotRead = new SourceRead(snapshotStart, snapshotEnd);
         OwnedSyncStore.IncrementalDiscovery discovery;
+        Set<Integer> changedCompatibilityFixtures = Set.of();
         try {
-            discovery = store.observeIncrementalSnapshot(lease, snapshot);
-            discovery.events().values().stream().filter(OwnedSyncStore.IncrementalEvent::finalPending)
-                    .map(OwnedSyncStore.IncrementalEvent::gameweek).forEach(finalPendingEvents::add);
-            String fingerprint = OwnedSyncStore.sha256(OwnedSyncStore.sha256(bootstrap.bytes()) + "|"
-                    + OwnedSyncStore.sha256(fixturesDocument.bytes()));
-            if (!store.recordIncrementalSourceSnapshot(lease, fingerprint, snapshotRead)) {
-                return fail(lease, "Source snapshot changed while resuming this import; start a fresh cycle",
-                        requestedPlayers, committedPlayers, failedPlayers, finalPendingEvents, null);
+            String fingerprint = selectedSourceFingerprint;
+            if (compatibilityCatalogue == null) {
+                discovery = store.observeIncrementalSnapshot(lease, snapshot);
+                discovery.events().values().stream().filter(OwnedSyncStore.IncrementalEvent::finalPending)
+                        .map(OwnedSyncStore.IncrementalEvent::gameweek).forEach(finalPendingEvents::add);
+                if (!store.recordIncrementalSourceSnapshot(lease, fingerprint, snapshotRead)) {
+                    return fail(lease, "Source snapshot changed while resuming this import; start a fresh cycle",
+                            requestedPlayers, committedPlayers, failedPlayers, finalPendingEvents, null);
+                }
+            } else {
+                if (!store.recordIncrementalSourceSnapshot(lease, fingerprint, snapshotRead)) {
+                    return fail(lease, "Source snapshot changed while resuming this import; start a fresh cycle",
+                            requestedPlayers, committedPlayers, failedPlayers, finalPendingEvents, null);
+                }
+                if (persistedSnapshot != null) {
+                    discovery = store.observeIncrementalSnapshot(lease, snapshot);
+                } else {
+                    long bootstrapPayload = store.stage(lease, Endpoint.bootstrap(), read(bootstrap),
+                            Validation.unchecked(), bootstrap.bytes());
+                    long fixturePayload = store.stage(lease, Endpoint.fixtures(), read(fixturesDocument),
+                            Validation.unchecked(), fixturesDocument.bytes());
+                    store.validateStagedPayloads(lease, List.of(bootstrapPayload, fixturePayload),
+                            Validation.valid());
+                    CompatibilityCatalogueWriter.Publication publication = compatibilityCatalogue.publish(
+                            lease, season, bootstrap, fixturesDocument);
+                    discovery = publication.discovery();
+                    changedCompatibilityFixtures = Set.copyOf(publication.changedFixtureIds());
+                }
+                discovery.events().values().stream().filter(OwnedSyncStore.IncrementalEvent::finalPending)
+                        .map(OwnedSyncStore.IncrementalEvent::gameweek).forEach(finalPendingEvents::add);
             }
         } catch (RuntimeException failure) {
             return fail(lease, bounded(failure.getMessage()), requestedPlayers, committedPlayers, failedPlayers,
                     finalPendingEvents, null);
         }
 
+        Set<Integer> changedFixtureIds = changedCompatibilityFixtures;
         Set<Integer> finalizedCandidates = discovery.events().values().stream()
                 .filter(OwnedSyncStore.IncrementalEvent::finalized)
                 .map(OwnedSyncStore.IncrementalEvent::gameweek)
@@ -178,6 +276,10 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
         List<FixtureRow> targets = new ArrayList<>(active.size() + finished.size());
         targets.addAll(active);
         targets.addAll(finished);
+        Set<Integer> targetIds = targets.stream().map(FixtureRow::id)
+                .collect(java.util.stream.Collectors.toSet());
+        snapshot.fixtures().stream().filter(fixture -> changedFixtureIds.contains(fixture.id()))
+                .filter(FixtureRow::started).filter(fixture -> targetIds.add(fixture.id())).forEach(targets::add);
         if (targets.isEmpty() && finalPendingEvents.isEmpty()) {
             return complete(lease, reads, requestedPlayers, committedPlayers, failedPlayers, finalPendingEvents);
         }
@@ -226,16 +328,23 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
             fixtureFloors.put(fixture.id(), cycleFloor);
             priorities.put(fixture.id(), 1);
         }
+        for (FixtureRow fixture : targets) {
+            if (changedFixtureIds.contains(fixture.id())
+                    && !fixtureFloors.containsKey(fixture.id())) {
+                fixtureFloors.put(fixture.id(), snapshotRead.finishedAt().plusMillis(1));
+                priorities.put(fixture.id(), 1);
+            }
+        }
         for (FixtureRow fixture : finished) {
             Instant observed = discovery.finishedObservationTimes().get(fixture.id());
             if (observed == null) {
                 return fail(lease, "Finished fixture has no durable first-observed source marker",
                         requestedPlayers, committedPlayers, failedPlayers, finalPendingEvents, null);
             }
-            Instant floor = observed.plusMillis(1);
+            Instant floor = later(fixtureFloors.get(fixture.id()), observed.plusMillis(1));
+            int priority = priorities.getOrDefault(fixture.id(), 2);
             OwnedSyncStore.IncrementalEvent event = fixture.gameweek() == null ? null
                     : discovery.events().get(fixture.gameweek());
-            int priority = 2;
             if (event != null && (event.finalPending() || reopenedFinalizedEvents.contains(event.gameweek()))) {
                 if (event.firstCheckedAt() == null) {
                     return fail(lease, "FINAL_PENDING event has no durable checked-source observation",
@@ -435,6 +544,30 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
                 committedPlayers.add(playerId);
             } catch (RuntimeException invalidPage) {
                 failedPlayers.add(playerId);
+                if (compatibilityCatalogue != null && !validationPairUsed
+                        && invalidPage instanceof HistoryParser.ParentContradictionException) {
+                    validationPairUsed = true;
+                    Instant validationFloor = later(cycleFloor, page.readInterval().completedAt().plusMillis(1));
+                    CanonicalPairRequest validationPair = requestCanonicalPair(lease, validationFloor);
+                    lease = validationPair.lease();
+                    if (validationPair.failure() != null) {
+                        return stop(validationPair.failure(), requestedPlayers, committedPlayers, failedPlayers,
+                                finalPendingEvents);
+                    }
+                    reads.add(read(validationPair.bootstrap()));
+                    reads.add(read(validationPair.fixtures()));
+                    try {
+                        CatalogueScheduleParser.parse(season, validationPair.bootstrap(), validationPair.fixtures());
+                        String validatedFingerprint = sourceBodyFingerprint(
+                                validationPair.bootstrap(), validationPair.fixtures());
+                        if (!selectedSourceFingerprint.equals(validatedFingerprint)) {
+                            return supersedeForSourceChange(lease, requestedPlayers, committedPlayers, failedPlayers,
+                                    finalPendingEvents);
+                        }
+                    } catch (RuntimeException invalidPair) {
+                        // An invalid or incoherent pair is not evidence of a source revision.
+                    }
+                }
             }
         }
 
@@ -585,6 +718,46 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
         store.fail(lease, bounded(error));
         store.enqueueIncrementalCoreImport(season, due);
         return result(State.RETRY_SCHEDULED, requested, committed, failed, finalPending, due);
+    }
+
+    private CanonicalPairRequest requestCanonicalPair(Lease lease, Instant floor) {
+        RequestResult bootstrapResult = request(lease, Endpoint.bootstrap(), floor);
+        lease = bootstrapResult.lease();
+        if (!bootstrapResult.succeeded()) {
+            return new CanonicalPairRequest(lease, null, null, bootstrapResult);
+        }
+        Instant fixturesFloor = later(floor, bootstrapResult.document().readInterval().completedAt().plusMillis(1));
+        RequestResult fixturesResult = request(lease, Endpoint.fixtures(), fixturesFloor);
+        lease = fixturesResult.lease();
+        if (!fixturesResult.succeeded()) {
+            return new CanonicalPairRequest(lease, bootstrapResult.document(), null, fixturesResult);
+        }
+        return new CanonicalPairRequest(lease, bootstrapResult.document(), fixturesResult.document(), null);
+    }
+
+    private CycleResult retryInvalidSourcePair(Lease lease, List<Integer> requested, List<Integer> committed,
+                                               List<Integer> failed, List<Integer> finalPending) {
+        Instant due = clock.instant().plus(CYCLE_INTERVAL);
+        store.retry(lease, due, "Canonical source pair is invalid or incoherent; no revision was accepted");
+        return result(State.RETRY_SCHEDULED, requested, committed, failed, finalPending, due);
+    }
+
+    private CycleResult supersedeForSourceChange(Lease lease, List<Integer> requested, List<Integer> committed,
+                                                 List<Integer> failed, List<Integer> finalPending) {
+        store.supersedeIncrementalCoreImport(lease);
+        Instant due = clock.instant().plus(CYCLE_INTERVAL);
+        return result(State.SUPERSEDED, requested, committed, failed, finalPending, due);
+    }
+
+    private static boolean sameSourceBodies(OwnedSyncStore.IncrementalCompatibilitySnapshot prior,
+                                            SourceDocument bootstrap, SourceDocument fixtures) {
+        return prior.pair().bootstrap().sha256().equals(OwnedSyncStore.sha256(bootstrap.bytes()))
+                && prior.pair().fixtures().sha256().equals(OwnedSyncStore.sha256(fixtures.bytes()));
+    }
+
+    private static String sourceBodyFingerprint(SourceDocument bootstrap, SourceDocument fixtures) {
+        return OwnedSyncStore.sha256(OwnedSyncStore.sha256(bootstrap.bytes()) + "|"
+                + OwnedSyncStore.sha256(fixtures.bytes()));
     }
 
     private RequestResult request(Lease lease, Endpoint endpoint, Instant floor) {
@@ -738,7 +911,7 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
         OwnedSyncHttpClient.Result get(Lease lease, Endpoint endpoint, int failureAttempt, Instant floor);
     }
 
-    public enum State { DISABLED, BUSY, DEFERRED, COMPLETED, RETRY_SCHEDULED, FAILED }
+    public enum State { DISABLED, BUSY, DEFERRED, COMPLETED, RETRY_SCHEDULED, SUPERSEDED, FAILED }
 
     public record CycleResult(State state, List<Integer> selectedPlayerIds,
                               List<Integer> committedPlayerIds, List<Integer> failedPlayerIds,
@@ -755,6 +928,9 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
             return new CycleResult(State.DISABLED, List.of(), List.of(), List.of(), List.of(), null);
         }
     }
+
+    private record CanonicalPairRequest(Lease lease, SourceDocument bootstrap, SourceDocument fixtures,
+                                        RequestResult failure) { }
 
     private record RequestResult(Lease lease, SourceDocument document, Instant nextDue,
                                  String error, boolean deferred) {

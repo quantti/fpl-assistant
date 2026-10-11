@@ -105,6 +105,11 @@ public class OwnedSyncRuntimeConfiguration {
                 && !importerEnabled;
     }
 
+    public static boolean catalogueCaptureEnabled(String configuredMode, boolean importerEnabled) {
+        return OwnedSyncMode.valueOf(configuredMode.trim().toUpperCase(Locale.ROOT)) != OwnedSyncMode.ACTIVE
+                || importerEnabled;
+    }
+
     static void validateLegacyArguments(OwnedSyncMode mode, ApplicationArguments arguments) {
         if (mode != OwnedSyncMode.ACTIVE) return;
         for (String option : List.of("sync-prices", "sync-schedule", "sync-defcon")) {
@@ -114,7 +119,7 @@ public class OwnedSyncRuntimeConfiguration {
         }
     }
 
-    private static Season configuredSeason(JdbcTemplate jdbc, String configured) {
+    static Season configuredSeason(JdbcTemplate jdbc, String configured) {
         List<Season> rows = jdbc.query("""
                 SELECT id, code, start_date, end_date FROM season
                 WHERE is_current=true AND (?='' OR code=?)

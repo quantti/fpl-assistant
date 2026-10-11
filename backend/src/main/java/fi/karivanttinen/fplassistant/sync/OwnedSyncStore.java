@@ -13,6 +13,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -49,6 +50,7 @@ public final class OwnedSyncStore {
     public static final int MAX_ERROR_CHARS = 1_000;
     static final String INCREMENTAL_CORE_PRODUCER = "INCREMENTAL_CORE";
     static final String INCREMENTAL_CORE_KEY = "incremental-core-import";
+    static final String INCREMENTAL_COMPATIBILITY_PUBLICATION_KEY = "incremental-compatibility-catalogue";
     static final String FINISHED_FIXTURE_RECEIPT_PREFIX = "incremental-finished-fixture:";
     static final String INCREMENTAL_LIVE_EVENT_RECEIPT_PREFIX = "incremental-live-event:";
     static final String INCREMENTAL_PARTICIPANT_RECEIPT_PREFIX = "incremental-participant:fixture:";
@@ -219,6 +221,19 @@ public final class OwnedSyncStore {
         }
     }
 
+    private void requireIncrementalCompatibilitySeason(CatalogueScheduleParser.Season season) {
+        requireIncrementalRuntime(season);
+        List<SeasonCalendar> current = jdbc.query("""
+                SELECT start_date, end_date FROM season WHERE is_current=true ORDER BY id FOR UPDATE
+                """, (rs, row) -> new SeasonCalendar(rs.getDate("start_date") == null ? null
+                : rs.getDate("start_date").toLocalDate(), rs.getDate("end_date") == null ? null
+                : rs.getDate("end_date").toLocalDate()));
+        if (current.size() != 1 || !Objects.equals(current.getFirst().startsOn(), season.startsOn())
+                || !Objects.equals(current.getFirst().endsOn(), season.endsOn())) {
+            throw new RuntimeFenceLostException("Incremental compatibility season calendar is not current");
+        }
+    }
+
     private void requireIncrementalRuntime(String season) {
         if (runtimeFence == null || runtimeFence.mode() != OwnedSyncMode.ACTIVE
                 || !runtimeFence.season().equals(season)) {
@@ -321,16 +336,16 @@ public final class OwnedSyncStore {
                     AND f.read_started_at=p.source_fixtures_read_started_at
                     AND f.read_finished_at=p.source_fixtures_read_finished_at
                 JOIN %s br ON br.generation=b.run_generation AND br.season=r.season
-                    AND br.kind='CATALOGUE_SCHEDULE' AND br.runtime_mode='ACTIVE'
-                    AND br.runtime_epoch=r.runtime_epoch
+                    AND br.kind='CATALOGUE_SCHEDULE' AND br.producer_key='LEGACY'
+                    AND br.runtime_mode='ACTIVE' AND br.runtime_epoch=r.runtime_epoch
                     AND ((br.coalescing_key=? AND br.publication_key=?)
                          OR (br.coalescing_key=? AND br.publication_key=?))
                 JOIN %s fr ON fr.generation=f.run_generation AND fr.season=r.season
-                    AND fr.kind='CATALOGUE_SCHEDULE' AND fr.runtime_mode='ACTIVE'
-                    AND fr.runtime_epoch=r.runtime_epoch
+                    AND fr.kind='CATALOGUE_SCHEDULE' AND fr.producer_key='LEGACY'
+                    AND fr.runtime_mode='ACTIVE' AND fr.runtime_epoch=r.runtime_epoch
                     AND ((fr.coalescing_key=? AND fr.publication_key=?)
                          OR (fr.coalescing_key=? AND fr.publication_key=?))
-                WHERE r.season=? AND r.kind='CATALOGUE_SCHEDULE'
+                WHERE r.season=? AND r.kind='CATALOGUE_SCHEDULE' AND r.producer_key='LEGACY'
                   AND ((r.coalescing_key=? AND r.publication_key=?)
                        OR (r.coalescing_key=? AND r.publication_key=?))
                   AND r.runtime_mode='ACTIVE' AND r.runtime_epoch=? AND r.state='COMPLETED'
@@ -415,7 +430,8 @@ public final class OwnedSyncStore {
     private String canonicalDemandFloor(String runAlias, String payloadAlias) {
         return """
                 (SELECT MAX(demand.requested_source_after) FROM %s demand
-                 WHERE demand.kind='CATALOGUE_SCHEDULE' AND demand.season=%s.season
+                 WHERE demand.kind='CATALOGUE_SCHEDULE' AND demand.producer_key='LEGACY'
+                   AND demand.season=%s.season
                    AND demand.runtime_mode=%s.runtime_mode AND demand.runtime_epoch=%s.runtime_epoch
                    AND demand.coalescing_key=%s.coalescing_key
                    AND demand.publication_key=%s.publication_key) <= %s.read_started_at
@@ -457,16 +473,16 @@ public final class OwnedSyncStore {
                         AND f.read_finished_at=p.source_fixtures_read_finished_at
                         AND f.read_finished_at<=p.published_at
                     LEFT JOIN %s br ON br.generation=b.run_generation AND br.season=r.season
-                        AND br.kind='CATALOGUE_SCHEDULE' AND br.runtime_mode='ACTIVE'
-                        AND br.runtime_epoch=r.runtime_epoch
+                        AND br.kind='CATALOGUE_SCHEDULE' AND br.producer_key='LEGACY'
+                        AND br.runtime_mode='ACTIVE' AND br.runtime_epoch=r.runtime_epoch
                         AND ((br.coalescing_key=? AND br.publication_key=?)
                           OR (br.coalescing_key=? AND br.publication_key=?))
                     LEFT JOIN %s fr ON fr.generation=f.run_generation AND fr.season=r.season
-                        AND fr.kind='CATALOGUE_SCHEDULE' AND fr.runtime_mode='ACTIVE'
-                        AND fr.runtime_epoch=r.runtime_epoch
+                        AND fr.kind='CATALOGUE_SCHEDULE' AND fr.producer_key='LEGACY'
+                        AND fr.runtime_mode='ACTIVE' AND fr.runtime_epoch=r.runtime_epoch
                         AND ((fr.coalescing_key=? AND fr.publication_key=?)
                           OR (fr.coalescing_key=? AND fr.publication_key=?))
-                    WHERE r.kind='CATALOGUE_SCHEDULE' AND r.season=?
+                    WHERE r.kind='CATALOGUE_SCHEDULE' AND r.producer_key='LEGACY' AND r.season=?
                       AND r.runtime_mode='ACTIVE' AND r.runtime_epoch=?
                       AND ((r.coalescing_key=? AND r.publication_key=?)
                            OR (r.coalescing_key=? AND r.publication_key=?))
@@ -586,9 +602,7 @@ public final class OwnedSyncStore {
             if (prior.size() != 1) throw new IllegalStateException("Incremental runner receipt is missing");
             SnapshotReceipt current = prior.getFirst();
             if (current.generation() != null && current.generation() == run.generation) {
-                if (!fingerprint.equals(current.fingerprint())) return false;
-                includeIncrementalSourceRead(run, read);
-                return true;
+                return fingerprint.equals(current.fingerprint());
             }
             if (current.generation() != null && current.generation() > run.generation) {
                 throw new StaleGenerationException(run.generation, current.generation(), run.season,
@@ -605,6 +619,264 @@ public final class OwnedSyncStore {
             includeIncrementalSourceRead(run, read);
             return true;
         });
+    }
+
+    CanonicalSourcePair incrementalSourcePair(Lease lease,
+            CatalogueScheduleParser.SourceDocument bootstrap,
+            CatalogueScheduleParser.SourceDocument fixtures) {
+        Objects.requireNonNull(bootstrap);
+        Objects.requireNonNull(fixtures);
+        StagedPayload stagedBootstrap = latestStagedPayload(lease, Endpoint.bootstrap())
+                .orElseThrow(() -> new IllegalStateException("Bootstrap source payload was not staged"));
+        StagedPayload stagedFixtures = latestStagedPayload(lease, Endpoint.fixtures())
+                .orElseThrow(() -> new IllegalStateException("Fixture source payload was not staged"));
+        if (stagedBootstrap.validationState() != ValidationState.VALID
+                || stagedFixtures.validationState() != ValidationState.VALID
+                || !stagedBootstrap.read().equals(new SourceRead(
+                        postgresTimestampPrecision(bootstrap.readInterval().startedAt()),
+                        postgresTimestampPrecision(bootstrap.readInterval().completedAt())))
+                || !stagedFixtures.read().equals(new SourceRead(
+                        postgresTimestampPrecision(fixtures.readInterval().startedAt()),
+                        postgresTimestampPrecision(fixtures.readInterval().completedAt())))
+                || !Arrays.equals(stagedBootstrap.body(), bootstrap.bytes())
+                || !Arrays.equals(stagedFixtures.body(), fixtures.bytes())) {
+            throw new IllegalArgumentException("Validated bootstrap and fixture payloads must match this source pair");
+        }
+        return CanonicalSourcePair.from(stagedBootstrap, stagedFixtures);
+    }
+
+    /** Returns the immutable source pair already published by this same incremental generation. */
+    Optional<IncrementalCompatibilitySnapshot> incrementalCompatibilitySnapshot(Lease lease) {
+        return tx.execute(status -> {
+            LockedRun run = lockAndValidate(lease);
+            requireIncrementalRun(run);
+            List<IncrementalCompatibilityReceipt> receipts = jdbc.query("""
+                    SELECT latest_generation, source_read_started_at, source_read_finished_at,
+                           source_bootstrap_payload_id, source_fixtures_payload_id,
+                           source_bootstrap_read_started_at, source_bootstrap_read_finished_at,
+                           source_fixtures_read_started_at, source_fixtures_read_finished_at,
+                           source_bootstrap_sha256, source_fixtures_sha256, source_pair_fingerprint
+                    FROM %s WHERE season=? AND publication_key=?
+                    """.formatted(tables.receipt()), (rs, row) -> new IncrementalCompatibilityReceipt(
+                    rs.getObject("latest_generation", Long.class), instant(rs, "source_read_started_at"),
+                    instant(rs, "source_read_finished_at"), rs.getObject("source_bootstrap_payload_id", Long.class),
+                    rs.getObject("source_fixtures_payload_id", Long.class),
+                    instant(rs, "source_bootstrap_read_started_at"),
+                    instant(rs, "source_bootstrap_read_finished_at"),
+                    instant(rs, "source_fixtures_read_started_at"),
+                    instant(rs, "source_fixtures_read_finished_at"), rs.getString("source_bootstrap_sha256"),
+                    rs.getString("source_fixtures_sha256"), rs.getString("source_pair_fingerprint")),
+                    run.season, INCREMENTAL_COMPATIBILITY_PUBLICATION_KEY);
+            if (receipts.size() > 1) throw new IllegalStateException("Incremental compatibility receipt is ambiguous");
+            if (receipts.isEmpty() || receipts.getFirst().generation() == null
+                    || receipts.getFirst().generation() != run.generation) return Optional.empty();
+            IncrementalCompatibilityReceipt receipt = receipts.getFirst();
+            if (receipt.bootstrapId() == null || receipt.fixturesId() == null || receipt.sourceRead() == null
+                    || receipt.bootstrapRead() == null || receipt.fixturesRead() == null
+                    || receipt.bootstrapHash() == null || receipt.fixturesHash() == null
+                    || receipt.fingerprint() == null) {
+                throw new IllegalStateException("Incremental compatibility receipt is incomplete");
+            }
+            List<IncrementalSourcePayload> payloads = jdbc.query("""
+                    SELECT id, run_generation, endpoint_kind, event_id, player_id,
+                           read_started_at, read_finished_at, validation_state, validation_error, body,
+                           source_published
+                    FROM %s WHERE id IN (?, ?) ORDER BY id
+                    """.formatted(tables.payload()), (rs, row) -> new IncrementalSourcePayload(
+                    stagedPayload(rs, row), rs.getObject("event_id", Integer.class),
+                    rs.getObject("player_id", Integer.class), rs.getBoolean("source_published")),
+                    receipt.bootstrapId(), receipt.fixturesId());
+            if (payloads.size() != 2) throw new IllegalStateException("Incremental compatibility payload disappeared");
+            IncrementalSourcePayload bootstrap = payloads.stream()
+                    .filter(payload -> payload.payload().id() == receipt.bootstrapId()).findFirst().orElseThrow();
+            IncrementalSourcePayload fixtures = payloads.stream()
+                    .filter(payload -> payload.payload().id() == receipt.fixturesId()).findFirst().orElseThrow();
+            StagedPayload bootstrapPayload = bootstrap.payload();
+            StagedPayload fixturePayload = fixtures.payload();
+            if (bootstrap.eventId() != null || bootstrap.playerId() != null
+                    || fixtures.eventId() != null || fixtures.playerId() != null
+                    || !bootstrap.sourcePublished() || !fixtures.sourcePublished()
+                    || bootstrapPayload.runGeneration() != run.generation
+                    || fixturePayload.runGeneration() != run.generation
+                    || bootstrapPayload.endpointKind() != EndpointKind.BOOTSTRAP_STATIC
+                    || fixturePayload.endpointKind() != EndpointKind.FIXTURES
+                    || bootstrapPayload.validationState() != ValidationState.VALID
+                    || fixturePayload.validationState() != ValidationState.VALID) {
+                throw new IllegalStateException("Incremental compatibility payload identity or proof changed");
+            }
+            CanonicalSourcePair pair = CanonicalSourcePair.from(bootstrapPayload, fixturePayload);
+            if (!pair.bootstrap().read().equals(receipt.bootstrapRead())
+                    || !pair.fixtures().read().equals(receipt.fixturesRead())
+                    || !pair.bootstrap().sha256().equals(receipt.bootstrapHash())
+                    || !pair.fixtures().sha256().equals(receipt.fixturesHash())
+                    || !pair.fingerprint().equals(receipt.fingerprint())) {
+                throw new IllegalStateException("Incremental compatibility pair no longer matches its receipt");
+            }
+            SourceRead sourceRead = receipt.sourceRead();
+            requireCanonicalPairCoverage(sourceRead, pair);
+            SourceRead canonicalSpan = combinedSourceRead(pair.bootstrap().read(), pair.fixtures().read());
+            if (!sourceRead.equals(canonicalSpan)) {
+                throw new IllegalStateException("Incremental compatibility receipt does not preserve its source span");
+            }
+            Instant sourceFloor = jdbc.queryForObject("SELECT requested_source_after FROM %s WHERE generation=?"
+                    .formatted(tables.run()), Timestamp.class, run.generation).toInstant();
+            if (pair.bootstrap().read().startedAt().isBefore(sourceFloor)
+                    || pair.fixtures().read().startedAt().isBefore(sourceFloor)) {
+                throw new IllegalStateException("Incremental compatibility pair predates its run source floor");
+            }
+            return Optional.of(new IncrementalCompatibilitySnapshot(pair, bootstrapPayload, fixturePayload, sourceRead));
+        });
+    }
+
+    /** Atomically publishes the incremental source pair and its compatibility rows under the collector lease. */
+    <T> T publishIncrementalCompatibility(Lease lease, CatalogueScheduleParser.Season season,
+            CanonicalSourcePair sourcePair, SourceRead sourceRead, Supplier<T> publication) {
+        Objects.requireNonNull(lease);
+        Objects.requireNonNull(season);
+        Objects.requireNonNull(sourcePair);
+        Objects.requireNonNull(sourceRead);
+        Objects.requireNonNull(publication);
+        return tx.execute(status -> {
+            LockedRun run = lockAndValidate(lease);
+            requireIncrementalRun(run);
+            if (lease.kind() != SyncKind.PLAYER_HISTORY || !season.code().equals(run.season)
+                    || sourcePair.bootstrap().runGeneration() != run.generation
+                    || sourcePair.fixtures().runGeneration() != run.generation) {
+                throw new IllegalArgumentException("Compatibility source pair must belong to the leased season run");
+            }
+            requireIncrementalCompatibilitySeason(season);
+            validateIncrementalCompatibilityPair(run, sourcePair, sourceRead);
+            Instant now = now();
+            requireNotExpired(run, now);
+            requireReadNotFuture(sourceRead, now);
+            Timestamp requestedAfter = jdbc.queryForObject("SELECT requested_source_after FROM %s WHERE generation=?"
+                    .formatted(tables.run()), Timestamp.class, run.generation);
+            if (requestedAfter == null
+                    || sourcePair.bootstrap().read().startedAt().isBefore(requestedAfter.toInstant())
+                    || sourcePair.fixtures().read().startedAt().isBefore(requestedAfter.toInstant())) {
+                throw new SourceDemandAdvancedException(run.generation,
+                        requestedAfter == null ? now : requestedAfter.toInstant());
+            }
+            requireCanonicalPairCoverage(sourceRead, sourcePair);
+            lockCompatibilityReceipt(run, sourcePair);
+            recordIncrementalSourceReceipt(run, CatalogueScheduleWriter.SHARED_TEAM_SOURCE_RECEIPT_KEY,
+                    sourcePair.bootstrap().read());
+            recordIncrementalSourceReceipt(run, CatalogueScheduleWriter.FIXTURE_SOURCE_RECEIPT_KEY,
+                    sourcePair.fixtures().read());
+
+            T result = publication.get();
+            requireNotExpired(run, now());
+            int marked = jdbc.update("""
+                    UPDATE %s SET source_published=TRUE
+                    WHERE id IN (?, ?) AND run_generation=? AND validation_state='VALID'
+                      AND endpoint_kind IN ('BOOTSTRAP_STATIC','FIXTURES')
+                    """.formatted(tables.payload()), sourcePair.bootstrap().id(),
+                    sourcePair.fixtures().id(), run.generation);
+            if (marked != 2) throw new IllegalStateException("Compatibility source pair changed during publication");
+            Instant publishedAt = now();
+            jdbc.update("""
+                    UPDATE %s SET latest_generation=?, source_read_started_at=?, source_read_finished_at=?,
+                        published_at=?, source_bootstrap_payload_id=?, source_fixtures_payload_id=?,
+                        source_bootstrap_read_started_at=?, source_bootstrap_read_finished_at=?,
+                        source_fixtures_read_started_at=?, source_fixtures_read_finished_at=?,
+                        source_bootstrap_sha256=?, source_fixtures_sha256=?, source_pair_fingerprint=?
+                    WHERE season=? AND publication_key=?
+                    """.formatted(tables.receipt()), run.generation, timestamp(sourceRead.startedAt()),
+                    timestamp(sourceRead.finishedAt()), timestamp(publishedAt), sourcePair.bootstrap().id(),
+                    sourcePair.fixtures().id(), timestamp(sourcePair.bootstrap().read().startedAt()),
+                    timestamp(sourcePair.bootstrap().read().finishedAt()),
+                    timestamp(sourcePair.fixtures().read().startedAt()),
+                    timestamp(sourcePair.fixtures().read().finishedAt()), sourcePair.bootstrap().sha256(),
+                    sourcePair.fixtures().sha256(), sourcePair.fingerprint(), run.season,
+                    INCREMENTAL_COMPATIBILITY_PUBLICATION_KEY);
+            requireNotExpired(run, now());
+            return result;
+        });
+    }
+
+    private void validateIncrementalCompatibilityPair(LockedRun run, CanonicalSourcePair sourcePair,
+                                                       SourceRead publicationRead) {
+        List<IncrementalSourcePayload> payloads = jdbc.query("""
+                SELECT id, run_generation, endpoint_kind, event_id, player_id,
+                       read_started_at, read_finished_at, validation_state, validation_error, body
+                FROM %s WHERE id IN (?, ?) ORDER BY id FOR UPDATE
+                """.formatted(tables.payload()), (rs, row) -> new IncrementalSourcePayload(
+                stagedPayload(rs, row), rs.getObject("event_id", Integer.class),
+                rs.getObject("player_id", Integer.class)),
+                sourcePair.bootstrap().id(), sourcePair.fixtures().id());
+        if (payloads.size() != 2) throw new IllegalStateException("Compatibility source payload disappeared");
+        IncrementalSourcePayload bootstrap = payloads.stream()
+                .filter(payload -> payload.payload().id() == sourcePair.bootstrap().id()).findFirst().orElseThrow();
+        IncrementalSourcePayload fixtures = payloads.stream()
+                .filter(payload -> payload.payload().id() == sourcePair.fixtures().id()).findFirst().orElseThrow();
+        if (bootstrap.payload().runGeneration() != run.generation
+                || fixtures.payload().runGeneration() != run.generation
+                || bootstrap.payload().endpointKind() != EndpointKind.BOOTSTRAP_STATIC
+                || fixtures.payload().endpointKind() != EndpointKind.FIXTURES
+                || bootstrap.eventId() != null || bootstrap.playerId() != null
+                || fixtures.eventId() != null || fixtures.playerId() != null
+                || bootstrap.payload().validationState() != ValidationState.VALID
+                || fixtures.payload().validationState() != ValidationState.VALID
+                || !sourcePair.equals(CanonicalSourcePair.from(bootstrap.payload(), fixtures.payload()))) {
+            throw new IllegalStateException("Compatibility source payload identity or validation changed");
+        }
+        requireReadNotFuture(publicationRead, now());
+    }
+
+    private void lockCompatibilityReceipt(LockedRun run, CanonicalSourcePair sourcePair) {
+        jdbc.update("INSERT INTO %s(season, publication_key) VALUES (?, ?) ON CONFLICT DO NOTHING"
+                .formatted(tables.receipt()), run.season, INCREMENTAL_COMPATIBILITY_PUBLICATION_KEY);
+        List<CompatibilityReceipt> receipts = jdbc.query("""
+                SELECT latest_generation, source_pair_fingerprint, source_bootstrap_payload_id,
+                       source_fixtures_payload_id
+                FROM %s WHERE season=? AND publication_key=? FOR UPDATE
+                """.formatted(tables.receipt()), (rs, ignored) -> new CompatibilityReceipt(
+                (Long) rs.getObject("latest_generation"), rs.getString("source_pair_fingerprint"),
+                (Long) rs.getObject("source_bootstrap_payload_id"),
+                (Long) rs.getObject("source_fixtures_payload_id"), null, null), run.season,
+                INCREMENTAL_COMPATIBILITY_PUBLICATION_KEY);
+        if (receipts.size() != 1) throw new IllegalStateException("Compatibility publication receipt is missing");
+        CompatibilityReceipt previous = receipts.getFirst();
+        if (previous.generation() != null && previous.generation() > run.generation) {
+            throw new StaleGenerationException(run.generation, previous.generation(), run.season,
+                    INCREMENTAL_COMPATIBILITY_PUBLICATION_KEY);
+        }
+        if (previous.generation() != null && previous.generation() == run.generation
+                && (!Objects.equals(previous.fingerprint(), sourcePair.fingerprint())
+                    || !Objects.equals(previous.bootstrapPayloadId(), sourcePair.bootstrap().id())
+                    || !Objects.equals(previous.fixturesPayloadId(), sourcePair.fixtures().id()))) {
+            throw new IllegalStateException("One incremental generation cannot publish two compatibility source pairs");
+        }
+    }
+
+    private void recordIncrementalSourceReceipt(LockedRun run, String streamKey, SourceRead read) {
+        jdbc.update("INSERT INTO %s(season, publication_key) VALUES (?, ?) ON CONFLICT DO NOTHING"
+                .formatted(tables.receipt()), run.season, streamKey);
+        List<CompatibilityReceipt> rows = jdbc.query("""
+                SELECT latest_generation, source_read_started_at, source_read_finished_at
+                FROM %s WHERE season=? AND publication_key=? FOR UPDATE
+                """.formatted(tables.receipt()), (rs, ignored) -> new CompatibilityReceipt(
+                (Long) rs.getObject("latest_generation"), null, null, null,
+                instant(rs, "source_read_started_at"), instant(rs, "source_read_finished_at")),
+                run.season, streamKey);
+        if (rows.size() != 1) throw new IllegalStateException("Shared source chronology receipt is missing");
+        CompatibilityReceipt previous = rows.getFirst();
+        if (previous.generation() != null && previous.generation() > run.generation
+                || previous.sourceFinishedAt() != null && previous.sourceFinishedAt().isAfter(read.finishedAt())
+                || previous.generation() != null && previous.generation() < run.generation
+                    && previous.sourceFinishedAt() != null
+                    && read.startedAt().isBefore(previous.sourceFinishedAt())) {
+            throw new CatalogueScheduleWriter.SourceRegressionException(
+                    streamKey + " source read predates its shared chronology receipt");
+        }
+        Instant recordedAt = now();
+        jdbc.update("""
+                UPDATE %s SET latest_generation=GREATEST(COALESCE(latest_generation, ?), ?),
+                    source_read_started_at=?, source_read_finished_at=?, published_at=?
+                WHERE season=? AND publication_key=?
+                """.formatted(tables.receipt()), run.generation, run.generation,
+                timestamp(read.startedAt()), timestamp(read.finishedAt()), timestamp(recordedAt),
+                run.season, streamKey);
     }
 
     /** Stores source-discovery checkpoints and returns only compact metadata for this snapshot. */
@@ -643,7 +915,7 @@ public final class OwnedSyncStore {
                         """.formatted(tables.receipt(), tables.receipt(), tables.receipt()), run.season, key,
                         run.generation, timestamp(snapshot.fixturesRead().startedAt()),
                         timestamp(snapshot.fixturesRead().completedAt()),
-                        FixtureVerification.verifiedHeader(fixture), timestamp(recordedAt));
+                        incrementalFixtureFingerprint(fixture), timestamp(recordedAt));
             }
             List<CatalogueScheduleParser.FixtureRow> notFinished = snapshot.fixtures().stream()
                     .filter(fixture -> !fixture.finished()).toList();
@@ -714,6 +986,10 @@ public final class OwnedSyncStore {
                     schedule.season().id(), event.id());
         }
         return new IncrementalEvent(event.id(), state, firstCheckedAt, signature);
+    }
+
+    private static String incrementalFixtureFingerprint(CatalogueScheduleParser.FixtureRow fixture) {
+        return sha256(FixtureVerification.verifiedHeader(fixture) + "|" + FixtureStatsFingerprint.of(fixture));
     }
 
     private void deleteFinishedMarkers(String season, List<CatalogueScheduleParser.FixtureRow> fixtures) {
@@ -2076,7 +2352,7 @@ public final class OwnedSyncStore {
                       AND p.endpoint_kind = 'FIXTURES' AND p.validation_state = 'VALID'
                     ORDER BY p.id DESC LIMIT 1
                 ) f ON TRUE
-                WHERE r.kind = 'CATALOGUE_SCHEDULE' AND r.season = ?
+                WHERE r.kind = 'CATALOGUE_SCHEDULE' AND r.producer_key = 'LEGACY' AND r.season = ?
                   AND (? = FALSE OR (r.runtime_mode=? AND r.runtime_epoch=?))
                 ORDER BY GREATEST(b.read_finished_at, f.read_finished_at) DESC, r.generation DESC
                 LIMIT ?
@@ -2122,12 +2398,13 @@ public final class OwnedSyncStore {
                     WHERE p.season=? AND publication_run.publication_key=p.publication_key
                       AND p.published_at IS NOT NULL AND p.published_at<=?
                       AND publication_run.kind='CATALOGUE_SCHEDULE'
+                      AND publication_run.producer_key='LEGACY'
                       AND publication_run.runtime_mode='ACTIVE' AND publication_run.runtime_epoch=?
                       AND publication_run.state='COMPLETED' AND publication_run.completed_at IS NOT NULL
                       AND publication_run.completed_at<=p.published_at
                       AND ((publication_run.coalescing_key=? AND publication_run.publication_key=?)
                            OR (publication_run.coalescing_key=? AND publication_run.publication_key=?))
-                      AND source_run.kind='CATALOGUE_SCHEDULE'
+                      AND source_run.kind='CATALOGUE_SCHEDULE' AND source_run.producer_key='LEGACY'
                       AND source_run.runtime_mode='ACTIVE' AND source_run.runtime_epoch=?
                       AND ((source_run.coalescing_key=? AND source_run.publication_key=?)
                            OR (source_run.coalescing_key=? AND source_run.publication_key=?))
@@ -2221,8 +2498,8 @@ public final class OwnedSyncStore {
                       AND b.endpoint_kind='BOOTSTRAP_STATIC' AND b.validation_state='VALID'
                     JOIN %s f ON f.run_generation=r.generation AND f.id=?
                       AND f.endpoint_kind='FIXTURES' AND f.validation_state='VALID'
-                    WHERE r.generation=? AND r.kind='CATALOGUE_SCHEDULE' AND r.season=?
-                      AND (? = FALSE OR (r.runtime_mode=? AND r.runtime_epoch=?))
+                    WHERE r.generation=? AND r.kind='CATALOGUE_SCHEDULE' AND r.producer_key='LEGACY'
+                      AND r.season=? AND (? = FALSE OR (r.runtime_mode=? AND r.runtime_epoch=?))
                 )
                 """.formatted(tables.run(), tables.payload(), tables.payload()), Boolean.class,
                 key.bootstrapId(), key.fixturesId(), key.runGeneration(), key.season(),
@@ -2243,8 +2520,8 @@ public final class OwnedSyncStore {
                   AND b.endpoint_kind='BOOTSTRAP_STATIC' AND b.validation_state='VALID'
                 JOIN %s f ON f.run_generation=r.generation AND f.id=?
                   AND f.endpoint_kind='FIXTURES' AND f.validation_state='VALID'
-                WHERE r.generation=? AND r.kind='CATALOGUE_SCHEDULE' AND r.season=?
-                  AND (? = FALSE OR (r.runtime_mode=? AND r.runtime_epoch=?))
+                WHERE r.generation=? AND r.kind='CATALOGUE_SCHEDULE' AND r.producer_key='LEGACY'
+                  AND r.season=? AND (? = FALSE OR (r.runtime_mode=? AND r.runtime_epoch=?))
                 """.formatted(tables.run(), tables.payload(), tables.payload()), (rs, row) ->
                 new PublicPayloadPair(rs.getLong("generation"),
                         stagedPayload(rs, "b", EndpointKind.BOOTSTRAP_STATIC),
@@ -2523,18 +2800,23 @@ public final class OwnedSyncStore {
         });
     }
 
-    private static void requireCanonicalPairCoverage(SourceRead publicationRead, CanonicalSourcePair pair) {
+    static void requireCanonicalPairCoverage(SourceRead publicationRead, CanonicalSourcePair pair) {
         SourceRead persistedRead = postgresTimestampPrecision(publicationRead);
-        if (persistedRead.startedAt().isAfter(pair.bootstrap().read().startedAt())
-                || persistedRead.startedAt().isAfter(pair.fixtures().read().startedAt())
-                || persistedRead.finishedAt().isBefore(pair.bootstrap().read().finishedAt())
-                || persistedRead.finishedAt().isBefore(pair.fixtures().read().finishedAt())) {
+        SourceRead bootstrapRead = postgresTimestampPrecision(pair.bootstrap().read());
+        SourceRead fixturesRead = postgresTimestampPrecision(pair.fixtures().read());
+        if (persistedRead.startedAt().isAfter(bootstrapRead.startedAt())
+                || persistedRead.startedAt().isAfter(fixturesRead.startedAt())
+                || persistedRead.finishedAt().isBefore(bootstrapRead.finishedAt())
+                || persistedRead.finishedAt().isBefore(fixturesRead.finishedAt())) {
             throw new IllegalArgumentException("Publication source interval must cover both canonical reads");
         }
     }
 
     private CanonicalSourcePair lockAndMarkCanonicalSourcePublished(LockedRun publicationRun,
                                                                       CanonicalSourcePair pair) {
+        if (!"LEGACY".equals(publicationRun.producerKey())) {
+            throw new IllegalArgumentException("Only legacy catalogue runs may publish canonical source pairs");
+        }
         List<CanonicalSourceMetadata> rows = jdbc.query("""
                 SELECT b.id AS b_id, b.run_generation AS b_generation, b.read_started_at AS b_started,
                        b.read_finished_at AS b_finished, f.id AS f_id,
@@ -2548,6 +2830,7 @@ public final class OwnedSyncStore {
                   AND b.event_id IS NULL AND b.player_id IS NULL
                   AND b.read_started_at=? AND b.read_finished_at=? AND b.validation_state='VALID'
                   AND source_run.season=? AND source_run.kind='CATALOGUE_SCHEDULE'
+                  AND source_run.producer_key='LEGACY'
                   AND source_run.runtime_mode=? AND source_run.runtime_epoch=?
                   AND ((source_run.coalescing_key=? AND source_run.publication_key=?)
                     OR (source_run.coalescing_key=? AND source_run.publication_key=?))
@@ -2742,6 +3025,25 @@ public final class OwnedSyncStore {
 
     public void fail(Lease lease, String error) {
         finishAttempt(lease, null, error, true, false, false, null);
+    }
+
+    /** Ends an incremental producer run after a validated canonical source revision supersedes it. */
+    void supersedeIncrementalCoreImport(Lease lease) {
+        tx.executeWithoutResult(status -> {
+            LockedRun run = lockAndValidate(lease);
+            requireIncrementalRun(run);
+            Instant supersededAt = now();
+            requireNotExpired(run, supersededAt);
+            int updated = jdbc.update("""
+                    UPDATE %s SET state='SUPERSEDED',
+                        last_error='Superseded by a validated newer canonical source pair',
+                        failed_at=NULL, completed_at=?, lease_owner=NULL, lease_token=NULL,
+                        lease_expires_at=NULL, updated_at=?
+                    WHERE generation=? AND state='LEASED' AND lease_owner=? AND lease_token=? AND lease_fence=?
+                    """.formatted(tables.run()), timestamp(supersededAt), timestamp(supersededAt),
+                    run.generation, lease.owner(), lease.token(), lease.fence());
+            if (updated != 1) throw new LeaseLostException("Lease is stale for generation " + run.generation);
+        });
     }
 
     public void failFetch(Lease lease, String error) {
@@ -3127,6 +3429,13 @@ public final class OwnedSyncStore {
         return value == null ? null : timestamp(value);
     }
 
+    private static SourceRead combinedSourceRead(SourceRead first, SourceRead second) {
+        return new SourceRead(first.startedAt().isBefore(second.startedAt())
+                ? first.startedAt() : second.startedAt(),
+                first.finishedAt().isAfter(second.finishedAt())
+                        ? first.finishedAt() : second.finishedAt());
+    }
+
     private static Instant max(Instant first, Instant second) {
         return first == null || second.isAfter(first) ? second : first;
     }
@@ -3211,7 +3520,7 @@ public final class OwnedSyncStore {
 
     public enum EndpointKind { BOOTSTRAP_STATIC, FIXTURES, EVENT_LIVE, ELEMENT_SUMMARY }
     public enum ValidationState { UNCHECKED, VALID, INVALID }
-    public enum RunState { PENDING, LEASED, COMPLETED, FAILED }
+    public enum RunState { PENDING, LEASED, COMPLETED, FAILED, SUPERSEDED }
 
     public record Endpoint(EndpointKind kind, Integer eventId, Integer playerId) {
         public Endpoint { Objects.requireNonNull(kind); }
@@ -3467,6 +3776,37 @@ public final class OwnedSyncStore {
                                          CanonicalPublication publication) { }
 
     private record SeasonIdentity(int id, String code) { }
+    private record SeasonCalendar(java.time.LocalDate startsOn, java.time.LocalDate endsOn) { }
+    private record CompatibilityReceipt(Long generation, String fingerprint, Long bootstrapPayloadId,
+                                        Long fixturesPayloadId, Instant sourceStartedAt,
+                                        Instant sourceFinishedAt) { }
+    private record IncrementalSourcePayload(StagedPayload payload, Integer eventId, Integer playerId,
+                                            boolean sourcePublished) {
+        IncrementalSourcePayload(StagedPayload payload, Integer eventId, Integer playerId) {
+            this(payload, eventId, playerId, false);
+        }
+    }
+
+    record IncrementalCompatibilitySnapshot(CanonicalSourcePair pair, StagedPayload bootstrap,
+                                            StagedPayload fixtures, SourceRead sourceRead) { }
+
+    private record IncrementalCompatibilityReceipt(Long generation, Instant sourceStartedAt,
+            Instant sourceFinishedAt, Long bootstrapId, Long fixturesId, Instant bootstrapStartedAt,
+            Instant bootstrapFinishedAt, Instant fixturesStartedAt, Instant fixturesFinishedAt,
+            String bootstrapHash, String fixturesHash, String fingerprint) {
+        SourceRead sourceRead() {
+            return sourceStartedAt == null || sourceFinishedAt == null
+                    ? null : new SourceRead(sourceStartedAt, sourceFinishedAt);
+        }
+        SourceRead bootstrapRead() {
+            return bootstrapStartedAt == null || bootstrapFinishedAt == null
+                    ? null : new SourceRead(bootstrapStartedAt, bootstrapFinishedAt);
+        }
+        SourceRead fixturesRead() {
+            return fixturesStartedAt == null || fixturesFinishedAt == null
+                    ? null : new SourceRead(fixturesStartedAt, fixturesFinishedAt);
+        }
+    }
 
     private record PageWatermark(Long generation, Instant startedAt, Instant finishedAt, Instant sourceFloor,
                                  String producerKey, String coalescingKey, String publicationKey) { }

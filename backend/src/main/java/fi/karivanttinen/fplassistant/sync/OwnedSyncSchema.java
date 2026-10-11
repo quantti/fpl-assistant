@@ -82,7 +82,7 @@ public final class OwnedSyncSchema {
                     updated_at TIMESTAMPTZ NOT NULL,
                     CONSTRAINT fk_%s_receipt FOREIGN KEY (season, publication_key)
                         REFERENCES %s(season, publication_key),
-                    CONSTRAINT ck_%s_state CHECK (state IN ('PENDING', 'LEASED', 'COMPLETED', 'FAILED')),
+                    CONSTRAINT ck_%s_state CHECK (state IN ('PENDING', 'LEASED', 'COMPLETED', 'FAILED', 'SUPERSEDED')),
                     CONSTRAINT ck_%s_read_interval CHECK (
                         source_read_started_at IS NULL OR source_read_finished_at IS NULL
                         OR source_read_started_at <= source_read_finished_at),
@@ -94,6 +94,11 @@ public final class OwnedSyncSchema {
                 )
                 """.formatted(tables.run(), tables.run(), tables.run(), tables.receipt(),
                 tables.run(), tables.run(), tables.run()));
+        jdbc.execute("ALTER TABLE %s DROP CONSTRAINT IF EXISTS ck_%s_state"
+                .formatted(tables.run(), tables.run()));
+        jdbc.execute("ALTER TABLE %s ADD CONSTRAINT ck_%s_state CHECK (state IN "
+                .formatted(tables.run(), tables.run())
+                + "('PENDING', 'LEASED', 'COMPLETED', 'FAILED', 'SUPERSEDED'))");
         jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS producer_key VARCHAR(40)"
                 .formatted(tables.run()));
         jdbc.execute("UPDATE %s SET producer_key='LEGACY' WHERE producer_key IS NULL"

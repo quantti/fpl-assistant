@@ -104,7 +104,7 @@ fpl:
     playing-season: ${OWNED_SYNC_PLAYING_SEASON:}
     cutover-confirmed: ${OWNED_SYNC_CUTOVER_CONFIRMED:false}
     importer:
-      # Reserved opt-in; startup fails closed until the compatibility catalogue writer is complete.
+      # Opt-in hourly incremental collector; requires an already-ACTIVE matching runtime and cutover confirmation.
       enabled: ${OWNED_SYNC_IMPORTER_ENABLED:false}
     fixture-table-name: fpl_fixture_sync
     evidence-table-name: fpl_player_fixture_evidence

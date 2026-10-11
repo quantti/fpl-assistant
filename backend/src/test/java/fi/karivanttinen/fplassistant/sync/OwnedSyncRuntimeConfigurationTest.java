@@ -7,6 +7,11 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
+import java.time.Duration;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.DefaultApplicationArguments;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
@@ -28,6 +33,7 @@ class OwnedSyncRuntimeConfigurationTest {
                             .doesNotHaveBean(OwnedMatchdayRuntime.class)
                             .doesNotHaveBean(CoalescedPlayerHistoryImportEntrypoint.class)
                             .doesNotHaveBean(CoalescedPlayerHistoryCollector.class)
+                            .doesNotHaveBean(CoalescedPlayerHistoryImportRuntime.class)
                             .doesNotHaveBean(OwnedMatchdayCoordinator.class)
                             .doesNotHaveBean(OwnedSyncHttpClient.class)
                             .doesNotHaveBean(OwnedSyncWatchdog.class)
@@ -62,10 +68,13 @@ class OwnedSyncRuntimeConfigurationTest {
     }
 
     @Test
-    void importerGuardExcludesLegacyCoreLoopWithoutChangingDefaultActiveRouting() {
+    void importerGuardSelectsTheNewCoreLoopButLeavesDailyCaptureEnabled() {
         assertThat(OwnedSyncRuntimeConfiguration.legacyRuntimeEnabled("ACTIVE", false)).isTrue();
         assertThat(OwnedSyncRuntimeConfiguration.legacyRuntimeEnabled("ACTIVE", true)).isFalse();
         assertThat(OwnedSyncRuntimeConfiguration.legacyRuntimeEnabled("OFF", false)).isFalse();
+        assertThat(OwnedSyncRuntimeConfiguration.catalogueCaptureEnabled("ACTIVE", false)).isFalse();
+        assertThat(OwnedSyncRuntimeConfiguration.catalogueCaptureEnabled("ACTIVE", true)).isTrue();
+        assertThat(OwnedSyncRuntimeConfiguration.catalogueCaptureEnabled("OFF", false)).isTrue();
     }
 
     @Test
@@ -87,25 +96,26 @@ class OwnedSyncRuntimeConfigurationTest {
     }
 
     @Test
-    void completeImporterOptInStillFailsClosedUntilTheCompatibilityWriterExists() {
-        JdbcTemplate jdbc = mock(JdbcTemplate.class);
-        new ApplicationContextRunner()
-                .withBean(JdbcTemplate.class, () -> jdbc)
-                .withUserConfiguration(OwnedSyncRuntimeConfiguration.class,
-                        OwnedSyncMonitoringDatabase.DatabaseConfiguration.class,
-                        CoalescedPlayerHistoryImportConfiguration.class)
-                .withPropertyValues("fpl.owned-sync.importer.enabled=true",
-                        "fpl.owned-sync.mode=ACTIVE",
-                        "fpl.owned-sync.playing-season=2026-27",
-                        "fpl.owned-sync.cutover-confirmed=true")
-                .run(context -> {
-                    assertThat(context).hasFailed();
-                    assertThat(context.getStartupFailure()).hasRootCauseMessage(
-                            "Incremental importer remains inert until a changed-only compatibility writer "
-                                    + "publishes team, player, gameweek and fixture rows without writing daily capture tables");
-                    assertThat(OwnedSyncRuntimeConfiguration.legacyRuntimeEnabled("ACTIVE", true)).isFalse();
-                    verify(jdbc, never()).execute(anyString());
-                });
+    void hourlyRuntimeRunsOneCycleImmediatelyAndUsesAnHourlyFixedDelay() throws Exception {
+        AtomicInteger runs = new AtomicInteger();
+        CountDownLatch firstRun = new CountDownLatch(1);
+        CoalescedPlayerHistoryImportEntrypoint entrypoint = () -> {
+            runs.incrementAndGet();
+            firstRun.countDown();
+            return new CoalescedPlayerHistoryCollector.CycleResult(
+                    CoalescedPlayerHistoryCollector.State.COMPLETED,
+                    java.util.List.of(), java.util.List.of(), java.util.List.of(), java.util.List.of(), null);
+        };
+        CoalescedPlayerHistoryImportRuntime runtime = new CoalescedPlayerHistoryImportRuntime(entrypoint);
+        try {
+            assertThat(CoalescedPlayerHistoryImportRuntime.INTERVAL).isEqualTo(Duration.ofHours(1));
+            runtime.start();
+            assertThat(firstRun.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(runs).hasValue(1);
+        } finally {
+            runtime.stop();
+        }
+        assertThat(runtime.isRunning()).isFalse();
     }
 
     @Test
