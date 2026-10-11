@@ -121,6 +121,9 @@ class HistoryEvidenceSchemaIntegrationTest {
         jdbc.execute("ALTER TABLE " + TABLES.payload() + " DROP COLUMN IF EXISTS source_payload_sha256");
         jdbc.execute("ALTER TABLE " + TABLES.payload() + " DROP COLUMN IF EXISTS body_pruned_at");
         jdbc.execute("ALTER TABLE " + TABLES.receipt() + " DROP COLUMN IF EXISTS source_catalogue");
+        jdbc.execute("ALTER TABLE " + TABLES.run() + " DROP CONSTRAINT IF EXISTS ck_" + TABLES.run()
+                + "_supersede_reason");
+        jdbc.execute("ALTER TABLE " + TABLES.run() + " DROP COLUMN IF EXISTS supersede_reason");
         insertBlankFinalGameweek(34, optionalCoverageJson());
         jdbc.update("INSERT INTO " + TABLES.receipt()
                         + "(season,publication_key,latest_generation) VALUES (?,?,?)",
@@ -128,12 +131,23 @@ class HistoryEvidenceSchemaIntegrationTest {
                 incrementalGeneration);
         try {
             assertThatThrownBy(() -> new IncrementalImporterSchemaPreflight(jdbc, TABLES).requireReady())
-                    .hasMessageContaining("body_pruned_at").hasMessageContaining("source_catalogue");
+                    .hasMessageContaining("body_pruned_at").hasMessageContaining("source_catalogue")
+                    .hasMessageContaining(TABLES.run() + ".supersede_reason")
+                    .hasMessageContaining("ck_" + TABLES.run() + "_supersede_reason");
             new OwnedSyncSchema(jdbc, TABLES).initialize();
 
             assertThat(jdbc.queryForList("SELECT column_name FROM information_schema.columns"
                     + " WHERE table_schema='public' AND table_name=?", String.class, TABLES.receipt()))
                     .contains("source_catalogue");
+            assertThat(jdbc.queryForList("SELECT column_name FROM information_schema.columns"
+                    + " WHERE table_schema='public' AND table_name=?", String.class, TABLES.run()))
+                    .contains("supersede_reason");
+            assertThat(jdbc.queryForObject("SELECT convalidated FROM pg_constraint WHERE conrelid=to_regclass(?)"
+                    + " AND conname=?", Boolean.class, "public." + TABLES.run(),
+                    "ck_" + TABLES.run() + "_supersede_reason")).isTrue();
+            assertThatThrownBy(() -> jdbc.update("UPDATE " + TABLES.run()
+                    + " SET state='SUPERSEDED',supersede_reason='UNSANCTIONED' WHERE generation=?",
+                    incrementalGeneration)).isInstanceOf(DataAccessException.class);
             assertThat(jdbc.queryForObject("SELECT source_payload_sha256 IS NULL FROM " + TABLES.payload()
                     + " WHERE id=?", Boolean.class, legacyPayloadId)).isTrue();
             assertThat(jdbc.queryForObject("SELECT body FROM " + TABLES.payload() + " WHERE id=?",
@@ -159,8 +173,14 @@ class HistoryEvidenceSchemaIntegrationTest {
             }
         } finally {
             if (Boolean.FALSE.equals(jdbc.queryForObject("SELECT EXISTS (SELECT 1 FROM information_schema.columns"
-                    + " WHERE table_schema='public' AND table_name=? AND column_name='source_catalogue')",
-                    Boolean.class, TABLES.receipt()))) {
+                            + " WHERE table_schema='public' AND table_name=? AND column_name='source_catalogue')",
+                    Boolean.class, TABLES.receipt()))
+                    || Boolean.FALSE.equals(jdbc.queryForObject("SELECT EXISTS (SELECT 1 FROM information_schema.columns"
+                            + " WHERE table_schema='public' AND table_name=? AND column_name='supersede_reason')",
+                    Boolean.class, TABLES.run()))
+                    || !Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS (SELECT 1 FROM pg_constraint"
+                            + " WHERE conrelid=to_regclass(?) AND conname=? AND convalidated)", Boolean.class,
+                    "public." + TABLES.run(), "ck_" + TABLES.run() + "_supersede_reason"))) {
                 new OwnedSyncSchema(jdbc, TABLES).initialize();
             }
             jdbc.update("DELETE FROM " + TABLES.payload() + " WHERE id=?", legacyPayloadId);
@@ -168,6 +188,40 @@ class HistoryEvidenceSchemaIntegrationTest {
                     + " WHERE season_id=? AND gameweek=34", ISOLATED_SEASON_ID);
             jdbc.update("DELETE FROM " + TABLES.receipt() + " WHERE season=? AND publication_key=?",
                     ISOLATED_SEASON_CODE, OwnedSyncStore.INCREMENTAL_COMPATIBILITY_PUBLICATION_KEY);
+        }
+    }
+
+    @Test
+    void supersededReasonMigrationMapsOnlyExactLegacyMarkers() {
+        long recognized = createRun("legacy-superseded-recognized", ISOLATED_SEASON_CODE);
+        long unrecognized = createRun("legacy-superseded-unrecognized", ISOLATED_SEASON_CODE);
+        jdbc.update("UPDATE " + TABLES.run() + " SET state='SUPERSEDED',last_error=? WHERE generation=?",
+                "INCREMENTAL_SUPERSEDED:VALIDATED_CANONICAL_SOURCE_PAIR", recognized);
+        jdbc.update("UPDATE " + TABLES.run() + " SET state='SUPERSEDED',last_error=? WHERE generation=?",
+                "unrecognized legacy reason", unrecognized);
+        jdbc.execute("ALTER TABLE " + TABLES.run() + " DROP CONSTRAINT IF EXISTS ck_" + TABLES.run()
+                + "_supersede_reason");
+        jdbc.execute("ALTER TABLE " + TABLES.run() + " DROP COLUMN IF EXISTS supersede_reason");
+        try {
+            new OwnedSyncSchema(jdbc, TABLES).initialize();
+            assertThat(jdbc.queryForObject("SELECT supersede_reason FROM " + TABLES.run()
+                    + " WHERE generation=?", String.class, recognized))
+                    .isEqualTo(OwnedSyncStore.IncrementalSupersedeReason.VALIDATED_CANONICAL_SOURCE_PAIR.code());
+            assertThat(jdbc.queryForObject("SELECT last_error FROM " + TABLES.run()
+                    + " WHERE generation=?", String.class, recognized)).isNull();
+            assertThat(jdbc.queryForObject("SELECT supersede_reason FROM " + TABLES.run()
+                    + " WHERE generation=?", String.class, unrecognized)).isNull();
+            assertThat(jdbc.queryForObject("SELECT last_error FROM " + TABLES.run()
+                    + " WHERE generation=?", String.class, unrecognized)).isEqualTo("unrecognized legacy reason");
+            assertThat(jdbc.queryForObject("SELECT convalidated FROM pg_constraint WHERE conrelid=to_regclass(?)"
+                    + " AND conname=?", Boolean.class, "public." + TABLES.run(),
+                    "ck_" + TABLES.run() + "_supersede_reason")).isTrue();
+        } finally {
+            new OwnedSyncSchema(jdbc, TABLES).initialize();
+            jdbc.update("DELETE FROM " + TABLES.run() + " WHERE generation IN (?,?)", recognized, unrecognized);
+            jdbc.update("DELETE FROM " + TABLES.receipt()
+                    + " WHERE publication_key IN ('legacy-superseded-recognized',"
+                    + "'legacy-superseded-unrecognized')");
         }
     }
 

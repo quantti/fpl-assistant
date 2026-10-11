@@ -77,6 +77,7 @@ public final class OwnedSyncSchema {
                     source_read_started_at TIMESTAMPTZ,
                     source_read_finished_at TIMESTAMPTZ,
                     last_error VARCHAR(1000),
+                    supersede_reason VARCHAR(80),
                     failed_at TIMESTAMPTZ,
                     completed_at TIMESTAMPTZ,
                     created_at TIMESTAMPTZ NOT NULL,
@@ -100,6 +101,21 @@ public final class OwnedSyncSchema {
         jdbc.execute("ALTER TABLE %s ADD CONSTRAINT ck_%s_state CHECK (state IN "
                 .formatted(tables.run(), tables.run())
                 + "('PENDING', 'LEASED', 'COMPLETED', 'FAILED', 'SUPERSEDED'))");
+        jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS supersede_reason VARCHAR(80)"
+                .formatted(tables.run()));
+        for (OwnedSyncStore.IncrementalSupersedeReason reason
+                : OwnedSyncStore.IncrementalSupersedeReason.values()) {
+            jdbc.update("UPDATE %s SET supersede_reason=?,last_error=NULL WHERE state='SUPERSEDED'"
+                            .formatted(tables.run())
+                            + " AND supersede_reason IS NULL AND last_error IN (?,?)",
+                    reason.code(), reason.persistedCode(), reason.legacyText());
+        }
+        jdbc.execute("ALTER TABLE %s DROP CONSTRAINT IF EXISTS ck_%s_supersede_reason"
+                .formatted(tables.run(), tables.run()));
+        jdbc.execute("ALTER TABLE %s ADD CONSTRAINT ck_%s_supersede_reason CHECK "
+                .formatted(tables.run(), tables.run())
+                + "(supersede_reason IS NULL OR (state='SUPERSEDED' AND supersede_reason IN ("
+                + OwnedSyncStore.IncrementalSupersedeReason.acceptedSqlValues() + ")))");
         jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS producer_key VARCHAR(40)"
                 .formatted(tables.run()));
         jdbc.execute("UPDATE %s SET producer_key='LEGACY' WHERE producer_key IS NULL"

@@ -1023,6 +1023,35 @@ public final class OwnedSyncStore {
         return new IncrementalEvent(event.id(), state, firstCheckedAt, signature);
     }
 
+    private void invalidateIncrementalAppearanceGameweek(String season, int gameweek,
+                                                           String expectedSignature, Instant appearanceFinishedAt,
+                                                           boolean appearanceRevision) {
+        Instant floor = postgresTimestampPrecision(appearanceFinishedAt);
+        int updated = jdbc.update("""
+                UPDATE %s SET state=CASE WHEN event_finished IS TRUE AND data_checked IS TRUE
+                        AND fixture_manifest_complete AND all_assigned_fixtures_finished
+                    THEN 'FINAL_PENDING' ELSE 'OPEN' END,
+                    current_invalidation_revision=current_invalidation_revision
+                        + CASE WHEN ? OR state='FINALIZED' THEN 1 ELSE 0 END,
+                    current_invalidation_floor=GREATEST(COALESCE(current_invalidation_floor,?),?),
+                    finalized_source_signature=NULL, finalized_population_fingerprint=NULL,
+                    finalized_row_revision_fingerprint=NULL, finalized_source_floor=NULL,
+                    finalized_validation_read_started_at=NULL, finalized_validation_read_finished_at=NULL,
+                    finalized_source_read_started_at=NULL, finalized_source_read_finished_at=NULL,
+                    finalized_invalidation_revision=NULL, finalized_run_generation=NULL,
+                    finalized_page_evidence=NULL, finalized_at=NULL,
+                    finalized_mandatory_manifest_complete=NULL, finalized_optional_component_coverage=NULL,
+                    updated_at=?
+                WHERE season_code=? AND season_id=(SELECT id FROM season WHERE code=? AND is_current=true)
+                  AND gameweek=? AND source_signature=?
+                """.formatted(tables.gameweekStatSync()), appearanceRevision,
+                timestamp(floor), timestamp(floor), timestamp(now()), season, season, gameweek, expectedSignature);
+        if (updated != 1) {
+            throw new FixtureEvidenceChangedException(
+                    "Live appearance revision no longer matches the observed gameweek source");
+        }
+    }
+
     private static String incrementalFixtureFingerprint(CatalogueScheduleParser.FixtureRow fixture) {
         return sha256(FixtureVerification.verifiedHeader(fixture) + "|" + FixtureStatsFingerprint.of(fixture));
     }
@@ -1405,16 +1434,20 @@ public final class OwnedSyncStore {
         });
     }
 
-    Set<Integer> recordIncrementalLiveEvent(Lease lease, int eventId,
+    Set<Integer> recordIncrementalLiveEvent(Lease lease, int eventId, String expectedGameweekSignature,
                                             Map<Integer, Set<Integer>> participants,
                                             List<CatalogueScheduleParser.FixtureRow> fixtures,
                                             Map<Integer, FixtureVerification.FixtureEvidence> evidence,
                                             SourceRead read) {
         if (eventId <= 0) throw new IllegalArgumentException("event id must be positive");
+        Objects.requireNonNull(expectedGameweekSignature);
         Objects.requireNonNull(participants);
         Objects.requireNonNull(fixtures);
         Objects.requireNonNull(evidence);
         Objects.requireNonNull(read);
+        if (!expectedGameweekSignature.matches("[0-9a-f]{64}")) {
+            throw new IllegalArgumentException("Invalid observed gameweek source signature");
+        }
         participants.forEach((fixture, playerIds) -> {
             if (fixture == null || fixture <= 0 || playerIds == null
                     || playerIds.size() > HistoryFixtureDispatcher.MAX_FIXTURE_PLAYERS
@@ -1455,6 +1488,7 @@ public final class OwnedSyncStore {
                 throw new IllegalArgumentException("Live appearance capture is not ordered after its event source");
             }
             Set<Integer> invalidatedFixtures = new LinkedHashSet<>();
+            boolean appearanceRevision = false;
             Map<Integer, String> appearanceFingerprints = new LinkedHashMap<>();
             for (CatalogueScheduleParser.FixtureRow fixture : fixturesById.values()) {
                 List<SourceFixtureRevision> sourceRevision = jdbc.query("SELECT source_pair_fingerprint,"
@@ -1495,6 +1529,7 @@ public final class OwnedSyncStore {
                                 run.season, stateKey);
                     }
                     invalidatedFixtures.add(fixture.id());
+                    appearanceRevision |= priorState != null;
                     int updated = jdbc.update("""
                             INSERT INTO %s(season,publication_key,latest_generation,source_read_started_at,
                                 source_read_finished_at,source_pair_fingerprint,published_at)
@@ -1514,6 +1549,10 @@ public final class OwnedSyncStore {
                                 priorState == null ? run.generation : priorState.generation(), run.season, stateKey);
                     }
                 }
+            }
+            if (!invalidatedFixtures.isEmpty()) {
+                invalidateIncrementalAppearanceGameweek(run.season, eventId,
+                        expectedGameweekSignature, read.finishedAt(), appearanceRevision);
             }
             Instant recordedAt = now();
             String key = INCREMENTAL_LIVE_EVENT_RECEIPT_PREFIX + eventId;
@@ -3387,23 +3426,24 @@ public final class OwnedSyncStore {
         finishAttempt(lease, null, error, true, false, false, null);
     }
 
-    /** Ends an incremental producer run after a validated canonical source revision supersedes it. */
+    /** Ends an incremental producer run after a validated source or appearance revision supersedes it. */
     void supersedeIncrementalCoreImport(Lease lease) {
-        supersedeIncrementalCoreImport(lease, "Superseded by a validated newer canonical source pair");
+        supersedeIncrementalCoreImport(lease, IncrementalSupersedeReason.VALIDATED_CANONICAL_SOURCE_PAIR);
     }
 
-    void supersedeIncrementalCoreImport(Lease lease, String reason) {
+    void supersedeIncrementalCoreImport(Lease lease, IncrementalSupersedeReason reason) {
+        Objects.requireNonNull(reason);
         tx.executeWithoutResult(status -> {
             LockedRun run = lockAndValidate(lease);
             requireIncrementalRun(run);
             Instant supersededAt = now();
             requireNotExpired(run, supersededAt);
             int updated = jdbc.update("""
-                    UPDATE %s SET state='SUPERSEDED', last_error=?,
+                    UPDATE %s SET state='SUPERSEDED', last_error=NULL, supersede_reason=?,
                         failed_at=NULL, completed_at=?, lease_owner=NULL, lease_token=NULL,
                         lease_expires_at=NULL, updated_at=?
                     WHERE generation=? AND state='LEASED' AND lease_owner=? AND lease_token=? AND lease_fence=?
-                    """.formatted(tables.run()), boundedNullable(reason, MAX_ERROR_CHARS),
+                    """.formatted(tables.run()), reason.code(),
                     timestamp(supersededAt), timestamp(supersededAt), run.generation,
                     lease.owner(), lease.token(), lease.fence());
             if (updated != 1) throw new LeaseLostException("Lease is stale for generation " + run.generation);
@@ -3930,6 +3970,38 @@ public final class OwnedSyncStore {
 
     public enum EndpointKind { BOOTSTRAP_STATIC, FIXTURES, EVENT_LIVE, ELEMENT_SUMMARY }
     public enum ValidationState { UNCHECKED, VALID, INVALID }
+    enum IncrementalSupersedeReason {
+        VALIDATED_CANONICAL_SOURCE_PAIR("VALIDATED_CANONICAL_SOURCE_PAIR",
+                "INCREMENTAL_SUPERSEDED:VALIDATED_CANONICAL_SOURCE_PAIR",
+                "Superseded by a validated newer canonical source pair"),
+        APPEARANCE_EVIDENCE_ADVANCED("APPEARANCE_EVIDENCE_ADVANCED",
+                "INCREMENTAL_SUPERSEDED:APPEARANCE_EVIDENCE_ADVANCED",
+                "Live appearance evidence advanced after this generation had already published player pages");
+
+        private final String code;
+        private final String persistedCode;
+        private final String legacyText;
+
+        IncrementalSupersedeReason(String code, String persistedCode, String legacyText) {
+            this.code = code;
+            this.persistedCode = persistedCode;
+            this.legacyText = legacyText;
+        }
+
+        String code() { return code; }
+        String persistedCode() { return persistedCode; }
+        String legacyText() { return legacyText; }
+
+        static boolean acceptsCode(String value) {
+            return java.util.Arrays.stream(values()).anyMatch(reason -> reason.code.equals(value));
+        }
+
+        static String acceptedSqlValues() {
+            return java.util.Arrays.stream(values()).map(reason -> "'" + reason.code + "'")
+                    .collect(java.util.stream.Collectors.joining(","));
+        }
+    }
+
     public enum RunState { PENDING, LEASED, COMPLETED, FAILED, SUPERSEDED }
 
     public record Endpoint(EndpointKind kind, Integer eventId, Integer playerId) {

@@ -57,22 +57,28 @@ final class IncrementalImporterSchemaPreflight {
 
     private List<String> missingProofConstraints() {
         List<RequiredConstraint> required = List.of(
-                new RequiredConstraint(tables.run(), "ck_" + tables.run() + "_state", "SUPERSEDED"),
+                new RequiredConstraint(tables.run(), "ck_" + tables.run() + "_state", List.of("SUPERSEDED")),
+                new RequiredConstraint(tables.run(), "ck_" + tables.run() + "_supersede_reason",
+                        List.of("supersede_reason", "SUPERSEDED",
+                                OwnedSyncStore.IncrementalSupersedeReason.VALIDATED_CANONICAL_SOURCE_PAIR.code(),
+                                OwnedSyncStore.IncrementalSupersedeReason.APPEARANCE_EVIDENCE_ADVANCED.code())),
                 new RequiredConstraint(tables.playerFixtureEvidence(),
-                        "ck_" + tables.playerFixtureEvidence() + "_components", "component_presence"),
+                        "ck_" + tables.playerFixtureEvidence() + "_components", List.of("component_presence")),
                 new RequiredConstraint(tables.playerFixtureCurrent(),
-                        "ck_" + tables.playerFixtureCurrent() + "_pointer", "row_fingerprint"),
+                        "ck_" + tables.playerFixtureCurrent() + "_pointer", List.of("row_fingerprint")),
                 new RequiredConstraint(tables.gameweekStatSync(),
-                        "ck_" + tables.gameweekStatSync() + "_checkpoint", "final_attempt_completed_player_ids"),
+                        "ck_" + tables.gameweekStatSync() + "_checkpoint",
+                        List.of("final_attempt_completed_player_ids")),
                 new RequiredConstraint(tables.gameweekStatSync(),
-                        "ck_" + tables.gameweekStatSync() + "_receipt", "finalized_page_evidence"));
+                        "ck_" + tables.gameweekStatSync() + "_receipt", List.of("finalized_page_evidence")));
         List<String> missing = new ArrayList<>();
         for (RequiredConstraint constraint : required) {
             List<String> definitions = jdbc.query("""
                     SELECT pg_get_constraintdef(oid) FROM pg_constraint
                     WHERE conrelid=to_regclass(?) AND conname=? AND contype='c' AND convalidated
                     """, (rs, row) -> rs.getString(1), "public." + constraint.table(), constraint.name());
-            if (definitions.size() != 1 || !definitions.getFirst().contains(constraint.requiredDefinitionPart())) {
+            if (definitions.size() != 1 || constraint.requiredDefinitionParts().stream()
+                    .anyMatch(part -> !definitions.getFirst().contains(part))) {
                 missing.add(constraint.table() + "." + constraint.name());
             }
         }
@@ -98,7 +104,7 @@ final class IncrementalImporterSchemaPreflight {
         add(required, tables.run(), "generation kind producer_key season coalescing_key publication_key priority due_at "
                 + "requested_source_after runtime_mode runtime_epoch state attempt_count consecutive_fetch_failures "
                 + "last_attempt_at lease_owner lease_token lease_fence lease_expires_at source_read_started_at "
-                + "source_read_finished_at last_error failed_at completed_at created_at updated_at");
+                + "source_read_finished_at last_error supersede_reason failed_at completed_at created_at updated_at");
         add(required, tables.payload(), "id run_generation endpoint_kind event_id player_id read_started_at "
                 + "read_finished_at validation_state validation_error source_published source_payload_sha256 "
                 + "body_pruned_at body staged_at");
@@ -156,5 +162,5 @@ final class IncrementalImporterSchemaPreflight {
         required.put(table, Set.of(columns.split(" ")));
     }
 
-    private record RequiredConstraint(String table, String name, String requiredDefinitionPart) { }
+    private record RequiredConstraint(String table, String name, List<String> requiredDefinitionParts) { }
 }

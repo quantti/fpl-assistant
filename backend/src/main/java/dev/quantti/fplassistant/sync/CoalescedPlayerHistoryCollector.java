@@ -445,8 +445,12 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
                     known.put(fixtureId, Set.copyOf(knownIds));
                 });
                 SourceRead liveRead = read(live);
+                OwnedSyncStore.IncrementalEvent sourceEvent = discovery.events().get(eventId);
+                if (sourceEvent == null) {
+                    throw new IllegalStateException("Live event has no observed gameweek source revision");
+                }
                 Set<Integer> revalidationFixtures = store.recordIncrementalLiveEvent(
-                        lease, eventId, participants, entry.getValue(), evidence, liveRead);
+                        lease, eventId, sourceEvent.sourceSignature(), participants, entry.getValue(), evidence, liveRead);
                 for (int fixtureId : revalidationFixtures) {
                     fixtureFloors.merge(fixtureId, liveRead.finishedAt(),
                             CoalescedPlayerHistoryCollector::later);
@@ -507,7 +511,8 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
                 if (progress.state() == dev.quantti.fplassistant.sync.GameweekFinality.State.FINAL_PENDING) {
                     finalCheckpoints.put(gameweek, progress);
                     for (FixtureRow fixture : finalSource.assignedFixtures()) {
-                        fixtureFloors.put(fixture.id(), progress.checkpoint().sourceFloor());
+                        fixtureFloors.merge(fixture.id(), progress.checkpoint().sourceFloor(),
+                                CoalescedPlayerHistoryCollector::later);
                         priorities.put(fixture.id(), 0);
                     }
                 }
@@ -529,8 +534,8 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
             for (int playerId : progress.checkpoint().outstandingPlayerIds()) {
                 PageReceipt receipt = pageReceipts.get(playerId);
                 if (receipt != null && receipt.generation() == lease.generation()) {
-                    return restartFinalSweepGeneration(lease, requestedPlayers, committedPlayers, failedPlayers,
-                            finalPendingEvents, "Outstanding final-sweep page needs a fresh producer generation");
+                    return restartAppearanceGeneration(lease, requestedPlayers, committedPlayers, failedPlayers,
+                            finalPendingEvents);
                 }
             }
         }
@@ -794,7 +799,7 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
                                                      List<Integer> finalPending) {
         Instant due = clock.instant().plus(CYCLE_INTERVAL);
         store.supersedeIncrementalCoreImport(lease,
-                "Live appearance evidence advanced after this generation had already published player pages");
+                OwnedSyncStore.IncrementalSupersedeReason.APPEARANCE_EVIDENCE_ADVANCED);
         store.enqueueIncrementalCoreImport(season, due);
         return result(State.RETRY_SCHEDULED, requested, committed, failed, finalPending, due);
     }
