@@ -206,6 +206,24 @@ class OwnedSyncStoreIntegrationTest {
     }
 
     @Test
+    void canonicalPairCoverageUsesPostgresMicrosecondPrecisionForBothIntervals() {
+        Instant start = Instant.parse("2097-08-15T12:00:00.123456100Z");
+        Instant finish = Instant.parse("2097-08-15T12:00:00.123456900Z");
+        SourceRead originalRead = new SourceRead(start, finish);
+        var pair = OwnedSyncStore.CanonicalSourcePair.of(
+                new OwnedSyncStore.CanonicalSourcePayload(101, 1, EndpointKind.BOOTSTRAP_STATIC,
+                        originalRead, OwnedSyncStore.sha256(bytes("bootstrap"))),
+                new OwnedSyncStore.CanonicalSourcePayload(102, 1, EndpointKind.FIXTURES,
+                        originalRead, OwnedSyncStore.sha256(bytes("fixtures"))));
+
+        OwnedSyncStore.requireCanonicalPairCoverage(originalRead, pair);
+        assertThatThrownBy(() -> OwnedSyncStore.requireCanonicalPairCoverage(
+                new SourceRead(finish, finish), pair))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("cover both canonical reads");
+    }
+
+    @Test
     void coalescesActiveIdenticalWorkAndGenerationsOnlyIncrease() {
         var first = store.enqueue(SyncKind.PLAYER_HISTORY, "2097-98", "all-players", "history", clock.instant());
         var coalesced = store.enqueue(SyncKind.PLAYER_HISTORY, "2097-98", "all-players", "history",

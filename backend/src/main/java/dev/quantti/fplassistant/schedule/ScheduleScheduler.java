@@ -14,7 +14,8 @@ import org.springframework.stereotype.Component;
  */
 @Component
 @ConditionalOnProperty(name = "fpl.schedule.scheduled", havingValue = "true")
-@ConditionalOnExpression("'${fpl.owned-sync.mode:OFF}' != 'ACTIVE'")
+@ConditionalOnExpression("T(dev.quantti.fplassistant.sync.OwnedSyncRuntimeConfiguration).catalogueCaptureEnabled("
+        + "'${fpl.owned-sync.mode:OFF}', ${fpl.owned-sync.importer.enabled:false})")
 public class ScheduleScheduler {
 
     private static final Logger log = LoggerFactory.getLogger(ScheduleScheduler.class);

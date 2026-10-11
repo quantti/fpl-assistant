@@ -2,6 +2,13 @@ package dev.quantti.fplassistant.testsupport;
 
 import org.springframework.jdbc.core.JdbcTemplate;
 
+import java.sql.Timestamp;
+import java.util.List;
+import java.util.function.Supplier;
+
+import dev.quantti.fplassistant.sync.CatalogueScheduleParser.FixtureRow;
+import dev.quantti.fplassistant.sync.CatalogueScheduleParser.TeamRow;
+
 /**
  * The fixture league every data-dependent test asserts against.
  *
@@ -82,6 +89,60 @@ public final class SharedStatsSeed {
         }
     }
 
+    /** Adds a PFS key outside the recorded catalogue so owned-sync discovery can test departed players. */
+    public static void seedOwnedSyncKnownHistoryKey(JdbcTemplate jdbc, int seasonId, int fixtureId,
+                                                     int gameweek, int playerId, int playerTeamId,
+                                                     int opponentTeamId, boolean wasHome,
+                                                     java.time.Instant kickoff) {
+        ensureOwnedSyncCaptureSeason(jdbc);
+        if (seasonId != 27 || fixtureId <= 0 || gameweek < 1 || gameweek > 38 || playerId <= 0
+                || playerTeamId <= 0 || opponentTeamId <= 0 || playerTeamId == opponentTeamId) {
+            throw new IllegalArgumentException("Invalid owned-sync known-history test key");
+        }
+        jdbc.update("""
+                INSERT INTO player_fixture_stats(fixture_id, player_id, season_id, gameweek,
+                    player_team_id, opponent_team_id, was_home, kickoff_time, value)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 45)
+                ON CONFLICT (fixture_id, player_id, season_id) DO NOTHING
+                """, fixtureId, playerId, seasonId, gameweek, playerTeamId, opponentTeamId,
+                wasHome, java.sql.Timestamp.from(kickoff));
+    }
+
+    /** Seeds the SharedStats fixture identity mirror used by the owned-sync collector evidence test. */
+    public static void seedOwnedSyncFixtureIdentity(JdbcTemplate jdbc, int seasonId,
+                                                     List<TeamRow> teams, List<FixtureRow> fixtures) {
+        ensureOwnedSyncCaptureSeason(jdbc);
+        if (seasonId != 27 || teams.isEmpty() || fixtures.isEmpty()
+                || teams.stream().anyMatch(team -> team.seasonId() != seasonId)
+                || fixtures.stream().anyMatch(fixture -> fixture.seasonId() != seasonId)) {
+            throw new IllegalArgumentException("Invalid owned-sync fixture identity test seed");
+        }
+        jdbc.batchUpdate("""
+                INSERT INTO team(id,season_id,code,name,short_name,strength) VALUES (?,?,?,?,?,3)
+                ON CONFLICT (id,season_id) DO UPDATE SET code=EXCLUDED.code,name=EXCLUDED.name,
+                    short_name=EXCLUDED.short_name
+                """, teams.stream().map(team -> new Object[] {team.id(), seasonId, team.code(),
+                team.name(), team.shortName()}).toList());
+        jdbc.batchUpdate("""
+                INSERT INTO fixture(id,season_id,gameweek,code,team_h,team_a,team_h_score,team_a_score,
+                    team_h_difficulty,team_a_difficulty,kickoff_time,started,finished,
+                    finished_provisional,minutes,stats)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?::jsonb)
+                ON CONFLICT (id,season_id) DO UPDATE SET gameweek=EXCLUDED.gameweek,code=EXCLUDED.code,
+                    team_h=EXCLUDED.team_h,team_a=EXCLUDED.team_a,team_h_score=EXCLUDED.team_h_score,
+                    team_a_score=EXCLUDED.team_a_score,team_h_difficulty=EXCLUDED.team_h_difficulty,
+                    team_a_difficulty=EXCLUDED.team_a_difficulty,kickoff_time=EXCLUDED.kickoff_time,
+                    started=EXCLUDED.started,finished=EXCLUDED.finished,
+                    finished_provisional=EXCLUDED.finished_provisional,minutes=EXCLUDED.minutes,
+                    stats=EXCLUDED.stats
+                """, fixtures.stream().map(fixture -> new Object[] {fixture.id(), seasonId,
+                fixture.gameweek(), fixture.code(), fixture.homeTeamId(), fixture.awayTeamId(),
+                fixture.homeScore(), fixture.awayScore(), fixture.homeDifficulty(), fixture.awayDifficulty(),
+                fixture.kickoff() == null ? null : Timestamp.from(fixture.kickoff()), fixture.started(),
+                fixture.finished(), fixture.fields().get("finished_provisional"), fixture.fields().get("minutes"),
+                fixture.fields().get("stats")}).toList());
+    }
+
     /** Selects one test season as current without assigning meaning to the real playing season. */
     public static void setCurrentSeason(JdbcTemplate jdbc, int seasonId) {
         ensure(jdbc);
@@ -123,15 +184,51 @@ public final class SharedStatsSeed {
                 """);
     }
 
+    static boolean isDisposableTestDatabase(String url, String user, String password,
+                                            String ci, String githubActions,
+                                            String githubWorkflow, String githubJob) {
+        if (!"postgres".equals(user) || !"postgres".equals(password)) return false;
+        if ("jdbc:postgresql://localhost:55432/postgres".equals(url)
+                || "jdbc:postgresql://127.0.0.1:55432/postgres".equals(url)) return true;
+        return "jdbc:postgresql://localhost:5432/postgres".equals(url)
+                && "true".equalsIgnoreCase(ci)
+                && "true".equalsIgnoreCase(githubActions)
+                && "test and deploy".equals(githubWorkflow)
+                && "test".equals(githubJob);
+    }
+
+    /** Validates the configured target before a fixture constructs or uses JDBC. */
+    public static JdbcTemplate openDisposableTestJdbc(String url, String user, String password,
+                                                        Supplier<JdbcTemplate> jdbcSupplier) {
+        requireDisposableTestDatabase(url, user, password, System.getenv("CI"), System.getenv("GITHUB_ACTIONS"),
+                System.getenv("GITHUB_WORKFLOW"), System.getenv("GITHUB_JOB"));
+        return jdbcSupplier.get();
+    }
+
+    /** Validates the configured target before a fixture constructs a JDBC datasource. */
+    public static void requireDisposableTestDatabase() {
+        requireDisposableTestDatabase(System.getenv("DATABASE_URL"), System.getenv("DB_USER"),
+                System.getenv("DB_PASSWORD"), System.getenv("CI"), System.getenv("GITHUB_ACTIONS"),
+                System.getenv("GITHUB_WORKFLOW"), System.getenv("GITHUB_JOB"));
+    }
+
+    public static void requireDisposableTestDatabase(String url, String user, String password,
+                                                     String ci, String githubActions,
+                                                     String githubWorkflow, String githubJob) {
+        if (!isDisposableTestDatabase(url, user, password, ci, githubActions, githubWorkflow, githubJob)) {
+            throw new IllegalStateException("Refusing to use outside the disposable test database; "
+                    + "use backend/.env.test (localhost:55432) or the documented GitHub Actions test job");
+        }
+    }
+
     /**
-     * Seeds the fixture league, unless the connection points at the shared production database.
-     *
-     * <p>This is the one place in the suite that writes to shared-owned tables, which the project
-     * forbids on the shared database. The guard is content-based rather than a URL check: shared'
-     * own {@code manager} table exists only in the shared database — an ephemeral container holds
-     * nothing but the six dumped tables and the ones this project creates at startup.
+     * Seeds the fixture league only on the local disposable test database. GitHub Actions uses
+     * its documented job-scoped Postgres service on localhost:5432; local runs must use
+     * backend/.env.test on localhost:55432. The manager-table check remains a second, content-based
+     * fence against the shared SharedStats database.
      */
     public static void ensure(JdbcTemplate jdbc) {
+        requireDisposableTestDatabase();
         String sharedOnlyTable = jdbc.queryForObject(
                 "SELECT to_regclass('public.manager')::text", String.class);
         if (sharedOnlyTable != null) {
