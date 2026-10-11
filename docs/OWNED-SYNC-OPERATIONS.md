@@ -238,6 +238,64 @@ verified generations and receipts; otherwise overwritten physical rows would inh
 proof. Keep readers fail-closed until reviewed migration/re-verification. Never delete evidence to
 force a legacy-looking successful answer.
 
+## Incremental importer (implemented; not cut over)
+
+`OWNED_SYNC_IMPORTER_ENABLED` defaults to `false`; absent/false preserves the existing legacy
+runtime routing. **Setting it true is an activation-capable configuration, not a harmless probe.**
+With valid prerequisites it suppresses the legacy planner/workers, registers the importer and runs
+one collection immediately, then at a one-hour fixed delay. The durable producer lease prevents
+cross-process overlap. Valid provisional pages publish without a fixture-wide stability wait;
+checked gameweeks receive a fresh, resumable final sweep.
+
+Opt-in requires `OWNED_SYNC_MODE=ACTIVE`, explicit `OWNED_SYNC_PLAYING_SEASON`,
+`OWNED_SYNC_CUTOVER_CONFIRMED=true`, the matching database playing season and an already-existing
+ACTIVE runtime epoch. Read-only schema preflight must find the required incremental tables/columns.
+Invalid prerequisites fail startup before collection. Importer startup neither initializes schema
+nor changes modes/epochs, but **successful startup can fetch and publish immediately**.
+
+The compatibility writer now conditionally upserts named `team`, `player`, `gameweek` and `fixture`
+columns alongside independently valid PFS page publication. It does not publish `fpl_daily_price`,
+`fpl_gameweek` or `fpl_fixture`; existing daily price/availability and schedule jobs retain their own
+capture times and freshness contracts. My-team and unrelated jobs remain separate. The importer
+records a fenced heartbeat each minute and runs the existing watchdog's importer-specific checks
+every five minutes on separate executors; alert delivery retains its 30-second executor. Importer
+checks omit legacy fixture/capture signals, while existing legacy watchdog behavior is unchanged
+when the flag is false. External health requires a fresh importer heartbeat and watchdog heartbeat,
+not a leftover legacy planner heartbeat. Neither watchdog changes runtime mode automatically.
+
+While opted in, the same serialized hourly runner performs a startup retention pass before its first
+collection and runs maintenance after every collection, including a failed one. For `INCREMENTAL_CORE`
+payload rows older than 24 hours on `COMPLETED`, `FAILED` or `SUPERSEDED` runs, it replaces eligible
+raw `BYTEA` bodies with empty bytes and records `body_pruned_at`; it does not delete the payload rows.
+It prunes only when the immutable `source_payload_sha256` still matches the body. Active `PENDING`/
+`LEASED` bodies and a published compatibility pair referenced by a newer active import are retained.
+The row keeps its ID, generation, endpoint, read interval, captured hash, validation state and
+`source_published` flag. Invalid validation remains invalid; a changed body whose digest no longer
+matches is not pruned. `GameweekFinalityReader` requires both exact payload rows and checks their
+captured hashes against the compatibility receipt; for a pruned row it accepts only the empty body,
+prune marker, matching hash and valid published state. Existing rows are not hydrated or hash-backfilled:
+legacy rows without this compact proof cannot certify new-path finality until a fresh validated capture.
+The importer preflight requires the new columns and enabled payload guard before it can run.
+
+Cleanup errors are logged without changing runtime mode or replacing the import result; there is no
+extra scheduler, FPL request or per-second queue. The legacy runtime keeps its existing row-deletion
+retention policy. This releases retained raw body bytes, not payload rows or their compact metadata,
+and is **not** a request-spend, provider-egress, database-storage or billing cap.
+
+**Do not enable it in production without the separately approved single-writer cutover.** Drain and
+fence old core writers first, install/verify the compatible schema and readers, and complete the
+external Tapas metric-reader audit; confirmation is not evidence that those steps happened. Real
+matchday latency, resource use and API variation remain operational acceptance work. Never use
+physical Tapas values as fallback or infer reader compatibility from the local synthetic tests.
+
+Rollback starts with an explicit operator-controlled OFF epoch fence and a drained importer,
+retaining compatible readers and ownership evidence. It must not simply unset the flag while
+ACTIVE, which would select the old core loop. Restoring old writers requires a separately reviewed
+re-verification plan; old fixture receipts must not certify new or withdrawn physical values.
+No production importer activation, DB/Fly operation or rollback was performed for this implementation.
+A failed page outside a complete checked game's manifest does not delay that game's final receipt:
+the completed producer is closed before a new pending generation retains the unresolved work.
+
 The 5000-attempt rolling-day ceiling can defer desired polling on a busy full-league day. Local
 600-player/ten-fixture demand intentionally exercises that case; it is not a guarantee of all
 cadences fitting the budget. Measure STAGING throughput/backlog and post-match verification priority
