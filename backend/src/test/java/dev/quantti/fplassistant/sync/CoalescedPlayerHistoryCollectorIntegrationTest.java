@@ -7,6 +7,7 @@ import java.io.InputStream;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
+import java.math.BigDecimal;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
@@ -17,6 +18,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.SQLFeatureNotSupportedException;
 import java.sql.Statement;
+import java.sql.Timestamp;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -28,6 +30,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -67,12 +70,18 @@ import dev.quantti.fplassistant.sync.OwnedSyncStore.RuntimeFence;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.SourceRead;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.SyncKind;
 import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
+import dev.quantti.fplassistant.tools.ExpectedStatsTools;
 import dev.quantti.fplassistant.tools.PfsReadSource;
+import dev.quantti.fplassistant.tools.PlayerNameSearch;
+import dev.quantti.fplassistant.tools.SeasonContext;
+import dev.quantti.fplassistant.tools.SeasonResolver;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
+import org.springframework.beans.factory.support.StaticListableBeanFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.ConnectionProxy;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
@@ -93,6 +102,12 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
     private static final int ACTIVE_PLAYER = 99003;
     private static final int LOCAL_HTTP_PLAYER = 99005;
     private static final int WATERMARK_PLAYER = 99006;
+    private static final int DOUBLE_FIXTURE_ONE = 989101;
+    private static final int DOUBLE_FIXTURE_TWO = 989102;
+    private static final int DOUBLE_HOME_ONE = 9912;
+    private static final int DOUBLE_AWAY_ONE = 9914;
+    private static final int DOUBLE_HOME_TWO = 9904;
+    private static final int DOUBLE_AWAY_TWO = 9920;
     private static final Instant START = Instant.parse("2026-09-13T18:00:00Z");
 
     private static JdbcTemplate jdbc;
@@ -1513,6 +1528,22 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         assertThat(first.failedPlayerIds()).containsExactly(knownOnlyPlayer);
         assertThat(first.finalPendingGameweeks()).isEmpty();
         assertThat(firstPageCalls).containsExactly(cataloguePlayer, knownOnlyPlayer);
+        String appearanceSnapshotKey = IncrementalAppearanceReceipt.snapshotKey(
+                sourceFixture, fixture.gameweek(), liveEvidence, liveEvidence.liveRead());
+        Map<String, Object> appearanceSnapshot = jdbc.queryForMap("SELECT latest_generation,"
+                + "source_read_started_at,source_read_finished_at,source_pair_fingerprint FROM "
+                + TABLES.receipt() + " WHERE season=? AND publication_key=?",
+                season.code(), appearanceSnapshotKey);
+        assertThat(appearanceSnapshot.get("latest_generation")).isNotNull();
+        assertThat(appearanceSnapshot.get("source_pair_fingerprint"))
+                .isEqualTo(IncrementalAppearanceReceipt.fingerprint(sourceFixture,
+                        fixture.gameweek(), liveEvidence));
+        assertThat(appearanceSnapshotKey).contains(":c:0:p:1");
+        FixtureVerification.Appearance sourceAppearance = liveEvidence.appearances().get(cataloguePlayer);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.receipt()
+                + " WHERE season=? AND publication_key=?", Integer.class, season.code(),
+                IncrementalAppearanceReceipt.playerKey(fixtureId, cataloguePlayer, sourceAppearance,
+                        liveEvidence.liveRead()))).isOne();
 
         String sourceFingerprint = jdbc.queryForObject("SELECT source_pair_fingerprint FROM " + TABLES.receipt()
                 + " WHERE season=? AND publication_key=?", String.class, season.code(), OwnedSyncStore.INCREMENTAL_CORE_KEY);
@@ -2020,6 +2051,338 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
                 .isEqualTo(GameweekFinality.State.FINALIZED);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.gameweekStatSync()
                 + " WHERE season_id=? AND gameweek=3 AND state='FINALIZED'", Integer.class, SEASON_ID)).isOne();
+    }
+
+    @Test
+    void sameGenerationLiveRefreshForRetryKeepsCompletedFixtureProofImmutable() throws Exception {
+        PairCapture capture = pairCapture();
+        SharedStatsSeed.seedOwnedSyncFixtureIdentity(jdbc, SEASON_ID, capture.teams(),
+                List.of(capture.fixtureOne(), capture.fixtureTwo()));
+        fetch.setSources(capture.bootstrap(), capture.fixtures(), capture.live(), eventFourLive);
+        capture.historyPages().forEach(fetch::setPlayerPage);
+        fetch.failPlayerCalls(82, 1);
+        fetch.failPlayer(501);
+
+        CycleResult first = collector(true).runCycle();
+
+        assertThat(first.state()).isEqualTo(State.RETRY_SCHEDULED);
+        assertThat(first.selectedPlayerIds()).containsExactly(82, 259, 350, 501);
+        assertThat(first.committedPlayerIds()).containsExactly(259, 350);
+        assertThat(first.failedPlayerIds()).containsExactly(82, 501);
+        assertThat(fetch.count(EndpointKind.EVENT_LIVE)).isEqualTo(1);
+        PfsReadSource reader = collectorPfsReadSource();
+        Map<PfsReadSource.FixtureSide, PfsReadSource.SidePopulation> partial = doubleFixturePopulation(reader);
+        assertThat(partial.get(new PfsReadSource.FixtureSide(DOUBLE_FIXTURE_ONE, DOUBLE_HOME_ONE)).complete())
+                .isTrue();
+        assertThat(partial.get(new PfsReadSource.FixtureSide(DOUBLE_FIXTURE_ONE, DOUBLE_AWAY_ONE)).complete())
+                .isTrue();
+        assertThat(partial.get(new PfsReadSource.FixtureSide(DOUBLE_FIXTURE_TWO, DOUBLE_AWAY_TWO)))
+                .satisfies(side -> {
+                    assertThat(side.sourceRosterComplete()).isTrue();
+                    assertThat(side.expectedPositive()).isEqualTo(1);
+                    assertThat(side.matchedPositive()).isZero();
+                    assertThat(side.complete()).isFalse();
+                });
+        String fixtureOneSnapshotKey = jdbc.queryForObject("SELECT publication_key FROM " + TABLES.receipt()
+                + " WHERE season=? AND publication_key LIKE ?", String.class, season.code(),
+                IncrementalAppearanceReceipt.SNAPSHOT_PREFIX + DOUBLE_FIXTURE_ONE + ":%");
+        Map<String, Object> firstFixtureProof = appearanceReceipt(fixtureOneSnapshotKey);
+        String fixtureOneRevisionKey = IncrementalAppearanceReceipt.sourceFixtureKey(DOUBLE_FIXTURE_ONE);
+        Map<String, Object> firstFixtureRevision = appearanceReceipt(fixtureOneRevisionKey);
+        BigDecimal firstFixtureXg = collectorFixtureXg(reader, DOUBLE_FIXTURE_ONE);
+        assertThat(firstFixtureXg).isEqualByComparingTo("1.00");
+        assertThat(collectorFixtureXg(reader, DOUBLE_FIXTURE_TWO)).isNull();
+
+        fetch.clearCalls();
+        fetch.clearPageOutcomes();
+        clock.set(first.nextDue().plusSeconds(1));
+        CycleResult resumed = collector(true).runCycle();
+
+        assertThat(resumed.state()).as("resume result %s; requests %s", resumed, fetch.calls())
+                .isEqualTo(State.COMPLETED);
+        assertThat(resumed.selectedPlayerIds()).containsExactly(82, 501);
+        assertThat(fetch.playerIds()).containsExactly(82, 501);
+        assertThat(fetch.count(EndpointKind.EVENT_LIVE)).isEqualTo(1);
+        Map<PfsReadSource.FixtureSide, PfsReadSource.SidePopulation> complete = doubleFixturePopulation(reader);
+        assertThat(complete.get(new PfsReadSource.FixtureSide(DOUBLE_FIXTURE_ONE, DOUBLE_HOME_ONE)).complete())
+                .isTrue();
+        assertThat(complete.get(new PfsReadSource.FixtureSide(DOUBLE_FIXTURE_ONE, DOUBLE_AWAY_ONE)).complete())
+                .isTrue();
+        assertThat(complete.get(new PfsReadSource.FixtureSide(DOUBLE_FIXTURE_TWO, DOUBLE_HOME_TWO)).complete())
+                .as("fixture 2 home: %s", complete.get(
+                        new PfsReadSource.FixtureSide(DOUBLE_FIXTURE_TWO, DOUBLE_HOME_TWO)))
+                .isTrue();
+        assertThat(complete.get(new PfsReadSource.FixtureSide(DOUBLE_FIXTURE_TWO, DOUBLE_AWAY_TWO)).complete())
+                .isTrue();
+        assertThat(appearanceReceipt(fixtureOneSnapshotKey)).isEqualTo(firstFixtureProof);
+        assertThat(appearanceReceipt(fixtureOneRevisionKey)).isEqualTo(firstFixtureRevision);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.receipt()
+                + " WHERE season=? AND publication_key LIKE ?", Integer.class, season.code(),
+                IncrementalAppearanceReceipt.SNAPSHOT_PREFIX + DOUBLE_FIXTURE_TWO + ":%")).isEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.receipt()
+                + " WHERE season=? AND publication_key LIKE ?", Integer.class, season.code(),
+                IncrementalAppearanceReceipt.LIVE_EVENT_SOURCE_PREFIX + "3:generation:%")).isEqualTo(2);
+        assertThat(collectorFixtureXg(reader, DOUBLE_FIXTURE_ONE)).isEqualByComparingTo(firstFixtureXg);
+        assertThat(collectorFixtureXg(reader, DOUBLE_FIXTURE_TWO)).isEqualByComparingTo("1.00");
+    }
+
+    @Test
+    void sameFixtureRetryKeepsEarlierSameSidePagesEligibleAcrossUnchangedLiveRefresh() throws Exception {
+        SingleFixtureCapture capture = sameFixtureCapture();
+        SharedStatsSeed.seedOwnedSyncFixtureIdentity(jdbc, SEASON_ID, capture.teams(), List.of(capture.fixture()));
+        fetch.setSources(capture.bootstrap(), capture.fixtures(), capture.live(), eventFourLive);
+        capture.historyPages().forEach(fetch::setPlayerPage);
+        fetch.failPlayer(82);
+
+        CycleResult first = collector(true).runCycle();
+
+        assertThat(first.state()).isEqualTo(State.RETRY_SCHEDULED);
+        assertThat(first.selectedPlayerIds()).containsExactly(82, 259, 350);
+        assertThat(first.committedPlayerIds()).containsExactly(259, 350);
+        assertThat(first.failedPlayerIds()).containsExactly(82);
+        assertThat(first.finalPendingGameweeks()).isEmpty();
+        assertThat(fetch.count(EndpointKind.EVENT_LIVE)).isEqualTo(1);
+        PfsReadSource reader = collectorPfsReadSource();
+        Map<PfsReadSource.FixtureSide, PfsReadSource.SidePopulation> partial = reader.fixtureSidePopulation(
+                SEASON_ID, season.code(), "fixture", "season_id", SEASON_ID,
+                Set.of(DOUBLE_FIXTURE_ONE), clock.instant());
+        assertThat(partial.get(new PfsReadSource.FixtureSide(DOUBLE_FIXTURE_ONE, DOUBLE_HOME_ONE)))
+                .satisfies(side -> {
+                    assertThat(side.sourceRosterComplete()).isTrue();
+                    assertThat(side.expectedPositive()).isEqualTo(2);
+                    assertThat(side.matchedPositive()).isEqualTo(1);
+                    assertThat(side.complete()).isFalse();
+                });
+        assertThat(partial.get(new PfsReadSource.FixtureSide(DOUBLE_FIXTURE_ONE, DOUBLE_AWAY_ONE)).complete())
+                .isTrue();
+        ExpectedStatsTools teamStats = collectorTeamStats(reader);
+        String partialTeam = teamStats.getTeamExpectedGoals(capture.fixture().homeTeamName(), 5);
+        assertThat(partialTeam).contains("incomplete positive-appearance evidence",
+                "n/a (incomplete team-side evidence)").doesNotContain("xG 0.10");
+        assertThat(teamStats.getTeamExpectedGoals(capture.fixture().awayTeamName(), 5))
+                .contains("xG 0.25", "(scored 0)");
+        Map<String, Object> playerAProof = playerPageProof(DOUBLE_FIXTURE_ONE, 259);
+        Map<String, Object> playerAPage = pageWatermark(259);
+        int playerAEvidenceCount = playerEvidenceCount(DOUBLE_FIXTURE_ONE, 259);
+        String firstSnapshotKey = jdbc.queryForObject("SELECT publication_key FROM " + TABLES.receipt()
+                + " WHERE season=? AND publication_key LIKE ? ORDER BY source_read_started_at LIMIT 1",
+                String.class, season.code(), IncrementalAppearanceReceipt.SNAPSHOT_PREFIX
+                        + DOUBLE_FIXTURE_ONE + ":%");
+        Map<String, Object> firstSnapshot = appearanceReceipt(firstSnapshotKey);
+
+        fetch.clearCalls();
+        fetch.clearPageOutcomes();
+        clock.set(first.nextDue().plusSeconds(1));
+        CycleResult resumed = collector(true).runCycle();
+
+        assertThat(resumed.state()).as("resume result %s; requests %s", resumed, fetch.calls())
+                .isEqualTo(State.COMPLETED);
+        assertThat(resumed.selectedPlayerIds()).containsExactly(82);
+        assertThat(fetch.playerIds()).containsExactly(82);
+        assertThat(fetch.count(EndpointKind.EVENT_LIVE)).isEqualTo(1);
+        assertThat(resumed.finalPendingGameweeks()).isEmpty();
+        Map<PfsReadSource.FixtureSide, PfsReadSource.SidePopulation> complete = reader.fixtureSidePopulation(
+                SEASON_ID, season.code(), "fixture", "season_id", SEASON_ID,
+                Set.of(DOUBLE_FIXTURE_ONE), clock.instant());
+        assertThat(complete.get(new PfsReadSource.FixtureSide(DOUBLE_FIXTURE_ONE, DOUBLE_HOME_ONE)).complete())
+                .isTrue();
+        assertThat(complete.get(new PfsReadSource.FixtureSide(DOUBLE_FIXTURE_ONE, DOUBLE_AWAY_ONE)).complete())
+                .isTrue();
+        assertThat(playerPageProof(DOUBLE_FIXTURE_ONE, 259)).isEqualTo(playerAProof);
+        assertThat(pageWatermark(259)).isEqualTo(playerAPage);
+        assertThat(playerEvidenceCount(DOUBLE_FIXTURE_ONE, 259)).isEqualTo(playerAEvidenceCount);
+        assertThat(appearanceReceipt(firstSnapshotKey)).isEqualTo(firstSnapshot);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.receipt()
+                + " WHERE season=? AND publication_key LIKE ?", Integer.class, season.code(),
+                IncrementalAppearanceReceipt.SNAPSHOT_PREFIX + DOUBLE_FIXTURE_ONE + ":%")).isEqualTo(2);
+        String completeTeam = teamStats.getTeamExpectedGoals(capture.fixture().homeTeamName(), 5);
+        assertThat(completeTeam).contains("xG 1.00", "(scored 1)",
+                        "provisional incremental rows; FPL has not supplied a checked-gameweek final import.")
+                .doesNotContain("incomplete positive-appearance evidence",
+                        "FPL checked; final import completed");
+
+        fetch.clearCalls();
+        fetch.clearPageOutcomes();
+        fetch.setSources(capture.bootstrap(), capture.fixtures(), sameFixtureLive(80), eventFourLive);
+        clock.set(clock.instant().plusSeconds(10));
+        jdbc.update("DELETE FROM " + TABLES.receipt() + " WHERE season=? AND publication_key=?",
+                season.code(), IncrementalPlayerFixturePublisher.pageReceiptKey(82));
+        CycleResult changedMinutes = collector(true).runCycle();
+
+        assertThat(changedMinutes.state()).isEqualTo(State.COMPLETED);
+        assertThat(changedMinutes.selectedPlayerIds()).containsExactly(82, 259, 350);
+        assertThat(fetch.playerIds()).containsExactly(82, 259, 350);
+        assertThat(fetch.count(EndpointKind.EVENT_LIVE)).isEqualTo(1);
+        Map<PfsReadSource.FixtureSide, PfsReadSource.SidePopulation> changedPopulation =
+                reader.fixtureSidePopulation(SEASON_ID, season.code(), "fixture", "season_id", SEASON_ID,
+                        Set.of(DOUBLE_FIXTURE_ONE), clock.instant());
+        assertThat(changedPopulation.get(new PfsReadSource.FixtureSide(
+                DOUBLE_FIXTURE_ONE, DOUBLE_HOME_ONE))).satisfies(side -> {
+                    assertThat(side.sourceRosterComplete()).isTrue();
+                    assertThat(side.expectedPositive()).isEqualTo(2);
+                    assertThat(side.matchedPositive()).isEqualTo(1);
+                    assertThat(side.complete()).isFalse();
+                });
+        assertThat(playerPageProof(DOUBLE_FIXTURE_ONE, 259)).isEqualTo(playerAProof);
+        Map<String, Object> newestSnapshot = jdbc.queryForMap("SELECT source_read_finished_at FROM "
+                + TABLES.receipt() + " WHERE season=? AND publication_key LIKE ?"
+                + " ORDER BY source_read_started_at DESC LIMIT 1", season.code(),
+                IncrementalAppearanceReceipt.SNAPSHOT_PREFIX + DOUBLE_FIXTURE_ONE + ":%");
+        assertThat(((Timestamp) pageWatermark(259).get("source_read_started_at")).toInstant())
+                .isAfterOrEqualTo(((Timestamp) newestSnapshot.get("source_read_finished_at")).toInstant());
+    }
+
+    @Test
+    void changedLiveMinutesOnPartialRetryRestartsAndRevalidatesEveryPage() throws Exception {
+        SingleFixtureCapture capture = sameFixtureCapture();
+        int fixtureId = capture.fixture().id();
+        int playerA = 259;
+        int playerB = 82;
+        int playerC = 350;
+        SharedStatsSeed.seedOwnedSyncFixtureIdentity(jdbc, SEASON_ID, capture.teams(), List.of(capture.fixture()));
+        fetch.setSources(capture.bootstrap(), capture.fixtures(), capture.live(), eventFourLive);
+        capture.historyPages().forEach(fetch::setPlayerPage);
+        fetch.failPlayer(playerB);
+        CoalescedPlayerHistoryCollector collector = compatibilityCollector(true);
+
+        CycleResult partial = collector.runCycle();
+
+        assertThat(partial.state()).isEqualTo(State.RETRY_SCHEDULED);
+        assertThat(partial.selectedPlayerIds()).containsExactly(playerB, playerA, playerC);
+        assertThat(partial.committedPlayerIds()).containsExactly(playerA, playerC);
+        assertThat(partial.failedPlayerIds()).containsExactly(playerB);
+        long firstGeneration = ((Number) pageWatermark(playerA).get("latest_generation")).longValue();
+        assertThat(((Number) pageWatermark(playerC).get("latest_generation")).longValue())
+                .isEqualTo(firstGeneration);
+        String initialFingerprint = jdbc.queryForObject("SELECT source_pair_fingerprint FROM " + TABLES.receipt()
+                + " WHERE season=? AND publication_key=?", String.class, season.code(),
+                IncrementalAppearanceReceipt.appearanceStateKey(fixtureId));
+        Instant firstAppearanceFloor = jdbc.queryForObject("SELECT source_read_finished_at FROM " + TABLES.receipt()
+                + " WHERE season=? AND publication_key=?", Timestamp.class, season.code(),
+                IncrementalAppearanceReceipt.appearanceStateKey(fixtureId)).toInstant();
+        assertThat(firstAppearanceFloor).isEqualTo(fetch.successfulReads().stream()
+                .filter(read -> read.endpoint().kind() == EndpointKind.EVENT_LIVE)
+                .map(read -> read.read().finishedAt()).findFirst().orElseThrow());
+        Map<String, Object> sourceRevisionBefore = appearanceReceipt(
+                IncrementalAppearanceReceipt.sourceFixtureKey(fixtureId));
+
+        byte[] revisedLive = sameFixtureLive(80);
+        byte[] revisedPlayerBPage = historyWithMinutes(capture.historyPages().get(playerB), fixtureId, playerB, 80);
+        fetch.clearCalls();
+        fetch.clearPageOutcomes();
+        fetch.setSources(capture.bootstrap(), capture.fixtures(), revisedLive, eventFourLive);
+        fetch.setPlayerPage(playerB, revisedPlayerBPage);
+        clock.set(partial.nextDue().plusSeconds(1));
+        CycleResult restarted = collector.runCycle();
+
+        assertThat(restarted.state()).isEqualTo(State.RETRY_SCHEDULED);
+        assertThat(restarted.failedPlayerIds()).isEmpty();
+        assertThat(fetch.playerIds()).as("stale same-generation pages are never republished").isEmpty();
+        assertThat(fetch.count(EndpointKind.EVENT_LIVE)).isOne();
+        long advancedGeneration = jdbc.queryForObject("SELECT generation FROM " + TABLES.run()
+                + " WHERE producer_key=? AND season=? AND state='PENDING' ORDER BY generation DESC LIMIT 1",
+                Long.class, OwnedSyncStore.INCREMENTAL_CORE_PRODUCER, season.code());
+        assertThat(advancedGeneration).isGreaterThan(firstGeneration);
+        assertThat(jdbc.queryForObject("SELECT state FROM " + TABLES.run() + " WHERE generation=?",
+                String.class, firstGeneration)).isEqualTo("SUPERSEDED");
+        Instant revisedAppearanceFloor = jdbc.queryForObject("SELECT source_read_finished_at FROM " + TABLES.receipt()
+                + " WHERE season=? AND publication_key=?", Timestamp.class, season.code(),
+                IncrementalAppearanceReceipt.appearanceStateKey(fixtureId)).toInstant();
+        String revisedFingerprint = jdbc.queryForObject("SELECT source_pair_fingerprint FROM " + TABLES.receipt()
+                + " WHERE season=? AND publication_key=?", String.class, season.code(),
+                IncrementalAppearanceReceipt.appearanceStateKey(fixtureId));
+        assertThat(revisedAppearanceFloor).isAfter(firstAppearanceFloor);
+        assertThat(revisedAppearanceFloor).isEqualTo(fetch.successfulReads().stream()
+                .filter(read -> read.endpoint().kind() == EndpointKind.EVENT_LIVE)
+                .map(read -> read.read().finishedAt()).findFirst().orElseThrow());
+        assertThat(revisedFingerprint).isNotEqualTo(initialFingerprint);
+        assertThat(appearanceReceipt(IncrementalAppearanceReceipt.sourceFixtureKey(fixtureId)))
+                .isEqualTo(sourceRevisionBefore);
+        Map<PfsReadSource.FixtureSide, PfsReadSource.SidePopulation> invalidated =
+                collectorPfsReadSource().fixtureSidePopulation(SEASON_ID, season.code(), "fixture", "season_id",
+                        SEASON_ID, Set.of(fixtureId), clock.instant());
+        assertThat(invalidated.get(new PfsReadSource.FixtureSide(fixtureId, DOUBLE_HOME_ONE)))
+                .satisfies(side -> {
+                    assertThat(side.sourceRosterComplete()).isTrue();
+                    assertThat(side.expectedPositive()).isEqualTo(2);
+                    assertThat(side.matchedPositive()).isZero();
+                    assertThat(side.complete()).isFalse();
+                });
+        assertThat(invalidated.get(new PfsReadSource.FixtureSide(fixtureId, DOUBLE_AWAY_ONE)))
+                .satisfies(side -> {
+                    assertThat(side.sourceRosterComplete()).isTrue();
+                    assertThat(side.expectedPositive()).isEqualTo(1);
+                    assertThat(side.matchedPositive()).isZero();
+                    assertThat(side.complete()).isFalse();
+                });
+
+        Map<String, List<Object>> rowsBeforeRevalidation = pfsRowsSnapshot(Set.of(fixtureId));
+        Map<String, List<Object>> proofBeforeRevalidation = pfsProofSnapshot(Set.of(fixtureId));
+        Map<String, Object> playerAProof = playerPageProof(fixtureId, playerA);
+        Map<String, Object> playerCProof = playerPageProof(fixtureId, playerC);
+        int playerAEvidenceCount = playerEvidenceCount(fixtureId, playerA);
+        int playerCEvidenceCount = playerEvidenceCount(fixtureId, playerC);
+        fetch.clearCalls();
+        clock.set(restarted.nextDue().plusSeconds(1));
+        CycleResult recovered = collector.runCycle();
+
+        assertThat(recovered.state()).as("cycle %s; error %s", recovered, latestRunError())
+                .isEqualTo(State.COMPLETED);
+        assertThat(recovered.selectedPlayerIds()).containsExactly(playerB, playerA, playerC);
+        assertThat(recovered.committedPlayerIds()).containsExactly(playerB, playerA, playerC);
+        assertThat(fetch.playerIds()).containsExactly(playerB, playerA, playerC);
+        Map<String, Object> newRun = jdbc.queryForMap("SELECT generation,requested_source_after FROM "
+                + TABLES.run() + " WHERE generation=?", advancedGeneration);
+        Instant runFloor = ((Timestamp) newRun.get("requested_source_after")).toInstant();
+        assertThat(fetch.requests().stream().filter(request -> request.endpoint().kind() == EndpointKind.ELEMENT_SUMMARY))
+                .allSatisfy(request -> assertThat(request.floor()).isAfterOrEqualTo(revisedAppearanceFloor)
+                        .isAfterOrEqualTo(runFloor));
+        assertThat(fetch.successfulReads().stream()
+                .filter(read -> read.endpoint().kind() == EndpointKind.ELEMENT_SUMMARY))
+                .allSatisfy(read -> assertThat(read.read().startedAt()).isAfterOrEqualTo(revisedAppearanceFloor));
+        assertThat(jdbc.queryForObject("SELECT minutes FROM player_fixture_stats WHERE season_id=?"
+                + " AND fixture_id=? AND player_id=?", Integer.class, SEASON_ID, fixtureId, playerB)).isEqualTo(80);
+        Map<String, List<Object>> rowsAfterRevalidation = pfsRowsSnapshot(Set.of(fixtureId));
+        Map<String, List<Object>> proofAfterRevalidation = pfsProofSnapshot(Set.of(fixtureId));
+        assertThat(rowsAfterRevalidation.get(fixtureId + "/" + playerA))
+                .isEqualTo(rowsBeforeRevalidation.get(fixtureId + "/" + playerA));
+        assertThat(rowsAfterRevalidation.get(fixtureId + "/" + playerC))
+                .isEqualTo(rowsBeforeRevalidation.get(fixtureId + "/" + playerC));
+        assertThat(proofAfterRevalidation.get(fixtureId + "/" + playerA))
+                .isEqualTo(proofBeforeRevalidation.get(fixtureId + "/" + playerA));
+        assertThat(proofAfterRevalidation.get(fixtureId + "/" + playerC))
+                .isEqualTo(proofBeforeRevalidation.get(fixtureId + "/" + playerC));
+        assertThat(pageWatermark(playerA).get("latest_generation")).isEqualTo(advancedGeneration);
+        assertThat(pageWatermark(playerC).get("latest_generation")).isEqualTo(advancedGeneration);
+        assertThat(playerPageProof(fixtureId, playerA)).isEqualTo(playerAProof);
+        assertThat(playerPageProof(fixtureId, playerC)).isEqualTo(playerCProof);
+        assertThat(playerEvidenceCount(fixtureId, playerA)).isEqualTo(playerAEvidenceCount);
+        assertThat(playerEvidenceCount(fixtureId, playerC)).isEqualTo(playerCEvidenceCount);
+
+        PfsReadSource reader = collectorPfsReadSource();
+        Map<PfsReadSource.FixtureSide, PfsReadSource.SidePopulation> complete = reader.fixtureSidePopulation(
+                SEASON_ID, season.code(), "fixture", "season_id", SEASON_ID, Set.of(fixtureId), clock.instant());
+        assertThat(complete.get(new PfsReadSource.FixtureSide(fixtureId, DOUBLE_HOME_ONE)).complete()).isTrue();
+        assertThat(complete.get(new PfsReadSource.FixtureSide(fixtureId, DOUBLE_AWAY_ONE)).complete()).isTrue();
+        assertThat(collectorTeamStats(reader).getTeamExpectedGoals(capture.fixture().homeTeamName(), 5))
+                .contains("xG 1.00", "(scored 1)", "provisional incremental rows");
+        assertThat(jdbc.queryForObject("SELECT data_checked FROM " + TABLES.gameweekStatSync()
+                + " WHERE season_id=? AND gameweek=?", Boolean.class, SEASON_ID,
+                capture.fixture().gameweek())).isFalse();
+
+        fetch.clearCalls();
+        clock.set(clock.instant().plusSeconds(10));
+        CycleResult noop = collector.runCycle();
+        assertThat(noop.state()).isEqualTo(State.COMPLETED);
+        assertThat(noop.selectedPlayerIds()).isEmpty();
+        assertThat(fetch.count(EndpointKind.EVENT_LIVE)).isZero();
+        assertThat(fetch.count(EndpointKind.ELEMENT_SUMMARY)).isZero();
+        assertThat(reader.fixtureSidePopulation(SEASON_ID, season.code(), "fixture", "season_id", SEASON_ID,
+                Set.of(fixtureId), clock.instant()).get(new PfsReadSource.FixtureSide(
+                        fixtureId, DOUBLE_HOME_ONE)).complete()).isTrue();
+        assertThat(jdbc.queryForObject("SELECT data_checked FROM " + TABLES.gameweekStatSync()
+                + " WHERE season_id=? AND gameweek=?", Boolean.class, SEASON_ID,
+                capture.fixture().gameweek())).isFalse();
     }
 
     @Test
@@ -3497,6 +3860,287 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         return recording;
     }
 
+    private PfsReadSource collectorPfsReadSource() {
+        return new PfsReadSource(jdbc, "OFF", "", TABLES.fixtureSync(),
+                TABLES.playerFixtureEvidence(), TABLES.playerFixtureCurrent(), TABLES.receipt());
+    }
+
+    private Map<PfsReadSource.FixtureSide, PfsReadSource.SidePopulation> doubleFixturePopulation(
+            PfsReadSource reader) {
+        return reader.fixtureSidePopulation(SEASON_ID, season.code(), "fixture", "season_id", SEASON_ID,
+                Set.of(DOUBLE_FIXTURE_ONE, DOUBLE_FIXTURE_TWO), clock.instant());
+    }
+
+    private BigDecimal collectorFixtureXg(PfsReadSource reader, int fixtureId) {
+        return jdbc.queryForObject("WITH " + reader.cte()
+                + " SELECT SUM(expected_goals) FROM pfs_read WHERE season_id=? AND fixture_id=?",
+                BigDecimal.class, SEASON_ID, fixtureId);
+    }
+
+    private Map<String, Object> appearanceReceipt(String key) {
+        return jdbc.queryForMap("SELECT latest_generation,source_read_started_at,source_read_finished_at,"
+                + "source_pair_fingerprint FROM " + TABLES.receipt()
+                + " WHERE season=? AND publication_key=?", season.code(), key);
+    }
+
+    private ExpectedStatsTools collectorTeamStats(PfsReadSource reader) {
+        SeasonContext context = new SeasonContext(SEASON_ID, season.code(), true,
+                season.code(), season.startsOn());
+        SeasonResolver resolver = Mockito.mock(SeasonResolver.class);
+        Mockito.when(resolver.resolve()).thenReturn(context);
+        Mockito.when(resolver.previousSeason(context)).thenReturn(Optional.empty());
+        var clocks = new StaticListableBeanFactory(Map.of("collectorTestClock", clock))
+                .getBeanProvider(Clock.class);
+        return new ExpectedStatsTools(jdbc, resolver, clocks, reader,
+                Mockito.mock(PlayerNameSearch.class), new GameweekFinalityReader(jdbc, clock, TABLES),
+                new DataSourceTransactionManager(dataSource));
+    }
+
+    private Map<String, Object> playerPageProof(int fixtureId, int playerId) {
+        return jdbc.queryForMap("SELECT c.source_run_generation,c.evidence_generation,c.row_fingerprint,"
+                + "c.physical_fingerprint,c.source_read_started_at AS pointer_started,"
+                + "c.source_read_finished_at AS pointer_finished,c.updated_at AS pointer_updated,"
+                + "e.component_presence,e.source_read_started_at AS evidence_started,"
+                + "e.source_read_finished_at AS evidence_finished,p.updated_at AS pfs_updated "
+                + "FROM " + TABLES.playerFixtureCurrent() + " c JOIN " + TABLES.playerFixtureEvidence()
+                + " e ON e.season_id=c.season_id AND e.fixture_id=c.fixture_id AND e.player_id=c.player_id"
+                + " AND e.generation=c.evidence_generation JOIN player_fixture_stats p"
+                + " ON p.season_id=c.season_id AND p.fixture_id=c.fixture_id AND p.player_id=c.player_id"
+                + " WHERE c.season_id=? AND c.fixture_id=? AND c.player_id=?",
+                SEASON_ID, fixtureId, playerId);
+    }
+
+    private Map<String, Object> pageWatermark(int playerId) {
+        return jdbc.queryForMap("SELECT latest_generation,source_read_started_at,source_read_finished_at"
+                + " FROM " + TABLES.receipt() + " WHERE season=? AND publication_key=?",
+                season.code(), IncrementalPlayerFixturePublisher.pageReceiptKey(playerId));
+    }
+
+    private int playerEvidenceCount(int fixtureId, int playerId) {
+        return jdbc.queryForObject("SELECT count(*) FROM " + TABLES.playerFixtureEvidence()
+                + " WHERE season_id=? AND fixture_id=? AND player_id=?", Integer.class,
+                SEASON_ID, fixtureId, playerId);
+    }
+
+    private SingleFixtureCapture sameFixtureCapture() throws Exception {
+        PairCapture base = pairCapture();
+        ObjectNode bootstrapRoot = (ObjectNode) JSON.readTree(base.bootstrap());
+        int homeCode = 0;
+        int awayCode = 0;
+        for (JsonNode team : bootstrapRoot.path("teams")) {
+            if (team.path("id").asInt() == DOUBLE_HOME_ONE) homeCode = team.path("code").asInt();
+            if (team.path("id").asInt() == DOUBLE_AWAY_ONE) awayCode = team.path("code").asInt();
+        }
+        ArrayNode players = JSON.createArrayNode();
+        for (JsonNode raw : bootstrapRoot.path("elements")) {
+            int id = raw.path("id").asInt();
+            if (id != 259 && id != 82 && id != 350) continue;
+            ObjectNode player = ((ObjectNode) raw).deepCopy();
+            player.put("team", id == 350 ? DOUBLE_AWAY_ONE : DOUBLE_HOME_ONE);
+            player.put("team_code", id == 350 ? awayCode : homeCode);
+            players.add(player);
+        }
+        bootstrapRoot.set("elements", players);
+
+        ArrayNode schedule = (ArrayNode) JSON.readTree(base.fixtures());
+        for (JsonNode raw : schedule) {
+            ObjectNode fixture = (ObjectNode) raw;
+            if (fixture.path("id").asInt() == DOUBLE_FIXTURE_ONE) {
+                fixture.put("team_h_score", 1);
+                fixture.put("team_a_score", 0);
+                fixture.set("stats", sameFixtureStats());
+            } else if (fixture.path("id").asInt() == DOUBLE_FIXTURE_TWO) {
+                fixture.putNull("event");
+                fixture.put("started", false);
+                fixture.put("finished", false);
+                fixture.put("finished_provisional", false);
+                fixture.put("minutes", 0);
+                fixture.putNull("team_h_score");
+                fixture.putNull("team_a_score");
+                fixture.set("stats", JSON.createArrayNode());
+            }
+        }
+
+        byte[] sourceBootstrap = JSON.writeValueAsBytes(bootstrapRoot);
+        byte[] sourceFixtures = JSON.writeValueAsBytes(schedule);
+        byte[] live = sameFixtureLive();
+        var snapshot = CatalogueScheduleParser.parse(season,
+                document(sourceBootstrap, new SourceRead(START, START.plusMillis(1))),
+                document(sourceFixtures, new SourceRead(START.plusMillis(2), START.plusMillis(3))));
+        assertThat(snapshot.gameweeks().stream().filter(gameweek -> gameweek.id() == 3)
+                .findFirst().orElseThrow().dataChecked()).isFalse();
+        FixtureRow fixture = snapshot.fixtures().stream()
+                .filter(row -> row.id() == DOUBLE_FIXTURE_ONE).findFirst().orElseThrow();
+        SourceDocument liveDocument = document(live, new SourceRead(START.plusMillis(4), START.plusMillis(5)));
+        assertThat(FixtureVerification.fixtureEvidenceByFixture(List.of(fixture), liveDocument)
+                .get(DOUBLE_FIXTURE_ONE).complete()).isTrue();
+        Map<Integer, byte[]> pages = Map.of(
+                259, syntheticHistoryPage(259, fixture, 10, 0, "0.10"),
+                82, syntheticHistoryPage(82, fixture, 90, 1, "0.90"),
+                350, syntheticHistoryPage(350, fixture, 90, 0, "0.25"));
+        List<TeamRow> teams = snapshot.teams().stream()
+                .filter(team -> team.id() == DOUBLE_HOME_ONE || team.id() == DOUBLE_AWAY_ONE).toList();
+        return new SingleFixtureCapture(sourceBootstrap, sourceFixtures, live, fixture, pages, teams);
+    }
+
+    private static ArrayNode sameFixtureStats() {
+        ArrayNode stats = JSON.createArrayNode();
+        ObjectNode minutes = stats.addObject();
+        minutes.put("identifier", "minutes");
+        minutes.putArray("h").addObject().put("element", 259).put("value", 10);
+        minutes.withArray("h").addObject().put("element", 82).put("value", 90);
+        minutes.putArray("a").addObject().put("element", 350).put("value", 90);
+        ObjectNode goals = stats.addObject();
+        goals.put("identifier", "goals_scored");
+        goals.putArray("h").addObject().put("element", 259).put("value", 0);
+        goals.withArray("h").addObject().put("element", 82).put("value", 1);
+        goals.putArray("a").addObject().put("element", 350).put("value", 0);
+        return stats;
+    }
+
+    private static byte[] sameFixtureLive() throws IOException {
+        return sameFixtureLive(90);
+    }
+
+    private static byte[] sameFixtureLive(int secondHomeMinutes) throws IOException {
+        ObjectNode root = JSON.createObjectNode();
+        ArrayNode elements = root.putArray("elements");
+        addLivePlayer(elements, 259, DOUBLE_FIXTURE_ONE, 10);
+        addLivePlayer(elements, 82, DOUBLE_FIXTURE_ONE, secondHomeMinutes);
+        addLivePlayer(elements, 350, DOUBLE_FIXTURE_ONE, 90);
+        return JSON.writeValueAsBytes(root);
+    }
+
+    private PairCapture pairCapture() throws Exception {
+        Map<Integer, Integer> teamIds = Map.of(12, DOUBLE_HOME_ONE, 14, DOUBLE_AWAY_ONE,
+                4, DOUBLE_HOME_TWO, 20, DOUBLE_AWAY_TWO);
+        ObjectNode bootstrapRoot = (ObjectNode) JSON.readTree(bootstrap);
+        ArrayNode sourceTeams = JSON.createArrayNode();
+        for (JsonNode row : bootstrapRoot.path("teams")) {
+            int oldId = row.path("id").asInt();
+            ObjectNode team = ((ObjectNode) row).deepCopy();
+            team.put("id", teamIds.getOrDefault(oldId, oldId));
+            sourceTeams.add(team);
+        }
+        bootstrapRoot.set("teams", sourceTeams);
+        ArrayNode sourcePlayers = JSON.createArrayNode();
+        Map<Integer, Integer> playerTeams = Map.of(259, 12, 350, 14, 82, 4, 501, 20);
+        for (JsonNode row : bootstrapRoot.path("elements")) {
+            int playerId = row.path("id").asInt();
+            if (!playerTeams.containsKey(playerId)) continue;
+            ObjectNode player = ((ObjectNode) row).deepCopy();
+            player.put("team", teamIds.get(playerTeams.get(playerId)));
+            sourcePlayers.add(player);
+        }
+        bootstrapRoot.set("elements", sourcePlayers);
+        for (JsonNode event : bootstrapRoot.path("events")) ((ObjectNode) event).put("data_checked", false);
+
+        ArrayNode sourceFixtures = (ArrayNode) JSON.readTree(fixtures);
+        for (JsonNode raw : sourceFixtures) {
+            ObjectNode fixture = (ObjectNode) raw;
+            int fixtureId = fixture.path("id").asInt();
+            int oldHome = fixture.path("team_h").asInt();
+            int oldAway = fixture.path("team_a").asInt();
+            fixture.put("team_h", teamIds.getOrDefault(oldHome, oldHome));
+            fixture.put("team_a", teamIds.getOrDefault(oldAway, oldAway));
+            if (fixtureId == 21 || fixtureId == 22) {
+                boolean first = fixtureId == 21;
+                fixture.put("id", first ? DOUBLE_FIXTURE_ONE : DOUBLE_FIXTURE_TWO);
+                fixture.put("team_h_score", 0);
+                fixture.put("team_a_score", first ? 0 : 1);
+                fixture.set("stats", pairFixtureStats(first));
+            } else {
+                fixture.putNull("event");
+                fixture.put("kickoff_time", "2026-09-20T12:00:00Z");
+                fixture.put("started", false);
+                fixture.put("finished", false);
+                fixture.put("finished_provisional", false);
+                fixture.put("minutes", 0);
+                fixture.putNull("team_h_score");
+                fixture.putNull("team_a_score");
+                fixture.set("stats", JSON.createArrayNode());
+            }
+        }
+
+        byte[] sourceBootstrap = JSON.writeValueAsBytes(bootstrapRoot);
+        byte[] sourceSchedule = JSON.writeValueAsBytes(sourceFixtures);
+        byte[] live = pairLive();
+        SourceRead bootstrapRead = new SourceRead(START, START.plusMillis(1));
+        SourceRead fixtureRead = new SourceRead(START.plusMillis(2), START.plusMillis(3));
+        var snapshot = CatalogueScheduleParser.parse(season, document(sourceBootstrap, bootstrapRead),
+                document(sourceSchedule, fixtureRead));
+        FixtureRow first = snapshot.fixtures().stream()
+                .filter(row -> row.id() == DOUBLE_FIXTURE_ONE).findFirst().orElseThrow();
+        FixtureRow second = snapshot.fixtures().stream()
+                .filter(row -> row.id() == DOUBLE_FIXTURE_TWO).findFirst().orElseThrow();
+        SourceDocument liveDocument = document(live, new SourceRead(START.plusMillis(4), START.plusMillis(5)));
+        assertThat(FixtureVerification.fixtureEvidenceByFixture(List.of(first, second), liveDocument))
+                .allSatisfy((id, evidence) -> assertThat(evidence.complete()).isTrue());
+        Map<Integer, byte[]> pages = Map.of(
+                82, syntheticHistoryPage(82, second, 30, 0, "0.10"),
+                259, syntheticHistoryPage(259, first, 10, 0, "0.10"),
+                350, syntheticHistoryPage(350, first, 90, 0, "0.90"),
+                501, syntheticHistoryPage(501, second, 90, 1, "0.90"));
+        List<TeamRow> teams = snapshot.teams().stream().filter(team -> teamIds.containsValue(team.id())).toList();
+        return new PairCapture(sourceBootstrap, sourceSchedule, live, first, second, pages, teams);
+    }
+
+    private static ArrayNode pairFixtureStats(boolean first) {
+        int homePlayer = first ? 259 : 82;
+        int awayPlayer = first ? 350 : 501;
+        ArrayNode stats = JSON.createArrayNode();
+        ObjectNode minutes = stats.addObject();
+        minutes.put("identifier", "minutes");
+        minutes.putArray("h").addObject().put("element", homePlayer).put("value", first ? 10 : 30);
+        minutes.putArray("a").addObject().put("element", awayPlayer).put("value", 90);
+        ObjectNode goals = stats.addObject();
+        goals.put("identifier", "goals_scored");
+        goals.putArray("h").addObject().put("element", homePlayer).put("value", 0);
+        goals.putArray("a").addObject().put("element", awayPlayer).put("value", first ? 0 : 1);
+        return stats;
+    }
+
+    private static byte[] pairLive() throws IOException {
+        ObjectNode root = JSON.createObjectNode();
+        ArrayNode elements = root.putArray("elements");
+        addLivePlayer(elements, 259, DOUBLE_FIXTURE_ONE, 10);
+        addLivePlayer(elements, 350, DOUBLE_FIXTURE_ONE, 90);
+        addLivePlayer(elements, 82, DOUBLE_FIXTURE_TWO, 30);
+        addLivePlayer(elements, 501, DOUBLE_FIXTURE_TWO, 90);
+        return JSON.writeValueAsBytes(root);
+    }
+
+    private static void addLivePlayer(ArrayNode elements, int playerId, int fixtureId, int minutes) {
+        ObjectNode player = elements.addObject();
+        player.put("id", playerId);
+        ObjectNode explanation = player.putArray("explain").addObject();
+        explanation.put("fixture", fixtureId);
+        explanation.putArray("stats").addObject().put("identifier", "minutes")
+                .put("value", minutes).put("points", minutes >= 60 ? 2 : 1).put("points_modification", 0);
+    }
+
+    private static byte[] syntheticHistoryPage(int playerId, FixtureRow fixture, int minutes,
+                                               int goals, String xg) throws IOException {
+        ObjectNode root = (ObjectNode) JSON.readTree(resource("element-summary-1.json"));
+        ObjectNode row = ((ObjectNode) root.path("history").get(0)).deepCopy();
+        boolean home = playerId == 259 || playerId == 82;
+        row.put("element", playerId);
+        row.put("fixture", fixture.id());
+        row.put("round", fixture.gameweek());
+        row.put("opponent_team", home ? fixture.awayTeamId() : fixture.homeTeamId());
+        row.put("was_home", home);
+        row.put("kickoff_time", fixture.kickoff().toString());
+        row.put("minutes", minutes);
+        row.put("goals_scored", goals);
+        row.put("expected_goals", xg);
+        row.put("expected_assists", "0.00");
+        row.put("expected_goal_involvements", xg);
+        row.put("expected_goals_conceded", "0.20");
+        ArrayNode history = JSON.createArrayNode().add(row);
+        root.set("history", history);
+        return JSON.writeValueAsBytes(root);
+    }
+
     private CoalescedPlayerHistoryCollector collector(boolean enabled) {
         return new CoalescedPlayerHistoryCollector(season, enabled, store, publisher, fetch, clock,
                 "collector-test");
@@ -4085,6 +4729,7 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         private static final byte[] EMPTY_HISTORY = "{\"history\":[]}".getBytes(java.nio.charset.StandardCharsets.UTF_8);
         private static final byte[] EMPTY_LIVE = "{\"elements\":[]}".getBytes(java.nio.charset.StandardCharsets.UTF_8);
         private final List<Endpoint> calls = new ArrayList<>();
+        private final List<RecordedRequest> requests = new ArrayList<>();
         private final List<RecordedRead> successfulReads = new ArrayList<>();
         private final List<Integer> successfulBodyBytes = new ArrayList<>();
         private byte[] bootstrap;
@@ -4099,10 +4744,9 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         private int failedPageCall;
         private int deferredPageCall;
         private int pageCalls;
-        private int failingPlayerCalls;
+        private final Map<Integer, Integer> failingPlayerCalls = new java.util.HashMap<>();
         private Instant deferUntil;
         private boolean failFirstPage;
-        private Integer failingPlayerId;
         private boolean firstRequestRun;
 
         private void setSources(byte[] bootstrap, byte[] fixtures, byte[] eventThree, byte[] eventFour) {
@@ -4122,8 +4766,8 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         private void failPlayerCall(int call) { failFirstPage = true; failedPageCall = call; }
         private void failPlayer(int playerId) { failPlayerCalls(playerId, 1); }
         private void failPlayerCalls(int playerId, int calls) {
-            failingPlayerId = playerId;
-            failingPlayerCalls = calls;
+            if (calls <= 0) failingPlayerCalls.remove(playerId);
+            else failingPlayerCalls.put(playerId, calls);
         }
         private void setEventFourLive(byte[] body) { eventFour = body; }
         private void setPlayerPage(int playerId, byte[] body) { playerPages.put(playerId, body.clone()); }
@@ -4133,6 +4777,7 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         public OwnedSyncHttpClient.Result get(Lease lease, Endpoint endpoint, int failureAttempt, Instant floor) {
             if (clock == null) throw new IllegalStateException("clock not bound");
             calls.add(endpoint);
+            requests.add(new RecordedRequest(endpoint, floor));
             if (!firstRequestRun) {
                 firstRequestRun = true;
                 if (firstRequest != null) firstRequest.run();
@@ -4142,11 +4787,12 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
                 if (deferredPageCall == pageCalls) {
                     return new DeferredResult(deferUntil, DeferredReason.COOLDOWN);
                 }
+                Integer remainingFailures = failingPlayerCalls.get(endpoint.playerId());
                 if (failFirstPage && failedPageCall == pageCalls
-                        || failingPlayerId != null && endpoint.playerId().equals(failingPlayerId)
-                                && failingPlayerCalls > 0) {
-                    if (failingPlayerId != null && endpoint.playerId().equals(failingPlayerId)) {
-                        failingPlayerCalls--;
+                        || remainingFailures != null && remainingFailures > 0) {
+                    if (remainingFailures != null && remainingFailures > 0) {
+                        if (remainingFailures == 1) failingPlayerCalls.remove(endpoint.playerId());
+                        else failingPlayerCalls.put(endpoint.playerId(), remainingFailures - 1);
                     }
                     return new Failure(FailureKind.IO_ERROR, "recorded page failure", null, null,
                             interval(), null);
@@ -4184,9 +4830,11 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         }
 
         private List<Endpoint> calls() { return List.copyOf(calls); }
+        private List<RecordedRequest> requests() { return List.copyOf(requests); }
         private int returnedBodyBytes() { return successfulBodyBytes.stream().mapToInt(Integer::intValue).sum(); }
         private void clearCalls() {
             calls.clear();
+            requests.clear();
             successfulReads.clear();
             successfulBodyBytes.clear();
             pageCalls = 0;
@@ -4196,8 +4844,7 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
 
         private void clearPageOutcomes() {
             failFirstPage = false;
-            failingPlayerId = null;
-            failingPlayerCalls = 0;
+            failingPlayerCalls.clear();
             deferredPageCall = 0;
             deferUntil = null;
         }
@@ -4357,6 +5004,10 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         @Override public synchronized Instant instant() { return current; }
     }
 
+    private record PairCapture(byte[] bootstrap, byte[] fixtures, byte[] live, FixtureRow fixtureOne,
+                               FixtureRow fixtureTwo, Map<Integer, byte[]> historyPages, List<TeamRow> teams) { }
+    private record SingleFixtureCapture(byte[] bootstrap, byte[] fixtures, byte[] live, FixtureRow fixture,
+                                        Map<Integer, byte[]> historyPages, List<TeamRow> teams) { }
     private record CheckedFixtureSetup(int fixtureId, int cataloguePlayer, byte[] fixtureSource,
                                        byte[] bootstrapSource, byte[] liveSource) { }
     private record MultiFixtureSetup(Set<Integer> fixtureIds,
@@ -4366,5 +5017,6 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
     private record FixtureKey(int id, int gameweek, int homeTeam, int awayTeam, Instant kickoff,
                               boolean started, boolean finished) { }
     private record ActiveFixture(byte[] body, int id) { }
+    private record RecordedRequest(Endpoint endpoint, Instant floor) { }
     private record RecordedRead(Endpoint endpoint, SourceRead read) { }
 }

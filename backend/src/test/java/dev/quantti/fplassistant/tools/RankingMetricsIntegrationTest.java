@@ -10,11 +10,16 @@ import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.OptionalDouble;
 import java.util.Set;
 
 import dev.quantti.fplassistant.schedule.ScheduleSource;
+import dev.quantti.fplassistant.sync.CatalogueScheduleParser;
+import dev.quantti.fplassistant.sync.CatalogueScheduleParser.FixtureRow;
+import dev.quantti.fplassistant.sync.FixtureVerification;
 import dev.quantti.fplassistant.sync.HistoryParser;
+import dev.quantti.fplassistant.sync.IncrementalAppearanceReceipt;
 import dev.quantti.fplassistant.sync.PlayerFixtureFingerprint;
 import dev.quantti.fplassistant.testsupport.RankingSeed;
 import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
@@ -127,6 +132,12 @@ class RankingMetricsIntegrationTest {
                 .contains("incremental population incomplete");
 
         jdbc.update("DELETE FROM " + dailyTable + " WHERE season=? AND element_id=?", SEASON, PLAYER + 1);
+        int opponent = jdbc.queryForObject("SELECT CASE WHEN team_h=? THEN team_a ELSE team_h END FROM "
+                + fixtureTable + " WHERE season=? AND id=?", Integer.class, club, SEASON, fixture);
+        seedPfs(PLAYER + 2, fixture, 60, opponent, opponent, null);
+        seedIncrementalRow(PLAYER, fixture, 11);
+        seedIncrementalRow(PLAYER + 2, fixture, 11);
+        seedAppearanceEvidence(fixture, 11, Map.of(PLAYER, 30, PLAYER + 2, 60));
         RankingMetrics.Snapshot complete = loadWithReader(reader);
         assertThat(complete.comparisonCoverage().affectedClubs()).isEmpty();
         assertThat(complete.comparisonCoverage().evidenceStatus())
@@ -151,6 +162,120 @@ class RankingMetricsIntegrationTest {
         assertThat(withLiveRow.current().window().observed()).isEqualTo(1);
         assertThat(withLiveRow.current().window().reason()).isEqualTo(RankingMetrics.WindowReason.RESULT_PENDING);
         assertThat(withLiveRow.blended().matchesThisSeason()).isEqualTo(1);
+    }
+
+    @Test
+    void incompleteIncrementalFixtureSideNeverFeedsClubRatesUntilEveryPositivePageArrives() {
+        int club = RankingSeed.team(1);
+        seedAverageLeague(2, 1.40, 1.40);
+        int fixture = fixtureFor(club, 1);
+        int otherFixture = fixtureFor(club, 2);
+        int opponent = jdbc.queryForObject("SELECT CASE WHEN team_h=? THEN team_a ELSE team_h END FROM "
+                + fixtureTable + " WHERE season=? AND id=?", Integer.class, club, SEASON, fixture);
+        seedDaily(PLAYER, "PositiveA", club, 3, "a", CAPTURE_DATE, CAPTURED_AT);
+
+        seedPfs(PLAYER, fixture, 30, club, club, null);
+        seedPfs(PLAYER + 1, fixture, 90, club, club, null); // old row, hidden by A's current fixture marker
+        seedPfs(PLAYER + 2, fixture, 90, opponent, opponent, null);
+        seedPfs(PLAYER, otherFixture, 90, club, club, null);
+        jdbc.update("UPDATE player_fixture_stats SET expected_goals=0.10, goals_scored=0"
+                        + " WHERE season_id=? AND fixture_id=? AND player_id=?",
+                SEASON_ID, fixture, PLAYER);
+        jdbc.update("UPDATE player_fixture_stats SET expected_goals=0.90, goals_scored=1"
+                        + " WHERE season_id=? AND fixture_id=? AND player_id=?",
+                SEASON_ID, fixture, PLAYER + 1);
+        seedIncrementalRow(PLAYER, fixture, 10);
+        seedIncrementalRow(PLAYER + 2, fixture, 10);
+        seedAppearanceEvidence(fixture, 10, Map.of(PLAYER, 30, PLAYER + 1, 90, PLAYER + 2, 90));
+        Map<Integer, Integer> otherFixtureAppearances = new java.util.LinkedHashMap<>();
+        jdbc.queryForList("SELECT player_id,minutes FROM player_fixture_stats WHERE season_id=? "
+                        + "AND fixture_id=? AND minutes>0", SEASON_ID, otherFixture)
+                .forEach(row -> {
+                    int playerId = ((Number) row.get("player_id")).intValue();
+                    int minutes = ((Number) row.get("minutes")).intValue();
+                    otherFixtureAppearances.put(playerId, minutes);
+                    seedIncrementalRow(playerId, otherFixture, 10);
+                });
+        seedAppearanceEvidence(otherFixture, 10, otherFixtureAppearances);
+
+        RankingMetrics.Snapshot incomplete = loadWithReader(incrementalReader());
+        assertThat(incomplete.clubRates().clubs()).doesNotContainKey(club);
+        assertThat(incomplete.clubRates().league()).isEmpty();
+        assertThat(incomplete.comparisonCoverage().affectedClubs()).anySatisfy(affected -> {
+            if (affected.teamId() == club) {
+                assertThat(affected.fixtures()).anySatisfy(gap -> {
+                    if (gap.fixtureId() == fixture) {
+                        assertThat(gap.reason()).isEqualTo(
+                                ComparisonCoverage.GapReason.INCREMENTAL_POPULATION_INCOMPLETE);
+                    }
+                });
+            }
+        });
+
+        seedIncrementalRow(PLAYER + 1, fixture, 11);
+        RankingMetrics.Snapshot complete = loadWithReader(incrementalReader());
+        ClubRates.ClubRate rate = complete.clubRates().clubs().get(club);
+        assertThat(rate).isNotNull();
+        assertThat(rate.fixturesThisSeason()).isEqualTo(2);
+        assertThat(rate.attack()).isCloseTo(1.30, within(1e-9));
+        assertThat(complete.clubRates().league()).isPresent();
+        assertThat(complete.comparisonCoverage().affectedClubs()).isEmpty();
+        assertThat(complete.comparisonCoverage().evidenceStatus())
+                .isEqualTo(ComparisonCoverage.EvidenceStatus.PROVISIONAL);
+        assertThat(complete.gameweekFinality()).contains("provisional");
+    }
+
+    @Test
+    void rankingReadsAppearanceProofAndPfsRowsFromOneRepeatableReadSnapshot() {
+        int club = RankingSeed.team(1);
+        seedDaily(PLAYER, "Atomic", club, 3, "a", CAPTURE_DATE, CAPTURED_AT);
+        int fixture = finishFixtures(club, 1).getFirst();
+        int opponent = jdbc.queryForObject("SELECT CASE WHEN team_h=? THEN team_a ELSE team_h END FROM "
+                + fixtureTable + " WHERE season=? AND id=?", Integer.class, club, SEASON, fixture);
+        seedPfs(PLAYER, fixture, 90, club, club, null);
+        seedPfs(PLAYER + 2, fixture, 90, opponent, opponent, null);
+        seedIncrementalRow(PLAYER, fixture, 10);
+        seedIncrementalRow(PLAYER + 2, fixture, 10);
+
+        java.util.concurrent.atomic.AtomicBoolean changed = new java.util.concurrent.atomic.AtomicBoolean();
+        JdbcTemplate mutatingJdbc = new JdbcTemplate(jdbc.getDataSource()) {
+            @Override
+            public List<Map<String, Object>> queryForList(String sql, Object... args) {
+                List<Map<String, Object>> result = super.queryForList(sql, args);
+                if (!changed.get() && sql.contains("SELECT fixture_id, state,")
+                        && sql.contains(READER_FIXTURES)) {
+                    java.util.concurrent.CompletableFuture.runAsync(() -> {
+                        org.springframework.transaction.support.TransactionTemplate writer =
+                                new org.springframework.transaction.support.TransactionTemplate(
+                                        new org.springframework.jdbc.datasource.DataSourceTransactionManager(
+                                                jdbc.getDataSource()));
+                        writer.executeWithoutResult(status -> seedAppearanceEvidence(fixture, 10,
+                                Map.of(PLAYER, 90, PLAYER + 2, 90)));
+                    }).join();
+                    changed.set(true);
+                }
+                return result;
+            }
+        };
+        PfsReadSource reader = new PfsReadSource(mutatingJdbc, "OFF", SEASON,
+                READER_FIXTURES, READER_EVIDENCE, READER_CURRENT, READER_RECEIPT);
+        RankingMetrics atomicMetrics = new RankingMetrics(mutatingJdbc, schedules, transactionManager,
+                clocks, dailyTable, reader);
+
+        RankingMetrics.Snapshot first = atomicMetrics.load(new DailyPriceSource.Capture(SEASON, CAPTURE_DATE),
+                new MetricSeasons(context(), Optional.empty(), 3, 3));
+
+        assertThat(changed).isTrue();
+        assertThat(first.comparisonCoverage().affectedClubs()).anySatisfy(affected -> {
+            if (affected.teamId() == club) {
+                assertThat(affected.fixtures()).anySatisfy(gap -> assertThat(gap.reason()).isEqualTo(
+                        ComparisonCoverage.GapReason.INCREMENTAL_POPULATION_INCOMPLETE));
+            }
+        });
+        RankingMetrics.Snapshot next = loadWithReader(incrementalReader());
+        assertThat(next.comparisonCoverage().affectedClubs()).isEmpty();
+        assertThat(next.comparisonCoverage().evidenceStatus())
+                .isEqualTo(ComparisonCoverage.EvidenceStatus.PROVISIONAL);
     }
 
     @Test
@@ -817,7 +942,8 @@ class RankingMetricsIntegrationTest {
         jdbc.execute("""
                 CREATE TABLE %s (season VARCHAR(10) NOT NULL, publication_key VARCHAR(200) NOT NULL,
                     latest_generation BIGINT, source_read_started_at TIMESTAMPTZ,
-                    source_read_finished_at TIMESTAMPTZ, PRIMARY KEY (season, publication_key))
+                    source_read_finished_at TIMESTAMPTZ, source_pair_fingerprint VARCHAR(64),
+                    PRIMARY KEY (season, publication_key))
                 """.formatted(READER_RECEIPT));
     }
 
@@ -857,6 +983,76 @@ class RankingMetricsIntegrationTest {
                         + " source_read_finished_at=EXCLUDED.source_read_finished_at",
                 SEASON, dev.quantti.fplassistant.sync.IncrementalPlayerFixturePublisher
                         .pageReceiptKey(playerId), generation, Timestamp.from(started), Timestamp.from(finished));
+    }
+
+    private void seedAppearanceEvidence(int fixtureId, long generation, Map<Integer, Integer> minutes) {
+        Map<String, Object> fixture = jdbc.queryForMap("SELECT * FROM "
+                + fixtureTable + " WHERE season=? AND id=?", SEASON, fixtureId);
+        int gameweek = ((Number) fixture.get("gameweek")).intValue();
+        Instant started = AS_OF.minusSeconds(650);
+        Instant finished = started.plusSeconds(1);
+        CatalogueScheduleParser.ReadInterval read = new CatalogueScheduleParser.ReadInterval(started, finished);
+        FixtureRow sourceFixture = sourceFixture(fixture);
+        CatalogueScheduleParser.ReadInterval parentRead = new CatalogueScheduleParser.ReadInterval(
+                started.minusSeconds(120), started.minusSeconds(60));
+        insertAppearanceReceipt(IncrementalAppearanceReceipt.sourceFixtureKey(fixtureId), generation,
+                parentRead, IncrementalAppearanceReceipt.fixtureRevisionFingerprint(sourceFixture, gameweek));
+        Map<Integer, FixtureVerification.Appearance> appearances = new java.util.HashMap<>();
+        minutes.forEach((playerId, played) -> appearances.put(playerId,
+                new FixtureVerification.Appearance(
+                        jdbc.queryForObject("SELECT was_home FROM player_fixture_stats WHERE season_id=? "
+                                + "AND fixture_id=? AND player_id=?", Boolean.class,
+                                SEASON_ID, fixtureId, playerId)
+                                ? FixtureVerification.Side.HOME : FixtureVerification.Side.AWAY, played)));
+        FixtureVerification.FixtureEvidence evidence = new FixtureVerification.FixtureEvidence(true,
+                minutes.keySet(), appearances, read);
+        String eventKey = IncrementalAppearanceReceipt.LIVE_EVENT_PREFIX + gameweek;
+        String snapshotKey = IncrementalAppearanceReceipt.snapshotKey(sourceFixture, gameweek, evidence, read);
+        insertAppearanceReceipt(eventKey, generation, read, null);
+        insertAppearanceReceipt(IncrementalAppearanceReceipt.liveSourceKey(gameweek, generation,
+                started, finished), generation, read, null);
+        String fullFingerprint = IncrementalAppearanceReceipt.fingerprint(sourceFixture, gameweek, evidence);
+        insertAppearanceReceipt(snapshotKey, generation, read, fullFingerprint);
+        List<String> previousAppearanceState = jdbc.query("SELECT source_pair_fingerprint FROM " + READER_RECEIPT
+                        + " WHERE season=? AND publication_key=?", (rs, row) -> rs.getString(1),
+                SEASON, IncrementalAppearanceReceipt.appearanceStateKey(fixtureId));
+        if (previousAppearanceState.isEmpty()
+                || !fullFingerprint.equals(previousAppearanceState.getFirst())) {
+            insertAppearanceReceipt(IncrementalAppearanceReceipt.appearanceStateKey(fixtureId), generation,
+                    read, fullFingerprint);
+        }
+        evidence.appearances().forEach((playerId, appearance) -> insertAppearanceReceipt(
+                IncrementalAppearanceReceipt.playerKey(fixtureId, playerId, appearance, read), generation,
+                read, null));
+    }
+
+    private FixtureRow sourceFixture(Map<String, Object> row) {
+        Map<String, Object> fields = new java.util.HashMap<>();
+        fields.put("finished_provisional", false);
+        fields.put("minutes", 0);
+        fields.put("stats", "[]");
+        int id = ((Number) row.get("id")).intValue();
+        return new FixtureRow(SEASON_ID, SEASON, id, id, (Integer) row.get("gameweek"),
+                ((Number) row.get("team_h")).intValue(), ((Number) row.get("team_a")).intValue(),
+                String.valueOf(row.get("team_h_name")), String.valueOf(row.get("team_h_short")),
+                String.valueOf(row.get("team_a_name")), String.valueOf(row.get("team_a_short")),
+                (Integer) row.get("team_h_score"), (Integer) row.get("team_a_score"),
+                (Integer) row.get("team_h_difficulty"), (Integer) row.get("team_a_difficulty"),
+                ((Timestamp) row.get("kickoff_time")).toInstant(), (Boolean) row.get("started"),
+                (Boolean) row.get("finished"), fields);
+    }
+
+    private void insertAppearanceReceipt(String key, long generation,
+                                         CatalogueScheduleParser.ReadInterval read, String fingerprint) {
+        jdbc.update("INSERT INTO " + READER_RECEIPT + " (season,publication_key,latest_generation,"
+                        + "source_read_started_at,source_read_finished_at,source_pair_fingerprint) "
+                        + "VALUES (?,?,?,?,?,?) ON CONFLICT (season,publication_key) DO UPDATE SET "
+                        + "latest_generation=EXCLUDED.latest_generation,"
+                        + "source_read_started_at=EXCLUDED.source_read_started_at,"
+                        + "source_read_finished_at=EXCLUDED.source_read_finished_at,"
+                        + "source_pair_fingerprint=EXCLUDED.source_pair_fingerprint",
+                SEASON, key, generation, Timestamp.from(read.startedAt()),
+                Timestamp.from(read.completedAt()), fingerprint);
     }
 
     private PfsReadSource incrementalReader() {

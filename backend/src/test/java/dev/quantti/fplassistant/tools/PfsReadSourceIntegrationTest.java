@@ -1,8 +1,11 @@
 package dev.quantti.fplassistant.tools;
 
 import java.math.BigDecimal;
+import java.sql.Timestamp;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -12,7 +15,11 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 
+import dev.quantti.fplassistant.sync.CatalogueScheduleParser;
+import dev.quantti.fplassistant.sync.CatalogueScheduleParser.FixtureRow;
+import dev.quantti.fplassistant.sync.FixtureVerification;
 import dev.quantti.fplassistant.sync.HistoryParser;
+import dev.quantti.fplassistant.sync.IncrementalAppearanceReceipt;
 import dev.quantti.fplassistant.sync.PlayerFixtureFingerprint;
 import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
 
@@ -32,6 +39,8 @@ class PfsReadSourceIntegrationTest {
     @BeforeAll
     static void setUp(@Autowired JdbcTemplate jdbc) {
         SharedStatsSeed.ensure(jdbc);
+        jdbc.update("UPDATE player_fixture_stats SET expected_goals=0.55 WHERE season_id=?"
+                + " AND fixture_id=9101 AND player_id=9201", SharedStatsSeed.POPULATED_SEASON_ID);
         jdbc.execute("DROP TABLE IF EXISTS " + PAGE_RECEIPTS);
         jdbc.execute("DROP TABLE IF EXISTS " + CURRENT);
         jdbc.execute("DROP TABLE IF EXISTS " + EVIDENCE);
@@ -59,7 +68,8 @@ class PfsReadSourceIntegrationTest {
                 + " source_read_finished_at TIMESTAMPTZ)");
         jdbc.execute("CREATE TABLE " + PAGE_RECEIPTS + " (season VARCHAR(10), publication_key VARCHAR(200),"
                 + " latest_generation BIGINT, source_read_started_at TIMESTAMPTZ,"
-                + " source_read_finished_at TIMESTAMPTZ)");
+                + " source_read_finished_at TIMESTAMPTZ, source_pair_fingerprint VARCHAR(64),"
+                + " PRIMARY KEY (season,publication_key))");
     }
 
     @org.junit.jupiter.api.BeforeEach
@@ -264,6 +274,228 @@ class PfsReadSourceIntegrationTest {
     }
 
     @Test
+    void fixtureSidePopulationRequiresACompleteSourceRosterAndDoesNotRequireZeroMinuteRows() {
+        fixture(9101, "WAITING_STATS", null, 1);
+        Integer originalMinutes = jdbc.queryForObject("SELECT minutes FROM player_fixture_stats"
+                + " WHERE season_id=? AND fixture_id=9101 AND player_id=9203", Integer.class,
+                SharedStatsSeed.POPULATED_SEASON_ID);
+        jdbc.update("UPDATE player_fixture_stats SET minutes=0 WHERE season_id=? AND fixture_id=9101"
+                + " AND player_id=9203", SharedStatsSeed.POPULATED_SEASON_ID);
+        try {
+            current(9101, 9201, "VALID");
+            current(9101, 9202, "VALID");
+            current(9101, 9203, "VALID");
+            PfsReadSource reader = source("OFF");
+            Map<PfsReadSource.FixtureSide, PfsReadSource.SidePopulation> unknown =
+                    reader.fixtureSidePopulation(SharedStatsSeed.POPULATED_SEASON_ID,
+                            SharedStatsSeed.POPULATED_SEASON_CODE, "fixture", "season_id",
+                            SharedStatsSeed.POPULATED_SEASON_ID, Set.of(9101),
+                            Instant.parse("2026-09-09T00:00:00Z"));
+            assertThat(unknown.get(new PfsReadSource.FixtureSide(9101, 9001)))
+                    .satisfies(population -> {
+                        assertThat(population.sourceRosterKnown()).isFalse();
+                        assertThat(population.complete()).isFalse();
+                    });
+
+            Instant started = Instant.parse("2025-08-24T00:00:00Z");
+            Map<Integer, FixtureVerification.Appearance> appearances = Map.of(
+                    9201, new FixtureVerification.Appearance(FixtureVerification.Side.HOME, 90),
+                    9202, new FixtureVerification.Appearance(FixtureVerification.Side.AWAY, 90));
+            FixtureVerification.FixtureEvidence evidence = new FixtureVerification.FixtureEvidence(true,
+                    appearances.keySet(), appearances,
+                    new CatalogueScheduleParser.ReadInterval(started, started.plusSeconds(60)));
+            insertAppearanceSnapshot(9101, 1, 100, evidence);
+
+            Map<PfsReadSource.FixtureSide, PfsReadSource.SidePopulation> complete =
+                    reader.fixtureSidePopulation(SharedStatsSeed.POPULATED_SEASON_ID,
+                            SharedStatsSeed.POPULATED_SEASON_CODE, "fixture", "season_id",
+                            SharedStatsSeed.POPULATED_SEASON_ID, Set.of(9101),
+                            Instant.parse("2026-09-09T00:00:00Z"));
+            assertThat(complete.get(new PfsReadSource.FixtureSide(9101, 9001)))
+                    .satisfies(population -> {
+                        assertThat(population.sourceRosterKnown()).isTrue();
+                        assertThat(population.sourceRosterComplete()).isTrue();
+                        assertThat(population.expectedPositive()).isEqualTo(1);
+                        assertThat(population.matchedPositive()).isEqualTo(1);
+                        assertThat(population.unexpectedPositive()).isZero();
+                        assertThat(population.complete()).isTrue();
+                    });
+            assertThat(complete.get(new PfsReadSource.FixtureSide(9101, 9002)))
+                    .satisfies(population -> assertThat(population.complete()).isTrue());
+        } finally {
+            jdbc.update("UPDATE player_fixture_stats SET minutes=? WHERE season_id=? AND fixture_id=9101"
+                    + " AND player_id=9203", originalMinutes, SharedStatsSeed.POPULATED_SEASON_ID);
+        }
+    }
+
+    @Test
+    void currentLiveRosterCannotPromoteLegacyAggregateWithoutCurrentPageBackedRows() {
+        fixture(9101, "VERIFIED", 99L, 1);
+        evidence(9101, 9201, 99, HistoryParser.Component.EXPECTED_GOALS.bit());
+        evidence(9101, 9202, 99, HistoryParser.Component.EXPECTED_GOALS.bit());
+        Instant started = Instant.parse("2025-08-24T00:10:00Z").plusNanos(123_456_789);
+        Instant finished = started.plusSeconds(60);
+        Map<Integer, FixtureVerification.Appearance> appearances = Map.of(
+                9201, new FixtureVerification.Appearance(FixtureVerification.Side.HOME, 90),
+                9202, new FixtureVerification.Appearance(FixtureVerification.Side.AWAY, 90));
+        FixtureVerification.FixtureEvidence evidence = new FixtureVerification.FixtureEvidence(true,
+                appearances.keySet(), appearances,
+                new CatalogueScheduleParser.ReadInterval(started, finished));
+        insertAppearanceSnapshot(9101, 1, 100, evidence);
+
+        PfsReadSource reader = source("OFF");
+        Map<PfsReadSource.FixtureSide, PfsReadSource.SidePopulation> sides = reader.fixtureSidePopulation(
+                SharedStatsSeed.POPULATED_SEASON_ID, SharedStatsSeed.POPULATED_SEASON_CODE, "fixture", "season_id",
+                SharedStatsSeed.POPULATED_SEASON_ID, Set.of(9101), Instant.parse("2026-09-09T00:00:00Z"));
+
+        assertThat(rows(reader, 9101)).hasSize(1);
+        assertThat(reader.incrementalPagePlayers(SharedStatsSeed.POPULATED_SEASON_CODE, Set.of(9201, 9202))).isEmpty();
+        assertThat(sides.get(new PfsReadSource.FixtureSide(9101, 9001)))
+                .satisfies(side -> {
+                    assertThat(side.fixtureReceipt()).isEqualTo(PfsReadSource.FixtureReceipt.INCREMENTAL);
+                    assertThat(side.sourceRosterComplete()).isTrue();
+                    assertThat(side.expectedPositive()).isEqualTo(1);
+                    assertThat(side.matchedPositive()).isZero();
+                    assertThat(side.complete()).isFalse();
+                });
+        assertThat(sides.get(new PfsReadSource.FixtureSide(9101, 9002)).complete()).isFalse();
+    }
+
+    @Test
+    void correctedFixtureSourceRevisionInvalidatesItsPriorAppearanceSnapshot() {
+        fixture(9101, "WAITING_STATS", null, 1);
+        String originalStats = jdbc.queryForObject("SELECT stats::text FROM fixture"
+                + " WHERE season_id=? AND id=9101", String.class, SharedStatsSeed.POPULATED_SEASON_ID);
+        Instant started = Instant.parse("2025-08-24T00:10:00Z").plusNanos(123_456_789);
+        Instant finished = started.plusSeconds(60);
+        Map<Integer, FixtureVerification.Appearance> appearances = Map.of(
+                9201, new FixtureVerification.Appearance(FixtureVerification.Side.HOME, 90),
+                9202, new FixtureVerification.Appearance(FixtureVerification.Side.AWAY, 90));
+        FixtureVerification.FixtureEvidence evidence = new FixtureVerification.FixtureEvidence(true,
+                appearances.keySet(), appearances,
+                new CatalogueScheduleParser.ReadInterval(started, finished));
+        insertAppearanceSnapshot(9101, 1, 100, evidence);
+
+        try {
+            jdbc.update("UPDATE fixture SET stats=stats || '[{\"identifier\":\"revision_test\",\"h\":[],\"a\":[]}]'::jsonb"
+                    + " WHERE season_id=? AND id=9101", SharedStatsSeed.POPULATED_SEASON_ID);
+            FixtureRow corrected = sourceFixture(9101);
+            CatalogueScheduleParser.ReadInterval correctionRead = new CatalogueScheduleParser.ReadInterval(
+                    finished.plusSeconds(1), finished.plusSeconds(2));
+            insertReceipt(IncrementalAppearanceReceipt.sourceFixtureKey(9101), 101, correctionRead,
+                    IncrementalAppearanceReceipt.fixtureRevisionFingerprint(corrected, corrected.gameweek()));
+
+            Map<PfsReadSource.FixtureSide, PfsReadSource.SidePopulation> sides = source("OFF")
+                    .fixtureSidePopulation(SharedStatsSeed.POPULATED_SEASON_ID, SharedStatsSeed.POPULATED_SEASON_CODE,
+                            "fixture", "season_id", SharedStatsSeed.POPULATED_SEASON_ID, Set.of(9101),
+                            Instant.parse("2026-09-09T00:00:00Z"));
+
+            assertThat(sides.get(new PfsReadSource.FixtureSide(9101, 9001)))
+                    .satisfies(side -> {
+                        assertThat(side.sourceRosterKnown()).isTrue();
+                        assertThat(side.sourceRosterComplete()).isFalse();
+                        assertThat(side.complete()).isFalse();
+                    });
+        } finally {
+            jdbc.update("UPDATE fixture SET stats=?::jsonb WHERE season_id=? AND id=9101",
+                    originalStats, SharedStatsSeed.POPULATED_SEASON_ID);
+        }
+    }
+
+    @Test
+    void sourceCorrectionRequiresANewPageWatermarkEvenWithMatchingLiveRoster() {
+        fixture(9101, "WAITING_STATS", null, 1);
+        current(9101, 9201, "VALID");
+        current(9101, 9202, "VALID");
+        Map<Integer, FixtureVerification.Appearance> appearances = Map.of(
+                9201, new FixtureVerification.Appearance(FixtureVerification.Side.HOME, 90),
+                9202, new FixtureVerification.Appearance(FixtureVerification.Side.AWAY, 90));
+        Instant firstStart = Instant.parse("2025-08-24T00:10:00Z");
+        FixtureVerification.FixtureEvidence firstEvidence = new FixtureVerification.FixtureEvidence(true,
+                appearances.keySet(), appearances,
+                new CatalogueScheduleParser.ReadInterval(firstStart, firstStart.plusSeconds(60)));
+        insertAppearanceSnapshot(9101, 1, 100, firstEvidence);
+        String initialSourceFingerprint = jdbc.queryForObject("SELECT source_pair_fingerprint FROM "
+                + PAGE_RECEIPTS + " WHERE season=? AND publication_key=?", String.class,
+                SharedStatsSeed.POPULATED_SEASON_CODE, IncrementalAppearanceReceipt.sourceFixtureKey(9101));
+        refreshPageWatermark(9201, 101, firstStart.plusSeconds(120));
+        refreshPageWatermark(9202, 101, firstStart.plusSeconds(120));
+
+        PfsReadSource reader = source("OFF");
+        Map<PfsReadSource.FixtureSide, PfsReadSource.SidePopulation> initial = reader.fixtureSidePopulation(
+                SharedStatsSeed.POPULATED_SEASON_ID, SharedStatsSeed.POPULATED_SEASON_CODE, "fixture", "season_id",
+                SharedStatsSeed.POPULATED_SEASON_ID, Set.of(9101), Instant.parse("2026-09-09T00:00:00Z"));
+        assertThat(initial.get(new PfsReadSource.FixtureSide(9101, 9001)).complete()).isTrue();
+
+        Integer priorScore = jdbc.queryForObject("SELECT team_h_score FROM fixture WHERE season_id=? AND id=9101",
+                Integer.class, SharedStatsSeed.POPULATED_SEASON_ID);
+        try {
+            jdbc.update("UPDATE fixture SET team_h_score=COALESCE(team_h_score,0)+1"
+                    + " WHERE season_id=? AND id=9101", SharedStatsSeed.POPULATED_SEASON_ID);
+            FixtureRow corrected = sourceFixture(9101);
+            assertThat(IncrementalAppearanceReceipt.fixtureRevisionFingerprint(corrected, 1))
+                    .isNotEqualTo(initialSourceFingerprint);
+            Instant correctedStart = firstStart.plusSeconds(600);
+            FixtureVerification.FixtureEvidence correctedEvidence = new FixtureVerification.FixtureEvidence(true,
+                    appearances.keySet(), appearances, new CatalogueScheduleParser.ReadInterval(
+                            correctedStart, correctedStart.plusSeconds(60)));
+            insertAppearanceSnapshot(9101, 1, 102, correctedEvidence);
+
+            Map<PfsReadSource.FixtureSide, PfsReadSource.SidePopulation> stalePages = reader.fixtureSidePopulation(
+                    SharedStatsSeed.POPULATED_SEASON_ID, SharedStatsSeed.POPULATED_SEASON_CODE, "fixture", "season_id",
+                    SharedStatsSeed.POPULATED_SEASON_ID, Set.of(9101), Instant.parse("2026-09-09T00:00:00Z"));
+            assertThat(stalePages.get(new PfsReadSource.FixtureSide(9101, 9001)))
+                    .satisfies(side -> {
+                        assertThat(side.sourceRosterComplete()).isTrue();
+                        assertThat(side.expectedPositive()).isEqualTo(1);
+                        assertThat(side.matchedPositive()).isZero();
+                        assertThat(side.complete()).isFalse();
+                    });
+
+            refreshPageWatermark(9201, 103, correctedStart.plusSeconds(120));
+            refreshPageWatermark(9202, 103, correctedStart.plusSeconds(120));
+            Map<PfsReadSource.FixtureSide, PfsReadSource.SidePopulation> revalidated = reader.fixtureSidePopulation(
+                    SharedStatsSeed.POPULATED_SEASON_ID, SharedStatsSeed.POPULATED_SEASON_CODE, "fixture", "season_id",
+                    SharedStatsSeed.POPULATED_SEASON_ID, Set.of(9101), Instant.parse("2026-09-09T00:00:00Z"));
+            assertThat(revalidated.get(new PfsReadSource.FixtureSide(9101, 9001)).complete()).isTrue();
+            assertThat(revalidated.get(new PfsReadSource.FixtureSide(9101, 9002)).complete()).isTrue();
+        } finally {
+            jdbc.update("UPDATE fixture SET team_h_score=? WHERE season_id=? AND id=9101",
+                    priorScore, SharedStatsSeed.POPULATED_SEASON_ID);
+        }
+    }
+
+    @Test
+    void absentOptionalComponentsStayNullWhileKnownZeroRemainsAReading() {
+        fixture(9101, "WAITING_STATS", null, 1);
+        BigDecimal originalGoals = jdbc.queryForObject("SELECT expected_goals FROM player_fixture_stats"
+                + " WHERE season_id=? AND fixture_id=9101 AND player_id=9201", BigDecimal.class,
+                SharedStatsSeed.POPULATED_SEASON_ID);
+        jdbc.update("UPDATE player_fixture_stats SET expected_goals=0 WHERE season_id=?"
+                + " AND fixture_id=9101 AND player_id=9201", SharedStatsSeed.POPULATED_SEASON_ID);
+        evidence(9101, 9201, 100, HistoryParser.Component.EXPECTED_GOALS.bit());
+        pageReceipt(9201, 100);
+        String physical = physicalFingerprint(9101, 9201, HistoryParser.Component.EXPECTED_GOALS.bit());
+        jdbc.update("INSERT INTO " + CURRENT + "(season_id,season_code,fixture_id,player_id,row_state,"
+                        + "source_run_generation,evidence_generation,row_fingerprint,physical_fingerprint,"
+                        + "source_read_started_at,source_read_finished_at) VALUES (?,?,?,?, 'VALID',?,?,?,?,"
+                        + "TIMESTAMPTZ '2025-08-24T00:05:00Z',TIMESTAMPTZ '2025-08-24T00:06:00Z')",
+                SharedStatsSeed.POPULATED_SEASON_ID, SharedStatsSeed.POPULATED_SEASON_CODE, 9101, 9201,
+                100, 100, "a".repeat(64), physical);
+
+        try {
+            assertThat(rows(source("OFF"), 9101)).singleElement().satisfies(row -> {
+                assertThat(row.get("expected_goals")).isEqualTo(BigDecimal.ZERO.setScale(2));
+                assertThat(row.get("expected_assists")).isNull();
+            });
+        } finally {
+            jdbc.update("UPDATE player_fixture_stats SET expected_goals=? WHERE season_id=?"
+                            + " AND fixture_id=9101 AND player_id=9201",
+                    originalGoals, SharedStatsSeed.POPULATED_SEASON_ID);
+        }
+    }
+
+    @Test
     void invalidCurrentPointerHidesVerifiedAndPhysicalFallback() {
         fixture(9101, "VERIFIED", 99L, 1);
         evidence(9101, 9201, 99, HistoryParser.Component.EXPECTED_GOALS.bit());
@@ -352,6 +584,70 @@ class PfsReadSourceIntegrationTest {
                 SharedStatsSeed.POPULATED_SEASON_ID, fixtureId, state, (long) hour, generation, generation, hour);
     }
 
+    private void insertAppearanceSnapshot(int fixtureId, int eventId, long generation,
+                                           FixtureVerification.FixtureEvidence evidence) {
+        CatalogueScheduleParser.ReadInterval read = evidence.liveRead();
+        FixtureRow fixture = sourceFixture(fixtureId);
+        CatalogueScheduleParser.ReadInterval parentRead = new CatalogueScheduleParser.ReadInterval(
+                read.startedAt().minusSeconds(120), read.startedAt().minusSeconds(60));
+        insertReceipt(IncrementalAppearanceReceipt.sourceFixtureKey(fixtureId), generation, parentRead,
+                IncrementalAppearanceReceipt.fixtureRevisionFingerprint(fixture, eventId));
+        insertReceipt(IncrementalAppearanceReceipt.LIVE_EVENT_PREFIX + eventId, generation, read, null);
+        insertReceipt(IncrementalAppearanceReceipt.liveSourceKey(eventId, generation,
+                read.startedAt(), read.completedAt()), generation, read, null);
+        String snapshot = IncrementalAppearanceReceipt.snapshotKey(fixture, eventId, evidence, read);
+        String fullFingerprint = IncrementalAppearanceReceipt.fingerprint(fixture, eventId, evidence);
+        insertReceipt(snapshot, generation, read, fullFingerprint);
+        List<String> previousAppearanceState = jdbc.query("SELECT source_pair_fingerprint FROM " + PAGE_RECEIPTS
+                        + " WHERE season=? AND publication_key=?", (rs, row) -> rs.getString(1),
+                SharedStatsSeed.POPULATED_SEASON_CODE, IncrementalAppearanceReceipt.appearanceStateKey(fixtureId));
+        if (previousAppearanceState.isEmpty()
+                || !fullFingerprint.equals(previousAppearanceState.getFirst())) {
+            insertReceipt(IncrementalAppearanceReceipt.appearanceStateKey(fixtureId), generation, read,
+                    fullFingerprint);
+        }
+        evidence.appearances().forEach((playerId, appearance) -> insertReceipt(
+                IncrementalAppearanceReceipt.playerKey(fixtureId, playerId, appearance, read), generation, read, null));
+    }
+
+    private FixtureRow sourceFixture(int fixtureId) {
+        Map<String, Object> row = jdbc.queryForMap("""
+                SELECT f.id,f.code,f.gameweek,f.team_h,f.team_a,h.name AS home_name,h.short_name AS home_short,
+                       a.name AS away_name,a.short_name AS away_short,f.team_h_score,f.team_a_score,
+                       f.team_h_difficulty,f.team_a_difficulty,f.kickoff_time,f.started,f.finished,
+                       f.finished_provisional,f.minutes,f.stats::text AS stats
+                FROM fixture f JOIN team h ON h.id=f.team_h AND h.season_id=f.season_id
+                JOIN team a ON a.id=f.team_a AND a.season_id=f.season_id
+                WHERE f.season_id=? AND f.id=?
+                """, SharedStatsSeed.POPULATED_SEASON_ID, fixtureId);
+        Map<String, Object> fields = new java.util.HashMap<>();
+        fields.put("finished_provisional", row.get("finished_provisional"));
+        fields.put("minutes", ((Number) row.get("minutes")).intValue());
+        fields.put("stats", row.get("stats"));
+        return new FixtureRow(SharedStatsSeed.POPULATED_SEASON_ID, SharedStatsSeed.POPULATED_SEASON_CODE,
+                fixtureId, ((Number) row.get("code")).intValue(), (Integer) row.get("gameweek"),
+                ((Number) row.get("team_h")).intValue(), ((Number) row.get("team_a")).intValue(),
+                String.valueOf(row.get("home_name")), String.valueOf(row.get("home_short")),
+                String.valueOf(row.get("away_name")), String.valueOf(row.get("away_short")),
+                (Integer) row.get("team_h_score"), (Integer) row.get("team_a_score"),
+                (Integer) row.get("team_h_difficulty"), (Integer) row.get("team_a_difficulty"),
+                ((Timestamp) row.get("kickoff_time")).toInstant(), (Boolean) row.get("started"),
+                (Boolean) row.get("finished"), fields);
+    }
+
+    private void insertReceipt(String key, long generation, CatalogueScheduleParser.ReadInterval read,
+                               String fingerprint) {
+        jdbc.update("INSERT INTO " + PAGE_RECEIPTS + " (season,publication_key,latest_generation,"
+                        + "source_read_started_at,source_read_finished_at,source_pair_fingerprint)"
+                        + " VALUES (?,?,?,?,?,?) ON CONFLICT (season,publication_key) DO UPDATE SET"
+                        + " latest_generation=EXCLUDED.latest_generation,"
+                        + " source_read_started_at=EXCLUDED.source_read_started_at,"
+                        + " source_read_finished_at=EXCLUDED.source_read_finished_at,"
+                        + " source_pair_fingerprint=EXCLUDED.source_pair_fingerprint",
+                SharedStatsSeed.POPULATED_SEASON_CODE, key, generation,
+                Timestamp.from(read.startedAt()), Timestamp.from(read.completedAt()), fingerprint);
+    }
+
     private void discovery(int fixtureId) {
         jdbc.update("INSERT INTO " + FIXTURES
                         + "(season_id, fixture_id, state) VALUES (?, ?, 'SCHEDULED')"
@@ -362,17 +658,21 @@ class PfsReadSourceIntegrationTest {
     }
 
     private void current(int fixtureId, int playerId, String state) {
+        current(fixtureId, playerId, state, HistoryParser.Component.EXPECTED_ASSISTS.bit());
+    }
+
+    private void current(int fixtureId, int playerId, String state, long presenceMask) {
         long generation = state.equals("VALID") ? 100L : 101L;
         if (state.equals("VALID")) {
-            evidence(fixtureId, playerId, generation, HistoryParser.Component.EXPECTED_ASSISTS.bit());
+            evidence(fixtureId, playerId, generation, presenceMask);
         }
         pageReceipt(playerId, generation);
         String physicalFingerprint = state.equals("VALID") ? physicalFingerprint(fixtureId, playerId,
-                HistoryParser.Component.EXPECTED_ASSISTS.bit()) : null;
+                presenceMask) : null;
         jdbc.update("INSERT INTO " + CURRENT + "(season_id, season_code, fixture_id, player_id, row_state,"
                         + " source_run_generation, evidence_generation, row_fingerprint, physical_fingerprint,"
                         + " source_read_started_at, source_read_finished_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,"
-                        + " TIMESTAMPTZ '2025-08-24T00:00:00Z', TIMESTAMPTZ '2025-08-24T00:01:00Z')",
+                        + " TIMESTAMPTZ '2025-08-24T00:05:00Z', TIMESTAMPTZ '2025-08-24T00:06:00Z')",
                 SharedStatsSeed.POPULATED_SEASON_ID, SharedStatsSeed.POPULATED_SEASON_CODE,
                 fixtureId, playerId, state, generation, state.equals("VALID") ? generation : null,
                 state.equals("VALID") ? "a".repeat(64) : null, physicalFingerprint);
@@ -383,7 +683,7 @@ class PfsReadSourceIntegrationTest {
         jdbc.update("INSERT INTO " + CURRENT + "(season_id, season_code, fixture_id, player_id, row_state,"
                         + " source_run_generation, evidence_generation, row_fingerprint, physical_fingerprint,"
                         + " source_read_started_at, source_read_finished_at) VALUES (?, ?, ?, ?, 'VALID', ?, ?, ?, NULL,"
-                        + " TIMESTAMPTZ '2025-08-24T00:00:00Z', TIMESTAMPTZ '2025-08-24T00:01:00Z')",
+                        + " TIMESTAMPTZ '2025-08-24T00:05:00Z', TIMESTAMPTZ '2025-08-24T00:06:00Z')",
                 SharedStatsSeed.POPULATED_SEASON_ID, SharedStatsSeed.POPULATED_SEASON_CODE,
                 fixtureId, playerId, generation, generation, "a".repeat(64));
     }
@@ -399,17 +699,25 @@ class PfsReadSourceIntegrationTest {
     private void pageReceipt(int playerId, long generation) {
         jdbc.update("INSERT INTO " + PAGE_RECEIPTS + "(season, publication_key, latest_generation,"
                         + " source_read_started_at, source_read_finished_at)"
-                        + " VALUES (?, ?, ?, TIMESTAMPTZ '2025-08-24T00:00:00Z',"
-                        + " TIMESTAMPTZ '2025-08-24T00:01:00Z')",
+                        + " VALUES (?, ?, ?, TIMESTAMPTZ '2025-08-24T00:05:00Z',"
+                        + " TIMESTAMPTZ '2025-08-24T00:06:00Z') ON CONFLICT (season,publication_key)"
+                        + " DO UPDATE SET latest_generation=EXCLUDED.latest_generation",
                 SharedStatsSeed.POPULATED_SEASON_CODE, "incremental-page:player:" + playerId, generation);
+    }
+
+    private void refreshPageWatermark(int playerId, long generation, Instant startedAt) {
+        jdbc.update("UPDATE " + PAGE_RECEIPTS + " SET latest_generation=?,source_read_started_at=?,"
+                        + "source_read_finished_at=? WHERE season=? AND publication_key=?",
+                generation, Timestamp.from(startedAt), Timestamp.from(startedAt.plusSeconds(1)),
+                SharedStatsSeed.POPULATED_SEASON_CODE, "incremental-page:player:" + playerId);
     }
 
     private void evidence(int fixtureId, int playerId, long generation, long mask) {
         jdbc.update("INSERT INTO " + EVIDENCE
                         + "(season_id, fixture_id, player_id, generation, component_presence, season_code,"
                         + " source_read_started_at, source_read_finished_at)"
-                        + " VALUES (?, ?, ?, ?, ?, ?, TIMESTAMPTZ '2025-08-24T00:00:00Z',"
-                        + " TIMESTAMPTZ '2025-08-24T00:01:00Z') ON CONFLICT DO NOTHING",
+                        + " VALUES (?, ?, ?, ?, ?, ?, TIMESTAMPTZ '2025-08-24T00:05:00Z',"
+                        + " TIMESTAMPTZ '2025-08-24T00:06:00Z') ON CONFLICT DO NOTHING",
                 SharedStatsSeed.POPULATED_SEASON_ID, fixtureId, playerId, generation, mask,
                 SharedStatsSeed.POPULATED_SEASON_CODE);
     }
