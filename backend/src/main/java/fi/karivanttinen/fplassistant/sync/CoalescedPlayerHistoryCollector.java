@@ -301,12 +301,13 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
         Map<Integer, Set<Integer>> discovered;
         Map<Integer, Set<Integer>> known;
         Map<Integer, Set<Integer>> knownLedger;
+        Map<Integer, Set<Integer>> durableParticipants;
+        Set<Integer> needsDiscovery;
         try {
-            Set<Integer> needsDiscovery = store.incrementalFixturesNeedingDiscovery(lease, discoveryFingerprints);
+            needsDiscovery = store.incrementalFixturesNeedingDiscovery(lease, discoveryFingerprints);
             List<Integer> targetFixtureIds = targets.stream().map(FixtureRow::id).toList();
             discovered = store.incrementalDiscoveredPlayerIds(lease, targetFixtureIds);
-            Map<Integer, Set<Integer>> durableParticipants =
-                    store.incrementalParticipantPlayerIds(lease, targetFixtureIds);
+            durableParticipants = store.incrementalParticipantPlayerIds(lease, targetFixtureIds);
             knownLedger = store.incrementalKnownPlayerIds(lease, targetFixtureIds);
             List<Integer> hydrationFixtures = targets.stream().map(FixtureRow::id)
                     .filter(needsDiscovery::contains).toList();
@@ -400,10 +401,12 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
             if (fixture.gameweek() == null) continue;
             Instant floor = fixtureFloors.get(fixture.id());
             boolean always = !fixture.finished() || finalPendingEvents.contains(fixture.gameweek());
-            boolean missingPages = candidates.get(fixture.id()).stream().anyMatch(player ->
+            Set<Integer> participantIds = new LinkedHashSet<>(sourceParticipants.getOrDefault(fixture.id(), Set.of()));
+            participantIds.addAll(durableParticipants.getOrDefault(fixture.id(), Set.of()));
+            boolean missingParticipantPages = participantIds.stream().anyMatch(player ->
                     !pageFresh(initialPageReceipts.get(player), floor));
-            boolean missingLive = !pageFresh(liveReceipts.get(fixture.gameweek()), floor);
-            if (always || missingPages || missingLive) {
+            boolean missingLive = !sourceFresh(liveReceipts.get(fixture.gameweek()), floor);
+            if (always || needsDiscovery.contains(fixture.id()) || missingParticipantPages || missingLive) {
                 liveByEvent.computeIfAbsent(fixture.gameweek(), ignored -> new ArrayList<>()).add(fixture);
             }
         }
@@ -468,7 +471,7 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
         Map<Integer, String> checkpointFingerprints = new LinkedHashMap<>(discoveryFingerprints);
         for (FixtureRow fixture : targets) {
             boolean liveFresh = fixture.gameweek() == null || refreshedLiveEvents.contains(fixture.gameweek())
-                    || pageFresh(liveReceipts.get(fixture.gameweek()), fixtureFloors.get(fixture.id()));
+                    || sourceFresh(liveReceipts.get(fixture.gameweek()), fixtureFloors.get(fixture.id()));
             if (liveFresh) {
                 checkpointPlayers.put(fixture.id(),
                         new LinkedHashSet<>(sourceParticipants.getOrDefault(fixture.id(), Set.of())));
@@ -942,6 +945,11 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
 
     private static boolean pageFresh(PageReceipt receipt, Instant floor) {
         return receipt != null && !receipt.read().startedAt().isBefore(floor);
+    }
+
+    private static boolean sourceFresh(PageReceipt receipt, Instant floor) {
+        // A live capture establishes the appearance floor at its own finish time.
+        return receipt != null && !receipt.read().finishedAt().isBefore(floor);
     }
 
     private static SourceRead read(SourceDocument document) {

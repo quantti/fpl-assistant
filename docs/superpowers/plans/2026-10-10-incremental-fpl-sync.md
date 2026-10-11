@@ -1,6 +1,6 @@
 # Incremental FPL rows and a checked-gameweek final sweep
 
-**PROGRESS:** Units 1–7, PR #157 retry work and review fixes FIX1–FIX6 are implemented; focused guarded tests pass. Independent review and fresh PR CI remain pending. Production/live API/Fly/monitor action, activation and the full suite were not run; owned writers remain inert.
+**PROGRESS:** Units 1–7, PR #157 retry work and FIX1–FIX6 are implemented locally; the final collector-class run is 50/50 with no skipped tests, recorded in `docs/STATUS.md`. This is not a full-suite result. Awaiting fresh PR CI; the external Tapas-reader audit and approved cutover/activation remain blocked. No full suite or production/live API/Fly/monitor action occurred; owned writers remain inert.
 
 ## Decision being proposed
 
