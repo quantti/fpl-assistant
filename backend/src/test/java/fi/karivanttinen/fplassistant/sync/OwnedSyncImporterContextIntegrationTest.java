@@ -155,6 +155,28 @@ class OwnedSyncImporterContextIntegrationTest {
     }
 
     @Test
+    void missingTypedSupersedeReasonColumnFailsOptInPreflightBeforeCollectorStarts() {
+        jdbc.execute("ALTER TABLE " + TABLES.run() + " DROP CONSTRAINT IF EXISTS ck_" + TABLES.run()
+                + "_supersede_reason");
+        jdbc.execute("ALTER TABLE " + TABLES.run() + " DROP COLUMN IF EXISTS supersede_reason");
+        try {
+            runner().run(context -> {
+                assertThat(context).hasFailed();
+                assertThat(context.getStartupFailure().toString())
+                        .contains(TABLES.run() + ".supersede_reason")
+                        .contains("Install the owned-sync schema migration");
+            });
+            assertThat(SAFE_CYCLES).hasValue(0);
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.requestAttempt(), Integer.class)).isZero();
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run(), Integer.class)).isZero();
+            assertThat(jdbc.queryForObject("SELECT runtime_epoch FROM " + TABLES.plannerRuntime()
+                    + " WHERE instance_id='mode:2026-27'", Long.class)).isEqualTo(7L);
+        } finally {
+            new OwnedSyncSchema(jdbc, TABLES).initialize();
+        }
+    }
+
+    @Test
     void missingPointerTableOrFinalityCheckpointColumnFailsWithoutSchemaRepair() {
         jdbc.execute("DROP TABLE " + TABLES.playerFixtureCurrent() + " CASCADE");
         runner().run(context -> {

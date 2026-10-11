@@ -1031,6 +1031,11 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
                 .orElseThrow();
         store.observeIncrementalSnapshot(lease, initialSnapshot);
         clock.set(liveRead.completedAt());
+        store.recordIncrementalFixtureSourceRevisions(lease, initialSnapshot.fixtures(),
+                new SourceRead(START.plusMillis(2), START.plusMillis(3)));
+        store.recordIncrementalLiveEvent(lease, 3, source.signature(),
+                Map.of(fixtureId, Set.of(homePlayer, awayPlayer)), List.of(fixtureRow), evidence,
+                new SourceRead(liveRead.startedAt(), liveRead.completedAt()));
         GameweekFinalityRepository finality = new GameweekFinalityRepository(jdbc, store, TABLES, clock);
 
         var started = finality.beginOrResume(lease, season, source, population, initialRead);
@@ -1200,6 +1205,34 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         var supersededWatermarkRead = reader.read(SEASON_ID, season.code(), Set.of(3)).get(3);
         assertThat(supersededWatermarkRead.state()).isEqualTo(GameweekFinality.State.FINALIZED);
         assertThat(supersededWatermarkRead.receipt()).isEqualTo(receipt);
+        String validSupersedeReason = jdbc.queryForObject("SELECT supersede_reason FROM " + TABLES.run()
+                + " WHERE generation=?", String.class, supersededLease.generation());
+        assertThat(validSupersedeReason).isEqualTo(
+                OwnedSyncStore.IncrementalSupersedeReason.VALIDATED_CANONICAL_SOURCE_PAIR.code());
+        String reasonConstraint = "ck_" + TABLES.run() + "_supersede_reason";
+        jdbc.execute("ALTER TABLE " + TABLES.run() + " DROP CONSTRAINT " + reasonConstraint);
+        try {
+            jdbc.update("UPDATE " + TABLES.run()
+                    + " SET supersede_reason='UNSANCTIONED',last_error=NULL WHERE generation=?",
+                    supersededLease.generation());
+            assertThat(reader.read(SEASON_ID, season.code(), Set.of(3)).get(3).state())
+                    .as("arbitrary superseded donors cannot validate the page watermark")
+                    .isEqualTo(GameweekFinality.State.FINAL_PENDING);
+            jdbc.update("UPDATE " + TABLES.run()
+                    + " SET supersede_reason=NULL,last_error=? WHERE generation=?",
+                    "INCREMENTAL_SUPERSEDED:VALIDATED_CANONICAL_SOURCE_PAIR", supersededLease.generation());
+            assertThat(reader.read(SEASON_ID, season.code(), Set.of(3)).get(3).state())
+                    .as("legacy error text alone is not a supersede proof")
+                    .isEqualTo(GameweekFinality.State.FINAL_PENDING);
+            jdbc.update("UPDATE " + TABLES.run() + " SET supersede_reason=?,last_error=NULL WHERE generation=?",
+                    validSupersedeReason, supersededLease.generation());
+            assertThat(reader.read(SEASON_ID, season.code(), Set.of(3)).get(3).state())
+                    .isEqualTo(GameweekFinality.State.FINALIZED);
+        } finally {
+            jdbc.update("UPDATE " + TABLES.run() + " SET supersede_reason=?,last_error=NULL WHERE generation=?",
+                    validSupersedeReason, supersededLease.generation());
+            new OwnedSyncSchema(jdbc, TABLES).initialize();
+        }
         assertThat(jdbc.queryForMap("SELECT updated_at,minutes,total_points,bps FROM player_fixture_stats"
                 + " WHERE season_id=? AND fixture_id=? AND player_id=?", SEASON_ID, fixtureId, homePlayer))
                 .isEqualTo(homeRowBeforeNoop);
@@ -1248,9 +1281,10 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         assertThat(advancedHomeWatermark).isGreaterThan(lease.generation());
         assertThat(pageRead.finishedAt()).isBefore(receipt.sourceReadInterval().finishedAt());
         Map<String, Object> originalDonorRun = jdbc.queryForMap("SELECT state,source_read_finished_at,completed_at,"
-                + "failed_at,last_error FROM " + TABLES.run() + " WHERE generation=?", lease.generation());
+                + "failed_at,last_error,supersede_reason FROM " + TABLES.run() + " WHERE generation=?",
+                lease.generation());
         jdbc.update("UPDATE " + TABLES.run() + " SET state='PENDING',source_read_finished_at=?,"
-                + "completed_at=NULL,failed_at=NULL,last_error=NULL,lease_owner=NULL,lease_token=NULL,"
+                + "completed_at=NULL,failed_at=NULL,last_error=NULL,supersede_reason=NULL,lease_owner=NULL,lease_token=NULL,"
                 + "lease_expires_at=NULL WHERE generation=?",
                 java.sql.Timestamp.from(clock.instant().plusSeconds(30)), lease.generation());
         assertThat(reader.read(SEASON_ID, season.code(), Set.of(3)).get(3).state())
@@ -1258,9 +1292,10 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
                         + " even after a later page watermark")
                 .isEqualTo(GameweekFinality.State.FINAL_PENDING);
         jdbc.update("UPDATE " + TABLES.run() + " SET state=?,source_read_finished_at=?,completed_at=?,"
-                + "failed_at=?,last_error=? WHERE generation=?", originalDonorRun.get("state"),
+                + "failed_at=?,last_error=?,supersede_reason=? WHERE generation=?", originalDonorRun.get("state"),
                 originalDonorRun.get("source_read_finished_at"), originalDonorRun.get("completed_at"),
-                originalDonorRun.get("failed_at"), originalDonorRun.get("last_error"), lease.generation());
+                originalDonorRun.get("failed_at"), originalDonorRun.get("last_error"),
+                originalDonorRun.get("supersede_reason"), lease.generation());
         assertThat(reader.read(SEASON_ID, season.code(), Set.of(3)).get(3).state())
                 .isEqualTo(GameweekFinality.State.FINALIZED);
 
@@ -2782,6 +2817,287 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
     }
 
     @Test
+    void checkedMixedFixtureAppearanceRevisionInvalidatesCheckpointAndRefreshesAllPages() throws Exception {
+        MultiFixtureSetup setup = checkedDoubleFixtureSetup();
+        int changedFixture = 36;
+        int failedPlayer = 545;
+        publishCompatibilitySnapshot(setup);
+        fetch.failPlayer(failedPlayer);
+
+        CycleResult partial = collector(true).runCycle();
+
+        assertThat(partial.state()).isEqualTo(State.RETRY_SCHEDULED);
+        assertThat(partial.finalPendingGameweeks()).containsExactly(3);
+        assertThat(partial.failedPlayerIds()).containsExactly(failedPlayer);
+        assertThat(partial.committedPlayerIds()).containsExactlyInAnyOrderElementsOf(
+                setup.participantIds().stream().filter(id -> id != failedPlayer).toList());
+        long firstGeneration = ((Number) pageWatermark(1).get("latest_generation")).longValue();
+        assertThat(setup.participantIds()).contains(1, 4, 28, 40, 544, failedPlayer);
+
+        fetch.clearCalls();
+        fetch.clearPageOutcomes();
+        fetch.failPlayer(failedPlayer);
+        clock.set(partial.nextDue().plusSeconds(1));
+        CycleResult unchangedPartial = collector(true).runCycle();
+
+        assertThat(unchangedPartial.state()).isEqualTo(State.RETRY_SCHEDULED);
+        assertThat(fetch.playerIds()).containsExactly(failedPlayer);
+        assertThat(((Number) pageWatermark(1).get("latest_generation")).longValue()).isEqualTo(firstGeneration);
+        assertThat(new GameweekFinalityReader(jdbc, clock, TABLES)
+                .read(SEASON_ID, season.code(), Set.of(3)).get(3).state())
+                .isEqualTo(GameweekFinality.State.FINAL_PENDING);
+
+        int originalMinutes = fixtureSpecificLiveMinutes(setup.liveSource(), changedFixture, failedPlayer);
+        int revisedMinutes = originalMinutes == 45 ? 46 : 45;
+        byte[] revisedLive = changeFixtureLiveMinutes(setup.liveSource(), changedFixture, failedPlayer,
+                revisedMinutes);
+        byte[] revisedPage = historyWithMinutes(setup.historyPages().get(failedPlayer), changedFixture,
+                failedPlayer, revisedMinutes);
+        fetch.clearCalls();
+        fetch.clearPageOutcomes();
+        fetch.setSources(setup.bootstrapSource(), setup.fixtureSource(), revisedLive, eventFourLive);
+        fetch.setPlayerPage(failedPlayer, revisedPage);
+        clock.set(unchangedPartial.nextDue().plusSeconds(1));
+        CycleResult invalidated = collector(true).runCycle();
+
+        assertThat(invalidated.state()).isEqualTo(State.RETRY_SCHEDULED);
+        assertThat(fetch.count(EndpointKind.EVENT_LIVE)).isOne();
+        assertThat(fetch.playerIds()).isEmpty();
+        assertThat(jdbc.queryForObject("SELECT state FROM " + TABLES.run() + " WHERE generation=?",
+                String.class, firstGeneration)).isEqualTo("SUPERSEDED");
+        assertThat(jdbc.queryForObject("SELECT supersede_reason FROM " + TABLES.run()
+                + " WHERE generation=?", String.class, firstGeneration))
+                .isEqualTo(OwnedSyncStore.IncrementalSupersedeReason.APPEARANCE_EVIDENCE_ADVANCED.code());
+        assertThat(new GameweekFinalityReader(jdbc, clock, TABLES)
+                .read(SEASON_ID, season.code(), Set.of(3)).get(3).state())
+                .isEqualTo(GameweekFinality.State.FINAL_PENDING);
+        Instant appearanceFloor = jdbc.queryForObject("SELECT current_invalidation_floor FROM "
+                + TABLES.gameweekStatSync() + " WHERE season_id=? AND gameweek=3", Timestamp.class, SEASON_ID)
+                .toInstant();
+        assertThat(appearanceFloor).isEqualTo(fetch.successfulReads().stream()
+                .filter(read -> read.endpoint().kind() == EndpointKind.EVENT_LIVE)
+                .map(read -> read.read().finishedAt()).toList().getLast());
+        assertThat(jdbc.queryForObject("SELECT final_attempt_source_floor FROM " + TABLES.gameweekStatSync()
+                + " WHERE season_id=? AND gameweek=3", Timestamp.class, SEASON_ID).toInstant())
+                .isAfterOrEqualTo(appearanceFloor);
+
+        fetch.clearCalls();
+        clock.set(invalidated.nextDue().plusSeconds(1));
+        CycleResult recovered = collector(true).runCycle();
+
+        assertThat(recovered.state()).as("cycle: %s; error: %s", recovered, latestRunError())
+                .isEqualTo(State.COMPLETED);
+        assertThat(fetch.playerIds()).containsExactlyInAnyOrderElementsOf(setup.participantIds());
+        assertThat(setup.participantIds()).allSatisfy(player -> assertThat(
+                ((Timestamp) pageWatermark(player).get("source_read_started_at")).toInstant())
+                .isAfter(appearanceFloor));
+        assertThat(new GameweekFinalityReader(jdbc, clock, TABLES)
+                .read(SEASON_ID, season.code(), Set.of(3)).get(3).state())
+                .isEqualTo(GameweekFinality.State.FINALIZED);
+    }
+
+    @Test
+    void unrelatedUncheckedAppearanceChangeSupersedesRunAndReusesCheckedDonorAtPostgresPrecision()
+            throws Exception {
+        int checkedFixture = 29;
+        int uncheckedFixture = 38;
+        int checkedPlayerA = 1;
+        int checkedPlayerB = 28;
+        int uncheckedPlayer = 600;
+        byte[] checkedBootstrap = markGameweekChecked(markAllGameweeksUnchecked(
+                bootstrapPlayers(bootstrap, Set.of(checkedPlayerA, uncheckedPlayer))), 3);
+        byte[] checkedFixtures = fixtureStatsForPlayers(
+                onlyCollectorFixtureFinished(fixtures, checkedFixture), checkedFixture,
+                checkedPlayerA, checkedPlayerB);
+        byte[] sourceFixtures = appendUncheckedFixtureParticipant(
+                checkedFixtures, fixtures, uncheckedFixture, uncheckedPlayer);
+        byte[] eventThree = liveForFixturePlayers(eventThreeLive, checkedFixture,
+                Set.of(checkedPlayerA, checkedPlayerB));
+        byte[] eventFour = liveForFixturePlayers(eventFourLive, uncheckedFixture, Set.of(uncheckedPlayer));
+        byte[] checkedHistoryA = onlyHistoryForFixture(resource("element-summary-1.json"),
+                checkedFixture, checkedPlayerA);
+        byte[] checkedHistoryB = historyForAwayPlayer28(checkedFixture);
+        byte[] uncheckedHistory = historyWithMinutes(relabelHistoryPlayer(
+                resource("element-summary-658.json"), uncheckedPlayer), uncheckedFixture, uncheckedPlayer, 12);
+        fetch.useSubMillisecondReads();
+        fetch.setSources(checkedBootstrap, sourceFixtures, eventThree, eventFour);
+        fetch.setPlayerPage(checkedPlayerA, checkedHistoryA);
+        fetch.setPlayerPage(checkedPlayerB, checkedHistoryB);
+        fetch.setPlayerPage(uncheckedPlayer, uncheckedHistory);
+        fetch.failPlayer(checkedPlayerB);
+
+        CycleResult partial = compatibilityCollector(true).runCycle();
+
+        assertThat(partial.state()).as("cycle %s; error %s", partial, latestRunError())
+                .isEqualTo(State.RETRY_SCHEDULED);
+        assertThat(partial.finalPendingGameweeks()).containsExactly(3);
+        assertThat(partial.failedPlayerIds()).containsExactly(checkedPlayerB);
+        assertThat(partial.committedPlayerIds()).contains(checkedPlayerA, uncheckedPlayer);
+        long firstGeneration = ((Number) pageWatermark(checkedPlayerA).get("latest_generation")).longValue();
+        assertThat(fetch.playerIds()).containsExactly(checkedPlayerA, checkedPlayerB, uncheckedPlayer);
+        SourceRead rawCheckedLive = fetch.successfulReads().stream()
+                .filter(read -> read.endpoint().equals(Endpoint.eventLive(3)))
+                .map(RecordedRead::read).findFirst().orElseThrow();
+        SourceRead persistedCheckedLive = jdbc.queryForObject("SELECT source_read_started_at,"
+                + "source_read_finished_at FROM " + TABLES.receipt()
+                + " WHERE season=? AND publication_key=?", (rs, row) -> new SourceRead(
+                        rs.getTimestamp(1).toInstant(), rs.getTimestamp(2).toInstant()), season.code(),
+                IncrementalAppearanceReceipt.appearanceStateKey(checkedFixture));
+        assertThat(persistedCheckedLive).isEqualTo(new SourceRead(
+                OwnedSyncStore.postgresTimestampPrecision(rawCheckedLive.startedAt()),
+                OwnedSyncStore.postgresTimestampPrecision(rawCheckedLive.finishedAt())));
+        assertThat(persistedCheckedLive).isNotEqualTo(rawCheckedLive);
+        Map<String, Object> originalCheckedPage = pageWatermark(checkedPlayerA);
+        Map<String, Object> originalCheckedPfs = jdbc.queryForMap("SELECT minutes,updated_at FROM "
+                + "player_fixture_stats WHERE season_id=? AND fixture_id=? AND player_id=?",
+                SEASON_ID, checkedFixture, checkedPlayerA);
+        Instant originalCheckedFloor = jdbc.queryForObject("SELECT final_attempt_source_floor FROM "
+                + TABLES.gameweekStatSync() + " WHERE season_id=? AND gameweek=3", Timestamp.class,
+                SEASON_ID).toInstant();
+        Instant originalUncheckedFloor = jdbc.queryForObject("SELECT source_read_finished_at FROM "
+                + TABLES.receipt() + " WHERE season=? AND publication_key=?", Timestamp.class,
+                season.code(), IncrementalAppearanceReceipt.appearanceStateKey(uncheckedFixture)).toInstant();
+        assertThat(originalCheckedFloor).isEqualTo(persistedCheckedLive.finishedAt().plusMillis(1));
+        SourceRead rawBootstrapRead = fetch.successfulReads().stream()
+                .filter(read -> read.endpoint().kind() == EndpointKind.BOOTSTRAP_STATIC)
+                .map(RecordedRead::read).findFirst().orElseThrow();
+        SourceRead rawFixturesRead = fetch.successfulReads().stream()
+                .filter(read -> read.endpoint().kind() == EndpointKind.FIXTURES)
+                .map(RecordedRead::read).findFirst().orElseThrow();
+        var snapshot = CatalogueScheduleParser.parse(season,
+                document(checkedBootstrap, rawBootstrapRead), document(sourceFixtures, rawFixturesRead));
+        var checkedSource = GameweekFinality.SourceSnapshot.from(snapshot, 3);
+        var checkedEvidence = FixtureVerification.fixtureEvidenceByFixture(checkedSource.assignedFixtures(),
+                document(eventThree, rawCheckedLive));
+        var checkedPopulation = new GameweekFinality.RequiredPopulation("a".repeat(64), Map.of(),
+                Map.of(checkedFixture, Set.of(checkedPlayerA, checkedPlayerB)), Map.of(), checkedEvidence);
+        assertThat(GameweekFinalityRepository.currentAppearanceStateMatches(jdbc, TABLES, clock,
+                season.code(), checkedSource, checkedPopulation, originalCheckedFloor, firstGeneration, true)).isTrue();
+        var captured = checkedEvidence.get(checkedFixture);
+        var overlappingEvidence = new FixtureVerification.FixtureEvidence(captured.complete(),
+                captured.positivePlayerIds(), captured.appearances(), new CatalogueScheduleParser.ReadInterval(
+                        persistedCheckedLive.startedAt().minusNanos(600),
+                        persistedCheckedLive.finishedAt().plusNanos(600)));
+        var overlappingPopulation = new GameweekFinality.RequiredPopulation("a".repeat(64), Map.of(),
+                Map.of(checkedFixture, Set.of(checkedPlayerA, checkedPlayerB)), Map.of(),
+                Map.of(checkedFixture, overlappingEvidence));
+        assertThat(GameweekFinalityRepository.currentAppearanceStateMatches(jdbc, TABLES, clock,
+                season.code(), checkedSource, overlappingPopulation, originalCheckedFloor, firstGeneration, true))
+                .as("a different overlapping live-read interval cannot stand in for the persisted capture")
+                .isFalse();
+
+        byte[] changedEventFour = changeFixtureLiveMinutes(eventFour, uncheckedFixture, uncheckedPlayer, 45);
+        byte[] changedUncheckedHistory = historyWithMinutes(uncheckedHistory,
+                uncheckedFixture, uncheckedPlayer, 45);
+        jdbc.update("DELETE FROM " + TABLES.receipt() + " WHERE season=? AND publication_key=?",
+                season.code(), IncrementalAppearanceReceipt.LIVE_EVENT_PREFIX + 4);
+        fetch.clearCalls();
+        fetch.clearPageOutcomes();
+        fetch.setSources(checkedBootstrap, sourceFixtures, eventThree, changedEventFour);
+        fetch.setPlayerPage(uncheckedPlayer, changedUncheckedHistory);
+        clock.set(partial.nextDue().plusSeconds(1));
+        CycleResult superseded = compatibilityCollector(true).runCycle();
+
+        assertThat(superseded.state()).isEqualTo(State.RETRY_SCHEDULED);
+        assertThat(fetch.playerIds()).isEmpty();
+        assertThat(jdbc.queryForObject("SELECT state FROM " + TABLES.run() + " WHERE generation=?",
+                String.class, firstGeneration)).isEqualTo("SUPERSEDED");
+        assertThat(jdbc.queryForObject("SELECT supersede_reason FROM " + TABLES.run()
+                + " WHERE generation=?", String.class, firstGeneration))
+                .isEqualTo(OwnedSyncStore.IncrementalSupersedeReason.APPEARANCE_EVIDENCE_ADVANCED.code());
+        Instant changedUncheckedFloor = jdbc.queryForObject("SELECT source_read_finished_at FROM "
+                + TABLES.receipt() + " WHERE season=? AND publication_key=?", Timestamp.class,
+                season.code(), IncrementalAppearanceReceipt.appearanceStateKey(uncheckedFixture)).toInstant();
+        assertThat(changedUncheckedFloor).isAfter(originalUncheckedFloor);
+        assertThat(jdbc.queryForObject("SELECT current_invalidation_revision FROM "
+                + TABLES.gameweekStatSync() + " WHERE season_id=? AND gameweek=3", Long.class,
+                SEASON_ID)).isZero();
+        assertThat(jdbc.queryForObject("SELECT final_attempt_source_floor FROM "
+                + TABLES.gameweekStatSync() + " WHERE season_id=? AND gameweek=3", Timestamp.class,
+                SEASON_ID).toInstant()).isEqualTo(originalCheckedFloor);
+        assertThat(((Timestamp) pageWatermark(uncheckedPlayer).get("source_read_started_at")).toInstant())
+                .isBefore(changedUncheckedFloor);
+
+        fetch.clearCalls();
+        clock.set(superseded.nextDue().plusSeconds(1));
+        CycleResult recovered = compatibilityCollector(true).runCycle();
+
+        assertThat(recovered.state()).as("cycle %s; error %s", recovered, latestRunError())
+                .isEqualTo(State.COMPLETED);
+        assertThat(fetch.playerIds()).containsExactly(checkedPlayerB, uncheckedPlayer);
+        assertThat(pageWatermark(checkedPlayerA)).isEqualTo(originalCheckedPage);
+        assertThat(jdbc.queryForMap("SELECT minutes,updated_at FROM player_fixture_stats"
+                + " WHERE season_id=? AND fixture_id=? AND player_id=?",
+                SEASON_ID, checkedFixture, checkedPlayerA)).isEqualTo(originalCheckedPfs);
+        assertThat(jdbc.queryForObject("SELECT minutes FROM player_fixture_stats WHERE season_id=?"
+                + " AND fixture_id=? AND player_id=?", Integer.class, SEASON_ID,
+                checkedFixture, checkedPlayerB)).isEqualTo(90);
+        assertThat(jdbc.queryForObject("SELECT minutes FROM player_fixture_stats WHERE season_id=?"
+                + " AND fixture_id=? AND player_id=?", Integer.class, SEASON_ID,
+                uncheckedFixture, uncheckedPlayer)).isEqualTo(45);
+        long recoveredGeneration = ((Number) pageWatermark(checkedPlayerB).get("latest_generation")).longValue();
+        assertThat(recoveredGeneration).isGreaterThan(firstGeneration);
+        assertThat(jdbc.queryForObject("SELECT supersede_reason FROM " + TABLES.run()
+                + " WHERE generation=?", String.class, firstGeneration))
+                .isEqualTo(OwnedSyncStore.IncrementalSupersedeReason.APPEARANCE_EVIDENCE_ADVANCED.code());
+        Map<String, Object> finalPageEvidence = jdbc.queryForMap("SELECT finalized_page_evidence::text AS evidence"
+                + " FROM " + TABLES.gameweekStatSync() + " WHERE season_id=? AND gameweek=3", SEASON_ID);
+        assertThat(JSON.readTree((String) finalPageEvidence.get("evidence"))
+                .path(Integer.toString(checkedPlayerA)).path("generation").asLong()).isEqualTo(firstGeneration);
+        GameweekFinalityReader reader = new GameweekFinalityReader(jdbc, clock, TABLES);
+        assertThat(reader.read(SEASON_ID, season.code(), Set.of(3)).get(3).state())
+                .isEqualTo(GameweekFinality.State.FINALIZED);
+        Map<PfsReadSource.FixtureSide, PfsReadSource.SidePopulation> sides = collectorPfsReadSource()
+                .fixtureSidePopulation(SEASON_ID, season.code(), "fixture", "season_id", SEASON_ID,
+                        Set.of(checkedFixture), clock.instant());
+        assertThat(sides.get(new PfsReadSource.FixtureSide(checkedFixture, 1)).complete()).isTrue();
+        assertThat(sides.get(new PfsReadSource.FixtureSide(checkedFixture, 6)).complete()).isTrue();
+
+        Map<String, Object> finalRow = finalitySnapshot();
+        Map<String, Object> finalDonor = pageWatermark(checkedPlayerA);
+        fetch.clearCalls();
+        clock.set(clock.instant().plusSeconds(10));
+        CycleResult noop = compatibilityCollector(true).runCycle();
+        assertThat(noop.state()).as("cycle %s; error %s; requests %s", noop, latestRunError(), fetch.calls())
+                .isEqualTo(State.COMPLETED);
+        assertThat(fetch.playerIds()).isEmpty();
+        assertThat(finalitySnapshot()).isEqualTo(finalRow);
+        assertThat(pageWatermark(checkedPlayerA)).isEqualTo(finalDonor);
+        new PlannerRuntimeRepository(jdbc, tx, clock, TABLES).deactivate(runtimeFence);
+        assertThat(jdbc.queryForObject("SELECT runtime_mode FROM " + TABLES.plannerRuntime()
+                + " WHERE instance_id=?", String.class, "mode:" + season.code())).isEqualTo("OFF");
+        assertThat(reader.read(SEASON_ID, season.code(), Set.of(3)).get(3).state())
+                .isEqualTo(GameweekFinality.State.FINALIZED);
+    }
+
+    @Test
+    void offReaderTreatsOldMissingSupersedeColumnAsPendingWithoutReferencingIt() throws Exception {
+        checkedSingleFixtureSetup();
+        assertThat(compatibilityCollector(true).runCycle().state()).isEqualTo(State.COMPLETED);
+        GameweekFinalityReader reader = new GameweekFinalityReader(jdbc, clock, TABLES);
+        assertThat(reader.read(SEASON_ID, season.code(), Set.of(3)).get(3).state())
+                .isEqualTo(GameweekFinality.State.FINALIZED);
+        new PlannerRuntimeRepository(jdbc, tx, clock, TABLES).deactivate(runtimeFence);
+        assertThat(jdbc.queryForObject("SELECT runtime_mode FROM " + TABLES.plannerRuntime()
+                + " WHERE instance_id=?", String.class, "mode:" + season.code())).isEqualTo("OFF");
+
+        jdbc.execute("ALTER TABLE " + TABLES.run() + " DROP CONSTRAINT ck_" + TABLES.run()
+                + "_supersede_reason");
+        jdbc.execute("ALTER TABLE " + TABLES.run() + " DROP COLUMN supersede_reason");
+        SqlRecordingDataSource recording = new SqlRecordingDataSource(dataSource);
+        try {
+            GameweekFinalityReader oldSchemaReader = new GameweekFinalityReader(
+                    new JdbcTemplate(recording), clock, TABLES);
+            assertThat(oldSchemaReader.read(SEASON_ID, season.code(), Set.of(3)).get(3).state())
+                    .isEqualTo(GameweekFinality.State.FINAL_PENDING);
+            assertThat(recording.statements()).noneMatch(sql ->
+                    sql.toLowerCase(java.util.Locale.ROOT).contains("supersede_reason"));
+        } finally {
+            new OwnedSyncSchema(jdbc, TABLES).initialize();
+        }
+    }
+
+    @Test
     void finalMetricCorrectionChangesOnlyItsRowAndRequiresFreshGameweekReproof() throws Exception {
         CheckedFixtureSetup setup = checkedSingleFixtureSetup();
         int fixtureId = setup.fixtureId();
@@ -2897,6 +3213,8 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         SourceDocument freshFixtures = document(setup.fixtureSource(), freshFixturesRead);
         var snapshot = CatalogueScheduleParser.parse(season, freshBootstrap, freshFixtures);
         store.observeIncrementalSnapshot(lease, snapshot);
+        store.recordIncrementalFixtureSourceRevisions(lease, snapshot.fixtures(),
+                new SourceRead(freshFixturesRead.startedAt(), freshFixturesRead.finishedAt()));
         var fixture = snapshot.fixtures().stream().filter(row -> row.id() == fixtureId).findFirst().orElseThrow();
         Instant liveStart = clock.instant();
         SourceDocument live = document(setup.liveSource(), new SourceRead(liveStart, liveStart.plusMillis(1)));
@@ -2911,6 +3229,10 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         var population = new GameweekFinality.RequiredPopulation(
                 GameweekFinality.catalogueFingerprint(snapshot, source.assignedFixtures()),
                 Map.of(fixtureId, cataloguePlayers), Map.of(fixtureId, participants), Map.of(), evidence);
+        store.recordIncrementalLiveEvent(lease, 3, source.signature(), Map.of(fixtureId, participants),
+                List.of(fixture), evidence,
+                new SourceRead(evidence.get(fixtureId).liveRead().startedAt(),
+                        evidence.get(fixtureId).liveRead().completedAt()));
         var finality = new GameweekFinalityRepository(jdbc, store, TABLES, clock);
         var restarted = finality.beginOrResume(lease, season, source, population, freshSnapshotRead);
         assertThat(restarted.state()).isEqualTo(GameweekFinality.State.FINAL_PENDING);
@@ -3143,6 +3465,12 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         Lease lease = store.acquireIncrementalCoreImport(season.code(), "withdrawal-cycle", Duration.ofMinutes(30))
                 .orElseThrow();
         store.observeIncrementalSnapshot(lease, initialSnapshot);
+        clock.set(liveRead.completedAt());
+        store.recordIncrementalFixtureSourceRevisions(lease, initialSnapshot.fixtures(),
+                new SourceRead(START.plusMillis(2), START.plusMillis(3)));
+        store.recordIncrementalLiveEvent(lease, 3, source.signature(),
+                Map.of(fixtureId, Set.of(1, 28)), List.of(fixtureRow), evidence,
+                new SourceRead(liveRead.startedAt(), liveRead.completedAt()));
         List<CanonicalFixture> canonical = initialSnapshot.fixtures().stream()
                 .map(HistoryParser::canonicalFixture).toList();
         SourceRead oldPageRead = new SourceRead(START.plusMillis(1), START.plusMillis(2));
@@ -3917,6 +4245,29 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         }
     }
 
+    private static byte[] appendUncheckedFixtureParticipant(byte[] checkedFixtures, byte[] fullFixtures,
+                                                              int fixtureId, int playerId) throws IOException {
+        ArrayNode schedule = (ArrayNode) JSON.readTree(checkedFixtures);
+        ObjectNode fixture = ((ObjectNode) findFixture(JSON.readTree(fullFixtures), fixtureId)).deepCopy();
+        fixture.put("started", true);
+        fixture.put("finished", true);
+        fixture.put("finished_provisional", false);
+        fixture.put("minutes", 90);
+        ObjectNode bps = JSON.createObjectNode().put("identifier", "bps");
+        bps.set("h", JSON.createArrayNode());
+        ArrayNode away = JSON.createArrayNode();
+        away.addObject().put("element", playerId).put("value", 1);
+        bps.set("a", away);
+        fixture.set("stats", JSON.createArrayNode().add(bps));
+        for (int index = 0; index < schedule.size(); index++) {
+            if (schedule.get(index).path("id").asInt() == fixtureId) {
+                schedule.set(index, fixture);
+                return JSON.writeValueAsBytes(schedule);
+            }
+        }
+        throw new IllegalStateException("Missing unchecked fixture " + fixtureId);
+    }
+
     private MultiFixtureSetup checkedDoubleFixtureSetup() throws Exception {
         byte[] bootstrap = resource("bootstrap-static.json");
         byte[] originalFixtures = resource("fixtures.json");
@@ -4108,6 +4459,24 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         elementsByPlayer.values().forEach(elements::add);
         root.set("elements", elements);
         return JSON.writeValueAsBytes(root);
+    }
+
+    private static byte[] changeFixtureLiveMinutes(byte[] source, int fixtureId, int playerId,
+                                                   int minutes) throws IOException {
+        ObjectNode root = (ObjectNode) JSON.readTree(source);
+        for (JsonNode element : root.path("elements")) {
+            if (element.path("id").asInt() != playerId) continue;
+            for (JsonNode explanation : element.path("explain")) {
+                if (explanation.path("fixture").asInt() != fixtureId) continue;
+                for (JsonNode stat : explanation.path("stats")) {
+                    if (!stat.path("identifier").asText().equals("minutes")) continue;
+                    ((ObjectNode) stat).put("value", minutes);
+                    if (stat.has("points")) ((ObjectNode) stat).put("points", minutes >= 60 ? 2 : 1);
+                    return JSON.writeValueAsBytes(root);
+                }
+            }
+        }
+        throw new IllegalStateException("Missing live fixture minutes for player " + playerId);
     }
 
     private static int fixtureSpecificLiveMinutes(byte[] source, int fixtureId, int playerId) throws IOException {
@@ -5417,6 +5786,7 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         private final Map<Integer, Integer> failingPlayerCalls = new java.util.HashMap<>();
         private Instant deferUntil;
         private boolean failFirstPage;
+        private boolean subMillisecondReads;
         private boolean firstRequestRun;
 
         private void setSources(byte[] bootstrap, byte[] fixtures, byte[] eventThree, byte[] eventFour) {
@@ -5432,6 +5802,7 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         }
 
         private void bindClock(MutableClock clock) { this.clock = clock; }
+        private void useSubMillisecondReads() { subMillisecondReads = true; }
         private void onFirstRequest(Runnable callback) { firstRequest = callback; }
         private void failPlayerCall(int call) { failFirstPage = true; failedPageCall = call; }
         private void failPlayer(int playerId) { failPlayerCalls(playerId, 1); }
@@ -5446,6 +5817,7 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         @Override
         public OwnedSyncHttpClient.Result get(Lease lease, Endpoint endpoint, int failureAttempt, Instant floor) {
             if (clock == null) throw new IllegalStateException("clock not bound");
+            if (clock.instant().isBefore(floor)) clock.set(floor);
             calls.add(endpoint);
             requests.add(new RecordedRequest(endpoint, floor));
             if (!firstRequestRun) {
@@ -5485,8 +5857,8 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
 
         private SourceRead interval() {
             Instant start = clock.instant();
-            Instant finish = start.plusMillis(1);
-            clock.set(finish.plusMillis(5));
+            Instant finish = subMillisecondReads ? start.plusNanos(300) : start.plusMillis(1);
+            clock.set(finish.plusMillis(subMillisecondReads ? 1 : 5));
             return new SourceRead(start, finish);
         }
 

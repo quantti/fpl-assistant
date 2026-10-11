@@ -338,12 +338,11 @@ public final class GameweekFinality {
             return OwnedSyncStore.sha256(canonical.toString());
         }
 
-        public boolean hasCompleteAppearanceEvidence(SourceSnapshot source, Instant sourceFloor) {
+        public boolean hasCompleteAppearanceEvidence(SourceSnapshot source) {
             validateFor(source);
             for (FixtureRow fixture : source.assignedFixtures()) {
                 FixtureVerification.FixtureEvidence evidence = participantEvidenceByFixture.get(fixture.id());
                 if (evidence == null || !evidence.complete()
-                        || evidence.liveRead().startedAt().isBefore(sourceFloor)
                         || evidence.appearances().keySet().size() != evidence.positivePlayerIds().size()
                         || evidence.appearances().values().stream().noneMatch(row ->
                                 row.side() == FixtureVerification.Side.HOME)

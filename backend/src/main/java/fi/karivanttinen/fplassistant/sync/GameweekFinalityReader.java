@@ -196,7 +196,7 @@ public final class GameweekFinalityReader {
                                              SourceCatalogueMembership membership) {
         if (row.state() != State.FINALIZED || !source.finalSweepEligible()) return false;
         if (!tableExists(tables.playerFixtureCurrent()) || !tableExists(tables.playerFixtureEvidence())
-                || !tableExists(tables.receipt()) || !tableExists(tables.run())) return false;
+                || !tableExists(tables.receipt()) || !typedSupersedeReasonAvailable()) return false;
         SweepCheckpoint checkpoint = row.checkpoint();
         GameweekFinalityRepository.PopulationManifest manifest =
                 GameweekFinalityRepository.populationManifest(row.populationManifest());
@@ -228,7 +228,9 @@ public final class GameweekFinalityReader {
                 || !checkpoint.populationFingerprint().equals(population.fingerprint(source))
                 || !Objects.equals(row.finalizedPopulationFingerprint(), population.finalizedFingerprint(source))
                 || !manifest.fixtureIdentities().equals(GameweekFinalityRepository.fixtureIdentities(source))
-                || !population.hasCompleteAppearanceEvidence(source, checkpoint.sourceFloor())) return false;
+                || !population.hasCompleteAppearanceEvidence(source)
+                || !GameweekFinalityRepository.currentAppearanceStateMatches(jdbc, tables, clock, seasonCode,
+                        source, population, checkpoint.sourceFloor(), row.finalizedRunGeneration(), false)) return false;
 
         CatalogueProof catalogue;
         if (population.sourceCatalogueMembershipRequired()) {
@@ -426,8 +428,8 @@ public final class GameweekFinalityReader {
                           AND page_run.completed_at IS NULL AND page_run.last_error IS NOT NULL)
                       OR (page_run.state='SUPERSEDED' AND page_run.completed_at IS NOT NULL
                           AND page_run.completed_at>=page_run.source_read_finished_at
-                          AND page_run.failed_at IS NULL
-                          AND page_run.last_error='Superseded by a validated newer canonical source pair')
+                          AND page_run.failed_at IS NULL AND page_run.last_error IS NULL
+                          AND page_run.supersede_reason IN (%s))
                   )
                   AND (COALESCE(page_run.completed_at,page_run.failed_at) IS NULL
                        OR COALESCE(page_run.completed_at,page_run.failed_at)<=?)
@@ -454,8 +456,8 @@ public final class GameweekFinalityReader {
                           AND latest_run.completed_at IS NULL AND latest_run.last_error IS NOT NULL)
                       OR (latest_run.state='SUPERSEDED' AND latest_run.completed_at IS NOT NULL
                           AND latest_run.completed_at>=latest_run.source_read_finished_at
-                          AND latest_run.failed_at IS NULL
-                          AND latest_run.last_error='Superseded by a validated newer canonical source pair')
+                          AND latest_run.failed_at IS NULL AND latest_run.last_error IS NULL
+                          AND latest_run.supersede_reason IN (%s))
                   )
                   AND (COALESCE(latest_run.completed_at,latest_run.failed_at) IS NULL
                        OR COALESCE(latest_run.completed_at,latest_run.failed_at)<=?)
@@ -465,14 +467,18 @@ public final class GameweekFinalityReader {
                            AND receipt.source_read_finished_at=original.finished_at))
                   AND (receipt.latest_generation=original.generation
                        OR receipt.source_read_started_at>=original.finished_at)
-                """.formatted(values, tables.receipt(), tables.run(), tables.run()),
+                """.formatted(values, tables.receipt(), tables.run(), tables.run(),
+                        OwnedSyncStore.IncrementalSupersedeReason.acceptedSqlValues(),
+                        OwnedSyncStore.IncrementalSupersedeReason.acceptedSqlValues()),
                 rs -> { validated.add(rs.getInt("player_id")); }, args.toArray());
         return validated.equals(required);
     }
 
     private SourceCatalogueMembership currentSourceCatalogueMembership(int seasonId, String seasonCode) {
-        if (!tableExists(tables.receipt()) || !tableExists(tables.run()) || !tableExists(tables.payload())
-                || !columnExists(tables.receipt(), "source_catalogue")) return null;
+        if (!tableExists(tables.receipt()) || !tableExists(tables.payload())
+                || !typedSupersedeReasonAvailable() || !columnExists(tables.receipt(), "source_catalogue")) {
+            return null;
+        }
         Instant now = clock.instant();
         List<MembershipReceipt> rows = jdbc.query("""
                 SELECT r.latest_generation,r.source_read_started_at,r.source_read_finished_at,
@@ -540,11 +546,12 @@ public final class GameweekFinalityReader {
                         AND producer.completed_at IS NULL AND producer.last_error IS NOT NULL)
                     OR (producer.state='SUPERSEDED' AND producer.completed_at IS NOT NULL
                         AND producer.completed_at>=producer.source_read_finished_at
-                        AND producer.failed_at IS NULL
-                        AND producer.last_error='Superseded by a validated newer canonical source pair'))
+                        AND producer.failed_at IS NULL AND producer.last_error IS NULL
+                        AND producer.supersede_reason IN (%s)))
                   AND (COALESCE(producer.completed_at,producer.failed_at) IS NULL
                        OR COALESCE(producer.completed_at,producer.failed_at)<=?)
-                """.formatted(tables.receipt(), tables.run(), tables.payload(), tables.payload()),
+                """.formatted(tables.receipt(), tables.run(), tables.payload(), tables.payload(),
+                        OwnedSyncStore.IncrementalSupersedeReason.acceptedSqlValues()),
                 (rs, row) -> new MembershipReceipt(rs.getLong("latest_generation"),
                         new SourceRead(instant(rs, "source_read_started_at"),
                                 instant(rs, "source_read_finished_at")),
@@ -571,6 +578,10 @@ public final class GameweekFinalityReader {
         if (!sourcePair.fingerprint().equals(row.sourcePairFingerprint())) return null;
         return SourceCatalogueMembership.parse(row.catalogue(), seasonId, seasonCode, row.generation(),
                 row.sourceRead(), row.sourcePairFingerprint()).orElse(null);
+    }
+
+    private boolean typedSupersedeReasonAvailable() {
+        return tableExists(tables.run()) && columnExists(tables.run(), "supersede_reason");
     }
 
     private boolean columnExists(String tableName, String columnName) {

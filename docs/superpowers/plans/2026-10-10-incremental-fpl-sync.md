@@ -1,6 +1,6 @@
 # Incremental FPL rows and a checked-gameweek final sweep
 
-**PROGRESS:** Units 1–7, PR #157 retry work and FIX1–FIX6 are implemented locally; the final collector-class run is 50/50 with no skipped tests, recorded in `docs/STATUS.md`. This is not a full-suite result. Awaiting fresh PR CI; the external Tapas-reader audit and approved cutover/activation remain blocked. No full suite or production/live API/Fly/monitor action occurred; owned writers remain inert.
+**PROGRESS:** Units 1–7 and FIX1–FIX6 are implemented. The earlier checked-floor/superseded-donor collector run passed 51/51; final cross-review fixes for typed supersede schema/preflight, OFF-reader compatibility and PostgreSQL timestamp precision passed 16 focused tests (4 collector, 8 schema, 4 opt-in context). CI passed at `2e24f99`; these final-head fixes still need review and fresh CI. The external Tapas-reader audit and approved production cutover remain pending. No local full suite or production/live API/Fly/monitor action occurred; the importer remains disabled by default.
 
 ## Decision being proposed
 
@@ -515,6 +515,25 @@ The guarded disposable-DB `IncrementalPlayerFixturePublisherIntegrationTest` pas
 The opted-in hourly importer runs one producer-scoped retention pass before its first collection and after every cycle, including failure; manual `runOnce()` also runs maintenance in `finally`. For `INCREMENTAL_CORE` rows older than 24 hours on `COMPLETED`, `FAILED` or `SUPERSEDED` runs, it empties raw `BYTEA` bodies and records `body_pruned_at`, retaining every row and its compact ID/generation/endpoint/read-span/hash/validation/publication proof. It prunes only a body whose captured `source_payload_sha256` still matches. Active `PENDING`/`LEASED` bodies and a published compatibility pair referenced by a newer active import are protected. Legacy row-deletion cleanup is unchanged; cleanup errors do not change runtime mode or replace the import result.
 
 `GameweekFinalityReader` requires both exact payload rows and validates their captured hashes against the receipt. It recomputes the digest while a body is present and accepts an empty body only with a valid prune marker and unchanged `VALID`/published proof. Missing, wrong-generation, mutated or invalid proof remains `FINAL_PENDING`; no old-row hash backfill/body hydration is performed, so old rows without compact proof need a fresh validated capture. The importer preflight now requires the metadata columns and enabled payload guard. Guarded tests cover terminal prune counts and released raw bytes with retained rows, active retry/parent isolation, invalid-body and wrong-proof negatives, valid finality after prune and a subsequent collector no-op. This is raw staged-body retention, not a payload-row, request-spend or billing cap.
+
+## Post-push checked-floor and superseded-donor follow-up
+
+Changed live-appearance evidence atomically advances the checked game's invalidation floor and
+revision, so checkpoint reuse cannot overwrite the newer floor. Resume and finalization validate
+persisted appearance provenance; genuine revisions require fresh eligible pages and unchanged
+partial sweeps still reuse successful pages. `supersede_reason` records sanctioned producer reasons
+separately from diagnostic text. Reader acceptance retains the donor's producer, interval and floor
+checks and the final issuer's completed-state requirement. Migration recognises only exact previous
+markers, not arbitrary `SUPERSEDED` rows. The guarded collector-class run passed **51/51, zero
+skipped**; this does not establish production API completeness or authorise cutover.
+
+## Final cross-review follow-up
+
+`supersede_reason` is now a constrained owned-run column with only the two canonical producer reasons accepted for `SUPERSEDED` rows; NULL remains valid for old or unrecognized rows but cannot certify finality. The one-time migration maps only exact legacy markers, and read-only importer preflight requires the column plus a validated typed CHECK before opt-in startup. The OFF `GameweekFinalityReader` checks column support before any membership/donor join that names it, degrading old-schema receipts to `FINAL_PENDING` without a database error.
+
+Appearance-read endpoints and final-sweep interval aggregates are canonicalized to PostgreSQL microseconds before equality, overlap and persisted-interval checks. The collector test uses non-millisecond reads and proves an exact normalized capture passes while a different overlapping interval is still rejected. A separate real-collector sequence commits checked GW3 A while B fails, changes an unchecked GW4 appearance, supersedes the partial producer, reuses A's actual prior page donor and fetches only the checked missing B plus the unrelated stale GW4 page. It verifies typed supersede evidence, complete GW3 sides, a no-op, and archived finality after OFF.
+
+Guarded focused verification passed **16/16, 0 failures, 0 skipped**: 4 selected collector regressions, 8 `HistoryEvidenceSchemaIntegrationTest` cases and 4 `OwnedSyncImporterContextIntegrationTest` cases against disposable `localhost:55432`, under a 1200 MiB cgroup, no swap and 200% CPU quota. No full suite, production/live API/Fly/monitor action, activation, commit or push occurred; fresh PR CI and the external reader audit/cutover remain required.
 
 ## Rollback
 

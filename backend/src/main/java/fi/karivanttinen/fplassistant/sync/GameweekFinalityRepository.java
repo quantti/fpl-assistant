@@ -92,6 +92,8 @@ public final class GameweekFinalityRepository {
                 Map<Integer, PageEvidence> pages = proof ? freshPageReceipts(season,
                         checkpoint.requiredPlayerIds(), checkpoint.sourceFloor(), lease.generation()) : Map.of();
                 proof = proof && current.valid()
+                        && currentAppearanceStateMatches(jdbc, tables, clock, season.code(), source,
+                                manifest.population(), checkpoint.sourceFloor(), lease.generation(), true)
                         && Objects.equals(row.finalizedRowFingerprint(), current.fingerprint())
                         && pages.keySet().equals(checkpoint.requiredPlayerIds())
                         && validatesAppearanceRows(source, manifest.population(), checkpoint, current);
@@ -126,9 +128,12 @@ public final class GameweekFinalityRepository {
             if (row.state() == State.FINALIZED
                     && finalizedFingerprint.equals(row.finalizedPopulationFingerprint())) {
                 CurrentRows current = currentRows(season, source);
-                boolean pagesCurrent = row.checkpoint() != null && freshPageReceipts(season,
-                        row.checkpoint().requiredPlayerIds(), row.checkpoint().sourceFloor(), lease.generation())
-                        .keySet().equals(row.checkpoint().requiredPlayerIds());
+                boolean pagesCurrent = row.checkpoint() != null
+                        && currentAppearanceStateMatches(jdbc, tables, clock, season.code(), source,
+                                effectivePopulation, row.checkpoint().sourceFloor(), lease.generation(), true)
+                        && freshPageReceipts(season, row.checkpoint().requiredPlayerIds(),
+                                row.checkpoint().sourceFloor(), lease.generation())
+                                .keySet().equals(row.checkpoint().requiredPlayerIds());
                 if (current.valid() && pagesCurrent
                         && Objects.equals(row.finalizedRowFingerprint(), current.fingerprint())
                         && validatesAppearanceRows(source, effectivePopulation, row.checkpoint(), current)) {
@@ -145,6 +150,10 @@ public final class GameweekFinalityRepository {
                                     row.invalidationFloor()), populationFingerprint);
             Instant floor = compatible ? row.checkpoint().sourceFloor()
                     : freshFloor(sourceRead.finishedAt(), row.invalidationFloor());
+            if (!currentAppearanceStateMatches(jdbc, tables, clock, season.code(), source,
+                    effectivePopulation, floor, lease.generation(), true)) {
+                throw new IllegalStateException("Final sweep appearance floor or source identity is not current");
+            }
             Set<Integer> required = effectivePopulation.requiredPlayerIds();
             Map<Integer, PageEvidence> pages = freshPageReceipts(season, required, floor, lease.generation());
             Set<Integer> completed = new TreeSet<>(pages.keySet());
@@ -211,7 +220,9 @@ public final class GameweekFinalityRepository {
             String populationFingerprint = effectivePopulation.fingerprint(endSource);
             String finalizedFingerprint = effectivePopulation.finalizedFingerprint(endSource);
             if (!checkpoint.populationFingerprint().equals(populationFingerprint)
-                    || !effectivePopulation.hasCompleteAppearanceEvidence(endSource, checkpoint.sourceFloor())
+                    || !effectivePopulation.hasCompleteAppearanceEvidence(endSource)
+                    || !currentAppearanceStateMatches(jdbc, tables, clock, season.code(), endSource,
+                            effectivePopulation, checkpoint.sourceFloor(), lease.generation(), true)
                     || checkpoint.invalidationRevision() != row.invalidationRevision()
                     || row.invalidationFloor() == null || checkpoint.sourceFloor().isBefore(row.invalidationFloor())) {
                 throw new IllegalStateException("Final sweep checkpoint no longer matches the current revision");
@@ -732,6 +743,7 @@ public final class GameweekFinalityRepository {
         parameters.addAll(keys);
         parameters.add(timestamp(floor));
         parameters.add(timestamp(clock.instant()));
+        parameters.add(timestamp(clock.instant()));
         Map<Integer, PageEvidence> result = new HashMap<>();
         jdbc.query("""
                 SELECT receipt.publication_key,receipt.latest_generation,
@@ -753,7 +765,22 @@ public final class GameweekFinalityRepository {
                   AND page_run.source_read_started_at<=receipt.source_read_started_at
                   AND page_run.source_read_finished_at>=receipt.source_read_finished_at
                   AND page_run.source_read_finished_at<=?
-                """.formatted(tables.receipt(), tables.run(), placeholders), rs -> {
+                  AND ((page_run.state IN ('PENDING','LEASED')
+                        AND page_run.completed_at IS NULL AND page_run.failed_at IS NULL)
+                    OR (page_run.state='COMPLETED' AND page_run.completed_at IS NOT NULL
+                        AND page_run.completed_at>=page_run.source_read_finished_at
+                        AND page_run.failed_at IS NULL AND page_run.last_error IS NULL)
+                    OR (page_run.state='FAILED' AND page_run.failed_at IS NOT NULL
+                        AND page_run.failed_at>=page_run.source_read_finished_at
+                        AND page_run.completed_at IS NULL AND page_run.last_error IS NOT NULL)
+                    OR (page_run.state='SUPERSEDED' AND page_run.completed_at IS NOT NULL
+                        AND page_run.completed_at>=page_run.source_read_finished_at
+                        AND page_run.failed_at IS NULL AND page_run.last_error IS NULL
+                        AND page_run.supersede_reason IN (%s)))
+                  AND (COALESCE(page_run.completed_at,page_run.failed_at) IS NULL
+                       OR COALESCE(page_run.completed_at,page_run.failed_at)<=?)
+                """.formatted(tables.receipt(), tables.run(), placeholders,
+                        OwnedSyncStore.IncrementalSupersedeReason.acceptedSqlValues()), rs -> {
             int playerId = Integer.parseInt(rs.getString("publication_key")
                     .substring(IncrementalPlayerFixturePublisher.PAGE_RECEIPT_PREFIX.length()));
             result.put(playerId, new PageEvidence(rs.getLong("latest_generation"),
@@ -835,10 +862,116 @@ public final class GameweekFinalityRepository {
                 Map.copyOf(coverage), Map.copyOf(rows), valid[0]);
     }
 
+    static boolean currentAppearanceStateMatches(JdbcTemplate jdbc, OwnedSyncTables tables, Clock clock,
+                                                  String season, SourceSnapshot source,
+                                                  RequiredPopulation population, Instant pageFloor,
+                                                  long maximumGeneration, boolean allowOpenProducer) {
+        List<FixtureRow> fixtures = source.assignedFixtures();
+        if (fixtures.isEmpty()) return population.participantEvidenceByFixture().isEmpty();
+        if (population.participantEvidenceByFixture().isEmpty()
+                || !population.hasCompleteAppearanceEvidence(source)) return allowOpenProducer;
+        if (pageFloor == null) return false;
+        List<String> keys = fixtures.stream().map(fixture ->
+                IncrementalAppearanceReceipt.appearanceStateKey(fixture.id())).toList();
+        String placeholders = String.join(",", java.util.Collections.nCopies(keys.size(), "?"));
+        List<Object> parameters = new ArrayList<>();
+        parameters.add(season);
+        parameters.addAll(keys);
+        Map<Integer, AppearanceStateProof> states = new HashMap<>();
+        jdbc.query("""
+                SELECT state_receipt.publication_key,state_receipt.latest_generation,
+                       state_receipt.source_read_started_at,state_receipt.source_read_finished_at,
+                       state_receipt.source_pair_fingerprint,producer.kind,producer.producer_key,
+                       producer.season AS producer_season,producer.coalescing_key,producer.publication_key
+                           AS producer_publication_key,producer.runtime_mode,producer.runtime_epoch,
+                       producer.state AS producer_state,producer.requested_source_after,
+                       producer.source_read_started_at AS producer_started,
+                       producer.source_read_finished_at AS producer_finished,
+                       producer.completed_at,producer.failed_at,producer.last_error,
+                       producer.supersede_reason
+                FROM %s state_receipt
+                JOIN %s producer ON producer.generation=state_receipt.latest_generation
+                    AND producer.season=state_receipt.season
+                WHERE state_receipt.season=? AND state_receipt.publication_key IN (%s)
+                  AND state_receipt.latest_generation IS NOT NULL
+                """.formatted(tables.receipt(), tables.run(), placeholders), rs -> {
+            String key = rs.getString("publication_key");
+            int fixtureId = Integer.parseInt(key.substring(
+                    IncrementalAppearanceReceipt.APPEARANCE_STATE_PREFIX.length()));
+            states.put(fixtureId, new AppearanceStateProof(rs.getLong("latest_generation"),
+                    instant(rs, "source_read_started_at"), instant(rs, "source_read_finished_at"),
+                    rs.getString("source_pair_fingerprint"), rs.getString("kind"),
+                    rs.getString("producer_key"), rs.getString("producer_season"),
+                    rs.getString("coalescing_key"), rs.getString("producer_publication_key"),
+                    rs.getString("runtime_mode"), rs.getLong("runtime_epoch"),
+                    rs.getString("producer_state"), instant(rs, "requested_source_after"),
+                    instant(rs, "producer_started"), instant(rs, "producer_finished"),
+                    instant(rs, "completed_at"), instant(rs, "failed_at"), rs.getString("last_error"),
+                    rs.getString("supersede_reason")));
+        }, parameters.toArray());
+        if (!states.keySet().equals(fixtures.stream().map(FixtureRow::id)
+                .collect(java.util.stream.Collectors.toSet()))) return false;
+        Instant now = clock.instant();
+        for (FixtureRow fixture : fixtures) {
+            FixtureVerification.FixtureEvidence evidence =
+                    population.participantEvidenceByFixture().get(fixture.id());
+            AppearanceStateProof state = states.get(fixture.id());
+            Instant liveStarted = OwnedSyncStore.postgresTimestampPrecision(evidence.liveRead().startedAt());
+            Instant liveFinished = OwnedSyncStore.postgresTimestampPrecision(evidence.liveRead().completedAt());
+            Instant persistedPageFloor = OwnedSyncStore.postgresTimestampPrecision(pageFloor);
+            if (state.startedAt() == null || state.finishedAt() == null
+                    || state.finishedAt().isBefore(state.startedAt())
+                    || state.finishedAt().isAfter(now) || !persistedPageFloor.isAfter(state.finishedAt())
+                    || !state.fingerprint().equals(IncrementalAppearanceReceipt.fingerprint(
+                            fixture, source.gameweek(), evidence))
+                    || state.startedAt().isAfter(liveStarted) || state.finishedAt().isAfter(liveFinished)
+                    || (!state.startedAt().equals(liveStarted) || !state.finishedAt().equals(liveFinished))
+                        && liveStarted.isBefore(state.finishedAt())
+                    || !validAppearanceProducer(state, season, maximumGeneration, now, allowOpenProducer)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean validAppearanceProducer(AppearanceStateProof state, String season,
+                                                    long maximumGeneration, Instant now,
+                                                    boolean allowOpenProducer) {
+        if (state.generation() <= 0 || state.generation() > maximumGeneration
+                || !"PLAYER_HISTORY".equals(state.kind())
+                || !OwnedSyncStore.INCREMENTAL_CORE_PRODUCER.equals(state.producerKey())
+                || !season.equals(state.producerSeason())
+                || !OwnedSyncStore.INCREMENTAL_CORE_KEY.equals(state.coalescingKey())
+                || !OwnedSyncStore.INCREMENTAL_CORE_KEY.equals(state.publicationKey())
+                || !"ACTIVE".equals(state.runtimeMode()) || state.runtimeEpoch() <= 0
+                || state.requestedSourceAfter() == null || state.startedAt().isBefore(state.requestedSourceAfter())
+                || state.runStartedAt() == null || state.runFinishedAt() == null
+                || state.runStartedAt().isAfter(state.runFinishedAt())
+                || state.runStartedAt().isAfter(state.startedAt())
+                || state.runFinishedAt().isBefore(state.finishedAt())
+                || state.runFinishedAt().isAfter(now)) return false;
+        return switch (state.runState()) {
+            case "PENDING", "LEASED" -> allowOpenProducer
+                    && state.completedAt() == null && state.failedAt() == null;
+            case "COMPLETED" -> state.completedAt() != null
+                    && !state.completedAt().isBefore(state.runFinishedAt())
+                    && !state.completedAt().isAfter(now) && state.failedAt() == null && state.lastError() == null;
+            case "FAILED" -> state.failedAt() != null
+                    && !state.failedAt().isBefore(state.runFinishedAt())
+                    && !state.failedAt().isAfter(now) && state.completedAt() == null && state.lastError() != null;
+            case "SUPERSEDED" -> state.completedAt() != null
+                    && !state.completedAt().isBefore(state.runFinishedAt())
+                    && !state.completedAt().isAfter(now) && state.failedAt() == null
+                    && state.lastError() == null
+                    && OwnedSyncStore.IncrementalSupersedeReason.acceptsCode(state.supersedeReason());
+            default -> false;
+        };
+    }
+
     static boolean validatesAppearanceRows(SourceSnapshot source, RequiredPopulation population,
                                             SweepCheckpoint checkpoint, CurrentRows current) {
         return checkpoint != null
-                && population.hasCompleteAppearanceEvidence(source, checkpoint.sourceFloor())
+                && population.hasCompleteAppearanceEvidence(source)
                 && currentPositiveRowsMatchAppearances(source, population, current)
                 && pagesWithAppearanceRows(source, population, current,
                         checkpoint.requiredPlayerIds()).equals(checkpoint.requiredPlayerIds());
@@ -970,12 +1103,16 @@ public final class GameweekFinalityRepository {
         Instant finished = null;
         for (SourceRead interval : new SourceRead[] { previous, source, extra }) {
             if (interval == null) continue;
-            started = started == null || interval.startedAt().isBefore(started) ? interval.startedAt() : started;
-            finished = max(finished, interval.finishedAt());
+            Instant intervalStarted = OwnedSyncStore.postgresTimestampPrecision(interval.startedAt());
+            Instant intervalFinished = OwnedSyncStore.postgresTimestampPrecision(interval.finishedAt());
+            started = started == null || intervalStarted.isBefore(started) ? intervalStarted : started;
+            finished = max(finished, intervalFinished);
         }
         if (pages != null) {
-            started = started == null || pages.startedAt().isBefore(started) ? pages.startedAt() : started;
-            finished = max(finished, pages.finishedAt());
+            Instant pageStarted = OwnedSyncStore.postgresTimestampPrecision(pages.startedAt());
+            Instant pageFinished = OwnedSyncStore.postgresTimestampPrecision(pages.finishedAt());
+            started = started == null || pageStarted.isBefore(started) ? pageStarted : started;
+            finished = max(finished, pageFinished);
         }
         if (started == null || finished == null) throw new IllegalArgumentException("A source interval is required");
         return new SourceRead(started, finished);
@@ -1032,6 +1169,13 @@ public final class GameweekFinalityRepository {
     }
 
     record FixturePlayer(int fixtureId, int playerId) { }
+    private record AppearanceStateProof(long generation, Instant startedAt, Instant finishedAt,
+                                        String fingerprint, String kind, String producerKey,
+                                        String producerSeason, String coalescingKey, String publicationKey,
+                                        String runtimeMode, long runtimeEpoch, String runState,
+                                        Instant requestedSourceAfter, Instant runStartedAt, Instant runFinishedAt,
+                                        Instant completedAt, Instant failedAt, String lastError,
+                                       String supersedeReason) { }
     private record ParticipantManifest(Map<Integer, Set<Integer>> playerIdsByFixture) { }
     private record PageEvidence(long generation, Instant startedAt, Instant finishedAt) { }
     private record SourceInterval(Instant startedAt, Instant finishedAt) { }
