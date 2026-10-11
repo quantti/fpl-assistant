@@ -15,6 +15,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 
 import javax.sql.DataSource;
 
@@ -66,8 +67,12 @@ class IncrementalPlayerFixturePublisherIntegrationTest {
 
     private static JdbcTemplate jdbc;
     private static TransactionTemplate tx;
-    private static List<Integer> previousCurrentSeasons = List.of();
+    private static List<Integer> previousCurrentSeasons;
     private static boolean testSeasonCreated;
+    private static boolean disposableDatabaseValidated;
+    private static boolean seasonBaselineCaptured;
+    private static boolean seasonFlagsChanged;
+    private static boolean cleanupAuthorized;
     private static MutableClock clock;
     private OwnedSyncStore store;
     private IncrementalPlayerFixturePublisher publisher;
@@ -75,16 +80,20 @@ class IncrementalPlayerFixturePublisherIntegrationTest {
     @BeforeAll
     static void initialize() {
         String url = requiredEnv("DATABASE_URL");
-        if (!url.startsWith("jdbc:postgresql://localhost:55432/")) {
-            throw new IllegalStateException("Incremental PFS tests require disposable localhost:55432 Postgres");
-        }
-        DataSource dataSource = new DriverManagerDataSource(url,
-                requiredEnv("DB_USER"), requiredEnv("DB_PASSWORD"));
-        jdbc = new JdbcTemplate(dataSource);
-        tx = new TransactionTemplate(new DataSourceTransactionManager(dataSource));
+        String user = requiredEnv("DB_USER");
+        String password = requiredEnv("DB_PASSWORD");
+        initialize(url, user, password,
+                () -> new JdbcTemplate(new DriverManagerDataSource(url, user, password)));
+    }
+
+    static void initialize(String url, String user, String password, Supplier<JdbcTemplate> jdbcSupplier) {
+        jdbc = SharedStatsSeed.openDisposableTestJdbc(url, user, password, jdbcSupplier);
+        tx = new TransactionTemplate(new DataSourceTransactionManager(jdbc.getDataSource()));
         SharedStatsSeed.ensure(jdbc);
+        disposableDatabaseValidated = true;
         previousCurrentSeasons = jdbc.queryForList(
                 "SELECT id FROM season WHERE is_current=true ORDER BY id", Integer.class);
+        seasonBaselineCaptured = true;
         testSeasonCreated = jdbc.update("INSERT INTO season (id, code, name, start_date, end_date, is_current) "
                         + "VALUES (?, ?, 'Incremental PFS test', DATE '2031-08-01', DATE '2032-05-30', false) "
                         + "ON CONFLICT (id) DO NOTHING", SEASON_ID, SEASON_CODE) == 1;
@@ -97,8 +106,10 @@ class IncrementalPlayerFixturePublisherIntegrationTest {
             jdbc.update("UPDATE season SET is_current=false");
             jdbc.update("UPDATE season SET is_current=true WHERE id=?", SEASON_ID);
         });
+        seasonFlagsChanged = true;
         new DefensiveStatsSchema(jdbc).ensureColumns();
         new OwnedSyncSchema(jdbc, TABLES).initialize();
+        cleanupAuthorized = true;
     }
 
     @BeforeEach
@@ -123,20 +134,24 @@ class IncrementalPlayerFixturePublisherIntegrationTest {
 
     @AfterAll
     static void cleanUp() {
-        if (jdbc == null) return;
-        jdbc.update("DELETE FROM player_fixture_stats WHERE fixture_id IN (?, ?) AND season_id IN (?, ?)",
-                FIXTURE_HOME, FIXTURE_TRANSFER, SEASON_ID, SharedStatsSeed.POPULATED_SEASON_ID);
-        jdbc.execute("TRUNCATE " + TABLES.playerFixtureCurrent() + ", "
+        if (jdbc == null || !disposableDatabaseValidated || !seasonBaselineCaptured) return;
+        if (cleanupAuthorized) {
+            jdbc.update("DELETE FROM player_fixture_stats WHERE fixture_id IN (?, ?) AND season_id IN (?, ?)",
+                    FIXTURE_HOME, FIXTURE_TRANSFER, SEASON_ID, SharedStatsSeed.POPULATED_SEASON_ID);
+            jdbc.execute("TRUNCATE " + TABLES.playerFixtureCurrent() + ", "
                 + TABLES.playerFixtureEvidence() + ", " + TABLES.gameweekStatSync() + ", "
                 + TABLES.fixtureSync() + ", " + TABLES.payload() + ", " + TABLES.run() + ", "
                 + TABLES.receipt() + ", " + TABLES.plannerSlot() + ", " + TABLES.plannerRuntime()
                 + " CASCADE");
+        }
+        if (!seasonFlagsChanged) return;
         tx.executeWithoutResult(status -> {
             jdbc.queryForList("SELECT id FROM season ORDER BY id FOR UPDATE", Integer.class);
             jdbc.update("UPDATE season SET is_current=false");
             previousCurrentSeasons.forEach(id -> jdbc.update("UPDATE season SET is_current=true WHERE id=?", id));
-            if (testSeasonCreated) jdbc.update("DELETE FROM season WHERE id=?", SEASON_ID);
+            if (cleanupAuthorized && testSeasonCreated) jdbc.update("DELETE FROM season WHERE id=?", SEASON_ID);
         });
+        seasonFlagsChanged = false;
     }
 
     @Test
@@ -315,6 +330,8 @@ class IncrementalPlayerFixturePublisherIntegrationTest {
         seedLegacyPfs(PLAYER, FIXTURE_HOME, 1, "0.90");
         seedOldVerifiedFixture(PLAYER, FIXTURE_HOME, oldReceiptLease.generation());
         PfsReadSource offReader = oldOffReader();
+        PfsReadSource activeReader = new PfsReadSource(jdbc, "ACTIVE", SEASON_CODE, TABLES.fixtureSync(),
+                TABLES.playerFixtureEvidence(), TABLES.playerFixtureCurrent(), TABLES.receipt());
         assertThat(oldReaderRows(offReader, FIXTURE_HOME, PLAYER)).containsExactly(new BigDecimal("0.90"));
 
         SourceDocument firstPage = page(PLAYER, BASE.plusSeconds(2), BASE.plusSeconds(3),
@@ -327,6 +344,8 @@ class IncrementalPlayerFixturePublisherIntegrationTest {
                 .isEqualTo(oldReceiptLease.generation());
         assertThat(oldReaderRows(offReader, FIXTURE_HOME, PLAYER))
                 .containsExactly(new BigDecimal("0.40"));
+        assertThat(oldReaderRows(activeReader, FIXTURE_HOME, PLAYER))
+                .containsExactly(new BigDecimal("0.40"));
 
         SourceDocument presenceOnlyPage = page(PLAYER, BASE.plusSeconds(4), BASE.plusSeconds(5),
                 row(PLAYER, FIXTURE_HOME, 2, true, null));
@@ -334,6 +353,7 @@ class IncrementalPlayerFixturePublisherIntegrationTest {
         assertThat(pfsDecimal(PLAYER, FIXTURE_HOME, "expected_goals")).isEqualByComparingTo("0.40");
         assertThat(hasComponent(PLAYER, FIXTURE_HOME, Component.EXPECTED_GOALS)).isFalse();
         assertThat(oldReaderRows(offReader, FIXTURE_HOME, PLAYER)).containsExactly((BigDecimal) null);
+        assertThat(oldReaderRows(activeReader, FIXTURE_HOME, PLAYER)).containsExactly((BigDecimal) null);
 
         seedLegacyPfs(NEW_ONLY_PLAYER, FIXTURE_TRANSFER, 2, "0.75");
         assertThat(oldReaderRows(offReader, FIXTURE_TRANSFER, NEW_ONLY_PLAYER))
@@ -345,12 +365,15 @@ class IncrementalPlayerFixturePublisherIntegrationTest {
                 + " WHERE season_id=? AND fixture_id=?", Integer.class, SEASON_ID, FIXTURE_TRANSFER)).isZero();
         assertThat(oldReaderRows(offReader, FIXTURE_TRANSFER, NEW_ONLY_PLAYER))
                 .containsExactly(new BigDecimal("0.80"));
+        assertThat(oldReaderRows(activeReader, FIXTURE_TRANSFER, NEW_ONLY_PLAYER))
+                .containsExactly(new BigDecimal("0.80"));
 
         SourceDocument withdrawal = page(PLAYER, BASE.plusSeconds(8), BASE.plusSeconds(9));
         publish(PLAYER, "withdrawal-off-reader", withdrawal);
         assertThat(currentState(PLAYER, FIXTURE_HOME)).isEqualTo("WITHDRAWN");
         assertThat(playerPfsCount(PLAYER)).isEqualTo(1);
         assertThat(oldReaderRows(offReader, FIXTURE_HOME, PLAYER)).isEmpty();
+        assertThat(oldReaderRows(activeReader, FIXTURE_HOME, PLAYER)).isEmpty();
     }
 
     @Test

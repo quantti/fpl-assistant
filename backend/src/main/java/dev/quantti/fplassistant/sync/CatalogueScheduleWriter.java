@@ -224,71 +224,11 @@ public final class CatalogueScheduleWriter {
     }
 
     private int writeTeams(List<TeamRow> rows, Instant publicationTime) {
-        String sql = """
-                INSERT INTO team (id, season_id, code, name, short_name, strength,
-                    strength_overall_home, strength_overall_away, strength_attack_home,
-                    strength_attack_away, strength_defence_home, strength_defence_away, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (id, season_id) DO UPDATE SET code=EXCLUDED.code, name=EXCLUDED.name,
-                    short_name=EXCLUDED.short_name, strength=EXCLUDED.strength,
-                    strength_overall_home=EXCLUDED.strength_overall_home,
-                    strength_overall_away=EXCLUDED.strength_overall_away,
-                    strength_attack_home=EXCLUDED.strength_attack_home,
-                    strength_attack_away=EXCLUDED.strength_attack_away,
-                    strength_defence_home=EXCLUDED.strength_defence_home,
-                    strength_defence_away=EXCLUDED.strength_defence_away, updated_at=EXCLUDED.updated_at
-                """;
-        return batch(sql, rows.stream().map(row -> new Object[]{row.id(), row.seasonId(), row.code(),
-                row.name(), row.shortName(), field(row.fields(), "strength"),
-                field(row.fields(), "strength_overall_home"), field(row.fields(), "strength_overall_away"),
-                field(row.fields(), "strength_attack_home"), field(row.fields(), "strength_attack_away"),
-                field(row.fields(), "strength_defence_home"), field(row.fields(), "strength_defence_away"),
-                timestamp(publicationTime)}).toList());
+        return CatalogueCompatibilityRows.writeTeams(jdbc, rows, publicationTime, false);
     }
 
     private int writePlayers(List<PlayerRow> rows, Instant publicationTime) {
-        String sql = """
-                INSERT INTO player (id, season_id, team_id, first_name, second_name, web_name,
-                    element_type, now_cost, status, news, news_added, total_points, minutes,
-                    goals_scored, assists, clean_sheets, goals_conceded, own_goals, penalties_saved,
-                    penalties_missed, yellow_cards, red_cards, saves, bonus, bps, expected_goals,
-                    expected_assists, expected_goal_involvements, expected_goals_conceded, influence,
-                    creativity, threat, ict_index, selected_by_percent, form, points_per_game, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (id, season_id) DO UPDATE SET team_id=EXCLUDED.team_id,
-                    first_name=EXCLUDED.first_name, second_name=EXCLUDED.second_name,
-                    web_name=EXCLUDED.web_name, element_type=EXCLUDED.element_type,
-                    now_cost=EXCLUDED.now_cost, status=EXCLUDED.status, news=EXCLUDED.news,
-                    news_added=EXCLUDED.news_added, total_points=EXCLUDED.total_points,
-                    minutes=EXCLUDED.minutes, goals_scored=EXCLUDED.goals_scored,
-                    assists=EXCLUDED.assists, clean_sheets=EXCLUDED.clean_sheets,
-                    goals_conceded=EXCLUDED.goals_conceded, own_goals=EXCLUDED.own_goals,
-                    penalties_saved=EXCLUDED.penalties_saved, penalties_missed=EXCLUDED.penalties_missed,
-                    yellow_cards=EXCLUDED.yellow_cards, red_cards=EXCLUDED.red_cards,
-                    saves=EXCLUDED.saves, bonus=EXCLUDED.bonus, bps=EXCLUDED.bps,
-                    expected_goals=EXCLUDED.expected_goals, expected_assists=EXCLUDED.expected_assists,
-                    expected_goal_involvements=EXCLUDED.expected_goal_involvements,
-                    expected_goals_conceded=EXCLUDED.expected_goals_conceded,
-                    influence=EXCLUDED.influence, creativity=EXCLUDED.creativity, threat=EXCLUDED.threat,
-                    ict_index=EXCLUDED.ict_index, selected_by_percent=EXCLUDED.selected_by_percent,
-                    form=EXCLUDED.form, points_per_game=EXCLUDED.points_per_game, updated_at=EXCLUDED.updated_at
-                """;
-        return batch(sql, rows.stream().map(row -> {
-            Map<String, Object> f = row.fields();
-            return new Object[]{row.id(), row.seasonId(), row.teamId(), field(f, "first_name"),
-                    field(f, "second_name"), row.webName(), row.elementType(), row.nowCost(),
-                    field(f, "status"), field(f, "news"), sqlTime(field(f, "news_added")),
-                    field(f, "total_points"), field(f, "minutes"), field(f, "goals_scored"),
-                    field(f, "assists"), field(f, "clean_sheets"), field(f, "goals_conceded"),
-                    field(f, "own_goals"), field(f, "penalties_saved"), field(f, "penalties_missed"),
-                    field(f, "yellow_cards"), field(f, "red_cards"), field(f, "saves"), field(f, "bonus"),
-                    field(f, "bps"), field(f, "expected_goals"), field(f, "expected_assists"),
-                    field(f, "expected_goal_involvements"), field(f, "expected_goals_conceded"),
-                    field(f, "influence"), field(f, "creativity"), field(f, "threat"),
-                    field(f, "ict_index"), field(f, "selected_by_percent"), field(f, "form"),
-                    field(f, "points_per_game"), timestamp(publicationTime)};
-        }).toList());
+        return CatalogueCompatibilityRows.writePlayers(jdbc, rows, publicationTime, false);
     }
 
     private int writeDailyPrices(List<DailyPriceRow> rows, Instant sourceTime) {
@@ -319,51 +259,11 @@ public final class CatalogueScheduleWriter {
     }
 
     private int writeCoreGameweeks(List<GameweekRow> rows, Instant publicationTime) {
-        String sql = """
-                INSERT INTO gameweek (id, season_id, name, deadline_time, finished, data_checked,
-                    is_current, is_next, average_entry_score, highest_score, transfers_made,
-                    most_selected, most_transferred_in, most_captained, most_vice_captained,
-                    top_element, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (id, season_id) DO UPDATE SET name=EXCLUDED.name,
-                    deadline_time=EXCLUDED.deadline_time, finished=EXCLUDED.finished,
-                    data_checked=EXCLUDED.data_checked, is_current=EXCLUDED.is_current,
-                    is_next=EXCLUDED.is_next, average_entry_score=EXCLUDED.average_entry_score,
-                    highest_score=EXCLUDED.highest_score, transfers_made=EXCLUDED.transfers_made,
-                    most_selected=EXCLUDED.most_selected, most_transferred_in=EXCLUDED.most_transferred_in,
-                    most_captained=EXCLUDED.most_captained,
-                    most_vice_captained=EXCLUDED.most_vice_captained,
-                    top_element=EXCLUDED.top_element, updated_at=EXCLUDED.updated_at
-                """;
-        return batch(sql, rows.stream().map(row -> new Object[]{row.id(), row.seasonId(), row.name(),
-                timestamp(row.deadline()), row.finished(), row.dataChecked(), row.current(), row.next(),
-                field(row.fields(), "average_entry_score"), field(row.fields(), "highest_score"),
-                field(row.fields(), "transfers_made"), field(row.fields(), "most_selected"),
-                field(row.fields(), "most_transferred_in"), field(row.fields(), "most_captained"),
-                field(row.fields(), "most_vice_captained"), field(row.fields(), "top_element"),
-                timestamp(publicationTime)}).toList());
+        return CatalogueCompatibilityRows.writeGameweeks(jdbc, rows, publicationTime, false);
     }
 
     private int writeCoreFixtures(List<FixtureRow> rows, Instant publicationTime) {
-        String sql = """
-                INSERT INTO fixture (id, season_id, gameweek, code, team_h, team_a, team_h_score,
-                    team_a_score, team_h_difficulty, team_a_difficulty, kickoff_time, started,
-                    finished, finished_provisional, minutes, stats, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?)
-                ON CONFLICT (id, season_id) DO UPDATE SET gameweek=EXCLUDED.gameweek, code=EXCLUDED.code,
-                    team_h=EXCLUDED.team_h, team_a=EXCLUDED.team_a,
-                    team_h_score=EXCLUDED.team_h_score, team_a_score=EXCLUDED.team_a_score,
-                    team_h_difficulty=EXCLUDED.team_h_difficulty,
-                    team_a_difficulty=EXCLUDED.team_a_difficulty, kickoff_time=EXCLUDED.kickoff_time,
-                    started=EXCLUDED.started, finished=EXCLUDED.finished,
-                    finished_provisional=EXCLUDED.finished_provisional, minutes=EXCLUDED.minutes,
-                    stats=EXCLUDED.stats, updated_at=EXCLUDED.updated_at
-                """;
-        return batch(sql, rows.stream().map(row -> new Object[]{row.id(), row.seasonId(), row.gameweek(),
-                row.code(), row.homeTeamId(), row.awayTeamId(), row.homeScore(), row.awayScore(),
-                row.homeDifficulty(), row.awayDifficulty(), timestamp(row.kickoff()), row.started(), row.finished(),
-                field(row.fields(), "finished_provisional"), field(row.fields(), "minutes"),
-                field(row.fields(), "stats"), timestamp(publicationTime)}).toList());
+        return CatalogueCompatibilityRows.writeFixtures(jdbc, rows, publicationTime, false).size();
     }
 
     private int writeCapturedGameweeks(List<GameweekRow> rows, Instant sourceTime) {
@@ -442,10 +342,6 @@ public final class CatalogueScheduleWriter {
 
     private static Object field(Map<String, Object> fields, String name) {
         return fields.get(name);
-    }
-
-    private static Object sqlTime(Object value) {
-        return value instanceof Instant instant ? timestamp(instant) : value;
     }
 
     private static Timestamp timestamp(Instant value) {
