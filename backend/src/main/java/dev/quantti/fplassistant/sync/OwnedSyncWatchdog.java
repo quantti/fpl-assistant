@@ -64,15 +64,26 @@ public final class OwnedSyncWatchdog {
         this.json = new ObjectMapper().findAndRegisterModules();
     }
 
-    /** Reads durable metadata only, then atomically opens incidents and verified recoveries. */
+    /** Reads the legacy runtime metadata, then atomically opens incidents and verified recoveries. */
     public CheckResult check(String season) {
+        return check(season, false);
+    }
+
+    /** Keeps runtime, run-queue, budget and delivery checks without legacy fixture/capture signals. */
+    public CheckResult checkImporter(String season) {
+        return check(season, true);
+    }
+
+    private CheckResult check(String season, boolean incrementalImporter) {
         Objects.requireNonNull(season);
         Instant now = clock.instant();
         Map<String, Signal> current = new LinkedHashMap<>();
         inspectRuntime(season, now, current);
         inspectRuns(season, now, current);
-        inspectFixtures(season, now, current);
-        inspectCaptures(season, now, current);
+        if (!incrementalImporter) {
+            inspectFixtures(season, now, current);
+            inspectCaptures(season, now, current);
+        }
         inspectBudget(season, now, current);
 
         CheckResult result = tx.execute(status -> {

@@ -181,7 +181,7 @@ public class PickTools implements FplTool {
             HorizonFixtures.Result horizon = horizon(snapshot, capture, gameweekLimit);
             String provenance = provenanceFor(capture, season,
                     LocalDate.ofInstant(snapshot.asOf(), UkTime.zone()), scheduleSource(snapshot))
-                    + "\n" + snapshot.metricRefresh();
+                    + "\n" + snapshot.metricEvidence();
             Selection selection = candidates(snapshot, horizon, elementType, maxOwnership);
             if (selection.rows().isEmpty()) {
                 return provenance + "\n" + scheduleEvidence(snapshot, horizon, selection) + "\n"
@@ -242,7 +242,7 @@ public class PickTools implements FplTool {
             HorizonFixtures.Result horizon = horizon(snapshot, capture, gameweekLimit);
             String provenance = provenanceFor(capture, season,
                     LocalDate.ofInstant(snapshot.asOf(), UkTime.zone()), scheduleSource(snapshot))
-                    + "\n" + snapshot.metricRefresh();
+                    + "\n" + snapshot.metricEvidence();
             Selection selection = candidates(snapshot, horizon, ATTACKERS, 100.0);
             if (selection.rows().isEmpty()) {
                 return provenance + "\n" + scheduleEvidence(snapshot, horizon, selection) + "\n"

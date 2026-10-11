@@ -212,7 +212,7 @@ class SquadToolsIntegrationTest {
                 .doesNotContain("observed current-club 60+")
                 .contains("Schedule evidence: complete FPL capture")
                 .contains("Comparison coverage: all clubs")
-                .contains("Player comparison receipt: 97 eligible of 97");
+                .contains("Player comparison population: 97 eligible of 97");
     }
 
     @Test

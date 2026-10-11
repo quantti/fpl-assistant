@@ -136,7 +136,7 @@ public class SquadTools implements FplTool {
             String scheduleProvenance = scheduleProvenance(loaded.snapshot(), capture, season);
             String scheduleNote = scheduleEvidence(loaded.snapshot(), horizon);
             String evidenceHeader = priceProvenance + "\n" + metricProvenance
-                    + "\n" + scheduleProvenance + "\n" + loaded.snapshot().metricRefresh()
+                    + "\n" + scheduleProvenance + "\n" + loaded.snapshot().metricEvidence()
                     + "\n" + scheduleNote;
             if (horizon.status() == HorizonFixtures.Status.KNOWN
                     && loaded.snapshot().comparisonCoverage().assessed()
@@ -242,7 +242,7 @@ public class SquadTools implements FplTool {
 
             return SquadFormatter.format(solved.get(), constraints,
                     priceProvenance, metricProvenance, scheduleProvenance,
-                    loaded.snapshot().metricRefresh(), excludedForNoRecord, pinned, excludedPlayers, projections,
+                    loaded.snapshot().metricEvidence(), excludedForNoRecord, pinned, excludedPlayers, projections,
                     !anyCandidateWasScoreable, blendNote, horizon);
         } catch (DataAccessException e) {
             log.error("buildSquad failed", e);
