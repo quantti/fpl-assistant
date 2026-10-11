@@ -519,13 +519,13 @@ class HistoryEvidenceSchemaIntegrationTest {
                     finalized_population_fingerprint,finalized_row_revision_fingerprint,finalized_source_floor,
                     finalized_validation_read_started_at,finalized_validation_read_finished_at,
                     finalized_source_read_started_at,finalized_source_read_finished_at,
-                    finalized_invalidation_revision, finalized_run_generation, finalized_at,
-                    finalized_mandatory_manifest_complete, finalized_optional_component_coverage,
+                    finalized_invalidation_revision, finalized_run_generation, finalized_page_evidence,
+                    finalized_at, finalized_mandatory_manifest_complete, finalized_optional_component_coverage,
                     updated_at)
                 VALUES (?, ?, ?, 'FINALIZED', TRUE, TRUE, TRUE, TRUE, ?, ?, now(), 0, ?,
                     ('{"bootstrapFingerprint":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",'
                     || '"catalogue":{},"participants":{},"known":{},"fixtureIdentities":{}}')::jsonb,
-                    now(),now(),now(),?, ?, ?, now(), now(), now(), now(), now(), 0, ?, now(), TRUE, ?::jsonb, now())
+                    now(),now(),now(),?, ?, ?, now(), now(), now(), now(), now(), 0, ?, '{}'::jsonb, now(), TRUE, ?::jsonb, now())
                 """.formatted(TABLES.gameweekStatSync()), ISOLATED_SEASON_ID, ISOLATED_SEASON_CODE,
                 gameweek, signature, signature, "f".repeat(64), signature, "f".repeat(64), rowFingerprint,
                 incrementalGeneration, coverage);

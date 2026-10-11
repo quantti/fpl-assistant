@@ -703,7 +703,8 @@ public final class OwnedSyncStore {
                         finalized_row_revision_fingerprint=NULL, finalized_source_floor=NULL,
                         finalized_validation_read_started_at=NULL, finalized_validation_read_finished_at=NULL,
                         finalized_source_read_started_at=NULL, finalized_source_read_finished_at=NULL,
-                        finalized_invalidation_revision=NULL, finalized_run_generation=NULL, finalized_at=NULL,
+                        finalized_invalidation_revision=NULL, finalized_run_generation=NULL,
+                        finalized_page_evidence=NULL, finalized_at=NULL,
                         finalized_mandatory_manifest_complete=NULL, finalized_optional_component_coverage=NULL,
                         updated_at=?
                     WHERE season_id=? AND gameweek=?
@@ -1114,7 +1115,8 @@ public final class OwnedSyncStore {
                             finalized_row_revision_fingerprint=NULL, finalized_source_floor=NULL,
                             finalized_validation_read_started_at=NULL, finalized_validation_read_finished_at=NULL,
                             finalized_source_read_started_at=NULL, finalized_source_read_finished_at=NULL,
-                            finalized_invalidation_revision=NULL, finalized_run_generation=NULL, finalized_at=NULL,
+                            finalized_invalidation_revision=NULL, finalized_run_generation=NULL,
+                            finalized_page_evidence=NULL, finalized_at=NULL,
                             finalized_mandatory_manifest_complete=NULL, finalized_optional_component_coverage=NULL,
                             updated_at=?
                         WHERE season_id=? AND gameweek=?

@@ -135,8 +135,9 @@ class RankingMetricsIntegrationTest {
         assertThat(candidate(complete, PLAYER).current().window().observed()).isEqualTo(1);
         assertThat(candidate(complete, PLAYER).eligibility()).isEqualTo(MinutesModel.Eligibility.ELIGIBLE);
         assertThat(ComparisonCoverageFormatter.success(complete.comparisonCoverage()))
-                .contains("Match evidence status: provisional incremental-page evidence is present")
-                .doesNotContain("FPL checked and final import complete");
+                .contains("incremental current-row evidence is present")
+                .contains("per-gameweek FPL-check/final-import scope is listed beside the metric refresh")
+                .doesNotContain("FPL checked; final import completed");
 
         int liveFixture = fixtureIdsFor(club).get(1);
         jdbc.update("UPDATE " + fixtureTable

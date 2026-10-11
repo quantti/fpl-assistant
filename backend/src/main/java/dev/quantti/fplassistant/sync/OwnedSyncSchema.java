@@ -630,6 +630,7 @@ public final class OwnedSyncSchema {
                     finalized_source_read_finished_at TIMESTAMPTZ,
                     finalized_invalidation_revision BIGINT,
                     finalized_run_generation BIGINT,
+                    finalized_page_evidence JSONB,
                     finalized_at TIMESTAMPTZ,
                     finalized_mandatory_manifest_complete BOOLEAN,
                     finalized_optional_component_coverage JSONB,
@@ -666,7 +667,8 @@ public final class OwnedSyncSchema {
                             AND finalized_row_revision_fingerprint ~ '^[0-9a-f]{64}$'
                             AND finalized_source_floor IS NOT NULL
                             AND finalized_invalidation_revision IS NOT NULL
-                            AND finalized_run_generation IS NOT NULL AND finalized_at IS NOT NULL
+                            AND finalized_run_generation IS NOT NULL AND finalized_page_evidence IS NOT NULL
+                            AND jsonb_typeof(finalized_page_evidence)='object' AND finalized_at IS NOT NULL
                             AND finalized_source_floor <= finalized_at
                             AND finalized_mandatory_manifest_complete IS TRUE
                             AND fpl_owned_sync_optional_coverage_valid(
@@ -724,6 +726,7 @@ public final class OwnedSyncSchema {
                 "finalized_validation_read_finished_at TIMESTAMPTZ",
                 "finalized_source_read_started_at TIMESTAMPTZ",
                 "finalized_source_read_finished_at TIMESTAMPTZ",
+                "finalized_page_evidence JSONB",
                 "legacy_finality_evidence JSONB")) {
             jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s"
                     .formatted(tables.gameweekStatSync(), column));
@@ -783,7 +786,8 @@ public final class OwnedSyncSchema {
                         AND finalized_validation_read_started_at IS NULL
                         AND finalized_validation_read_finished_at IS NULL
                         AND finalized_invalidation_revision IS NULL AND finalized_run_generation IS NULL
-                        AND finalized_at IS NULL AND finalized_mandatory_manifest_complete IS NULL
+                        AND finalized_page_evidence IS NULL AND finalized_at IS NULL
+                        AND finalized_mandatory_manifest_complete IS NULL
                         AND finalized_optional_component_coverage IS NULL)
                     OR (finalized_source_signature IS NOT NULL
                         AND finalized_population_fingerprint IS NOT NULL
@@ -804,7 +808,9 @@ public final class OwnedSyncSchema {
                             (finalized_source_read_started_at <= final_attempt_page_read_started_at
                                 AND finalized_source_read_finished_at >= final_attempt_page_read_finished_at))
                         AND finalized_invalidation_revision IS NOT NULL
-                        AND finalized_run_generation IS NOT NULL AND finalized_at IS NOT NULL
+                        AND finalized_run_generation IS NOT NULL
+                        AND finalized_page_evidence IS NOT NULL
+                        AND jsonb_typeof(finalized_page_evidence)='object' AND finalized_at IS NOT NULL
                         AND finalized_source_floor <= finalized_at
                         AND finalized_validation_read_started_at >= finalized_source_floor
                         AND finalized_validation_read_finished_at <= finalized_at
@@ -830,7 +836,8 @@ public final class OwnedSyncSchema {
                 + " AND finalized_row_revision_fingerprint ~ '^[0-9a-f]{64}$'"
                 + " AND finalized_source_floor = final_attempt_source_floor"
                 + " AND finalized_invalidation_revision = current_invalidation_revision"
-                + " AND finalized_run_generation IS NOT NULL AND finalized_at IS NOT NULL"
+                + " AND finalized_run_generation IS NOT NULL AND finalized_page_evidence IS NOT NULL"
+                + " AND jsonb_typeof(finalized_page_evidence)='object' AND finalized_at IS NOT NULL"
                 + " AND finalized_validation_read_started_at >= final_attempt_source_floor"
                 + " AND finalized_validation_read_finished_at <= finalized_at"
                 + " AND finalized_source_read_started_at = final_attempt_source_read_started_at"
@@ -1011,6 +1018,7 @@ public final class OwnedSyncSchema {
                     finalized_source_read_finished_at=NULL,
                     finalized_invalidation_revision=NULL,
                     finalized_run_generation=NULL,
+                    finalized_page_evidence=NULL,
                     finalized_at=NULL,
                     finalized_mandatory_manifest_complete=NULL,
                     finalized_optional_component_coverage=NULL
@@ -1031,7 +1039,8 @@ public final class OwnedSyncSchema {
                         OR g.finalized_validation_read_started_at IS NULL
                         OR g.finalized_validation_read_finished_at IS NULL
                         OR g.finalized_source_read_started_at IS NULL
-                        OR g.finalized_source_read_finished_at IS NULL))
+                        OR g.finalized_source_read_finished_at IS NULL
+                        OR g.finalized_page_evidence IS NULL))
                 """.formatted(table));
     }
 

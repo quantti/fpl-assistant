@@ -7,7 +7,9 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.BiFunction;
+import java.util.function.Supplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -17,6 +19,12 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionTemplate;
+
+import dev.quantti.fplassistant.sync.GameweekFinalityReader;
+import dev.quantti.fplassistant.sync.OwnedSyncTables;
 
 /**
  * Phase 4 expected-stats (xG / xA / xGI / xGA) tools. Both read FPL's own expected-stats columns
@@ -49,22 +57,41 @@ public class ExpectedStatsTools implements FplTool {
     private final Clock clock;
     private final PfsReadSource pfs;
     private final PlayerNameSearch names;
+    private final GameweekFinalityReader finalityReader;
+    private final TransactionTemplate readTransaction;
 
     @Autowired
     public ExpectedStatsTools(JdbcTemplate jdbc, SeasonResolver seasonResolver,
-                              ObjectProvider<Clock> clock, PfsReadSource pfs, PlayerNameSearch names) {
+                              ObjectProvider<Clock> clock, PfsReadSource pfs, PlayerNameSearch names,
+                              GameweekFinalityReader finalityReader,
+                              PlatformTransactionManager transactionManager) {
+        this(jdbc, seasonResolver, clock, pfs, names, finalityReader, transactionManager, true);
+    }
+
+    private ExpectedStatsTools(JdbcTemplate jdbc, SeasonResolver seasonResolver,
+                               ObjectProvider<Clock> clock, PfsReadSource pfs, PlayerNameSearch names,
+                               GameweekFinalityReader finalityReader,
+                               PlatformTransactionManager transactionManager, boolean readOnlySnapshot) {
         this.jdbc = jdbc;
         this.seasonResolver = seasonResolver;
         this.clock = clock.getIfAvailable(Clock::systemUTC);
         this.pfs = pfs;
         this.names = names;
+        this.finalityReader = finalityReader;
+        this.readTransaction = readOnlySnapshot ? new TransactionTemplate(transactionManager) : null;
+        if (this.readTransaction != null) {
+            this.readTransaction.setReadOnly(true);
+            this.readTransaction.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);
+        }
     }
 
     /** Compatibility constructor for focused legacy tests. */
     ExpectedStatsTools(JdbcTemplate jdbc, SeasonResolver seasonResolver,
                        ObjectProvider<Clock> clock, PlayerNameSearch names) {
         this(jdbc, seasonResolver, clock,
-                new PfsReadSource(jdbc, "OFF", "", "fpl_fixture_sync", "fpl_player_fixture_evidence"), names);
+                new PfsReadSource(jdbc, "OFF", "", "fpl_fixture_sync", "fpl_player_fixture_evidence"),
+                names, new GameweekFinalityReader(jdbc, clock.getIfAvailable(Clock::systemUTC),
+                        OwnedSyncTables.defaults()), null, false);
     }
 
     @Tool(description = """
@@ -83,6 +110,10 @@ public class ExpectedStatsTools implements FplTool {
             currently being played, tell the user the figures are historical.
             """)
     public String getPlayerExpectedStats(String playerName, int lastN) {
+        return readSnapshot(() -> playerExpectedStats(playerName, lastN));
+    }
+
+    private String playerExpectedStats(String playerName, int lastN) {
         try {
             Instant asOf = clock.instant();
             SeasonContext season = seasonResolver.resolve();
@@ -116,8 +147,8 @@ public class ExpectedStatsTools implements FplTool {
 
             List<Map<String, Object>> rows = jdbc.queryForList("""
                     WITH %s
-                    SELECT pfs.gameweek, pfs.was_home, pfs.minutes,
-                           pfs.goals_scored, pfs.assists,
+                    SELECT pfs.gameweek,pfs.fixture_id,pfs.season_id,pfs.evidence_status,
+                           pfs.was_home,pfs.minutes,pfs.goals_scored,pfs.assists,
                            pfs.expected_goals, pfs.expected_assists, pfs.expected_goal_involvements,
                            pfs.defensive_contribution,
                            pfs.kickoff_time, pfs.source_read_finished_at,
@@ -133,6 +164,7 @@ public class ExpectedStatsTools implements FplTool {
             List<Map<String, Object>> shown = new ArrayList<>(rows);
             for (Map<String, Object> r : shown) {
                 r.put("season_code", season.code());
+                r.put("season_id", season.seasonId());
                 r.put("element_type", position);
             }
             Optional<SeasonContext> previous = Optional.empty();
@@ -179,6 +211,10 @@ public class ExpectedStatsTools implements FplTool {
             is not the season currently being played, tell the user the figures are historical.
             """)
     public String getTeamExpectedGoals(String teamName, int lastN) {
+        return readSnapshot(() -> teamExpectedGoals(teamName, lastN));
+    }
+
+    private String teamExpectedGoals(String teamName, int lastN) {
         try {
             Instant asOf = clock.instant();
             SeasonContext season = seasonResolver.resolve();
@@ -207,7 +243,7 @@ public class ExpectedStatsTools implements FplTool {
             // The kickoff span and source-row counts date the group without hiding undated rows.
             List<Map<String, Object>> fixtures = jdbc.queryForList("""
                     WITH %s
-                    SELECT pfs.gameweek, pfs.was_home,
+                    SELECT pfs.gameweek,pfs.fixture_id,pfs.season_id,pfs.was_home,
                            opp.short_name AS opponent,
                            CASE WHEN COUNT(*) FILTER (WHERE pfs.owned_evidence AND pfs.expected_goals IS NULL)=0 THEN COALESCE(SUM(pfs.expected_goals), 0) END AS xg,
                            CASE WHEN COUNT(*) FILTER (WHERE pfs.owned_evidence AND pfs.expected_assists IS NULL)=0 THEN COALESCE(SUM(pfs.expected_assists), 0) END AS xa,
@@ -218,6 +254,8 @@ public class ExpectedStatsTools implements FplTool {
                            MIN(pfs.kickoff_time) AS kickoff_min,
                            MAX(pfs.kickoff_time) AS kickoff_max,
                            COUNT(*) AS source_rows,
+                           COUNT(*) FILTER (WHERE pfs.evidence_status='PROVISIONAL') AS incremental_rows,
+                           COUNT(*) FILTER (WHERE pfs.evidence_status<>'PROVISIONAL') AS other_rows,
                            COUNT(pfs.kickoff_time) AS dated_rows,
                            MIN(pfs.source_read_finished_at) AS source_read_min,
                            MAX(pfs.source_read_finished_at) AS source_read_max,
@@ -228,7 +266,7 @@ public class ExpectedStatsTools implements FplTool {
                     FROM pfs_read pfs
                     LEFT JOIN team opp ON opp.id = pfs.opponent_team_id AND opp.season_id = pfs.season_id
                     WHERE pfs.season_id = ? AND pfs.player_team_id = ?
-                    GROUP BY pfs.fixture_id, pfs.gameweek, pfs.was_home, opp.short_name
+                    GROUP BY pfs.fixture_id,pfs.gameweek,pfs.season_id,pfs.was_home,opp.short_name
                     ORDER BY MAX(pfs.kickoff_time) DESC NULLS LAST
                     LIMIT ?
                     """.formatted(pfs.cte()), season.seasonId(), teamId, limit);
@@ -236,6 +274,7 @@ public class ExpectedStatsTools implements FplTool {
             List<Map<String, Object>> shown = new ArrayList<>(fixtures);
             for (Map<String, Object> f : shown) {
                 f.put("season_code", season.code());
+                f.put("season_id", season.seasonId());
             }
             Optional<SeasonContext> previous = Optional.empty();
             int fromPrevious = 0;
@@ -292,8 +331,8 @@ public class ExpectedStatsTools implements FplTool {
         }
         List<Map<String, Object>> rows = jdbc.queryForList("""
                 WITH %s
-                SELECT pfs.gameweek, pfs.was_home, pfs.minutes,
-                       pfs.goals_scored, pfs.assists,
+                SELECT pfs.gameweek,pfs.fixture_id,pfs.season_id,pfs.evidence_status,
+                       pfs.was_home,pfs.minutes,pfs.goals_scored,pfs.assists,
                        pfs.expected_goals, pfs.expected_assists, pfs.expected_goal_involvements,
                        pfs.defensive_contribution,
                        pfs.kickoff_time, pfs.source_read_finished_at,
@@ -307,6 +346,7 @@ public class ExpectedStatsTools implements FplTool {
                 """.formatted(pfs.cte()), previous.seasonId(), ids.getFirst().get("id"), limit);
         for (Map<String, Object> r : rows) {
             r.put("season_code", previous.code());
+            r.put("season_id", previous.seasonId());
             r.put("element_type", ids.getFirst().get("element_type"));
         }
         return rows;
@@ -323,7 +363,7 @@ public class ExpectedStatsTools implements FplTool {
         }
         List<Map<String, Object>> rows = jdbc.queryForList("""
                 WITH %s
-                SELECT pfs.gameweek, pfs.was_home,
+                SELECT pfs.gameweek,pfs.fixture_id,pfs.season_id,pfs.was_home,
                        opp.short_name AS opponent,
                        CASE WHEN COUNT(*) FILTER (WHERE pfs.owned_evidence AND pfs.expected_goals IS NULL)=0 THEN COALESCE(SUM(pfs.expected_goals), 0) END AS xg,
                        CASE WHEN COUNT(*) FILTER (WHERE pfs.owned_evidence AND pfs.expected_assists IS NULL)=0 THEN COALESCE(SUM(pfs.expected_assists), 0) END AS xa,
@@ -334,6 +374,8 @@ public class ExpectedStatsTools implements FplTool {
                        MIN(pfs.kickoff_time) AS kickoff_min,
                        MAX(pfs.kickoff_time) AS kickoff_max,
                        COUNT(*) AS source_rows,
+                       COUNT(*) FILTER (WHERE pfs.evidence_status='PROVISIONAL') AS incremental_rows,
+                       COUNT(*) FILTER (WHERE pfs.evidence_status<>'PROVISIONAL') AS other_rows,
                        COUNT(pfs.kickoff_time) AS dated_rows,
                        MIN(pfs.source_read_finished_at) AS source_read_min,
                        MAX(pfs.source_read_finished_at) AS source_read_max,
@@ -344,12 +386,13 @@ public class ExpectedStatsTools implements FplTool {
                 FROM pfs_read pfs
                 LEFT JOIN team opp ON opp.id = pfs.opponent_team_id AND opp.season_id = pfs.season_id
                 WHERE pfs.season_id = ? AND pfs.player_team_id = ?
-                GROUP BY pfs.fixture_id, pfs.gameweek, pfs.was_home, opp.short_name
+                GROUP BY pfs.fixture_id,pfs.gameweek,pfs.season_id,pfs.was_home,opp.short_name
                 ORDER BY MAX(pfs.kickoff_time) DESC NULLS LAST
                 LIMIT ?
                 """.formatted(pfs.cte()), previous.seasonId(), ids.getFirst(), limit);
         for (Map<String, Object> r : rows) {
             r.put("season_code", previous.code());
+            r.put("season_id", previous.seasonId());
         }
         return rows;
     }
@@ -359,20 +402,61 @@ public class ExpectedStatsTools implements FplTool {
      * window was filled, separately for the previous season's — two seasons never share a range.
      * The fill is appended after the resolved season's rows, so the split is positional.
      */
-    private static String sampleEvidence(List<Map<String, Object>> shown, int fromPrevious,
-                                         String currentCode, Optional<SeasonContext> previous,
-                                         BiFunction<List<Map<String, Object>>, String, String> coverage) {
+    private String readSnapshot(Supplier<String> operation) {
+        if (readTransaction == null) return operation.get();
+        return readTransaction.execute(status -> operation.get());
+    }
+
+    private String sampleEvidence(List<Map<String, Object>> shown, int fromPrevious,
+                                  String currentCode, Optional<SeasonContext> previous,
+                                  BiFunction<List<Map<String, Object>>, String, String> coverage) {
         int split = shown.size() - fromPrevious;
         List<Map<String, Object>> currentRows = shown.subList(0, split);
-        String out = metricRefresh(currentRows, currentCode) + "\n"
+        String out = metricRefresh(currentRows, currentCode) + finalityEvidence(currentRows) + "\n"
                 + coverage.apply(currentRows, currentCode);
         if (fromPrevious > 0) {
             String previousCode = previous.orElseThrow().code();
             List<Map<String, Object>> previousRows = shown.subList(split, shown.size());
-            out += "\n" + metricRefresh(previousRows, previousCode) + "\n"
+            out += "\n" + metricRefresh(previousRows, previousCode) + finalityEvidence(previousRows) + "\n"
                     + coverage.apply(previousRows, previousCode);
         }
         return out;
+    }
+
+    private String finalityEvidence(List<Map<String, Object>> rows) {
+        Map<Integer, int[]> grouped = new java.util.TreeMap<>();
+        Map<Integer, Set<Integer>> fixtureIdsByGameweek = new java.util.TreeMap<>();
+        int seasonId = 0;
+        String seasonCode = null;
+        for (Map<String, Object> row : rows) {
+            if (seasonId == 0) {
+                seasonId = ((Number) row.get("season_id")).intValue();
+                seasonCode = String.valueOf(row.get("season_code"));
+            }
+            int gameweek = ((Number) row.get("gameweek")).intValue();
+            int[] counts = grouped.computeIfAbsent(gameweek, ignored -> new int[2]);
+            fixtureIdsByGameweek.computeIfAbsent(gameweek, ignored -> new java.util.TreeSet<>())
+                    .add(((Number) row.get("fixture_id")).intValue());
+            if (row.containsKey("source_rows")) {
+                counts[0] += ((Number) row.get("incremental_rows")).intValue();
+                counts[1] += ((Number) row.get("other_rows")).intValue();
+            } else if ("PROVISIONAL".equals(row.get("evidence_status"))) {
+                counts[0]++;
+            } else {
+                counts[1]++;
+            }
+        }
+        Map<Integer, PfsReadSource.IncrementalRows> rowCounts = new java.util.TreeMap<>();
+        grouped.forEach((gameweek, counts) -> rowCounts.put(gameweek,
+                new PfsReadSource.IncrementalRows(counts[0], counts[1])));
+        Set<Integer> incrementalGameweeks = rowCounts.entrySet().stream()
+                .filter(entry -> entry.getValue().incrementalRows() > 0)
+                .map(Map.Entry::getKey).collect(java.util.stream.Collectors.toSet());
+        if (incrementalGameweeks.isEmpty()) return "";
+        Map<Integer, GameweekFinalityReader.Result> finality = finalityReader.read(
+                seasonId, seasonCode, incrementalGameweeks);
+        return "\n" + GameweekFinalityFormatter.summary(seasonCode, rowCounts, finality,
+                fixtureIdsByGameweek);
     }
 
     private static String metricRefresh(List<Map<String, Object>> rows, String seasonCode) {

@@ -19,7 +19,11 @@ import java.util.Set;
 import dev.quantti.fplassistant.price.DailyPriceFreshnessCheck;
 import dev.quantti.fplassistant.schedule.ScheduleFreshnessCheck;
 import dev.quantti.fplassistant.schedule.ScheduleSource;
+import dev.quantti.fplassistant.sync.GameweekFinality;
+import dev.quantti.fplassistant.sync.GameweekFinalityReader;
+import dev.quantti.fplassistant.sync.OwnedSyncTables;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
@@ -106,19 +110,29 @@ public class RankingMetrics {
     public record Snapshot(Instant asOf, DailyPriceSource.Capture capture,
                            MetricSeasons metricSeasons, ScheduleSource.View schedule,
                            List<Candidate> candidates, ClubRates.Rates clubRates,
-                           String metricRefresh, ComparisonCoverage comparisonCoverage) {
+                           String metricRefresh, ComparisonCoverage comparisonCoverage,
+                           String gameweekFinality) {
         public Snapshot {
             candidates = List.copyOf(candidates);
             clubRates = Objects.requireNonNull(clubRates);
             metricRefresh = Objects.requireNonNull(metricRefresh);
             comparisonCoverage = Objects.requireNonNull(comparisonCoverage);
+            gameweekFinality = Objects.requireNonNull(gameweekFinality);
+        }
+
+        public Snapshot(Instant asOf, DailyPriceSource.Capture capture,
+                        MetricSeasons metricSeasons, ScheduleSource.View schedule,
+                        List<Candidate> candidates, ClubRates.Rates clubRates,
+                        String metricRefresh, ComparisonCoverage comparisonCoverage) {
+            this(asOf, capture, metricSeasons, schedule, candidates, clubRates, metricRefresh,
+                    comparisonCoverage, "");
         }
 
         public Snapshot(Instant asOf, DailyPriceSource.Capture capture,
                         MetricSeasons metricSeasons, ScheduleSource.View schedule,
                         List<Candidate> candidates, ClubRates.Rates clubRates) {
             this(asOf, capture, metricSeasons, schedule, candidates, clubRates,
-                    DataAge.METRIC_REFRESH, ComparisonCoverage.assemble(candidates, List.of()));
+                    DataAge.METRIC_REFRESH, ComparisonCoverage.assemble(candidates, List.of()), "");
         }
 
         public Snapshot(Instant asOf, DailyPriceSource.Capture capture,
@@ -126,7 +140,11 @@ public class RankingMetrics {
                         List<Candidate> candidates, ClubRates.Rates clubRates,
                         String metricRefresh) {
             this(asOf, capture, metricSeasons, schedule, candidates, clubRates, metricRefresh,
-                    ComparisonCoverage.assemble(candidates, List.of()));
+                    ComparisonCoverage.assemble(candidates, List.of()), "");
+        }
+
+        public String metricEvidence() {
+            return gameweekFinality.isBlank() ? metricRefresh : metricRefresh + "\n" + gameweekFinality;
         }
     }
 
@@ -199,7 +217,8 @@ public class RankingMetrics {
 
     private record CurrentBuild(Map<Integer, SeasonMetrics> metrics,
                                 List<ComparisonCoverage.ClubGap> gaps,
-                                boolean comparisonAssessed, boolean provisionalEvidence) {
+                                boolean comparisonAssessed, boolean provisionalEvidence,
+                                boolean checkedFinalEvidence, String gameweekFinality) {
     }
 
     private record SideCoverage(List<ComparisonCoverage.ClubGap> gaps,
@@ -218,21 +237,34 @@ public class RankingMetrics {
     private final String dailyTable;
     private final Clock clock;
     private final PfsReadSource pfs;
+    private final GameweekFinalityReader finalityReader;
     private final TransactionTemplate readTransaction;
 
+    @Autowired
     public RankingMetrics(JdbcTemplate jdbc, ScheduleSource schedules,
                           PlatformTransactionManager transactionManager,
                           ObjectProvider<Clock> clock,
                           @Value("${fpl.daily-price.table-name}") String dailyTable,
-                          PfsReadSource pfs) {
+                          PfsReadSource pfs, GameweekFinalityReader finalityReader) {
         this.jdbc = jdbc;
         this.schedules = schedules;
         this.dailyTable = dailyTable;
         this.clock = clock.getIfAvailable(Clock::systemUTC);
         this.pfs = pfs;
+        this.finalityReader = finalityReader;
         this.readTransaction = new TransactionTemplate(transactionManager);
         this.readTransaction.setReadOnly(true);
         this.readTransaction.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);
+    }
+
+    /** Compatibility constructor for focused tests that do not seed finality receipts. */
+    public RankingMetrics(JdbcTemplate jdbc, ScheduleSource schedules,
+                          PlatformTransactionManager transactionManager,
+                          ObjectProvider<Clock> clock,
+                          @Value("${fpl.daily-price.table-name}") String dailyTable,
+                          PfsReadSource pfs) {
+        this(jdbc, schedules, transactionManager, clock, dailyTable, pfs,
+                new GameweekFinalityReader(jdbc, clock.getIfAvailable(Clock::systemUTC), OwnedSyncTables.defaults()));
     }
 
     /** Reads one immutable snapshot under one database snapshot and one chosen clock instant. */
@@ -278,6 +310,8 @@ public class RankingMetrics {
         List<ComparisonCoverage.ClubGap> coverageGaps = List.of();
         boolean comparisonAssessed = false;
         boolean provisionalEvidence = false;
+        boolean checkedFinalEvidence = false;
+        String gameweekFinality = "";
         if (metric.played().currentSeason()) {
             CurrentBuild currentBuild = buildCurrentMetrics(capture, metric.played(), schedule,
                     capturePlayers, currentIds, currentPositions, asOf);
@@ -285,6 +319,8 @@ public class RankingMetrics {
             coverageGaps = currentBuild.gaps();
             comparisonAssessed = currentBuild.comparisonAssessed();
             provisionalEvidence = currentBuild.provisionalEvidence();
+            checkedFinalEvidence = currentBuild.checkedFinalEvidence();
+            gameweekFinality = currentBuild.gameweekFinality();
         } else {
             CanonicalSource source = new CanonicalSource("fixture", "season_id",
                     metric.played().seasonId());
@@ -353,9 +389,9 @@ public class RankingMetrics {
                             metric.played().currentSeason())));
         }
         ComparisonCoverage comparisonCoverage = ComparisonCoverage.assemble(
-                candidates, coverageGaps, comparisonAssessed, provisionalEvidence);
+                candidates, coverageGaps, comparisonAssessed, provisionalEvidence, checkedFinalEvidence);
         return new Snapshot(asOf, capture, metric, schedule, candidates, clubRates,
-                DataAge.RANKING_METRIC_REFRESH, comparisonCoverage);
+                DataAge.RANKING_METRIC_REFRESH, comparisonCoverage, gameweekFinality);
     }
 
     private List<CapturePlayer> loadCapture(DailyPriceSource.Capture capture) {
@@ -413,7 +449,7 @@ public class RankingMetrics {
                             Map.of(), emptyWindow(sourceFailure, player.teamId())));
                 }
             }
-            return new CurrentBuild(unavailable, List.of(), false, false);
+            return new CurrentBuild(unavailable, List.of(), false, false, false, "");
         }
 
         ScheduleSource.Snapshot selected = schedule.snapshot().orElseThrow();
@@ -517,8 +553,32 @@ public class RankingMetrics {
             result.put(playerId, new SeasonMetrics(season, playerId,
                     positions.get(player.elementId()), ability, window));
         }
+        List<Target> expectedTargets = flatten(expected, false);
+        Set<Integer> expectedFixtureIds = expectedTargets.stream()
+                .map(target -> target.fixture().id()).collect(java.util.stream.Collectors.toSet());
+        Map<Integer, Set<Integer>> fixtureIdsByGameweek = new HashMap<>();
+        for (Target target : expectedTargets) {
+            Integer gameweek = target.fixture().gameweek();
+            if (gameweek != null) {
+                fixtureIdsByGameweek.computeIfAbsent(gameweek, ignored -> new HashSet<>())
+                        .add(target.fixture().id());
+            }
+        }
+        Map<Integer, PfsReadSource.IncrementalRows> rowsByGameweek =
+                pfs.incrementalRowsByGameweek(season.seasonId(), expectedFixtureIds);
+        Set<Integer> incrementalGameweeks = rowsByGameweek.entrySet().stream()
+                .filter(entry -> entry.getValue().incrementalRows() > 0)
+                .map(Map.Entry::getKey).collect(java.util.stream.Collectors.toSet());
+        Map<Integer, GameweekFinalityReader.Result> finality =
+                finalityReader.read(season.seasonId(), season.code(), incrementalGameweeks);
+        boolean checkedFinalEvidence = !incrementalGameweeks.isEmpty()
+                && incrementalGameweeks.stream().allMatch(gameweek -> finality.get(gameweek) != null
+                        && finality.get(gameweek).state() == GameweekFinality.State.FINALIZED);
+        boolean provisionalEvidence = sideCoverage.incrementalEvidence() && !checkedFinalEvidence;
+        String finalitySummary = GameweekFinalityFormatter.summary(season.code(), rowsByGameweek,
+                finality, fixtureIdsByGameweek);
         return new CurrentBuild(result, List.copyOf(coverageGaps), true,
-                sideCoverage.incrementalEvidence());
+                provisionalEvidence, checkedFinalEvidence, finalitySummary);
     }
 
     /** One set-based side-population read over the same expected windows as MinutesModel. */

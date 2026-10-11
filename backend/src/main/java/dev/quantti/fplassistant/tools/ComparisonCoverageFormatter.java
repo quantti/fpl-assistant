@@ -49,9 +49,11 @@ public final class ComparisonCoverageFormatter {
     private static String evidenceStatus(ComparisonCoverage coverage) {
         return switch (coverage.evidenceStatus()) {
             case INCOMPLETE -> "Match evidence status: incomplete; missing current evidence is not treated as zero. ";
-            case PROVISIONAL -> "Match evidence status: provisional incremental-page evidence is present; no"
-                    + " FPL-checked or final-import claim is inferred. ";
-            case CHECKED_FINAL -> "Match evidence status: FPL checked and final import complete. ";
+            case PROVISIONAL -> "Match evidence status: incremental current-row evidence is present; its"
+                    + " per-gameweek FPL-check/final-import scope is listed beside the metric refresh."
+                    + " Legacy rows do not inherit that receipt. ";
+            case CHECKED_FINAL -> "Match evidence status: final imports apply only to the explicitly"
+                    + " listed gameweeks; no season-wide finality is inferred. ";
             case LEGACY -> "Match evidence status: legacy stored rows; incremental finality is not asserted. ";
         };
     }

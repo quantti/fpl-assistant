@@ -79,6 +79,12 @@ public record ComparisonCoverage(List<AffectedClub> affectedClubs,
     static ComparisonCoverage assemble(List<RankingMetrics.Candidate> candidates,
                                        List<ClubGap> gaps, boolean assessed,
                                        boolean provisionalEvidence) {
+        return assemble(candidates, gaps, assessed, provisionalEvidence, false);
+    }
+
+    static ComparisonCoverage assemble(List<RankingMetrics.Candidate> candidates,
+                                       List<ClubGap> gaps, boolean assessed,
+                                       boolean provisionalEvidence, boolean checkedFinalEvidence) {
         Map<Integer, RankingMetrics.CapturePlayer> clubs = new LinkedHashMap<>();
         Map<Integer, Integer> clubCandidateCounts = new LinkedHashMap<>();
         List<PlayerExclusion> exclusions = new ArrayList<>();
@@ -126,6 +132,7 @@ public record ComparisonCoverage(List<AffectedClub> affectedClubs,
         boolean incomplete = !assessed || !affected.isEmpty() || exclusions.stream()
                 .anyMatch(row -> row.eligibility() == MinutesModel.Eligibility.UNKNOWN_CURRENT_EVIDENCE);
         EvidenceStatus status = incomplete ? EvidenceStatus.INCOMPLETE
+                : checkedFinalEvidence ? EvidenceStatus.CHECKED_FINAL
                 : provisionalEvidence ? EvidenceStatus.PROVISIONAL : EvidenceStatus.LEGACY;
         return new ComparisonCoverage(affected, exclusions, candidates.size(), eligible, assessed, status);
     }
