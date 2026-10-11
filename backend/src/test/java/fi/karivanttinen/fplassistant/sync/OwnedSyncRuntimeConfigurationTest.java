@@ -98,7 +98,9 @@ class OwnedSyncRuntimeConfigurationTest {
     @Test
     void hourlyRuntimeRunsOneCycleImmediatelyAndUsesAnHourlyFixedDelay() throws Exception {
         AtomicInteger runs = new AtomicInteger();
+        AtomicInteger maintenanceRuns = new AtomicInteger();
         CountDownLatch firstRun = new CountDownLatch(1);
+        CountDownLatch maintenanceRun = new CountDownLatch(2);
         CoalescedPlayerHistoryImportEntrypoint entrypoint = () -> {
             runs.incrementAndGet();
             firstRun.countDown();
@@ -106,16 +108,59 @@ class OwnedSyncRuntimeConfigurationTest {
                     CoalescedPlayerHistoryCollector.State.COMPLETED,
                     java.util.List.of(), java.util.List.of(), java.util.List.of(), java.util.List.of(), null);
         };
-        CoalescedPlayerHistoryImportRuntime runtime = new CoalescedPlayerHistoryImportRuntime(entrypoint);
+        CoalescedPlayerHistoryImportRuntime runtime = new CoalescedPlayerHistoryImportRuntime(entrypoint, () -> {
+            maintenanceRuns.incrementAndGet();
+            maintenanceRun.countDown();
+            return 0;
+        });
         try {
             assertThat(CoalescedPlayerHistoryImportRuntime.INTERVAL).isEqualTo(Duration.ofHours(1));
             runtime.start();
             assertThat(firstRun.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(maintenanceRun.await(5, TimeUnit.SECONDS)).isTrue();
             assertThat(runs).hasValue(1);
+            assertThat(maintenanceRuns).hasValue(2);
         } finally {
             runtime.stop();
         }
         assertThat(runtime.isRunning()).isFalse();
+    }
+
+    @Test
+    void scheduledImportFailureStillRunsMaintenance() throws Exception {
+        AtomicInteger maintenanceRuns = new AtomicInteger();
+        CountDownLatch maintenanceRun = new CountDownLatch(2);
+        CoalescedPlayerHistoryImportEntrypoint entrypoint = () -> {
+            throw new IllegalStateException("controlled import failure");
+        };
+        CoalescedPlayerHistoryImportRuntime runtime = new CoalescedPlayerHistoryImportRuntime(entrypoint, () -> {
+            maintenanceRuns.incrementAndGet();
+            maintenanceRun.countDown();
+            return 0;
+        });
+        try {
+            runtime.start();
+            assertThat(maintenanceRun.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(maintenanceRuns).hasValue(2);
+        } finally {
+            runtime.stop();
+        }
+        assertThat(runtime.isRunning()).isFalse();
+    }
+
+    @Test
+    void manualImportExceptionIsNotReplacedByMaintenanceFailure() {
+        AtomicInteger maintenanceRuns = new AtomicInteger();
+        CoalescedPlayerHistoryImportEntrypoint entrypoint = () -> {
+            throw new IllegalStateException("controlled import failure");
+        };
+        CoalescedPlayerHistoryImportRuntime runtime = new CoalescedPlayerHistoryImportRuntime(entrypoint, () -> {
+            maintenanceRuns.incrementAndGet();
+            throw new IllegalStateException("controlled cleanup failure");
+        });
+
+        assertThatThrownBy(runtime::runOnce).hasMessage("controlled import failure");
+        assertThat(maintenanceRuns).hasValue(1);
     }
 
     @Test

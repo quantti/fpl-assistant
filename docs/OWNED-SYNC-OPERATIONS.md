@@ -262,6 +262,25 @@ when the flag is false; the qualified monitoring pool remains available to indep
 and external-health wiring when the importer is selected. Importer-specific remote alert delivery
 and health semantics are not verified by this implementation.
 
+While opted in, the same serialized hourly runner performs a startup retention pass before its first
+collection and runs maintenance after every collection, including a failed one. For `INCREMENTAL_CORE`
+payload rows older than 24 hours on `COMPLETED`, `FAILED` or `SUPERSEDED` runs, it replaces eligible
+raw `BYTEA` bodies with empty bytes and records `body_pruned_at`; it does not delete the payload rows.
+It prunes only when the immutable `source_payload_sha256` still matches the body. Active `PENDING`/
+`LEASED` bodies and a published compatibility pair referenced by a newer active import are retained.
+The row keeps its ID, generation, endpoint, read interval, captured hash, validation state and
+`source_published` flag. Invalid validation remains invalid; a changed body whose digest no longer
+matches is not pruned. `GameweekFinalityReader` requires both exact payload rows and checks their
+captured hashes against the compatibility receipt; for a pruned row it accepts only the empty body,
+prune marker, matching hash and valid published state. Existing rows are not hydrated or hash-backfilled:
+legacy rows without this compact proof cannot certify new-path finality until a fresh validated capture.
+The importer preflight requires the new columns and enabled payload guard before it can run.
+
+Cleanup errors are logged without changing runtime mode or replacing the import result; there is no
+extra scheduler, FPL request or per-second queue. The legacy runtime keeps its existing row-deletion
+retention policy. This releases retained raw body bytes, not payload rows or their compact metadata,
+and is **not** a request-spend, provider-egress, database-storage or billing cap.
+
 **Do not enable it in production without the separately approved single-writer cutover.** Drain and
 fence old core writers first, install/verify the compatible schema and readers, and complete the
 external Tapas metric-reader audit; confirmation is not evidence that those steps happened. Real

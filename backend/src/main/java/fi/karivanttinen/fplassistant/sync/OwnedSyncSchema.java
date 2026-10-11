@@ -153,6 +153,8 @@ public final class OwnedSyncSchema {
                     validation_state VARCHAR(20) NOT NULL,
                     validation_error VARCHAR(1000),
                     source_published BOOLEAN NOT NULL DEFAULT FALSE,
+                    source_payload_sha256 VARCHAR(64),
+                    body_pruned_at TIMESTAMPTZ,
                     body BYTEA NOT NULL,
                     staged_at TIMESTAMPTZ NOT NULL,
                     CONSTRAINT ck_%s_validation CHECK (validation_state IN ('UNCHECKED', 'VALID', 'INVALID')),
@@ -161,6 +163,10 @@ public final class OwnedSyncSchema {
                 )
                 """.formatted(tables.payload(), tables.run(), tables.payload(),
                 tables.payload(), tables.payload(), MAX_PAYLOAD_BYTES));
+        jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS source_payload_sha256 VARCHAR(64)"
+                .formatted(tables.payload()));
+        jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS body_pruned_at TIMESTAMPTZ"
+                .formatted(tables.payload()));
         // Kept as an explicit replace so an idempotent initialize also tightens a table made by
         // an earlier Task 2a build whose CHECK allowed SQL NULL to pass.
         jdbc.execute("ALTER TABLE %s DROP CONSTRAINT IF EXISTS ck_%s_endpoint"
@@ -178,6 +184,56 @@ public final class OwnedSyncSchema {
                 CREATE OR REPLACE FUNCTION fpl_owned_payload_source_guard()
                 RETURNS trigger LANGUAGE plpgsql AS $$
                 BEGIN
+                    IF TG_OP = 'INSERT' THEN
+                        IF NEW.body_pruned_at IS NOT NULL THEN
+                            RAISE EXCEPTION 'new source payload cannot start pruned';
+                        END IF;
+                        NEW.source_payload_sha256 := encode(sha256(NEW.body), 'hex');
+                        RETURN NEW;
+                    END IF;
+
+                    IF OLD.body_pruned_at IS NOT NULL THEN
+                        IF NEW.id IS DISTINCT FROM OLD.id
+                            OR NEW.run_generation IS DISTINCT FROM OLD.run_generation
+                            OR NEW.endpoint_kind IS DISTINCT FROM OLD.endpoint_kind
+                            OR NEW.event_id IS DISTINCT FROM OLD.event_id
+                            OR NEW.player_id IS DISTINCT FROM OLD.player_id
+                            OR NEW.read_started_at IS DISTINCT FROM OLD.read_started_at
+                            OR NEW.read_finished_at IS DISTINCT FROM OLD.read_finished_at
+                            OR NEW.validation_state IS DISTINCT FROM OLD.validation_state
+                            OR NEW.validation_error IS DISTINCT FROM OLD.validation_error
+                            OR NEW.source_published IS DISTINCT FROM OLD.source_published
+                            OR NEW.source_payload_sha256 IS DISTINCT FROM OLD.source_payload_sha256
+                            OR NEW.body_pruned_at IS DISTINCT FROM OLD.body_pruned_at
+                            OR NEW.body IS DISTINCT FROM OLD.body
+                            OR NEW.staged_at IS DISTINCT FROM OLD.staged_at THEN
+                            RAISE EXCEPTION 'pruned source payload is immutable';
+                        END IF;
+                        RETURN NEW;
+                    END IF;
+
+                    IF NEW.body_pruned_at IS NOT NULL THEN
+                        IF NEW.body IS DISTINCT FROM ''::bytea
+                            OR NEW.id IS DISTINCT FROM OLD.id
+                            OR NEW.run_generation IS DISTINCT FROM OLD.run_generation
+                            OR NEW.endpoint_kind IS DISTINCT FROM OLD.endpoint_kind
+                            OR NEW.event_id IS DISTINCT FROM OLD.event_id
+                            OR NEW.player_id IS DISTINCT FROM OLD.player_id
+                            OR NEW.read_started_at IS DISTINCT FROM OLD.read_started_at
+                            OR NEW.read_finished_at IS DISTINCT FROM OLD.read_finished_at
+                            OR NEW.validation_state IS DISTINCT FROM OLD.validation_state
+                            OR NEW.validation_error IS DISTINCT FROM OLD.validation_error
+                            OR NEW.source_published IS DISTINCT FROM OLD.source_published
+                            OR NEW.source_payload_sha256 IS DISTINCT FROM OLD.source_payload_sha256
+                            OR NEW.staged_at IS DISTINCT FROM OLD.staged_at
+                            OR OLD.source_payload_sha256 IS NULL
+                            OR OLD.source_payload_sha256 !~ '^[0-9a-f]{64}$'
+                            OR OLD.source_payload_sha256 IS DISTINCT FROM encode(sha256(OLD.body), 'hex') THEN
+                            RAISE EXCEPTION 'source payload body prune does not match its captured proof';
+                        END IF;
+                        RETURN NEW;
+                    END IF;
+
                     IF (OLD.source_published AND (
                             NEW.run_generation IS DISTINCT FROM OLD.run_generation
                             OR NEW.endpoint_kind IS DISTINCT FROM OLD.endpoint_kind
@@ -186,6 +242,7 @@ public final class OwnedSyncSchema {
                             OR NEW.read_started_at IS DISTINCT FROM OLD.read_started_at
                             OR NEW.read_finished_at IS DISTINCT FROM OLD.read_finished_at
                             OR NEW.body IS DISTINCT FROM OLD.body
+                            OR NEW.source_payload_sha256 IS DISTINCT FROM OLD.source_payload_sha256
                             OR NEW.validation_state IS DISTINCT FROM 'VALID'
                             OR NEW.source_published IS DISTINCT FROM TRUE))
                         OR NEW.run_generation IS DISTINCT FROM OLD.run_generation
@@ -195,6 +252,7 @@ public final class OwnedSyncSchema {
                         OR NEW.read_started_at IS DISTINCT FROM OLD.read_started_at
                         OR NEW.read_finished_at IS DISTINCT FROM OLD.read_finished_at
                         OR NEW.body IS DISTINCT FROM OLD.body
+                        OR NEW.source_payload_sha256 IS DISTINCT FROM OLD.source_payload_sha256
                         OR (OLD.validation_state='VALID' AND NEW.validation_state IS DISTINCT FROM 'VALID')
                         OR (OLD.validation_state='INVALID' AND NEW.validation_state='VALID') THEN
                         NEW.validation_state := 'INVALID';
@@ -206,7 +264,7 @@ public final class OwnedSyncSchema {
                 $$
                 """);
         jdbc.execute("DROP TRIGGER IF EXISTS trg_owned_payload_source_guard ON %s".formatted(tables.payload()));
-        jdbc.execute("CREATE TRIGGER trg_owned_payload_source_guard BEFORE UPDATE ON %s "
+        jdbc.execute("CREATE TRIGGER trg_owned_payload_source_guard BEFORE INSERT OR UPDATE ON %s "
                 .formatted(tables.payload())
                 + "FOR EACH ROW EXECUTE FUNCTION fpl_owned_payload_source_guard()");
         jdbc.execute("CREATE INDEX IF NOT EXISTS idx_%s_run ON %s(run_generation)"

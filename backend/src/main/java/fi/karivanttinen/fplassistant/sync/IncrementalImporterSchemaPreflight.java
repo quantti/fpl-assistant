@@ -76,7 +76,21 @@ final class IncrementalImporterSchemaPreflight {
                 missing.add(constraint.table() + "." + constraint.name());
             }
         }
+        if (!payloadProofGuardReady()) missing.add(tables.payload() + ".trg_owned_payload_source_guard");
         return missing;
+    }
+
+    private boolean payloadProofGuardReady() {
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+                SELECT EXISTS (
+                    SELECT 1 FROM pg_trigger t
+                    WHERE t.tgrelid=to_regclass(?) AND t.tgname='trg_owned_payload_source_guard'
+                      AND NOT t.tgisinternal AND t.tgenabled IN ('O','A') AND (t.tgtype & 23)=23
+                      AND position('source_payload_sha256' in pg_get_functiondef(t.tgfoid))>0
+                      AND position('body_pruned_at' in pg_get_functiondef(t.tgfoid))>0
+                      AND position('sha256' in pg_get_functiondef(t.tgfoid))>0
+                )
+                """, Boolean.class, "public." + tables.payload()));
     }
 
     private Map<String, Set<String>> requiredColumns() {
@@ -86,7 +100,8 @@ final class IncrementalImporterSchemaPreflight {
                 + "last_attempt_at lease_owner lease_token lease_fence lease_expires_at source_read_started_at "
                 + "source_read_finished_at last_error failed_at completed_at created_at updated_at");
         add(required, tables.payload(), "id run_generation endpoint_kind event_id player_id read_started_at "
-                + "read_finished_at validation_state validation_error source_published body staged_at");
+                + "read_finished_at validation_state validation_error source_published source_payload_sha256 "
+                + "body_pruned_at body staged_at");
         add(required, tables.receipt(), "season publication_key latest_generation source_read_started_at "
                 + "source_read_finished_at published_at source_bootstrap_payload_id source_fixtures_payload_id "
                 + "source_bootstrap_read_started_at source_bootstrap_read_finished_at "
