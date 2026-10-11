@@ -74,8 +74,9 @@ public class CoalescedPlayerHistoryImportConfiguration {
 
     @Bean
     CoalescedPlayerHistoryImportRuntime ownedImporterHourlyRuntime(
-            CoalescedPlayerHistoryImportEntrypoint collector) {
-        return new CoalescedPlayerHistoryImportRuntime(collector);
+            CoalescedPlayerHistoryImportEntrypoint collector,
+            CoalescedPlayerHistoryCollector ownedImporterCollector) {
+        return new CoalescedPlayerHistoryImportRuntime(collector, ownedImporterCollector::pruneTerminalPayloads);
     }
 
     static ImporterActivation validateActivation(String configuredMode, String configuredSeason,

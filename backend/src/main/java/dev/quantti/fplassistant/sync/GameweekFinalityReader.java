@@ -489,6 +489,12 @@ public final class GameweekFinalityReader {
                     AND fixtures.run_generation=r.latest_generation
                 WHERE r.season=? AND r.publication_key=? AND r.latest_generation IS NOT NULL
                   AND r.source_catalogue IS NOT NULL
+                  AND r.source_bootstrap_payload_id IS NOT NULL
+                  AND r.source_fixtures_payload_id IS NOT NULL
+                  AND r.source_bootstrap_read_started_at IS NOT NULL
+                  AND r.source_bootstrap_read_finished_at IS NOT NULL
+                  AND r.source_fixtures_read_started_at IS NOT NULL
+                  AND r.source_fixtures_read_finished_at IS NOT NULL
                   AND r.source_pair_fingerprint ~ '^[0-9a-f]{64}$'
                   AND r.source_bootstrap_sha256 ~ '^[0-9a-f]{64}$'
                   AND r.source_fixtures_sha256 ~ '^[0-9a-f]{64}$'
@@ -503,9 +509,19 @@ public final class GameweekFinalityReader {
                   AND bootstrap.endpoint_kind='BOOTSTRAP_STATIC' AND bootstrap.event_id IS NULL
                   AND bootstrap.player_id IS NULL AND bootstrap.validation_state='VALID'
                   AND bootstrap.source_published IS TRUE
+                  AND bootstrap.source_payload_sha256=r.source_bootstrap_sha256
+                  AND bootstrap.source_payload_sha256 ~ '^[0-9a-f]{64}$'
+                  AND ((bootstrap.body_pruned_at IS NULL
+                        AND bootstrap.source_payload_sha256=encode(sha256(bootstrap.body), 'hex'))
+                    OR (bootstrap.body_pruned_at IS NOT NULL AND octet_length(bootstrap.body)=0))
                   AND fixtures.endpoint_kind='FIXTURES' AND fixtures.event_id IS NULL
                   AND fixtures.player_id IS NULL AND fixtures.validation_state='VALID'
                   AND fixtures.source_published IS TRUE
+                  AND fixtures.source_payload_sha256=r.source_fixtures_sha256
+                  AND fixtures.source_payload_sha256 ~ '^[0-9a-f]{64}$'
+                  AND ((fixtures.body_pruned_at IS NULL
+                        AND fixtures.source_payload_sha256=encode(sha256(fixtures.body), 'hex'))
+                    OR (fixtures.body_pruned_at IS NOT NULL AND octet_length(fixtures.body)=0))
                   AND bootstrap.read_started_at=r.source_bootstrap_read_started_at
                   AND bootstrap.read_finished_at=r.source_bootstrap_read_finished_at
                   AND fixtures.read_started_at=r.source_fixtures_read_started_at

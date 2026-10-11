@@ -36,6 +36,7 @@ import dev.quantti.fplassistant.sync.GameweekFinalityRepository.Progress;
 public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHistoryImportEntrypoint {
 
     public static final Duration CYCLE_INTERVAL = Duration.ofHours(1);
+    static final Duration PAYLOAD_RETENTION = Duration.ofHours(24);
     private static final Duration LEASE = Duration.ofMinutes(5);
     private static final Duration RENEW_THRESHOLD = Duration.ofMinutes(4);
     private static final int MAX_PLAYER_PAGES = GameweekFinality.MAX_CHECKPOINT_PLAYER_IDS;
@@ -90,6 +91,10 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
         this.fetch = Objects.requireNonNull(fetch);
         this.clock = Objects.requireNonNull(clock);
         this.owner = Objects.requireNonNull(owner);
+    }
+
+    int pruneTerminalPayloads() {
+        return store.deleteIncrementalCoreTerminalPayloadsOlderThan(PAYLOAD_RETENTION);
     }
 
     /** Runs at most one durable season cycle. Callers decide when to invoke this API. */

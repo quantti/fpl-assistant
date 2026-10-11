@@ -1,11 +1,13 @@
 package dev.quantti.fplassistant.sync;
 
 import java.time.Duration;
+import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.IntSupplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -19,12 +21,16 @@ public final class CoalescedPlayerHistoryImportRuntime implements SmartLifecycle
     private static final Duration STOP_WAIT = Duration.ofSeconds(5);
 
     private final CoalescedPlayerHistoryImportEntrypoint collector;
+    private final IntSupplier payloadMaintenance;
     private final AtomicBoolean running = new AtomicBoolean();
     private final AtomicBoolean cycleRunning = new AtomicBoolean();
+    private final AtomicBoolean initialMaintenancePending = new AtomicBoolean(true);
     private ScheduledExecutorService scheduler;
 
-    public CoalescedPlayerHistoryImportRuntime(CoalescedPlayerHistoryImportEntrypoint collector) {
+    public CoalescedPlayerHistoryImportRuntime(CoalescedPlayerHistoryImportEntrypoint collector,
+                                                IntSupplier payloadMaintenance) {
         this.collector = Objects.requireNonNull(collector);
+        this.payloadMaintenance = Objects.requireNonNull(payloadMaintenance);
     }
 
     @Override
@@ -37,13 +43,23 @@ public final class CoalescedPlayerHistoryImportRuntime implements SmartLifecycle
 
     /** Explicit manual boundary used by focused operations and tests. */
     public CoalescedPlayerHistoryCollector.CycleResult runOnce() {
-        return collector.runCycle();
+        if (!cycleRunning.compareAndSet(false, true)) {
+            return new CoalescedPlayerHistoryCollector.CycleResult(
+                    CoalescedPlayerHistoryCollector.State.BUSY,
+                    List.of(), List.of(), List.of(), List.of(), null);
+        }
+        try {
+            return runCycleWithMaintenance();
+        } finally {
+            cycleRunning.set(false);
+        }
     }
 
     private void runScheduledCycle() {
         if (!running.get() || !cycleRunning.compareAndSet(false, true)) return;
         try {
-            CoalescedPlayerHistoryCollector.CycleResult result = collector.runCycle();
+            if (initialMaintenancePending.compareAndSet(true, false)) runPayloadMaintenance();
+            CoalescedPlayerHistoryCollector.CycleResult result = runCycleWithMaintenance();
             log.info("hourly incremental core import: {} ({} pages requested, {} committed, {} failed)",
                     result.state(), result.selectedPlayerIds().size(), result.committedPlayerIds().size(),
                     result.failedPlayerIds().size());
@@ -51,6 +67,25 @@ public final class CoalescedPlayerHistoryImportRuntime implements SmartLifecycle
             log.error("hourly incremental core import failed", failure);
         } finally {
             cycleRunning.set(false);
+        }
+    }
+
+    private CoalescedPlayerHistoryCollector.CycleResult runCycleWithMaintenance() {
+        try {
+            return collector.runCycle();
+        } finally {
+            runPayloadMaintenance();
+        }
+    }
+
+    private void runPayloadMaintenance() {
+        try {
+            int pruned = payloadMaintenance.getAsInt();
+            if (pruned > 0) {
+                log.info("incremental payload retention pruned {} old payload bodies", pruned);
+            }
+        } catch (RuntimeException failure) {
+            log.error("incremental payload retention failed; continuing without changing runtime mode", failure);
         }
     }
 

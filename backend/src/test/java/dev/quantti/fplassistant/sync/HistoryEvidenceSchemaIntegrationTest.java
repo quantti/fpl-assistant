@@ -102,7 +102,24 @@ class HistoryEvidenceSchemaIntegrationTest {
     }
 
     @Test
-    void membershipProofSchemaUpgradeRetiresUnprovenFinalityAndPreflightRequiresTheNewColumn() {
+    void membershipProofSchemaUpgradeRetiresUnprovenFinalityAndPreflightRequiresTheNewColumnsAndGuard() {
+        byte[] legacyBody = "legacy-before-capture-hash".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        jdbc.execute("ALTER TABLE " + TABLES.payload()
+                + " DISABLE TRIGGER trg_owned_payload_source_guard");
+        long legacyPayloadId;
+        try {
+            legacyPayloadId = jdbc.queryForObject("""
+                    INSERT INTO %s(run_generation,endpoint_kind,read_started_at,read_finished_at,
+                        validation_state,body,staged_at)
+                    VALUES (?,'BOOTSTRAP_STATIC',now(),now(),'VALID',?,now()) RETURNING id
+                    """.formatted(TABLES.payload()), Long.class, incrementalGeneration, legacyBody);
+        } finally {
+            jdbc.execute("ALTER TABLE " + TABLES.payload()
+                    + " ENABLE TRIGGER trg_owned_payload_source_guard");
+        }
+        jdbc.execute("DROP TRIGGER trg_owned_payload_source_guard ON " + TABLES.payload());
+        jdbc.execute("ALTER TABLE " + TABLES.payload() + " DROP COLUMN IF EXISTS source_payload_sha256");
+        jdbc.execute("ALTER TABLE " + TABLES.payload() + " DROP COLUMN IF EXISTS body_pruned_at");
         jdbc.execute("ALTER TABLE " + TABLES.receipt() + " DROP COLUMN IF EXISTS source_catalogue");
         insertBlankFinalGameweek(34, optionalCoverageJson());
         jdbc.update("INSERT INTO " + TABLES.receipt()
@@ -110,11 +127,17 @@ class HistoryEvidenceSchemaIntegrationTest {
                 ISOLATED_SEASON_CODE, OwnedSyncStore.INCREMENTAL_COMPATIBILITY_PUBLICATION_KEY,
                 incrementalGeneration);
         try {
+            assertThatThrownBy(() -> new IncrementalImporterSchemaPreflight(jdbc, TABLES).requireReady())
+                    .hasMessageContaining("body_pruned_at").hasMessageContaining("source_catalogue");
             new OwnedSyncSchema(jdbc, TABLES).initialize();
 
             assertThat(jdbc.queryForList("SELECT column_name FROM information_schema.columns"
                     + " WHERE table_schema='public' AND table_name=?", String.class, TABLES.receipt()))
                     .contains("source_catalogue");
+            assertThat(jdbc.queryForObject("SELECT source_payload_sha256 IS NULL FROM " + TABLES.payload()
+                    + " WHERE id=?", Boolean.class, legacyPayloadId)).isTrue();
+            assertThat(jdbc.queryForObject("SELECT body FROM " + TABLES.payload() + " WHERE id=?",
+                    byte[].class, legacyPayloadId)).containsExactly(legacyBody);
             assertThat(jdbc.queryForObject("SELECT source_catalogue IS NULL FROM " + TABLES.receipt()
                     + " WHERE season=? AND publication_key=?", Boolean.class, ISOLATED_SEASON_CODE,
                     OwnedSyncStore.INCREMENTAL_COMPATIBILITY_PUBLICATION_KEY)).isTrue();
@@ -125,12 +148,22 @@ class HistoryEvidenceSchemaIntegrationTest {
                     + TABLES.gameweekStatSync() + " WHERE season_id=? AND gameweek=34",
                     Boolean.class, ISOLATED_SEASON_ID)).isTrue();
             new IncrementalImporterSchemaPreflight(jdbc, TABLES).requireReady();
+            jdbc.execute("ALTER TABLE " + TABLES.payload()
+                    + " DISABLE TRIGGER trg_owned_payload_source_guard");
+            try {
+                assertThatThrownBy(() -> new IncrementalImporterSchemaPreflight(jdbc, TABLES).requireReady())
+                        .hasMessageContaining("trg_owned_payload_source_guard");
+            } finally {
+                jdbc.execute("ALTER TABLE " + TABLES.payload()
+                        + " ENABLE TRIGGER trg_owned_payload_source_guard");
+            }
         } finally {
             if (Boolean.FALSE.equals(jdbc.queryForObject("SELECT EXISTS (SELECT 1 FROM information_schema.columns"
                     + " WHERE table_schema='public' AND table_name=? AND column_name='source_catalogue')",
                     Boolean.class, TABLES.receipt()))) {
                 new OwnedSyncSchema(jdbc, TABLES).initialize();
             }
+            jdbc.update("DELETE FROM " + TABLES.payload() + " WHERE id=?", legacyPayloadId);
             jdbc.update("DELETE FROM " + TABLES.gameweekStatSync()
                     + " WHERE season_id=? AND gameweek=34", ISOLATED_SEASON_ID);
             jdbc.update("DELETE FROM " + TABLES.receipt() + " WHERE season=? AND publication_key=?",

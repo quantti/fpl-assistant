@@ -2309,13 +2309,13 @@ public final class OwnedSyncStore {
             Long id = jdbc.queryForObject("""
                     INSERT INTO %s(run_generation, endpoint_kind, event_id, player_id,
                                    read_started_at, read_finished_at, validation_state,
-                                   validation_error, body, staged_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                   validation_error, source_payload_sha256, body, staged_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     RETURNING id
                     """.formatted(tables.payload()), Long.class, lease.generation(),
                     endpoint.kind().name(), endpoint.eventId(), endpoint.playerId(),
                     timestamp(read.startedAt()), timestamp(read.finishedAt()), validation.state().name(),
-                    boundedNullable(validation.error(), MAX_ERROR_CHARS), body, timestamp(stagedAt));
+                    boundedNullable(validation.error(), MAX_ERROR_CHARS), sha256(body), body, timestamp(stagedAt));
             jdbc.update("""
                     UPDATE %s SET
                         source_read_started_at = LEAST(COALESCE(source_read_started_at, ?), ?),
@@ -3463,6 +3463,52 @@ public final class OwnedSyncStore {
             }
         }
         return deleted;
+    }
+
+    /**
+     * Incremental-import retention is deliberately producer-scoped: it never prunes legacy queue
+     * payloads or bodies belonging to an active incremental run. It empties old terminal bodies
+     * while retaining each payload row and its immutable capture proof; the published compatibility
+     * pair is also kept with its bodies while a newer incremental run is pending or leased.
+     */
+    public int deleteIncrementalCoreTerminalPayloadsOlderThan(Duration retention) {
+        if (retention == null || retention.isNegative() || retention.isZero()) {
+            throw new IllegalArgumentException("retention must be positive");
+        }
+        Instant cutoff = now().minus(retention);
+        int pruned = jdbc.update("""
+                UPDATE %s p SET body=decode('', 'hex'), body_pruned_at=?
+                FROM %s r
+                WHERE p.run_generation = r.generation
+                  AND r.kind='PLAYER_HISTORY' AND r.producer_key='INCREMENTAL_CORE'
+                  AND r.coalescing_key=? AND r.publication_key=?
+                  AND r.state IN ('COMPLETED', 'FAILED', 'SUPERSEDED')
+                  AND p.staged_at < ? AND p.body_pruned_at IS NULL
+                  AND p.source_payload_sha256 ~ '^[0-9a-f]{64}$'
+                  AND p.source_payload_sha256=encode(sha256(p.body), 'hex')
+                  AND NOT EXISTS (
+                      SELECT 1 FROM %s parent
+                      JOIN %s active ON active.season=parent.season
+                        AND active.kind='PLAYER_HISTORY'
+                        AND active.producer_key='INCREMENTAL_CORE'
+                        AND active.coalescing_key=? AND active.publication_key=?
+                        AND active.generation>parent.latest_generation
+                        AND active.state IN ('PENDING','LEASED')
+                      WHERE parent.season=r.season
+                        AND parent.publication_key=?
+                        AND parent.latest_generation=r.generation
+                        AND (p.id=parent.source_bootstrap_payload_id
+                             OR p.id=parent.source_fixtures_payload_id)
+                  )
+                """.formatted(tables.payload(), tables.run(), tables.receipt(), tables.run()),
+                timestamp(now()), INCREMENTAL_CORE_KEY, INCREMENTAL_CORE_KEY, timestamp(cutoff),
+                INCREMENTAL_CORE_KEY, INCREMENTAL_CORE_KEY, INCREMENTAL_COMPATIBILITY_PUBLICATION_KEY);
+        if (pruned > 0) {
+            synchronized (publicPairCache) {
+                publicPairCache.clear();
+            }
+        }
+        return pruned;
     }
 
     private void evictPublicPairs(List<Long> payloadIds) {

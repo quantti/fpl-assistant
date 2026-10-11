@@ -1,6 +1,7 @@
 package dev.quantti.fplassistant.sync;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -32,7 +33,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
@@ -69,6 +72,7 @@ import dev.quantti.fplassistant.sync.OwnedSyncStore.Lease;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.RuntimeFence;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.SourceRead;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.SyncKind;
+import dev.quantti.fplassistant.sync.OwnedSyncStore.Validation;
 import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
 import dev.quantti.fplassistant.tools.ExpectedStatsTools;
 import dev.quantti.fplassistant.tools.PfsReadSource;
@@ -229,6 +233,136 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT state FROM " + TABLES.run()
                 + " WHERE producer_key=? AND season=?", String.class,
                 OwnedSyncStore.INCREMENTAL_CORE_PRODUCER, season.code())).isEqualTo("PENDING");
+    }
+
+    @Test
+    void incrementalRetentionPrunesOldCompletedFailedAndSupersededBodiesOnly() {
+        StagedCorePair completed = stagePublishedCorePair();
+        store.completeStaged(completed.lease(), store.incrementalSourceInterval(completed.lease()),
+                List.of(completed.bootstrapRead(), completed.fixturesRead()));
+        clock.advance(CoalescedPlayerHistoryCollector.PAYLOAD_RETENTION.plusMillis(1));
+        assertThat(store.deleteIncrementalCoreTerminalPayloadsOlderThan(
+                CoalescedPlayerHistoryCollector.PAYLOAD_RETENTION)).isEqualTo(2);
+        assertPrunedPayloadBodies(completed.lease().generation(), 2);
+
+        StagedCorePair superseded = stagePublishedCorePair();
+        store.supersedeIncrementalCoreImport(superseded.lease());
+        clock.advance(CoalescedPlayerHistoryCollector.PAYLOAD_RETENTION.plusMillis(1));
+        assertThat(store.deleteIncrementalCoreTerminalPayloadsOlderThan(
+                CoalescedPlayerHistoryCollector.PAYLOAD_RETENTION)).isEqualTo(2);
+        assertPrunedPayloadBodies(superseded.lease().generation(), 2);
+
+        StagedCorePair failed = stagePublishedCorePair();
+        store.failFetch(failed.lease(), "controlled terminal failure");
+        clock.advance(CoalescedPlayerHistoryCollector.PAYLOAD_RETENTION.plusMillis(1));
+        assertThat(store.deleteIncrementalCoreTerminalPayloadsOlderThan(
+                CoalescedPlayerHistoryCollector.PAYLOAD_RETENTION)).isEqualTo(2);
+        assertPrunedPayloadBodies(failed.lease().generation(), 2);
+
+        var legacyRun = store.enqueue(SyncKind.CATALOGUE_SCHEDULE, season.code(),
+                "retention-legacy", "retention-legacy", clock.instant());
+        Lease legacyLease = store.acquireForSeason(season.code(), "retention-legacy-worker",
+                Duration.ofMinutes(30)).orElseThrow();
+        assertThat(legacyLease.generation()).isEqualTo(legacyRun.generation());
+        SourceRead legacyRead = nextRead();
+        store.stage(legacyLease, Endpoint.bootstrap(), legacyRead, Validation.valid(), bootstrap);
+        store.completeStaged(legacyLease, legacyRead, List.of(legacyRead));
+        clock.advance(CoalescedPlayerHistoryCollector.PAYLOAD_RETENTION.plusMillis(1));
+        assertThat(store.deleteIncrementalCoreTerminalPayloadsOlderThan(
+                CoalescedPlayerHistoryCollector.PAYLOAD_RETENTION)).isZero();
+        assertThat(payloadCount(legacyLease.generation())).isOne();
+        assertThat(jdbc.queryForObject("SELECT octet_length(body) > 0 AND body_pruned_at IS NULL FROM "
+                + TABLES.payload() + " WHERE run_generation=?", Boolean.class, legacyLease.generation())).isTrue();
+    }
+
+    @Test
+    void incrementalRetentionPreservesPendingAndExpiredLeasedPairsForSuccessfulResume() {
+        StagedCorePair pair = stagePublishedCorePair();
+        Instant retryAt = clock.instant().plus(CoalescedPlayerHistoryCollector.PAYLOAD_RETENTION)
+                .plusSeconds(1);
+        store.retry(pair.lease(), retryAt, "controlled partial cycle");
+        clock.set(retryAt.plusSeconds(1));
+        assertThat(store.deleteIncrementalCoreTerminalPayloadsOlderThan(
+                CoalescedPlayerHistoryCollector.PAYLOAD_RETENTION)).isZero();
+        assertThat(payloadCount(pair.lease().generation())).isEqualTo(2);
+        assertPayloadBodiesPresent(pair.lease().generation(), 2);
+
+        Lease firstResume = store.acquireIncrementalCoreImport(season.code(), "retention-resume-1",
+                Duration.ofHours(1)).orElseThrow();
+        assertThat(firstResume.generation()).isEqualTo(pair.lease().generation());
+        clock.advance(CoalescedPlayerHistoryCollector.PAYLOAD_RETENTION.plusSeconds(1));
+        assertThat(store.deleteIncrementalCoreTerminalPayloadsOlderThan(
+                CoalescedPlayerHistoryCollector.PAYLOAD_RETENTION)).isZero();
+        assertThat(payloadCount(pair.lease().generation())).isEqualTo(2);
+        assertPayloadBodiesPresent(pair.lease().generation(), 2);
+
+        Lease resumed = store.acquireIncrementalCoreImport(season.code(), "retention-resume-2",
+                Duration.ofHours(1)).orElseThrow();
+        assertThat(resumed.generation()).isEqualTo(pair.lease().generation());
+        var snapshot = store.incrementalCompatibilitySnapshot(resumed).orElseThrow();
+        assertThat(snapshot.bootstrap().body()).containsExactly(bootstrap);
+        assertThat(snapshot.fixtures().body()).containsExactly(fixtures);
+        store.completeStaged(resumed, store.incrementalSourceInterval(resumed),
+                List.of(pair.bootstrapRead(), pair.fixturesRead()));
+        assertThat(store.deleteIncrementalCoreTerminalPayloadsOlderThan(
+                CoalescedPlayerHistoryCollector.PAYLOAD_RETENTION)).isEqualTo(2);
+        assertPrunedPayloadBodies(pair.lease().generation(), 2);
+    }
+
+    @Test
+    void incrementalRetentionKeepsPublishedParentBodiesWhileNewCoreRunIsActive() {
+        StagedCorePair parent = stagePublishedCorePair();
+        store.completeStaged(parent.lease(), store.incrementalSourceInterval(parent.lease()),
+                List.of(parent.bootstrapRead(), parent.fixturesRead()));
+        clock.advance(CoalescedPlayerHistoryCollector.PAYLOAD_RETENTION.plusMillis(1));
+        var pending = store.enqueueIncrementalCoreImport(season, clock.instant());
+        assertThat(pending.generation()).isNotEqualTo(parent.lease().generation());
+
+        assertThat(store.deleteIncrementalCoreTerminalPayloadsOlderThan(
+                CoalescedPlayerHistoryCollector.PAYLOAD_RETENTION)).isZero();
+        assertThat(payloadCount(parent.lease().generation())).isEqualTo(2);
+        assertPayloadBodiesPresent(parent.lease().generation(), 2);
+        Lease pendingLease = store.acquireIncrementalCoreImport(season.code(), "retention-pending-parent",
+                Duration.ofMinutes(30)).orElseThrow();
+        store.failFetch(pendingLease, "controlled failure before fetching source pair");
+
+        assertThat(store.deleteIncrementalCoreTerminalPayloadsOlderThan(
+                CoalescedPlayerHistoryCollector.PAYLOAD_RETENTION)).isEqualTo(2);
+        assertPrunedPayloadBodies(parent.lease().generation(), 2);
+    }
+
+    @Test
+    void scheduledImportFailureRunsRetentionWithoutChangingRuntimeMode() throws Exception {
+        StagedCorePair pair = stagePublishedCorePair();
+        store.completeStaged(pair.lease(), store.incrementalSourceInterval(pair.lease()),
+                List.of(pair.bootstrapRead(), pair.fixturesRead()));
+        clock.advance(CoalescedPlayerHistoryCollector.PAYLOAD_RETENTION.plusMillis(1));
+        Map<String, Object> runtimeBefore = jdbc.queryForMap("SELECT runtime_mode,runtime_epoch,activation_boundary "
+                + "FROM " + TABLES.plannerRuntime() + " WHERE instance_id=?", "mode:" + season.code());
+        AtomicInteger deleted = new AtomicInteger();
+        CountDownLatch maintenanceRun = new CountDownLatch(2);
+        CoalescedPlayerHistoryImportRuntime runtime = new CoalescedPlayerHistoryImportRuntime(() -> {
+            throw new IllegalStateException("controlled scheduled import failure");
+        }, () -> {
+            int count = store.deleteIncrementalCoreTerminalPayloadsOlderThan(
+                    CoalescedPlayerHistoryCollector.PAYLOAD_RETENTION);
+            deleted.addAndGet(count);
+            maintenanceRun.countDown();
+            return count;
+        });
+
+        try {
+            runtime.start();
+            assertThat(maintenanceRun.await(5, TimeUnit.SECONDS)).isTrue();
+        } finally {
+            runtime.stop();
+        }
+
+        assertThat(deleted).hasValue(2);
+        assertPrunedPayloadBodies(pair.lease().generation(), 2);
+        assertThat(jdbc.queryForMap("SELECT runtime_mode,runtime_epoch,activation_boundary FROM "
+                + TABLES.plannerRuntime() + " WHERE instance_id=?", "mode:" + season.code()))
+                .isEqualTo(runtimeBefore);
     }
 
     @Test
@@ -2842,6 +2976,117 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         Map<String, List<Object>> correctedProof = pfsProofSnapshot(fixtureIds);
         Map<String, String> correctedPageWatermarks = pageWatermarkSnapshot();
         Map<String, Object> correctedFinality = finalitySnapshot();
+        Map<String, Object> compatibilityReceipt = jdbc.queryForMap("SELECT latest_generation,source_read_started_at,"
+                + "source_read_finished_at,source_bootstrap_payload_id,source_fixtures_payload_id,"
+                + "source_bootstrap_sha256,source_fixtures_sha256,source_pair_fingerprint,source_catalogue::text "
+                + "FROM " + TABLES.receipt() + " WHERE season=? AND publication_key=?",
+                season.code(), OwnedSyncStore.INCREMENTAL_COMPATIBILITY_PUBLICATION_KEY);
+        long publishedGeneration = ((Number) compatibilityReceipt.get("latest_generation")).longValue();
+        long bootstrapPayloadId = ((Number) compatibilityReceipt.get("source_bootstrap_payload_id")).longValue();
+        long fixturesPayloadId = ((Number) compatibilityReceipt.get("source_fixtures_payload_id")).longValue();
+        assertThat(payloadCount(publishedGeneration)).isEqualTo(2);
+        assertThat(reader.read(SEASON_ID, season.code(), Set.of(3)).get(3).state())
+                .isEqualTo(GameweekFinality.State.FINALIZED);
+        Long otherGeneration = jdbc.queryForObject("SELECT min(generation) FROM " + TABLES.run()
+                + " WHERE generation<>?", Long.class, publishedGeneration);
+        assertThat(otherGeneration).isNotNull();
+        assertFinalityPendingAfterTemporaryMutation(reader, () -> jdbc.update("UPDATE " + TABLES.payload()
+                + " SET validation_state='INVALID' WHERE id=?", bootstrapPayloadId));
+        assertFinalityPendingAfterTemporaryMutation(reader, () -> jdbc.update("UPDATE " + TABLES.payload()
+                + " SET run_generation=? WHERE id=?", otherGeneration, bootstrapPayloadId));
+        assertFinalityPendingAfterTemporaryMutation(reader, () -> jdbc.update("UPDATE " + TABLES.payload()
+                + " SET endpoint_kind='FIXTURES' WHERE id=?", bootstrapPayloadId));
+        assertFinalityPendingAfterTemporaryMutation(reader, () -> jdbc.update("UPDATE " + TABLES.payload()
+                + " SET read_started_at=?,read_finished_at=? WHERE id=?",
+                java.sql.Timestamp.from(clock.instant()), java.sql.Timestamp.from(clock.instant()), bootstrapPayloadId));
+        assertFinalityPendingAfterTemporaryMutation(reader, () -> jdbc.update("UPDATE " + TABLES.payload()
+                + " SET source_payload_sha256=repeat('0',64) WHERE id=?", bootstrapPayloadId));
+        clock.advance(CoalescedPlayerHistoryCollector.PAYLOAD_RETENTION.plusMillis(1));
+        tx.executeWithoutResult(status -> {
+            jdbc.update("UPDATE " + TABLES.payload() + " SET body=body || decode('ff','hex') WHERE id=?",
+                    bootstrapPayloadId);
+            assertThat(jdbc.queryForObject("SELECT validation_state FROM " + TABLES.payload()
+                    + " WHERE id=?", String.class, bootstrapPayloadId)).isEqualTo("INVALID");
+            assertThat(reader.read(SEASON_ID, season.code(), Set.of(3)).get(3).state())
+                    .isEqualTo(GameweekFinality.State.FINAL_PENDING);
+            assertThat(store.deleteIncrementalCoreTerminalPayloadsOlderThan(
+                    CoalescedPlayerHistoryCollector.PAYLOAD_RETENTION)).isEqualTo(1);
+            assertThat(jdbc.queryForObject("SELECT body_pruned_at IS NULL AND octet_length(body)>0 "
+                    + "AND source_payload_sha256<>encode(sha256(body),'hex') FROM " + TABLES.payload()
+                    + " WHERE id=?", Boolean.class, bootstrapPayloadId)).isTrue();
+            assertThat(reader.read(SEASON_ID, season.code(), Set.of(3)).get(3).state())
+                    .isEqualTo(GameweekFinality.State.FINAL_PENDING);
+            status.setRollbackOnly();
+        });
+        tx.executeWithoutResult(status -> {
+            jdbc.execute("ALTER TABLE " + TABLES.payload() + " DISABLE TRIGGER trg_owned_payload_source_guard");
+            jdbc.update("UPDATE " + TABLES.payload() + " SET body=body || decode('ff','hex') WHERE id=?",
+                    bootstrapPayloadId);
+            jdbc.execute("ALTER TABLE " + TABLES.payload() + " ENABLE TRIGGER trg_owned_payload_source_guard");
+            assertThat(jdbc.queryForObject("SELECT validation_state='VALID' AND source_payload_sha256<>"
+                    + "encode(sha256(body),'hex') FROM " + TABLES.payload() + " WHERE id=?",
+                    Boolean.class, bootstrapPayloadId)).isTrue();
+            assertThat(reader.read(SEASON_ID, season.code(), Set.of(3)).get(3).state())
+                    .isEqualTo(GameweekFinality.State.FINAL_PENDING);
+            status.setRollbackOnly();
+        });
+        assertFinalityPendingAfterTemporaryMutation(reader, () -> jdbc.update("DELETE FROM " + TABLES.payload()
+                + " WHERE id=?", bootstrapPayloadId));
+        assertFinalityPendingAfterTemporaryMutation(reader, () -> jdbc.update("UPDATE " + TABLES.receipt()
+                + " SET source_bootstrap_sha256=repeat('0',64) WHERE season=? AND publication_key=?",
+                season.code(), OwnedSyncStore.INCREMENTAL_COMPATIBILITY_PUBLICATION_KEY));
+
+        tx.executeWithoutResult(status -> {
+            jdbc.update("UPDATE " + TABLES.payload()
+                    + " SET validation_state='INVALID' WHERE id=?", bootstrapPayloadId);
+            assertThat(reader.read(SEASON_ID, season.code(), Set.of(3)).get(3).state())
+                    .isEqualTo(GameweekFinality.State.FINAL_PENDING);
+            assertThat(store.deleteIncrementalCoreTerminalPayloadsOlderThan(
+                    CoalescedPlayerHistoryCollector.PAYLOAD_RETENTION)).isEqualTo(2);
+            assertThat(jdbc.queryForObject("SELECT validation_state='INVALID' AND body_pruned_at IS NOT NULL "
+                    + "AND octet_length(body)=0 FROM " + TABLES.payload() + " WHERE id=?",
+                    Boolean.class, bootstrapPayloadId)).isTrue();
+            assertThat(reader.read(SEASON_ID, season.code(), Set.of(3)).get(3).state())
+                    .isEqualTo(GameweekFinality.State.FINAL_PENDING);
+            status.setRollbackOnly();
+        });
+        assertThat(reader.read(SEASON_ID, season.code(), Set.of(3)).get(3).state())
+                .isEqualTo(GameweekFinality.State.FINALIZED);
+        long rawBytesBeforePrune = jdbc.queryForObject("SELECT sum(octet_length(body)) FROM "
+                + TABLES.payload() + " WHERE run_generation=?", Long.class, publishedGeneration);
+        assertThat(store.deleteIncrementalCoreTerminalPayloadsOlderThan(
+                CoalescedPlayerHistoryCollector.PAYLOAD_RETENTION)).isEqualTo(2);
+        assertPrunedPayloadBodies(publishedGeneration, 2);
+        assertThat(jdbc.queryForObject("SELECT sum(octet_length(body)) FROM " + TABLES.payload()
+                + " WHERE run_generation=?", Long.class, publishedGeneration)).isZero();
+        assertThat(rawBytesBeforePrune).isPositive();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.payload()
+                + " WHERE id IN (?,?) AND run_generation=? AND validation_state='VALID' AND source_published "
+                + "AND source_payload_sha256 IN (?,?) AND body_pruned_at IS NOT NULL AND octet_length(body)=0",
+                Integer.class, bootstrapPayloadId, fixturesPayloadId, publishedGeneration,
+                compatibilityReceipt.get("source_bootstrap_sha256"),
+                compatibilityReceipt.get("source_fixtures_sha256"))).isEqualTo(2);
+        assertThatThrownBy(() -> jdbc.update("UPDATE " + TABLES.payload()
+                + " SET body=? WHERE id=?", setup.bootstrapSource(), bootstrapPayloadId))
+                .isInstanceOf(org.springframework.dao.DataAccessException.class);
+        assertThatThrownBy(() -> jdbc.update("UPDATE " + TABLES.payload()
+                + " SET source_payload_sha256=repeat('0',64) WHERE id=?", fixturesPayloadId))
+                .isInstanceOf(org.springframework.dao.DataAccessException.class);
+        assertThatThrownBy(() -> jdbc.update("UPDATE " + TABLES.payload()
+                + " SET body_pruned_at=NULL WHERE id=?", fixturesPayloadId))
+                .isInstanceOf(org.springframework.dao.DataAccessException.class);
+        assertThat(payloadCount(publishedGeneration)).isEqualTo(2);
+        assertThat(jdbc.queryForMap("SELECT latest_generation,source_read_started_at,source_read_finished_at,"
+                + "source_bootstrap_payload_id,source_fixtures_payload_id,source_bootstrap_sha256,"
+                + "source_fixtures_sha256,source_pair_fingerprint,source_catalogue::text FROM " + TABLES.receipt()
+                + " WHERE season=? AND publication_key=?", season.code(),
+                OwnedSyncStore.INCREMENTAL_COMPATIBILITY_PUBLICATION_KEY)).isEqualTo(compatibilityReceipt);
+        assertThat(pfsRowsSnapshot(fixtureIds)).isEqualTo(correctedRows);
+        assertThat(pfsProofSnapshot(fixtureIds)).isEqualTo(correctedProof);
+        assertThat(pageWatermarkSnapshot()).isEqualTo(correctedPageWatermarks);
+        assertThat(finalitySnapshot()).isEqualTo(correctedFinality);
+        assertThat(reader.read(SEASON_ID, season.code(), Set.of(3)).get(3).state())
+                .isEqualTo(GameweekFinality.State.FINALIZED);
         fetch.clearCalls();
         clock.set(clock.instant().plusSeconds(1));
         CycleResult correctionNoop = compatibilityCollector(true).runCycle();
@@ -4414,6 +4659,57 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
                 .orElseThrow();
     }
 
+    private StagedCorePair stagePublishedCorePair() {
+        store.enqueueIncrementalCoreImport(season, clock.instant());
+        Lease lease = store.acquireIncrementalCoreImport(season.code(), "retention-pair-worker",
+                Duration.ofMinutes(30)).orElseThrow();
+        Instant sourceStart = clock.instant().plusMillis(1);
+        SourceRead bootstrapRead = new SourceRead(sourceStart, sourceStart.plusMillis(1));
+        SourceRead fixturesRead = new SourceRead(sourceStart.plusMillis(2), sourceStart.plusMillis(3));
+        SourceDocument bootstrapDocument = document(bootstrap, bootstrapRead);
+        SourceDocument fixturesDocument = document(fixtures, fixturesRead);
+        clock.set(fixturesRead.finishedAt().plusMillis(1));
+        long bootstrapId = store.stage(lease, Endpoint.bootstrap(), bootstrapRead,
+                Validation.unchecked(), bootstrap);
+        long fixturesId = store.stage(lease, Endpoint.fixtures(), fixturesRead,
+                Validation.unchecked(), fixtures);
+        store.validateStagedPayloads(lease, List.of(bootstrapId, fixturesId), Validation.valid());
+        new CompatibilityCatalogueWriter(jdbc, clock, store, TABLES)
+                .publish(lease, season, bootstrapDocument, fixturesDocument);
+        return new StagedCorePair(lease, bootstrapRead, fixturesRead);
+    }
+
+    private int payloadCount(long generation) {
+        return jdbc.queryForObject("SELECT count(*) FROM " + TABLES.payload()
+                + " WHERE run_generation=?", Integer.class, generation);
+    }
+
+    private void assertPrunedPayloadBodies(long generation, int expectedCount) {
+        assertThat(payloadCount(generation)).isEqualTo(expectedCount);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.payload()
+                + " WHERE run_generation=? AND body_pruned_at IS NOT NULL AND octet_length(body)=0 "
+                + "AND source_payload_sha256 ~ '^[0-9a-f]{64}$'", Integer.class, generation))
+                .isEqualTo(expectedCount);
+    }
+
+    private void assertPayloadBodiesPresent(long generation, int expectedCount) {
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.payload()
+                + " WHERE run_generation=? AND body_pruned_at IS NULL AND octet_length(body)>0 "
+                + "AND source_payload_sha256=encode(sha256(body),'hex')", Integer.class, generation))
+                .isEqualTo(expectedCount);
+    }
+
+    private void assertFinalityPendingAfterTemporaryMutation(GameweekFinalityReader reader, Runnable mutation) {
+        tx.executeWithoutResult(status -> {
+            mutation.run();
+            assertThat(reader.read(SEASON_ID, season.code(), Set.of(3)).get(3).state())
+                    .isEqualTo(GameweekFinality.State.FINAL_PENDING);
+            status.setRollbackOnly();
+        });
+        assertThat(reader.read(SEASON_ID, season.code(), Set.of(3)).get(3).state())
+                .isEqualTo(GameweekFinality.State.FINALIZED);
+    }
+
     private SourceRead nextRead() {
         Instant started = clock.instant();
         Instant finished = started.plusMillis(1);
@@ -5244,11 +5540,13 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         private MutableClock(Instant current) { this(current, ZoneId.of("UTC")); }
         private MutableClock(Instant current, ZoneId zone) { this.current = current; this.zone = zone; }
         private synchronized void set(Instant instant) { current = instant; }
+        private synchronized void advance(Duration duration) { current = current.plus(duration); }
         @Override public ZoneId getZone() { return zone; }
         @Override public Clock withZone(ZoneId selected) { return new MutableClock(current, selected); }
         @Override public synchronized Instant instant() { return current; }
     }
 
+    private record StagedCorePair(Lease lease, SourceRead bootstrapRead, SourceRead fixturesRead) { }
     private record PairCapture(byte[] bootstrap, byte[] fixtures, byte[] live, FixtureRow fixtureOne,
                                FixtureRow fixtureTwo, Map<Integer, byte[]> historyPages, List<TeamRow> teams) { }
     private record SingleFixtureCapture(byte[] bootstrap, byte[] fixtures, byte[] live, FixtureRow fixture,
