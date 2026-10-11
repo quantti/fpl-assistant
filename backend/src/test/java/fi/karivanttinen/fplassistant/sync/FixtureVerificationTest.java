@@ -13,6 +13,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -286,7 +287,7 @@ class FixtureVerificationTest {
                 + "{\"element\":9,\"value\":0}],\"a\":[{\"element\":2,\"value\":90},"
                 + "{\"element\":658,\"value\":0}]}]";
         Inputs input = inputs(BASE, true, live(player(1, 90, 2, 0), player(2, 90, 3, 0),
-                player(9, 0, 0, 0), player(557, 0, 0, 0)), List.of(), stats);
+                player(9, 0, 0, 0), player(557, 0, 0, 0), player(658, 0, 0, 0)), List.of(), stats);
 
         var evidence = FixtureVerification.fixtureEvidenceByFixture(List.of(input.fixture), input.live)
                 .get(input.fixture.id());
@@ -310,6 +311,41 @@ class FixtureVerificationTest {
         assertThat(evidence.complete()).isFalse();
         assertThat(evidence.positivePlayerIds()).containsExactlyInAnyOrder(1, 2, 3);
         assertThat(evidence.appearances()).doesNotContainKey(3);
+    }
+
+    @Test
+    void parsedSourceStatsAndLiveRosterMustAgreeBidirectionallyIncludingKnownZeroMinuteRows() throws Exception {
+        byte[] fixtureBytes = resource("fixtures.json");
+        JsonNode fixtureRoot = JSON.readTree(fixtureBytes);
+        // Select the actual captured fixture 29 object, then replace only its fixture-local stats.
+        ObjectNode target = null;
+        for (JsonNode node : fixtureRoot) {
+            if (node.path("id").asInt() == 29) target = (ObjectNode) node;
+        }
+        assertThat(target).isNotNull();
+        target.set("stats", fixtureStats(true, true));
+        SourceDocument bootstrap = new SourceDocument(resource("bootstrap-static.json"), interval(BASE));
+        SourceDocument fixtures = new SourceDocument(JSON.writeValueAsBytes(fixtureRoot), interval(BASE));
+        FixtureRow fixture = CatalogueScheduleParser.parse(SEASON, bootstrap, fixtures).fixtures().stream()
+                .filter(row -> row.id() == 29).findFirst().orElseThrow();
+
+        var inconsistent = FixtureVerification.fixtureEvidenceByFixture(List.of(fixture),
+                liveDocument(15, 10, 26, 0, 40, 90, 2, 0)).get(29);
+        assertThat(inconsistent.complete()).isFalse();
+        assertThat(inconsistent.positivePlayerIds()).containsExactlyInAnyOrder(15, 40);
+
+        target.set("stats", fixtureStats(false, true));
+        fixtures = new SourceDocument(JSON.writeValueAsBytes(fixtureRoot), interval(BASE));
+        fixture = CatalogueScheduleParser.parse(SEASON, bootstrap, fixtures).fixtures().stream()
+                .filter(row -> row.id() == 29).findFirst().orElseThrow();
+        var explainedZeros = FixtureVerification.fixtureEvidenceByFixture(List.of(fixture),
+                liveDocument(15, 10, 26, 0, 40, 90, 2, 0)).get(29);
+        assertThat(explainedZeros.complete()).isTrue();
+        assertThat(explainedZeros.positivePlayerIds()).containsExactlyInAnyOrder(15, 40);
+
+        var unexplainedZero = FixtureVerification.fixtureEvidenceByFixture(List.of(fixture),
+                liveDocument(15, 10, 26, 0, 40, 90)).get(29);
+        assertThat(unexplainedZero.complete()).isFalse();
     }
 
     @Test
@@ -351,6 +387,38 @@ class FixtureVerificationTest {
         assertThat(result.reasons()).contains(Reason.MISSING_HISTORY,
                 Reason.FIXTURE_STAT_PARTICIPANT_MISSING);
         assertThat(result.observation().fingerprint()).hasSize(64);
+    }
+
+    private static ArrayNode fixtureStats(boolean goalByPlayer26, boolean includeZeroContributor) {
+        ArrayNode stats = JSON.createArrayNode();
+        ObjectNode minutes = stats.addObject();
+        minutes.put("identifier", "minutes");
+        ArrayNode homeMinutes = minutes.putArray("h");
+        homeMinutes.addObject().put("element", 15).put("value", 10);
+        homeMinutes.addObject().put("element", 26).put("value", 0);
+        if (includeZeroContributor) homeMinutes.addObject().put("element", 2).put("value", 0);
+        minutes.putArray("a").addObject().put("element", 40).put("value", 90);
+        ObjectNode goals = stats.addObject();
+        goals.put("identifier", "goals_scored");
+        goals.putArray("h").addObject().put("element", 26).put("value", goalByPlayer26 ? 1 : 0);
+        goals.putArray("a");
+        return stats;
+    }
+
+    private static SourceDocument liveDocument(int... playerMinutes) throws Exception {
+        ObjectNode root = JSON.createObjectNode();
+        ArrayNode elements = root.putArray("elements");
+        for (int i = 0; i < playerMinutes.length; i += 2) {
+            ObjectNode player = elements.addObject();
+            player.put("id", playerMinutes[i]);
+            ObjectNode explanation = player.putArray("explain").addObject();
+            explanation.put("fixture", 29);
+            explanation.putArray("stats").addObject().put("identifier", "minutes")
+                    .put("value", playerMinutes[i + 1]).put("points", playerMinutes[i + 1] >= 60 ? 2 : 1)
+                    .put("points_modification", 0);
+        }
+        Instant started = BASE.plusSeconds(2);
+        return new SourceDocument(JSON.writeValueAsBytes(root), interval(started));
     }
 
     private static Inputs normal(Instant start) throws Exception {

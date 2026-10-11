@@ -17,6 +17,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -1210,6 +1211,24 @@ public final class OwnedSyncStore {
                 timestamp(read.startedAt()), timestamp(read.finishedAt()), fingerprint, timestamp(publishedAt));
     }
 
+    private void insertIncrementalSourceFixtureReceipt(String season, String key, long generation,
+                                                       SourceRead read, String fingerprint, Instant publishedAt) {
+        jdbc.update("""
+                INSERT INTO %s(season, publication_key, latest_generation, source_read_started_at,
+                    source_read_finished_at, source_pair_fingerprint, published_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (season, publication_key) DO UPDATE SET
+                    latest_generation=EXCLUDED.latest_generation,
+                    source_read_started_at=EXCLUDED.source_read_started_at,
+                    source_read_finished_at=EXCLUDED.source_read_finished_at,
+                    source_pair_fingerprint=EXCLUDED.source_pair_fingerprint,
+                    published_at=EXCLUDED.published_at
+                WHERE %s.latest_generation<=EXCLUDED.latest_generation
+                  AND %s.source_pair_fingerprint IS DISTINCT FROM EXCLUDED.source_pair_fingerprint
+                """.formatted(tables.receipt(), tables.receipt(), tables.receipt()), season, key, generation,
+                timestamp(read.startedAt()), timestamp(read.finishedAt()), fingerprint, timestamp(publishedAt));
+    }
+
     private void insertIncrementalReceipt(String season, String key, long generation, SourceRead read,
                                          String fingerprint, Instant publishedAt) {
         jdbc.update("""
@@ -1252,6 +1271,41 @@ public final class OwnedSyncStore {
         return incrementalReceiptMap(lease, eventIds, INCREMENTAL_LIVE_EVENT_RECEIPT_PREFIX);
     }
 
+    Map<Integer, IncrementalAppearanceState> incrementalAppearanceStates(Lease lease, Set<Integer> fixtureIds) {
+        Objects.requireNonNull(fixtureIds);
+        if (fixtureIds.isEmpty()) return Map.of();
+        return tx.execute(status -> {
+            LockedRun run = lockAndValidate(lease);
+            requireIncrementalRun(run);
+            List<Integer> ordered = fixtureIds.stream().sorted().toList();
+            String placeholders = String.join(",", java.util.Collections.nCopies(ordered.size(), "?"));
+            List<Object> parameters = new ArrayList<>(ordered.size() + 1);
+            parameters.add(run.season);
+            ordered.stream().map(IncrementalAppearanceReceipt::appearanceStateKey).forEach(parameters::add);
+            Map<Integer, IncrementalAppearanceState> result = new LinkedHashMap<>();
+            jdbc.query("""
+                    SELECT publication_key, latest_generation, source_read_started_at,
+                           source_read_finished_at, source_pair_fingerprint
+                    FROM %s WHERE season=? AND publication_key IN (%s)
+                    """.formatted(tables.receipt(), placeholders), rs -> {
+                String key = rs.getString("publication_key");
+                int fixtureId = Integer.parseInt(key.substring(
+                        IncrementalAppearanceReceipt.APPEARANCE_STATE_PREFIX.length()));
+                Long generation = rs.getObject("latest_generation", Long.class);
+                Instant started = instant(rs, "source_read_started_at");
+                Instant finished = instant(rs, "source_read_finished_at");
+                String fingerprint = rs.getString("source_pair_fingerprint");
+                if (generation == null || generation <= 0 || started == null || finished == null
+                        || finished.isBefore(started) || fingerprint == null
+                        || !fingerprint.matches("[0-9a-f]{64}")) {
+                    throw new IllegalStateException("Persisted appearance invalidation state is malformed");
+                }
+                result.put(fixtureId, new IncrementalAppearanceState(fingerprint, finished));
+            }, parameters.toArray());
+            return Map.copyOf(result);
+        });
+    }
+
     private Map<Integer, PageReceipt> incrementalReceiptMap(Lease lease, Set<Integer> ids, String prefix) {
         if (ids.isEmpty()) return Map.of();
         return tx.execute(status -> {
@@ -1279,10 +1333,15 @@ public final class OwnedSyncStore {
         });
     }
 
-    void recordIncrementalLiveEvent(Lease lease, int eventId,
-                                   Map<Integer, Set<Integer>> participants, SourceRead read) {
+    Set<Integer> recordIncrementalLiveEvent(Lease lease, int eventId,
+                                            Map<Integer, Set<Integer>> participants,
+                                            List<CatalogueScheduleParser.FixtureRow> fixtures,
+                                            Map<Integer, FixtureVerification.FixtureEvidence> evidence,
+                                            SourceRead read) {
         if (eventId <= 0) throw new IllegalArgumentException("event id must be positive");
         Objects.requireNonNull(participants);
+        Objects.requireNonNull(fixtures);
+        Objects.requireNonNull(evidence);
         Objects.requireNonNull(read);
         participants.forEach((fixture, playerIds) -> {
             if (fixture == null || fixture <= 0 || playerIds == null
@@ -1291,9 +1350,99 @@ public final class OwnedSyncStore {
                 throw new IllegalArgumentException("Invalid incremental fixture participant manifest");
             }
         });
-        tx.executeWithoutResult(status -> {
+        Map<Integer, CatalogueScheduleParser.FixtureRow> fixturesById = new LinkedHashMap<>();
+        for (CatalogueScheduleParser.FixtureRow fixture : fixtures) {
+            FixtureVerification.FixtureEvidence fixtureEvidence = evidence.get(fixture.id());
+            if (fixture.gameweek() == null || fixture.gameweek() != eventId || fixtureEvidence == null
+                    || !fixtureEvidence.liveRead().startedAt().equals(read.startedAt())
+                    || !fixtureEvidence.liveRead().completedAt().equals(read.finishedAt())
+                    || fixturesById.putIfAbsent(fixture.id(), fixture) != null) {
+                throw new IllegalArgumentException("Invalid incremental fixture appearance evidence");
+            }
+        }
+        if (!fixturesById.keySet().equals(participants.keySet())
+                || !fixturesById.keySet().equals(evidence.keySet())
+                || evidence.entrySet().stream().anyMatch(entry -> {
+                    CatalogueScheduleParser.FixtureRow fixture = fixturesById.get(entry.getKey());
+                    return !participants.get(entry.getKey()).containsAll(entry.getValue().positivePlayerIds())
+                            || !participants.get(entry.getKey()).containsAll(
+                                    FixtureVerification.fixtureStatParticipantIds(fixture));
+                })) {
+            throw new IllegalArgumentException("Live fixture, participant and appearance sets must match");
+        }
+        return tx.execute(status -> {
             LockedRun run = lockAndValidate(lease);
             requireIncrementalRun(run);
+            requireReadNotFuture(read, now());
+            List<Instant> priorEventReads = jdbc.query("SELECT source_read_finished_at FROM " + tables.receipt()
+                    + " WHERE season=? AND publication_key=? AND source_read_finished_at IS NOT NULL",
+                    (rs, row) -> instant(rs, "source_read_finished_at"), run.season,
+                    INCREMENTAL_LIVE_EVENT_RECEIPT_PREFIX + eventId);
+            if (priorEventReads.size() > 1 || !priorEventReads.isEmpty()
+                    && read.startedAt().isBefore(priorEventReads.getFirst())) {
+                throw new IllegalArgumentException("Live appearance capture is not ordered after its event source");
+            }
+            Set<Integer> invalidatedFixtures = new LinkedHashSet<>();
+            Map<Integer, String> appearanceFingerprints = new LinkedHashMap<>();
+            for (CatalogueScheduleParser.FixtureRow fixture : fixturesById.values()) {
+                List<SourceFixtureRevision> sourceRevision = jdbc.query("SELECT source_pair_fingerprint,"
+                        + "source_read_finished_at FROM " + tables.receipt()
+                        + " WHERE season=? AND publication_key=?", (rs, row) -> new SourceFixtureRevision(
+                                rs.getString("source_pair_fingerprint"), instant(rs, "source_read_finished_at")),
+                        run.season, IncrementalAppearanceReceipt.sourceFixtureKey(fixture.id()));
+                String sourceFingerprint = IncrementalAppearanceReceipt.fixtureRevisionFingerprint(fixture, eventId);
+                if (sourceRevision.size() != 1
+                        || !sourceFingerprint.equals(sourceRevision.getFirst().fingerprint())
+                        || sourceRevision.getFirst().finishedAt() == null
+                        || !read.startedAt().isAfter(sourceRevision.getFirst().finishedAt())) {
+                    throw new IllegalArgumentException("Live appearance capture is not ordered after its fixture source");
+                }
+                String appearanceFingerprint = IncrementalAppearanceReceipt.fingerprint(
+                        fixture, eventId, evidence.get(fixture.id()));
+                appearanceFingerprints.put(fixture.id(), appearanceFingerprint);
+                String stateKey = IncrementalAppearanceReceipt.appearanceStateKey(fixture.id());
+                List<AppearanceStateReceipt> previous = jdbc.query("SELECT latest_generation,"
+                                + "source_read_started_at,source_read_finished_at,source_pair_fingerprint FROM "
+                                + tables.receipt() + " WHERE season=? AND publication_key=? FOR UPDATE",
+                        (rs, row) -> new AppearanceStateReceipt(rs.getLong("latest_generation"),
+                                instant(rs, "source_read_started_at"), instant(rs, "source_read_finished_at"),
+                                rs.getString("source_pair_fingerprint")), run.season, stateKey);
+                if (previous.size() > 1) {
+                    throw new IllegalStateException("Fixture appearance state is not unique");
+                }
+                AppearanceStateReceipt priorState = previous.isEmpty() ? null : previous.getFirst();
+                if (priorState != null && (priorState.generation() <= 0 || priorState.startedAt() == null
+                        || priorState.finishedAt() == null || priorState.finishedAt().isBefore(priorState.startedAt())
+                        || priorState.fingerprint() == null
+                        || !priorState.fingerprint().matches("[0-9a-f]{64}"))) {
+                    throw new IllegalStateException("Persisted appearance invalidation state is malformed");
+                }
+                if (priorState == null || !appearanceFingerprint.equals(priorState.fingerprint())) {
+                    if (priorState != null && priorState.generation() > run.generation) {
+                        throw new StaleGenerationException(run.generation, priorState.generation(),
+                                run.season, stateKey);
+                    }
+                    invalidatedFixtures.add(fixture.id());
+                    int updated = jdbc.update("""
+                            INSERT INTO %s(season,publication_key,latest_generation,source_read_started_at,
+                                source_read_finished_at,source_pair_fingerprint,published_at)
+                            VALUES (?,?,?,?,?,?,?)
+                            ON CONFLICT (season,publication_key) DO UPDATE SET
+                                latest_generation=EXCLUDED.latest_generation,
+                                source_read_started_at=EXCLUDED.source_read_started_at,
+                                source_read_finished_at=EXCLUDED.source_read_finished_at,
+                                source_pair_fingerprint=EXCLUDED.source_pair_fingerprint,
+                                published_at=EXCLUDED.published_at
+                            WHERE %s.latest_generation<=EXCLUDED.latest_generation
+                            """.formatted(tables.receipt(), tables.receipt()), run.season, stateKey,
+                            run.generation, timestamp(read.startedAt()), timestamp(read.finishedAt()),
+                            appearanceFingerprint, timestamp(now()));
+                    if (updated != 1) {
+                        throw new StaleGenerationException(run.generation,
+                                priorState == null ? run.generation : priorState.generation(), run.season, stateKey);
+                    }
+                }
+            }
             Instant recordedAt = now();
             String key = INCREMENTAL_LIVE_EVENT_RECEIPT_PREFIX + eventId;
             jdbc.update("""
@@ -1308,6 +1457,10 @@ public final class OwnedSyncStore {
                     WHERE %s.latest_generation<=EXCLUDED.latest_generation
                     """.formatted(tables.receipt(), tables.receipt()), run.season, key, run.generation,
                     timestamp(read.startedAt()), timestamp(read.finishedAt()), timestamp(recordedAt));
+            insertIncrementalReceipt(run.season,
+                    IncrementalAppearanceReceipt.liveSourceKey(eventId, run.generation,
+                            read.startedAt(), read.finishedAt()),
+                    run.generation, read, null, recordedAt);
             includeIncrementalSourceRead(run, read);
             for (Map.Entry<Integer, Set<Integer>> fixture : participants.entrySet()) {
                 String fixturePrefix = INCREMENTAL_PARTICIPANT_RECEIPT_PREFIX
@@ -1327,6 +1480,61 @@ public final class OwnedSyncStore {
                             fixturePrefix + playerId, run.generation, timestamp(read.startedAt()),
                             timestamp(read.finishedAt()), timestamp(recordedAt));
                 }
+                CatalogueScheduleParser.FixtureRow fixtureRow = fixturesById.get(fixture.getKey());
+                FixtureVerification.FixtureEvidence fixtureEvidence = evidence.get(fixture.getKey());
+                insertIncrementalReceipt(run.season,
+                        IncrementalAppearanceReceipt.snapshotKey(fixtureRow, eventId, fixtureEvidence,
+                                fixtureEvidence.liveRead()),
+                        run.generation, read, appearanceFingerprints.get(fixture.getKey()), recordedAt);
+                for (Map.Entry<Integer, FixtureVerification.Appearance> appearance
+                        : new java.util.TreeMap<>(fixtureEvidence.appearances()).entrySet()) {
+                    insertIncrementalReceipt(run.season,
+                            IncrementalAppearanceReceipt.playerKey(fixture.getKey(), appearance.getKey(),
+                                    appearance.getValue(), fixtureEvidence.liveRead()),
+                            run.generation, read, null, recordedAt);
+                }
+            }
+            return Set.copyOf(invalidatedFixtures);
+        });
+    }
+
+    void recordIncrementalFixtureSourceRevisions(Lease lease,
+            List<CatalogueScheduleParser.FixtureRow> fixtures, SourceRead fixtureRead) {
+        Objects.requireNonNull(fixtures);
+        Objects.requireNonNull(fixtureRead);
+        tx.executeWithoutResult(status -> {
+            LockedRun run = lockAndValidate(lease);
+            requireIncrementalRun(run);
+            requireReadNotFuture(fixtureRead, now());
+            Map<Integer, String> sourceFingerprints = new LinkedHashMap<>();
+            for (CatalogueScheduleParser.FixtureRow fixture : fixtures) {
+                if (!run.season.equals(fixture.seasonCode())
+                        || sourceFingerprints.putIfAbsent(fixture.id(),
+                                IncrementalAppearanceReceipt.fixtureRevisionFingerprint(
+                                        fixture, fixture.gameweek())) != null) {
+                    throw new IllegalArgumentException("Invalid fixture-specific source revision set");
+                }
+            }
+            if (sourceFingerprints.isEmpty()) return;
+            List<Integer> orderedIds = sourceFingerprints.keySet().stream().sorted().toList();
+            String placeholders = String.join(",", java.util.Collections.nCopies(orderedIds.size(), "?"));
+            List<Object> parameters = new ArrayList<>(orderedIds.size() + 1);
+            parameters.add(run.season);
+            orderedIds.stream().map(IncrementalAppearanceReceipt::sourceFixtureKey).forEach(parameters::add);
+            Map<Integer, String> existing = new HashMap<>();
+            jdbc.query("SELECT publication_key,source_pair_fingerprint FROM " + tables.receipt()
+                    + " WHERE season=? AND publication_key IN (" + placeholders + ")", rs -> {
+                String key = rs.getString("publication_key");
+                existing.put(Integer.parseInt(key.substring(
+                        IncrementalAppearanceReceipt.SOURCE_FIXTURE_PREFIX.length())),
+                        rs.getString("source_pair_fingerprint"));
+            }, parameters.toArray());
+            Instant recordedAt = now();
+            for (int fixtureId : orderedIds) {
+                if (sourceFingerprints.get(fixtureId).equals(existing.get(fixtureId))) continue;
+                insertIncrementalSourceFixtureReceipt(run.season,
+                        IncrementalAppearanceReceipt.sourceFixtureKey(fixtureId), run.generation,
+                        fixtureRead, sourceFingerprints.get(fixtureId), recordedAt);
             }
         });
     }
@@ -3109,19 +3317,23 @@ public final class OwnedSyncStore {
 
     /** Ends an incremental producer run after a validated canonical source revision supersedes it. */
     void supersedeIncrementalCoreImport(Lease lease) {
+        supersedeIncrementalCoreImport(lease, "Superseded by a validated newer canonical source pair");
+    }
+
+    void supersedeIncrementalCoreImport(Lease lease, String reason) {
         tx.executeWithoutResult(status -> {
             LockedRun run = lockAndValidate(lease);
             requireIncrementalRun(run);
             Instant supersededAt = now();
             requireNotExpired(run, supersededAt);
             int updated = jdbc.update("""
-                    UPDATE %s SET state='SUPERSEDED',
-                        last_error='Superseded by a validated newer canonical source pair',
+                    UPDATE %s SET state='SUPERSEDED', last_error=?,
                         failed_at=NULL, completed_at=?, lease_owner=NULL, lease_token=NULL,
                         lease_expires_at=NULL, updated_at=?
                     WHERE generation=? AND state='LEASED' AND lease_owner=? AND lease_token=? AND lease_fence=?
-                    """.formatted(tables.run()), timestamp(supersededAt), timestamp(supersededAt),
-                    run.generation, lease.owner(), lease.token(), lease.fence());
+                    """.formatted(tables.run()), boundedNullable(reason, MAX_ERROR_CHARS),
+                    timestamp(supersededAt), timestamp(supersededAt), run.generation,
+                    lease.owner(), lease.token(), lease.fence());
             if (updated != 1) throw new LeaseLostException("Lease is stale for generation " + run.generation);
         });
     }
@@ -3891,6 +4103,7 @@ public final class OwnedSyncStore {
     private record PageWatermark(Long generation, Instant startedAt, Instant finishedAt, Instant sourceFloor,
                                  String producerKey, String coalescingKey, String publicationKey) { }
     private record SnapshotReceipt(Long generation, String fingerprint) { }
+    private record SourceFixtureRevision(String fingerprint, Instant finishedAt) { }
     private record GameweekSyncRow(String state, String sourceSignature, Instant firstCheckedAt,
                                    long invalidationRevision, Instant invalidationFloor,
                                    String finalizedSourceSignature, Long finalizedInvalidationRevision) { }
@@ -3909,6 +4122,18 @@ public final class OwnedSyncStore {
     }
 
     record PageReceipt(long generation, SourceRead read) { }
+
+    record IncrementalAppearanceState(String fullFixtureFingerprint, Instant invalidationFloor) {
+        IncrementalAppearanceState {
+            if (fullFixtureFingerprint == null || !fullFixtureFingerprint.matches("[0-9a-f]{64}")
+                    || invalidationFloor == null) {
+                throw new IllegalArgumentException("Invalid persisted appearance invalidation state");
+            }
+        }
+    }
+
+    private record AppearanceStateReceipt(long generation, Instant startedAt, Instant finishedAt,
+                                          String fingerprint) { }
 
     private record LockedRun(long generation, SyncKind kind, String season, String coalescingKey,
                              String publicationKey, String producerKey, String state, String owner, UUID token,

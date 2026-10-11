@@ -2,7 +2,12 @@ package fi.karivanttinen.fplassistant.testsupport;
 
 import org.springframework.jdbc.core.JdbcTemplate;
 
+import java.sql.Timestamp;
+import java.util.List;
 import java.util.function.Supplier;
+
+import fi.karivanttinen.fplassistant.sync.CatalogueScheduleParser.FixtureRow;
+import fi.karivanttinen.fplassistant.sync.CatalogueScheduleParser.TeamRow;
 
 /**
  * The fixture league every data-dependent test asserts against.
@@ -101,6 +106,41 @@ public final class TapasSeed {
                 ON CONFLICT (fixture_id, player_id, season_id) DO NOTHING
                 """, fixtureId, playerId, seasonId, gameweek, playerTeamId, opponentTeamId,
                 wasHome, java.sql.Timestamp.from(kickoff));
+    }
+
+    /** Seeds the Tapas fixture identity mirror used by the owned-sync collector evidence test. */
+    public static void seedOwnedSyncFixtureIdentity(JdbcTemplate jdbc, int seasonId,
+                                                     List<TeamRow> teams, List<FixtureRow> fixtures) {
+        ensureOwnedSyncCaptureSeason(jdbc);
+        if (seasonId != 27 || teams.isEmpty() || fixtures.isEmpty()
+                || teams.stream().anyMatch(team -> team.seasonId() != seasonId)
+                || fixtures.stream().anyMatch(fixture -> fixture.seasonId() != seasonId)) {
+            throw new IllegalArgumentException("Invalid owned-sync fixture identity test seed");
+        }
+        jdbc.batchUpdate("""
+                INSERT INTO team(id,season_id,code,name,short_name,strength) VALUES (?,?,?,?,?,3)
+                ON CONFLICT (id,season_id) DO UPDATE SET code=EXCLUDED.code,name=EXCLUDED.name,
+                    short_name=EXCLUDED.short_name
+                """, teams.stream().map(team -> new Object[] {team.id(), seasonId, team.code(),
+                team.name(), team.shortName()}).toList());
+        jdbc.batchUpdate("""
+                INSERT INTO fixture(id,season_id,gameweek,code,team_h,team_a,team_h_score,team_a_score,
+                    team_h_difficulty,team_a_difficulty,kickoff_time,started,finished,
+                    finished_provisional,minutes,stats)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?::jsonb)
+                ON CONFLICT (id,season_id) DO UPDATE SET gameweek=EXCLUDED.gameweek,code=EXCLUDED.code,
+                    team_h=EXCLUDED.team_h,team_a=EXCLUDED.team_a,team_h_score=EXCLUDED.team_h_score,
+                    team_a_score=EXCLUDED.team_a_score,team_h_difficulty=EXCLUDED.team_h_difficulty,
+                    team_a_difficulty=EXCLUDED.team_a_difficulty,kickoff_time=EXCLUDED.kickoff_time,
+                    started=EXCLUDED.started,finished=EXCLUDED.finished,
+                    finished_provisional=EXCLUDED.finished_provisional,minutes=EXCLUDED.minutes,
+                    stats=EXCLUDED.stats
+                """, fixtures.stream().map(fixture -> new Object[] {fixture.id(), seasonId,
+                fixture.gameweek(), fixture.code(), fixture.homeTeamId(), fixture.awayTeamId(),
+                fixture.homeScore(), fixture.awayScore(), fixture.homeDifficulty(), fixture.awayDifficulty(),
+                fixture.kickoff() == null ? null : Timestamp.from(fixture.kickoff()), fixture.started(),
+                fixture.finished(), fixture.fields().get("finished_provisional"), fixture.fields().get("minutes"),
+                fixture.fields().get("stats")}).toList());
     }
 
     /** Selects one test season as current without assigning meaning to the real playing season. */

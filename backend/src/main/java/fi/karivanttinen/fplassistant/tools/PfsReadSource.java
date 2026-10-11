@@ -1,5 +1,7 @@
 package fi.karivanttinen.fplassistant.tools;
 
+import java.sql.Timestamp;
+import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -78,6 +80,31 @@ public final class PfsReadSource {
         }
     }
 
+    public record FixtureSide(int fixtureId, int clubId) {
+    }
+
+    /** Receipt-backed complete-positive-population proof for one fixture side. */
+    public record SidePopulation(FixtureReceipt fixtureReceipt, boolean sourceRosterKnown,
+                                 boolean sourceRosterComplete, int expectedPositive,
+                                 int matchedPositive, int unexpectedPositive) {
+        public SidePopulation {
+            Objects.requireNonNull(fixtureReceipt);
+            if (expectedPositive < 0 || matchedPositive < 0 || unexpectedPositive < 0
+                    || matchedPositive > expectedPositive) {
+                throw new IllegalArgumentException("Invalid fixture-side population counts");
+            }
+        }
+
+        public boolean incremental() {
+            return fixtureReceipt == FixtureReceipt.INCREMENTAL || sourceRosterKnown;
+        }
+
+        public boolean complete() {
+            return sourceRosterComplete && expectedPositive > 0
+                    && matchedPositive == expectedPositive && unexpectedPositive == 0;
+        }
+    }
+
     /**
      * Receipt state for a bulk fixture population. This must be called inside the ranking
      * transaction: it is coverage metadata for the same PFS rows exposed by {@link #cte()}.
@@ -148,6 +175,293 @@ public final class PfsReadSource {
                             rs.getInt("incremental_rows"), rs.getInt("other_rows")));
                 },
                 args.toArray());
+        return Map.copyOf(result);
+    }
+
+    /**
+     * Proves fixture-side positive-appearance coverage in one set-based read. It reads only the
+     * exact live-event generation and source fixture identity represented by the durable receipts;
+     * zero-minute rows are intentionally outside the mandatory participant population.
+     */
+    public Map<FixtureSide, SidePopulation> fixtureSidePopulation(
+            int seasonId, String seasonCode, String sourceTable, String sourceSeasonColumn,
+            Object sourceSeasonValue, Set<Integer> fixtureIds, Instant asOf) {
+        if (fixtureIds.isEmpty()) return Map.of();
+        String fixtures = identifier(sourceTable);
+        String seasonColumn = identifier(sourceSeasonColumn);
+        boolean hasCode = hasColumn(fixtures, "code");
+        boolean hasProvisional = hasColumn(fixtures, "finished_provisional");
+        boolean hasMinutes = hasColumn(fixtures, "minutes");
+        Map<Integer, FixtureReceipt> receipts = fixtureReceipts(seasonId, seasonCode, fixtureIds);
+        if (!exists(pageReceipt)) {
+            return unprovenFixtureSides(fixtures, seasonColumn, sourceSeasonValue, fixtureIds, receipts);
+        }
+        List<Integer> orderedFixtures = fixtureIds.stream().sorted().toList();
+        List<Object> args = new java.util.ArrayList<>();
+        List<String> values = new java.util.ArrayList<>();
+        for (int fixtureId : orderedFixtures) {
+            values.add("(?)");
+            args.add(fixtureId);
+        }
+        String playerPrefix = fi.karivanttinen.fplassistant.sync.IncrementalAppearanceReceipt.PLAYER_PREFIX;
+        String snapshotPrefix = fi.karivanttinen.fplassistant.sync.IncrementalAppearanceReceipt.SNAPSHOT_PREFIX;
+        String appearanceStatePrefix =
+                fi.karivanttinen.fplassistant.sync.IncrementalAppearanceReceipt.APPEARANCE_STATE_PREFIX;
+        String liveEventSourcePrefix =
+                fi.karivanttinen.fplassistant.sync.IncrementalAppearanceReceipt.LIVE_EVENT_SOURCE_PREFIX;
+        String sql = """
+                WITH %s, requested_fixture(fixture_id) AS (VALUES %s),
+                source_fixture AS (
+                    SELECT f.id AS fixture_id, %s AS code, f.gameweek, f.team_h, f.team_a,
+                           f.kickoff_time, f.started, f.finished, %s AS finished_provisional, %s AS minutes,
+                           f.team_h_score, f.team_a_score
+                    FROM %s f JOIN requested_fixture r ON r.fixture_id=f.id
+                    WHERE f.%s=?
+                ), source_revisions AS (
+                    SELECT split_part(r.publication_key, ':', 2)::integer AS fixture_id,
+                           r.latest_generation, r.source_read_started_at, r.source_read_finished_at,
+                           r.source_pair_fingerprint
+                    FROM %s r
+                    WHERE r.season=? AND r.publication_key LIKE '%s%%'
+                      AND r.publication_key ~ '^incremental-source-fixture:[0-9]+$'
+                      AND r.latest_generation IS NOT NULL
+                      AND r.source_read_started_at IS NOT NULL
+                      AND r.source_read_finished_at>=r.source_read_started_at
+                      AND r.source_read_finished_at<=?
+                ), appearance_state AS (
+                    SELECT split_part(r.publication_key, ':', 3)::integer AS fixture_id,
+                           r.latest_generation, r.source_read_started_at, r.source_read_finished_at,
+                           r.source_pair_fingerprint
+                    FROM %s r
+                    WHERE r.season=? AND r.publication_key LIKE '%s%%'
+                      AND r.publication_key ~ '^incremental-live-appearance-state:fixture:[0-9]+$'
+                      AND r.latest_generation IS NOT NULL
+                      AND r.source_read_started_at IS NOT NULL
+                      AND r.source_read_finished_at>=r.source_read_started_at
+                      AND r.source_pair_fingerprint ~ '^[0-9a-f]{64}$'
+                      AND r.source_read_finished_at<=?
+                ), snapshot_fixtures AS (
+                    SELECT DISTINCT split_part(r.publication_key, ':', 3)::integer AS fixture_id
+                    FROM %s r
+                    WHERE r.season=? AND r.publication_key LIKE '%s%%'
+                      AND split_part(r.publication_key, ':', 3) ~ '^[0-9]+$'
+                ), snapshots AS (
+                    SELECT r.season, r.latest_generation, r.source_read_started_at,
+                           r.source_read_finished_at, r.source_pair_fingerprint,
+                           split_part(r.publication_key, ':', 3)::integer AS fixture_id,
+                           split_part(r.publication_key, ':', 5)::integer AS event_id,
+                           split_part(r.publication_key, ':', 7)::integer AS home_id,
+                           split_part(r.publication_key, ':', 9)::integer AS away_id,
+                           split_part(r.publication_key, ':', 11) AS gameweek_key,
+                           split_part(r.publication_key, ':', 13) AS kickoff_key,
+                           split_part(r.publication_key, ':', 15) AS finished_key,
+                           split_part(r.publication_key, ':', 17)='1' AS source_complete,
+                           split_part(r.publication_key, ':', 19)::integer AS expected_appearance_rows,
+                           split_part(r.publication_key, ':', 21)::integer AS fixture_code,
+                           split_part(r.publication_key, ':', 23)='1' AS started,
+                           split_part(r.publication_key, ':', 25)='1' AS provisional,
+                           split_part(r.publication_key, ':', 27)::integer AS fixture_minutes,
+                           split_part(r.publication_key, ':', 29) AS score_home,
+                           split_part(r.publication_key, ':', 31) AS score_away
+                    FROM %s r
+                    WHERE r.season=? AND r.publication_key LIKE '%s%%'
+                      AND r.publication_key ~ '^incremental-live-appearance:fixture:[0-9]+:e:[0-9]+:h:[0-9]+:a:[0-9]+:g:([0-9]+|n):k:(-?[0-9]+|n):f:[01]:c:[01]:p:[0-9]+:cd:-?[0-9]+:st:[01]:pr:[01]:m:[0-9]+:sh:(-?[0-9]+|n):sa:(-?[0-9]+|n):r:-?[0-9]+:-?[0-9]+$'
+                      AND r.latest_generation IS NOT NULL
+                      AND r.source_read_started_at IS NOT NULL
+                      AND r.source_read_finished_at>=r.source_read_started_at
+                ), appearance_rows AS (
+                    SELECT r.season, r.latest_generation, r.source_read_started_at,
+                           r.source_read_finished_at,
+                           split_part(r.publication_key, ':', 3)::integer AS fixture_id,
+                           split_part(r.publication_key, ':', 5)::integer AS player_id,
+                           split_part(r.publication_key, ':', 7) AS side,
+                           split_part(r.publication_key, ':', 9)::integer AS minutes
+                    FROM %s r JOIN requested_fixture f
+                      ON f.fixture_id=split_part(r.publication_key, ':', 3)::integer
+                    WHERE r.season=? AND r.publication_key LIKE '%s%%'
+                      AND r.publication_key ~ '^incremental-live-player:fixture:[0-9]+:player:[0-9]+:side:(HOME|AWAY):minutes:[0-9]+:readstart:-?[0-9]+:readfinish:-?[0-9]+$'
+                      AND r.latest_generation IS NOT NULL
+                      AND r.source_read_started_at IS NOT NULL
+                      AND r.source_read_finished_at>=r.source_read_started_at
+                ), appearance_digest AS (
+                    SELECT a.fixture_id, a.latest_generation, a.source_read_started_at,
+                           a.source_read_finished_at, count(*) AS appearance_rows,
+                           encode(sha256(convert_to(string_agg(
+                               a.player_id::text || ':' || a.side || ':' || a.minutes::text,
+                               '|' ORDER BY a.player_id), 'UTF8')), 'hex') AS fingerprint
+                    FROM appearance_rows a JOIN snapshots s
+                      ON s.season=a.season AND s.fixture_id=a.fixture_id
+                     AND s.latest_generation=a.latest_generation
+                     AND s.source_read_started_at=a.source_read_started_at
+                     AND s.source_read_finished_at=a.source_read_finished_at
+                    GROUP BY a.fixture_id, a.latest_generation,
+                             a.source_read_started_at, a.source_read_finished_at
+                ), source_snapshots AS (
+                    SELECT s.*, f.team_h, f.team_a,
+                           current_state.source_read_finished_at AS appearance_floor,
+                           (COALESCE(d.appearance_rows, 0)=s.expected_appearance_rows
+                            AND s.source_pair_fingerprint=encode(sha256(convert_to(
+                                sr.source_pair_fingerprint || ':' || COALESCE(d.fingerprint,
+                                    encode(sha256(convert_to('', 'UTF8')), 'hex')), 'UTF8')), 'hex'))
+                               AS digest_valid
+                    FROM snapshots s
+                    JOIN source_fixture f ON f.fixture_id=s.fixture_id
+                    JOIN source_revisions sr ON sr.fixture_id=s.fixture_id
+                    JOIN appearance_state current_state ON current_state.fixture_id=s.fixture_id
+                      AND current_state.source_pair_fingerprint=s.source_pair_fingerprint
+                      AND s.source_read_finished_at>=current_state.source_read_finished_at
+                    JOIN %s event_source_receipt ON event_source_receipt.season=s.season
+                      AND event_source_receipt.publication_key='%s' || s.event_id::text
+                          || ':generation:' || s.latest_generation::text
+                          || ':started:' || round(extract(epoch FROM s.source_read_started_at)*1000000)::bigint::text
+                          || ':finished:' || round(extract(epoch FROM s.source_read_finished_at)*1000000)::bigint::text
+                      AND event_source_receipt.latest_generation=s.latest_generation
+                      AND event_source_receipt.source_read_started_at=s.source_read_started_at
+                      AND event_source_receipt.source_read_finished_at=s.source_read_finished_at
+                      AND event_source_receipt.source_read_finished_at<=?
+                    LEFT JOIN appearance_digest d ON d.fixture_id=s.fixture_id
+                      AND d.latest_generation=s.latest_generation
+                      AND d.source_read_started_at=s.source_read_started_at
+                      AND d.source_read_finished_at=s.source_read_finished_at
+                    WHERE s.source_read_finished_at<=?
+                      AND s.source_read_started_at>sr.source_read_finished_at
+                      AND sr.source_pair_fingerprint ~ '^[0-9a-f]{64}$'
+                      AND f.gameweek=s.event_id
+                      AND f.team_h=s.home_id AND f.team_a=s.away_id
+                      AND ((f.gameweek IS NULL AND s.gameweek_key='n')
+                           OR f.gameweek::text=s.gameweek_key)
+                      AND ((f.kickoff_time IS NULL AND s.kickoff_key='n')
+                           OR (f.kickoff_time IS NOT NULL AND s.kickoff_key=
+                               round(extract(epoch FROM f.kickoff_time)*1000000)::bigint::text))
+                      AND s.finished_key=CASE WHEN f.finished THEN '1' ELSE '0' END
+                      AND %s AND f.started=s.started
+                      AND %s AND %s
+                      AND ((f.team_h_score IS NULL AND s.score_home='n')
+                           OR f.team_h_score::text=s.score_home)
+                      AND ((f.team_a_score IS NULL AND s.score_away='n')
+                           OR f.team_a_score::text=s.score_away)
+                ), current_snapshot AS (
+                    SELECT DISTINCT ON (s.fixture_id) s.*,
+                           s.appearance_floor AS proof_floor
+                    FROM source_snapshots s
+                    ORDER BY s.fixture_id,s.source_read_started_at DESC,
+                             s.source_read_finished_at DESC,s.latest_generation DESC
+                ), appearances AS (
+                    SELECT s.season,s.fixture_id,s.latest_generation,
+                           a.player_id,a.side,a.minutes,s.proof_floor AS appearance_floor,
+                           CASE WHEN a.side='HOME' THEN s.team_h ELSE s.team_a END AS club_id
+                    FROM current_snapshot s JOIN appearance_rows a
+                      ON a.season=s.season AND a.fixture_id=s.fixture_id
+                     AND a.latest_generation=s.latest_generation
+                     AND a.source_read_started_at=s.source_read_started_at
+                     AND a.source_read_finished_at=s.source_read_finished_at
+                    WHERE s.digest_valid AND s.source_complete
+                ), expected AS (
+                    SELECT a.fixture_id, a.club_id, count(*) AS expected_positive,
+                           count(*) FILTER (WHERE p.player_id IS NOT NULL
+                               AND p.evidence_status='PROVISIONAL' AND p.owned_evidence
+                               AND watermark.source_read_started_at>=a.appearance_floor
+                               AND watermark.source_read_finished_at>=a.appearance_floor
+                               AND watermark.source_read_started_at<=watermark.source_read_finished_at
+                               AND watermark.source_read_finished_at<=?
+                               AND p.minutes BETWEEN 1 AND 90 AND p.total_points IS NOT NULL
+                               AND p.minutes=a.minutes AND p.player_team_id=a.club_id
+                               AND p.was_home=(a.side='HOME')
+                               AND p.opponent_team_id=CASE WHEN p.was_home THEN f.team_a ELSE f.team_h END)
+                               AS matched_positive
+                    FROM appearances a JOIN source_fixture f ON f.fixture_id=a.fixture_id
+                    LEFT JOIN pfs_read p ON p.season_id=? AND p.fixture_id=a.fixture_id
+                      AND p.player_id=a.player_id
+                    LEFT JOIN %s watermark ON watermark.season=a.season
+                      AND watermark.publication_key='%s' || a.player_id::text
+                    GROUP BY a.fixture_id, a.club_id
+                ), unexpected AS (
+                    SELECT f.fixture_id,
+                           CASE WHEN p.was_home THEN f.team_h ELSE f.team_a END AS club_id,
+                           count(*) AS unexpected_positive
+                    FROM pfs_read p JOIN source_fixture f ON f.fixture_id=p.fixture_id
+                    WHERE p.season_id=? AND p.minutes>0
+                      AND NOT EXISTS (
+                          SELECT 1 FROM appearances a WHERE a.fixture_id=p.fixture_id
+                            AND a.player_id=p.player_id
+                            AND a.club_id=CASE WHEN p.was_home THEN f.team_h ELSE f.team_a END
+                            AND a.minutes=p.minutes AND p.minutes BETWEEN 1 AND 90
+                            AND p.total_points IS NOT NULL
+                            AND p.opponent_team_id=CASE WHEN p.was_home THEN f.team_a ELSE f.team_h END)
+                    GROUP BY f.fixture_id, CASE WHEN p.was_home THEN f.team_h ELSE f.team_a END
+                ), side_rows AS (
+                    SELECT f.fixture_id, f.team_h AS club_id FROM source_fixture f
+                    UNION ALL
+                    SELECT f.fixture_id, f.team_a AS club_id FROM source_fixture f
+                )
+                SELECT s.fixture_id, s.club_id,
+                       (c.fixture_id IS NOT NULL OR (r.fixture_id IS NOT NULL AND old_snapshot.fixture_id IS NOT NULL))
+                           AS source_roster_known,
+                       COALESCE(c.source_complete AND c.digest_valid, false) AS source_roster_complete,
+                       COALESCE(e.expected_positive, 0) AS expected_positive,
+                       COALESCE(e.matched_positive, 0) AS matched_positive,
+                       COALESCE(u.unexpected_positive, 0) AS unexpected_positive
+                FROM side_rows s
+                LEFT JOIN current_snapshot c ON c.fixture_id=s.fixture_id
+                LEFT JOIN source_revisions r ON r.fixture_id=s.fixture_id
+                LEFT JOIN snapshot_fixtures old_snapshot ON old_snapshot.fixture_id=s.fixture_id
+                LEFT JOIN expected e ON e.fixture_id=s.fixture_id AND e.club_id=s.club_id
+                LEFT JOIN unexpected u ON u.fixture_id=s.fixture_id AND u.club_id=s.club_id
+                """.formatted(cte(), String.join(",", values), hasCode ? "f.code" : "NULL::integer",
+                hasProvisional ? "f.finished_provisional" : "NULL::boolean",
+                hasMinutes ? "f.minutes" : "NULL::integer", fixtures, seasonColumn, pageReceipt,
+                fi.karivanttinen.fplassistant.sync.IncrementalAppearanceReceipt.SOURCE_FIXTURE_PREFIX,
+                pageReceipt, appearanceStatePrefix, pageReceipt, snapshotPrefix, pageReceipt, snapshotPrefix,
+                pageReceipt, playerPrefix,
+                pageReceipt, liveEventSourcePrefix,
+                hasCode ? "f.code=s.fixture_code" : "TRUE",
+                hasProvisional ? "COALESCE(f.finished_provisional,FALSE)=s.provisional" : "TRUE",
+                hasMinutes ? "f.minutes=s.fixture_minutes" : "TRUE", pageReceipt,
+                fi.karivanttinen.fplassistant.sync.IncrementalPlayerFixturePublisher.PAGE_RECEIPT_PREFIX);
+        args.add(sourceSeasonValue);
+        args.add(seasonCode);
+        args.add(Timestamp.from(asOf));
+        args.add(seasonCode);
+        args.add(Timestamp.from(asOf));
+        args.add(seasonCode);
+        args.add(seasonCode);
+        args.add(seasonCode);
+        args.add(Timestamp.from(asOf));
+        args.add(Timestamp.from(asOf));
+        args.add(Timestamp.from(asOf));
+        args.add(seasonId);
+        args.add(seasonId);
+        Map<FixtureSide, SidePopulation> result = new HashMap<>();
+        jdbc.query(sql, rs -> {
+            int fixtureId = rs.getInt("fixture_id");
+            boolean sourceRosterKnown = rs.getBoolean("source_roster_known");
+            FixtureReceipt receipt = sourceRosterKnown ? FixtureReceipt.INCREMENTAL
+                    : receipts.getOrDefault(fixtureId, FixtureReceipt.LEGACY);
+            result.put(new FixtureSide(fixtureId, rs.getInt("club_id")), new SidePopulation(receipt,
+                    sourceRosterKnown, rs.getBoolean("source_roster_complete"),
+                    rs.getInt("expected_positive"), rs.getInt("matched_positive"),
+                    rs.getInt("unexpected_positive")));
+        }, args.toArray());
+        return Map.copyOf(result);
+    }
+
+    private Map<FixtureSide, SidePopulation> unprovenFixtureSides(
+            String fixtureTable, String seasonColumn, Object seasonValue, Set<Integer> fixtureIds,
+            Map<Integer, FixtureReceipt> receipts) {
+        List<Integer> ordered = fixtureIds.stream().sorted().toList();
+        String placeholders = String.join(",", java.util.Collections.nCopies(ordered.size(), "?"));
+        List<Object> args = new java.util.ArrayList<>();
+        args.add(seasonValue);
+        args.addAll(ordered);
+        Map<FixtureSide, SidePopulation> result = new HashMap<>();
+        jdbc.query("SELECT id,team_h,team_a FROM " + fixtureTable + " WHERE " + seasonColumn
+                + "=? AND id IN (" + placeholders + ")", rs -> {
+            int fixtureId = rs.getInt("id");
+            FixtureReceipt receipt = receipts.getOrDefault(fixtureId, FixtureReceipt.LEGACY);
+            SidePopulation population = new SidePopulation(receipt, false, false, 0, 0, 0);
+            result.put(new FixtureSide(fixtureId, rs.getInt("team_h")), population);
+            result.put(new FixtureSide(fixtureId, rs.getInt("team_a")), population);
+        }, args.toArray());
         return Map.copyOf(result);
     }
 
@@ -306,6 +620,13 @@ public final class PfsReadSource {
 
     private boolean exists(String table) {
         return Boolean.TRUE.equals(jdbc.queryForObject("SELECT to_regclass(?) IS NOT NULL", Boolean.class, table));
+    }
+
+    private boolean hasColumn(String table, String column) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+                SELECT EXISTS (SELECT 1 FROM information_schema.columns
+                               WHERE table_schema=ANY(current_schemas(false)) AND table_name=? AND column_name=?)
+                """, Boolean.class, table, column));
     }
 
     private String receiptOnlyCte() {

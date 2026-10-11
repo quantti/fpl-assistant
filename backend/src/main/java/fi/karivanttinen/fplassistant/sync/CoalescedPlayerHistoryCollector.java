@@ -220,11 +220,15 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
                     return fail(lease, "Source snapshot changed while resuming this import; start a fresh cycle",
                             requestedPlayers, committedPlayers, failedPlayers, finalPendingEvents, null);
                 }
+                store.recordIncrementalFixtureSourceRevisions(lease, snapshot.fixtures(),
+                        read(snapshot.fixturesRead()));
             } else {
                 if (!store.recordIncrementalSourceSnapshot(lease, fingerprint, snapshotRead)) {
                     return fail(lease, "Source snapshot changed while resuming this import; start a fresh cycle",
                             requestedPlayers, committedPlayers, failedPlayers, finalPendingEvents, null);
                 }
+                store.recordIncrementalFixtureSourceRevisions(lease, snapshot.fixtures(),
+                        read(snapshot.fixturesRead()));
                 if (persistedSnapshot != null) {
                     discovery = store.observeIncrementalSnapshot(lease, snapshot);
                 } else {
@@ -336,6 +340,15 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
                 priorities.put(fixture.id(), 1);
             }
         }
+        try {
+            store.incrementalAppearanceStates(lease, targetIds).forEach((fixtureId, appearanceState) ->
+                    fixtureFloors.merge(fixtureId, appearanceState.invalidationFloor(),
+                            CoalescedPlayerHistoryCollector::later));
+        } catch (RuntimeException failure) {
+            return fail(lease, bounded(failure.getMessage()), requestedPlayers, committedPlayers, failedPlayers,
+                    finalPendingEvents, null);
+        }
+
         for (FixtureRow fixture : finished) {
             Instant observed = discovery.finishedObservationTimes().get(fixture.id());
             if (observed == null) {
@@ -407,11 +420,26 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
                     candidates.get(fixtureId).addAll(ids);
                     sourceParticipants.computeIfAbsent(fixtureId, ignored -> new LinkedHashSet<>()).addAll(ids);
                 });
-                store.recordIncrementalLiveEvent(lease, eventId, participants, read(live));
+                SourceRead liveRead = read(live);
+                Set<Integer> revalidationFixtures = store.recordIncrementalLiveEvent(
+                        lease, eventId, participants, entry.getValue(), evidence, liveRead);
+                for (int fixtureId : revalidationFixtures) {
+                    fixtureFloors.merge(fixtureId, liveRead.finishedAt(),
+                            CoalescedPlayerHistoryCollector::later);
+                }
                 refreshedLiveEvents.add(eventId);
             } catch (RuntimeException invalidLive) {
                 missingLiveEvents.add(eventId);
             }
+        }
+
+        try {
+            store.incrementalAppearanceStates(lease, targetIds).forEach((fixtureId, appearanceState) ->
+                    fixtureFloors.merge(fixtureId, appearanceState.invalidationFloor(),
+                            CoalescedPlayerHistoryCollector::later));
+        } catch (RuntimeException failure) {
+            return fail(lease, bounded(failure.getMessage()), requestedPlayers, committedPlayers, failedPlayers,
+                    finalPendingEvents, null);
         }
 
         Map<Integer, Set<Integer>> checkpointPlayers = new LinkedHashMap<>();
@@ -490,7 +518,7 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
             for (int playerId : candidates.get(fixture.id())) {
                 PageReceipt receipt = pageReceipts.get(playerId);
                 boolean required = activeFixture
-                        ? receipt == null || receipt.generation() != lease.generation()
+                        ? receipt == null || receipt.generation() != lease.generation() || !pageFresh(receipt, floor)
                         : !pageFresh(receipt, floor);
                 if (!required) continue;
                 PageNeed prior = needed.get(playerId);
@@ -508,6 +536,20 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
         if (needed.size() > MAX_PLAYER_PAGES) {
             return fail(lease, "Core-import cycle exceeds the bounded player-page limit",
                     requestedPlayers, committedPlayers, failedPlayers, finalPendingEvents, null);
+        }
+        long currentGeneration = lease.generation();
+        boolean sameGenerationPageInvalidated = false;
+        for (Map.Entry<Integer, PageNeed> entry : needed.entrySet()) {
+            PageReceipt receipt = pageReceipts.get(entry.getKey());
+            if (receipt != null && receipt.generation() == currentGeneration
+                    && !pageFresh(receipt, entry.getValue().floor())) {
+                sameGenerationPageInvalidated = true;
+                break;
+            }
+        }
+        if (sameGenerationPageInvalidated) {
+            return restartAppearanceGeneration(lease, requestedPlayers, committedPlayers, failedPlayers,
+                    finalPendingEvents);
         }
 
         List<Integer> orderedPlayers = needed.entrySet().stream()
@@ -723,6 +765,16 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
         return result(State.RETRY_SCHEDULED, requested, committed, failed, finalPending, due);
     }
 
+    private CycleResult restartAppearanceGeneration(Lease lease, List<Integer> requested,
+                                                     List<Integer> committed, List<Integer> failed,
+                                                     List<Integer> finalPending) {
+        Instant due = clock.instant().plus(CYCLE_INTERVAL);
+        store.supersedeIncrementalCoreImport(lease,
+                "Live appearance evidence advanced after this generation had already published player pages");
+        store.enqueueIncrementalCoreImport(season, due);
+        return result(State.RETRY_SCHEDULED, requested, committed, failed, finalPending, due);
+    }
+
     private CanonicalPairRequest requestCanonicalPair(Lease lease, Instant floor) {
         RequestResult bootstrapResult = request(lease, Endpoint.bootstrap(), floor);
         lease = bootstrapResult.lease();
@@ -846,7 +898,8 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
             String playerIds = sourcePlayers.stream().sorted().map(String::valueOf)
                     .collect(java.util.stream.Collectors.joining(","));
             fingerprints.put(fixture.id(), OwnedSyncStore.sha256(
-                    FixtureVerification.verifiedHeader(fixture) + "|" + playerIds));
+                    IncrementalAppearanceReceipt.fixtureRevisionFingerprint(fixture, fixture.gameweek())
+                            + "|" + playerIds));
         }
         return Map.copyOf(fingerprints);
     }
@@ -872,6 +925,10 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
 
     private static SourceRead read(SourceDocument document) {
         return new SourceRead(document.readInterval().startedAt(), document.readInterval().completedAt());
+    }
+
+    private static SourceRead read(CatalogueScheduleParser.ReadInterval interval) {
+        return new SourceRead(interval.startedAt(), interval.completedAt());
     }
 
     private static Instant min(Instant first, Instant second) {

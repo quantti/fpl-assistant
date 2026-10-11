@@ -312,9 +312,17 @@ public class RankingMetrics {
         boolean provisionalEvidence = false;
         boolean checkedFinalEvidence = false;
         String gameweekFinality = "";
+        Map<PfsReadSource.FixtureSide, PfsReadSource.SidePopulation> currentSidePopulation = Map.of();
         if (metric.played().currentSeason()) {
+            if (currentSourceFailure(capture, metric.played(), schedule, asOf) == null) {
+                Set<Integer> fixtureIds = schedule.fixtures().stream().map(ScheduleSource.FixtureRow::id)
+                        .collect(java.util.stream.Collectors.toSet());
+                currentSidePopulation = pfs.fixtureSidePopulation(metric.played().seasonId(),
+                        metric.played().code(), schedules.fixtureTable(), "season",
+                        schedule.snapshot().orElseThrow().season(), fixtureIds, asOf);
+            }
             CurrentBuild currentBuild = buildCurrentMetrics(capture, metric.played(), schedule,
-                    capturePlayers, currentIds, currentPositions, asOf);
+                    capturePlayers, currentIds, currentPositions, asOf, currentSidePopulation);
             currentMetrics = currentBuild.metrics();
             coverageGaps = currentBuild.gaps();
             comparisonAssessed = currentBuild.comparisonAssessed();
@@ -347,11 +355,11 @@ public class RankingMetrics {
                     ? Map.of()
                     : loadClubSides(new CanonicalSource(schedules.fixtureTable(), "season",
                             schedule.snapshot().orElseThrow().season()),
-                            metric.played().seasonId(), asOf);
+                            metric.played().seasonId(), asOf, currentSidePopulation);
             currentSides = rawCurrentSides;
         } else {
             rawCurrentSides = loadClubSides(new CanonicalSource("fixture", "season_id",
-                    metric.played().seasonId()), metric.played().seasonId(), null);
+                    metric.played().seasonId()), metric.played().seasonId(), null, Map.of());
             currentSides = bridgeClubs(rawCurrentSides, metric.played().seasonId(), capturePlayers);
         }
         Map<Integer, ClubRates.SeasonSide> rawPreviousSides = Map.of();
@@ -359,7 +367,7 @@ public class RankingMetrics {
         if (metric.previous().isPresent()) {
             SeasonContext previous = metric.previous().orElseThrow();
             rawPreviousSides = loadClubSides(new CanonicalSource("fixture", "season_id",
-                    previous.seasonId()), previous.seasonId(), null);
+                    previous.seasonId()), previous.seasonId(), null, Map.of());
             previousSides = bridgeClubs(rawPreviousSides, previous.seasonId(), capturePlayers);
         }
         // The league constants pool every club of each season, from the raw sides rather than the
@@ -438,7 +446,8 @@ public class RankingMetrics {
     private CurrentBuild buildCurrentMetrics(
             DailyPriceSource.Capture capture, SeasonContext season, ScheduleSource.View schedule,
             List<CapturePlayer> players, Map<Integer, Integer> ids,
-            Map<Integer, Integer> positions, Instant asOf) {
+            Map<Integer, Integer> positions, Instant asOf,
+            Map<PfsReadSource.FixtureSide, PfsReadSource.SidePopulation> sidePopulation) {
         WindowReason sourceFailure = currentSourceFailure(capture, season, schedule, asOf);
         if (sourceFailure != null) {
             Map<Integer, SeasonMetrics> unavailable = new HashMap<>();
@@ -535,7 +544,8 @@ public class RankingMetrics {
             }
         }
 
-        SideCoverage sideCoverage = loadCompletedSideCoverage(season, source, expected, clubs);
+        SideCoverage sideCoverage = loadCompletedSideCoverage(season, source, expected, clubs,
+                sidePopulation);
         coverageGaps.addAll(sideCoverage.gaps());
         Map<Integer, Aggregate> aggregates = loadTargetAggregates(season.seasonId(), expected);
         Map<Integer, List<FixtureOutcome>> outcomes = loadRecentOutcomes(season.seasonId(), expected);
@@ -585,7 +595,8 @@ public class RankingMetrics {
     private SideCoverage loadCompletedSideCoverage(
             SeasonContext season, CanonicalSource source,
             Map<Integer, List<CanonicalFixture>> expectedByPlayer,
-            Map<Integer, Integer> clubsByPlayer) {
+            Map<Integer, Integer> clubsByPlayer,
+            Map<PfsReadSource.FixtureSide, PfsReadSource.SidePopulation> sidePopulation) {
         Map<String, SideTarget> unique = new LinkedHashMap<>();
         expectedByPlayer.forEach((playerId, fixtures) -> {
             Integer club = clubsByPlayer.get(playerId);
@@ -598,16 +609,6 @@ public class RankingMetrics {
             return new SideCoverage(List.of(), false);
         }
         List<SideTarget> targets = new ArrayList<>(unique.values());
-        Set<Integer> fixtureIds = new HashSet<>();
-        targets.forEach(target -> fixtureIds.add(target.fixture().id()));
-        Map<Integer, Set<Integer>> playersByClub = new HashMap<>();
-        clubsByPlayer.forEach((playerId, clubId) -> playersByClub
-                .computeIfAbsent(clubId, ignored -> new HashSet<>()).add(playerId));
-        Set<Integer> allPlayers = Set.copyOf(clubsByPlayer.keySet());
-        Set<Integer> pagedPlayers = pfs.incrementalPagePlayers(season.code(), allPlayers);
-        Map<Integer, PfsReadSource.FixtureReceipt> receipts = pfs.fixtureReceipts(
-                season.seasonId(), season.code(), fixtureIds);
-
         List<Object> args = new ArrayList<>();
         List<String> values = new ArrayList<>();
         for (SideTarget target : targets) {
@@ -638,14 +639,14 @@ public class RankingMetrics {
         List<ComparisonCoverage.ClubGap> gaps = new ArrayList<>();
         boolean incrementalEvidence = false;
         for (SideTarget target : targets) {
-            PfsReadSource.FixtureReceipt receipt = receipts.getOrDefault(target.fixture().id(),
-                    PfsReadSource.FixtureReceipt.LEGACY);
-            Set<Integer> population = playersByClub.getOrDefault(target.clubId(), Set.of());
-            boolean anyPlayerPage = population.stream().anyMatch(pagedPlayers::contains);
-            boolean incremental = receipt == PfsReadSource.FixtureReceipt.INCREMENTAL || anyPlayerPage;
+            PfsReadSource.SidePopulation population = sidePopulation.get(
+                    new PfsReadSource.FixtureSide(target.fixture().id(), target.clubId()));
+            PfsReadSource.FixtureReceipt receipt = population == null
+                    ? PfsReadSource.FixtureReceipt.LEGACY : population.fixtureReceipt();
+            boolean incremental = population != null && population.incremental();
             incrementalEvidence |= incremental;
             ComparisonCoverage.GapReason reason;
-            if (incremental && (population.isEmpty() || !pagedPlayers.containsAll(population))) {
+            if (incremental && (population == null || !population.complete())) {
                 reason = ComparisonCoverage.GapReason.INCREMENTAL_POPULATION_INCOMPLETE;
             } else if (!incremental && receipt == PfsReadSource.FixtureReceipt.UNVERIFIED_OWNED) {
                 reason = ComparisonCoverage.GapReason.UNVERIFIED_OWNED_RECEIPT;
@@ -745,16 +746,45 @@ public class RankingMetrics {
      * side whose concession was never written is left out rather than read as a shut-out.
      */
     private Map<Integer, ClubRates.SeasonSide> loadClubSides(CanonicalSource source, int seasonId,
-                                                              Instant asOf) {
+                                                              Instant asOf,
+                                                              Map<PfsReadSource.FixtureSide,
+                                                                      PfsReadSource.SidePopulation> sidePopulation) {
         String cutoff = asOf == null ? "" : " AND f.kickoff_time <= ?";
+        List<PfsReadSource.FixtureSide> untrusted = sidePopulation.entrySet().stream()
+                .filter(entry -> entry.getValue().incremental() && !entry.getValue().complete())
+                .map(Map.Entry::getKey).toList();
+        List<Object> args = new ArrayList<>();
+        String untrustedCte;
+        if (untrusted.isEmpty()) {
+            untrustedCte = "untrusted_incremental_side(club,fixture_id) AS "
+                    + "(SELECT NULL::integer, NULL::integer WHERE FALSE)";
+        } else {
+            List<String> sideValues = new ArrayList<>();
+            for (PfsReadSource.FixtureSide side : untrusted) {
+                sideValues.add("(?, ?)");
+                args.add(side.clubId());
+                args.add(side.fixtureId());
+            }
+            untrustedCte = "untrusted_incremental_side(club,fixture_id) AS (VALUES "
+                    + String.join(",", sideValues) + ")";
+        }
         String sql = """
-                WITH %s, sides AS (
+                WITH %s, %s, sides AS (
                     SELECT f.id AS fixture_id, p.was_home,
                            CASE WHEN p.was_home THEN f.team_h ELSE f.team_a END AS club,
-                           CASE WHEN count(*) FILTER (WHERE p.owned_evidence
+                           CASE WHEN count(*) FILTER (WHERE p.evidence_status='PROVISIONAL')>0
+                                THEN CASE WHEN count(*) FILTER (WHERE p.evidence_status='PROVISIONAL'
+                                                        AND p.minutes BETWEEN 1 AND 90
+                                                        AND p.expected_goals IS NULL)=0
+                                          THEN SUM(p.expected_goals) FILTER (WHERE p.evidence_status='PROVISIONAL'
+                                                        AND p.minutes BETWEEN 1 AND 90) END
+                                WHEN count(*) FILTER (WHERE p.owned_evidence
                                                    AND p.expected_goals IS NULL)=0
                                 THEN SUM(p.expected_goals) END AS xg_for,
-                           CASE WHEN count(p.expected_goals_conceded)>0
+                           CASE WHEN count(*) FILTER (WHERE p.evidence_status='PROVISIONAL')>0
+                                THEN MAX(p.expected_goals_conceded) FILTER (WHERE p.evidence_status='PROVISIONAL'
+                                                    AND p.minutes BETWEEN 1 AND 90)
+                                WHEN count(p.expected_goals_conceded)>0
                                 THEN MAX(p.expected_goals_conceded) END AS xg_against
                     FROM pfs_read p
                     JOIN %s f ON f.id = p.fixture_id AND f.%s = ?
@@ -762,6 +792,9 @@ public class RankingMetrics {
                       AND COALESCE(f.finished, false) AND f.kickoff_time IS NOT NULL%s
                       AND p.opponent_team_id = CASE WHEN p.was_home THEN f.team_a ELSE f.team_h END
                       AND p.minutes BETWEEN 0 AND 90
+                      AND NOT EXISTS (SELECT 1 FROM untrusted_incremental_side u
+                                      WHERE u.club=CASE WHEN p.was_home THEN f.team_h ELSE f.team_a END
+                                        AND u.fixture_id=f.id)
                     GROUP BY f.id, p.was_home, CASE WHEN p.was_home THEN f.team_h ELSE f.team_a END
                 )
                 SELECT club, count(*) AS fixtures, SUM(xg_for) AS xg_for,
@@ -769,8 +802,7 @@ public class RankingMetrics {
                        count(*) FILTER (WHERE was_home) AS home_fixtures,
                        COALESCE(SUM(xg_for) FILTER (WHERE was_home), 0) AS home_xg_for
                 FROM sides WHERE xg_against > 0 AND xg_for IS NOT NULL GROUP BY club
-                """.formatted(pfs.cte(), source.table(), source.seasonColumn(), cutoff);
-        List<Object> args = new ArrayList<>();
+                """.formatted(pfs.cte(), untrustedCte, source.table(), source.seasonColumn(), cutoff);
         args.add(source.seasonValue());
         args.add(seasonId);
         if (asOf != null) {
