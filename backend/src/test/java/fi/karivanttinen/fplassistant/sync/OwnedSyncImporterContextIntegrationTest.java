@@ -133,7 +133,7 @@ class OwnedSyncImporterContextIntegrationTest {
                     .hasBean("syncOperationsController")
                     .doesNotHaveBean(OwnedMatchdayRuntime.class)
                     .doesNotHaveBean(OwnedMatchdayCoordinator.class)
-                    .doesNotHaveBean(OwnedSyncWatchdog.class)
+                    .hasBean("ownedImporterWatchdog")
                     .doesNotHaveBean(HistoryFixtureDispatcher.class)
                     .doesNotHaveBean(CatalogueScheduleDispatcher.class);
             OwnedSyncMonitoringDatabase work = context.getBean("ownedSyncWorkDatabase",
@@ -143,6 +143,26 @@ class OwnedSyncImporterContextIntegrationTest {
             assertThat(work.dataSource()).isNotSameAs(monitor.dataSource());
             assertThat(work.dataSource().getPoolName()).isEqualTo("owned-sync-work");
             assertThat(monitor.dataSource().getPoolName()).isEqualTo("owned-sync-monitor");
+            SyncOperations operations = context.getBean(SyncOperations.class);
+            Instant cutoff = Instant.now().minusSeconds(600);
+            for (int i = 0; i < 50 && jdbc.queryForObject("SELECT count(*) FROM "
+                    + TABLES.plannerRuntime() + " WHERE instance_id LIKE 'importer:%' AND heartbeat_at>?",
+                    Integer.class, Timestamp.from(cutoff)) == 0; i++) {
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(interrupted);
+                }
+            }
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.plannerRuntime()
+                    + " WHERE instance_id LIKE 'importer:%' AND heartbeat_at>?", Integer.class,
+                    Timestamp.from(cutoff))).isOne();
+            context.getBean(OwnedSyncWatchdog.class).checkImporter("2026-27");
+            assertThat(operations.healthy()).isTrue();
+            jdbc.update("UPDATE " + TABLES.plannerRuntime() + " SET heartbeat_at=?"
+                    + " WHERE instance_id LIKE 'importer:%'", Timestamp.from(cutoff.minusSeconds(1)));
+            assertThat(operations.healthy()).isFalse();
         });
 
         assertThat(jdbc.queryForMap("SELECT runtime_mode,runtime_epoch,activation_boundary FROM "
@@ -236,7 +256,8 @@ class OwnedSyncImporterContextIntegrationTest {
                         "fpl.owned-sync.cutover-confirmed=true",
                         "fpl.owned-sync.ops.enabled=true",
                         "fpl.owned-sync.external-health.enabled=true",
-                        "fpl.owned-sync.external-health.token=context-test-token");
+                        "fpl.owned-sync.external-health.token=context-test-token",
+                        "fpl.owned-sync.alerts.via-monitor=true");
     }
 
     @Configuration(proxyBeanMethods = false)

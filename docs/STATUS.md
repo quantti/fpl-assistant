@@ -1,5 +1,11 @@
 # Status — Phase 1
 
+## PR #157 review follow-up — independent finality and importer health (2026-10-12; local)
+
+A failed/deferred player page or missing live source in another event no longer holds a fully evidenced, nonempty checked gameweek pending. The collector closes that completed final-sweep producer and queues a new generation at the retry due time for unresolved work; a blank checked game does not split a busy producer. A real GW3/GW4 page-failure regression failed before the fix (`FINAL_PENDING`) and passes with GW3 `FINALIZED`, an archived completed run and a pending GW4 retry. A separate malformed GW4 live-source regression verifies the same isolation. Existing partial-generation and source-supersession controls still pass.
+
+The opt-in importer now emits a fenced minute heartbeat and runs importer-specific five-minute watchdog checks and 30-second alert delivery separately from hourly collection. External health requires the importer heartbeat rather than borrowing a recent legacy planner heartbeat. The legacy runtime, monitoring policy and OFF default are unchanged. Focused context and health tests pass on disposable Postgres; the full PR CI and external Tapas-reader audit/cutover remain gates. No production/monitor activation or live API request occurred.
+
 ## PR #157 CI regression — exact watchdog delivery assertion (2026-10-12; local)
 
 CI run 38173045513 at `8f65f1a` completed 1,635 tests with one failure in the unchanged legacy `OwnedMatchdayEndToEndIntegrationTest.fakeMultiMatchdaySurvivesPartialHistoryRestartAndCorrectionWithoutFalseCoverage`. The artifact's first delivery batch contained `RUNTIME_STALLED` (`lastSuccessfulHeartbeat=never`) and overdue fixture alerts for IDs 1, 4, 3, 5, 6, 2, 7, 8 and 9, but not fixture 29. This is the legacy watchdog's real batch boundary (`MAX_DELIVERIES_PER_DRAIN=10`), not a completeness/verification failure.

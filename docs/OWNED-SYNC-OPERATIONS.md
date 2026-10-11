@@ -256,11 +256,12 @@ nor changes modes/epochs, but **successful startup can fetch and publish immedia
 The compatibility writer now conditionally upserts named `team`, `player`, `gameweek` and `fixture`
 columns alongside independently valid PFS page publication. It does not publish `fpl_daily_price`,
 `fpl_gameweek` or `fpl_fixture`; existing daily price/availability and schedule jobs retain their own
-capture times and freshness contracts. My-team and unrelated jobs remain separate. No importer
-watchdog or automatic mode shutdown is added. Existing legacy watchdog behavior remains unchanged
-when the flag is false; the qualified monitoring pool remains available to independent operations
-and external-health wiring when the importer is selected. Importer-specific remote alert delivery
-and health semantics are not verified by this implementation.
+capture times and freshness contracts. My-team and unrelated jobs remain separate. The importer
+records a fenced heartbeat each minute and runs the existing watchdog's importer-specific checks
+every five minutes on separate executors; alert delivery retains its 30-second executor. Importer
+checks omit legacy fixture/capture signals, while existing legacy watchdog behavior is unchanged
+when the flag is false. External health requires a fresh importer heartbeat and watchdog heartbeat,
+not a leftover legacy planner heartbeat. Neither watchdog changes runtime mode automatically.
 
 While opted in, the same serialized hourly runner performs a startup retention pass before its first
 collection and runs maintenance after every collection, including a failed one. For `INCREMENTAL_CORE`
@@ -292,6 +293,8 @@ retaining compatible readers and ownership evidence. It must not simply unset th
 ACTIVE, which would select the old core loop. Restoring old writers requires a separately reviewed
 re-verification plan; old fixture receipts must not certify new or withdrawn physical values.
 No production importer activation, DB/Fly operation or rollback was performed for this implementation.
+A failed page outside a complete checked game's manifest does not delay that game's final receipt:
+the completed producer is closed before a new pending generation retains the unresolved work.
 
 The 5000-attempt rolling-day ceiling can defer desired polling on a busy full-league day. Local
 600-player/ten-fixture demand intentionally exercises that case; it is not a guarantee of all

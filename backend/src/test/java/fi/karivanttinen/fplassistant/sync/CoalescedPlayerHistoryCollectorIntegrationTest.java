@@ -2897,6 +2897,73 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
     }
 
     @Test
+    void unrelatedFailedPageDoesNotHoldACompleteCheckedGameweekPending() throws Exception {
+        int checkedFixture = 29;
+        int uncheckedFixture = 38;
+        int uncheckedPlayer = 600;
+        byte[] checkedBootstrap = markGameweekChecked(markAllGameweeksUnchecked(
+                bootstrapPlayers(bootstrap, Set.of(1, uncheckedPlayer))), 3);
+        byte[] checkedFixtures = fixtureStatsForPlayers(
+                onlyCollectorFixtureFinished(fixtures, checkedFixture), checkedFixture, 1, 28);
+        byte[] sourceFixtures = appendUncheckedFixtureParticipant(
+                checkedFixtures, fixtures, uncheckedFixture, uncheckedPlayer);
+        byte[] eventThree = liveForFixturePlayers(eventThreeLive, checkedFixture, Set.of(1, 28));
+        byte[] eventFour = liveForFixturePlayers(eventFourLive, uncheckedFixture, Set.of(uncheckedPlayer));
+        fetch.setSources(checkedBootstrap, sourceFixtures, eventThree, eventFour);
+        fetch.setPlayerPage(1, onlyHistoryForFixture(resource("element-summary-1.json"), checkedFixture, 1));
+        fetch.setPlayerPage(28, historyForAwayPlayer28(checkedFixture));
+        fetch.setPlayerPage(uncheckedPlayer, historyWithMinutes(relabelHistoryPlayer(
+                resource("element-summary-658.json"), uncheckedPlayer), uncheckedFixture, uncheckedPlayer, 12));
+        fetch.failPlayer(uncheckedPlayer);
+
+        CycleResult partial = compatibilityCollector(true).runCycle();
+
+        assertThat(partial.state()).isEqualTo(State.RETRY_SCHEDULED);
+        assertThat(partial.failedPlayerIds()).containsExactly(uncheckedPlayer);
+        assertThat(partial.committedPlayerIds()).contains(1, 28);
+        assertThat(new GameweekFinalityReader(jdbc, clock, TABLES)
+                .read(SEASON_ID, season.code(), Set.of(3)).get(3).state())
+                .isEqualTo(GameweekFinality.State.FINALIZED);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
+                + " WHERE producer_key=? AND state='COMPLETED'", Integer.class,
+                OwnedSyncStore.INCREMENTAL_CORE_PRODUCER)).isOne();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
+                + " WHERE producer_key=? AND state='PENDING'", Integer.class,
+                OwnedSyncStore.INCREMENTAL_CORE_PRODUCER)).isOne();
+    }
+
+    @Test
+    void unrelatedMissingLiveEventDoesNotHoldACompleteCheckedGameweekPending() throws Exception {
+        int checkedFixture = 29;
+        int uncheckedFixture = 38;
+        int uncheckedPlayer = 600;
+        byte[] checkedBootstrap = markGameweekChecked(markAllGameweeksUnchecked(
+                bootstrapPlayers(bootstrap, Set.of(1, uncheckedPlayer))), 3);
+        byte[] checkedFixtures = fixtureStatsForPlayers(
+                onlyCollectorFixtureFinished(fixtures, checkedFixture), checkedFixture, 1, 28);
+        byte[] sourceFixtures = appendUncheckedFixtureParticipant(
+                checkedFixtures, fixtures, uncheckedFixture, uncheckedPlayer);
+        byte[] eventThree = liveForFixturePlayers(eventThreeLive, checkedFixture, Set.of(1, 28));
+        fetch.setSources(checkedBootstrap, sourceFixtures, eventThree,
+                "{invalid live event".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        fetch.setPlayerPage(1, onlyHistoryForFixture(resource("element-summary-1.json"), checkedFixture, 1));
+        fetch.setPlayerPage(28, historyForAwayPlayer28(checkedFixture));
+        fetch.setPlayerPage(uncheckedPlayer, historyWithMinutes(relabelHistoryPlayer(
+                resource("element-summary-658.json"), uncheckedPlayer), uncheckedFixture, uncheckedPlayer, 12));
+
+        CycleResult partial = compatibilityCollector(true).runCycle();
+
+        assertThat(partial.state()).isEqualTo(State.RETRY_SCHEDULED);
+        assertThat(partial.failedPlayerIds()).isEmpty();
+        assertThat(new GameweekFinalityReader(jdbc, clock, TABLES)
+                .read(SEASON_ID, season.code(), Set.of(3)).get(3).state())
+                .isEqualTo(GameweekFinality.State.FINALIZED);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
+                + " WHERE producer_key=? AND state='PENDING'", Integer.class,
+                OwnedSyncStore.INCREMENTAL_CORE_PRODUCER)).isOne();
+    }
+
+    @Test
     void unrelatedUncheckedAppearanceChangeSupersedesRunAndReusesCheckedDonorAtPostgresPrecision()
             throws Exception {
         int checkedFixture = 29;

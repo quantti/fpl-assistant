@@ -22,15 +22,30 @@ public final class CoalescedPlayerHistoryImportRuntime implements SmartLifecycle
 
     private final CoalescedPlayerHistoryImportEntrypoint collector;
     private final IntSupplier payloadMaintenance;
+    private final Runnable heartbeat;
+    private final Runnable watchdog;
+    private final Runnable delivery;
     private final AtomicBoolean running = new AtomicBoolean();
     private final AtomicBoolean cycleRunning = new AtomicBoolean();
     private final AtomicBoolean initialMaintenancePending = new AtomicBoolean(true);
     private ScheduledExecutorService scheduler;
+    private ScheduledExecutorService heartbeatScheduler;
+    private ScheduledExecutorService watchdogScheduler;
+    private ScheduledExecutorService deliveryScheduler;
 
     public CoalescedPlayerHistoryImportRuntime(CoalescedPlayerHistoryImportEntrypoint collector,
                                                 IntSupplier payloadMaintenance) {
+        this(collector, payloadMaintenance, null, null, null);
+    }
+
+    public CoalescedPlayerHistoryImportRuntime(CoalescedPlayerHistoryImportEntrypoint collector,
+                                                IntSupplier payloadMaintenance, Runnable heartbeat,
+                                                Runnable watchdog, Runnable delivery) {
         this.collector = Objects.requireNonNull(collector);
         this.payloadMaintenance = Objects.requireNonNull(payloadMaintenance);
+        this.heartbeat = heartbeat;
+        this.watchdog = watchdog;
+        this.delivery = delivery;
     }
 
     @Override
@@ -39,6 +54,33 @@ public final class CoalescedPlayerHistoryImportRuntime implements SmartLifecycle
         scheduler = Executors.newSingleThreadScheduledExecutor(
                 Thread.ofPlatform().name("owned-sync-importer-hourly").daemon(true).factory());
         scheduler.scheduleWithFixedDelay(this::runScheduledCycle, 0, INTERVAL.toMillis(), TimeUnit.MILLISECONDS);
+        if (heartbeat != null) {
+            heartbeatScheduler = Executors.newSingleThreadScheduledExecutor(
+                    Thread.ofPlatform().name("owned-sync-importer-heartbeat").daemon(true).factory());
+            heartbeatScheduler.scheduleWithFixedDelay(() -> guarded("heartbeat", heartbeat),
+                    0, 1, TimeUnit.MINUTES);
+        }
+        if (watchdog != null) {
+            watchdogScheduler = Executors.newSingleThreadScheduledExecutor(
+                    Thread.ofPlatform().name("owned-sync-importer-watchdog").daemon(true).factory());
+            watchdogScheduler.scheduleWithFixedDelay(() -> guarded("watchdog", watchdog),
+                    5, 5, TimeUnit.MINUTES);
+        }
+        if (delivery != null) {
+            deliveryScheduler = Executors.newSingleThreadScheduledExecutor(
+                    Thread.ofPlatform().name("owned-sync-importer-alert-delivery").daemon(true).factory());
+            deliveryScheduler.scheduleWithFixedDelay(() -> guarded("alert-delivery", delivery),
+                    0, 30, TimeUnit.SECONDS);
+        }
+    }
+
+    private void guarded(String task, Runnable operation) {
+        if (!running.get()) return;
+        try {
+            operation.run();
+        } catch (RuntimeException failure) {
+            log.error("incremental core import {} failed", task, failure);
+        }
     }
 
     /** Explicit manual boundary used by focused operations and tests. */
@@ -94,15 +136,30 @@ public final class CoalescedPlayerHistoryImportRuntime implements SmartLifecycle
         if (!running.compareAndSet(true, false)) return;
         if (scheduler == null) return;
         scheduler.shutdown();
+        if (heartbeatScheduler != null) heartbeatScheduler.shutdown();
+        if (watchdogScheduler != null) watchdogScheduler.shutdown();
+        if (deliveryScheduler != null) deliveryScheduler.shutdown();
         try {
             if (!scheduler.awaitTermination(STOP_WAIT.toMillis(), TimeUnit.MILLISECONDS)) {
                 scheduler.shutdownNow();
             }
+            if (heartbeatScheduler != null && !heartbeatScheduler.awaitTermination(
+                    STOP_WAIT.toMillis(), TimeUnit.MILLISECONDS)) heartbeatScheduler.shutdownNow();
+            if (watchdogScheduler != null && !watchdogScheduler.awaitTermination(
+                    STOP_WAIT.toMillis(), TimeUnit.MILLISECONDS)) watchdogScheduler.shutdownNow();
+            if (deliveryScheduler != null && !deliveryScheduler.awaitTermination(
+                    STOP_WAIT.toMillis(), TimeUnit.MILLISECONDS)) deliveryScheduler.shutdownNow();
         } catch (InterruptedException interrupted) {
             scheduler.shutdownNow();
+            if (heartbeatScheduler != null) heartbeatScheduler.shutdownNow();
+            if (watchdogScheduler != null) watchdogScheduler.shutdownNow();
+            if (deliveryScheduler != null) deliveryScheduler.shutdownNow();
             Thread.currentThread().interrupt();
         }
         scheduler = null;
+        heartbeatScheduler = null;
+        watchdogScheduler = null;
+        deliveryScheduler = null;
     }
 
     @Override public boolean isRunning() { return running.get(); }

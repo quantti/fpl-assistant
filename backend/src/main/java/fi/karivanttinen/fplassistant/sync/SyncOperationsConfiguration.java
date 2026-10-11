@@ -25,7 +25,8 @@ public class SyncOperationsConfiguration {
         OwnedSyncWatchdog.Notification notification = notification(environment);
         return new SyncOperations(database.jdbc(), database.transaction(), Clock.systemUTC(),
                 tableProvider.getIfAvailable(OwnedSyncTables::defaults), mode, monitorEnabled && mode != OwnedSyncMode.OFF,
-                notification.enabled() && notification.configured(), notification.externalMonitor());
+                notification.enabled() && notification.configured(), notification.externalMonitor(),
+                environment.getProperty("fpl.owned-sync.importer.enabled", Boolean.class, false));
     }
 
     static OwnedSyncWatchdog.Notification notification(Environment environment) {
