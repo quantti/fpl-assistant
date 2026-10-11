@@ -238,34 +238,41 @@ verified generations and receipts; otherwise overwritten physical rows would inh
 proof. Keep readers fail-closed until reviewed migration/re-verification. Never delete evidence to
 force a legacy-looking successful answer.
 
-## Incremental importer foundation (not scheduled or cut over)
+## Incremental importer (implemented; not cut over)
 
-`OWNED_SYNC_IMPORTER_ENABLED` defaults to `false`, and the existing `OWNED_SYNC_MODE` routing is
-unchanged when the flag is absent/false. The code exposes only the collector's explicit manual
-entrypoint; it is not a Spring bean and has no schedule. If the flag is set, the legacy core runtime
-is suppressed and startup validates `OWNED_SYNC_MODE=ACTIVE`, an explicit
-a non-empty `OWNED_SYNC_PLAYING_SEASON` value, and
-`OWNED_SYNC_CUTOVER_CONFIRMED=true`, then fails closed with the missing prerequisite. It does not
-initialize owned schema, advance a runtime epoch, fetch or publish. This guard prevents accidentally
-running both engines while the next unit is incomplete. Do not set the flag in production.
+`OWNED_SYNC_IMPORTER_ENABLED` defaults to `false`; absent/false preserves the existing legacy
+runtime routing. **Setting it true is an activation-capable configuration, not a harmless probe.**
+With valid prerequisites it suppresses the legacy planner/workers, registers the importer and runs
+one collection immediately, then at a one-hour fixed delay. The durable producer lease prevents
+cross-process overlap. Valid provisional pages publish without a fixture-wide stability wait;
+checked gameweeks receive a fresh, resumable final sweep.
 
-The missing prerequisite is a separate validated, named-column, changed-only writer for compatibility
-`team`, `player`, `gameweek` and `fixture` rows. The collector currently validates its in-memory
-bootstrap/fixtures snapshot and writes incremental PFS pages, but does not publish those compatibility
-rows. The legacy `CatalogueScheduleWriter` also writes canonical capture tables and timestamps;
-reusing its dispatcher would conflict with the independent daily price/schedule sync ownership.
-Until the separate compatibility writer and source-floor/changed-only tests exist, no hourly runtime
-or importer watchdog is registered. Daily-price/schedule jobs, their freshness checks, my-team and the
-existing watchdog retain their established behavior under the unchanged legacy configuration. ACTIVE
-DefCon ownership remains as before. The actual Tapas metric-reader audit is an independent cutover
-blocker; do not use physical Tapas values as fallback or infer compatibility.
+Opt-in requires `OWNED_SYNC_MODE=ACTIVE`, explicit `OWNED_SYNC_PLAYING_SEASON`,
+`OWNED_SYNC_CUTOVER_CONFIRMED=true`, the matching database playing season and an already-existing
+ACTIVE runtime epoch. Read-only schema preflight must find the required incremental tables/columns.
+Invalid prerequisites fail startup before collection. Importer startup neither initializes schema
+nor changes modes/epochs, but **successful startup can fetch and publish immediately**.
 
-Once those prerequisites are reviewed, the follow-on runtime unit may add the single hourly fixed-delay
-trigger, durable cross-process lease, independent watchdog and alert delivery, while leaving capture
-jobs independent. It must not turn the mode OFF on health failure or orderly close; OFF must use an
-explicit operator-controlled epoch fence. Rollback must retain compatible readers and evidence and
-must not simply unset the importer flag while ACTIVE, which would otherwise select the old core loop.
-No production importer activation, DB/Fly operation or rollback was performed for this foundation.
+The compatibility writer now conditionally upserts named `team`, `player`, `gameweek` and `fixture`
+columns alongside independently valid PFS page publication. It does not publish `fpl_daily_price`,
+`fpl_gameweek` or `fpl_fixture`; existing daily price/availability and schedule jobs retain their own
+capture times and freshness contracts. My-team and unrelated jobs remain separate. No importer
+watchdog or automatic mode shutdown is added. Existing legacy watchdog behavior remains unchanged
+when the flag is false; the qualified monitoring pool remains available to independent operations
+and external-health wiring when the importer is selected. Importer-specific remote alert delivery
+and health semantics are not verified by this implementation.
+
+**Do not enable it in production without the separately approved single-writer cutover.** Drain and
+fence old core writers first, install/verify the compatible schema and readers, and complete the
+external Tapas metric-reader audit; confirmation is not evidence that those steps happened. Real
+matchday latency, resource use and API variation remain operational acceptance work. Never use
+physical Tapas values as fallback or infer reader compatibility from the local synthetic tests.
+
+Rollback starts with an explicit operator-controlled OFF epoch fence and a drained importer,
+retaining compatible readers and ownership evidence. It must not simply unset the flag while
+ACTIVE, which would select the old core loop. Restoring old writers requires a separately reviewed
+re-verification plan; old fixture receipts must not certify new or withdrawn physical values.
+No production importer activation, DB/Fly operation or rollback was performed for this implementation.
 
 The 5000-attempt rolling-day ceiling can defer desired polling on a busy full-league day. Local
 600-player/ten-fixture demand intentionally exercises that case; it is not a guarantee of all
