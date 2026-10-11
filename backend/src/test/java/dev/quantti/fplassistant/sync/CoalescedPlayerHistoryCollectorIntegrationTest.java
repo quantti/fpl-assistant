@@ -629,6 +629,20 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         CycleResult first = collector.runCycle();
         assertThat(first.state()).isEqualTo(State.COMPLETED);
         assertThat(first.selectedPlayerIds()).containsExactly(cataloguePlayer);
+        assertThat(fetch.count(EndpointKind.EVENT_LIVE)).isOne();
+        String incompleteAppearance = jdbc.queryForObject("SELECT publication_key FROM " + TABLES.receipt()
+                + " WHERE season=? AND publication_key LIKE ? AND publication_key LIKE '%:c:0:p:0:%'",
+                String.class, season.code(), IncrementalAppearanceReceipt.SNAPSHOT_PREFIX + fixtureId + ":%");
+        assertThat(incompleteAppearance).contains(":c:0:p:0:");
+        assertThat(jdbc.queryForObject("SELECT state FROM " + TABLES.gameweekStatSync()
+                + " WHERE season_id=? AND gameweek=4", String.class, SEASON_ID)).isEqualTo("OPEN");
+        Timestamp liveFinished = jdbc.queryForObject("SELECT source_read_finished_at FROM " + TABLES.receipt()
+                + " WHERE season=? AND publication_key=?", Timestamp.class, season.code(),
+                OwnedSyncStore.INCREMENTAL_LIVE_EVENT_RECEIPT_PREFIX + 4);
+        Timestamp historyStarted = jdbc.queryForObject("SELECT source_read_started_at FROM " + TABLES.receipt()
+                + " WHERE season=? AND publication_key=?", Timestamp.class, season.code(),
+                IncrementalPlayerFixturePublisher.pageReceiptKey(cataloguePlayer));
+        assertThat(historyStarted.toInstant()).isAfterOrEqualTo(liveFinished.toInstant());
 
         recording.clear();
         fetch.clearCalls();
@@ -1925,12 +1939,15 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
                 + ", knownPopulationUnchanged=" + knownMembers.equals(retryKnownMembers)
                 + ", knownPfsQueriesOnRetry=" + knownPfsQueries + ", discoveryBatchesOnRetry="
                 + retryDiscoveryBatches + ", error=" + retryError
-                + ", knownOnlyPfs=" + pfsBeforeRetry + " -> " + pfsAfterRetry;
+                + ", knownOnlyPfs=" + pfsBeforeRetry + " -> " + pfsAfterRetry
+                + ", eventRequests=" + fetch.requests().stream()
+                        .filter(request -> request.endpoint().kind() == EndpointKind.EVENT_LIVE).toList();
         System.out.println("PR157_KNOWN_PLAYER_RETRY_REPRO " + diagnostic);
 
         org.assertj.core.api.SoftAssertions.assertSoftly(softly -> {
             softly.assertThat(retry.state()).as(diagnostic).isEqualTo(State.RETRY_SCHEDULED);
             softly.assertThat(retry.selectedPlayerIds()).as(diagnostic).containsExactly(knownOnlyPlayer);
+            softly.assertThat(fetch.count(EndpointKind.EVENT_LIVE)).as(diagnostic).isZero();
             softly.assertThat(retry.committedPlayerIds()).as(diagnostic).isEmpty();
             softly.assertThat(retry.failedPlayerIds()).as(diagnostic).containsExactly(knownOnlyPlayer);
             softly.assertThat(retryPageCalls).as(diagnostic).containsExactly(knownOnlyPlayer);
@@ -3244,15 +3261,95 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
     }
 
     @Test
-    void offThenActiveRevalidatesFinalizedPageWatermarks() throws Exception {
-        assertFinalizedEvidenceTamperReopens(setup -> {
+    void offThenActiveKeepsFinalizedPageProofWhenSourceMembershipIsUnchanged() throws Exception {
+        CheckedFixtureSetup setup = checkedSingleFixtureSetup();
+        installUnit6WriteCounters();
+        try {
+            CycleResult first = compatibilityCollector(true).runCycle();
+            assertThat(first.state()).as("last error: %s", latestRunError()).isEqualTo(State.COMPLETED);
+            GameweekFinalityReader reader = new GameweekFinalityReader(jdbc, clock, TABLES);
+            var initial = reader.read(SEASON_ID, season.code(), Set.of(3)).get(3);
+            assertThat(initial.state()).isEqualTo(GameweekFinality.State.FINALIZED);
+            String manifestJson = jdbc.queryForObject("SELECT final_attempt_population_manifest::text FROM "
+                    + TABLES.gameweekStatSync() + " WHERE season_id=? AND gameweek=3", String.class, SEASON_ID);
+            var manifest = GameweekFinalityRepository.populationManifest(manifestJson);
+            assertThat(manifest.population().sourceCatalogueMembershipRequired()).isTrue();
+            assertThat(manifest.population().participantEvidenceByFixture()).containsKey(setup.fixtureId());
+
+            Map<String, List<Object>> rows = pfsRowsSnapshot(Set.of(setup.fixtureId()));
+            Map<String, List<Object>> pfsProof = pfsProofSnapshot(Set.of(setup.fixtureId()));
+            Map<String, String> pageWatermarks = pageWatermarkSnapshot();
+            Map<String, Object> finality = finalitySnapshot();
+            Map<String, Object> finalizedPageProof = finalizedPageProofSnapshot();
+            Map<String, Object> sourceCatalogue = sourceCatalogueSnapshot();
+            Map<String, Long> writes = unit6WriteCounts();
+            List<Long> pageEpochs = jdbc.query("""
+                    SELECT DISTINCT page_run.runtime_epoch
+                    FROM %s finality
+                    CROSS JOIN LATERAL jsonb_each(finality.finalized_page_evidence) page
+                    JOIN %s page_run ON page_run.generation=(page.value->>'generation')::bigint
+                    WHERE finality.season_id=? AND finality.gameweek=3
+                    ORDER BY page_run.runtime_epoch
+                    """.formatted(TABLES.gameweekStatSync(), TABLES.run()),
+                    (rs, row) -> rs.getLong(1), SEASON_ID);
+            assertThat(pageEpochs).containsExactly(runtimeFence.epoch());
+
+            long finalizedEpoch = runtimeFence.epoch();
             PlannerRuntimeRepository runtime = new PlannerRuntimeRepository(jdbc, tx, clock, TABLES);
             runtime.deactivate(runtimeFence);
             runtimeFence = runtime.activate(season.code(), OwnedSyncMode.ACTIVE);
+            assertThat(runtimeFence.epoch()).isGreaterThan(finalizedEpoch);
+            assertThat(reader.read(SEASON_ID, season.code(), Set.of(3)).get(3).state())
+                    .isEqualTo(GameweekFinality.State.FINALIZED);
             store = new OwnedSyncStore(jdbc, tx, clock, TABLES, runtimeFence);
             publisher = new IncrementalPlayerFixturePublisher(
                     new IncrementalPfsRepository(jdbc, clock, store, TABLES));
-        });
+
+            fetch.clearCalls();
+            clock.set(clock.instant().plusSeconds(60));
+            CycleResult resumed = compatibilityCollector(true).runCycle();
+
+            assertThat(resumed.state()).as("last error: %s", latestRunError()).isEqualTo(State.COMPLETED);
+            assertThat(resumed.selectedPlayerIds()).isEmpty();
+            assertThat(fetch.count(EndpointKind.BOOTSTRAP_STATIC)).isOne();
+            assertThat(fetch.count(EndpointKind.FIXTURES)).isOne();
+            assertThat(fetch.count(EndpointKind.EVENT_LIVE)).isZero();
+            assertThat(fetch.playerIds()).isEmpty();
+            var after = reader.read(SEASON_ID, season.code(), Set.of(3)).get(3);
+            assertThat(after.state()).isEqualTo(GameweekFinality.State.FINALIZED);
+            assertThat(after.receipt()).isEqualTo(initial.receipt());
+            assertThat(pfsRowsSnapshot(Set.of(setup.fixtureId()))).isEqualTo(rows);
+            assertThat(pfsProofSnapshot(Set.of(setup.fixtureId()))).isEqualTo(pfsProof);
+            assertThat(pageWatermarkSnapshot()).isEqualTo(pageWatermarks);
+            assertThat(finalitySnapshot()).isEqualTo(finality);
+            assertThat(finalizedPageProofSnapshot()).isEqualTo(finalizedPageProof);
+            assertThat(sourceCatalogueSnapshot().get("membership_fingerprint"))
+                    .isEqualTo(sourceCatalogue.get("membership_fingerprint"));
+            assertThat(sourceCatalogueSnapshot().get("source_generation"))
+                    .isEqualTo(sourceCatalogueSnapshot().get("latest_generation"));
+            assertThat(((Number) sourceCatalogueSnapshot().get("latest_generation")).longValue())
+                    .isGreaterThan(((Number) sourceCatalogue.get("latest_generation")).longValue());
+            assertThat(jdbc.query("""
+                    SELECT DISTINCT page_run.runtime_epoch
+                    FROM %s finality
+                    CROSS JOIN LATERAL jsonb_each(finality.finalized_page_evidence) page
+                    JOIN %s page_run ON page_run.generation=(page.value->>'generation')::bigint
+                    WHERE finality.season_id=? AND finality.gameweek=3
+                    ORDER BY page_run.runtime_epoch
+                    """.formatted(TABLES.gameweekStatSync(), TABLES.run()),
+                    (rs, row) -> rs.getLong(1), SEASON_ID)).containsExactly(finalizedEpoch);
+            Map<String, Long> writesAfter = unit6WriteCounts();
+            for (String table : List.of("player_fixture_stats", TABLES.playerFixtureEvidence(),
+                    TABLES.playerFixtureCurrent(), TABLES.gameweekStatSync())) {
+                for (String operation : List.of("INSERT", "UPDATE", "DELETE")) {
+                    String key = table + "/" + operation;
+                    assertThat(writesAfter.getOrDefault(key, 0L)).as("no proof churn for %s", key)
+                            .isEqualTo(writes.getOrDefault(key, 0L));
+                }
+            }
+        } finally {
+            removeUnit6WriteCounters();
+        }
     }
 
     @Test
@@ -3720,21 +3817,40 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
     private void assertFinalizedEvidenceTamperReopens(java.util.function.Consumer<CheckedFixtureSetup> tamper)
             throws Exception {
         CheckedFixtureSetup setup = checkedSingleFixtureSetup();
-        CycleResult finalized = collector(true).runCycle();
+        CycleResult finalized = compatibilityCollector(true).runCycle();
         assertThat(finalized.state()).as("last error: %s", latestRunError()).isEqualTo(State.COMPLETED);
-        assertThat(jdbc.queryForObject("SELECT state FROM " + TABLES.gameweekStatSync()
-                + " WHERE season_id=? AND gameweek=3", String.class, SEASON_ID)).isEqualTo("FINALIZED");
+        GameweekFinalityReader reader = new GameweekFinalityReader(jdbc, clock, TABLES);
+        assertThat(reader.read(SEASON_ID, season.code(), Set.of(3)).get(3).state())
+                .isEqualTo(GameweekFinality.State.FINALIZED);
+        String manifestJson = jdbc.queryForObject("SELECT final_attempt_population_manifest::text FROM "
+                + TABLES.gameweekStatSync() + " WHERE season_id=? AND gameweek=3", String.class, SEASON_ID);
+        var manifest = GameweekFinalityRepository.populationManifest(manifestJson);
+        assertThat(manifest.population().sourceCatalogueMembershipRequired()).isTrue();
+        assertThat(manifest.population().participantEvidenceByFixture()).containsKey(setup.fixtureId());
+        Map<String, String> previousPageWatermarks = pageWatermarkSnapshot();
+        Map<String, Object> previousFinalizedPageProof = finalizedPageProofSnapshot();
 
         tamper.accept(setup);
+        assertThat(reader.read(SEASON_ID, season.code(), Set.of(3)).get(3).state())
+                .isEqualTo(GameweekFinality.State.FINAL_PENDING);
         fetch.clearCalls();
         clock.set(clock.instant().plusSeconds(60));
-        CycleResult reopened = collector(true).runCycle();
+        CycleResult reopened = compatibilityCollector(true).runCycle();
 
         assertThat(reopened.state()).as("last error: %s", latestRunError()).isEqualTo(State.COMPLETED);
-        assertThat(reopened.selectedPlayerIds()).contains(setup.cataloguePlayer(), 28);
-        assertThat(fetch.playerIds()).contains(setup.cataloguePlayer(), 28);
-        assertThat(jdbc.queryForObject("SELECT state FROM " + TABLES.gameweekStatSync()
-                + " WHERE season_id=? AND gameweek=3", String.class, SEASON_ID)).isEqualTo("FINALIZED");
+        assertThat(reopened.selectedPlayerIds()).containsExactly(setup.cataloguePlayer(), 28);
+        assertThat(fetch.playerIds()).containsExactly(setup.cataloguePlayer(), 28);
+        assertThat(fetch.count(EndpointKind.BOOTSTRAP_STATIC)).isEqualTo(2);
+        assertThat(fetch.count(EndpointKind.FIXTURES)).isEqualTo(2);
+        assertThat(reader.read(SEASON_ID, season.code(), Set.of(3)).get(3).state())
+                .isEqualTo(GameweekFinality.State.FINALIZED);
+        assertThat(pageWatermarkSnapshot()).isNotEqualTo(previousPageWatermarks);
+        Map<String, Object> revalidatedPageProof = finalizedPageProofSnapshot();
+        assertThat(revalidatedPageProof).isNotEqualTo(previousFinalizedPageProof);
+        assertThat(((Number) revalidatedPageProof.get("finalized_run_generation")).longValue())
+                .isGreaterThan(((Number) previousFinalizedPageProof.get("finalized_run_generation")).longValue());
+        Map<String, Object> sourceCatalogue = sourceCatalogueSnapshot();
+        assertThat(sourceCatalogue.get("source_generation")).isEqualTo(sourceCatalogue.get("latest_generation"));
     }
 
     private CycleResult collectWithExtraHistory(int historyMinutes, boolean includeZeroMinuteLive)
@@ -4204,6 +4320,19 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
                 + "final_attempt_outstanding_player_ids::text,final_attempt_page_read_started_at,"
                 + "final_attempt_page_read_finished_at FROM " + TABLES.gameweekStatSync()
                 + " WHERE season_id=? AND gameweek=3", SEASON_ID);
+    }
+
+    private Map<String, Object> finalizedPageProofSnapshot() {
+        return jdbc.queryForMap("SELECT finalized_run_generation,finalized_page_evidence::text,"
+                + "finalized_source_read_started_at,finalized_source_read_finished_at,finalized_source_floor "
+                + "FROM " + TABLES.gameweekStatSync() + " WHERE season_id=? AND gameweek=3", SEASON_ID);
+    }
+
+    private Map<String, Object> sourceCatalogueSnapshot() {
+        return jdbc.queryForMap("SELECT latest_generation,(source_catalogue->>'sourceGeneration')::bigint "
+                + "AS source_generation,source_catalogue->>'membershipFingerprint' AS membership_fingerprint "
+                + "FROM " + TABLES.receipt() + " WHERE season=? AND publication_key=?",
+                season.code(), OwnedSyncStore.INCREMENTAL_COMPATIBILITY_PUBLICATION_KEY);
     }
 
     private CheckedFixtureSetup checkedSingleFixtureSetup() throws Exception {
