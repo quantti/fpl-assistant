@@ -4,6 +4,7 @@ import java.net.InetAddress;
 import java.time.Clock;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -18,7 +19,7 @@ import fi.karivanttinen.fplassistant.sync.CatalogueScheduleParser.Season;
 
 /** Creates the owned runtime only for an explicit STAGING or guarded ACTIVE mode. */
 @Configuration(proxyBeanMethods = false)
-@ConditionalOnExpression("T(fi.karivanttinen.fplassistant.sync.OwnedSyncMode).valueOf('${fpl.owned-sync.mode:OFF}') != T(fi.karivanttinen.fplassistant.sync.OwnedSyncMode).OFF")
+@ConditionalOnExpression("T(fi.karivanttinen.fplassistant.sync.OwnedSyncRuntimeConfiguration).legacyRuntimeEnabled('${fpl.owned-sync.mode:OFF}', ${fpl.owned-sync.importer.enabled:false})")
 public class OwnedSyncRuntimeConfiguration {
 
     @Bean(destroyMethod = "close")
@@ -97,6 +98,11 @@ public class OwnedSyncRuntimeConfiguration {
         if (mode == OwnedSyncMode.ACTIVE && !cutover) {
             throw new IllegalStateException("ACTIVE owned sync requires cutover-confirmed=true");
         }
+    }
+
+    public static boolean legacyRuntimeEnabled(String configuredMode, boolean importerEnabled) {
+        return OwnedSyncMode.valueOf(configuredMode.trim().toUpperCase(Locale.ROOT)) != OwnedSyncMode.OFF
+                && !importerEnabled;
     }
 
     static void validateLegacyArguments(OwnedSyncMode mode, ApplicationArguments arguments) {

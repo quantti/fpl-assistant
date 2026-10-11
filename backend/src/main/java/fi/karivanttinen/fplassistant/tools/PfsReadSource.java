@@ -66,6 +66,18 @@ public final class PfsReadSource {
         INCREMENTAL
     }
 
+    public record IncrementalRows(int incrementalRows, int otherRows) {
+        public IncrementalRows {
+            if (incrementalRows < 0 || otherRows < 0) {
+                throw new IllegalArgumentException("Row counts cannot be negative");
+            }
+        }
+
+        public int totalRows() {
+            return incrementalRows + otherRows;
+        }
+    }
+
     /**
      * Receipt state for a bulk fixture population. This must be called inside the ranking
      * transaction: it is coverage metadata for the same PFS rows exposed by {@link #cte()}.
@@ -116,6 +128,26 @@ public final class PfsReadSource {
                 result.put(fixtureId, FixtureReceipt.INCREMENTAL);
             }
         }
+        return Map.copyOf(result);
+    }
+
+    /** Row evidence in an exact fixture set, grouped once for output finality attribution. */
+    public Map<Integer, IncrementalRows> incrementalRowsByGameweek(int seasonId, Set<Integer> fixtureIds) {
+        if (fixtureIds.isEmpty()) return Map.of();
+        String placeholders = String.join(",", java.util.Collections.nCopies(fixtureIds.size(), "?"));
+        List<Object> args = new java.util.ArrayList<>();
+        args.add(seasonId);
+        args.addAll(fixtureIds);
+        Map<Integer, IncrementalRows> result = new HashMap<>();
+        jdbc.query("WITH " + cte() + " SELECT gameweek,"
+                + " count(*) FILTER (WHERE evidence_status='PROVISIONAL') AS incremental_rows,"
+                + " count(*) FILTER (WHERE evidence_status<>'PROVISIONAL') AS other_rows"
+                + " FROM pfs_read WHERE season_id=? AND fixture_id IN (" + placeholders + ")"
+                + " GROUP BY gameweek", rs -> {
+                    result.put(rs.getInt("gameweek"), new IncrementalRows(
+                            rs.getInt("incremental_rows"), rs.getInt("other_rows")));
+                },
+                args.toArray());
         return Map.copyOf(result);
     }
 
@@ -289,7 +321,8 @@ public final class PfsReadSource {
                            p.expected_goal_involvements, p.goals_conceded, p.expected_goals_conceded,
                            p.defensive_contribution, NULL::timestamptz AS source_read_started_at,
                            NULL::timestamptz AS source_read_finished_at,
-                           NULL::timestamptz AS verified_published_at, FALSE AS owned_evidence
+                           NULL::timestamptz AS verified_published_at, FALSE AS owned_evidence,
+                           'LEGACY'::text AS evidence_status
                     FROM player_fixture_stats p
                     LEFT JOIN %s fs ON fs.season_id=p.season_id AND fs.fixture_id=p.fixture_id
                     LEFT JOIN season s ON s.id=p.season_id
@@ -310,7 +343,7 @@ public final class PfsReadSource {
                            defensive_contribution, NULL::timestamptz AS source_read_started_at,
                            NULL::timestamptz AS source_read_finished_at,
                            NULL::timestamptz AS verified_published_at,
-                           FALSE AS owned_evidence
+                           FALSE AS owned_evidence, 'LEGACY'::text AS evidence_status
                     FROM player_fixture_stats
                 )
                 """;

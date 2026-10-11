@@ -32,7 +32,7 @@ import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.SourceRead;
 import fi.karivanttinen.fplassistant.sync.GameweekFinalityRepository.Progress;
 
 /** Explicit, inert hourly-style collector. It owns no scheduler, bean registration or endpoint. */
-public final class CoalescedPlayerHistoryCollector {
+public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHistoryImportEntrypoint {
 
     public static final Duration CYCLE_INTERVAL = Duration.ofHours(1);
     private static final Duration LEASE = Duration.ofMinutes(5);
@@ -77,6 +77,7 @@ public final class CoalescedPlayerHistoryCollector {
     }
 
     /** Runs at most one durable season cycle. Callers decide when to invoke this API. */
+    @Override
     public CycleResult runCycle() {
         if (!enabled) return CycleResult.disabled();
         Instant now = clock.instant();

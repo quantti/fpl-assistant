@@ -12,12 +12,22 @@ class ComparisonCoverageFormatterTest {
     private static final Instant AS_OF = Instant.parse("2026-09-09T12:00:00Z");
 
     @Test
-    void provisionalPageEvidenceIsExplicitlyNotCalledFplCheckedOrFinal() {
+    void incrementalPageEvidencePointsToScopedFinalityWithoutClaimingAnOverallState() {
         ComparisonCoverage coverage = ComparisonCoverage.assemble(List.of(), List.of(), true, true);
 
         assertThat(ComparisonCoverageFormatter.success(coverage))
-                .contains("Match evidence status: provisional incremental-page evidence is present")
-                .contains("no FPL-checked or final-import claim is inferred");
+                .contains("incremental current-row evidence is present")
+                .contains("per-gameweek FPL-check/final-import scope is listed beside the metric refresh")
+                .doesNotContain("provisional", "FPL checked; final import completed");
+    }
+
+    @Test
+    void checkedFinalEvidenceIsScopedToListedGameweeks() {
+        ComparisonCoverage coverage = ComparisonCoverage.assemble(List.of(), List.of(), true, false, true);
+
+        assertThat(ComparisonCoverageFormatter.success(coverage))
+                .contains("Match evidence status: final imports apply only to the explicitly listed gameweeks")
+                .contains("no season-wide finality is inferred");
     }
 
     @Test

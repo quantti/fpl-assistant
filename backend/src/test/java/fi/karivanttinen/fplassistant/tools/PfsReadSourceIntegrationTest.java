@@ -147,6 +147,16 @@ class PfsReadSourceIntegrationTest {
     }
 
     @Test
+    void groupsIncrementalAndOtherRowsOnlyInsideTheRequestedFixtureSet() {
+        fixture(9101, "VERIFIED", 99L, 1);
+        current(9101, 9201, "VALID");
+
+        assertThat(source("OFF").incrementalRowsByGameweek(TapasSeed.POPULATED_SEASON_ID,
+                java.util.Set.of(9101, 9102))).containsOnlyKeys(1)
+                .containsEntry(1, new PfsReadSource.IncrementalRows(1, 3));
+    }
+
+    @Test
     void offMasksNewOwnedPagesAndWithdrawalsEvenWithOldVerifiedOrNoFixtureReceipt() {
         fixture(9101, "VERIFIED", 99L, 1);
         evidence(9101, 9201, 99, HistoryParser.Component.EXPECTED_GOALS.bit());

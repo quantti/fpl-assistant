@@ -258,14 +258,15 @@ public final class GameweekFinalityRepository {
                         finalized_source_floor=?, finalized_validation_read_started_at=?,
                         finalized_validation_read_finished_at=?, finalized_source_read_started_at=?,
                         finalized_source_read_finished_at=?, finalized_invalidation_revision=?,
-                        finalized_run_generation=?, finalized_at=?, finalized_mandatory_manifest_complete=TRUE,
+                        finalized_run_generation=?, finalized_page_evidence=?::jsonb, finalized_at=?,
+                        finalized_mandatory_manifest_complete=TRUE,
                         finalized_optional_component_coverage=?::jsonb, updated_at=?
                     WHERE season_id=? AND gameweek=?
                     """.formatted(tables.gameweekStatSync()), receipt.sourceSignature(), finalizedFingerprint,
                     receipt.rowRevisionFingerprint(), timestamp(receipt.sourceFloor()),
                     timestamp(endSourceRead.startedAt()), timestamp(endSourceRead.finishedAt()),
                     timestamp(finalSourceInterval.startedAt()), timestamp(finalSourceInterval.finishedAt()),
-                    receipt.invalidationRevision(), receipt.runGeneration(), timestamp(now),
+                    receipt.invalidationRevision(), receipt.runGeneration(), pageEvidenceJson(pages), timestamp(now),
                     coverageJson(receipt.optionalCoverage()), timestamp(now), season.id(), endSource.gameweek());
             return receipt;
         });
@@ -400,7 +401,7 @@ public final class GameweekFinalityRepository {
         return parameters;
     }
 
-    private static Map<Integer, String> fixtureIdentities(SourceSnapshot source) {
+    static Map<Integer, String> fixtureIdentities(SourceSnapshot source) {
         Map<Integer, String> result = new java.util.TreeMap<>();
         for (FixtureRow fixture : source.assignedFixtures()) {
             String identity = fixture.seasonId() + "|" + fixture.seasonCode() + "|" + fixture.id() + "|"
@@ -500,7 +501,7 @@ public final class GameweekFinalityRepository {
         json.append('}');
     }
 
-    private static PopulationManifest populationManifest(String value) {
+    static PopulationManifest populationManifest(String value) {
         if (value == null) return null;
         try {
             JsonNode root = JSON.readTree(value);
@@ -699,7 +700,8 @@ public final class GameweekFinalityRepository {
                     finalized_row_revision_fingerprint=NULL, finalized_source_floor=NULL,
                     finalized_validation_read_started_at=NULL, finalized_validation_read_finished_at=NULL,
                     finalized_source_read_started_at=NULL, finalized_source_read_finished_at=NULL,
-                    finalized_invalidation_revision=NULL, finalized_run_generation=NULL, finalized_at=NULL,
+                    finalized_invalidation_revision=NULL, finalized_run_generation=NULL,
+                    finalized_page_evidence=NULL, finalized_at=NULL,
                     finalized_mandatory_manifest_complete=NULL, finalized_optional_component_coverage=NULL,
                     updated_at=? WHERE season_id=? AND gameweek=?
                 """.formatted(tables.gameweekStatSync()), revision, timestamp(floor), timestamp(clock.instant()),
@@ -816,8 +818,8 @@ public final class GameweekFinalityRepository {
                 Map.copyOf(coverage), Map.copyOf(rows), valid[0]);
     }
 
-    private static boolean validatesAppearanceRows(SourceSnapshot source, RequiredPopulation population,
-                                                    SweepCheckpoint checkpoint, CurrentRows current) {
+    static boolean validatesAppearanceRows(SourceSnapshot source, RequiredPopulation population,
+                                            SweepCheckpoint checkpoint, CurrentRows current) {
         return checkpoint != null
                 && population.hasCompleteAppearanceEvidence(source, checkpoint.sourceFloor())
                 && currentPositiveRowsMatchAppearances(source, population, current)
@@ -881,6 +883,20 @@ public final class GameweekFinalityRepository {
         Map<Component, ComponentCoverage> result = new EnumMap<>(Component.class);
         for (Component component : Component.values()) result.put(component, new ComponentCoverage(0, 0, true));
         return Map.copyOf(result);
+    }
+
+    private static String pageEvidenceJson(Map<Integer, PageEvidence> pages) {
+        StringBuilder json = new StringBuilder("{");
+        boolean first = true;
+        for (Map.Entry<Integer, PageEvidence> entry : new java.util.TreeMap<>(pages).entrySet()) {
+            if (!first) json.append(',');
+            first = false;
+            PageEvidence page = entry.getValue();
+            json.append('\"').append(entry.getKey()).append("\":{\"generation\":")
+                    .append(page.generation()).append(",\"startedAt\":\"").append(page.startedAt())
+                    .append("\",\"finishedAt\":\"").append(page.finishedAt()).append("\"}");
+        }
+        return json.append('}').toString();
     }
 
     private static String coverageJson(Map<Component, ComponentCoverage> coverage) {
@@ -991,20 +1007,20 @@ public final class GameweekFinalityRepository {
                                   Long finalizedRunGeneration,
                                   Instant finalizedAt, String coverageJson) { }
 
-    private record PopulationManifest(RequiredPopulation population, Map<Integer, String> fixtureIdentities) {
-        private PopulationManifest {
+    record PopulationManifest(RequiredPopulation population, Map<Integer, String> fixtureIdentities) {
+        PopulationManifest {
             Objects.requireNonNull(population);
             fixtureIdentities = Map.copyOf(fixtureIdentities);
         }
     }
 
-    private record FixturePlayer(int fixtureId, int playerId) { }
+    record FixturePlayer(int fixtureId, int playerId) { }
     private record ParticipantManifest(Map<Integer, Set<Integer>> playerIdsByFixture) { }
     private record PageEvidence(long generation, Instant startedAt, Instant finishedAt) { }
     private record SourceInterval(Instant startedAt, Instant finishedAt) { }
-    private record CurrentRows(String fingerprint, Map<Component, ComponentCoverage> coverage,
-                               Map<FixturePlayer, CurrentPfsRow> rows, boolean valid) { }
-    private record CurrentPfsRow(int minutes, int playerTeamId, int opponentTeamId, Boolean wasHome) { }
+    record CurrentRows(String fingerprint, Map<Component, ComponentCoverage> coverage,
+                       Map<FixturePlayer, CurrentPfsRow> rows, boolean valid) { }
+    record CurrentPfsRow(int minutes, int playerTeamId, int opponentTeamId, Boolean wasHome) { }
 
     public record Progress(State state, String sourceSignature, long invalidationRevision,
                            Instant invalidationFloor, Instant firstCheckedAt, SweepCheckpoint checkpoint,

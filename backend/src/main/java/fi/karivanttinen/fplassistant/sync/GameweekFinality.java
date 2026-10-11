@@ -181,12 +181,17 @@ public final class GameweekFinality {
 
     public static String catalogueFingerprint(Snapshot snapshot, List<FixtureRow> fixtures) {
         Objects.requireNonNull(snapshot);
+        return catalogueFingerprint(snapshot.players(), fixtures);
+    }
+
+    public static String catalogueFingerprint(List<PlayerRow> players, List<FixtureRow> fixtures) {
+        Objects.requireNonNull(players);
         Set<Integer> teams = new HashSet<>();
         fixtures.forEach(fixture -> {
             teams.add(fixture.homeTeamId());
             teams.add(fixture.awayTeamId());
         });
-        String canonical = snapshot.players().stream().filter(player -> teams.contains(player.teamId()))
+        String canonical = players.stream().filter(player -> teams.contains(player.teamId()))
                 .sorted(java.util.Comparator.comparingInt(PlayerRow::id))
                 .map(player -> player.id() + ":" + player.teamId())
                 .collect(java.util.stream.Collectors.joining("|"));
