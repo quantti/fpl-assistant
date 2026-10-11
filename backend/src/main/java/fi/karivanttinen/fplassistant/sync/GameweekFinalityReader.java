@@ -33,6 +33,7 @@ import fi.karivanttinen.fplassistant.sync.GameweekFinality.RowState;
 import fi.karivanttinen.fplassistant.sync.GameweekFinality.SourceSnapshot;
 import fi.karivanttinen.fplassistant.sync.GameweekFinality.State;
 import fi.karivanttinen.fplassistant.sync.GameweekFinality.SweepCheckpoint;
+import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.EndpointKind;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.SourceRead;
 
 /** Read-only validation of current checked-gameweek source and row receipts. */
@@ -78,6 +79,7 @@ public final class GameweekFinalityReader {
         Map<Integer, SourceSnapshot> sources = currentSources(seasonId, seasonCode, gameweeks);
         Map<Integer, Stored> stored = tableExists(tables.gameweekStatSync())
                 ? storedRows(seasonId, seasonCode, gameweeks) : Map.of();
+        SourceCatalogueMembership membership = currentSourceCatalogueMembership(seasonId, seasonCode);
         Map<Integer, Result> result = new HashMap<>();
         for (int gameweek : gameweeks) {
             SourceSnapshot source = sources.get(gameweek);
@@ -85,7 +87,8 @@ public final class GameweekFinalityReader {
             boolean eligible = source != null && source.finalSweepEligible();
             State state = eligible ? State.FINAL_PENDING : State.OPEN;
             FinalReceipt receipt = null;
-            if (source != null && row != null && validFinalReceipt(source, row, seasonId, seasonCode)) {
+            if (source != null && row != null
+                    && validFinalReceipt(source, row, seasonId, seasonCode, membership)) {
                 state = State.FINALIZED;
                 receipt = row.receipt();
             }
@@ -179,16 +182,18 @@ public final class GameweekFinalityReader {
         return Map.copyOf(result);
     }
 
-    private boolean validFinalReceipt(SourceSnapshot source, Stored row, int seasonId, String seasonCode) {
+    private boolean validFinalReceipt(SourceSnapshot source, Stored row, int seasonId, String seasonCode,
+                                      SourceCatalogueMembership membership) {
         try {
-            return validFinalReceiptChecked(source, row, seasonId, seasonCode);
+            return validFinalReceiptChecked(source, row, seasonId, seasonCode, membership);
         } catch (IllegalArgumentException | NullPointerException invalidReceipt) {
             return false;
         }
     }
 
     private boolean validFinalReceiptChecked(SourceSnapshot source, Stored row,
-                                             int seasonId, String seasonCode) {
+                                             int seasonId, String seasonCode,
+                                             SourceCatalogueMembership membership) {
         if (row.state() != State.FINALIZED || !source.finalSweepEligible()) return false;
         if (!tableExists(tables.playerFixtureCurrent()) || !tableExists(tables.playerFixtureEvidence())
                 || !tableExists(tables.receipt()) || !tableExists(tables.run())) return false;
@@ -225,7 +230,14 @@ public final class GameweekFinalityReader {
                 || !manifest.fixtureIdentities().equals(GameweekFinalityRepository.fixtureIdentities(source))
                 || !population.hasCompleteAppearanceEvidence(source, checkpoint.sourceFloor())) return false;
 
-        CatalogueProof catalogue = currentCatalogue(seasonId, seasonCode, source.assignedFixtures());
+        CatalogueProof catalogue;
+        if (population.sourceCatalogueMembershipRequired()) {
+            if (membership == null || membership.seasonId() != seasonId
+                    || !membership.seasonCode().equals(seasonCode)) return false;
+            catalogue = sourceCatalogue(membership, source.assignedFixtures());
+        } else {
+            catalogue = currentCatalogue(seasonId, seasonCode, source.assignedFixtures());
+        }
         if (!population.bootstrapFingerprint().equals(catalogue.fingerprint())
                 || !covers(population.cataloguePlayerIdsByFixture(), catalogue.playerIdsByFixture())) return false;
         GameweekFinalityRepository.CurrentRows current = currentRows(seasonId, seasonCode, source);
@@ -458,6 +470,113 @@ public final class GameweekFinalityReader {
         return validated.equals(required);
     }
 
+    private SourceCatalogueMembership currentSourceCatalogueMembership(int seasonId, String seasonCode) {
+        if (!tableExists(tables.receipt()) || !tableExists(tables.run()) || !tableExists(tables.payload())
+                || !columnExists(tables.receipt(), "source_catalogue")) return null;
+        Instant now = clock.instant();
+        List<MembershipReceipt> rows = jdbc.query("""
+                SELECT r.latest_generation,r.source_read_started_at,r.source_read_finished_at,
+                       r.source_pair_fingerprint,r.source_catalogue::text AS source_catalogue,
+                       r.source_bootstrap_payload_id,r.source_fixtures_payload_id,
+                       r.source_bootstrap_sha256,r.source_fixtures_sha256,
+                       bootstrap.read_started_at AS bootstrap_started,bootstrap.read_finished_at AS bootstrap_finished,
+                       fixtures.read_started_at AS fixtures_started,fixtures.read_finished_at AS fixtures_finished
+                FROM %s r
+                JOIN %s producer ON producer.generation=r.latest_generation AND producer.season=r.season
+                JOIN %s bootstrap ON bootstrap.id=r.source_bootstrap_payload_id
+                    AND bootstrap.run_generation=r.latest_generation
+                JOIN %s fixtures ON fixtures.id=r.source_fixtures_payload_id
+                    AND fixtures.run_generation=r.latest_generation
+                WHERE r.season=? AND r.publication_key=? AND r.latest_generation IS NOT NULL
+                  AND r.source_catalogue IS NOT NULL
+                  AND r.source_pair_fingerprint ~ '^[0-9a-f]{64}$'
+                  AND r.source_bootstrap_sha256 ~ '^[0-9a-f]{64}$'
+                  AND r.source_fixtures_sha256 ~ '^[0-9a-f]{64}$'
+                  AND producer.kind='PLAYER_HISTORY' AND producer.producer_key='INCREMENTAL_CORE'
+                  AND producer.coalescing_key='incremental-core-import'
+                  AND producer.publication_key='incremental-core-import'
+                  AND producer.runtime_mode='ACTIVE' AND producer.runtime_epoch>0
+                  AND producer.requested_source_after<=r.source_read_started_at
+                  AND producer.source_read_started_at<=r.source_read_started_at
+                  AND producer.source_read_finished_at>=r.source_read_finished_at
+                  AND producer.source_read_finished_at<=?
+                  AND bootstrap.endpoint_kind='BOOTSTRAP_STATIC' AND bootstrap.event_id IS NULL
+                  AND bootstrap.player_id IS NULL AND bootstrap.validation_state='VALID'
+                  AND bootstrap.source_published IS TRUE
+                  AND fixtures.endpoint_kind='FIXTURES' AND fixtures.event_id IS NULL
+                  AND fixtures.player_id IS NULL AND fixtures.validation_state='VALID'
+                  AND fixtures.source_published IS TRUE
+                  AND bootstrap.read_started_at=r.source_bootstrap_read_started_at
+                  AND bootstrap.read_finished_at=r.source_bootstrap_read_finished_at
+                  AND fixtures.read_started_at=r.source_fixtures_read_started_at
+                  AND fixtures.read_finished_at=r.source_fixtures_read_finished_at
+                  AND bootstrap.read_finished_at<=? AND fixtures.read_finished_at<=?
+                  AND r.source_read_started_at=LEAST(bootstrap.read_started_at,fixtures.read_started_at)
+                  AND r.source_read_finished_at=GREATEST(bootstrap.read_finished_at,fixtures.read_finished_at)
+                  AND r.source_read_finished_at<=?
+                  AND ((producer.state IN ('PENDING','LEASED')
+                        AND producer.completed_at IS NULL AND producer.failed_at IS NULL)
+                    OR (producer.state='COMPLETED' AND producer.completed_at IS NOT NULL
+                        AND producer.completed_at>=producer.source_read_finished_at
+                        AND producer.failed_at IS NULL AND producer.last_error IS NULL)
+                    OR (producer.state='FAILED' AND producer.failed_at IS NOT NULL
+                        AND producer.failed_at>=producer.source_read_finished_at
+                        AND producer.completed_at IS NULL AND producer.last_error IS NOT NULL)
+                    OR (producer.state='SUPERSEDED' AND producer.completed_at IS NOT NULL
+                        AND producer.completed_at>=producer.source_read_finished_at
+                        AND producer.failed_at IS NULL
+                        AND producer.last_error='Superseded by a validated newer canonical source pair'))
+                  AND (COALESCE(producer.completed_at,producer.failed_at) IS NULL
+                       OR COALESCE(producer.completed_at,producer.failed_at)<=?)
+                """.formatted(tables.receipt(), tables.run(), tables.payload(), tables.payload()),
+                (rs, row) -> new MembershipReceipt(rs.getLong("latest_generation"),
+                        new SourceRead(instant(rs, "source_read_started_at"),
+                                instant(rs, "source_read_finished_at")),
+                        rs.getString("source_pair_fingerprint"), rs.getString("source_catalogue"),
+                        rs.getLong("source_bootstrap_payload_id"), rs.getLong("source_fixtures_payload_id"),
+                        rs.getString("source_bootstrap_sha256"), rs.getString("source_fixtures_sha256"),
+                        new SourceRead(instant(rs, "bootstrap_started"), instant(rs, "bootstrap_finished")),
+                        new SourceRead(instant(rs, "fixtures_started"), instant(rs, "fixtures_finished"))),
+                seasonCode, OwnedSyncStore.INCREMENTAL_COMPATIBILITY_PUBLICATION_KEY,
+                Timestamp.from(now), Timestamp.from(now), Timestamp.from(now), Timestamp.from(now),
+                Timestamp.from(now));
+        if (rows.size() != 1) return null;
+        MembershipReceipt row = rows.getFirst();
+        OwnedSyncStore.CanonicalSourcePair sourcePair;
+        try {
+            sourcePair = OwnedSyncStore.CanonicalSourcePair.of(
+                    new OwnedSyncStore.CanonicalSourcePayload(row.bootstrapPayloadId(), row.generation(),
+                            EndpointKind.BOOTSTRAP_STATIC, row.bootstrapRead(), row.bootstrapHash()),
+                    new OwnedSyncStore.CanonicalSourcePayload(row.fixturesPayloadId(), row.generation(),
+                            EndpointKind.FIXTURES, row.fixturesRead(), row.fixturesHash()));
+        } catch (IllegalArgumentException invalidSourcePair) {
+            return null;
+        }
+        if (!sourcePair.fingerprint().equals(row.sourcePairFingerprint())) return null;
+        return SourceCatalogueMembership.parse(row.catalogue(), seasonId, seasonCode, row.generation(),
+                row.sourceRead(), row.sourcePairFingerprint()).orElse(null);
+    }
+
+    private boolean columnExists(String tableName, String columnName) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+                SELECT EXISTS (SELECT 1 FROM information_schema.columns
+                    WHERE table_schema='public' AND table_name=? AND column_name=?)
+                """, Boolean.class, tableName, columnName));
+    }
+
+    private CatalogueProof sourceCatalogue(SourceCatalogueMembership membership, List<FixtureRow> fixtures) {
+        List<PlayerRow> players = SourceCatalogueMembership.asPlayerRows(membership);
+        String fingerprint = GameweekFinality.catalogueFingerprint(players, fixtures);
+        Map<Integer, Set<Integer>> byFixture = new java.util.TreeMap<>();
+        for (FixtureRow fixture : fixtures) {
+            Set<Integer> ids = new TreeSet<>();
+            players.stream().filter(player -> player.teamId() == fixture.homeTeamId()
+                    || player.teamId() == fixture.awayTeamId()).map(PlayerRow::id).forEach(ids::add);
+            byFixture.put(fixture.id(), Set.copyOf(ids));
+        }
+        return new CatalogueProof(fingerprint, Map.copyOf(byFixture));
+    }
+
     private CatalogueProof currentCatalogue(int seasonId, String seasonCode, List<FixtureRow> fixtures) {
         Set<Integer> clubs = new HashSet<>();
         fixtures.forEach(fixture -> {
@@ -671,6 +790,10 @@ public final class GameweekFinalityReader {
     }
 
     private record Page(long generation, Instant startedAt, Instant finishedAt) { }
+    private record MembershipReceipt(long generation, SourceRead sourceRead, String sourcePairFingerprint,
+                                    String catalogue, long bootstrapPayloadId, long fixturesPayloadId,
+                                    String bootstrapHash, String fixturesHash, SourceRead bootstrapRead,
+                                    SourceRead fixturesRead) { }
     private record CatalogueProof(String fingerprint, Map<Integer, Set<Integer>> playerIdsByFixture) { }
 
     private record Stored(State state, Boolean eventFinished, Boolean dataChecked,

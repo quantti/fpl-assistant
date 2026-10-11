@@ -56,6 +56,7 @@ public final class OwnedSyncStore {
     static final String INCREMENTAL_LIVE_EVENT_RECEIPT_PREFIX = "incremental-live-event:";
     static final String INCREMENTAL_PARTICIPANT_RECEIPT_PREFIX = "incremental-participant:fixture:";
     static final String INCREMENTAL_DISCOVERY_RECEIPT_PREFIX = "incremental-discovery:fixture:";
+    static final String INCREMENTAL_KNOWN_RECEIPT_PREFIX = "incremental-known:fixture:";
     static final String INCREMENTAL_POPULATION_RECEIPT_PREFIX = "incremental-population:fixture:";
     private static final Duration MAX_LEASE = Duration.ofHours(1);
     private static final int PUBLIC_PAIR_CACHE_ENTRIES = 2;
@@ -769,6 +770,7 @@ public final class OwnedSyncStore {
 
             T result = publication.get();
             requireNotExpired(run, now());
+            String sourceCatalogue = sourceCatalogueMembership(run, season, sourcePair, sourceRead);
             int marked = jdbc.update("""
                     UPDATE %s SET source_published=TRUE
                     WHERE id IN (?, ?) AND run_generation=? AND validation_state='VALID'
@@ -782,7 +784,8 @@ public final class OwnedSyncStore {
                         published_at=?, source_bootstrap_payload_id=?, source_fixtures_payload_id=?,
                         source_bootstrap_read_started_at=?, source_bootstrap_read_finished_at=?,
                         source_fixtures_read_started_at=?, source_fixtures_read_finished_at=?,
-                        source_bootstrap_sha256=?, source_fixtures_sha256=?, source_pair_fingerprint=?
+                        source_bootstrap_sha256=?, source_fixtures_sha256=?, source_pair_fingerprint=?,
+                        source_catalogue=?::jsonb
                     WHERE season=? AND publication_key=?
                     """.formatted(tables.receipt()), run.generation, timestamp(sourceRead.startedAt()),
                     timestamp(sourceRead.finishedAt()), timestamp(publishedAt), sourcePair.bootstrap().id(),
@@ -790,7 +793,7 @@ public final class OwnedSyncStore {
                     timestamp(sourcePair.bootstrap().read().finishedAt()),
                     timestamp(sourcePair.fixtures().read().startedAt()),
                     timestamp(sourcePair.fixtures().read().finishedAt()), sourcePair.bootstrap().sha256(),
-                    sourcePair.fixtures().sha256(), sourcePair.fingerprint(), run.season,
+                    sourcePair.fixtures().sha256(), sourcePair.fingerprint(), sourceCatalogue, run.season,
                     INCREMENTAL_COMPATIBILITY_PUBLICATION_KEY);
             requireNotExpired(run, now());
             return result;
@@ -824,6 +827,35 @@ public final class OwnedSyncStore {
             throw new IllegalStateException("Compatibility source payload identity or validation changed");
         }
         requireReadNotFuture(publicationRead, now());
+    }
+
+    private String sourceCatalogueMembership(LockedRun run, CatalogueScheduleParser.Season season,
+                                             CanonicalSourcePair sourcePair, SourceRead sourceRead) {
+        SourceRead persistedSourceRead = postgresTimestampPrecision(sourceRead);
+        List<SourcePayloadBody> payloads = jdbc.query("""
+                SELECT id, endpoint_kind, body FROM %s
+                WHERE id IN (?, ?) AND run_generation=? AND validation_state='VALID'
+                """.formatted(tables.payload()), (rs, row) -> new SourcePayloadBody(
+                rs.getLong("id"), EndpointKind.valueOf(rs.getString("endpoint_kind")), rs.getBytes("body")),
+                sourcePair.bootstrap().id(), sourcePair.fixtures().id(), run.generation);
+        if (payloads.size() != 2) throw new IllegalStateException("Validated catalogue source pair disappeared");
+        SourcePayloadBody bootstrap = payloads.stream()
+                .filter(payload -> payload.id() == sourcePair.bootstrap().id()).findFirst().orElseThrow();
+        SourcePayloadBody fixtures = payloads.stream()
+                .filter(payload -> payload.id() == sourcePair.fixtures().id()).findFirst().orElseThrow();
+        if (bootstrap.endpoint() != EndpointKind.BOOTSTRAP_STATIC || fixtures.endpoint() != EndpointKind.FIXTURES
+                || !sha256(bootstrap.body()).equals(sourcePair.bootstrap().sha256())
+                || !sha256(fixtures.body()).equals(sourcePair.fixtures().sha256())
+                || !persistedSourceRead.equals(combinedSourceRead(
+                        sourcePair.bootstrap().read(), sourcePair.fixtures().read()))) {
+            throw new IllegalStateException("Catalogue membership source proof changed before publication");
+        }
+        CatalogueScheduleParser.Snapshot snapshot = CatalogueScheduleParser.parse(season,
+                new CatalogueScheduleParser.SourceDocument(bootstrap.body(), new CatalogueScheduleParser.ReadInterval(
+                        sourcePair.bootstrap().read().startedAt(), sourcePair.bootstrap().read().finishedAt())),
+                new CatalogueScheduleParser.SourceDocument(fixtures.body(), new CatalogueScheduleParser.ReadInterval(
+                        sourcePair.fixtures().read().startedAt(), sourcePair.fixtures().read().finishedAt())));
+        return SourceCatalogueMembership.from(snapshot, run.generation, sourcePair.fingerprint(), persistedSourceRead);
     }
 
     private void lockCompatibilityReceipt(LockedRun run, CanonicalSourcePair sourcePair) {
@@ -1042,7 +1074,6 @@ public final class OwnedSyncStore {
                 result.computeIfAbsent(rs.getInt("fixture_id"), ignored -> new java.util.TreeSet<>())
                         .add(rs.getInt("player_id"));
             }, parameters.toArray());
-            mergeDiscoveredPlayerIds(result, readParticipantLedger(run.season, fixtureIds));
             return immutablePlayerIds(result);
         });
     }
@@ -1054,6 +1085,24 @@ public final class OwnedSyncStore {
             requireIncrementalRun(run);
             return readFixturePlayerReceipts(run.season, fixtureIds, INCREMENTAL_DISCOVERY_RECEIPT_PREFIX,
                     INCREMENTAL_PARTICIPANT_RECEIPT_PREFIX);
+        });
+    }
+
+    Map<Integer, Set<Integer>> incrementalParticipantPlayerIds(Lease lease, List<Integer> fixtureIds) {
+        if (fixtureIds.isEmpty()) return Map.of();
+        return tx.execute(status -> {
+            LockedRun run = lockAndValidate(lease);
+            requireIncrementalRun(run);
+            return readFixturePlayerReceipts(run.season, fixtureIds, INCREMENTAL_PARTICIPANT_RECEIPT_PREFIX);
+        });
+    }
+
+    Map<Integer, Set<Integer>> incrementalKnownPlayerIds(Lease lease, List<Integer> fixtureIds) {
+        if (fixtureIds.isEmpty()) return Map.of();
+        return tx.execute(status -> {
+            LockedRun run = lockAndValidate(lease);
+            requireIncrementalRun(run);
+            return readFixturePlayerReceipts(run.season, fixtureIds, INCREMENTAL_KNOWN_RECEIPT_PREFIX);
         });
     }
 
@@ -1091,14 +1140,22 @@ public final class OwnedSyncStore {
     void recordIncrementalPopulation(Lease lease, Map<Integer, Set<Integer>> sourceParticipantsByFixture,
                                      Map<Integer, Set<Integer>> candidatePlayerIdsByFixture,
                                      Map<Integer, Set<Integer>> previouslyDiscoveredPlayerIdsByFixture,
+                                     Map<Integer, Set<Integer>> knownPlayerIdsByFixture,
+                                     Map<Integer, Set<Integer>> previouslyKnownPlayerIdsByFixture,
                                      Map<Integer, String> sourceFingerprints, SourceRead sourceRead) {
         Objects.requireNonNull(sourceParticipantsByFixture);
         Objects.requireNonNull(candidatePlayerIdsByFixture);
         Objects.requireNonNull(previouslyDiscoveredPlayerIdsByFixture);
+        Objects.requireNonNull(knownPlayerIdsByFixture);
+        Objects.requireNonNull(previouslyKnownPlayerIdsByFixture);
         Objects.requireNonNull(sourceFingerprints);
         Objects.requireNonNull(sourceRead);
         if (!candidatePlayerIdsByFixture.keySet().equals(sourceFingerprints.keySet())
-                || !sourceFingerprints.keySet().containsAll(sourceParticipantsByFixture.keySet())) {
+                || !sourceFingerprints.keySet().containsAll(sourceParticipantsByFixture.keySet())
+                || !sourceFingerprints.keySet().containsAll(knownPlayerIdsByFixture.keySet())
+                || knownPlayerIdsByFixture.entrySet().stream().anyMatch(entry ->
+                        !candidatePlayerIdsByFixture.getOrDefault(entry.getKey(), Set.of())
+                                .containsAll(entry.getValue()))) {
             throw new IllegalArgumentException("Fixture population and checkpoint sets must match");
         }
         tx.executeWithoutResult(status -> {
@@ -1106,6 +1163,7 @@ public final class OwnedSyncStore {
             requireIncrementalRun(run);
             Instant recordedAt = now();
             List<Object[]> newDiscoveryCandidates = new ArrayList<>();
+            List<Object[]> newKnownCandidates = new ArrayList<>();
             for (int fixtureId : candidatePlayerIdsByFixture.keySet().stream().sorted().toList()) {
                 String participantPrefix = INCREMENTAL_PARTICIPANT_RECEIPT_PREFIX + fixtureId + ":player:";
                 for (int playerId : sourceParticipantsByFixture.getOrDefault(fixtureId, Set.of())
@@ -1120,11 +1178,27 @@ public final class OwnedSyncStore {
                     newDiscoveryCandidates.add(new Object[] {run.season, discoveryKey, run.generation,
                             timestamp(sourceRead.startedAt()), timestamp(sourceRead.finishedAt()), timestamp(recordedAt)});
                 }
+                Set<Integer> previousKnown = previouslyKnownPlayerIdsByFixture.getOrDefault(fixtureId, Set.of());
+                for (int playerId : knownPlayerIdsByFixture.getOrDefault(fixtureId, Set.of()).stream().sorted().toList()) {
+                    if (previousKnown.contains(playerId)) continue;
+                    String knownKey = INCREMENTAL_KNOWN_RECEIPT_PREFIX + fixtureId + ":player:" + playerId;
+                    newKnownCandidates.add(new Object[] {run.season, knownKey, run.generation,
+                            timestamp(sourceRead.startedAt()), timestamp(sourceRead.finishedAt()), timestamp(recordedAt)});
+                }
                 insertIncrementalPopulationReceipt(run.season, INCREMENTAL_POPULATION_RECEIPT_PREFIX + fixtureId,
                         run.generation, sourceRead, sourceFingerprints.get(fixtureId), recordedAt);
             }
             insertIncrementalDiscoveryCandidates(newDiscoveryCandidates);
+            insertIncrementalKnownCandidates(newKnownCandidates);
         });
+    }
+
+    void recordIncrementalPopulation(Lease lease, Map<Integer, Set<Integer>> sourceParticipantsByFixture,
+                                     Map<Integer, Set<Integer>> candidatePlayerIdsByFixture,
+                                     Map<Integer, Set<Integer>> previouslyDiscoveredPlayerIdsByFixture,
+                                     Map<Integer, String> sourceFingerprints, SourceRead sourceRead) {
+        recordIncrementalPopulation(lease, sourceParticipantsByFixture, candidatePlayerIdsByFixture,
+                previouslyDiscoveredPlayerIdsByFixture, Map.of(), Map.of(), sourceFingerprints, sourceRead);
     }
 
     void recordIncrementalPopulation(Lease lease, Map<Integer, Set<Integer>> sourceParticipantsByFixture,
@@ -1133,16 +1207,12 @@ public final class OwnedSyncStore {
         Map<Integer, Set<Integer>> existing = incrementalDiscoveredPlayerIds(lease,
                 candidatePlayerIdsByFixture.keySet().stream().sorted().toList());
         recordIncrementalPopulation(lease, sourceParticipantsByFixture, candidatePlayerIdsByFixture,
-                existing, sourceFingerprints, sourceRead);
+                existing, Map.of(), Map.of(), sourceFingerprints, sourceRead);
     }
 
     void recordIncrementalPopulation(Lease lease, Map<Integer, Set<Integer>> playersByFixture,
                                      Map<Integer, String> sourceFingerprints, SourceRead sourceRead) {
         recordIncrementalPopulation(lease, playersByFixture, playersByFixture, sourceFingerprints, sourceRead);
-    }
-
-    private Map<Integer, Set<Integer>> readParticipantLedger(String season, List<Integer> fixtureIds) {
-        return readFixturePlayerReceipts(season, fixtureIds, INCREMENTAL_PARTICIPANT_RECEIPT_PREFIX);
     }
 
     private Map<Integer, Set<Integer>> readFixturePlayerReceipts(String season, List<Integer> fixtureIds,
@@ -1180,13 +1250,21 @@ public final class OwnedSyncStore {
     }
 
     private void insertIncrementalDiscoveryCandidates(List<Object[]> candidates) {
+        insertIncrementalCandidateBatch(candidates, "incremental discovery candidate batch");
+    }
+
+    private void insertIncrementalKnownCandidates(List<Object[]> candidates) {
+        insertIncrementalCandidateBatch(candidates, "incremental known candidate batch");
+    }
+
+    private void insertIncrementalCandidateBatch(List<Object[]> candidates, String marker) {
         String sql = """
-                /* incremental discovery candidate batch */
+                /* %s */
                 INSERT INTO %s(season, publication_key, latest_generation, source_read_started_at,
                     source_read_finished_at, published_at)
                 VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT (season, publication_key) DO NOTHING
-                """.formatted(tables.receipt());
+                """.formatted(marker, tables.receipt());
         for (int offset = 0; offset < candidates.size(); offset += INCREMENTAL_DISCOVERY_BATCH_SIZE) {
             jdbc.batchUpdate(sql, candidates.subList(offset,
                     Math.min(offset + INCREMENTAL_DISCOVERY_BATCH_SIZE, candidates.size())));
@@ -1249,12 +1327,6 @@ public final class OwnedSyncStore {
                 """.formatted(tables.receipt(), tables.receipt(), tables.receipt(),
                 tables.receipt(), tables.receipt(), tables.receipt()), season, key, generation,
                 timestamp(read.startedAt()), timestamp(read.finishedAt()), fingerprint, timestamp(publishedAt));
-    }
-
-    private static void mergeDiscoveredPlayerIds(Map<Integer, Set<Integer>> target,
-                                                   Map<Integer, Set<Integer>> discovered) {
-        discovered.forEach((fixture, players) ->
-                target.computeIfAbsent(fixture, ignored -> new java.util.TreeSet<>()).addAll(players));
     }
 
     private static Map<Integer, Set<Integer>> immutablePlayerIds(Map<Integer, Set<Integer>> source) {
@@ -4067,6 +4139,7 @@ public final class OwnedSyncStore {
     record CurrentPublishedCanonicalPair(PublicPayloadPair pair, CanonicalSourcePair sourcePair,
                                          CanonicalPublication publication) { }
 
+    private record SourcePayloadBody(long id, EndpointKind endpoint, byte[] body) { }
     private record SeasonIdentity(int id, String code) { }
     private record SeasonCalendar(java.time.LocalDate startsOn, java.time.LocalDate endsOn) { }
     private record CompatibilityReceipt(Long generation, String fingerprint, Long bootstrapPayloadId,

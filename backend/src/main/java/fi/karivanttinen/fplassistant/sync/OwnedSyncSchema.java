@@ -49,7 +49,8 @@ public final class OwnedSyncSchema {
                 "source_fixtures_read_finished_at TIMESTAMPTZ",
                 "source_bootstrap_sha256 VARCHAR(64)",
                 "source_fixtures_sha256 VARCHAR(64)",
-                "source_pair_fingerprint VARCHAR(64)")) {
+                "source_pair_fingerprint VARCHAR(64)",
+                "source_catalogue JSONB")) {
             jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s".formatted(tables.receipt(), column));
         }
         jdbc.execute("""
@@ -1046,6 +1047,8 @@ public final class OwnedSyncSchema {
                         OR g.finalized_source_read_started_at IS NULL
                         OR g.finalized_source_read_finished_at IS NULL
                         OR g.finalized_page_evidence IS NULL))
+                   OR (g.state='FINALIZED' AND NOT COALESCE(
+                        g.final_attempt_population_manifest ? 'sourceCatalogueMembershipRequired', FALSE))
                 """.formatted(table));
     }
 

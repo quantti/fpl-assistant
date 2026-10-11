@@ -248,6 +248,19 @@ class GameweekFinalityTest {
     }
 
     @Test
+    void sourceCatalogueMembershipIsOptInAndChangesThePopulationFingerprint() {
+        SourceSnapshot source = snapshot(true, true, true, List.of(fixture(1, 1, true, false, 90, 1)));
+        RequiredPopulation legacy = new RequiredPopulation("b".repeat(64),
+                Map.of(1, Set.of(10)), Map.of(), Map.of());
+        RequiredPopulation sourceBacked = new RequiredPopulation("b".repeat(64),
+                Map.of(1, Set.of(10)), Map.of(), Map.of(), Map.of(), true);
+
+        assertThat(legacy.sourceCatalogueMembershipRequired()).isFalse();
+        assertThat(sourceBacked.sourceCatalogueMembershipRequired()).isTrue();
+        assertThat(legacy.fingerprint(source)).isNotEqualTo(sourceBacked.fingerprint(source));
+    }
+
+    @Test
     void checkpointPopulationFingerprintBindsBootstrapParticipantsAndKnownKeys() {
         SourceSnapshot source = snapshot(true, true, true, List.of(fixture(1, 1, true, false, 90, 1)));
         RequiredPopulation population = new RequiredPopulation("b".repeat(64),
