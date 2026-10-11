@@ -4,6 +4,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.math.BigDecimal;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -260,6 +262,336 @@ class IncrementalPlayerFixturePublisherIntegrationTest {
         assertThat(sameWatermark.currentPointersUpdated()).isZero();
         assertThat(oldReaderRows(off, FIXTURE_HOME, PLAYER)).containsExactly(new BigDecimal("0.40"));
         assertThat(oldReaderRows(active, FIXTURE_HOME, PLAYER)).containsExactly(new BigDecimal("0.40"));
+    }
+
+    @Test
+    void newerIdenticalPageRepairsTamperedPfsAndInvalidatesCheckedProof() throws Exception {
+        seedCheckedPendingGameweek();
+        ObjectNode sourceRow = row(PLAYER, FIXTURE_HOME, 2, true, "0.40");
+        sourceRow.put("defensive_contribution", 6);
+        SourceDocument originalPage = page(PLAYER, BASE.plusSeconds(1), BASE.plusSeconds(2), sourceRow);
+        Lease originalLease = newCoreLease();
+        clock.set(originalPage.readInterval().completedAt());
+        var initial = publisher.publish(originalLease, SEASON, PLAYER, originalPage, FIXTURES);
+        assertThat(initial.pfsRowsWritten()).isEqualTo(1);
+        completeCorePage(originalLease, originalPage);
+        PfsReadSource activeReader = new PfsReadSource(jdbc, "ACTIVE", SEASON_CODE,
+                TABLES.fixtureSync(), TABLES.playerFixtureEvidence(), TABLES.playerFixtureCurrent(), TABLES.receipt());
+        assertThat(oldReaderStats(oldOffReader(), FIXTURE_HOME, PLAYER)).singleElement().satisfies(values -> {
+            assertThat(((Number) values.get("total_points")).intValue()).isEqualTo(2);
+            assertThat((BigDecimal) values.get("expected_goals")).isEqualByComparingTo("0.40");
+            assertThat(((Number) values.get("defensive_contribution")).intValue()).isEqualTo(6);
+        });
+
+        jdbc.update("INSERT INTO " + TABLES.fixtureSync()
+                        + "(season_id,season_code,fixture_id,state,current_verified_generation,updated_at)"
+                        + " VALUES (?,?,?,'VERIFIED',?,?)",
+                SEASON_ID, SEASON_CODE, FIXTURE_HOME, originalLease.generation(),
+                java.sql.Timestamp.from(clock.instant()));
+        long revisionBeforeRepair = jdbc.queryForObject("SELECT current_invalidation_revision FROM "
+                + TABLES.gameweekStatSync() + " WHERE season_id=? AND gameweek=1", Long.class, SEASON_ID);
+        Instant createdAt = pfsCreatedAt(PLAYER, FIXTURE_HOME);
+        Instant originalPfsAge = pfsAge(PLAYER, FIXTURE_HOME).value();
+        jdbc.update("UPDATE player_fixture_stats SET total_points=99, defensive_contribution=41"
+                        + " WHERE season_id=? AND fixture_id=? AND player_id=?",
+                SEASON_ID, FIXTURE_HOME, PLAYER);
+        assertThat(oldReaderStats(oldOffReader(), FIXTURE_HOME, PLAYER)).isEmpty();
+        assertThat(oldReaderStats(activeReader, FIXTURE_HOME, PLAYER)).isEmpty();
+
+        clock.set(BASE.plusSeconds(2));
+        Lease repairLease = newCoreLease();
+        SourceDocument identicalPage = page(PLAYER, BASE.plusSeconds(2), BASE.plusSeconds(3), sourceRow);
+        clock.set(identicalPage.readInterval().completedAt());
+        var repaired = publisher.publish(repairLease, SEASON, PLAYER, identicalPage, FIXTURES);
+        assertThat(repaired.pfsRowsWritten()).isEqualTo(1);
+        assertThat(repaired.evidenceRowsWritten()).isEqualTo(1);
+        assertThat(repaired.currentPointersUpdated()).isEqualTo(1);
+        assertThat(repaired.changedKeys()).containsExactly(new IncrementalPfsRepository.RowKey(
+                SEASON_ID, SEASON_CODE, 1, FIXTURE_HOME, PLAYER));
+        assertThat(pfsInteger(PLAYER, FIXTURE_HOME, "total_points")).isEqualTo(2);
+        assertThat(pfsInteger(PLAYER, FIXTURE_HOME, "defensive_contribution")).isEqualTo(6);
+        assertThat(pfsAge(PLAYER, FIXTURE_HOME).value()).isNotEqualTo(originalPfsAge);
+        assertThat(pfsCreatedAt(PLAYER, FIXTURE_HOME)).isEqualTo(createdAt);
+        assertThat(currentSourceGeneration(PLAYER, FIXTURE_HOME)).isEqualTo(repairLease.generation());
+        assertThat(currentSourceInterval(PLAYER, FIXTURE_HOME)).isEqualTo(new SourceInterval(
+                identicalPage.readInterval().startedAt(), identicalPage.readInterval().completedAt()));
+        assertThat(oldReaderStats(oldOffReader(), FIXTURE_HOME, PLAYER)).singleElement().satisfies(values -> {
+            assertThat(((Number) values.get("total_points")).intValue()).isEqualTo(2);
+            assertThat((BigDecimal) values.get("expected_goals")).isEqualByComparingTo("0.40");
+            assertThat(((Number) values.get("defensive_contribution")).intValue()).isEqualTo(6);
+        });
+        assertThat(oldReaderStats(activeReader, FIXTURE_HOME, PLAYER)).hasSize(1);
+        assertThat(jdbc.queryForObject("SELECT state FROM " + TABLES.fixtureSync()
+                + " WHERE season_id=? AND fixture_id=?", String.class, SEASON_ID, FIXTURE_HOME))
+                .isEqualTo("WAITING_STATS");
+        assertThat(jdbc.queryForObject("SELECT current_verified_generation FROM " + TABLES.fixtureSync()
+                + " WHERE season_id=? AND fixture_id=?", Long.class, SEASON_ID, FIXTURE_HOME)).isNull();
+        assertThat(jdbc.queryForObject("SELECT state FROM " + TABLES.gameweekStatSync()
+                + " WHERE season_id=? AND gameweek=1", String.class, SEASON_ID)).isEqualTo("FINAL_PENDING");
+        assertThat(jdbc.queryForObject("SELECT current_invalidation_revision FROM "
+                + TABLES.gameweekStatSync() + " WHERE season_id=? AND gameweek=1", Long.class, SEASON_ID))
+                .isGreaterThan(revisionBeforeRepair);
+        assertThat(jdbc.queryForObject("SELECT current_invalidation_floor FROM "
+                + TABLES.gameweekStatSync() + " WHERE season_id=? AND gameweek=1", java.sql.Timestamp.class,
+                SEASON_ID).toInstant()).isEqualTo(identicalPage.readInterval().completedAt());
+        completeCorePage(repairLease, identicalPage);
+    }
+
+    @Test
+    void invalidPhysicalGameweekDoesNotBlockCoreRepairOrItsFollowingNoOp() throws Exception {
+        seedCheckedPendingGameweek();
+        ObjectNode sourceRow = row(PLAYER, FIXTURE_HOME, 2, true, "0.40");
+        SourceDocument originalPage = page(PLAYER, BASE.plusSeconds(1), BASE.plusSeconds(2), sourceRow);
+        Lease originalLease = newCoreLease();
+        clock.set(originalPage.readInterval().completedAt());
+        assertThat(publisher.publish(originalLease, SEASON, PLAYER, originalPage, FIXTURES)
+                .pfsRowsWritten()).isEqualTo(1);
+        completeCorePage(originalLease, originalPage);
+
+        jdbc.update("INSERT INTO " + TABLES.fixtureSync()
+                        + "(season_id,season_code,fixture_id,state,current_verified_generation,updated_at)"
+                        + " VALUES (?,?,?,'VERIFIED',?,?)",
+                SEASON_ID, SEASON_CODE, FIXTURE_HOME, originalLease.generation(),
+                java.sql.Timestamp.from(clock.instant()));
+        long revisionBeforeRepair = jdbc.queryForObject("SELECT current_invalidation_revision FROM "
+                + TABLES.gameweekStatSync() + " WHERE season_id=? AND gameweek=1", Long.class, SEASON_ID);
+        assertThat(jdbc.update("UPDATE player_fixture_stats SET gameweek=0"
+                        + " WHERE season_id=? AND fixture_id=? AND player_id=?",
+                SEASON_ID, FIXTURE_HOME, PLAYER)).isEqualTo(1);
+        assertThat(pfsInteger(PLAYER, FIXTURE_HOME, "gameweek")).isZero();
+        assertThat(oldReaderStats(oldOffReader(), FIXTURE_HOME, PLAYER)).isEmpty();
+
+        clock.set(BASE.plusSeconds(2));
+        Lease repairLease = newCoreLease();
+        SourceDocument repairPage = page(PLAYER, BASE.plusSeconds(2), BASE.plusSeconds(3), sourceRow);
+        clock.set(repairPage.readInterval().completedAt());
+        var repaired = publisher.publish(repairLease, SEASON, PLAYER, repairPage, FIXTURES);
+        assertThat(repaired.pfsRowsWritten()).isEqualTo(1);
+        assertThat(repaired.evidenceRowsWritten()).isEqualTo(1);
+        assertThat(repaired.currentPointersUpdated()).isEqualTo(1);
+        assertThat(repaired.changedKeys()).containsExactly(new IncrementalPfsRepository.RowKey(
+                SEASON_ID, SEASON_CODE, 1, FIXTURE_HOME, PLAYER));
+        assertThat(pfsInteger(PLAYER, FIXTURE_HOME, "gameweek")).isEqualTo(1);
+        assertThat(oldReaderStats(oldOffReader(), FIXTURE_HOME, PLAYER)).hasSize(1);
+        assertThat(jdbc.queryForObject("SELECT state FROM " + TABLES.gameweekStatSync()
+                + " WHERE season_id=? AND gameweek=1", String.class, SEASON_ID)).isEqualTo("FINAL_PENDING");
+        assertThat(jdbc.queryForObject("SELECT current_invalidation_revision FROM "
+                + TABLES.gameweekStatSync() + " WHERE season_id=? AND gameweek=1", Long.class, SEASON_ID))
+                .isGreaterThan(revisionBeforeRepair);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.gameweekStatSync()
+                + " WHERE season_id=? AND gameweek=0", Integer.class, SEASON_ID)).isZero();
+        assertThat(jdbc.queryForObject("SELECT state FROM " + TABLES.fixtureSync()
+                + " WHERE season_id=? AND fixture_id=?", String.class, SEASON_ID, FIXTURE_HOME))
+                .isEqualTo("WAITING_STATS");
+        completeCorePage(repairLease, repairPage);
+
+        assertThat(jdbc.update("UPDATE player_fixture_stats SET gameweek=39"
+                        + " WHERE season_id=? AND fixture_id=? AND player_id=?",
+                SEASON_ID, FIXTURE_HOME, PLAYER)).isEqualTo(1);
+        assertThat(oldReaderStats(oldOffReader(), FIXTURE_HOME, PLAYER)).isEmpty();
+        clock.set(BASE.plusSeconds(3));
+        Lease upperBoundRepairLease = newCoreLease();
+        SourceDocument upperBoundRepairPage = page(PLAYER, BASE.plusSeconds(3), BASE.plusSeconds(4), sourceRow);
+        clock.set(upperBoundRepairPage.readInterval().completedAt());
+        var upperBoundRepair = publisher.publish(upperBoundRepairLease, SEASON, PLAYER,
+                upperBoundRepairPage, FIXTURES);
+        assertThat(upperBoundRepair.pfsRowsWritten()).isEqualTo(1);
+        assertThat(upperBoundRepair.changedKeys()).containsExactly(new IncrementalPfsRepository.RowKey(
+                SEASON_ID, SEASON_CODE, 1, FIXTURE_HOME, PLAYER));
+        assertThat(pfsInteger(PLAYER, FIXTURE_HOME, "gameweek")).isEqualTo(1);
+        assertThat(oldReaderStats(oldOffReader(), FIXTURE_HOME, PLAYER)).hasSize(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.gameweekStatSync()
+                + " WHERE season_id=? AND gameweek IN (0,39)", Integer.class, SEASON_ID)).isZero();
+        completeCorePage(upperBoundRepairLease, upperBoundRepairPage);
+
+        Instant repairedPfsAge = pfsAge(PLAYER, FIXTURE_HOME).value();
+        Instant repairedPointerUpdatedAt = currentPointerUpdatedAt(PLAYER, FIXTURE_HOME);
+        long repairedPointerGeneration = currentSourceGeneration(PLAYER, FIXTURE_HOME);
+        int repairedEvidenceCount = playerEvidenceCount(PLAYER);
+        long repairedInvalidationRevision = jdbc.queryForObject("SELECT current_invalidation_revision FROM "
+                + TABLES.gameweekStatSync() + " WHERE season_id=? AND gameweek=1", Long.class, SEASON_ID);
+        clock.set(BASE.plusSeconds(4));
+        SourceDocument noOpPage = page(PLAYER, BASE.plusSeconds(4), BASE.plusSeconds(5), sourceRow);
+        Lease noOpLease = newCoreLease();
+        clock.set(noOpPage.readInterval().completedAt());
+        var noOp = publisher.publish(noOpLease, SEASON, PLAYER, noOpPage, FIXTURES);
+        assertThat(noOp.pfsRowsWritten()).isZero();
+        assertThat(noOp.evidenceRowsWritten()).isZero();
+        assertThat(noOp.currentPointersUpdated()).isZero();
+        assertThat(noOp.changedKeys()).isEmpty();
+        assertThat(pfsAge(PLAYER, FIXTURE_HOME).value()).isEqualTo(repairedPfsAge);
+        assertThat(currentPointerUpdatedAt(PLAYER, FIXTURE_HOME)).isEqualTo(repairedPointerUpdatedAt);
+        assertThat(currentSourceGeneration(PLAYER, FIXTURE_HOME)).isEqualTo(repairedPointerGeneration);
+        assertThat(playerEvidenceCount(PLAYER)).isEqualTo(repairedEvidenceCount);
+        assertThat(jdbc.queryForObject("SELECT current_invalidation_revision FROM "
+                + TABLES.gameweekStatSync() + " WHERE season_id=? AND gameweek=1", Long.class, SEASON_ID))
+                .isEqualTo(repairedInvalidationRevision);
+        assertThat(oldReaderStats(oldOffReader(), FIXTURE_HOME, PLAYER)).hasSize(1);
+        completeCorePage(noOpLease, noOpPage);
+    }
+
+    @Test
+    void missingPhysicalRowIsReinsertedAndUnmatchedWithdrawalDoesNotInventGameweek() throws Exception {
+        SourceDocument initialPage = page(PLAYER, BASE, BASE.plusSeconds(1),
+                row(PLAYER, FIXTURE_HOME, 2, true, "0.40"));
+        var initial = publish(PLAYER, "missing-row-baseline", initialPage);
+        assertThat(initial.pfsRowsWritten()).isEqualTo(1);
+        Instant priorPfsAge = pfsAge(PLAYER, FIXTURE_HOME).value();
+        long priorPointerAt = currentPointerUpdatedAt(PLAYER, FIXTURE_HOME).toEpochMilli();
+        int priorEvidenceCount = playerEvidenceCount(PLAYER);
+        jdbc.update("DELETE FROM player_fixture_stats WHERE season_id=? AND fixture_id=? AND player_id=?",
+                SEASON_ID, FIXTURE_HOME, PLAYER);
+        assertThat(oldReaderStats(oldOffReader(), FIXTURE_HOME, PLAYER)).isEmpty();
+
+        SourceDocument repairPage = page(PLAYER, BASE.plusSeconds(2), BASE.plusSeconds(3),
+                row(PLAYER, FIXTURE_HOME, 2, true, "0.4"));
+        var repaired = publish(PLAYER, "missing-row-repair", repairPage);
+        assertThat(repaired.pfsRowsWritten()).isEqualTo(1);
+        assertThat(repaired.evidenceRowsWritten()).isEqualTo(1);
+        assertThat(repaired.currentPointersUpdated()).isEqualTo(1);
+        assertThat(repaired.changedKeys()).containsExactly(new IncrementalPfsRepository.RowKey(
+                SEASON_ID, SEASON_CODE, 1, FIXTURE_HOME, PLAYER));
+        assertThat(pfsInteger(PLAYER, FIXTURE_HOME, "total_points")).isEqualTo(2);
+        assertThat(oldReaderStats(oldOffReader(), FIXTURE_HOME, PLAYER)).hasSize(1);
+        SourceInterval repairedInterval = currentSourceInterval(PLAYER, FIXTURE_HOME);
+        Instant repairedPointerAt = currentPointerUpdatedAt(PLAYER, FIXTURE_HOME);
+        Instant repairedPfsAge = pfsAge(PLAYER, FIXTURE_HOME).value();
+        int repairedEvidenceCount = playerEvidenceCount(PLAYER);
+        assertThat(repairedPfsAge).isAfter(priorPfsAge);
+        assertThat(repairedPointerAt).isAfter(Instant.ofEpochMilli(priorPointerAt));
+        assertThat(repairedEvidenceCount).isEqualTo(priorEvidenceCount + 1);
+
+        SourceDocument samePage = page(PLAYER, BASE.plusSeconds(4), BASE.plusSeconds(5),
+                row(PLAYER, FIXTURE_HOME, 2, true, "0.40"));
+        var noOp = publish(PLAYER, "missing-row-no-op", samePage);
+        assertThat(noOp.pfsRowsWritten()).isZero();
+        assertThat(noOp.evidenceRowsWritten()).isZero();
+        assertThat(noOp.currentPointersUpdated()).isZero();
+        assertThat(noOp.changedKeys()).isEmpty();
+        assertThat(currentSourceInterval(PLAYER, FIXTURE_HOME)).isEqualTo(repairedInterval);
+        assertThat(currentPointerUpdatedAt(PLAYER, FIXTURE_HOME)).isEqualTo(repairedPointerAt);
+        assertThat(pfsAge(PLAYER, FIXTURE_HOME).value()).isEqualTo(repairedPfsAge);
+        assertThat(playerEvidenceCount(PLAYER)).isEqualTo(repairedEvidenceCount);
+
+        jdbc.update("DELETE FROM player_fixture_stats WHERE season_id=? AND fixture_id=? AND player_id=?",
+                SEASON_ID, FIXTURE_HOME, PLAYER);
+        SourceDocument withdrawnPage = page(PLAYER, BASE.plusSeconds(6), BASE.plusSeconds(7));
+        var withdrawn = publish(PLAYER, "missing-row-withdraw", withdrawnPage);
+        assertThat(withdrawn.currentPointersUpdated()).isEqualTo(1);
+        assertThat(withdrawn.changedKeys()).isEmpty();
+        assertThat(currentState(PLAYER, FIXTURE_HOME)).isEqualTo("WITHDRAWN");
+        assertThat(playerPfsCount(PLAYER)).isZero();
+    }
+
+    @Test
+    void absentOptionalTamperStaysMaskedWithoutSpeculativeRepairWrites() throws Exception {
+        SourceDocument present = page(PLAYER, BASE, BASE.plusSeconds(1),
+                row(PLAYER, FIXTURE_HOME, 2, true, "0.40"));
+        publish(PLAYER, "optional-present", present);
+        SourceDocument absent = page(PLAYER, BASE.plusSeconds(2), BASE.plusSeconds(3),
+                row(PLAYER, FIXTURE_HOME, 2, true, null));
+        var presenceOnly = publish(PLAYER, "optional-absent", absent);
+        assertThat(presenceOnly.pfsRowsWritten()).isZero();
+        assertThat(presenceOnly.evidenceRowsWritten()).isEqualTo(1);
+        assertThat(hasComponent(PLAYER, FIXTURE_HOME, Component.EXPECTED_GOALS)).isFalse();
+        assertThat(pfsDecimal(PLAYER, FIXTURE_HOME, "expected_goals")).isEqualByComparingTo("0.40");
+
+        jdbc.update("UPDATE player_fixture_stats SET expected_goals=9.99"
+                        + " WHERE season_id=? AND fixture_id=? AND player_id=?",
+                SEASON_ID, FIXTURE_HOME, PLAYER);
+        assertThat(oldReaderStats(oldOffReader(), FIXTURE_HOME, PLAYER)).singleElement().satisfies(values -> {
+            assertThat(values.get("expected_goals")).isNull();
+            assertThat(((Number) values.get("total_points")).intValue()).isEqualTo(2);
+        });
+        SourceInterval priorInterval = currentSourceInterval(PLAYER, FIXTURE_HOME);
+        Instant priorPointerAt = currentPointerUpdatedAt(PLAYER, FIXTURE_HOME);
+        Instant priorPfsAge = pfsAge(PLAYER, FIXTURE_HOME).value();
+        int priorEvidenceCount = playerEvidenceCount(PLAYER);
+
+        SourceDocument sameAbsent = page(PLAYER, BASE.plusSeconds(4), BASE.plusSeconds(5),
+                row(PLAYER, FIXTURE_HOME, 2, true, null));
+        var noOp = publish(PLAYER, "optional-absent-tamper", sameAbsent);
+        assertThat(noOp.pfsRowsWritten()).isZero();
+        assertThat(noOp.evidenceRowsWritten()).isZero();
+        assertThat(noOp.currentPointersUpdated()).isZero();
+        assertThat(noOp.changedKeys()).isEmpty();
+        assertThat(pfsDecimal(PLAYER, FIXTURE_HOME, "expected_goals")).isEqualByComparingTo("9.99");
+        assertThat(currentSourceInterval(PLAYER, FIXTURE_HOME)).isEqualTo(priorInterval);
+        assertThat(currentPointerUpdatedAt(PLAYER, FIXTURE_HOME)).isEqualTo(priorPointerAt);
+        assertThat(pfsAge(PLAYER, FIXTURE_HOME).value()).isEqualTo(priorPfsAge);
+        assertThat(playerEvidenceCount(PLAYER)).isEqualTo(priorEvidenceCount);
+        assertThat(oldReaderStats(oldOffReader(), FIXTURE_HOME, PLAYER)).singleElement()
+                .satisfies(values -> assertThat(values.get("expected_goals")).isNull());
+    }
+
+    @Test
+    void staleOrEqualGenerationCannotRepairTamperedPfs() throws Exception {
+        Lease staleLease = newLease(PLAYER, "stale-tampered-page");
+        Lease latestLease = newLease(PLAYER, "latest-tampered-page");
+        SourceDocument latestPage = page(PLAYER, BASE.plusSeconds(10), BASE.plusSeconds(11),
+                row(PLAYER, FIXTURE_HOME, 2, true, "0.40"));
+        clock.set(latestPage.readInterval().completedAt());
+        publisher.publish(latestLease, SEASON, PLAYER, latestPage, FIXTURES);
+        jdbc.update("UPDATE player_fixture_stats SET total_points=99"
+                        + " WHERE season_id=? AND fixture_id=? AND player_id=?",
+                SEASON_ID, FIXTURE_HOME, PLAYER);
+        assertThatThrownBy(() -> publisher.publish(latestLease, SEASON, PLAYER, latestPage, FIXTURES))
+                .isInstanceOf(IncrementalPfsRepository.SourceOrderConflictException.class);
+        SourceDocument stalePage = page(PLAYER, BASE.plusSeconds(1), BASE.plusSeconds(2),
+                row(PLAYER, FIXTURE_HOME, 2, true, "0.40"));
+        assertThatThrownBy(() -> publisher.publish(staleLease, SEASON, PLAYER, stalePage, FIXTURES))
+                .isInstanceOf(IncrementalPfsRepository.SourceOrderConflictException.class);
+        assertThat(pfsInteger(PLAYER, FIXTURE_HOME, "total_points")).isEqualTo(99);
+        assertThat(currentSourceGeneration(PLAYER, FIXTURE_HOME)).isEqualTo(latestLease.generation());
+        assertThat(oldReaderStats(oldOffReader(), FIXTURE_HOME, PLAYER)).isEmpty();
+    }
+
+    @Test
+    void leaseExpiryDuringPhysicalRepairRollsBackPfsEvidenceAndPointer() throws Exception {
+        int lockClass = SEASON_ID;
+        int lockObject = 93_771;
+        String function = "fpl_inc_test_block_current_insert";
+        String trigger = "zz_inc_test_block_current_insert";
+        jdbc.execute("CREATE OR REPLACE FUNCTION " + function + "() RETURNS trigger LANGUAGE plpgsql AS $$"
+                + " BEGIN IF NEW.fixture_id = " + FIXTURE_HOME + " THEN PERFORM pg_advisory_xact_lock("
+                + lockClass + ", " + lockObject + "); END IF; RETURN NEW; END $$");
+        jdbc.execute("CREATE TRIGGER " + trigger + " BEFORE INSERT ON " + TABLES.playerFixtureCurrent()
+                + " FOR EACH ROW EXECUTE FUNCTION " + function + "()");
+        var executor = Executors.newSingleThreadExecutor();
+        try (Connection gate = jdbc.getDataSource().getConnection()) {
+            try (PreparedStatement lock = gate.prepareStatement("SELECT pg_advisory_lock(?, ?)")) {
+                lock.setInt(1, lockClass);
+                lock.setInt(2, lockObject);
+                lock.execute();
+            }
+            Lease lease = newLease(PLAYER, "expiry-during-repair");
+            SourceDocument page = page(PLAYER, BASE.plusSeconds(1), BASE.plusSeconds(2),
+                    row(PLAYER, FIXTURE_HOME, 2, true, "0.40"));
+            clock.set(page.readInterval().completedAt());
+            var attempt = executor.submit(() -> publisher.publish(lease, SEASON, PLAYER, page, FIXTURES));
+            awaitAdvisoryWait(lockClass, lockObject);
+            clock.set(lease.expiresAt());
+            try (PreparedStatement unlock = gate.prepareStatement("SELECT pg_advisory_unlock(?, ?)")) {
+                unlock.setInt(1, lockClass);
+                unlock.setInt(2, lockObject);
+                unlock.execute();
+            }
+            assertThatThrownBy(attempt::get).isInstanceOf(ExecutionException.class)
+                    .hasCauseInstanceOf(OwnedSyncStore.LeaseLostException.class);
+            assertThat(playerPfsCount(PLAYER)).isZero();
+            assertThat(playerEvidenceCount(PLAYER)).isZero();
+            assertThat(playerCurrentCount(PLAYER)).isZero();
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.receipt()
+                    + " WHERE season=? AND publication_key=?", Integer.class, SEASON_CODE,
+                    IncrementalPlayerFixturePublisher.pageReceiptKey(PLAYER))).isZero();
+            assertThat(runState(lease.generation())).isEqualTo("LEASED");
+        } finally {
+            executor.shutdownNow();
+            boolean terminated = executor.awaitTermination(10, TimeUnit.SECONDS);
+            jdbc.execute("DROP TRIGGER IF EXISTS " + trigger + " ON " + TABLES.playerFixtureCurrent());
+            jdbc.execute("DROP FUNCTION IF EXISTS " + function + "()");
+            assertThat(terminated).isTrue();
+        }
     }
 
     @Test
@@ -719,6 +1051,41 @@ class IncrementalPlayerFixturePublisherIntegrationTest {
         return publisher.publish(lease, SEASON, playerId, page, FIXTURES);
     }
 
+    private Lease newCoreLease() {
+        store.enqueueIncrementalCoreImport(SEASON, clock.instant());
+        return store.acquireIncrementalCoreImport(SEASON_CODE, "incremental-pfs-test",
+                Duration.ofMinutes(30)).orElseThrow();
+    }
+
+    private void completeCorePage(Lease lease, SourceDocument page) {
+        var read = new OwnedSyncStore.SourceRead(page.readInterval().startedAt(),
+                page.readInterval().completedAt());
+        clock.set(read.finishedAt());
+        store.completeStaged(lease, read, List.of(read));
+    }
+
+    private void seedCheckedPendingGameweek() {
+        jdbc.update("""
+                INSERT INTO %s(season_id,season_code,gameweek,state,event_finished,data_checked,
+                    fixture_manifest_complete,all_assigned_fixtures_finished,source_signature,updated_at)
+                VALUES (?, ?, 1, 'FINAL_PENDING', TRUE, TRUE, TRUE, TRUE, ?, ?)
+                """.formatted(TABLES.gameweekStatSync()), SEASON_ID, SEASON_CODE, "a".repeat(64),
+                java.sql.Timestamp.from(BASE));
+    }
+
+    private void awaitAdvisoryWait(int lockClass, int lockObject) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (System.nanoTime() < deadline) {
+            Boolean waiting = jdbc.queryForObject("""
+                    SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype='advisory' AND NOT granted
+                        AND classid=?::oid AND objid=?::oid AND objsubid=2)
+                    """, Boolean.class, lockClass, lockObject);
+            if (Boolean.TRUE.equals(waiting)) return;
+            Thread.sleep(10);
+        }
+        throw new IllegalStateException("Publisher did not reach the held current-pointer lock");
+    }
+
     private Lease newLease(int playerId, String suffix) {
         return newLease(store, playerId, suffix);
     }
@@ -815,6 +1182,14 @@ class IncrementalPlayerFixturePublisherIntegrationTest {
         return jdbc.queryForList("WITH " + source.cte()
                 + " SELECT expected_goals FROM pfs_read WHERE season_id=? AND fixture_id=? AND player_id=?",
                 BigDecimal.class, SEASON_ID, fixtureId, playerId);
+    }
+
+    private List<java.util.Map<String, Object>> oldReaderStats(PfsReadSource source,
+                                                                int fixtureId, int playerId) {
+        return jdbc.queryForList("WITH " + source.cte()
+                + " SELECT total_points, expected_goals, defensive_contribution FROM pfs_read"
+                + " WHERE season_id=? AND fixture_id=? AND player_id=?",
+                SEASON_ID, fixtureId, playerId);
     }
 
     private void seedLegacyPfs(int playerId, int fixtureId, int gameweek, String expectedGoals) {

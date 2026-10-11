@@ -129,23 +129,28 @@ public final class IncrementalPfsRepository {
     private PublicationResult publishInsideLease(Lease lease, HistoryBatch batch, SourceRead read) {
         // Serializes complete-page reconciliation for one player, including a first-page insert.
         jdbc.execute("SELECT pg_advisory_xact_lock(" + batch.seasonId() + ", " + batch.playerId() + ")");
+        jdbc.query("SELECT fixture_id FROM player_fixture_stats WHERE season_id=? AND player_id=?"
+                        + " ORDER BY fixture_id FOR UPDATE", rs -> { }, batch.seasonId(), batch.playerId());
         Map<Integer, CurrentPointer> current = loadCurrent(batch.seasonId(), batch.seasonCode(), batch.playerId());
         Map<Integer, LegacyOwnedRow> legacyOwned = loadLegacyOwnedRows(batch.seasonId(), batch.playerId());
         Map<Integer, HistoryRow> received = new HashMap<>();
         for (HistoryRow row : batch.rows()) received.put(row.fixtureId(), row);
 
         Map<Integer, Boolean> apply = new HashMap<>();
+        Map<Integer, Boolean> physicalProofByFixture = new HashMap<>();
         Map<Integer, String> fingerprints = new HashMap<>();
         for (HistoryRow row : batch.rows()) {
             String fingerprint = PlayerFixtureFingerprint.of(row);
+            boolean physicalProofMatches = currentPhysicalProofMatches(current.get(row.fixtureId()), row);
             fingerprints.put(row.fixtureId(), fingerprint);
+            physicalProofByFixture.put(row.fixtureId(), physicalProofMatches);
             apply.put(row.fixtureId(), shouldApply(current.get(row.fixtureId()), RowState.VALID,
-                    fingerprint, lease.generation(), read));
+                    fingerprint, lease.generation(), read, physicalProofMatches));
         }
         for (CurrentPointer pointer : current.values()) {
             if (!received.containsKey(pointer.fixtureId())) {
                 apply.put(pointer.fixtureId(), shouldApply(pointer, RowState.WITHDRAWN,
-                        null, lease.generation(), read));
+                        null, lease.generation(), read, true));
             }
         }
 
@@ -168,12 +173,14 @@ public final class IncrementalPfsRepository {
                     physicalFingerprint, read, publishedAt);
             currentPointersUpdated++;
             observedFixtures.add(row.fixtureId());
-            if (prior != null && prior.gameweek() != null && prior.gameweek() != row.gameweek()) {
-                changed.add(new RowKey(batch.seasonId(), batch.seasonCode(), prior.gameweek(),
+            Integer priorGameweek = trustedPriorGameweek(prior);
+            if (priorGameweek != null && priorGameweek != row.gameweek()) {
+                changed.add(new RowKey(batch.seasonId(), batch.seasonCode(), priorGameweek,
                         row.fixtureId(), batch.playerId()));
             }
             if (prior == null || prior.state() != RowState.VALID
-                    || !Objects.equals(prior.fingerprint(), fingerprints.get(row.fixtureId()))) {
+                    || !Objects.equals(prior.fingerprint(), fingerprints.get(row.fixtureId()))
+                    || !physicalProofByFixture.get(row.fixtureId())) {
                 changed.add(new RowKey(batch.seasonId(), batch.seasonCode(), row.gameweek(),
                         row.fixtureId(), batch.playerId()));
             }
@@ -187,11 +194,9 @@ public final class IncrementalPfsRepository {
                     RowState.WITHDRAWN, lease.generation(), null, null, null, read, publishedAt);
             currentPointersUpdated++;
             observedFixtures.add(pointer.fixtureId());
-            if (pointer.state() == RowState.VALID) {
-                if (pointer.gameweek() == null) {
-                    throw new IllegalStateException("Valid current row has no physical PFS gameweek");
-                }
-                changed.add(new RowKey(batch.seasonId(), batch.seasonCode(), pointer.gameweek(),
+            Integer priorGameweek = trustedPriorGameweek(pointer);
+            if (priorGameweek != null) {
+                changed.add(new RowKey(batch.seasonId(), batch.seasonCode(), priorGameweek,
                         pointer.fixtureId(), batch.playerId()));
             }
         }
@@ -202,7 +207,7 @@ public final class IncrementalPfsRepository {
                     RowState.WITHDRAWN, lease.generation(), null, null, null, read, publishedAt);
             currentPointersUpdated++;
             observedFixtures.add(legacy.fixtureId());
-            if (legacy.gameweek() != null) {
+            if (validGameweek(legacy.gameweek())) {
                 changed.add(new RowKey(batch.seasonId(), batch.seasonCode(), legacy.gameweek(),
                         legacy.fixtureId(), batch.playerId()));
             }
@@ -245,15 +250,29 @@ public final class IncrementalPfsRepository {
     }
 
     private Map<Integer, CurrentPointer> loadCurrent(int seasonId, String seasonCode, int playerId) {
+        String actualPhysicalFingerprint = PlayerFixtureFingerprint.physicalSqlExpression("p", "s",
+                "e.component_presence");
         String sql = """
                 SELECT c.fixture_id, c.row_state, c.source_run_generation, c.row_fingerprint,
-                       c.source_read_started_at, c.source_read_finished_at, p.gameweek
+                       c.physical_fingerprint, c.evidence_generation, c.source_read_started_at,
+                       c.source_read_finished_at, p.gameweek, p.fixture_id IS NOT NULL AS physical_present,
+                       e.component_presence,
+                       CASE WHEN p.fixture_id IS NOT NULL AND e.generation IS NOT NULL
+                           THEN %s END AS actual_physical_fingerprint,
+                       c.evidence_generation=c.source_run_generation
+                           AND e.generation=c.evidence_generation AND e.season_code=c.season_code
+                           AND e.source_read_started_at=c.source_read_started_at
+                           AND e.source_read_finished_at=c.source_read_finished_at AS evidence_matches
                 FROM %s c
                 LEFT JOIN player_fixture_stats p ON p.season_id=c.season_id
                     AND p.fixture_id=c.fixture_id AND p.player_id=c.player_id
+                LEFT JOIN %s e ON e.season_id=c.season_id AND e.fixture_id=c.fixture_id
+                    AND e.player_id=c.player_id AND e.generation=c.evidence_generation
+                LEFT JOIN season s ON s.id=c.season_id
                 WHERE c.season_id=? AND c.season_code=? AND c.player_id=?
                 ORDER BY c.fixture_id FOR UPDATE OF c
-                """.formatted(tables.playerFixtureCurrent());
+                """.formatted(actualPhysicalFingerprint, tables.playerFixtureCurrent(),
+                tables.playerFixtureEvidence());
         Map<Integer, CurrentPointer> result = new HashMap<>();
         jdbc.query(sql, rs -> {
             int fixtureId = rs.getInt("fixture_id");
@@ -263,35 +282,58 @@ public final class IncrementalPfsRepository {
             CurrentPointer pointer = new CurrentPointer(fixtureId, state,
                     rs.getLong("source_run_generation"), rs.getString("row_fingerprint"),
                     instant(rs, "source_read_started_at"), instant(rs, "source_read_finished_at"),
-                    gameweek);
-            if (state == RowState.VALID && gameweek == null) {
-                throw new IllegalStateException("Valid current row has no physical PFS row");
-            }
+                    gameweek, rs.getBoolean("physical_present"), rs.getBoolean("evidence_matches"),
+                    rs.getObject("component_presence", Long.class), rs.getString("physical_fingerprint"),
+                    rs.getString("actual_physical_fingerprint"));
             result.put(fixtureId, pointer);
         }, seasonId, seasonCode, playerId);
         return result;
     }
 
+    private static boolean currentPhysicalProofMatches(CurrentPointer current, HistoryRow row) {
+        return currentPhysicalRowMatchesPointer(current)
+                && current.componentPresence() == row.presenceMask();
+    }
+
+    private static Integer trustedPriorGameweek(CurrentPointer current) {
+        // Never infer an old assignment from the opaque row fingerprint when physical proof fails.
+        return currentPhysicalRowMatchesPointer(current) && validGameweek(current.gameweek())
+                ? current.gameweek() : null;
+    }
+
+    private static boolean currentPhysicalRowMatchesPointer(CurrentPointer current) {
+        return current != null && current.state() == RowState.VALID && current.physicalPresent()
+                && current.evidenceMatches() && current.componentPresence() != null
+                && current.physicalFingerprint() != null
+                && current.physicalFingerprint().equals(current.actualPhysicalFingerprint());
+    }
+
+    private static boolean validGameweek(Integer gameweek) {
+        return gameweek != null && gameweek >= 1 && gameweek <= 38;
+    }
+
     private static boolean shouldApply(CurrentPointer current, RowState desiredState, String fingerprint,
-                                       long generation, SourceRead read) {
+                                       long generation, SourceRead read, boolean physicalProofMatches) {
         if (current == null) return true;
         boolean sameRevision = current.state() == desiredState
                 && Objects.equals(current.fingerprint(), fingerprint);
+        boolean proofMatches = desiredState != RowState.VALID || physicalProofMatches;
         int generationOrder = Long.compare(generation, current.sourceRunGeneration());
         int sourceOrder = read.finishedAt().compareTo(current.sourceReadFinishedAt());
         if (generationOrder < 0) {
-            if (sameRevision) return false;
-            throw sourceConflict(current, generation, read, "older observation conflicts with current row");
+            if (sameRevision && proofMatches) return false;
+            throw sourceConflict(current, generation, read,
+                    "older observation cannot replace or repair the current row");
         }
         if (generationOrder == 0) {
-            if (sameRevision && read.startedAt().equals(current.sourceReadStartedAt())
+            if (sameRevision && proofMatches && read.startedAt().equals(current.sourceReadStartedAt())
                     && read.finishedAt().equals(current.sourceReadFinishedAt())) return false;
             throw sourceConflict(current, generation, read, "one run cannot publish conflicting page revisions");
         }
         if (sourceOrder < 0 || read.startedAt().isBefore(current.sourceReadFinishedAt())) {
             throw sourceConflict(current, generation, read, "newer generation has an older or overlapping interval");
         }
-        if (sameRevision) return false;
+        if (sameRevision && proofMatches) return false;
         return true;
     }
 
@@ -370,7 +412,7 @@ public final class IncrementalPfsRepository {
                     source_read_started_at=EXCLUDED.source_read_started_at,
                     source_read_finished_at=EXCLUDED.source_read_finished_at, updated_at=EXCLUDED.updated_at
                 WHERE EXCLUDED.source_run_generation > current_row.source_run_generation
-                    AND EXCLUDED.source_read_finished_at > current_row.source_read_finished_at
+                    AND EXCLUDED.source_read_started_at >= current_row.source_read_finished_at
                 """.formatted(tables.playerFixtureCurrent()), seasonId, seasonCode, fixtureId, playerId,
                 state.name(), sourceGeneration, evidenceGeneration, fingerprint, physicalFingerprint,
                 timestamp(read.startedAt()), timestamp(read.finishedAt()), timestamp(updatedAt));
@@ -413,7 +455,9 @@ public final class IncrementalPfsRepository {
     }
 
     private record CurrentPointer(int fixtureId, RowState state, long sourceRunGeneration, String fingerprint,
-                                  Instant sourceReadStartedAt, Instant sourceReadFinishedAt, Integer gameweek) { }
+                                  Instant sourceReadStartedAt, Instant sourceReadFinishedAt, Integer gameweek,
+                                  boolean physicalPresent, boolean evidenceMatches, Long componentPresence,
+                                  String physicalFingerprint, String actualPhysicalFingerprint) { }
 
     private record LegacyOwnedRow(int fixtureId, Integer gameweek) { }
 
