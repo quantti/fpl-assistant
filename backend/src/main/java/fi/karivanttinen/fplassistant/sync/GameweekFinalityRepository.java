@@ -716,10 +716,10 @@ public final class GameweekFinalityRepository {
         String placeholders = String.join(",", java.util.Collections.nCopies(keys.size(), "?"));
         List<Object> parameters = new ArrayList<>();
         parameters.add(currentGeneration);
-        parameters.add("mode:" + season.code());
         parameters.add(season.code());
         parameters.addAll(keys);
         parameters.add(timestamp(floor));
+        parameters.add(timestamp(clock.instant()));
         Map<Integer, PageEvidence> result = new HashMap<>();
         jdbc.query("""
                 SELECT receipt.publication_key,receipt.latest_generation,
@@ -728,15 +728,20 @@ public final class GameweekFinalityRepository {
                 JOIN %s page_run ON page_run.generation=receipt.latest_generation
                     AND page_run.season=receipt.season AND page_run.kind='PLAYER_HISTORY'
                     AND page_run.producer_key='INCREMENTAL_CORE' AND page_run.runtime_mode='ACTIVE'
+                    AND page_run.runtime_epoch>0
                     AND page_run.coalescing_key='incremental-core-import'
                     AND page_run.publication_key='incremental-core-import' AND page_run.generation<=?
-                JOIN %s runtime ON runtime.instance_id=? AND runtime.runtime_mode='ACTIVE'
-                    AND runtime.runtime_epoch=page_run.runtime_epoch
                 WHERE receipt.season=? AND receipt.publication_key IN (%s)
                   AND receipt.latest_generation IS NOT NULL
                   AND receipt.source_read_started_at>=?
                   AND receipt.source_read_finished_at>=receipt.source_read_started_at
-                """.formatted(tables.receipt(), tables.run(), tables.plannerRuntime(), placeholders), rs -> {
+                  AND page_run.requested_source_after<=receipt.source_read_started_at
+                  AND page_run.source_read_started_at IS NOT NULL
+                  AND page_run.source_read_finished_at IS NOT NULL
+                  AND page_run.source_read_started_at<=receipt.source_read_started_at
+                  AND page_run.source_read_finished_at>=receipt.source_read_finished_at
+                  AND page_run.source_read_finished_at<=?
+                """.formatted(tables.receipt(), tables.run(), placeholders), rs -> {
             int playerId = Integer.parseInt(rs.getString("publication_key")
                     .substring(IncrementalPlayerFixturePublisher.PAGE_RECEIPT_PREFIX.length()));
             result.put(playerId, new PageEvidence(rs.getLong("latest_generation"),

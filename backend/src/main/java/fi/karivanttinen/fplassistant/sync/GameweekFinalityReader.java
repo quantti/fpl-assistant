@@ -215,7 +215,7 @@ public final class GameweekFinalityReader {
                 || row.finalizedAt() == null || row.finalizedRunGeneration() == null
                 || row.finalizedRunGeneration() <= 0 || row.finalizedSourceRead() == null
                 || !validFinalRun(seasonCode, row.finalizedRunGeneration(), row.finalizedSourceRead(),
-                        row.attemptSourceStartedAt(), row.finalizedAt())
+                        row.validationRead(), row.finalizedAt())
                 || !intervalsCover(row) || !validHash(row.finalizedRowFingerprint())) return false;
 
         RequiredPopulation population = manifest.population();
@@ -306,8 +306,11 @@ public final class GameweekFinalityReader {
                 Map.copyOf(current), valid[0]);
     }
 
-    private boolean validFinalRun(String season, long generation, SourceRead finalSourceRead,
-                                  Instant initialSourceStartedAt, Instant finalizedAt) {
+    // The run interval aggregates donor pages across generations; its request floor applies to the
+    // terminal validation read, not to that older aggregate start.
+    private boolean validFinalRun(String season, long generation, SourceRead aggregateSourceRead,
+                                  SourceRead terminalValidationRead, Instant finalizedAt) {
+        if (aggregateSourceRead == null || terminalValidationRead == null) return false;
         return Boolean.TRUE.equals(jdbc.queryForObject("""
                 SELECT EXISTS (
                     SELECT 1 FROM %s final_run
@@ -329,10 +332,12 @@ public final class GameweekFinalityReader {
                 )
                 """.formatted(tables.run()), Boolean.class,
                 generation, season, Timestamp.from(finalizedAt), Timestamp.from(clock.instant()),
-                initialSourceStartedAt == null ? null : Timestamp.from(initialSourceStartedAt),
-                Timestamp.from(finalSourceRead.startedAt()), Timestamp.from(finalSourceRead.finishedAt())));
+                Timestamp.from(terminalValidationRead.startedAt()),
+                Timestamp.from(aggregateSourceRead.startedAt()), Timestamp.from(aggregateSourceRead.finishedAt())));
     }
 
+    // A committed page is evidenced by its immutable finalized interval plus the ordered receipt;
+    // the enclosing run may later be retried, failed, superseded, or fenced by OFF/reactivation.
     private boolean freshPages(String season, SweepCheckpoint checkpoint, long finalGeneration,
                                SourceRead finalSourceRead, String pageEvidenceJson, SourceRead expectedPageInterval) {
         Map<Integer, Page> original = parsePageEvidence(pageEvidenceJson);
@@ -391,32 +396,57 @@ public final class GameweekFinalityReader {
                   AND receipt.source_read_started_at IS NOT NULL
                   AND receipt.source_read_finished_at>=receipt.source_read_started_at
                   AND page_run.producer_key='INCREMENTAL_CORE' AND page_run.runtime_mode='ACTIVE'
-                  AND page_run.runtime_epoch>0 AND page_run.state='COMPLETED'
-                  AND page_run.failed_at IS NULL AND page_run.last_error IS NULL
-                  AND page_run.completed_at IS NOT NULL
+                  AND page_run.runtime_epoch>0
+                  AND page_run.state IN ('PENDING','LEASED','COMPLETED','FAILED','SUPERSEDED')
                   AND page_run.requested_source_after<=original.started_at
                   AND page_run.source_read_started_at IS NOT NULL
                   AND page_run.source_read_finished_at IS NOT NULL
                   AND page_run.source_read_started_at<=original.started_at
                   AND page_run.source_read_finished_at>=original.finished_at
-                  AND page_run.completed_at>=page_run.source_read_finished_at
-                  AND page_run.completed_at<=?
+                  AND (
+                      (page_run.state IN ('PENDING','LEASED')
+                       AND page_run.completed_at IS NULL AND page_run.failed_at IS NULL)
+                      OR (page_run.state='COMPLETED' AND page_run.completed_at IS NOT NULL
+                          AND page_run.completed_at>=page_run.source_read_finished_at
+                          AND page_run.failed_at IS NULL AND page_run.last_error IS NULL)
+                      OR (page_run.state='FAILED' AND page_run.failed_at IS NOT NULL
+                          AND page_run.failed_at>=page_run.source_read_finished_at
+                          AND page_run.completed_at IS NULL AND page_run.last_error IS NOT NULL)
+                      OR (page_run.state='SUPERSEDED' AND page_run.completed_at IS NOT NULL
+                          AND page_run.completed_at>=page_run.source_read_finished_at
+                          AND page_run.failed_at IS NULL
+                          AND page_run.last_error='Superseded by a validated newer canonical source pair')
+                  )
+                  AND (COALESCE(page_run.completed_at,page_run.failed_at) IS NULL
+                       OR COALESCE(page_run.completed_at,page_run.failed_at)<=?)
+                  AND page_run.source_read_finished_at<=?
                   AND latest_run.kind='PLAYER_HISTORY' AND latest_run.producer_key='INCREMENTAL_CORE'
                   AND latest_run.runtime_mode='ACTIVE' AND latest_run.runtime_epoch>0
                   AND latest_run.coalescing_key='incremental-core-import'
                   AND latest_run.publication_key='incremental-core-import'
-                  AND latest_run.state IN ('PENDING','LEASED','COMPLETED','FAILED')
+                  AND latest_run.state IN ('PENDING','LEASED','COMPLETED','FAILED','SUPERSEDED')
                   AND latest_run.requested_source_after<=receipt.source_read_started_at
                   AND latest_run.source_read_started_at IS NOT NULL
                   AND latest_run.source_read_finished_at IS NOT NULL
                   AND latest_run.source_read_started_at<=receipt.source_read_started_at
                   AND latest_run.source_read_finished_at>=receipt.source_read_finished_at
                   AND latest_run.source_read_finished_at<=?
-                  AND (latest_run.state<>'COMPLETED' OR
-                       (latest_run.completed_at>=latest_run.source_read_finished_at
-                        AND latest_run.completed_at<=?))
-                  AND (latest_run.state<>'FAILED' OR
-                       (latest_run.failed_at IS NOT NULL AND latest_run.failed_at<=?))
+                  AND (
+                      (latest_run.state IN ('PENDING','LEASED')
+                       AND latest_run.completed_at IS NULL AND latest_run.failed_at IS NULL)
+                      OR (latest_run.state='COMPLETED' AND latest_run.completed_at IS NOT NULL
+                          AND latest_run.completed_at>=latest_run.source_read_finished_at
+                          AND latest_run.failed_at IS NULL AND latest_run.last_error IS NULL)
+                      OR (latest_run.state='FAILED' AND latest_run.failed_at IS NOT NULL
+                          AND latest_run.failed_at>=latest_run.source_read_finished_at
+                          AND latest_run.completed_at IS NULL AND latest_run.last_error IS NOT NULL)
+                      OR (latest_run.state='SUPERSEDED' AND latest_run.completed_at IS NOT NULL
+                          AND latest_run.completed_at>=latest_run.source_read_finished_at
+                          AND latest_run.failed_at IS NULL
+                          AND latest_run.last_error='Superseded by a validated newer canonical source pair')
+                  )
+                  AND (COALESCE(latest_run.completed_at,latest_run.failed_at) IS NULL
+                       OR COALESCE(latest_run.completed_at,latest_run.failed_at)<=?)
                   AND receipt.source_read_started_at<=? AND receipt.source_read_finished_at<=?
                   AND (receipt.latest_generation<>original.generation
                        OR (receipt.source_read_started_at=original.started_at
