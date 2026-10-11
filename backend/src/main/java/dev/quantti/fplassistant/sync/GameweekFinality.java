@@ -203,13 +203,23 @@ public final class GameweekFinality {
                                      Map<Integer, Set<Integer>> cataloguePlayerIdsByFixture,
                                      Map<Integer, Set<Integer>> participantPlayerIdsByFixture,
                                      Map<Integer, Set<Integer>> knownPlayerIdsByFixture,
-                                     Map<Integer, FixtureVerification.FixtureEvidence> participantEvidenceByFixture) {
+                                     Map<Integer, FixtureVerification.FixtureEvidence> participantEvidenceByFixture,
+                                     boolean sourceCatalogueMembershipRequired) {
         public RequiredPopulation(String bootstrapFingerprint,
                                   Map<Integer, Set<Integer>> cataloguePlayerIdsByFixture,
                                   Map<Integer, Set<Integer>> participantPlayerIdsByFixture,
                                   Map<Integer, Set<Integer>> knownPlayerIdsByFixture) {
             this(bootstrapFingerprint, cataloguePlayerIdsByFixture, participantPlayerIdsByFixture,
-                    knownPlayerIdsByFixture, Map.of());
+                    knownPlayerIdsByFixture, Map.of(), false);
+        }
+
+        public RequiredPopulation(String bootstrapFingerprint,
+                                  Map<Integer, Set<Integer>> cataloguePlayerIdsByFixture,
+                                  Map<Integer, Set<Integer>> participantPlayerIdsByFixture,
+                                  Map<Integer, Set<Integer>> knownPlayerIdsByFixture,
+                                  Map<Integer, FixtureVerification.FixtureEvidence> participantEvidenceByFixture) {
+            this(bootstrapFingerprint, cataloguePlayerIdsByFixture, participantPlayerIdsByFixture,
+                    knownPlayerIdsByFixture, participantEvidenceByFixture, false);
         }
 
         public RequiredPopulation {
@@ -254,7 +264,8 @@ public final class GameweekFinality {
             return new RequiredPopulation(bootstrapFingerprint,
                     union(cataloguePlayerIdsByFixture, catalogue),
                     union(participantPlayerIdsByFixture, participants),
-                    union(knownPlayerIdsByFixture, known), participantEvidenceByFixture);
+                    union(knownPlayerIdsByFixture, known), participantEvidenceByFixture,
+                    sourceCatalogueMembershipRequired);
         }
 
         private static void mergePopulation(Map<Integer, Set<Integer>> target,
@@ -297,6 +308,7 @@ public final class GameweekFinality {
             StringBuilder canonical = new StringBuilder();
             append(canonical, source.signature());
             append(canonical, bootstrapFingerprint);
+            if (sourceCatalogueMembershipRequired) append(canonical, "sourceCatalogueMembershipRequired");
             appendPopulation(canonical, "catalogue", cataloguePlayerIdsByFixture);
             appendPopulation(canonical, "participant", participantPlayerIdsByFixture);
             appendPopulation(canonical, "known", knownPlayerIdsByFixture);

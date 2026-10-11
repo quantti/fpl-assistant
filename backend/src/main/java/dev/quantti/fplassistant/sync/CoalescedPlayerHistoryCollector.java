@@ -295,23 +295,36 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
         Map<Integer, String> discoveryFingerprints = discoveryFingerprints(snapshot, targets);
         Map<Integer, Set<Integer>> discovered;
         Map<Integer, Set<Integer>> known;
+        Map<Integer, Set<Integer>> knownLedger;
         try {
             Set<Integer> needsDiscovery = store.incrementalFixturesNeedingDiscovery(lease, discoveryFingerprints);
             List<Integer> targetFixtureIds = targets.stream().map(FixtureRow::id).toList();
             discovered = store.incrementalDiscoveredPlayerIds(lease, targetFixtureIds);
+            Map<Integer, Set<Integer>> durableParticipants =
+                    store.incrementalParticipantPlayerIds(lease, targetFixtureIds);
+            knownLedger = store.incrementalKnownPlayerIds(lease, targetFixtureIds);
             List<Integer> hydrationFixtures = targets.stream().map(FixtureRow::id)
                     .filter(needsDiscovery::contains).toList();
-            known = store.knownPlayerIds(lease, season.id(), hydrationFixtures);
+            Map<Integer, Set<Integer>> hydratedKnown = store.knownPlayerIds(lease, season.id(), hydrationFixtures);
+            known = new LinkedHashMap<>();
             for (FixtureRow fixture : targets) {
                 Set<Integer> catalogue = new LinkedHashSet<>();
                 snapshot.players().stream().filter(player -> player.teamId() == fixture.homeTeamId()
                         || player.teamId() == fixture.awayTeamId()).map(PlayerRow::id).forEach(catalogue::add);
                 Set<Integer> participants = new LinkedHashSet<>(
                         FixtureVerification.fixtureStatParticipantIds(fixture));
+                Set<Integer> knownIds = new LinkedHashSet<>(knownLedger.getOrDefault(fixture.id(), Set.of()));
+                if (needsDiscovery.contains(fixture.id())) {
+                    knownIds.addAll(hydratedKnown.getOrDefault(fixture.id(), Set.of()));
+                }
+                knownIds.removeAll(catalogue);
+                knownIds.removeAll(participants);
+                knownIds.removeAll(durableParticipants.getOrDefault(fixture.id(), Set.of()));
+                known.put(fixture.id(), Set.copyOf(knownIds));
                 Set<Integer> ids = new LinkedHashSet<>(catalogue);
                 ids.addAll(participants);
-                ids.addAll(discovered.getOrDefault(fixture.id(), Set.of()));
-                ids.addAll(known.getOrDefault(fixture.id(), Set.of()));
+                ids.addAll(durableParticipants.getOrDefault(fixture.id(), Set.of()));
+                ids.addAll(knownIds);
                 cataloguePlayers.put(fixture.id(), catalogue);
                 sourceParticipants.put(fixture.id(), participants);
                 candidates.put(fixture.id(), ids);
@@ -419,6 +432,9 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
                     participants.put(fixtureId, Set.copyOf(ids));
                     candidates.get(fixtureId).addAll(ids);
                     sourceParticipants.computeIfAbsent(fixtureId, ignored -> new LinkedHashSet<>()).addAll(ids);
+                    Set<Integer> knownIds = new LinkedHashSet<>(known.getOrDefault(fixtureId, Set.of()));
+                    knownIds.removeAll(ids);
+                    known.put(fixtureId, Set.copyOf(knownIds));
                 });
                 SourceRead liveRead = read(live);
                 Set<Integer> revalidationFixtures = store.recordIncrementalLiveEvent(
@@ -457,7 +473,7 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
         if (!checkpointCandidates.isEmpty()) {
             try {
                 store.recordIncrementalPopulation(lease, checkpointPlayers, checkpointCandidates, discovered,
-                        checkpointFingerprints, snapshotRead);
+                        known, knownLedger, checkpointFingerprints, snapshotRead);
             } catch (RuntimeException failure) {
                 return fail(lease, bounded(failure.getMessage()), requestedPlayers, committedPlayers, failedPlayers,
                         finalPendingEvents, null);
@@ -478,7 +494,7 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
                         catalogueFingerprint(snapshot, finalSource.assignedFixtures()),
                         subset(cataloguePlayers, fixtureIds),
                         subset(sourceParticipants, fixtureIds), subset(known, fixtureIds),
-                        subsetEvidence(participantEvidence, fixtureIds));
+                        subsetEvidence(participantEvidence, fixtureIds), compatibilityCatalogue != null);
                 var progress = finality.beginOrResume(lease, season, finalSource, population, snapshotRead);
                 if (progress.state() == dev.quantti.fplassistant.sync.GameweekFinality.State.FINAL_PENDING) {
                     finalCheckpoints.put(gameweek, progress);
@@ -718,7 +734,7 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
             var population = new dev.quantti.fplassistant.sync.GameweekFinality.RequiredPopulation(
                     catalogueFingerprint(endSnapshot, source.assignedFixtures()), subset(endCatalogue, fixtureIds),
                     subset(sourceParticipants, fixtureIds), subset(known, fixtureIds),
-                    subsetEvidence(participantEvidence, fixtureIds));
+                    subsetEvidence(participantEvidence, fixtureIds), compatibilityCatalogue != null);
             try {
                 finality.finalizeSweep(lease, season, source, population, endRead);
             } catch (RuntimeException finalizationFailure) {

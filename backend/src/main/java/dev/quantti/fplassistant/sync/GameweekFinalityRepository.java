@@ -299,6 +299,8 @@ public final class GameweekFinalityRepository {
         Map<Integer, Set<Integer>> catalogue = mutable(requested.cataloguePlayerIdsByFixture(), fixtureIds);
         Map<Integer, Set<Integer>> participants = mutable(requested.participantPlayerIdsByFixture(), fixtureIds);
         Map<Integer, Set<Integer>> known = mutable(requested.knownPlayerIdsByFixture(), fixtureIds);
+        boolean sourceMembershipRequired = requested.sourceCatalogueMembershipRequired()
+                || previous != null && previous.population().sourceCatalogueMembershipRequired();
 
         ParticipantManifest durableParticipants = participantManifest(season, fixtureIds);
         if (previous != null) {
@@ -306,16 +308,18 @@ public final class GameweekFinalityRepository {
             for (int fixtureId : fixtureIds) {
                 if (!Objects.equals(previous.fixtureIdentities().get(fixtureId), identities.get(fixtureId))) continue;
                 hasMatchingIdentity = true;
-                merge(catalogue, previous.population().cataloguePlayerIdsByFixture(), Set.of(fixtureId));
+                if (!sourceMembershipRequired) {
+                    merge(catalogue, previous.population().cataloguePlayerIdsByFixture(), Set.of(fixtureId));
+                }
                 merge(participants, previous.population().participantPlayerIdsByFixture(), Set.of(fixtureId));
                 merge(known, previous.population().knownPlayerIdsByFixture(), Set.of(fixtureId));
             }
             if (hasMatchingIdentity) {
-                merge(known, durableParticipants.playerIdsByFixture(),
+                merge(participants, durableParticipants.playerIdsByFixture(),
                         matchingFixtures(previous, identities));
             }
         } else {
-            merge(known, durableParticipants.playerIdsByFixture(), fixtureIds);
+            merge(participants, durableParticipants.playerIdsByFixture(), fixtureIds);
         }
         knownRows(season, source).forEach((fixture, ids) -> ids.forEach(player -> {
             if (!catalogue.getOrDefault(fixture, Set.of()).contains(player)
@@ -341,7 +345,7 @@ public final class GameweekFinalityRepository {
             }
         }
         RequiredPopulation effective = new RequiredPopulation(requested.bootstrapFingerprint(), catalogue,
-                participants, known, evidence);
+                participants, known, evidence, sourceMembershipRequired);
         return new PopulationManifest(effective, identities);
     }
 
@@ -438,7 +442,10 @@ public final class GameweekFinalityRepository {
 
     private static String populationManifestJson(PopulationManifest manifest) {
         StringBuilder json = new StringBuilder("{\"bootstrapFingerprint\":\"")
-                .append(manifest.population().bootstrapFingerprint()).append("\",\"catalogue\":");
+                .append(manifest.population().bootstrapFingerprint())
+                .append("\",\"sourceCatalogueMembershipRequired\":")
+                .append(manifest.population().sourceCatalogueMembershipRequired())
+                .append(",\"catalogue\":");
         appendPopulationJson(json, manifest.population().cataloguePlayerIdsByFixture());
         json.append(",\"participants\":");
         appendPopulationJson(json, manifest.population().participantPlayerIdsByFixture());
@@ -505,9 +512,14 @@ public final class GameweekFinalityRepository {
         if (value == null) return null;
         try {
             JsonNode root = JSON.readTree(value);
+            JsonNode membershipRequired = root.path("sourceCatalogueMembershipRequired");
+            if (!membershipRequired.isMissingNode() && !membershipRequired.isBoolean()) {
+                throw new IllegalArgumentException("Invalid source catalogue membership requirement");
+            }
             RequiredPopulation population = new RequiredPopulation(root.path("bootstrapFingerprint").asText(),
                     parsePopulation(root.path("catalogue")), parsePopulation(root.path("participants")),
-                    parsePopulation(root.path("known")), parseParticipantEvidence(root.path("participantEvidence")));
+                    parsePopulation(root.path("known")), parseParticipantEvidence(root.path("participantEvidence")),
+                    membershipRequired.asBoolean(false));
             JsonNode identitiesNode = root.path("fixtureIdentities");
             if (!identitiesNode.isObject()) throw new IllegalArgumentException("Invalid fixture identity manifest");
             Map<Integer, String> identities = new java.util.TreeMap<>();

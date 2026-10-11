@@ -133,6 +133,8 @@ public final class IncrementalPfsRepository {
                         + " ORDER BY fixture_id FOR UPDATE", rs -> { }, batch.seasonId(), batch.playerId());
         Map<Integer, CurrentPointer> current = loadCurrent(batch.seasonId(), batch.seasonCode(), batch.playerId());
         Map<Integer, LegacyOwnedRow> legacyOwned = loadLegacyOwnedRows(batch.seasonId(), batch.playerId());
+        Map<Integer, Integer> knownCandidateGameweeks = loadKnownCandidateGameweeks(
+                batch.seasonId(), batch.seasonCode(), batch.playerId());
         Map<Integer, HistoryRow> received = new HashMap<>();
         for (HistoryRow row : batch.rows()) received.put(row.fixtureId(), row);
 
@@ -213,11 +215,71 @@ public final class IncrementalPfsRepository {
             }
         }
 
+        for (Map.Entry<Integer, Integer> known : knownCandidateGameweeks.entrySet()) {
+            int fixtureId = known.getKey();
+            if (received.containsKey(fixtureId) || current.containsKey(fixtureId)
+                    || legacyOwned.containsKey(fixtureId)) continue;
+            upsertCurrent(batch.seasonId(), batch.seasonCode(), fixtureId, batch.playerId(),
+                    RowState.WITHDRAWN, lease.generation(), null, null, null, read, publishedAt);
+            currentPointersUpdated++;
+            observedFixtures.add(fixtureId);
+            if (validGameweek(known.getValue())) {
+                changed.add(new RowKey(batch.seasonId(), batch.seasonCode(), known.getValue(),
+                        fixtureId, batch.playerId()));
+            }
+        }
+
         for (int fixtureId : observedFixtures) revokeObsoleteFixtureVerification(batch.seasonId(), fixtureId,
                 publishedAt);
+        resolveWithdrawnKnownCandidates(batch.seasonId(), batch.seasonCode(), batch.playerId());
         if (!changed.isEmpty()) store.invalidateIncrementalGameweeks(lease, changed, read);
 
         return new PublicationResult(changed, pfsRowsWritten, evidenceRowsWritten, currentPointersUpdated);
+    }
+
+    private Map<Integer, Integer> loadKnownCandidateGameweeks(int seasonId, String seasonCode, int playerId) {
+        String prefix = OwnedSyncStore.INCREMENTAL_KNOWN_RECEIPT_PREFIX;
+        List<String> keys = jdbc.queryForList("SELECT publication_key FROM " + tables.receipt()
+                + " WHERE season=? AND publication_key LIKE ?", String.class,
+                seasonCode, prefix + "%:player:" + playerId);
+        Map<Integer, Integer> result = new HashMap<>();
+        for (String key : keys) {
+            int separator = key.indexOf(":player:", prefix.length());
+            try {
+                int fixtureId = Integer.parseInt(key.substring(prefix.length(), separator));
+                if (fixtureId <= 0) throw new NumberFormatException("non-positive fixture id");
+                result.put(fixtureId, null);
+            } catch (RuntimeException invalidKey) {
+                throw new IllegalStateException("Invalid known player-fixture receipt key", invalidKey);
+            }
+        }
+        if (result.isEmpty()) return result;
+        String placeholders = String.join(",", java.util.Collections.nCopies(result.size(), "?"));
+        List<Object> parameters = new ArrayList<>(result.size() + 2);
+        parameters.add(seasonId);
+        parameters.add(playerId);
+        parameters.addAll(result.keySet().stream().sorted().toList());
+        jdbc.query("SELECT fixture_id,gameweek FROM player_fixture_stats WHERE season_id=? AND player_id=?"
+                + " AND fixture_id IN (" + placeholders + ")", rs -> {
+            int gameweek = rs.getInt("gameweek");
+            Integer knownGameweek = rs.wasNull() ? null : gameweek;
+            result.put(rs.getInt("fixture_id"), knownGameweek);
+        }, parameters.toArray());
+        return result;
+    }
+
+    private void resolveWithdrawnKnownCandidates(int seasonId, String seasonCode, int playerId) {
+        jdbc.update("""
+                DELETE FROM %s known
+                WHERE known.season=? AND known.publication_key LIKE ?
+                  AND EXISTS (SELECT 1 FROM %s current_row
+                      WHERE current_row.season_id=? AND current_row.season_code=? AND current_row.player_id=?
+                        AND current_row.row_state='WITHDRAWN'
+                        AND known.publication_key=? || current_row.fixture_id::text || ':player:'
+                            || current_row.player_id::text)
+                """.formatted(tables.receipt(), tables.playerFixtureCurrent()), seasonCode,
+                OwnedSyncStore.INCREMENTAL_KNOWN_RECEIPT_PREFIX + "%:player:" + playerId,
+                seasonId, seasonCode, playerId, OwnedSyncStore.INCREMENTAL_KNOWN_RECEIPT_PREFIX);
     }
 
     private void revokeObsoleteFixtureVerification(int seasonId, int fixtureId, Instant updatedAt) {

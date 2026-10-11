@@ -10,6 +10,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Supplier;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -139,6 +140,21 @@ class CompatibilityCatalogueWriterIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT team_id FROM player WHERE season_id=27 AND id=1", Integer.class))
                 .isEqualTo(CatalogueScheduleParser.parse(SEASON, first.bootstrap(), first.fixtures())
                         .players().stream().filter(player -> player.id() == 1).findFirst().orElseThrow().teamId());
+        Map<String, Object> membershipReceipt = jdbc.queryForMap("SELECT latest_generation,source_pair_fingerprint,"
+                + "source_read_started_at,source_read_finished_at,source_catalogue::text AS source_catalogue FROM "
+                + TABLES.receipt() + " WHERE season=? AND publication_key=?", SEASON.code(),
+                OwnedSyncStore.INCREMENTAL_COMPATIBILITY_PUBLICATION_KEY);
+        var sourceMembership = JSON.readTree((String) membershipReceipt.get("source_catalogue"));
+        assertThat(sourceMembership.path("sourceGeneration").longValue())
+                .isEqualTo(((Number) membershipReceipt.get("latest_generation")).longValue());
+        assertThat(sourceMembership.path("sourcePairFingerprint").asText())
+                .isEqualTo(membershipReceipt.get("source_pair_fingerprint"));
+        assertThat(sourceMembership.path("sourceReadStartedAt").asText())
+                .isEqualTo(((java.sql.Timestamp) membershipReceipt.get("source_read_started_at")).toInstant().toString());
+        assertThat(sourceMembership.path("sourceReadFinishedAt").asText())
+                .isEqualTo(((java.sql.Timestamp) membershipReceipt.get("source_read_finished_at")).toInstant().toString());
+        assertThat(sourceMembership.path("players")).hasSize(657);
+        assertThat(sourceMembership.path("membershipFingerprint").asText()).matches("[0-9a-f]{64}");
         Instant firstWrite = timestamp("SELECT updated_at FROM player WHERE season_id=27 AND id=1");
         Instant archiveTeamTimestamp = timestamp("SELECT updated_at FROM team WHERE season_id=9825 AND id=1");
         assertCaptureSentinels();
@@ -288,6 +304,41 @@ class CompatibilityCatalogueWriterIntegrationTest {
                 + " WHERE season='2026-27' AND publication_key IN (?,?)",
                 Integer.class, CatalogueScheduleWriter.SHARED_TEAM_SOURCE_RECEIPT_KEY,
                 CatalogueScheduleWriter.FIXTURE_SOURCE_RECEIPT_KEY)).isZero();
+    }
+
+    @Test
+    void malformedAndOlderSourcePairsCannotReplacePublishedMembership() throws Exception {
+        Documents initial = documents(bootstrap, fixtures, BASE.plusSeconds(1));
+        Lease first = newLease(BASE.plusMillis(900));
+        stage(first, initial);
+        writer.publish(first, SEASON, initial.bootstrap(), initial.fixtures());
+        String published = jdbc.queryForObject("SELECT source_catalogue::text FROM " + TABLES.receipt()
+                + " WHERE season=? AND publication_key=?", String.class, SEASON.code(),
+                OwnedSyncStore.INCREMENTAL_COMPATIBILITY_PUBLICATION_KEY);
+        complete(first);
+
+        ObjectNode invalidBootstrap = (ObjectNode) JSON.readTree(bootstrap);
+        ((ObjectNode) invalidBootstrap.withArray("elements").get(0)).put("team", 999);
+        Documents malformed = documents(JSON.writeValueAsBytes(invalidBootstrap), fixtures, BASE.plusSeconds(10));
+        Lease malformedLease = newLease(BASE.plusSeconds(9));
+        stage(malformedLease, malformed);
+        assertThatThrownBy(() -> writer.publish(malformedLease, SEASON,
+                malformed.bootstrap(), malformed.fixtures())).isInstanceOf(IllegalArgumentException.class);
+        assertThat(jdbc.queryForObject("SELECT source_catalogue::text FROM " + TABLES.receipt()
+                + " WHERE season=? AND publication_key=?", String.class, SEASON.code(),
+                OwnedSyncStore.INCREMENTAL_COMPATIBILITY_PUBLICATION_KEY)).isEqualTo(published);
+        complete(malformedLease);
+
+        Documents older = documents(bootstrap, fixtures, BASE.plusSeconds(2));
+        Lease olderLease = newLease(BASE.plusSeconds(20));
+        stage(olderLease, older);
+        assertThatThrownBy(() -> writer.publish(olderLease, SEASON, older.bootstrap(), older.fixtures()))
+                .isInstanceOf(OwnedSyncStore.SourceDemandAdvancedException.class);
+        assertThat(jdbc.queryForObject("SELECT source_catalogue::text FROM " + TABLES.receipt()
+                + " WHERE season=? AND publication_key=?", String.class, SEASON.code(),
+                OwnedSyncStore.INCREMENTAL_COMPATIBILITY_PUBLICATION_KEY)).isEqualTo(published);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM player WHERE season_id=27", Integer.class))
+                .isEqualTo(657);
     }
 
     @Test

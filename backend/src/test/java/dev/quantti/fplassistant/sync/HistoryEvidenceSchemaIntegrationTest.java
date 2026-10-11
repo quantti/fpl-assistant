@@ -102,6 +102,43 @@ class HistoryEvidenceSchemaIntegrationTest {
     }
 
     @Test
+    void membershipProofSchemaUpgradeRetiresUnprovenFinalityAndPreflightRequiresTheNewColumn() {
+        jdbc.execute("ALTER TABLE " + TABLES.receipt() + " DROP COLUMN IF EXISTS source_catalogue");
+        insertBlankFinalGameweek(34, optionalCoverageJson());
+        jdbc.update("INSERT INTO " + TABLES.receipt()
+                        + "(season,publication_key,latest_generation) VALUES (?,?,?)",
+                ISOLATED_SEASON_CODE, OwnedSyncStore.INCREMENTAL_COMPATIBILITY_PUBLICATION_KEY,
+                incrementalGeneration);
+        try {
+            new OwnedSyncSchema(jdbc, TABLES).initialize();
+
+            assertThat(jdbc.queryForList("SELECT column_name FROM information_schema.columns"
+                    + " WHERE table_schema='public' AND table_name=?", String.class, TABLES.receipt()))
+                    .contains("source_catalogue");
+            assertThat(jdbc.queryForObject("SELECT source_catalogue IS NULL FROM " + TABLES.receipt()
+                    + " WHERE season=? AND publication_key=?", Boolean.class, ISOLATED_SEASON_CODE,
+                    OwnedSyncStore.INCREMENTAL_COMPATIBILITY_PUBLICATION_KEY)).isTrue();
+            assertThat(jdbc.queryForObject("SELECT state FROM " + TABLES.gameweekStatSync()
+                    + " WHERE season_id=? AND gameweek=34", String.class, ISOLATED_SEASON_ID))
+                    .isEqualTo("FINAL_PENDING");
+            assertThat(jdbc.queryForObject("SELECT legacy_finality_evidence IS NOT NULL FROM "
+                    + TABLES.gameweekStatSync() + " WHERE season_id=? AND gameweek=34",
+                    Boolean.class, ISOLATED_SEASON_ID)).isTrue();
+            new IncrementalImporterSchemaPreflight(jdbc, TABLES).requireReady();
+        } finally {
+            if (Boolean.FALSE.equals(jdbc.queryForObject("SELECT EXISTS (SELECT 1 FROM information_schema.columns"
+                    + " WHERE table_schema='public' AND table_name=? AND column_name='source_catalogue')",
+                    Boolean.class, TABLES.receipt()))) {
+                new OwnedSyncSchema(jdbc, TABLES).initialize();
+            }
+            jdbc.update("DELETE FROM " + TABLES.gameweekStatSync()
+                    + " WHERE season_id=? AND gameweek=34", ISOLATED_SEASON_ID);
+            jdbc.update("DELETE FROM " + TABLES.receipt() + " WHERE season=? AND publication_key=?",
+                    ISOLATED_SEASON_CODE, OwnedSyncStore.INCREMENTAL_COMPATIBILITY_PUBLICATION_KEY);
+        }
+    }
+
+    @Test
     void currentRowEvidenceIsVisibleBeforeGameweekFinalityAndSupportsWithdrawal() {
         tx.executeWithoutResult(status -> {
             insertIncrementalEvidence(93101, 94101);

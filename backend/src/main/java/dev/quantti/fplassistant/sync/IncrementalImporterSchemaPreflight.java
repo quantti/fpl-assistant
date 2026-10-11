@@ -91,7 +91,7 @@ final class IncrementalImporterSchemaPreflight {
                 + "source_read_finished_at published_at source_bootstrap_payload_id source_fixtures_payload_id "
                 + "source_bootstrap_read_started_at source_bootstrap_read_finished_at "
                 + "source_fixtures_read_started_at source_fixtures_read_finished_at source_bootstrap_sha256 "
-                + "source_fixtures_sha256 source_pair_fingerprint");
+                + "source_fixtures_sha256 source_pair_fingerprint source_catalogue");
         add(required, tables.requestState(), "singleton last_admitted_at cooldown_until");
         add(required, tables.requestAttempt(), "permit_id admitted_at permit_expires_at completed_at hold_until_expiry");
         add(required, tables.fixtureSync(), "season_id season_code fixture_id state observation observation_generation "
