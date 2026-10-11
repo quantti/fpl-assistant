@@ -154,6 +154,22 @@ The guarded disposable-DB rerun passed **7/7, zero skipped**: `CoalescedPlayerHi
 Fixed four bounded findings: unchanged later pages now advance only the ordered page watermark while preserving row revision/source interval and avoiding PFS/evidence/pointer churn; reader visibility accepts that newer watermark while fencing withdrawals and stale pages. Incremental pointers now carry a separate built-in PostgreSQL SHA-256 fingerprint of normalized physical PFS core values and present optional values; absent optionals are excluded, and tampering makes rows unreadable without fallback. A first empty page reconciles legacy owned PFS rows into current-batch withdrawals, returns their actual GW keys, revokes current verification while preserving older evidence/receipt, and does not sweep unowned rows/seasons. Complete legacy `player-history:<id>` receipt timestamps no longer risk being treated as an incremental page receipt; original values remain visible in ACTIVE and OFF.
 
 The latest guarded disposable-DB run on `localhost:55432` passed **57/57, zero skipped**: `IncrementalPlayerFixturePublisherIntegrationTest` 15, `HistoryEvidenceSchemaIntegrationTest` 5, `PfsReadSourceIntegrationTest` 14, and `RankingMetricsIntegrationTest` 23. This was not the full suite. No collector/unit 4, final sweep, production/API/monitor work, production DB, commit or push was run; writers remain inert and ACTIVE92 is untouched.
+## Incremental sync simplification proposal (2026-10-10; historical proposal)
+
+[New plan](superpowers/plans/2026-10-10-incremental-fpl-sync.md): publish valid provisional
+player-fixture rows as they arrive, update only changed values, and complete a fresh final sweep
+when FPL reports the event finished/data-checked. The owner now accepts later corrections; the
+old two-observation stability gate is a design choice being proposed for retirement, not an FPL
+requirement. The original missing-Arsenal/whole-club comparison incident remains a required
+regression: provisional availability must not turn missing coverage or optional defaults into facts.
+
+The proposal separates row publication, comparison coverage and gameweek finality, includes reader
+migration and single-writer rollback, and explicitly limits what can be known about corrections
+after FPL's checked signal. At this proposal checkpoint, seven bounded implementation units were proposed and none was implemented.
+No production mode, runtime, DB or monitor was changed by the proposal. The owner's 2026-10-09 continuous ACTIVE92
+and observation-only monitoring authorisation stands; older OFF83 notes below are historical.
+The earlier GW5 recovery reached 10 VERIFIED fixtures/667 physical rows; that outcome is not a
+claim that the separate full source-body audit or a real checked-GW final-sweep test was completed.
 
 ## Task 153 review-2 P1 oracle repair (local pass, 2026-10-08)
 
