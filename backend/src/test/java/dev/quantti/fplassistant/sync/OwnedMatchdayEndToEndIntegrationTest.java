@@ -17,6 +17,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Predicate;
 
 import javax.sql.DataSource;
 
@@ -56,6 +57,8 @@ class OwnedMatchdayEndToEndIntegrationTest {
     private static final Season SEASON = new Season(27, "2026-27", LocalDate.of(2026, 8, 21), null);
     private static final int DELAYED = 29;
     private static final int INDEPENDENT = 30;
+    private static final String FIXTURE_OVERDUE_CATEGORY = "FIXTURE_VERIFICATION_OVERDUE";
+    private static final String FIXTURE_OVERDUE_12H_CATEGORY = "FIXTURE_VERIFICATION_12H";
     private static DataSource dataSource;
     private static JdbcTemplate jdbc;
     private static TransactionTemplate tx;
@@ -75,6 +78,56 @@ class OwnedMatchdayEndToEndIntegrationTest {
     static void restoreSeed() {
         cleanSeason();
         jdbc.update("UPDATE season SET is_current=(id=?)", SharedStatsSeed.CURRENT_SEASON_ID);
+    }
+
+    @Test
+    void fixtureOverdueMessageMatcherRejectsNearMisses() throws Exception {
+        ObjectNode sourcePayload = fixtureOverdueMessage();
+        String validSourceMessage = JSON.writeValueAsString(sourcePayload);
+        assertThat(isFixtureOverdueIncident(validSourceMessage, SEASON.code(), DELAYED,
+                FIXTURE_OVERDUE_CATEGORY)).isTrue();
+
+        ObjectNode stringFixtureId = sourcePayload.deepCopy();
+        stringFixtureId.put("fixtureId", "29");
+        ((ObjectNode) stringFixtureId.get("details")).put("fixtureId", "29");
+        assertThat(isFixtureOverdueIncident(JSON.writeValueAsString(stringFixtureId), SEASON.code(), DELAYED,
+                FIXTURE_OVERDUE_CATEGORY)).isTrue();
+
+        ObjectNode legacyFixtureId = sourcePayload.deepCopy();
+        legacyFixtureId.put("fixtureId", 990029);
+        ((ObjectNode) legacyFixtureId.get("details")).put("fixtureId", 990029);
+        assertThat(isFixtureOverdueIncident(JSON.writeValueAsString(legacyFixtureId), SEASON.code(), DELAYED,
+                FIXTURE_OVERDUE_CATEGORY)).isFalse();
+
+        ObjectNode dateOnlyMatch = sourcePayload.deepCopy();
+        dateOnlyMatch.put("fixtureId", 30);
+        dateOnlyMatch.put("incidentKey", fixtureOverdueIncidentKey(FIXTURE_OVERDUE_CATEGORY,
+                SEASON.code(), 30));
+        ObjectNode dateDetails = (ObjectNode) dateOnlyMatch.get("details");
+        dateDetails.put("fixtureId", 30);
+        dateDetails.put("kickoff", "2026-09-29T15:30:00Z");
+        assertThat(isFixtureOverdueIncident(JSON.writeValueAsString(dateOnlyMatch), SEASON.code(), DELAYED,
+                FIXTURE_OVERDUE_CATEGORY)).isFalse();
+
+        ObjectNode wrongKey = sourcePayload.deepCopy();
+        wrongKey.put("incidentKey", "fixture-overdue:2026-27:990029");
+        assertThat(isFixtureOverdueIncident(JSON.writeValueAsString(wrongKey), SEASON.code(), DELAYED,
+                FIXTURE_OVERDUE_CATEGORY)).isFalse();
+
+        ObjectNode wrongCategory = sourcePayload.deepCopy();
+        wrongCategory.put("category", FIXTURE_OVERDUE_12H_CATEGORY);
+        assertThat(isFixtureOverdueIncident(JSON.writeValueAsString(wrongCategory), SEASON.code(), DELAYED,
+                FIXTURE_OVERDUE_CATEGORY)).isFalse();
+
+        ObjectNode wrongSeason = sourcePayload.deepCopy();
+        wrongSeason.put("season", "2025-26");
+        assertThat(isFixtureOverdueIncident(JSON.writeValueAsString(wrongSeason), SEASON.code(), DELAYED,
+                FIXTURE_OVERDUE_CATEGORY)).isFalse();
+
+        ObjectNode recovery = sourcePayload.deepCopy();
+        recovery.put("event", "recovery");
+        assertThat(isFixtureOverdueIncident(JSON.writeValueAsString(recovery), SEASON.code(), DELAYED,
+                FIXTURE_OVERDUE_CATEGORY)).isFalse();
     }
 
     @Test
@@ -160,10 +213,33 @@ class OwnedMatchdayEndToEndIntegrationTest {
         OwnedSyncWatchdog watchdog = new OwnedSyncWatchdog(jdbc, tx, clock, TABLES,
                 new OwnedSyncWatchdog.Notification(true, true), delivered::add);
         watchdog.check(SEASON.code());
-        watchdog.deliver();
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.alert()
-                + " WHERE fixture_id=29 AND event_type='INCIDENT'", Integer.class)).isPositive();
-        assertThat(delivered).anySatisfy(message -> assertThat(message).contains("fixtureId", "29", "verification overdue"));
+        Map<String, Object> incident = jdbc.queryForMap("SELECT id,incident_key,event_type,category,season,"
+                + "fixture_id,payload::text AS payload FROM " + TABLES.alert()
+                + " WHERE season=? AND fixture_id=? AND event_type='INCIDENT'", SEASON.code(), DELAYED);
+        long incidentId = ((Number) incident.get("id")).longValue();
+        String incidentKey = (String) incident.get("incident_key");
+        String incidentCategory = (String) incident.get("category");
+        assertThat(incident.get("event_type")).isEqualTo("INCIDENT");
+        assertThat(incidentCategory).isEqualTo(FIXTURE_OVERDUE_CATEGORY);
+        assertThat(incidentKey).isEqualTo(fixtureOverdueIncidentKey(incidentCategory, SEASON.code(), DELAYED));
+        assertThat(incident.get("season")).isEqualTo(SEASON.code());
+        assertThat(((Number) incident.get("fixture_id")).intValue()).isEqualTo(DELAYED);
+        String persistedPayload = (String) incident.get("payload");
+        Predicate<String> targetIncident = message -> isFixtureOverdueIncident(
+                message, SEASON.code(), DELAYED, incidentCategory);
+        assertThat(targetIncident.test(persistedPayload))
+                .as("persisted watchdog source payload for incident %s", incidentId).isTrue();
+
+        // The synthetic full-season feed can queue more than one delivery batch of older fixtures.
+        // Drain without relying on the unordered fixture query to put fixture 29 in the first batch.
+        for (int drain = 0; drain < 50; drain++) {
+            if (delivered.stream().anyMatch(targetIncident)) break;
+            if (watchdog.deliver() == 0) break;
+        }
+        assertThat(delivered.stream().anyMatch(targetIncident))
+                .as("exact overdue incident %s (alert id %s) was delivered", incidentKey, incidentId).isTrue();
+        assertThat(jdbc.queryForObject("SELECT delivery_state FROM " + TABLES.alert() + " WHERE id=?",
+                String.class, incidentId)).isEqualTo("DELIVERED");
 
         // Delayed finish: publish the corrected schedule, then require two genuinely separate source batches.
         fpl.finished29 = true;
@@ -605,6 +681,56 @@ class OwnedMatchdayEndToEndIntegrationTest {
                 String.class, run.generation())).isEqualTo("PENDING");
         assertThat(jdbc.queryForObject("SELECT completed_at IS NULL FROM " + TABLES.run()
                 + " WHERE generation=?", Boolean.class, run.generation())).isTrue();
+    }
+
+    private static ObjectNode fixtureOverdueMessage() {
+        ObjectNode message = JSON.createObjectNode().put("event", "incident")
+                .put("incidentKey", fixtureOverdueIncidentKey(FIXTURE_OVERDUE_CATEGORY, SEASON.code(), DELAYED))
+                .put("category", FIXTURE_OVERDUE_CATEGORY).put("severity", "WARNING")
+                .put("season", SEASON.code()).put("fixtureId", DELAYED);
+        message.putObject("details").put("fixtureId", DELAYED)
+                .put("kickoff", "2026-09-06T15:30:00Z").put("status", "verification overdue");
+        return message;
+    }
+
+    private static boolean isFixtureOverdueIncident(String payload, String season, int fixtureId, String category) {
+        String incidentKey = fixtureOverdueIncidentKey(category, season, fixtureId);
+        if (incidentKey == null) return false;
+        try {
+            JsonNode message = JSON.readTree(payload);
+            if (message == null || !message.isObject()) return false;
+            JsonNode details = message.get("details");
+            return details != null && details.isObject()
+                    && hasTextField(message, "event", "incident")
+                    && hasTextField(message, "incidentKey", incidentKey)
+                    && hasTextField(message, "category", category)
+                    && hasTextField(message, "season", season)
+                    && hasFixtureId(message.get("fixtureId"), fixtureId)
+                    && hasFixtureId(details.get("fixtureId"), fixtureId)
+                    && hasTextField(details, "status", "verification overdue");
+        } catch (com.fasterxml.jackson.core.JsonProcessingException malformed) {
+            return false;
+        }
+    }
+
+    private static String fixtureOverdueIncidentKey(String category, String season, int fixtureId) {
+        String prefix = switch (category) {
+            case FIXTURE_OVERDUE_CATEGORY -> "fixture-overdue";
+            case FIXTURE_OVERDUE_12H_CATEGORY -> "fixture-overdue-12h";
+            default -> null;
+        };
+        return prefix == null ? null : prefix + ":" + season + ":" + fixtureId;
+    }
+
+    private static boolean hasTextField(JsonNode object, String field, String expected) {
+        JsonNode value = object.get(field);
+        return value != null && value.isTextual() && expected.equals(value.textValue());
+    }
+
+    private static boolean hasFixtureId(JsonNode value, int expected) {
+        if (value == null) return false;
+        if (value.isIntegralNumber()) return value.canConvertToInt() && value.intValue() == expected;
+        return value.isTextual() && Integer.toString(expected).equals(value.textValue());
     }
 
     private static Harness harness(MutableClock clock, RuntimeFence fence, FakeFpl fpl) {
