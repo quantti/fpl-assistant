@@ -497,7 +497,8 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
         try {
             for (int gameweek : finalPendingEvents.stream().distinct().sorted().toList()) {
                 OwnedSyncStore.IncrementalEvent event = discovery.events().get(gameweek);
-                if (event == null || !event.finalPending() && !reopenedFinalizedEvents.contains(gameweek)) continue;
+                if (event == null || missingLiveEvents.contains(gameweek)
+                        || !event.finalPending() && !reopenedFinalizedEvents.contains(gameweek)) continue;
                 dev.quantti.fplassistant.sync.GameweekFinality.SourceSnapshot finalSource =
                         dev.quantti.fplassistant.sync.GameweekFinality.SourceSnapshot.from(snapshot, gameweek);
                 Set<Integer> fixtureIds = finalSource.assignedFixtures().stream().map(FixtureRow::id)
@@ -645,17 +646,26 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
             }
         }
 
-        if (deferredUntil != null || !failedPlayers.isEmpty() || !missingLiveEvents.isEmpty()) {
-            Instant due = later(clock.instant().plus(CYCLE_INTERVAL), deferredUntil);
-            String error = failureSummary(failedPlayers, missingLiveEvents);
-            store.retry(lease, due, error);
-            return result(State.RETRY_SCHEDULED, requestedPlayers, committedPlayers, failedPlayers,
-                    finalPendingEvents, due);
+        Instant retryDue = deferredUntil != null || !failedPlayers.isEmpty() || !missingLiveEvents.isEmpty()
+                ? later(clock.instant().plus(CYCLE_INTERVAL), deferredUntil) : null;
+        if (retryDue != null) {
+            Set<Integer> unfinishedPages = new HashSet<>(needed.keySet());
+            unfinishedPages.removeAll(committedPlayers);
+            finalCheckpoints.entrySet().removeIf(entry ->
+                    missingLiveEvents.contains(entry.getKey())
+                    || entry.getValue().checkpoint().requiredPlayerIds().isEmpty()
+                    || !entry.getValue().checkpoint().outstandingPlayerIds().isEmpty()
+                    || entry.getValue().checkpoint().requiredPlayerIds().stream().anyMatch(unfinishedPages::contains));
+            if (finalCheckpoints.isEmpty()) {
+                store.retry(lease, retryDue, failureSummary(failedPlayers, missingLiveEvents));
+                return result(State.RETRY_SCHEDULED, requestedPlayers, committedPlayers, failedPlayers,
+                        finalPendingEvents, retryDue);
+            }
         }
         if (!finalCheckpoints.isEmpty()) {
             return finishFinalSweeps(lease, snapshot, reads, finalCheckpoints,
                     sourceParticipants, participantEvidence, known, requestedPlayers, committedPlayers,
-                    failedPlayers, finalPendingEvents);
+                    failedPlayers, finalPendingEvents, retryDue);
         }
         return complete(lease, reads, requestedPlayers, committedPlayers, failedPlayers, finalPendingEvents);
     }
@@ -666,7 +676,8 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
                                           Map<Integer, FixtureVerification.FixtureEvidence> participantEvidence,
                                           Map<Integer, Set<Integer>> known,
                                           List<Integer> requested, List<Integer> committed,
-                                          List<Integer> failed, List<Integer> finalPending) {
+                                          List<Integer> failed, List<Integer> finalPending,
+                                          Instant retryDue) {
         Instant priorFinish = max(initialSnapshot.bootstrapRead().completedAt(),
                 initialSnapshot.fixturesRead().completedAt());
         for (var progress : checkpoints.values()) {
@@ -736,6 +747,7 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
 
         Map<Integer, Set<Integer>> endCatalogue = cataloguePlayers(endSnapshot, endSnapshot.fixtures());
         boolean blocked = false;
+        boolean finalizedAny = false;
         String blockedReason = "Checked-gameweek final sweep remains blocked";
         for (Map.Entry<Integer, Progress> entry
                 : checkpoints.entrySet()) {
@@ -750,6 +762,7 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
                     subsetEvidence(participantEvidence, fixtureIds), compatibilityCatalogue != null);
             try {
                 finality.finalizeSweep(lease, season, source, population, endRead);
+                finalizedAny = true;
             } catch (RuntimeException finalizationFailure) {
                 try {
                     var refreshed = finality.beginOrResume(lease, season, source, population, endRead);
@@ -778,11 +791,25 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
             }
         }
         if (blocked) {
-            Instant due = clock.instant().plus(CYCLE_INTERVAL);
+            Instant due = later(clock.instant().plus(CYCLE_INTERVAL), retryDue);
+            if (finalizedAny) {
+                return completeAndRequeue(lease, reads, requested, committed, failed, finalPending, due);
+            }
             store.retry(lease, due, blockedReason);
             return result(State.RETRY_SCHEDULED, requested, committed, failed, finalPending, due);
         }
+        if (retryDue != null) {
+            return completeAndRequeue(lease, reads, requested, committed, failed, finalPending, retryDue);
+        }
         return complete(lease, reads, requested, committed, failed, finalPending);
+    }
+
+    private CycleResult completeAndRequeue(Lease lease, List<SourceRead> reads, List<Integer> requested,
+                                           List<Integer> committed, List<Integer> failed,
+                                           List<Integer> finalPending, Instant due) {
+        complete(lease, reads, requested, committed, failed, finalPending);
+        store.enqueueIncrementalCoreImport(season, due);
+        return result(State.RETRY_SCHEDULED, requested, committed, failed, finalPending, due);
     }
 
     private CycleResult restartFinalSweepGeneration(Lease lease, List<Integer> requested,

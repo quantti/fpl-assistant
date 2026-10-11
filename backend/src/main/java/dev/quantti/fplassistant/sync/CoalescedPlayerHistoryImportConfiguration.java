@@ -55,15 +55,23 @@ public class CoalescedPlayerHistoryImportConfiguration {
     }
 
     @Bean
+    OwnedSyncStore.RuntimeFence ownedImporterFence(
+            @Qualifier("ownedSyncWorkDatabase") OwnedSyncMonitoringDatabase workDatabase,
+            ImporterActivation activation, OwnedSyncTables tables) {
+        return existingActiveFence(workDatabase.jdbc(), tables, activation.playingSeason());
+    }
+
+    @Bean
     CoalescedPlayerHistoryCollector ownedImporterCollector(
             @Qualifier("ownedSyncWorkDatabase") OwnedSyncMonitoringDatabase workDatabase,
-            OwnedSyncHttpClient http, ImporterActivation activation, OwnedSyncTables tables) {
+            OwnedSyncHttpClient http, ImporterActivation activation, OwnedSyncTables tables,
+            OwnedSyncStore.RuntimeFence ownedImporterFence) {
         JdbcTemplate jdbc = workDatabase.jdbc();
         new IncrementalImporterSchemaPreflight(jdbc, tables).requireReady();
         Clock clock = Clock.systemUTC();
         Season season = OwnedSyncRuntimeConfiguration.configuredSeason(jdbc, activation.playingSeason());
-        OwnedSyncStore.RuntimeFence fence = existingActiveFence(jdbc, tables, season.code());
-        OwnedSyncStore store = new OwnedSyncStore(jdbc, workDatabase.transaction(), clock, tables, fence);
+        OwnedSyncStore store = new OwnedSyncStore(jdbc, workDatabase.transaction(), clock, tables,
+                ownedImporterFence);
         IncrementalPlayerFixturePublisher publisher = new IncrementalPlayerFixturePublisher(
                 new IncrementalPfsRepository(jdbc, clock, store, tables));
         CompatibilityCatalogueWriter compatibility = new CompatibilityCatalogueWriter(
@@ -73,10 +81,31 @@ public class CoalescedPlayerHistoryImportConfiguration {
     }
 
     @Bean
+    OwnedSyncWatchdog ownedImporterWatchdog(
+            @Qualifier("ownedSyncMonitoringDatabase") OwnedSyncMonitoringDatabase monitoringDatabase,
+            Environment environment, OwnedSyncTables tables) {
+        OwnedSyncWatchdog.Notification notification = SyncOperationsConfiguration.notification(environment);
+        String webhook = environment.getProperty("fpl.owned-sync.alerts.webhook-url", "").trim();
+        OwnedSyncWatchdog.AlertSender sender = notification.enabled() && notification.configured()
+                ? new OwnedSyncWatchdog.HttpsWebhookSender(webhook) : payload -> { };
+        return new OwnedSyncWatchdog(monitoringDatabase.jdbc(), monitoringDatabase.transaction(),
+                Clock.systemUTC(), tables, notification, sender);
+    }
+
+    @Bean
     CoalescedPlayerHistoryImportRuntime ownedImporterHourlyRuntime(
             CoalescedPlayerHistoryImportEntrypoint collector,
-            CoalescedPlayerHistoryCollector ownedImporterCollector) {
-        return new CoalescedPlayerHistoryImportRuntime(collector, ownedImporterCollector::pruneTerminalPayloads);
+            CoalescedPlayerHistoryCollector ownedImporterCollector,
+            @Qualifier("ownedSyncWorkDatabase") OwnedSyncMonitoringDatabase workDatabase,
+            OwnedSyncWatchdog ownedImporterWatchdog, OwnedSyncTables tables,
+            OwnedSyncStore.RuntimeFence ownedImporterFence) {
+        PlannerRuntimeRepository runtime = new PlannerRuntimeRepository(workDatabase.jdbc(),
+                workDatabase.transaction(), Clock.systemUTC(), tables, ownedImporterFence);
+        String instanceId = "importer:" + instanceId();
+        return new CoalescedPlayerHistoryImportRuntime(collector, ownedImporterCollector::pruneTerminalPayloads,
+                () -> runtime.heartbeat(instanceId),
+                () -> ownedImporterWatchdog.checkImporter(ownedImporterFence.season()),
+                ownedImporterWatchdog::deliver);
     }
 
     static ImporterActivation validateActivation(String configuredMode, String configuredSeason,

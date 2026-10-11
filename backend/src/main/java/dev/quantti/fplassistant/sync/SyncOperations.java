@@ -26,6 +26,7 @@ public final class SyncOperations {
     private final boolean alertDeliveryRequired;
     private final boolean alertDeliveryConfigured;
     private final boolean externalMonitor;
+    private final boolean incrementalImporter;
 
     public SyncOperations(JdbcTemplate jdbc, TransactionTemplate tx, Clock clock, OwnedSyncTables tables) {
         this(jdbc, tx, clock, tables, OwnedSyncMode.OFF);
@@ -46,7 +47,16 @@ public final class SyncOperations {
                           OwnedSyncTables tables, OwnedSyncMode localMode,
                           boolean alertDeliveryRequired, boolean alertDeliveryConfigured,
                           boolean externalMonitor) {
+        this(jdbc, tx, clock, tables, localMode, alertDeliveryRequired, alertDeliveryConfigured,
+                externalMonitor, false);
+    }
+
+    public SyncOperations(JdbcTemplate jdbc, TransactionTemplate tx, Clock clock,
+                          OwnedSyncTables tables, OwnedSyncMode localMode,
+                          boolean alertDeliveryRequired, boolean alertDeliveryConfigured,
+                          boolean externalMonitor, boolean incrementalImporter) {
         this.externalMonitor = externalMonitor;
+        this.incrementalImporter = incrementalImporter;
         this.jdbc = Objects.requireNonNull(jdbc);
         this.tx = Objects.requireNonNull(tx);
         this.clock = Objects.requireNonNull(clock);
@@ -94,8 +104,10 @@ public final class SyncOperations {
     public boolean healthy() {
         try {
             Timestamp planner = jdbc.queryForObject("SELECT max(heartbeat_at) FROM "
-                    + tables.plannerRuntime() + " WHERE instance_id NOT LIKE 'mode:%' "
-                    + "AND instance_id NOT LIKE 'watchdog:%' AND instance_id NOT LIKE 'delivery%'",
+                    + tables.plannerRuntime() + (incrementalImporter
+                        ? " WHERE instance_id LIKE 'importer:%'"
+                        : " WHERE instance_id NOT LIKE 'mode:%' AND instance_id NOT LIKE 'importer:%' "
+                          + "AND instance_id NOT LIKE 'watchdog:%' AND instance_id NOT LIKE 'delivery%'"),
                     Timestamp.class);
             Timestamp watchdog = jdbc.queryForObject("SELECT max(heartbeat_at) FROM "
                     + tables.plannerRuntime() + " WHERE instance_id LIKE 'watchdog:%'", Timestamp.class);
