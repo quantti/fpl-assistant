@@ -288,10 +288,29 @@ external Tapas metric-reader audit; confirmation is not evidence that those step
 matchday latency, resource use and API variation remain operational acceptance work. Never use
 physical Tapas values as fallback or infer reader compatibility from the local synthetic tests.
 
-Rollback starts with an explicit operator-controlled OFF epoch fence and a drained importer,
-retaining compatible readers and ownership evidence. It must not simply unset the flag while
-ACTIVE, which would select the old core loop. Restoring old writers requires a separately reviewed
-re-verification plan; old fixture receipts must not certify new or withdrawn physical values.
+The cutover handoff is **not automatic**. After retiring/draining the old process, its normal
+shutdown must leave a recorded `OFF` epoch. Deploy the reviewed new binary with
+`OWNED_SYNC_MODE=OFF`, `OWNED_SYNC_IMPORTER_ENABLED=false`, operations and the dedicated operator
+token enabled. Only after the old process has stopped, the role/reader gates are accepted, and
+`OWNED_SYNC_CUTOVER_CONFIRMED=true`, opt in to `OWNED_SYNC_HANDOFF_ENABLED=true` on that OFF
+binary. Read `/ops/sync/status` with the operator token and separately confirm the playing season,
+the expected OFF epoch and no old process. POST `/ops/sync/importer/handoff` with JSON
+`{"playingSeason":"2026-27","expectedOffEpoch":<observed OFF epoch>}` and the operator token. The
+transaction refuses a stale/non-OFF epoch, a missing current season, unfinished old permits or an
+old worker/importer heartbeat in the last ten minutes; it advances to a new ACTIVE epoch and records
+an `importer-handoff` receipt. Only then deploy `OWNED_SYNC_MODE=ACTIVE` with importer enabled.
+Importer startup still refuses any other epoch. The new binary's legacy activation refuses an
+importer-owned ACTIVE epoch; **never redeploy an older binary that lacks this guard** while importer
+ownership is active. An ops endpoint is an execution mechanism, not approval to run it.
+
+Rollback starts by stopping the importer process and deploying an OFF/no-importer binary, then
+POST `/ops/sync/importer/retire` with
+`{"playingSeason":"2026-27","expectedImporterEpoch":<observed importer epoch>}` and the same
+token. It fences outstanding runs into a new OFF epoch and refuses to retire an unrelated legacy
+ACTIVE epoch. Observe the OFF epoch and drain before any old writer returns. Retain compatible
+readers and ownership evidence. Do not simply unset the flag while ACTIVE: that would select the
+old core loop. Restoring old writers requires a separately reviewed re-verification plan; old
+fixture receipts must not certify new or withdrawn physical values.
 No production importer activation, DB/Fly operation or rollback was performed for this implementation.
 A failed page outside a complete checked game's manifest does not delay that game's final receipt:
 the completed producer is closed before a new pending generation retains the unresolved work.

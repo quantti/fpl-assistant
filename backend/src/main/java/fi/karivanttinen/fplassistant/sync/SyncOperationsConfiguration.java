@@ -26,7 +26,10 @@ public class SyncOperationsConfiguration {
         return new SyncOperations(database.jdbc(), database.transaction(), Clock.systemUTC(),
                 tableProvider.getIfAvailable(OwnedSyncTables::defaults), mode, monitorEnabled && mode != OwnedSyncMode.OFF,
                 notification.enabled() && notification.configured(), notification.externalMonitor(),
-                environment.getProperty("fpl.owned-sync.importer.enabled", Boolean.class, false));
+                environment.getProperty("fpl.owned-sync.importer.enabled", Boolean.class, false),
+                environment.getProperty("fpl.owned-sync.playing-season", "").trim(),
+                environment.getProperty("fpl.owned-sync.handoff.enabled", Boolean.class, false)
+                        && environment.getProperty("fpl.owned-sync.cutover-confirmed", Boolean.class, false));
     }
 
     static OwnedSyncWatchdog.Notification notification(Environment environment) {
