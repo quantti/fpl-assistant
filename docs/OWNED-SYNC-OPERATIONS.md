@@ -260,8 +260,12 @@ capture times and freshness contracts. My-team and unrelated jobs remain separat
 records a fenced heartbeat each minute and runs the existing watchdog's importer-specific checks
 every five minutes on separate executors; alert delivery retains its 30-second executor. Importer
 checks omit legacy fixture/capture signals, while existing legacy watchdog behavior is unchanged
-when the flag is false. External health requires a fresh importer heartbeat and watchdog heartbeat,
-not a leftover legacy planner heartbeat. Neither watchdog changes runtime mode automatically.
+when the flag is false. The importer check requires its **own** heartbeat and opens a bounded
+checked/terminal-gameweek overdue incident when a gameweek has not reached finality. Old fixture
+incidents remain open after the legacy verifier stops; they and new gameweek incidents recover
+only when `GameweekFinalityReader` revalidates the current source population and row/page proof.
+External health requires a fresh importer heartbeat and watchdog heartbeat, not a leftover legacy
+planner heartbeat. Neither watchdog changes runtime mode automatically.
 
 While opted in, the same serialized hourly runner performs a startup retention pass before its first
 collection and runs maintenance after every collection, including a failed one. For `INCREMENTAL_CORE`
