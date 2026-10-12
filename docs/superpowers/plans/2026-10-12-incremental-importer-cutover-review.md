@@ -1,6 +1,17 @@
 # Incremental importer cutover review and 13 October decision
 
-**PROGRESS:** Source/reader/table review and SELECT-only production snapshot complete; **NO-GO** until the gates below are met. No production change authorized or performed.
+**PROGRESS:** Task 0/4 — implementation plan reviewed; no cutover approved. No production change authorized or performed.
+
+## Reviewed correction contract (12 October; before code)
+
+The original cutover plan identified four code blockers but left three choices implicit. The owner chose **proved provisional player rows in Tapas** on 12 October; Points Against must never publish a partial fixture side. On rereview, the importer watchdog also needs to detect new-path overdue work, not merely retire old fixture incidents; a permanently healthy heartbeat is not coverage proof. Finally, a normal legacy shutdown changes ACTIVE to OFF, so a config-only importer deploy cannot constitute the handoff. The corrections are therefore four sequential, test-first slices, with review after each local commit:
+
+1. **Tapas PFS reader and minimal SELECT privileges:** prove season-qualified current pointer, matching immutable evidence, ordered page receipt and physical fingerprint before exposing a new physical row. Mask unavailable optional metrics; treat a new pointer, withdrawal or page marker as ownership even if `fpl_fixture_sync` still looks legacy. Existing genuine legacy and VERIFIED rows retain their behavior. Exercise the exact CTE against seeded disposable PostgreSQL, not only SQL-string tests. Add narrowly scoped reviewed grants to the role template, never production grants here.
+2. **Tapas derived Points Against:** permit proved provisional points for individual picks/history, but publish fixture-team sums only once the *entire* corresponding source population is verified; a two-sided partial aggregate is not enough. Conservatively wait for a checked/finalized gameweek if necessary, retaining prior derived values/status on refusal. Test missing positives, later correction, known zero, absent optional, DGW and archived legacy rows on disposable inputs.
+3. **Assistant fenced handoff:** preserve the normal OFF-on-stop fence. Add an explicit operator-only, inert transition from a confirmed drained OFF epoch to a fresh ACTIVE importer epoch, with playing season and old-writer/permit checks. No automatic activation on startup, no dual writer or ad-hoc production SQL. Test normal old stop → refusal before transition → guarded transition → importer start, plus stale epoch/active worker/rollback negatives.
+4. **Assistant importer monitoring:** retain old incident history. Recover old fixture incidents only when the new source-backed proof actually covers the referenced fixture (or a complete validated checked-gameweek sweep); do not call an inactive verifier's state a recovery. Detect overdue new-path incomplete coverage/finality, require importer-specific heartbeat, and exercise DOWN → delivered notification → proved recovery without altering old watchdog behavior. Measure bounded watchdog DB reads in tests.
+
+Each slice must fail its new regression against the old behavior, pass its focused tests and relevant existing guards, be committed locally and reviewed at that exact SHA. Run one test/build unit at a time; the repository's full suite runs in CI only after separately authorised PR publication. Any still-open slice leaves the production decision **NO-GO**. This planning/review work does not authorise a push, grant, Fly change, activation or manual deploy.
 
 ## Scope and evidence (12 October 2026)
 
