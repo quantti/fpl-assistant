@@ -1,6 +1,6 @@
 # Incremental importer cutover review and 13 October decision
 
-**PROGRESS:** Task 0/4 — implementation plan reviewed; no cutover approved. No production change authorized or performed.
+**PROGRESS:** Task 4/4 — four code corrections implemented and focused checks green locally; PR/CI and production gates remain open. No production change authorized or performed.
 
 ## Reviewed correction contract (12 October; before code)
 
@@ -12,6 +12,10 @@ The original cutover plan identified four code blockers but left three choices i
 4. **Assistant importer monitoring:** retain old incident history. Recover old fixture incidents only when the new source-backed proof actually covers the referenced fixture (or a complete validated checked-gameweek sweep); do not call an inactive verifier's state a recovery. Detect overdue new-path incomplete coverage/finality, require importer-specific heartbeat, and exercise DOWN → delivered notification → proved recovery without altering old watchdog behavior. Measure bounded watchdog DB reads in tests.
 
 Each slice must fail its new regression against the old behavior, pass its focused tests and relevant existing guards, be committed locally and reviewed at that exact SHA. Run one test/build unit at a time; the repository's full suite runs in CI only after separately authorised PR publication. Any still-open slice leaves the production decision **NO-GO**. This planning/review work does not authorise a push, grant, Fly change, activation or manual deploy.
+
+**Slice 2 rereview at Tapas `3ace6f9`:** a stored `FINALIZED` certificate alone would be unsafe if the source or PFS publisher could change rows without revoking it. Source inspection confirmed `CompatibilityCatalogueWriter.publish` writes core fixture/gameweek rows and calls `OwnedSyncStore.observeIncrementalSnapshot` (which changes the gameweek signature/state/revision) *inside the same fenced transaction*; `IncrementalPfsRepository.publishInsideLease` calls `invalidateIncrementalGameweeks` inside each changed page transaction. The existing source-correction and changed-PFS integration tests were rerun locally and passed. With the single-writer/role fence enforced, Tapas may use the certificate's state, matching signatures and invalidation revision to withhold fixture-team sums until the full source population is finalized, while its row CTE independently rechecks physical/page proof. Out-of-band core writes could violate this contract and are **not** permitted by the cutover. Chat's `GameweekFinalityReader` still performs stronger live revalidation; the importer watchdog uses it for recovery. This resolves the earlier stale-certificate concern *under the documented single-writer gate*, not under arbitrary database mutation.
+
+**Local outcome (not published):** Tapas commits `2a65347`, `12a994b`, `3ace6f9` on `/tmp/tapas-incremental-proof` pass 29 focused tests, including three against disposable PostgreSQL (unit/role/PA). Assistant commits `95914dd`, `a23ad72` on `/tmp/fpl-incremental-corrections` pass focused handoff/rollback, controller, watchdog and source-finality checks. The operator endpoints remain OFF/inert by default and were not called against production. Integration tests for a finalized GW recover both an old fixture incident and the new GW incident, with bounded five-second monitoring queries and delivered/recovery notification events. Full repository CI, independent review, exact production grants, cutover rehearsal, fresh SELECT preflight and measured matchday load/budget are **not** yet complete: deployment and writer activation remain **NO-GO**.
 
 ## Scope and evidence (12 October 2026)
 
