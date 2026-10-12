@@ -4209,6 +4209,61 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
                 OwnedSyncStore.INCREMENTAL_CORE_PRODUCER, season.code());
     }
 
+    @Test
+    void importerWatchdogRecoversLegacyFixtureOnlyAfterCheckedSourceAndRowsAreFinalized() throws Exception {
+        CheckedFixtureSetup setup = checkedSingleFixtureSetup();
+        jdbc.update("INSERT INTO " + TABLES.requestState()
+                + "(singleton) VALUES (TRUE) ON CONFLICT (singleton) DO NOTHING");
+        String key = "fixture-overdue:" + season.code() + ":" + setup.fixtureId();
+        jdbc.update("INSERT INTO " + TABLES.alert()
+                        + "(incident_key,occurrence,event_type,category,severity,season,fixture_id,"
+                        + "payload,delivery_state,next_delivery_at,created_at) "
+                        + "VALUES (?,1,'INCIDENT','FIXTURE_VERIFICATION_OVERDUE','WARNING',?,?,"
+                        + "'{}','PENDING',?,?)",
+                key, season.code(), setup.fixtureId(), java.sql.Timestamp.from(clock.instant()),
+                java.sql.Timestamp.from(clock.instant()));
+        String gameweekKey = "incremental-gameweek:" + season.code() + ":3";
+        jdbc.update("INSERT INTO " + TABLES.alert()
+                        + "(incident_key,occurrence,event_type,category,severity,season,"
+                        + "payload,delivery_state,next_delivery_at,created_at) "
+                        + "VALUES (?,1,'INCIDENT','INCREMENTAL_GAMEWEEK_OVERDUE','WARNING',?,"
+                        + "'{}','PENDING',?,?)",
+                gameweekKey, season.code(), java.sql.Timestamp.from(clock.instant()),
+                java.sql.Timestamp.from(clock.instant()));
+        JdbcTemplate boundedJdbc = new JdbcTemplate(jdbc.getDataSource());
+        boundedJdbc.setQueryTimeout(5);
+        TransactionTemplate boundedTx = new TransactionTemplate(tx.getTransactionManager());
+        boundedTx.setTimeout(5);
+        List<String> delivered = new java.util.ArrayList<>();
+        OwnedSyncWatchdog watchdog = new OwnedSyncWatchdog(boundedJdbc, boundedTx, clock, TABLES,
+                new OwnedSyncWatchdog.Notification(true, true), delivered::add);
+        watchdog.checkImporter(season.code());
+        assertThat(watchdog.deliver()).isGreaterThanOrEqualTo(2);
+        assertThat(delivered).hasSizeGreaterThanOrEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.alert()
+                + " WHERE incident_key IN (?,?) AND delivery_state='DELIVERED'", Integer.class,
+                key, gameweekKey)).isEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.alert()
+                + " WHERE incident_key=? AND event_type='RECOVERY'", Integer.class, key)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.alert()
+                + " WHERE incident_key=? AND event_type='RECOVERY'", Integer.class, gameweekKey)).isZero();
+
+        CycleResult completed = compatibilityCollector(true).runCycle();
+        assertThat(completed.state()).as("last error: %s", latestRunError()).isEqualTo(State.COMPLETED);
+        assertThat(new GameweekFinalityReader(jdbc, clock, TABLES)
+                .read(SEASON_ID, season.code(), Set.of(3)).get(3).state())
+                .isEqualTo(GameweekFinality.State.FINALIZED);
+        watchdog.checkImporter(season.code());
+        assertThat(watchdog.deliver()).isPositive();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.alert()
+                + " WHERE incident_key=? AND event_type='RECOVERY'", Integer.class, key)).isOne();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.alert()
+                + " WHERE incident_key IN (?,?) AND event_type='RECOVERY' AND delivery_state='DELIVERED'",
+                Integer.class, key, gameweekKey)).isEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.alert()
+                + " WHERE incident_key=? AND event_type='RECOVERY'", Integer.class, gameweekKey)).isOne();
+    }
+
     private void assertFinalizedEvidenceTamperReopens(java.util.function.Consumer<CheckedFixtureSetup> tamper)
             throws Exception {
         CheckedFixtureSetup setup = checkedSingleFixtureSetup();
@@ -5331,7 +5386,7 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
                 + ", " + TABLES.playerFixtureCurrent() + ", " + TABLES.historyFingerprint() + ", "
                 + TABLES.gameweekStatSync() + ", " + TABLES.fixtureSync() + ", " + TABLES.payload() + ", "
                 + TABLES.receipt() + ", " + TABLES.requestAttempt() + ", " + TABLES.run() + ", "
-                + TABLES.plannerSlot() + " CASCADE");
+                + TABLES.plannerSlot() + ", " + TABLES.alert() + " CASCADE");
         jdbc.update("DELETE FROM " + TABLES.requestState());
     }
 

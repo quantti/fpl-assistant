@@ -1,5 +1,9 @@
 # Status — Phase 1
 
+## Incremental importer cutover corrections (2026-10-12; PR review, NO-GO)
+
+The [cutover plan](superpowers/plans/2026-10-12-incremental-importer-cutover-review.md) remains NO-GO for production. Assistant [PR #159](https://github.com/quantti/fpl-assistant/pull/159) adds an explicit fenced OFF→ACTIVE importer handoff/rollback (both default OFF), importer-specific heartbeat/gameweek overdue alerts and recovery only after the current checked source/PFS proof passes `GameweekFinalityReader`. Tapas [PR #3](https://github.com/quantti/tapas-fpl-app/pull/3) adds per-row pointer/page/physical PFS proof, optional masking, checked-GW Points Against withholding and reviewed SELECT grant templates; post-push review also fixed a player-page receipt masking earlier genuine legacy and VERIFIED fixtures. Source and PFS publication invalidate gameweek finality in their own transactions. Focused disposable-Postgres tests passed in both repos; PR CI is pending, no role or production setting was changed, and 13 October is a review date rather than activation approval. Green full CI, role grants, drained old writers, current SELECT preflight and measured HTTP/load/alert readiness remain separate gates.
+
 ## PR #157 post-merge CI gate (2026-10-12; local)
 
 PR #157 was merged as `26b72a0` while its PR CI was still running. PR run 38185165929 failed 1/1639 in the unchanged `OwnedSyncHttpClientIntegrationTest.expiredQueuedFollowerDoesNotPromoteOrFetch`: a 200 ms test-only DB-operation deadline produced `SETTLEMENT_UNCERTAIN` instead of the expected successful owner response. The master run 38185208949 failed 1/1639 in the unchanged active-recovery driver when an observed wait ended between event selection and its guarded clock advance. Master deployment was skipped; neither red run proves an importer-runtime failure.
