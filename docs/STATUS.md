@@ -1,5 +1,11 @@
 # Status — Phase 1
 
+## PR #157 post-merge CI gate (2026-10-12; local)
+
+PR #157 was merged as `26b72a0` while its PR CI was still running. PR run 38185165929 failed 1/1639 in the unchanged `OwnedSyncHttpClientIntegrationTest.expiredQueuedFollowerDoesNotPromoteOrFetch`: a 200 ms test-only DB-operation deadline produced `SETTLEMENT_UNCERTAIN` instead of the expected successful owner response. The master run 38185208949 failed 1/1639 in the unchanged active-recovery driver when an observed wait ended between event selection and its guarded clock advance. Master deployment was skipped; neither red run proves an importer-runtime failure.
+
+A focused test-only follow-up gives the expired-follower oracle a 2-second DB-operation deadline without changing the production deadline or follower expiry, and makes the driver reobserve a worker whose wait ended before advancing virtual time. The two exact failing methods passed separately against disposable loopback Postgres (1/1 each); no local full suite or production action occurred. A new PR/full CI is still required before this master commit can pass its deployment gate.
+
 ## PR #157 review follow-up — independent finality and importer health (2026-10-12; local)
 
 A failed/deferred player page or missing live source in another event no longer holds a fully evidenced, nonempty checked gameweek pending. The collector closes that completed final-sweep producer and queues a new generation at the retry due time for unresolved work; a blank checked game does not split a busy producer. A real GW3/GW4 page-failure regression failed before the fix (`FINAL_PENDING`) and passes with GW3 `FINALIZED`, an archived completed run and a pending GW4 retry. A separate malformed GW4 live-source regression verifies the same isolation. Existing partial-generation and source-supersession controls still pass.

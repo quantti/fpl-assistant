@@ -6999,7 +6999,11 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                     quiesceAtCutoff();
                     break;
                 }
-                if (next.at().isAfter(harness.clock.instant())) advanceTo(next.at(), next.kind().name());
+                if (next.at().isAfter(harness.clock.instant())
+                        && !advanceToIfAcknowledged(next.at(), next.kind().name())) {
+                    // A worker may leave its observed wait while the next event is selected.
+                    waitForEvent();
+                }
             }
             if (!active.isEmpty()) {
                 throw new IllegalStateException("driver cannot yet verify FIFO: workers remain active at snapshot");
@@ -7591,12 +7595,16 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
         }
 
         private void advanceTo(Instant instant, String reason) {
-            Instant current = harness.clock.instant();
-            if (!instant.isAfter(current)) return;
-            if (!activeStatesAcknowledged()) {
+            if (!advanceToIfAcknowledged(instant, reason)) {
                 throw new IllegalStateException("driver cannot advance without an acknowledged wait, "
                         + "controlled response release or completed dispatch for every active worker");
             }
+        }
+
+        private boolean advanceToIfAcknowledged(Instant instant, String reason) {
+            Instant current = harness.clock.instant();
+            if (!instant.isAfter(current)) return true;
+            if (!activeStatesAcknowledged()) return false;
             if (!unassignedArrivals.isEmpty()) {
                 throw new IllegalStateException("driver cannot advance with an unassigned source callback");
             }
@@ -7613,6 +7621,7 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
             harness.clock.advance(Duration.between(current, instant));
             harness.turnNanoTime.addAndGet(Duration.between(current, instant).toNanos());
             harness.http.clockAdvancedForTests();
+            return true;
         }
 
         private DispatchState start(int worker) {
