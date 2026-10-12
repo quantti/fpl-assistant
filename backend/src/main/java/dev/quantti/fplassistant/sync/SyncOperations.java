@@ -27,6 +27,8 @@ public final class SyncOperations {
     private final boolean alertDeliveryConfigured;
     private final boolean externalMonitor;
     private final boolean incrementalImporter;
+    private final String handoffSeason;
+    private final boolean handoffAllowed;
 
     public SyncOperations(JdbcTemplate jdbc, TransactionTemplate tx, Clock clock, OwnedSyncTables tables) {
         this(jdbc, tx, clock, tables, OwnedSyncMode.OFF);
@@ -55,8 +57,19 @@ public final class SyncOperations {
                           OwnedSyncTables tables, OwnedSyncMode localMode,
                           boolean alertDeliveryRequired, boolean alertDeliveryConfigured,
                           boolean externalMonitor, boolean incrementalImporter) {
+        this(jdbc, tx, clock, tables, localMode, alertDeliveryRequired, alertDeliveryConfigured,
+                externalMonitor, incrementalImporter, null, false);
+    }
+
+    SyncOperations(JdbcTemplate jdbc, TransactionTemplate tx, Clock clock,
+                   OwnedSyncTables tables, OwnedSyncMode localMode,
+                   boolean alertDeliveryRequired, boolean alertDeliveryConfigured,
+                   boolean externalMonitor, boolean incrementalImporter,
+                   String handoffSeason, boolean handoffAllowed) {
         this.externalMonitor = externalMonitor;
         this.incrementalImporter = incrementalImporter;
+        this.handoffSeason = handoffSeason;
+        this.handoffAllowed = handoffAllowed;
         this.jdbc = Objects.requireNonNull(jdbc);
         this.tx = Objects.requireNonNull(tx);
         this.clock = Objects.requireNonNull(clock);
@@ -136,6 +149,38 @@ public final class SyncOperations {
             return fresh(planner, cutoff) && fresh(watchdog, cutoff) && deliveryHealthy;
         } catch (DataAccessException unavailable) {
             return false;
+        }
+    }
+
+    /** Operator-confirmed OFF → importer ACTIVE epoch; never part of application startup. */
+    public long handoffImporter(String playingSeason, long expectedOffEpoch) {
+        if (!handoffAllowed || localMode != OwnedSyncMode.OFF || incrementalImporter) {
+            throw new StaleOperatorRequestException("Importer handoff is disabled or a writer is configured");
+        }
+        if (handoffSeason == null || handoffSeason.isBlank() || !handoffSeason.equals(playingSeason)) {
+            throw new IllegalArgumentException("Importer handoff season does not match configuration");
+        }
+        try {
+            return new PlannerRuntimeRepository(jdbc, tx, clock, tables)
+                    .handoffImporterFromOff(playingSeason, expectedOffEpoch).epoch();
+        } catch (OwnedSyncStore.RuntimeFenceLostException stale) {
+            throw new StaleOperatorRequestException(stale.getMessage());
+        }
+    }
+
+    /** Operator-confirmed rollback fence; only an importer handoff epoch may be retired here. */
+    public long retireImporter(String playingSeason, long expectedImporterEpoch) {
+        if (!handoffAllowed || localMode != OwnedSyncMode.OFF || incrementalImporter) {
+            throw new StaleOperatorRequestException("Importer rollback is disabled or a writer is configured");
+        }
+        if (handoffSeason == null || handoffSeason.isBlank() || !handoffSeason.equals(playingSeason)) {
+            throw new IllegalArgumentException("Importer rollback season does not match configuration");
+        }
+        try {
+            return new PlannerRuntimeRepository(jdbc, tx, clock, tables)
+                    .retireImporterToOff(playingSeason, expectedImporterEpoch);
+        } catch (OwnedSyncStore.RuntimeFenceLostException stale) {
+            throw new StaleOperatorRequestException(stale.getMessage());
         }
     }
 
