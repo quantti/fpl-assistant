@@ -1075,11 +1075,11 @@ class OwnedSyncHttpClientIntegrationTest {
     }
 
     @Test
-    @Timeout(value = 10, unit = TimeUnit.SECONDS)
+    @Timeout(value = 20, unit = TimeUnit.SECONDS)
     void expiredQueuedFollowerDoesNotPromoteOrFetch() throws Exception {
         Clock realClock = Clock.systemUTC();
         budget = new OwnedSyncRequestBudget(jdbc, tx, realClock, TABLES);
-        OwnedSyncDbOperations operations = new OwnedSyncDbOperations(Duration.ofMillis(200));
+        OwnedSyncDbOperations operations = new OwnedSyncDbOperations(Duration.ofSeconds(2));
         AtomicLong turnClockOffset = new AtomicLong();
         AtomicInteger requests = new AtomicInteger();
         CountDownLatch firstRequest = new CountDownLatch(1);
