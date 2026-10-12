@@ -119,6 +119,78 @@ class OwnedSyncWatchdogIntegrationTest {
     }
 
     @Test
+    void importerNeedsItsOwnHeartbeatAndRecoversOnlyAfterItsHeartbeat() {
+        jdbc.update("INSERT INTO " + TABLES.plannerRuntime()
+                + "(instance_id,started_at,heartbeat_at) VALUES ('legacy-worker',?,?)",
+                ts(NOW), ts(NOW));
+        OwnedSyncWatchdog watchdog = watchdog(false, false, payload -> { });
+        watchdog.checkImporter("2024-25");
+        assertThat(categories()).contains("RUNTIME_STALLED");
+        jdbc.update("INSERT INTO " + TABLES.plannerRuntime()
+                + "(instance_id,started_at,heartbeat_at) VALUES ('importer:ready',?,?)",
+                ts(NOW), ts(NOW));
+        watchdog.checkImporter("2024-25");
+        assertThat(eventCount("runtime:2024-25", "RECOVERY")).isOne();
+    }
+
+    @Test
+    void importerFlagsOverdueCheckedGameweekWithoutLegacyFixtureOrCaptureSignals() {
+        jdbc.update("""
+                INSERT INTO gameweek(id,season_id,name,deadline_time,finished,data_checked,is_current,is_next)
+                VALUES (1,9825,'GW 1',?,true,true,false,false)
+                ON CONFLICT(id,season_id) DO UPDATE SET finished=true,data_checked=true
+                """, ts(NOW.minusSeconds(3 * 24 * 3600)));
+        try {
+            jdbc.update("INSERT INTO " + TABLES.gameweekStatSync()
+                    + "(season_id,season_code,gameweek,state,event_finished,data_checked,"
+                    + "fixture_manifest_complete,all_assigned_fixtures_finished,source_signature,"
+                    + "first_checked_at,current_invalidation_revision,updated_at) "
+                    + "VALUES (9825,'2024-25',1,'FINAL_PENDING',true,true,true,true,?,?,0,?)",
+                    "a".repeat(64), ts(NOW.minusSeconds(4 * 3600)), ts(NOW));
+            OwnedSyncWatchdog watchdog = watchdog(false, false, payload -> { });
+            watchdog.checkImporter("2024-25");
+            assertThat(categories()).contains("INCREMENTAL_GAMEWEEK_OVERDUE")
+                    .doesNotContain("MISSED_DAILY_CAPTURE", "FIXTURE_VERIFICATION_OVERDUE");
+            assertThat(eventCount("incremental-gameweek:2024-25:1", "INCIDENT")).isOne();
+        } finally {
+            jdbc.update("DELETE FROM " + TABLES.gameweekStatSync() + " WHERE season_id=9825");
+            jdbc.update("DELETE FROM gameweek WHERE season_id=9825 AND id=1");
+        }
+    }
+
+    @Test
+    void importerCannotCallLegacyFixtureStateAProvedRecovery() {
+        long generation = run("fixture:98101", "fixture:98101", "FAILED");
+        jdbc.update("INSERT INTO " + TABLES.fixtureSync()
+                        + "(season_id,season_code,fixture_id,state,current_verified_generation,"
+                        + "last_verified_generation,updated_at) "
+                        + "VALUES (9825,'2024-25',98101,'VERIFIED',?,?,?)",
+                generation, generation, ts(NOW));
+        jdbc.update("INSERT INTO " + TABLES.alert()
+                        + "(incident_key,occurrence,event_type,category,severity,season,fixture_id,"
+                        + "payload,delivery_state,created_at) "
+                        + "VALUES ('fixture-overdue:2024-25:98101',1,'INCIDENT',"
+                        + "'FIXTURE_VERIFICATION_OVERDUE','WARNING','2024-25',98101,'{}','DISABLED',?)",
+                ts(NOW.minusSeconds(60)));
+
+        watchdog(false, false, payload -> { }).checkImporter("2024-25");
+
+        assertThat(eventCount("fixture-overdue:2024-25:98101", "RECOVERY")).isZero();
+    }
+
+    @Test
+    void malformedPersistedImporterGameweekIncidentNeverClaimsRecoveryOrStopsWatchdog() {
+        jdbc.update("INSERT INTO " + TABLES.alert()
+                        + "(incident_key,occurrence,event_type,category,severity,season,"
+                        + "payload,delivery_state,created_at) "
+                        + "VALUES ('incremental-gameweek:2024-25:99',1,'INCIDENT',"
+                        + "'INCREMENTAL_GAMEWEEK_OVERDUE','WARNING','2024-25','{}','DISABLED',?)",
+                ts(NOW));
+        watchdog(false, false, payload -> { }).checkImporter("2024-25");
+        assertThat(eventCount("incremental-gameweek:2024-25:99", "RECOVERY")).isZero();
+    }
+
+    @Test
     void deduplicatesIncidentAndRecoversFixtureOnlyAfterVerifiedState() {
         long generation = run("fixture:98101", "fixture:98101", "FAILED");
         jdbc.update("INSERT INTO " + TABLES.fixtureSync()

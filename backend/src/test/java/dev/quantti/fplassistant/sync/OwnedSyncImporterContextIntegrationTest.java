@@ -1,6 +1,7 @@
 package dev.quantti.fplassistant.sync;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.sql.Timestamp;
 import java.time.Instant;
@@ -122,6 +123,77 @@ class OwnedSyncImporterContextIntegrationTest {
     }
 
     @Test
+    void drainedOffEpochNeedsExplicitOperatorHandoffBeforeImporterCanStart() {
+        var old = new OwnedSyncStore.RuntimeFence("2026-27", OwnedSyncMode.ACTIVE, 7, ACTIVATED_AT);
+        var tx = new org.springframework.transaction.support.TransactionTemplate(
+                new org.springframework.jdbc.datasource.DataSourceTransactionManager(jdbc.getDataSource()));
+        new PlannerRuntimeRepository(jdbc, tx, java.time.Clock.systemUTC(), TABLES).deactivate(old);
+        assertThatThrownBy(() -> CoalescedPlayerHistoryImportConfiguration.existingActiveFence(
+                jdbc, TABLES, "2026-27")).isInstanceOf(IllegalStateException.class);
+        handoffRunner().run(context -> {
+            assertThat(context).hasNotFailed().doesNotHaveBean(CoalescedPlayerHistoryCollector.class);
+            SyncOperations ops = context.getBean(SyncOperations.class);
+            assertThatThrownBy(() -> ops.handoffImporter("2026-27", 7))
+                    .isInstanceOf(SyncOperations.StaleOperatorRequestException.class);
+            assertThatThrownBy(() -> ops.handoffImporter("2025-26", 8))
+                    .isInstanceOf(IllegalArgumentException.class);
+            jdbc.update("INSERT INTO " + TABLES.plannerRuntime()
+                    + "(instance_id,started_at,heartbeat_at) VALUES ('old-worker',NOW(),NOW())");
+            assertThatThrownBy(() -> ops.handoffImporter("2026-27", 8))
+                    .isInstanceOf(SyncOperations.StaleOperatorRequestException.class);
+            jdbc.update("DELETE FROM " + TABLES.plannerRuntime() + " WHERE instance_id='old-worker'");
+            jdbc.update("INSERT INTO " + TABLES.receipt()
+                    + "(season,publication_key) VALUES ('2026-27','old-pending')");
+            jdbc.update("INSERT INTO " + TABLES.run()
+                    + "(kind,season,coalescing_key,publication_key,priority,due_at,requested_source_after,"
+                    + "runtime_mode,runtime_epoch,created_at,updated_at) VALUES "
+                    + "('PLAYER_HISTORY','2026-27','old-pending','old-pending',0,NOW(),NOW(),'ACTIVE',7,NOW(),NOW())");
+            assertThatThrownBy(() -> ops.handoffImporter("2026-27", 8))
+                    .isInstanceOf(SyncOperations.StaleOperatorRequestException.class);
+            jdbc.update("DELETE FROM " + TABLES.run() + " WHERE publication_key='old-pending'");
+            assertThat(ops.handoffImporter("2026-27", 8)).isEqualTo(9);
+            assertThatThrownBy(() -> new PlannerRuntimeRepository(jdbc, tx,
+                    java.time.Clock.systemUTC(), TABLES).activate("2026-27", OwnedSyncMode.ACTIVE))
+                    .isInstanceOf(IllegalStateException.class);
+            assertThatThrownBy(() -> ops.handoffImporter("2026-27", 8))
+                    .isInstanceOf(SyncOperations.StaleOperatorRequestException.class);
+        });
+        assertThat(CoalescedPlayerHistoryImportConfiguration.existingActiveFence(
+                jdbc, TABLES, "2026-27").epoch()).isEqualTo(9);
+        runner().run(context -> assertThat(context).hasNotFailed()
+                .hasBean("ownedImporterCollector"));
+        handoffRunner().run(context -> {
+            assertThat(context).hasNotFailed();
+            assertThat(context.getBean(SyncOperations.class).retireImporter("2026-27", 9))
+                    .isEqualTo(10);
+        });
+        assertThatThrownBy(() -> CoalescedPlayerHistoryImportConfiguration.existingActiveFence(
+                jdbc, TABLES, "2026-27")).isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    void opsWithoutExplicitHandoffSettingCannotActivateAnImporter() {
+        handoffRunner().run(context -> {
+            assertThat(context).hasNotFailed();
+            assertThatThrownBy(() -> context.getBean(SyncOperations.class)
+                    .retireImporter("2026-27", 7))
+                    .isInstanceOf(SyncOperations.StaleOperatorRequestException.class);
+        });
+        defaultOffRunner().withBean(OwnedSyncTables.class, () -> TABLES)
+                .withPropertyValues("fpl.owned-sync.ops.enabled=true",
+                        "fpl.owned-sync.playing-season=2026-27",
+                        "fpl.owned-sync.cutover-confirmed=true")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThatThrownBy(() -> context.getBean(SyncOperations.class)
+                            .handoffImporter("2026-27", 8))
+                            .isInstanceOf(SyncOperations.StaleOperatorRequestException.class);
+                });
+        assertThat(jdbc.queryForObject("SELECT runtime_epoch FROM " + TABLES.plannerRuntime()
+                + " WHERE instance_id='mode:2026-27'", Long.class)).isEqualTo(7);
+    }
+
+    @Test
     void importerAndExternalHealthStartWithSeparatePoolsWithoutActivatingOrInitializing() {
         runner().run(context -> {
             assertThat(context).hasNotFailed()
@@ -236,6 +308,14 @@ class OwnedSyncImporterContextIntegrationTest {
                         "spring.datasource.url=" + required("DATABASE_URL"),
                         "spring.datasource.username=" + required("DB_USER"),
                         "spring.datasource.password=" + required("DB_PASSWORD"));
+    }
+
+    private ApplicationContextRunner handoffRunner() {
+        return defaultOffRunner().withBean(OwnedSyncTables.class, () -> TABLES)
+                .withPropertyValues("fpl.owned-sync.ops.enabled=true",
+                        "fpl.owned-sync.handoff.enabled=true",
+                        "fpl.owned-sync.playing-season=2026-27",
+                        "fpl.owned-sync.cutover-confirmed=true");
     }
 
     private ApplicationContextRunner runner() {
