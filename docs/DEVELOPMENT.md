@@ -98,6 +98,37 @@ set -a; source .env.test; set +a
 ./gradlew bootRun --args="--sync-schedule"        # capture FPL gameweeks and fixtures, then exit
 ```
 
+### Daily-price email reminders (KAR-19)
+
+The existing freshness check runs at 06:00, 12:00 and 18:00 Europe/London. It logs stale
+captures as before; opt-in mail also covers an empty capture table. Fresh/future captures
+and database read failures do not send mail. Each unhealthy check attempts one email, with
+no immediate retry; later checks remind again until recovery. This is not a durable outbox
+or a cross-instance deduplication guarantee. An app/scheduler outage cannot alert itself.
+
+| Environment variable | Default | Purpose |
+|---|---|---|
+| `DAILY_PRICE_ALERT_EMAIL_ENABLED` | `false` | Explicit opt-in to external mail |
+| `DAILY_PRICE_ALERT_RESEND_API_KEY` | empty | Separate Resend sending-only key scoped to the verified domain |
+| `DAILY_PRICE_ALERT_EMAIL_FROM` | `FPL Sidekick <noreply@fpl-sidekick.com>` | Existing verified sender domain |
+| `DAILY_PRICE_ALERT_EMAIL_TO` | `kvanttinen@gmail.com` | Owner's chosen destination |
+
+The app calls Resend's HTTPS Emails API, independently of Supabase Auth/SMTP. An incomplete
+enabled configuration logs ERROR and makes no request; provider errors/timeouts do not
+escape the freshness check. Connect/read timeouts are five seconds, redirects are refused,
+and logs contain neither the key nor provider response bodies. A success log means **API
+acceptance, not inbox delivery**. `/actuator/health` is unchanged. Disabling
+`fpl.daily-price.scheduled` also disables the check and its emails.
+
+Activation is an owner-operated step after the reviewed PR is merged: provision a separate
+sending-only key in Resend and install it as a Fly secret along with the enable flag. Do not
+reuse or change Supabase's SMTP configuration. Verify delivery to the owner inbox (including
+spam checks), record the date/result, and disable mail with the enable flag if delivery fails.
+For an attended smoke test, use an isolated staging instance and disposable capture table;
+do not delete/backdate production rows or force a production sync to manufacture an alert.
+Keep mail disabled in ordinary tests and development. Production activation and delivery
+have **not** been verified by the local loopback tests.
+
 ### Owned-sync implementation (not activated)
 
 `OWNED_SYNC_MODE=OFF` is the default: no owned runtime, schema initialization or outbound work.

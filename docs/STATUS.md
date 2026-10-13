@@ -1,5 +1,21 @@
 # Status — Phase 1
 
+## KAR-19 — opt-in daily-price email reminders (2026-10-13)
+
+The existing 06:00/12:00/18:00 UK freshness check can send plain-text reminders through
+Resend to `kvanttinen@gmail.com` when captures are stale or absent. Mail is disabled by
+default and requires a separate sending key; Supabase Auth/SMTP is unchanged. One attempt
+per unhealthy check, no immediate retry, recovery email or durable delivery guarantee.
+Future dates and DB failures retain their existing log-only paths; application health and
+ranking freshness predicates are unchanged. Provider failures are contained and logged
+without response bodies or credentials. API acceptance does not establish inbox delivery.
+
+[Plan and review](superpowers/plans/2026-10-13-kar-19-freshness-email.md) records the scope
+and tests. Eighteen focused tests pass using mocked JDBC and loopback HTTP only; ten expected
+assertion failures were observed against no-op scaffolding before implementation. No
+production DB query, Resend request, secret change, activation or deployment was performed.
+Configuration and the separate owner-operated delivery gate are in `DEVELOPMENT.md`.
+
 ## Owned sync — KAR-75 post-merge review fixes (2026-09-28)
 
 The [KAR-75 follow-up plan](superpowers/plans/2026-09-28-kar-75-owned-sync-review-followup.md)
