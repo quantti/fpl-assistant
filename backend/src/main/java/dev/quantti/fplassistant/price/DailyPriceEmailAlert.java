@@ -80,7 +80,7 @@ public class DailyPriceEmailAlert {
                 log.error("Daily price email alert failed (HTTP {}); next attempt at the next freshness check",
                         status);
             }
-        } catch (RestClientException e) {
+        } catch (RestClientException | IllegalArgumentException e) {
             // Provider bodies and exception messages can contain credentials or recipient data.
             log.error("Daily price email alert failed (transport/client error); next attempt at the next freshness check");
         }

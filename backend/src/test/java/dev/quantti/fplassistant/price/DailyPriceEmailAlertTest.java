@@ -133,6 +133,14 @@ class DailyPriceEmailAlertTest {
     }
 
     @Test
+    void malformedCredentialIsContainedWithoutLeakingIt() {
+        assertThatNoException().isThrownBy(() ->
+                sender(true, "test-key\r\ninvalid", Duration.ofSeconds(2)).send(null, expected));
+        assertThat(requests).isEmpty();
+        assertThat(messages()).contains("failed").doesNotContain("test-key", "invalid", "accepted");
+    }
+
+    @Test
     void redirectsAreNotFollowedOrReportedAsAccepted() {
         status.set(307);
         sender(true, "test-key", Duration.ofSeconds(2)).send(null, expected);
