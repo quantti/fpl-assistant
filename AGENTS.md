@@ -287,10 +287,15 @@ OpenJDK 25 and Docker for focused backend feature/bug tests. The VPS has no fron
 never run the full suite there — GitHub Actions remains its full-suite verification gate. Neither
 host's setup notes may be deleted in favour of the other's; see `docs/DEVELOPMENT.md`.
 
-**Always run only one subagent at a time: resources are limited.** No parallel agent calls,
-concurrent agent tasks or nested delegation. Wait for the current subagent to finish before
-starting another. Run one bounded agent/build/test unit at a time; never overlap builds or test
-suites with subagent work.
+**Choose concurrency by task, not by agent count alone.** Up to five independent, lightweight
+read-only agents (for example scouts reading files) may run concurrently. Reading agents must not
+start builds, tests or other resource-heavy commands; those need a separate bounded assignment.
+Run only one Gradle/build/test unit at a time across the parent, all agents and all worktrees —
+never two Gradle invocations concurrently. Lightweight reading may overlap that unit when memory
+headroom permits. Keep dependent tasks sequential and writers sharing a working tree sequential;
+independent writers need separate worktrees and an explicit resource assessment before overlap.
+Worktrees isolate files, not memory, processes, Docker or the test database. No nested delegation:
+the parent owns scheduling and must wait for heavy work to finish before admitting another unit.
 Keep the checked-in Gradle heap/worker/context-cache limits. On memory-constrained WSL, use the
 cgroup-v2 scope and host-memory stop threshold in `docs/DEVELOPMENT.md`; do not assume this Docker
 supports hard memory limits. Stop only this project's idle daemons or test scopes, never another

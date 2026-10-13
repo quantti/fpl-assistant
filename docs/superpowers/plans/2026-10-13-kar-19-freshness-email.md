@@ -1,6 +1,6 @@
 # KAR-19 — daily capture email reminder
 
-**PROGRESS:** Task 1/2 done — implementation and review fix green; PR publication pending.
+**PROGRESS:** Task 2/2 done — implemented, directly reviewed and published in PR #160; full CI and owner merge remain gates.
 
 ## Contract
 
@@ -86,4 +86,9 @@ Record production verification separately. This implementation does not attest d
 - Direct re-review confirms the fix contains the reproduced failure; request payload,
   source/date predicates, disabled defaults, log hygiene and unchanged writer/health paths
   were checked. No remaining blocking local findings. No independent reviewer was used.
+- [PR #160](https://github.com/quantti/fpl-assistant/pull/160) targets master. Master had
+  advanced to `05d7a7f`; integration required only retaining both new STATUS sections.
+  The YAML changes merged independently (importer settings versus daily-price email).
+  All 21 focused tests passed again on the integrated tree. Direct PR-range review found
+  no additional blocker; the original dirty worktree remains untouched.
 - Full suite belongs to PR CI; production mail configuration and inbox delivery are unverified.

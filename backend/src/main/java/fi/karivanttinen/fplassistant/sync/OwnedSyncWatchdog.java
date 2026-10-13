@@ -64,15 +64,28 @@ public final class OwnedSyncWatchdog {
         this.json = new ObjectMapper().findAndRegisterModules();
     }
 
-    /** Reads durable metadata only, then atomically opens incidents and verified recoveries. */
+    /** Reads the legacy runtime metadata, then atomically opens incidents and verified recoveries. */
     public CheckResult check(String season) {
+        return check(season, false);
+    }
+
+    /** Keeps runtime, run-queue, budget and delivery checks without legacy fixture/capture signals. */
+    public CheckResult checkImporter(String season) {
+        return check(season, true);
+    }
+
+    private CheckResult check(String season, boolean incrementalImporter) {
         Objects.requireNonNull(season);
         Instant now = clock.instant();
         Map<String, Signal> current = new LinkedHashMap<>();
-        inspectRuntime(season, now, current);
+        inspectRuntime(season, now, current, incrementalImporter);
         inspectRuns(season, now, current);
-        inspectFixtures(season, now, current);
-        inspectCaptures(season, now, current);
+        if (incrementalImporter) {
+            inspectImporterGameweeks(season, now, current);
+        } else {
+            inspectFixtures(season, now, current);
+            inspectCaptures(season, now, current);
+        }
         inspectBudget(season, now, current);
 
         CheckResult result = tx.execute(status -> {
@@ -91,7 +104,8 @@ public final class OwnedSyncWatchdog {
             int incidents = events.size();
             List<OpenIncident> recoveryCandidates = open.values().stream()
                     .filter(incident -> !current.containsKey(incident.key())).toList();
-            RecoveryEvidence recoveryEvidence = recoveryEvidence(season, recoveryCandidates);
+            RecoveryEvidence recoveryEvidence = recoveryEvidence(season, recoveryCandidates,
+                    incrementalImporter);
             for (OpenIncident incident : recoveryCandidates) {
                 if (verifiedRecovery(incident, recoveryEvidence)) {
                     Signal recovery = new Signal(incident.key(), incident.category(), "INFO",
@@ -132,10 +146,13 @@ public final class OwnedSyncWatchdog {
         return handled;
     }
 
-    private void inspectRuntime(String season, Instant now, Map<String, Signal> signals) {
+    private void inspectRuntime(String season, Instant now, Map<String, Signal> signals,
+                                boolean incrementalImporter) {
+        String filter = incrementalImporter ? "instance_id LIKE 'importer:%'"
+                : "instance_id NOT LIKE 'mode:%' AND instance_id NOT LIKE 'importer:%' "
+                  + "AND instance_id NOT LIKE 'watchdog:%' AND instance_id NOT LIKE 'delivery%'";
         Timestamp heartbeat = jdbc.queryForObject("SELECT max(heartbeat_at) FROM " + tables.plannerRuntime()
-                + " WHERE instance_id NOT LIKE 'mode:%' AND instance_id NOT LIKE 'watchdog:%' "
-                + "AND instance_id NOT LIKE 'delivery%'", Timestamp.class);
+                + " WHERE " + filter, Timestamp.class);
         if (heartbeat == null || heartbeat.toInstant().isBefore(now.minus(HEARTBEAT_LIMIT))) {
             put(signals, new Signal("runtime:" + season, "RUNTIME_STALLED", "CRITICAL", season,
                     null, Map.of("lastSuccessfulHeartbeat", heartbeat == null ? "never" : heartbeat.toInstant().toString(),
@@ -228,6 +245,42 @@ public final class OwnedSyncWatchdog {
                 }, season, Timestamp.from(now.minus(Duration.ofHours(3))));
     }
 
+    /** Only terminal or overdue checked events can owe a complete gameweek certificate. */
+    private void inspectImporterGameweeks(String season, Instant now, Map<String, Signal> signals) {
+        jdbc.query("""
+                SELECT w.id AS gameweek, g.state, g.first_checked_at,
+                       max(f.kickoff_time) AS last_kickoff
+                FROM gameweek w JOIN season s ON s.id=w.season_id
+                LEFT JOIN fixture f ON f.season_id=w.season_id AND f.gameweek=w.id
+                LEFT JOIN %s g ON g.season_id=w.season_id AND g.gameweek=w.id
+                WHERE s.code=? AND g.state IS DISTINCT FROM 'FINALIZED'
+                  AND EXISTS (SELECT 1 FROM fixture eligible
+                      LEFT JOIN %s fs ON fs.season_id=eligible.season_id
+                          AND fs.fixture_id=eligible.id
+                      WHERE eligible.season_id=w.season_id AND eligible.gameweek=w.id
+                        AND (fs.state IS DISTINCT FROM 'VERIFIED' OR EXISTS (
+                            SELECT 1 FROM %s c WHERE c.season_id=eligible.season_id
+                                AND c.fixture_id=eligible.id)))
+                GROUP BY w.id,w.season_id,g.state,g.first_checked_at
+                HAVING g.first_checked_at<=? OR (count(f.id)>0 AND bool_and(f.finished)
+                    AND max(f.kickoff_time)<=?)
+                ORDER BY w.id DESC LIMIT 38
+                """.formatted(tables.gameweekStatSync(), tables.fixtureSync(), tables.playerFixtureCurrent()),
+                rs -> {
+                    int gameweek = rs.getInt("gameweek");
+                    put(signals, new Signal("incremental-gameweek:" + season + ":" + gameweek,
+                            "INCREMENTAL_GAMEWEEK_OVERDUE", "WARNING", season, null, Map.of(
+                            "gameweek", gameweek,
+                            "finalityState", Objects.toString(rs.getString("state"), "MISSING"),
+                            "firstCheckedAt", rs.getTimestamp("first_checked_at") == null ? "never"
+                                    : rs.getTimestamp("first_checked_at").toInstant().toString(),
+                            "lastKickoff", rs.getTimestamp("last_kickoff") == null ? "unknown"
+                                    : rs.getTimestamp("last_kickoff").toInstant().toString(),
+                            "nextAction", "Inspect the incremental source population and final sweep")));
+                }, season, Timestamp.from(now.minus(Duration.ofHours(3))),
+                Timestamp.from(now.minus(Duration.ofHours(12))));
+    }
+
     private void inspectCaptures(String season, Instant now, Map<String, Signal> signals) {
         var local = now.atZone(UK);
         if (local.toLocalTime().isBefore(LocalTime.of(6, 0))) return;
@@ -280,13 +333,18 @@ public final class OwnedSyncWatchdog {
         return result;
     }
 
-    private RecoveryEvidence recoveryEvidence(String season, Iterable<OpenIncident> incidents) {
+    private RecoveryEvidence recoveryEvidence(String season, Iterable<OpenIncident> incidents,
+                                              boolean incrementalImporter) {
         Set<Long> runKeys = new LinkedHashSet<>();
         Set<Integer> fixtureKeys = new LinkedHashSet<>();
+        Set<Integer> gameweekKeys = new LinkedHashSet<>();
         Set<String> captureKeys = new LinkedHashSet<>();
         for (OpenIncident incident : incidents) {
             if (incident.category().startsWith("FIXTURE_VERIFICATION") && incident.fixtureId() != null) {
                 fixtureKeys.add(incident.fixtureId());
+            } else if (incident.category().equals("INCREMENTAL_GAMEWEEK_OVERDUE")) {
+                Integer gameweek = gameweekKey(incident.key());
+                if (gameweek != null) gameweekKeys.add(gameweek);
             } else if (incident.category().equals("MISSED_DAILY_CAPTURE")) {
                 captureKeys.add(incident.key().substring(incident.key().lastIndexOf(':') + 1));
             } else if (incident.category().equals("DUE_WORK") || incident.category().equals("EXPIRED_LEASE")) {
@@ -309,11 +367,41 @@ public final class OwnedSyncWatchdog {
                         + " m WHERE m.instance_id='mode:' || r.season AND m.runtime_mode=r.runtime_mode "
                         + "AND m.runtime_epoch=r.runtime_epoch)))",
                 season, "int8", runKeys.toArray(), (rs, row) -> rs.getLong(1)));
-        Set<Integer> verifiedFixtures = Set.copyOf(queryWithArray(
-                "SELECT fixture_id FROM " + tables.fixtureSync()
-                        + " WHERE season_code=? AND fixture_id=ANY(?) AND state='VERIFIED' "
-                        + "AND current_verified_generation IS NOT NULL",
-                season, "int4", fixtureKeys.toArray(), (rs, row) -> rs.getInt(1)));
+        Set<Integer> verifiedFixtures;
+        Set<Integer> finalizedGameweeks = Set.of();
+        if (incrementalImporter && (!fixtureKeys.isEmpty() || !gameweekKeys.isEmpty())) {
+            Map<Integer, Integer> fixtureGameweeks = new LinkedHashMap<>();
+            for (int[] fixture : queryWithArray("SELECT f.id,f.gameweek FROM fixture f "
+                            + "JOIN season s ON s.id=f.season_id WHERE s.code=? "
+                            + "AND f.id=ANY(?) AND f.finished=true",
+                    season, "int4", fixtureKeys.toArray(),
+                    (rs, row) -> new int[]{rs.getInt(1), rs.getInt(2)})) {
+                if (fixture[1] >= 1 && fixture[1] <= 38) fixtureGameweeks.put(fixture[0], fixture[1]);
+            }
+            gameweekKeys.addAll(fixtureGameweeks.values());
+            Integer seasonId = jdbc.queryForObject("SELECT id FROM season WHERE code=?", Integer.class, season);
+            if (seasonId != null && !gameweekKeys.isEmpty()) {
+                var finality = new GameweekFinalityReader(jdbc, clock, tables)
+                        .read(seasonId, season, gameweekKeys);
+                finalizedGameweeks = finality.values().stream()
+                        .filter(result -> result.state() == GameweekFinality.State.FINALIZED)
+                        .map(GameweekFinalityReader.Result::gameweek)
+                        .collect(java.util.stream.Collectors.toUnmodifiableSet());
+            }
+            Set<Integer> proved = finalizedGameweeks;
+            verifiedFixtures = fixtureGameweeks.entrySet().stream()
+                    .filter(entry -> proved.contains(entry.getValue()))
+                    .map(Map.Entry::getKey)
+                    .collect(java.util.stream.Collectors.toUnmodifiableSet());
+        } else if (incrementalImporter) {
+            verifiedFixtures = Set.of();
+        } else {
+            verifiedFixtures = Set.copyOf(queryWithArray(
+                    "SELECT fixture_id FROM " + tables.fixtureSync()
+                            + " WHERE season_code=? AND fixture_id=ANY(?) AND state='VERIFIED' "
+                            + "AND current_verified_generation IS NOT NULL",
+                    season, "int4", fixtureKeys.toArray(), (rs, row) -> rs.getInt(1)));
+        }
         Map<String, Instant> captureReads = new LinkedHashMap<>();
         for (CaptureRead row : queryWithArray(
                 "SELECT publication_key,max(source_read_finished_at) FROM " + tables.receipt()
@@ -322,13 +410,17 @@ public final class OwnedSyncWatchdog {
                         rs.getString(1), rs.getTimestamp(2) == null ? null : rs.getTimestamp(2).toInstant()))) {
             if (row.read() != null) captureReads.put(row.key(), row.read());
         }
-        return new RecoveryEvidence(completedRuns, verifiedFixtures, captureReads,
+        return new RecoveryEvidence(completedRuns, verifiedFixtures, finalizedGameweeks, captureReads,
                 clock.instant().atZone(UK).toLocalDate().atStartOfDay(UK).toInstant());
     }
 
     private boolean verifiedRecovery(OpenIncident incident, RecoveryEvidence evidence) {
         if (incident.category().startsWith("FIXTURE_VERIFICATION")) {
             return incident.fixtureId() != null && evidence.verifiedFixtures().contains(incident.fixtureId());
+        }
+        if (incident.category().equals("INCREMENTAL_GAMEWEEK_OVERDUE")) {
+            Integer gameweek = gameweekKey(incident.key());
+            return gameweek != null && evidence.finalizedGameweeks().contains(gameweek);
         }
         if (incident.category().equals("MISSED_DAILY_CAPTURE")) {
             String publicationKey = incident.key().substring(incident.key().lastIndexOf(':') + 1);
@@ -345,6 +437,15 @@ public final class OwnedSyncWatchdog {
             }
         }
         return true;
+    }
+
+    private static Integer gameweekKey(String key) {
+        try {
+            int gameweek = Integer.parseInt(key.substring(key.lastIndexOf(':') + 1));
+            return gameweek >= 1 && gameweek <= 38 ? gameweek : null;
+        } catch (NumberFormatException invalidKey) {
+            return null;
+        }
     }
 
     private Map<String, Integer> nextOccurrences(String season, Set<String> keys) {
@@ -546,6 +647,7 @@ public final class OwnedSyncWatchdog {
                                 Integer fixtureId, Instant createdAt) { }
     private record AlertEvent(Signal signal, int occurrence, String event) { }
     private record RecoveryEvidence(Set<Long> completedRuns, Set<Integer> verifiedFixtures,
+                                    Set<Integer> finalizedGameweeks,
                                     Map<String, Instant> captureReads, Instant dayStart) { }
     private record CaptureRead(String key, Instant read) { }
     private record Occurrence(String key, int next) { }

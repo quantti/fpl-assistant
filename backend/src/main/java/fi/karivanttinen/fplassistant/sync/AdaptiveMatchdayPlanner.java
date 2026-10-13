@@ -21,6 +21,10 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
 
+import fi.karivanttinen.fplassistant.sync.SharedFixtureRecoveryPolicy.Action;
+import fi.karivanttinen.fplassistant.sync.SharedFixtureRecoveryPolicy.DueReason;
+import fi.karivanttinen.fplassistant.sync.SharedFixtureRecoveryPolicy.SourceStatus;
+
 /** Pure due-time calculation for the owned matchday sync. It performs no I/O or activation. */
 public final class AdaptiveMatchdayPlanner {
 
@@ -181,37 +185,82 @@ public final class AdaptiveMatchdayPlanner {
             at = fixture.sourceObservedAt();
             reason = SlotReason.FINISH_OBSERVED;
             identity = "finish:" + at;
-        } else if (state.firstFinishedObservedAt() != null) {
+        } else if (state.firstFinishedObservedAt() != null
+                && now.isBefore(state.firstFinishedObservedAt().plus(FOLLOW_UP_LIMIT))) {
             Instant last = state.lastVerificationAt() == null
                     ? state.firstFinishedObservedAt() : state.lastVerificationAt();
             at = state.nextDueAt() != null ? state.nextDueAt()
                     : state.verificationAttempts() == 0 ? state.firstFinishedObservedAt()
                     : last.plus(followUpDelay(state.verificationAttempts()));
-            if (!at.isBefore(state.firstFinishedObservedAt().plus(FOLLOW_UP_LIMIT))) at = null;
+            at = respectRetryGates(at, now, state.recovery());
+        } else if (state.firstFinishedObservedAt() != null) {
+            addOverdueRecovery(season, fixture, state, now, due, next);
         } else if (state.pending() && fixture.kickoff() != null) {
             at = state.nextDueAt() != null ? state.nextDueAt()
                     : (state.lastVerificationAt() == null ? fixture.kickoff().plus(UNFINISHED_OVERDUE)
                     : state.lastVerificationAt().plus(Duration.ofHours(1)));
+            at = respectRetryGates(at, now, state.recovery());
             reason = SlotReason.WAITING_FINISH;
             identity = "waiting-finish";
         }
         if (at != null) addCandidate(slot(season, WorkKind.FIXTURE_VERIFICATION, at,
                 Set.of(fixture.id()), fixture.affectedPlayerIds(), reason,
                 fixture.affectedPlayerIds().size() + 5, identity), now, due, next);
+    }
 
-        if (state.pending() && (state.firstFinishedObservedAt() == null
-                || !now.isBefore(state.firstFinishedObservedAt().plus(FOLLOW_UP_LIMIT)))) {
-            LocalDate today = now.atZone(UK).toLocalDate();
-            Instant recovery = uk(today, LocalTime.of(3, 0));
-            if (recovery.isAfter(now)) recovery = uk(today.minusDays(1), LocalTime.of(3, 0));
-            addCandidate(slot(season, WorkKind.FIXTURE_VERIFICATION, recovery,
-                    Set.of(fixture.id()), fixture.affectedPlayerIds(), SlotReason.DAILY_RECOVERY,
-                    fixture.affectedPlayerIds().size() + 5, "recovery:" + recovery.atZone(UK).toLocalDate()),
-                    now, due, next);
-            Instant nextRecovery = uk(today, LocalTime.of(3, 0));
-            if (!nextRecovery.isAfter(now)) nextRecovery = uk(today.plusDays(1), LocalTime.of(3, 0));
-            next.consider(nextRecovery);
+    private static void addOverdueRecovery(String season, Fixture fixture, FixtureProgress state,
+                                           Instant now, Map<String, WorkSlot> due, Next next) {
+        RecoveryMetadata recovery = state.recovery();
+        var decision = SharedFixtureRecoveryPolicy.decide(new SharedFixtureRecoveryPolicy.Input(
+                now, fixture.recoverySourceStatus(), false, state.firstFinishedObservedAt(),
+                state.nextDueAt(), recovery.dueReason(), recovery.transportRetryAt(),
+                recovery.cooldownUntil(), recovery.recoveryDay(), recovery.episodeStartedAt(),
+                recovery.episodeUntil(), recovery.publishedAt(), recovery.dependencyRetryAt()));
+        // RESERVE_EPISODE means eligible for a planner slot only; the dispatcher reserves under its run lease.
+        Instant at = switch (decision.action()) {
+            case WAIT -> decision.notBefore();
+            case RESERVE_EPISODE, CONTINUE_EPISODE -> recoverySlotTime(state, decision, now);
+            case NORMAL, WAIT_FOR_PARENT, WAIT_FOR_SOURCE -> null;
+        };
+        if (at == null) return;
+        LocalDate recoveryDay = decision.recoveryDay() == null
+                ? SharedFixtureRecoveryPolicy.recoveryDayAt(at) : decision.recoveryDay();
+        addCandidate(slot(season, WorkKind.FIXTURE_VERIFICATION, at,
+                Set.of(fixture.id()), fixture.affectedPlayerIds(), SlotReason.DAILY_RECOVERY,
+                fixture.affectedPlayerIds().size() + 5, "recovery:" + recoveryDay), now, due, next);
+    }
+
+    private static Instant recoverySlotTime(FixtureProgress state,
+                                           SharedFixtureRecoveryPolicy.Decision decision, Instant now) {
+        LocalDate day = decision.recoveryDay() == null
+                ? SharedFixtureRecoveryPolicy.recoveryDayAt(now) : decision.recoveryDay();
+        if (!Objects.equals(state.recovery().recoveryDay(), day)) return uk(day, LocalTime.of(3, 0));
+        if (state.nextDueAt() != null && !state.nextDueAt().isAfter(now)) return state.nextDueAt();
+        if (state.recovery().episodeStartedAt() != null) return state.recovery().episodeStartedAt();
+        return uk(day, LocalTime.of(3, 0));
+    }
+
+    private static Instant respectRetryGates(Instant dueAt, Instant now, RecoveryMetadata recovery) {
+        Instant selected = dueAt;
+        for (Instant gate : new Instant[] { recovery.transportRetryAt(), recovery.dependencyRetryAt(),
+                recovery.cooldownUntil() }) {
+            if (gate != null && gate.isAfter(now) && (selected == null || gate.isAfter(selected))) selected = gate;
         }
+        return selected;
+    }
+
+    static Set<String> completedCorrections(Instant firstVerifiedAt, Instant dataCheckedTransitionAt,
+                                            Instant sourceStartedAt) {
+        if (firstVerifiedAt == null || sourceStartedAt == null) return Set.of();
+        Set<String> completed = new HashSet<>();
+        for (int index = 0; index < CORRECTIONS.size(); index++) {
+            String key = switch (index) { case 0 -> "2h"; case 1 -> "24h"; default -> "48h"; };
+            if (!sourceStartedAt.isBefore(firstVerifiedAt.plus(CORRECTIONS.get(index)))) completed.add(key);
+        }
+        if (dataCheckedTransitionAt != null && !sourceStartedAt.isBefore(dataCheckedTransitionAt)) {
+            completed.add("data-checked");
+        }
+        return Set.copyOf(completed);
     }
 
     private static Duration followUpDelay(int attempts) {
@@ -297,10 +346,17 @@ public final class AdaptiveMatchdayPlanner {
     public enum AlertStatus { VERIFICATION_OVERDUE }
 
     public record Fixture(int id, Integer gameweek, Instant kickoff, boolean started, boolean finished,
-                          boolean dataChecked, Instant sourceObservedAt, Set<Integer> affectedPlayerIds) {
+                          boolean dataChecked, Instant sourceObservedAt, Set<Integer> affectedPlayerIds,
+                          SourceStatus recoverySourceStatus) {
+        public Fixture(int id, Integer gameweek, Instant kickoff, boolean started, boolean finished,
+                       boolean dataChecked, Instant sourceObservedAt, Set<Integer> affectedPlayerIds) {
+            this(id, gameweek, kickoff, started, finished, dataChecked, sourceObservedAt, affectedPlayerIds,
+                    finished ? SourceStatus.FINISHED : SourceStatus.UNFINISHED);
+        }
         public Fixture {
             if (id <= 0) throw new IllegalArgumentException("fixture id must be positive");
             Objects.requireNonNull(sourceObservedAt);
+            Objects.requireNonNull(recoverySourceStatus);
             affectedPlayerIds = Set.copyOf(affectedPlayerIds);
         }
     }
@@ -308,13 +364,31 @@ public final class AdaptiveMatchdayPlanner {
     public record FixtureProgress(int fixtureId, boolean pending, Instant firstFinishedObservedAt,
                                   Instant lastVerificationAt, int verificationAttempts,
                                   Instant nextDueAt, Instant verifiedAt,
-                                  Instant dataCheckedTransitionAt, Set<String> completedCorrections) {
+                                  Instant dataCheckedTransitionAt, Set<String> completedCorrections,
+                                  RecoveryMetadata recovery) {
+        public FixtureProgress(int fixtureId, boolean pending, Instant firstFinishedObservedAt,
+                               Instant lastVerificationAt, int verificationAttempts, Instant nextDueAt,
+                               Instant verifiedAt, Instant dataCheckedTransitionAt,
+                               Set<String> completedCorrections) {
+            this(fixtureId, pending, firstFinishedObservedAt, lastVerificationAt, verificationAttempts,
+                    nextDueAt, verifiedAt, dataCheckedTransitionAt, completedCorrections,
+                    RecoveryMetadata.empty());
+        }
         public FixtureProgress {
             if (fixtureId <= 0 || verificationAttempts < 0) throw new IllegalArgumentException("invalid fixture progress");
             completedCorrections = Set.copyOf(completedCorrections);
+            Objects.requireNonNull(recovery);
         }
         public static FixtureProgress empty(int fixtureId) {
             return new FixtureProgress(fixtureId, false, null, null, 0, null, null, null, Set.of());
+        }
+    }
+
+    public record RecoveryMetadata(DueReason dueReason, Instant transportRetryAt, Instant dependencyRetryAt,
+                                   Instant cooldownUntil, LocalDate recoveryDay, Instant episodeStartedAt,
+                                   Instant episodeUntil, Instant publishedAt) {
+        public static RecoveryMetadata empty() {
+            return new RecoveryMetadata(null, null, null, null, null, null, null, null);
         }
     }
 
