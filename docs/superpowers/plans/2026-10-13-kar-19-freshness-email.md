@@ -1,6 +1,6 @@
 # KAR-19 — daily capture email reminder
 
-**PROGRESS:** Task 1/2 done — sender/check implementation and focused tests green.
+**PROGRESS:** Task 1/2 done — implementation and review fix green; PR publication pending.
 
 ## Contract
 
@@ -76,4 +76,14 @@ Record production verification separately. This implementation does not attest d
 - Verification includes loopback request body/auth, missing configuration, HTTP
   401/429/500, redirect refusal, bounded timeout and successful later attempt;
   mocked-JDBC stale/empty/fresh/future/DB-error decisions and repeat/recovery behavior.
+- Direct review of `26128a6` found a malformed credential could throw an uncaught
+  `IllegalArgumentException` while constructing the HTTP request. A CRLF-key regression
+  failed on that commit (1 failure / 3 checks); configuration default/gating tests passed.
+  The follow-up catches that client/configuration failure without logging exception details.
+- Final focused run adds `--tests '*DailyPriceEmailConfigurationTest'`: 21 passed, 0 failed,
+  0 skipped. The exact command is the GREEN command above plus that fourth selector.
+  Spring wiring uses checked-in YAML with no database, scheduler or external network.
+- Direct re-review confirms the fix contains the reproduced failure; request payload,
+  source/date predicates, disabled defaults, log hygiene and unchanged writer/health paths
+  were checked. No remaining blocking local findings. No independent reviewer was used.
 - Full suite belongs to PR CI; production mail configuration and inbox delivery are unverified.

@@ -11,8 +11,10 @@ ranking freshness predicates are unchanged. Provider failures are contained and 
 without response bodies or credentials. API acceptance does not establish inbox delivery.
 
 [Plan and review](superpowers/plans/2026-10-13-kar-19-freshness-email.md) records the scope
-and tests. Eighteen focused tests pass using mocked JDBC and loopback HTTP only; ten expected
-assertion failures were observed against no-op scaffolding before implementation. No
+and tests. Twenty-one focused tests pass using mocked JDBC, isolated Spring configuration
+and loopback HTTP only; ten expected assertion failures were observed against no-op scaffolding.
+Direct commit review added a failing malformed-credential regression, then contained that
+failure without logging the credential. No
 production DB query, Resend request, secret change, activation or deployment was performed.
 Configuration and the separate owner-operated delivery gate are in `DEVELOPMENT.md`.
 
