@@ -103,6 +103,12 @@ fpl:
     mode: ${OWNED_SYNC_MODE:OFF}
     playing-season: ${OWNED_SYNC_PLAYING_SEASON:}
     cutover-confirmed: ${OWNED_SYNC_CUTOVER_CONFIRMED:false}
+    importer:
+      # Opt-in hourly incremental collector; requires an already-ACTIVE matching runtime and cutover confirmation.
+      enabled: ${OWNED_SYNC_IMPORTER_ENABLED:false}
+    handoff:
+      # Operator-only OFF -> importer epoch and explicit rollback. Never acts at startup.
+      enabled: ${OWNED_SYNC_HANDOFF_ENABLED:false}
     fixture-table-name: fpl_fixture_sync
     evidence-table-name: fpl_player_fixture_evidence
     alerts:

@@ -159,6 +159,37 @@ class HistoryParserTest {
     }
 
     @Test
+    void mandatoryCurrentSeasonCoreFieldsAndOptionalPresenceAreExplicit() throws Exception {
+        ObjectNode complete = completeRow(7, 101, 8, 20, true, "2026-10-20T19:00:00Z");
+        for (String field : HistoryParser.MANDATORY_HISTORY_FIELDS) {
+            ObjectNode missing = complete.deepCopy();
+            missing.remove(field);
+            assertThatThrownBy(() -> parse(7, array(missing), List.of(
+                    fixture(101, 8, 10, 20, "2026-10-20T19:00:00Z"))))
+                    .as("mandatory history field %s", field)
+                    .isInstanceOf(IllegalArgumentException.class);
+        }
+        assertThat(HistoryParser.OPTIONAL_HISTORY_COMPONENTS)
+                .containsExactlyInAnyOrder(Component.values());
+
+        ObjectNode sameValueDifferentScale = complete.deepCopy().put("expected_goals", "0.0");
+        HistoryRow first = parse(7, array(complete), List.of(
+                fixture(101, 8, 10, 20, "2026-10-20T19:00:00Z"))).rows().getFirst();
+        HistoryRow same = parse(7, array(sameValueDifferentScale), List.of(
+                fixture(101, 8, 10, 20, "2026-10-20T19:00:00Z"))).rows().getFirst();
+        ObjectNode missingOptional = complete.deepCopy();
+        missingOptional.remove("expected_goals");
+        HistoryRow absent = parse(7, array(missingOptional), List.of(
+                fixture(101, 8, 10, 20, "2026-10-20T19:00:00Z"))).rows().getFirst();
+
+        assertThat(PlayerFixtureFingerprint.of(same)).isEqualTo(PlayerFixtureFingerprint.of(first));
+        assertThat(first.has(Component.EXPECTED_GOALS)).isTrue();
+        assertThat(absent.expectedGoals()).isNull();
+        assertThat(absent.has(Component.EXPECTED_GOALS)).isFalse();
+        assertThat(PlayerFixtureFingerprint.of(absent)).isNotEqualTo(PlayerFixtureFingerprint.of(first));
+    }
+
+    @Test
     void exactSchemaBoundsAndNegativeRulesAreEnforced() throws Exception {
         ObjectNode row = completeRow(7, 101, 8, 20, true, "2026-10-20T19:00:00Z");
         assertFieldInvalid(row, "minutes", -1, "must be non-negative");
