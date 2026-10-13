@@ -1,5 +1,25 @@
 # Status — Phase 1
 
+## KAR-19 — opt-in daily-price email reminders (2026-10-13)
+
+The existing 06:00/12:00/18:00 UK freshness check can send plain-text reminders through
+Resend to `kvanttinen@gmail.com` when captures are stale or absent. Mail is disabled by
+default and requires a separate sending key; Supabase Auth/SMTP is unchanged. One attempt
+per unhealthy check, no immediate retry, recovery email or durable delivery guarantee.
+Future dates and DB failures retain their existing log-only paths; application health and
+ranking freshness predicates are unchanged. Provider failures are contained and logged
+without response bodies or credentials. API acceptance does not establish inbox delivery.
+
+[Plan and review](superpowers/plans/2026-10-13-kar-19-freshness-email.md) records the scope
+and tests. Twenty-one focused tests pass using mocked JDBC, isolated Spring configuration
+and loopback HTTP only; ten expected assertion failures were observed against no-op scaffolding.
+Direct commit review added a failing malformed-credential regression, then contained that
+failure without logging the credential. [PR #160](https://github.com/quantti/fpl-assistant/pull/160)
+was directly reviewed; all 21 focused tests passed again after integration with `05d7a7f`.
+Full PR CI and owner merge remain gates. No production DB query, Resend request, secret change,
+activation or deployment was performed. Configuration and the separate owner-operated delivery
+gate are in `DEVELOPMENT.md`.
+
 ## Incremental importer cutover corrections (2026-10-12; PR review, NO-GO)
 
 The [cutover plan](superpowers/plans/2026-10-12-incremental-importer-cutover-review.md) remains NO-GO for production. Assistant [PR #159](https://github.com/quantti/fpl-assistant/pull/159) adds an explicit fenced OFF→ACTIVE importer handoff/rollback (both default OFF), importer-specific heartbeat/gameweek overdue alerts and recovery only after the current checked source/PFS proof passes `GameweekFinalityReader`. Tapas [PR #3](https://github.com/quantti/tapas-fpl-app/pull/3) adds per-row pointer/page/physical PFS proof, optional masking, checked-GW Points Against withholding and reviewed SELECT grant templates; post-push review also fixed a player-page receipt masking earlier genuine legacy and VERIFIED fixtures. Source and PFS publication invalidate gameweek finality in their own transactions. Focused disposable-Postgres tests passed in both repos; PR CI is pending, no role or production setting was changed, and 13 October is a review date rather than activation approval. Green full CI, role grants, drained old writers, current SELECT preflight and measured HTTP/load/alert readiness remain separate gates.
