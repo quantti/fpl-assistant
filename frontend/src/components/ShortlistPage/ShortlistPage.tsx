@@ -32,12 +32,12 @@ export default function ShortlistPage() {
     )
     // eslint-disable-next-line unicorn/no-array-sort -- Fresh array; toSorted is outside the ES2022 browser target.
     .sort((a, b) => {
-      if (sort === 'name') return a.player.fullName.localeCompare(b.player.fullName);
+      const byName = displayName(a.player, a.row).localeCompare(displayName(b.player, b.row));
+      if (sort === 'name') return byName;
       return sort === 'position'
         ? (a.row?.market?.position ?? a.player.elementType) -
             (b.row?.market?.position ?? b.player.elementType)
-        : compareNumbers(sortMetric(a.row, sort), sortMetric(b.row, sort)) ||
-            a.player.fullName.localeCompare(b.player.fullName);
+        : compareNumbers(sortMetric(a.row, sort), sortMetric(b.row, sort)) || byName;
     });
 
   return (
@@ -145,6 +145,7 @@ function ShortlistRow({ player, row }: { player: ShortlistPlayer; row?: Comparis
   const shortlist = useShortlist();
   const pending = shortlist.isPending(player.season, player.elementId);
   const position = row?.market?.position ?? player.elementType;
+  const name = displayName(player, row);
   const stats = [
     ['Price', row?.market ? `£${n(row.market.nowCost / 10, 1)}m` : 'n/a'],
     ['Points', n(row?.totals?.points)],
@@ -158,7 +159,7 @@ function ShortlistRow({ player, row }: { player: ShortlistPlayer; row?: Comparis
     <li className={classes.player}>
       <div className={classes.rowHead}>
         <div className={classes.identity}>
-          <strong>{player.fullName}</strong>
+          <strong>{name}</strong>
           <span>
             {row?.market?.teamShort ?? player.teamName} · {positionName(position)} ·{' '}
             {seasonName(player.season)}
@@ -172,7 +173,7 @@ function ShortlistRow({ player, row }: { player: ShortlistPlayer; row?: Comparis
           type="button"
           className={classes.remove}
           disabled={pending}
-          aria-label={`Remove ${player.fullName}`}
+          aria-label={`Remove ${name}`}
           onClick={() => void shortlist.toggle(catalogueFor(player), cataloguePlayerFor(player))}
         >
           {pending ? 'Removing…' : 'Remove'}
@@ -223,6 +224,10 @@ function ShortlistRow({ player, row }: { player: ShortlistPlayer; row?: Comparis
       {row && <ComparisonDetails row={row} position={position} />}
     </li>
   );
+}
+
+function displayName(player: ShortlistPlayer, row?: ComparisonRow) {
+  return row?.market?.fullName ?? row?.market?.webName ?? player.fullName;
 }
 
 function catalogueFor(player: ShortlistPlayer): PlayerCatalogue {

@@ -10,6 +10,7 @@ export interface ComparisonRow {
   elementId: number;
   market: {
     webName: string;
+    fullName: string | null;
     teamShort: string;
     position: number;
     nowCost: number;

@@ -37,6 +37,7 @@ const comparison = {
       elementId: 17,
       market: {
         webName: 'Saka',
+        fullName: 'Bukayo Saka',
         teamShort: 'ARS',
         position: 3,
         nowCost: 60,
@@ -335,6 +336,25 @@ it('ignores an old account response after the account-keyed provider remounts', 
   });
   expect(host.textContent).toContain('count:0');
   expect(host.textContent).not.toContain('Bukayo Saka');
+});
+
+it('uses the current captured name rather than the frozen catalogue name', async () => {
+  apiFetchMock.mockImplementation(() =>
+    Promise.resolve(
+      Response.json({
+        ...comparison,
+        rows: [
+          {
+            ...comparison.rows[0],
+            market: { ...comparison.rows[0].market, fullName: 'Updated Name' },
+          },
+        ],
+      }),
+    ),
+  );
+  await mount(Response.json([stored]));
+  expect(host.querySelector(':scope li strong')?.textContent).toBe('Updated Name');
+  expect(host.querySelector('button[aria-label="Remove Updated Name"]')).not.toBeNull();
 });
 
 it('never attaches another season with the same element id', async () => {

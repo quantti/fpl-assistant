@@ -1,5 +1,24 @@
 # Status — Phase 1
 
+## Shortlist comparison (2026-10-16; feature branch)
+
+The [reviewed plan](superpowers/plans/2026-10-16-shortlist-comparison.md) extends the existing
+account-owned shortlist with current captured price/availability, season points and points/£m,
+xG/xA/xGI, five editable gameweeks of FPL FDR and existing-model team expected clean sheets.
+Expanded rows show season details, fixture-first recent observations, DefCon and captured
+ownership/set-piece duties. Missing readings/projections stay unavailable; saved old-season IDs
+never attach a new-season player's numbers. Membership/removal remain independent of comparison
+failure. Reads use one repeatable-read transaction, existing RankingMetrics/ClubRates/HorizonFixtures
+and guarded PfsReadSource; no schema, sync, provider or production changes.
+
+One independent plan review corrected the test endpoint; parent implementation review corrected
+current-name display. Final focused verification: 62 backend tests (0 failed/skipped), 14 frontend
+tests, lint, format and build pass. Isolated Chromium validates mobile light/dark, desktop and
+keyboard expansion without page overflow. A 600-player/3000-PFS disposable probe took 304/491 ms
+for 1/20 saved players with constant queryForList count; not a production load guarantee. Vite's
+large-chunk warning remains. Full PR CI, owner merge and live signed-in smoke verification are
+separate gates; neither production access nor model calibration was performed.
+
 ## KAR-19 — opt-in daily-price email reminders (2026-10-13)
 
 The existing 06:00/12:00/18:00 UK freshness check can send plain-text reminders through

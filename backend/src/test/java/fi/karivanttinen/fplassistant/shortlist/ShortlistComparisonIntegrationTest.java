@@ -114,6 +114,7 @@ class ShortlistComparisonIntegrationTest {
         var row = result.rows().getFirst();
         assertThat(result.horizon()).startsWith("GW6–10");
         assertThat(row.market().status()).isEqualTo("d");
+        assertThat(row.market().fullName()).isEqualTo("Saved1");
         assertThat(row.market().penalties()).isEqualTo(1);
         assertThat(row.totals().points()).isEqualTo(60);
         assertThat(row.pointsPerMillion()).isEqualTo(10);

@@ -238,4 +238,27 @@ caught cramped mobile controls; corrected their wrapping and reran the browser p
 and output are local `/tmp/shortlist-{390,1440}-{light,dark}.png` and `/tmp/shortlist-browser.log`
 (actual variants: 390 light/dark and 1440 light). Initial probe setup errors (binary basename,
 pre-load DOM) were harness errors and corrected, not product failures. This is isolated UI evidence,
-not a signed-in live API smoke test. No browser profile, production auth or backend was used.
+not a signed-in live API smoke test. No existing browser profile, production auth or backend was used.
+
+Integration review (parent, no additional agent): **SC-02 accepted/fixed** — row names still used
+immutable catalogue text even when a fresh daily capture had a changed name. A focused UI test
+failed with `Bukayo Saka` instead of `Updated Name`. The response now carries daily full name;
+heading, accessible removal label and name sort use it, with the catalogue as unavailable-data
+fallback only. The corresponding real-JDBC assertion verifies the field. No membership mutation.
+
+Final code gates after SC-02: **62 backend tests, 0 failures, 0 skipped** (ShortlistComparisonTest,
+ShortlistComparisonIntegrationTest, ShortlistApiTest, HorizonFixturesTest, RankingMetricsIntegrationTest);
+**14 frontend tests** (ShortlistPage and unchanged shared ShortlistContext), ESLint, Biome and
+TypeScript/Vite build pass. Vite retains a >500 kB bundle warning; no unrelated splitting work.
+Browser probe reran on this state and passed the same three layouts and keyboard expansion.
+The actual HTTP authentication/JDBC boundary is covered separately from stubbed browser rendering;
+a signed-in end-to-end live service check and production model calibration remain unverified.
+
+Requirement disposition: A1 auth/identity and A2 stats have API/JDBC+UI assertions; A3 range
+semantics have 21 canonical horizon tests and page blank/double assertions; A4 additive/missing
+model behavior has pure tests plus real flagged/incomplete-side controls; A5 has fixture-first
+missing/zero observations and DefCon arithmetic; A6 has lifecycle tests and isolated Chromium;
+A7 has one completed independent plan review and parent code review, with remote CI still pending.
+Factory feedback: the single review caught an unusable test port before implementation. This is
+one observed useful correction, not evidence of overall workflow cost or effectiveness. No factory
+guidance was changed or adopted by this task.
