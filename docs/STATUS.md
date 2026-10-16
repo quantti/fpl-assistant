@@ -10,7 +10,9 @@ legacy/incremental proof, account isolation and safe test/publication boundaries
 observations remain historical. [Adoption plan](superpowers/plans/2026-10-16-fpl-software-factory.md)
 records 12 passing offline tests, bundle/source-path checks and author-performed source review.
 These do not prove independent review, Pi runtime discovery, model compliance or effectiveness;
-no product suite, external service or production action ran for this change.
+no product suite, external service or production action ran locally for this change.
+[PR #161](https://github.com/quantti/fpl-assistant/pull/161) was directly reviewed at `0ceb7ff`;
+PR CI and owner merge remain pending.
 
 ## KAR-19 — opt-in daily-price email reminders (2026-10-13)
 

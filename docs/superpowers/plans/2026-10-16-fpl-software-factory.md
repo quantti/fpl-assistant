@@ -1,6 +1,6 @@
 # FPL software-factory adoption
 
-**PROGRESS:** Task 1/2 done — complete bundle copied, FPL domain and usage documentation written.
+**PROGRESS:** Task 2/2 done — bundle and domain checked, committed and published in PR #161; CI and owner merge pending.
 
 ## Brief and source reconciliation
 
@@ -92,4 +92,10 @@ mail/DB/sync activation, broader agent installation. None is implied by copying 
 - This is construction/static-source review, not independent model review, actual Pi discovery,
   an end-to-end factory task or an effectiveness measurement. Those claims remain unverified.
   No independence claim is made for this author-performed inspection.
-- Publication/final PR review pending. Source pi-config and primary FPL dirty inputs preserved.
+- [PR #161](https://github.com/quantti/fpl-assistant/pull/161) publishes `0ceb7ff` against
+  `0c93388`. Direct committed/PR-range review confirmed exactly the seven bundle files plus
+  DEVELOPMENT, STATUS and this plan, with no product/config/hook changes. No blocking
+  source-fit finding was identified; this is not an independent review verdict. `git diff
+  --check` passed. The final follow-up changes only publication evidence in this plan/STATUS.
+- PR CI is pending; owner merge remains separate. Source pi-config and primary FPL dirty
+  inputs were rechecked and preserved. No merge/rebase/stash was performed in either checkout.
