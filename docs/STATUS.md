@@ -1,6 +1,6 @@
 # Status — Phase 1
 
-## Shortlist comparison (2026-10-16; feature branch)
+## Shortlist comparison (2026-10-16; PR #162)
 
 The [reviewed plan](superpowers/plans/2026-10-16-shortlist-comparison.md) extends the existing
 account-owned shortlist with current captured price/availability, season points and points/£m,
@@ -16,8 +16,10 @@ current-name display. Final focused verification: 62 backend tests (0 failed/ski
 tests, lint, format and build pass. Isolated Chromium validates mobile light/dark, desktop and
 keyboard expansion without page overflow. A 600-player/3000-PFS disposable probe took 304/491 ms
 for 1/20 saved players with constant queryForList count; not a production load guarantee. Vite's
-large-chunk warning remains. Full PR CI, owner merge and live signed-in smoke verification are
-separate gates; neither production access nor model calibration was performed.
+large-chunk warning remains. [PR #162](https://github.com/quantti/fpl-assistant/pull/162) contains
+code commits `0e1e791`–`fd17c67` and the handoff documentation. Parent reviewed the published PR;
+full exact-head CI, owner merge and live signed-in smoke verification remain separate gates.
+Neither production access nor model calibration was performed.
 
 ## KAR-19 — opt-in daily-price email reminders (2026-10-13)
 

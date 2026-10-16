@@ -1,6 +1,6 @@
 # Shortlist comparison: observed stats and five editable gameweeks
 
-**PROGRESS:** Task 2/3 done — comparison API and UI verified; integration/handoff next.
+**PROGRESS:** Task 3/3 done — implementation and parent review published as PR #162; full CI/owner merge remain separate gates.
 
 ## Brief, authority and sources
 
@@ -262,3 +262,12 @@ A7 has one completed independent plan review and parent code review, with remote
 Factory feedback: the single review caught an unusable test port before implementation. This is
 one observed useful correction, not evidence of overall workflow cost or effectiveness. No factory
 guidance was changed or adopted by this task.
+
+Publication: [PR #162](https://github.com/quantti/fpl-assistant/pull/162),
+`feat/shortlist-comparison` → `master`. Code commits `0e1e791`, `52bfda6`, `fd17c67`;
+`fd17c675f7d4715552e5b0b5ca97144502287e10` is the exact final tested code state. The final handoff
+commit changes only this plan and STATUS. Parent reviewed the published file set, current-name
+correction and requirement/test coverage; no additional agent review and no self-approval posted
+to GitHub. Base remains `0c933888c8b0409d052175d91ea5ebc6fc01d7e1`; original dirty sync checkout
+is unchanged. Full PR CI is not replaced by these local receipts; read its exact-head checks on
+the PR. No merge, deployment, alert activation, tracker write or production request occurred.
