@@ -29,9 +29,22 @@ public class ShortlistController {
     }
 
     private final ShortlistStore shortlist;
+    private final ShortlistComparison comparison;
 
-    public ShortlistController(ShortlistStore shortlist) {
+    public ShortlistController(ShortlistStore shortlist, ShortlistComparison comparison) {
         this.shortlist = shortlist;
+        this.comparison = comparison;
+    }
+
+    @GetMapping("/comparison")
+    public ResponseEntity<ShortlistComparison.Response> comparison(@AuthenticationPrincipal Jwt jwt) {
+        UUID owner = TokenSubject.userId(jwt);
+        try {
+            return noStore(comparison.read(owner));
+        } catch (org.springframework.dao.DataAccessException failure) {
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                    .cacheControl(CacheControl.noStore()).build();
+        }
     }
 
     @GetMapping
