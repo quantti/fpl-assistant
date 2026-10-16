@@ -159,6 +159,27 @@ class ShortlistApiTest {
     }
 
     @Test
+    void comparisonIsOwnerScopedNoStoreAndKeepsMembershipWithoutCaptures() throws Exception {
+        var catalogue = seedCatalogue("S-COMPARE", 31, "Saved", "Saved Player",
+                1, "AAA", "Alpha", 2);
+        shortlist.put(USER_A, catalogue.id(), catalogue.season(), 31).orElseThrow();
+        jdbc.update("DELETE FROM " + dailyTable + " WHERE season LIKE ?", SEASON_PREFIX + "%");
+
+        mockMvc.perform(get("/api/shortlist/comparison")).andExpect(status().isUnauthorized());
+        mockMvc.perform(get("/api/shortlist/comparison").header("Authorization", bearer("bad")))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(get("/api/shortlist/comparison").header("Authorization", bearer(USER_A)))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$.rows.length()").value(1))
+                .andExpect(jsonPath("$.rows[0].season").value("S-COMPARE"))
+                .andExpect(jsonPath("$.rows[0].elementId").value(31))
+                .andExpect(jsonPath("$.rows[0].market").isEmpty());
+        mockMvc.perform(get("/api/shortlist/comparison").header("Authorization", bearer(USER_B)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.rows").isEmpty());
+    }
+
+    @Test
     void everyOperationRequiresAUsableJwtSubject() throws Exception {
         mockMvc.perform(get("/api/shortlist")).andExpect(status().isUnauthorized());
         mockMvc.perform(get("/api/shortlist").header("Authorization", bearer("not-a-uuid")))
