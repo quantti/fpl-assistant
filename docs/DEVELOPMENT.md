@@ -80,6 +80,28 @@ characters that the latter mangles:
 set -a; source .env.test; set +a
 ```
 
+## Project-local software factory
+
+The portable workflow lives at `.agents/skills/software-factory/`; its `domain.md` maps FPL
+invariants, source documents, code boundaries and safe checks. Read current `AGENTS.md` and
+`STATUS.md` too: the supplement's pinned baseline is not current production state.
+
+In Pi, reload after adding the skill, then explicitly invoke
+`/skill:software-factory <task or selected stage>`. Automatic model invocation is disabled.
+Check the discovered path if a user-level skill has the same name; do not silently run another
+project's domain. The skill is guidance, not a dispatcher or permission to activate sync,
+contact production, spend provider credit, publish or merge. No global install is needed.
+
+Optional offline checks, from `.agents/skills/software-factory/`:
+
+```bash
+python3 -B scripts/check_bundle.py
+python3 -B -m unittest discover -s tests -p 'test_bundle.py' -v
+```
+
+These check bundle structure and portability, not agent behavior or FPL correctness. Adoption
+sources and limits: [factory plan](superpowers/plans/2026-10-16-fpl-software-factory.md).
+
 ## Commands
 
 Run from `backend/`:

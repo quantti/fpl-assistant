@@ -1,5 +1,17 @@
 # Status — Phase 1
 
+## Project-local software factory (2026-10-16)
+
+`.agents/skills/software-factory/` copies the complete vanilla bundle from `quantti/pi-config`
+`75cc2a5`, preserving its six generic files and specializing only `domain.md`. Explicit invocation
+keeps it separate from ordinary tasks; no global installation, auto-dispatch or permissions change.
+The FPL supplement maps governing sources, provenance/identity, ranking, shared-schema ownership,
+legacy/incremental proof, account isolation and safe test/publication boundaries. Historical runtime
+observations remain historical. [Adoption plan](superpowers/plans/2026-10-16-fpl-software-factory.md)
+records 12 passing offline tests, bundle/source-path checks and author-performed source review.
+These do not prove independent review, Pi runtime discovery, model compliance or effectiveness;
+no product suite, external service or production action ran for this change.
+
 ## KAR-19 — opt-in daily-price email reminders (2026-10-13)
 
 The existing 06:00/12:00/18:00 UK freshness check can send plain-text reminders through
