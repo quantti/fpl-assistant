@@ -33,7 +33,7 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class ShortlistComparison {
     public record Response(Instant asOf, String horizon, List<String> sources, List<Row> rows) {}
-    public record Market(String webName, String teamShort, int position, int nowCost,
+    public record Market(String webName, String fullName, String teamShort, int position, int nowCost,
                          String status, String news, Double ownership, Integer penalties,
                          Integer directFreeKicks, Integer corners, Instant capturedAt) {}
     public record Totals(Integer points, Integer minutes, Integer goals, Integer assists,
@@ -146,7 +146,7 @@ public class ShortlistComparison {
             return unavailable(saved, "Historical saved entry; no current-season comparison.");
         if (player == null || !player.hasValidIdentity())
             return unavailable(saved, "Player identity unavailable in the selected daily capture.");
-        Market market = fresh ? new Market(player.webName(), player.teamShort(), player.position(),
+        Market market = fresh ? new Market(player.webName(), player.fullName(), player.teamShort(), player.position(),
                 player.nowCost(), player.status(), player.news(), player.ownership(),
                 integer(duties, "penalties_order"), integer(duties, "direct_fk_order"),
                 integer(duties, "corners_order"), player.capturedAt()) : null;
