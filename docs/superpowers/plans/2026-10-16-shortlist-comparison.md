@@ -1,6 +1,6 @@
 # Shortlist comparison: observed stats and five editable gameweeks
 
-**PROGRESS:** Task 1/3 done — comparison API verified; UI implementation next.
+**PROGRESS:** Task 2/3 done — comparison API and UI verified; integration/handoff next.
 
 ## Brief, authority and sources
 
@@ -222,3 +222,20 @@ PFS rows, one vs twenty shortlist entries; 18 queryForList calls for both, 5549/
 304/491 ms. This counts queryForList only, not every JDBC statement or wire row. Source inspection
 finds no per-entry SQL. Production latency/concurrent load remains unverified. Tests used the
 owned local container and the 1536 MiB cgroup, dummy provider keys, no external API calls.
+
+Task 2 outcome: page-scoped comparison loading, all accepted columns, position filter, numerical
+sorts with unknowns last, five-GW strip and expandable observations. Membership/removal still use
+the unchanged shared provider. Test-first page assertion failed because xG was absent; now 13
+focused page/provider tests pass, covering retry, removal during loading, account remount,
+season/id matching and null-last sorting. TypeScript/Vite build, ESLint and Biome pass. Removed
+three obsolete test-rule suppressions; added none to the baseline. ES2022-specific local lint
+exceptions retain supported sorting/Promise construction rather than requiring newer browsers.
+
+Headless Chromium with a disposable profile and local stub responses rendered the real component
+and provider at 390px light/dark and 1440px light. No page overflow or runtime exceptions; Space
+opens native details and expanded history stays within its local scroll region. Visual inspection
+caught cramped mobile controls; corrected their wrapping and reran the browser probe. Screenshots
+and output are local `/tmp/shortlist-{390,1440}-{light,dark}.png` and `/tmp/shortlist-browser.log`
+(actual variants: 390 light/dark and 1440 light). Initial probe setup errors (binary basename,
+pre-load DOM) were harness errors and corrected, not product failures. This is isolated UI evidence,
+not a signed-in live API smoke test. No browser profile, production auth or backend was used.
