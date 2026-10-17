@@ -234,12 +234,13 @@ function ShortlistRow({
   ];
   return (
     <Fragment>
-      <tr>
+      <tr className={classes.playerRow}>
         <th scope="row" className={classes.playerCell}>
           <button
             type="button"
             className={classes.playerName}
             aria-label={`Details for ${name}`}
+            title={name}
             aria-expanded={expanded}
             aria-controls={expanded ? detailsId : undefined}
             onClick={() => setExpanded(!expanded)}

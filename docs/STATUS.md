@@ -1,5 +1,22 @@
 # Status — Phase 1
 
+## Local fixed-height shortlist rows
+
+Owner requires invariant player-row height. Main data rows and the header now measure 48px on
+desktop and touch layouts. Names stay on one line with ellipsis, full title/accessibility label
+and full name in the expanded card. Double/triple gameweek legs stay side by side, never stacked;
+all fixtures remain present and table-only horizontal scrolling handles narrower viewports.
+Touch controls keep 44px targets. Expanded detail rows alone retain natural height, and opening
+them does not change any player-row height. Focus outlines remain inside the compact controls.
+
+Before the fix the full-App browser stress case measured 57/51/79/49px for double-week,
+long-name, triple-week and normal rows; it failed the invariant-height assertion. Afterwards all
+four measure exactly 48px at 3840/1920/1440px and 390px light/dark touch, including after keyboard
+expansion. Header height, fixture alignment/containment, title/ellipsis and touch targets are
+also checked. The long-name DOM regression failed before implementation; 58 focused frontend
+tests, lint, format and TypeScript/Vite build pass. No backend code changed for this follow-up.
+Local only: neither this nor the preceding completed-match model change is pushed or deployed.
+
 ## Local shortlist completed-match model and limited sorting
 
 Owner-approved correction after read-only diagnosis: the 2026-10-17 schedule capture at 11:50 UTC
