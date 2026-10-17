@@ -51,10 +51,18 @@ public final class OwnedSyncWatchdog {
     private final ObjectMapper json;
     private final Notification notification;
     private final AlertSender sender;
+    private final OwnedSyncRequestBudget.Limits requestLimits;
 
     public OwnedSyncWatchdog(JdbcTemplate jdbc, TransactionTemplate tx, Clock clock,
                              OwnedSyncTables tables, Notification notification,
                              AlertSender sender) {
+        this(jdbc, tx, clock, tables, notification, sender, OwnedSyncRequestBudget.Limits.defaults());
+    }
+
+    public OwnedSyncWatchdog(JdbcTemplate jdbc, TransactionTemplate tx, Clock clock,
+                             OwnedSyncTables tables, Notification notification,
+                             AlertSender sender, OwnedSyncRequestBudget.Limits requestLimits) {
+        this.requestLimits = Objects.requireNonNull(requestLimits);
         this.jdbc = Objects.requireNonNull(jdbc);
         this.tx = Objects.requireNonNull(tx);
         this.clock = Objects.requireNonNull(clock);
@@ -308,7 +316,7 @@ public final class OwnedSyncWatchdog {
         Long due = jdbc.queryForObject("SELECT count(*) FROM " + tables.run()
                 + " WHERE season=? AND state IN ('PENDING','LEASED') AND due_at<=?", Long.class,
                 season, Timestamp.from(now));
-        boolean exhausted = attempts != null && attempts >= 5_000;
+        boolean exhausted = attempts != null && attempts >= requestLimits.maxAttempts();
         boolean blocked = due != null && due > 0 && cooldown != null && cooldown.toInstant().isAfter(now);
         if (exhausted || blocked) {
             put(signals, new Signal("budget:" + season, "REQUEST_BUDGET_BLOCKED",
