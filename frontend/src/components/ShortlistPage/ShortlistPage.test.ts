@@ -362,6 +362,36 @@ it('puts colour-coded availability in its own cell and sorts from headers both w
   );
 });
 
+it('keeps long failure explanations out of comparison rows but available in the detail card', async () => {
+  const reason =
+    'Team projection unavailable: incomplete comparison evidence or missing club rates.';
+  apiFetchMock.mockImplementation(() =>
+    Promise.resolve(
+      Response.json({
+        ...comparison,
+        rows: [
+          {
+            ...comparison.rows[0],
+            reason: 'Matching playing-season statistics unavailable.',
+            forecast: { ...comparison.rows[0].forecast, expectedCleanSheets: null, reason },
+          },
+        ],
+      }),
+    ),
+  );
+  await mount(Response.json([stored]));
+  const row = host.querySelector(':scope table[aria-label="Player comparison"] > tbody > tr')!;
+  expect(row.textContent).not.toContain(reason);
+  expect(row.textContent).not.toContain('Matching playing-season statistics unavailable.');
+  expect(row.textContent).toContain('n/a');
+  act(() =>
+    host.querySelector<HTMLButtonElement>('button[aria-label="Details for Bukayo Saka"]')!.click(),
+  );
+  const card = host.querySelector('section[aria-label="Bukayo Saka details"]');
+  expect(card?.textContent).toContain(reason);
+  expect(card?.textContent).toContain('Matching playing-season statistics unavailable.');
+});
+
 it('summarises source limits in two sentences with a readable UTC date', async () => {
   await mount(Response.json([stored]));
   const sources = host.querySelector('details');

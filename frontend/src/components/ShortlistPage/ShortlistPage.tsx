@@ -269,8 +269,6 @@ function ShortlistRow({
           >
             <span aria-hidden="true">{expanded ? '▾' : '▸'}</span> {name}
           </button>
-          {row?.reason && <p className={classes.note}>{row.reason}</p>}
-          {row?.forecast.reason && <p className={classes.note}>{row.forecast.reason}</p>}
         </th>
         <td>{row?.market?.teamShort ?? player.teamShort}</td>
         <td>{['GK', 'DEF', 'MID', 'FWD'][position - 1] ?? 'n/a'}</td>
@@ -337,6 +335,8 @@ function ShortlistRow({
             <section id={detailsId} className={classes.card} aria-label={`${name} details`}>
               <h2>{name}</h2>
               <p className={classes.note}>{seasonName(player.season)}</p>
+              {row?.reason && <p className={classes.note}>{row.reason}</p>}
+              {row?.forecast.reason && <p className={classes.note}>{row.forecast.reason}</p>}
               <p className={classes.note}>
                 {row?.market?.news ?? availability(row?.market?.status)}
               </p>

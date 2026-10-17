@@ -232,6 +232,21 @@ it('immediately hides the old thread, marks the target and disables the real com
   expect(sendButton().disabled).toBe(false);
 });
 
+it('marks the shortlist content column separately from the chat reading layout', async () => {
+  expect(host.querySelector('[data-page="/app"]')).not.toBeNull();
+  await flush(() =>
+    root.render(
+      React.createElement(
+        MantineProvider,
+        { forceColorScheme: 'light' },
+        React.createElement(ChatView, { route: '/shortlist' }),
+      ),
+    ),
+  );
+  expect(host.querySelector('[data-page="/shortlist"]')).not.toBeNull();
+  expect(host.querySelector('[data-page="/app"]')).toBeNull();
+});
+
 it('accepts empty history as success rather than a failed selection', async () => {
   await loadPrevious();
   const request = select('a');
