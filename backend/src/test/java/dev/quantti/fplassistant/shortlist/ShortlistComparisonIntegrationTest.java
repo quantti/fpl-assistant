@@ -57,6 +57,7 @@ class ShortlistComparisonIntegrationTest {
     @MockitoSpyBean JdbcTemplate jdbc;
     @Autowired PlatformTransactionManager transactions;
     @MockitoSpyBean RankingMetrics ranking;
+    @MockitoSpyBean dev.quantti.fplassistant.tools.DailyPriceSource prices;
     @Value("${fpl.daily-price.table-name}") String daily;
     @Value("${fpl.schedule.gameweek-table-name}") String events;
     @Value("${fpl.schedule.fixture-table-name}") String fixtures;
@@ -88,7 +89,7 @@ class ShortlistComparisonIntegrationTest {
             }
         }
         jdbc.batchUpdate("INSERT INTO player_fixture_stats(fixture_id,player_id,season_id,gameweek,player_team_id,opponent_team_id,was_home,kickoff_time,minutes,total_points,value,expected_goals,expected_assists,expected_goals_conceded,defensive_contribution) VALUES(?,?,?,?,?,?,?,?,90,6,60,1.2,0.3,1.2,10)", readings);
-        jdbc.update("UPDATE " + daily + " SET full_name=web_name,team_name=team_short WHERE season=?", SEASON);
+        jdbc.update("UPDATE " + daily + " SET full_name=web_name,team_name=team_short,chance_of_playing_next_round=75 WHERE season=?", SEASON);
         var cat = catalogues.forCapture(SEASON, DAY).orElseThrow();
         shortlist.put(OWNER, cat.id(), SEASON, PLAYER).orElseThrow();
     }
@@ -107,6 +108,26 @@ class ShortlistComparisonIntegrationTest {
         jdbc.update("DELETE FROM gameweek WHERE season_id=?", SEASON_ID);
         jdbc.update("DELETE FROM season WHERE id=?", SEASON_ID);
         SharedStatsSeed.setCurrentSeason(jdbc, SharedStatsSeed.CURRENT_SEASON_ID);
+    }
+
+    @Test void marketExposesCapturedPlayingChance() {
+        for (Integer chance : java.util.Arrays.asList(75, 50, 0, null)) {
+            jdbc.update("UPDATE " + daily + " SET chance_of_playing_next_round=? WHERE season=? AND price_date=? AND element_id=?", chance, SEASON, DAY, PLAYER);
+            var market = comparison.read(OWNER).rows().getFirst().market();
+            assertThat(market.chanceOfPlayingNextRound()).isEqualTo(chance);
+            assertThat(market.status()).isEqualTo("d");
+            assertThat(market.capturedAt()).isEqualTo(CAPTURED);
+        }
+    }
+
+    @Test void playingChanceIsSelectedFromTheSameSeasonAndCaptureDay() {
+        // Bind the selected capture: two artificial seasons on one date are not a selector test.
+        org.mockito.Mockito.doReturn(java.util.Optional.of(
+                new dev.quantti.fplassistant.tools.DailyPriceSource.Capture(SEASON, DAY)))
+                .when(prices).latestCapture();
+        jdbc.update("INSERT INTO " + daily + " (season,price_date,element_id,web_name,now_cost,status,captured_at,chance_of_playing_next_round) VALUES (?,?,?,'Yesterday',60,'d',?,25),('SC-OLD',?,?,'Old season',60,'d',?,100)",
+                SEASON, DAY.minusDays(1), PLAYER, Timestamp.from(CAPTURED.minus(1, ChronoUnit.DAYS)), DAY, PLAYER, Timestamp.from(CAPTURED));
+        assertThat(comparison.read(OWNER).rows().getFirst().market().chanceOfPlayingNextRound()).isEqualTo(75);
     }
 
     @Test void realReadIncludesObservedTotalsAndFlaggedPlayersTeamForecast() {
@@ -183,10 +204,19 @@ class ShortlistComparisonIntegrationTest {
             var result = call.callRealMethod();
             var other = new TransactionTemplate(transactions);
             other.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
-            other.executeWithoutResult(s -> jdbc.update("UPDATE player SET total_points=999 WHERE season_id=? AND id=?", SEASON_ID, PLAYER));
+            other.executeWithoutResult(s -> {
+                jdbc.update("UPDATE player SET total_points=999 WHERE season_id=? AND id=?", SEASON_ID, PLAYER);
+                jdbc.update("UPDATE " + daily + " SET chance_of_playing_next_round=25,status='i',news='Changed',captured_at=? WHERE season=? AND price_date=? AND element_id=?", Timestamp.from(CAPTURED.plusSeconds(60)), SEASON, DAY, PLAYER);
+            });
             return result;
         }).when(ranking).load(any(), any());
-        assertThat(comparison.read(OWNER).rows().getFirst().totals().points()).isEqualTo(60);
+        var row = comparison.read(OWNER).rows().getFirst();
+        assertThat(row.totals().points()).isEqualTo(60);
+        assertThat(row.market().chanceOfPlayingNextRound()).isEqualTo(75);
+        assertThat(row.market().status()).isEqualTo("d");
+        assertThat(row.market().news()).isNull();
+        assertThat(row.market().capturedAt()).isEqualTo(CAPTURED);
+        assertThat(jdbc.queryForObject("SELECT chance_of_playing_next_round FROM " + daily + " WHERE season=? AND price_date=? AND element_id=?", Integer.class, SEASON, DAY, PLAYER)).isEqualTo(25);
         assertThat(jdbc.queryForObject("SELECT total_points FROM player WHERE season_id=? AND id=?", Integer.class, SEASON_ID, PLAYER)).isEqualTo(999);
     }
 }
