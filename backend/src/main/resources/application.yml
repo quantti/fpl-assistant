@@ -105,6 +105,8 @@ fpl:
     importer:
       # Opt-in hourly incremental collector; requires an already-ACTIVE matching runtime and cutover confirmation.
       enabled: ${OWNED_SYNC_IMPORTER_ENABLED:false}
+      # Shared rolling ledger is retained; importer-only override, hard ceiling 6,000.
+      max-attempts-per-day: ${OWNED_SYNC_IMPORTER_MAX_ATTEMPTS_PER_DAY:5000}
     handoff:
       # Operator-only OFF -> importer epoch and explicit rollback. Never acts at startup.
       enabled: ${OWNED_SYNC_HANDOFF_ENABLED:false}
