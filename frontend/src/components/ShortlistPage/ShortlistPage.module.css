@@ -77,7 +77,7 @@
   background: var(--paper);
   font-weight: 500;
 }
-.table > thead > tr > th:nth-child(n + 4):nth-child(-n + 10),
+.table > thead > tr > th:nth-child(n + 5):nth-child(-n + 11),
 .table > tbody > tr > .number,
 .table > tbody > tr > .emphasis {
   text-align: right;
@@ -95,7 +95,7 @@
 }
 .playerName {
   display: block;
-  min-height: var(--space-48);
+  min-height: var(--space-32);
   padding: 0;
   border: 0;
   background: transparent;
@@ -106,9 +106,39 @@
   cursor: pointer;
 }
 .availability {
-  display: block;
+  display: inline-block;
+  padding: var(--space-4) var(--space-8);
   color: var(--muted);
-  font-weight: 400;
+  border: 1px solid var(--rule-section);
+  font-weight: 600;
+}
+.availability[data-status="a"] {
+  color: var(--pitch);
+  border-color: currentColor;
+}
+.availability[data-status="d"] {
+  background: #ffe65b;
+  color: #171e2e;
+  border-color: #ffe65b;
+}
+.availability:is([data-status="i"], [data-status="s"], [data-status="u"], [data-status="n"]) {
+  background: #c52232;
+  color: #ffffff;
+  border-color: #c52232;
+}
+.sortHeader {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  text-align: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.table > tbody > tr:nth-child(even) > :is(th, td) {
+  background: color-mix(in srgb, var(--paper), var(--ink) 4%);
 }
 .table > tbody > tr > .cardCell {
   padding: 0;

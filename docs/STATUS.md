@@ -1,5 +1,22 @@
 # Status — Phase 1
 
+## Shortlist header sorting and availability (PR #162)
+
+The owner requested an actual dense comparison grid with sortable column headers. TanStack Table
+v8 now owns client-side sorting (both directions, missing values last), replacing the sort select
+and manual comparator. Every data column is sortable; gameweek columns sort by average FDR
+(known blank = 0, incomplete ratings = unknown), not an invented expected-points score. Actions
+remain unsorted. Availability is a separate labelled badge column, with green available, yellow
+doubtful and red unavailable/injured/suspended statuses; no colour-only meaning. Alternating rows
+and shared aligned headers make rows easier to follow.
+
+The daily-capture DTO does not store FPL's chance-of-playing percentage, so 50/25% orange flags
+cannot be distinguished from 75% yellow flags: no percentage is inferred from news text or role.
+18 focused frontend tests, lint, format and build pass, with isolated Chromium light/dark checks
+at 390/1440px for cell bounds, scrolling and keyboard detail expansion. Production dependencies
+have no reported npm audit vulnerabilities; the full audit reports a high source-map-js development
+advisory, not changed here. No backend changes, production actions or staging deploy in this update.
+
 ## Shortlist table follow-up (PR #162)
 
 Owner-requested replacement of the stacked comparison cards: one semantic table row per player,

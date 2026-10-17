@@ -182,11 +182,14 @@ it('uses shared table columns and opens a detail card from the player name', asy
   await mount(Response.json([stored, { ...stored, elementId: 18, fullName: 'Alpha' }]));
   const table = host.querySelector('table[aria-label="Player comparison"]');
   expect(table).not.toBeNull();
-  const headers = [...table!.querySelectorAll(':scope > thead th')].map((cell) => cell.textContent);
+  const headers = [...table!.querySelectorAll(':scope > thead th')].map((cell) =>
+    cell.textContent?.replace(/ [↑↓↕]$/, ''),
+  );
   expect(headers).toEqual([
     'Player',
     'Club',
     'Pos',
+    'Availability',
     'Price',
     'Points',
     'Points/£m',
@@ -205,10 +208,10 @@ it('uses shared table columns and opens a detail card from the player name', asy
   expect(host.textContent).not.toContain('ARS · Midfielder · 2026/27 season');
   expect(table!.textContent).toContain('MID');
   const rows = table!.querySelectorAll(':scope > tbody > tr');
-  expect(rows[0].querySelector(':scope > :nth-child(11)')?.textContent).toBe('n/a');
-  expect(rows[1].querySelector(':scope > :nth-child(11)')?.textContent).toContain('CHE (H)');
-  expect(rows[1].querySelector(':scope > :nth-child(11)')?.textContent).toContain('LIV (A)');
-  expect(rows[1].querySelector(':scope > :nth-child(12)')?.textContent).toBe('Blank');
+  expect(rows[0].querySelector(':scope > :nth-child(12)')?.textContent).toBe('n/a');
+  expect(rows[1].querySelector(':scope > :nth-child(12)')?.textContent).toContain('CHE (H)');
+  expect(rows[1].querySelector(':scope > :nth-child(12)')?.textContent).toContain('LIV (A)');
+  expect(rows[1].querySelector(':scope > :nth-child(13)')?.textContent).toBe('Blank');
   expect(host.textContent).not.toContain('Observed season totals');
   const button = host.querySelector<HTMLButtonElement>(
     'button[aria-expanded="false"][aria-label="Details for Bukayo Saka"]',
@@ -278,7 +281,7 @@ it('compares all three xG metrics, value and five gameweeks with detail evidence
   const table = host.querySelector('table[aria-label="Player comparison"]')!;
   const metric = (label: string) => {
     const index = [...table.querySelectorAll(':scope > thead th')].findIndex(
-      (cell) => cell.textContent === label,
+      (cell) => cell.textContent?.replace(/ [↑↓↕]$/, '') === label,
     );
     return table.querySelector(':scope > tbody > tr')!.children[index].textContent;
   };
@@ -308,6 +311,45 @@ it('keeps removal usable on comparison failure and retries independently', async
     await Promise.resolve();
   });
   expect(host.textContent).toContain('count:0');
+});
+
+it('puts colour-coded availability in its own cell and sorts from headers both ways', async () => {
+  const other = { ...stored, elementId: 18, fullName: 'Alpha', teamShort: 'MCI' };
+  apiFetchMock.mockImplementation(() =>
+    Promise.resolve(
+      Response.json({
+        ...comparison,
+        rows: [
+          comparison.rows[0],
+          {
+            ...comparison.rows[0],
+            elementId: 18,
+            market: { ...comparison.rows[0].market, fullName: 'Alpha', status: 'a', nowCost: 90 },
+          },
+        ],
+      }),
+    ),
+  );
+  await mount(Response.json([stored, other]));
+  const table = host.querySelector('table[aria-label="Player comparison"]')!;
+  expect(table.querySelector('th[scope="row"]')?.textContent).not.toContain('Available');
+  expect(table.querySelector('[data-status="a"]')?.textContent).toBe('Available');
+  expect(table.querySelector('[data-status="d"]')?.textContent).toBe('Doubtful');
+  expect(table.querySelectorAll(':scope > thead button')).toHaveLength(16);
+  const price = [...table.querySelectorAll(':scope > thead button')].find((button) =>
+    button.textContent?.startsWith('Price'),
+  ) as HTMLButtonElement;
+  expect(price).toBeDefined();
+  act(() => price.click());
+  expect(price.parentElement?.getAttribute('aria-sort')).toBe('descending');
+  expect(table.querySelector(':scope > tbody button[aria-expanded]')?.textContent).toContain(
+    'Alpha',
+  );
+  act(() => price.click());
+  expect(price.parentElement?.getAttribute('aria-sort')).toBe('ascending');
+  expect(table.querySelector(':scope > tbody button[aria-expanded]')?.textContent).toContain(
+    'Bukayo Saka',
+  );
 });
 
 it('summarises source limits in two sentences with a readable UTC date', async () => {
@@ -356,10 +398,12 @@ it('sorts missing metrics last and filters positions without changing membership
   await mount(Response.json([stored, second]));
   expect(host.querySelector('button[aria-expanded]')?.textContent).toContain('Alpha');
   const selects = host.querySelectorAll('select');
-  act(() => {
-    selects[1].value = 'value';
-    selects[1].dispatchEvent(new Event('change', { bubbles: true }));
-  });
+  const valueHeader = [...host.querySelectorAll(':scope thead button')].find((button) =>
+    button.textContent?.startsWith('Points/£m'),
+  ) as HTMLButtonElement;
+  act(() => valueHeader.click());
+  expect(host.querySelector('button[aria-expanded]')?.textContent).toContain('Bukayo Saka');
+  act(() => valueHeader.click());
   expect(host.querySelector('button[aria-expanded]')?.textContent).toContain('Bukayo Saka');
   act(() => {
     selects[0].value = '2';
