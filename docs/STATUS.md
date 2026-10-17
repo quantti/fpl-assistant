@@ -1,5 +1,17 @@
 # Status — Phase 1
 
+## Incremental cutover request budget (2026-10-17; not activated)
+
+The owner authorised replacing legacy sync with the incremental importer. Legacy is now OFF
+(epoch 106 at 13:53 UTC), with no active owned jobs/unsettled permits and public health UP.
+Its 5,000-attempt rolling-day ledger was full; GW6's 10 VERIFIED fixtures/667 PFS rows came
+from legacy, not the importer. This branch adds a bounded importer-only 1..6,000 override
+(default still 5,000), shared with its watchdog; admission history and other safety limits remain.
+[Cutover plan](superpowers/plans/2026-10-17-importer-cutover-budget.md) estimates roughly 680
+requests for the initial 667-player pass plus source/event reads, not a guaranteed full-run cost.
+Focused unit/config checks passed; full PR CI, owner merge, operator handoff and first-cycle
+publication/monitor evidence remain required. No importer activation or ledger reset occurred.
+
 ## Project-local software factory (2026-10-16)
 
 `.agents/skills/software-factory/` copies the complete vanilla bundle from `quantti/pi-config`

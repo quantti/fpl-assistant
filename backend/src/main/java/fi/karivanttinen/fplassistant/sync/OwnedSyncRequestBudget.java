@@ -44,7 +44,7 @@ public final class OwnedSyncRequestBudget {
         this(jdbc, tx, clock, tables, Limits.defaults());
     }
 
-    /** Constructor-only override intended for bounded tests; there is deliberately no app wiring. */
+    /** Bounded limits for tests and the opt-in importer; default callers retain 5,000 attempts. */
     public OwnedSyncRequestBudget(JdbcTemplate jdbc, TransactionTemplate tx, Clock clock,
                                   OwnedSyncTables tables, Limits limits) {
         this.jdbc = Objects.requireNonNull(jdbc);
@@ -327,8 +327,8 @@ public final class OwnedSyncRequestBudget {
             if (maxLivePermits < 1 || maxLivePermits > 2) {
                 throw new IllegalArgumentException("maxLivePermits must be between 1 and 2");
             }
-            if (maxAttempts < 1 || maxAttempts > 5_000) {
-                throw new IllegalArgumentException("maxAttempts must be between 1 and 5000");
+            if (maxAttempts < 1 || maxAttempts > 6_000) {
+                throw new IllegalArgumentException("maxAttempts must be between 1 and 6000");
             }
             if (attemptWindow.compareTo(RETENTION) > 0) {
                 throw new IllegalArgumentException("attemptWindow cannot exceed 24 hours");
@@ -345,7 +345,11 @@ public final class OwnedSyncRequestBudget {
         }
 
         public static Limits defaults() {
-            return new Limits(Duration.ofSeconds(1), 2, 5_000, Duration.ofHours(24),
+            return defaults(5_000);
+        }
+
+        public static Limits defaults(int maxAttempts) {
+            return new Limits(Duration.ofSeconds(1), 2, maxAttempts, Duration.ofHours(24),
                     DEFAULT_PERMIT_TTL, Duration.ofSeconds(2), DEFAULT_MAXIMUM_BACKOFF);
         }
 
