@@ -1,24 +1,20 @@
 import { Loader } from '@mantine/core';
 import { Fragment, useId, useState } from 'react';
+import { getCoreRowModel, getSortedRowModel, useReactTable } from '@tanstack/react-table';
+import type { ColumnDef } from '@tanstack/react-table';
 import type { CataloguePlayer, PlayerCatalogue } from '../../types';
 import { type ShortlistPlayer, useShortlist } from '../../shortlist/ShortlistContext';
-import {
-  availability,
-  compareNumbers,
-  numberText as n,
-  sortMetric,
-} from '../../shortlist/comparison';
+import { availability, numberText as n, sortMetric } from '../../shortlist/comparison';
 import type { ComparisonRow, MetricSort } from '../../shortlist/comparison';
 import { useComparison } from '../../shortlist/useComparison';
 import ComparisonDetails from './ComparisonDetails';
 import classes from './ShortlistPage.module.css';
 
-type Sort = 'name' | 'position' | MetricSort;
+type PlayerEntry = { player: ShortlistPlayer; row?: ComparisonRow };
 
 export default function ShortlistPage() {
   const shortlist = useShortlist();
   const [position, setPosition] = useState('all');
-  const [sort, setSort] = useState<Sort>('name');
   const membershipKey = shortlist.players.map((p) => `${p.season}:${p.elementId}`).join(',');
   const comparison = useComparison(shortlist.loadFailed || shortlist.loading ? '' : membershipKey);
   const byKey = new Map(
@@ -29,16 +25,7 @@ export default function ShortlistPage() {
     .filter(
       ({ player, row }) =>
         position === 'all' || String(row?.market?.position ?? player.elementType) === position,
-    )
-    // eslint-disable-next-line unicorn/no-array-sort -- Fresh array; toSorted is outside the ES2022 browser target.
-    .sort((a, b) => {
-      const byName = displayName(a.player, a.row).localeCompare(displayName(b.player, b.row));
-      if (sort === 'name') return byName;
-      return sort === 'position'
-        ? (a.row?.market?.position ?? a.player.elementType) -
-            (b.row?.market?.position ?? b.player.elementType)
-        : compareNumbers(sortMetric(a.row, sort), sortMetric(b.row, sort)) || byName;
-    });
+    );
 
   const gameweeks = [
     ...new Set(
@@ -46,6 +33,65 @@ export default function ShortlistPage() {
     ),
   ];
   gameweeks.sort((a, b) => a - b);
+
+  const columns: ColumnDef<PlayerEntry>[] = [
+    {
+      id: 'name',
+      header: 'Player',
+      accessorFn: ({ player, row }) => displayName(player, row),
+      sortingFn: 'text',
+    },
+    {
+      id: 'club',
+      header: 'Club',
+      accessorFn: ({ player, row }) => row?.market?.teamShort ?? player.teamShort,
+      sortingFn: 'text',
+    },
+    {
+      id: 'position',
+      header: 'Pos',
+      accessorFn: ({ player, row }) => row?.market?.position ?? player.elementType,
+    },
+    {
+      id: 'status',
+      header: 'Availability',
+      accessorFn: ({ row }) => (row?.market?.status ? availability(row.market.status) : undefined),
+      sortingFn: 'text',
+    },
+    ...(['price', 'points', 'value', 'xg', 'xa', 'xgi', 'cs'] as MetricSort[]).map(
+      (metric, index) => ({
+        id: metric,
+        header: ['Price', 'Points', 'Points/£m', 'xG', 'xA', 'xGI', 'Team xCS'][index],
+        accessorFn: ({ row }: PlayerEntry) => sortMetric(row, metric) ?? undefined,
+        sortingFn: 'basic' as const,
+        sortDescFirst: true,
+      }),
+    ),
+    ...gameweeks.map((week) => ({
+      id: `gw${week}`,
+      header: `GW${week}`,
+      accessorFn: ({ row }: PlayerEntry) => {
+        const fixtures = row?.forecast.weeks.find((item) => item.gameweek === week)?.fixtures;
+        if (!fixtures || fixtures.some((fixture) => fixture.difficulty == null)) return;
+        return fixtures.length === 0
+          ? 0
+          : fixtures.reduce((sum, fixture) => sum + fixture.difficulty!, 0) / fixtures.length;
+      },
+      sortingFn: 'basic' as const,
+    })),
+    { id: 'actions', header: 'Actions', enableSorting: false },
+  ];
+  const table = useReactTable({
+    autoResetAll: false,
+    data: players,
+    columns,
+    defaultColumn: { sortUndefined: 'last', sortDescFirst: false },
+    initialState: { sorting: [{ id: 'name', desc: false }] },
+    enableSortingRemoval: false,
+    enableMultiSort: false,
+    getCoreRowModel: getCoreRowModel(),
+    getSortedRowModel: getSortedRowModel(),
+  });
 
   return (
     <main className={classes.page}>
@@ -83,20 +129,6 @@ export default function ShortlistPage() {
                 ))}
               </select>
             </label>
-            <label>
-              Sort by
-              <select value={sort} onChange={(event) => setSort(event.currentTarget.value as Sort)}>
-                <option value="name">Name</option>
-                <option value="position">Position</option>
-                <option value="price">Price · highest first</option>
-                <option value="points">Points · highest first</option>
-                <option value="value">Points/£m · highest first</option>
-                <option value="xg">xG · highest first</option>
-                <option value="xa">xA · highest first</option>
-                <option value="xgi">xGI · highest first</option>
-                <option value="cs">Team xCS · highest first</option>
-              </select>
-            </label>
             <span className={classes.note}>{comparison.data?.horizon}</span>
           </div>
           {comparison.loading && (
@@ -126,28 +158,38 @@ export default function ShortlistPage() {
             <table className={classes.table} aria-label="Player comparison">
               <thead>
                 <tr>
-                  {[
-                    'Player',
-                    'Club',
-                    'Pos',
-                    'Price',
-                    'Points',
-                    'Points/£m',
-                    'xG',
-                    'xA',
-                    'xGI',
-                    'Team xCS',
-                    ...gameweeks.map((week) => `GW${week}`),
-                    'Actions',
-                  ].map((label) => (
-                    <th key={label} scope="col">
-                      {label}
-                    </th>
-                  ))}
+                  {table.getFlatHeaders().map(({ id, column }) => {
+                    const direction = column.getIsSorted();
+                    const ariaSort = direction
+                      ? ({ asc: 'ascending', desc: 'descending' } as const)[direction]
+                      : undefined;
+                    const indicator = direction ? { asc: ' ↑', desc: ' ↓' }[direction] : ' ↕';
+                    return (
+                      <th key={id} scope="col" aria-sort={ariaSort}>
+                        {column.getCanSort() ? (
+                          <button
+                            type="button"
+                            className={classes.sortHeader}
+                            onClick={column.getToggleSortingHandler()}
+                            title={
+                              id.startsWith('gw')
+                                ? 'Sort by average FDR; blanks first, unknown last'
+                                : undefined
+                            }
+                          >
+                            {String(column.columnDef.header)}
+                            <span aria-hidden="true">{indicator}</span>
+                          </button>
+                        ) : (
+                          String(column.columnDef.header)
+                        )}
+                      </th>
+                    );
+                  })}
                 </tr>
               </thead>
               <tbody>
-                {players.map(({ player, row }) => (
+                {table.getRowModel().rows.map(({ original: { player, row } }) => (
                   <ShortlistRow
                     key={`${player.season}:${player.elementId}`}
                     player={player}
@@ -226,14 +268,20 @@ function ShortlistRow({
           >
             <span aria-hidden="true">{expanded ? '▾' : '▸'}</span> {name}
           </button>
-          <span className={classes.availability} title={row?.market?.news ?? undefined}>
-            {availability(row?.market?.status)}
-          </span>
           {row?.reason && <p className={classes.note}>{row.reason}</p>}
           {row?.forecast.reason && <p className={classes.note}>{row.forecast.reason}</p>}
         </th>
         <td>{row?.market?.teamShort ?? player.teamShort}</td>
         <td>{['GK', 'DEF', 'MID', 'FWD'][position - 1] ?? 'n/a'}</td>
+        <td>
+          <span
+            className={classes.availability}
+            data-status={row?.market?.status ?? 'unknown'}
+            title={row?.market?.news ?? undefined}
+          >
+            {availability(row?.market?.status)}
+          </span>
+        </td>
         {stats.map(([label, value]) => (
           <td
             key={label}
@@ -283,7 +331,7 @@ function ShortlistRow({
       </tr>
       {expanded && (
         <tr>
-          <td colSpan={11 + gameweeks.length} className={classes.cardCell}>
+          <td colSpan={12 + gameweeks.length} className={classes.cardCell}>
             <section id={detailsId} className={classes.card} aria-label={`${name} details`}>
               <h2>{name}</h2>
               <p className={classes.note}>{seasonName(player.season)}</p>

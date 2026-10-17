@@ -93,11 +93,6 @@ export function availability(status: string | null | undefined) {
   return status ? (labels[status] ?? 'Unknown') : 'Unknown';
 }
 
-export function compareNumbers(a: number | null | undefined, b: number | null | undefined) {
-  if (a == null) return b == null ? 0 : 1;
-  return b == null ? -1 : b - a;
-}
-
 export type MetricSort = 'price' | 'points' | 'value' | 'xg' | 'xa' | 'xgi' | 'cs';
 export function sortMetric(row: ComparisonRow | undefined, sort: MetricSort) {
   if (!row) return null;
