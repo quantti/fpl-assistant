@@ -1,5 +1,13 @@
 # Status — Phase 1
 
+## Local Team xCS legend
+
+Added a visible note below the table explaining that Team xCS is the club's expected clean-sheet
+count over the displayed gameweeks (1.54 ≈ 1½), not player points, and that forwards earn no
+clean-sheet points. The sortable header has a matching tooltip and aria-describedby link to the
+note. A missing-legend regression failed before the change; 50 focused frontend tests plus
+lint/format/TypeScript/Vite pass. Not pushed or deployed; the current n/a diagnosis is separate.
+
 ## Fixed-height shortlist rows
 
 Owner requires invariant player-row height. Main data rows and the header now measure 48px on

@@ -130,8 +130,7 @@ export default function ShortlistPage() {
           )}
           <p className={classes.note}>
             xG / xA / xGI are season totals; xGI = xG + xA. Points/£m uses current captured price,
-            not a forecast. Team xCS = expected clean sheets over this window. FDR: 1 easiest–5
-            hardest. n/a = unavailable.
+            not a forecast. FDR: 1 easiest–5 hardest. n/a = unavailable.
           </p>
           <div
             className={classes.tableScroll}
@@ -155,6 +154,12 @@ export default function ShortlistPage() {
                             type="button"
                             className={classes.sortHeader}
                             onClick={column.getToggleSortingHandler()}
+                            aria-describedby={id === 'cs' ? 'team-xcs-legend' : undefined}
+                            title={
+                              id === 'cs'
+                                ? 'Expected club clean sheets, not player points'
+                                : undefined
+                            }
                           >
                             {String(column.columnDef.header)}
                             <span aria-hidden="true">{indicator}</span>
@@ -179,6 +184,10 @@ export default function ShortlistPage() {
               </tbody>
             </table>
           </div>
+          <p id="team-xcs-legend" className={classes.note}>
+            <strong>Team xCS</strong> = expected club clean sheets in the displayed gameweeks (1.54
+            ≈ 1½), not player points; forwards earn no clean-sheet points.
+          </p>
           {players.length === 0 && (
             <p className={classes.state}>No saved players in this position.</p>
           )}
