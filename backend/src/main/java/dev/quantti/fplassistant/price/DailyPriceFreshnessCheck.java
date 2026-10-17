@@ -1,5 +1,6 @@
 package dev.quantti.fplassistant.price;
 
+import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -8,6 +9,7 @@ import java.time.temporal.ChronoUnit;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.dao.DataAccessException;
@@ -26,7 +28,7 @@ import org.springframework.stereotype.Component;
  * <p>Checks at 06:00 / 12:00 / 18:00 UK, all safely after the 02:00 capture window. Silent
  * when healthy; ERROR when stale; WARN when the table has no rows at all (a fresh environment
  * where the capture has never run — the tools already answer "no data captured yet" for that
- * state).
+ * state). When explicitly enabled, operational email accompanies stale and empty captures.
  *
  * <p>Gated on the same property as the capture itself: disabling the scheduled capture
  * disables the alert that watches it.
@@ -40,11 +42,22 @@ public class DailyPriceFreshnessCheck {
 
     private final JdbcTemplate jdbc;
     private final String tableName;
+    private final DailyPriceEmailAlert emailAlert;
+    private final Clock clock;
 
+    @Autowired
     public DailyPriceFreshnessCheck(JdbcTemplate jdbc,
-                                    @Value("${fpl.daily-price.table-name}") String tableName) {
+                                    @Value("${fpl.daily-price.table-name}") String tableName,
+                                    DailyPriceEmailAlert emailAlert) {
+        this(jdbc, tableName, emailAlert, Clock.systemUTC());
+    }
+
+    DailyPriceFreshnessCheck(JdbcTemplate jdbc, String tableName,
+                            DailyPriceEmailAlert emailAlert, Clock clock) {
         this.jdbc = jdbc;
         this.tableName = tableName;
+        this.emailAlert = emailAlert;
+        this.clock = clock;
     }
 
     @Scheduled(cron = "${fpl.daily-price.check-at}", zone = "${fpl.daily-price.fetch-zone}")
@@ -52,13 +65,14 @@ public class DailyPriceFreshnessCheck {
         try {
             LocalDate latest = jdbc.queryForObject(
                     "SELECT MAX(price_date) FROM %s".formatted(tableName), LocalDate.class);
+            LocalDateTime now = LocalDateTime.ofInstant(clock.instant(), UK);
             if (latest == null) {
-                log.warn("fpl_daily_price has no rows yet; freshness check skipped. If this is"
+                log.warn("fpl_daily_price has no rows yet. If this is"
                         + " production, the 02:00 UK capture has never run — check the always-on"
                         + " Fly machine setting.");
+                emailAlert.send(null, expectedDate(now));
                 return;
             }
-            LocalDateTime now = LocalDateTime.now(UK);
             if (isStale(latest, now)) {
                 log.error("DAILY PRICE CAPTURE IS STALE: latest row is {} but {} was expected"
                                 + " ({} days behind). The 02:00 UK capture has missed at least one"
@@ -66,6 +80,7 @@ public class DailyPriceFreshnessCheck {
                                 + " fpl.daily-price config, or run --sync-prices by hand.",
                         latest, expectedDate(now),
                         ChronoUnit.DAYS.between(latest, now.toLocalDate()));
+                emailAlert.send(latest, expectedDate(now));
             } else if (latest.isAfter(now.toLocalDate())) {
                 // A row dated in the future can only come from a machine whose clock runs
                 // ahead (e.g. a manual --sync-prices from a skewed laptop). It also suppresses

@@ -17,6 +17,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Predicate;
 
 import javax.sql.DataSource;
 
@@ -38,7 +39,9 @@ import dev.quantti.fplassistant.sync.OwnedSyncHttpClient.Response;
 import dev.quantti.fplassistant.sync.OwnedSyncRequestBudget.Allowed;
 import dev.quantti.fplassistant.sync.OwnedSyncRequestBudget.Deferred;
 import dev.quantti.fplassistant.sync.OwnedSyncRequestBudget.Limits;
+import dev.quantti.fplassistant.sync.HistoryFixtureDispatcher.Outcome;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.Endpoint;
+import dev.quantti.fplassistant.sync.OwnedSyncStore.Lease;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.RuntimeFence;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.SourceRead;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.SyncKind;
@@ -54,6 +57,8 @@ class OwnedMatchdayEndToEndIntegrationTest {
     private static final Season SEASON = new Season(27, "2026-27", LocalDate.of(2026, 8, 21), null);
     private static final int DELAYED = 29;
     private static final int INDEPENDENT = 30;
+    private static final String FIXTURE_OVERDUE_CATEGORY = "FIXTURE_VERIFICATION_OVERDUE";
+    private static final String FIXTURE_OVERDUE_12H_CATEGORY = "FIXTURE_VERIFICATION_12H";
     private static DataSource dataSource;
     private static JdbcTemplate jdbc;
     private static TransactionTemplate tx;
@@ -73,6 +78,56 @@ class OwnedMatchdayEndToEndIntegrationTest {
     static void restoreSeed() {
         cleanSeason();
         jdbc.update("UPDATE season SET is_current=(id=?)", SharedStatsSeed.CURRENT_SEASON_ID);
+    }
+
+    @Test
+    void fixtureOverdueMessageMatcherRejectsNearMisses() throws Exception {
+        ObjectNode sourcePayload = fixtureOverdueMessage();
+        String validSourceMessage = JSON.writeValueAsString(sourcePayload);
+        assertThat(isFixtureOverdueIncident(validSourceMessage, SEASON.code(), DELAYED,
+                FIXTURE_OVERDUE_CATEGORY)).isTrue();
+
+        ObjectNode stringFixtureId = sourcePayload.deepCopy();
+        stringFixtureId.put("fixtureId", "29");
+        ((ObjectNode) stringFixtureId.get("details")).put("fixtureId", "29");
+        assertThat(isFixtureOverdueIncident(JSON.writeValueAsString(stringFixtureId), SEASON.code(), DELAYED,
+                FIXTURE_OVERDUE_CATEGORY)).isTrue();
+
+        ObjectNode legacyFixtureId = sourcePayload.deepCopy();
+        legacyFixtureId.put("fixtureId", 990029);
+        ((ObjectNode) legacyFixtureId.get("details")).put("fixtureId", 990029);
+        assertThat(isFixtureOverdueIncident(JSON.writeValueAsString(legacyFixtureId), SEASON.code(), DELAYED,
+                FIXTURE_OVERDUE_CATEGORY)).isFalse();
+
+        ObjectNode dateOnlyMatch = sourcePayload.deepCopy();
+        dateOnlyMatch.put("fixtureId", 30);
+        dateOnlyMatch.put("incidentKey", fixtureOverdueIncidentKey(FIXTURE_OVERDUE_CATEGORY,
+                SEASON.code(), 30));
+        ObjectNode dateDetails = (ObjectNode) dateOnlyMatch.get("details");
+        dateDetails.put("fixtureId", 30);
+        dateDetails.put("kickoff", "2026-09-29T15:30:00Z");
+        assertThat(isFixtureOverdueIncident(JSON.writeValueAsString(dateOnlyMatch), SEASON.code(), DELAYED,
+                FIXTURE_OVERDUE_CATEGORY)).isFalse();
+
+        ObjectNode wrongKey = sourcePayload.deepCopy();
+        wrongKey.put("incidentKey", "fixture-overdue:2026-27:990029");
+        assertThat(isFixtureOverdueIncident(JSON.writeValueAsString(wrongKey), SEASON.code(), DELAYED,
+                FIXTURE_OVERDUE_CATEGORY)).isFalse();
+
+        ObjectNode wrongCategory = sourcePayload.deepCopy();
+        wrongCategory.put("category", FIXTURE_OVERDUE_12H_CATEGORY);
+        assertThat(isFixtureOverdueIncident(JSON.writeValueAsString(wrongCategory), SEASON.code(), DELAYED,
+                FIXTURE_OVERDUE_CATEGORY)).isFalse();
+
+        ObjectNode wrongSeason = sourcePayload.deepCopy();
+        wrongSeason.put("season", "2025-26");
+        assertThat(isFixtureOverdueIncident(JSON.writeValueAsString(wrongSeason), SEASON.code(), DELAYED,
+                FIXTURE_OVERDUE_CATEGORY)).isFalse();
+
+        ObjectNode recovery = sourcePayload.deepCopy();
+        recovery.put("event", "recovery");
+        assertThat(isFixtureOverdueIncident(JSON.writeValueAsString(recovery), SEASON.code(), DELAYED,
+                FIXTURE_OVERDUE_CATEGORY)).isFalse();
     }
 
     @Test
@@ -158,18 +213,45 @@ class OwnedMatchdayEndToEndIntegrationTest {
         OwnedSyncWatchdog watchdog = new OwnedSyncWatchdog(jdbc, tx, clock, TABLES,
                 new OwnedSyncWatchdog.Notification(true, true), delivered::add);
         watchdog.check(SEASON.code());
-        watchdog.deliver();
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.alert()
-                + " WHERE fixture_id=29 AND event_type='INCIDENT'", Integer.class)).isPositive();
-        assertThat(delivered).anySatisfy(message -> assertThat(message).contains("fixtureId", "29", "verification overdue"));
+        Map<String, Object> incident = jdbc.queryForMap("SELECT id,incident_key,event_type,category,season,"
+                + "fixture_id,payload::text AS payload FROM " + TABLES.alert()
+                + " WHERE season=? AND fixture_id=? AND event_type='INCIDENT'", SEASON.code(), DELAYED);
+        long incidentId = ((Number) incident.get("id")).longValue();
+        String incidentKey = (String) incident.get("incident_key");
+        String incidentCategory = (String) incident.get("category");
+        assertThat(incident.get("event_type")).isEqualTo("INCIDENT");
+        assertThat(incidentCategory).isEqualTo(FIXTURE_OVERDUE_CATEGORY);
+        assertThat(incidentKey).isEqualTo(fixtureOverdueIncidentKey(incidentCategory, SEASON.code(), DELAYED));
+        assertThat(incident.get("season")).isEqualTo(SEASON.code());
+        assertThat(((Number) incident.get("fixture_id")).intValue()).isEqualTo(DELAYED);
+        String persistedPayload = (String) incident.get("payload");
+        Predicate<String> targetIncident = message -> isFixtureOverdueIncident(
+                message, SEASON.code(), DELAYED, incidentCategory);
+        assertThat(targetIncident.test(persistedPayload))
+                .as("persisted watchdog source payload for incident %s", incidentId).isTrue();
+
+        // The synthetic full-season feed can queue more than one delivery batch of older fixtures.
+        // Drain without relying on the unordered fixture query to put fixture 29 in the first batch.
+        for (int drain = 0; drain < 50; drain++) {
+            if (delivered.stream().anyMatch(targetIncident)) break;
+            if (watchdog.deliver() == 0) break;
+        }
+        assertThat(delivered.stream().anyMatch(targetIncident))
+                .as("exact overdue incident %s (alert id %s) was delivered", incidentKey, incidentId).isTrue();
+        assertThat(jdbc.queryForObject("SELECT delivery_state FROM " + TABLES.alert() + " WHERE id=?",
+                String.class, incidentId)).isEqualTo("DELIVERED");
 
         // Delayed finish: publish the corrected schedule, then require two genuinely separate source batches.
         fpl.finished29 = true;
         publishSchedule(harness, clock);
         observeTwice(harness, fpl, DELAYED, clock);
         assertVerified(DELAYED);
-        assertThat(lastTwoReads(DELAYED)).satisfies(reads ->
-                assertThat(reads.get(1).started()).isAfterOrEqualTo(reads.get(0).finished().plus(Duration.ofMinutes(10))));
+        assertThat(lastTwoReads(DELAYED)).satisfies(reads -> {
+            assertThat(reads.get(1).started()).isAfterOrEqualTo(
+                    reads.get(0).finished().plus(Duration.ofMinutes(10)));
+            assertThat(reads.get(0).started()).isAfterOrEqualTo(reads.get(0).sourceFloor());
+            assertThat(reads.get(1).started()).isAfterOrEqualTo(reads.get(1).sourceFloor());
+        });
 
         watchdog.check(SEASON.code());
         watchdog.deliver();
@@ -188,6 +270,22 @@ class OwnedMatchdayEndToEndIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT current_verified_generation IS NULL FROM "
                 + TABLES.fixtureSync() + " WHERE fixture_id=29", Boolean.class)).isTrue();
         assertThat(readRows("ACTIVE", DELAYED)).isEmpty();
+        var invalidated = new PlannerInputRepository(jdbc, harness.store, TABLES, CAPTURED, clock)
+                .load(SEASON).progress().stream().filter(progress -> progress.fixtureId() == DELAYED)
+                .findFirst().orElseThrow();
+        assertThat(invalidated.verifiedAt()).isNull();
+        assertThat(invalidated.completedCorrections()).isEmpty();
+        Map<String, Object> scheduleCorrection = jdbc.queryForMap("SELECT generation,state,due_at,"
+                + "requested_source_after FROM " + TABLES.run()
+                + " WHERE kind='FIXTURE_VERIFICATION' AND publication_key=? AND state='PENDING' "
+                + "ORDER BY generation DESC LIMIT 1", "fixture:" + DELAYED);
+        assertThat(scheduleCorrection.get("state")).isEqualTo("PENDING");
+        assertThat(((Number) scheduleCorrection.get("generation")).longValue()).isGreaterThan(oldGeneration);
+        Timestamp scheduleSourceFinished = jdbc.queryForObject("SELECT source_read_finished_at FROM "
+                + TABLES.receipt() + " WHERE season=? AND publication_key=?", Timestamp.class,
+                SEASON.code(), CatalogueScheduleWriter.FIXTURE_SOURCE_RECEIPT_KEY);
+        assertThat(((Timestamp) scheduleCorrection.get("requested_source_after")).toInstant())
+                .isAfterOrEqualTo(scheduleSourceFinished.toInstant());
 
         observeTwice(harness, fpl, DELAYED, clock);
         assertThat(currentGeneration(DELAYED)).isGreaterThan(oldGeneration);
@@ -201,6 +299,326 @@ class OwnedMatchdayEndToEndIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT expected_assists FROM player_fixture_stats WHERE season_id=27"
                 + " AND fixture_id=29 AND player_id=?", BigDecimal.class,
                 fpl.playersByFixture.get(DELAYED).getFirst())).isNotNull();
+    }
+
+    @Test
+    void activeCorrectionPublicationSurvivesOffRestartWithoutReplay() throws Exception {
+        cleanSeason();
+        jdbc.update("UPDATE season SET is_current=false");
+        jdbc.update("INSERT INTO season(id,code,name,start_date,end_date,is_current) VALUES "
+                + "(27,'2026-27','Correction restart season','2026-08-21',NULL,true)");
+        seedLegacyRow();
+
+        MutableClock clock = new MutableClock(Instant.parse("2026-09-06T17:00:00Z"));
+        PlannerRuntimeRepository activator = new PlannerRuntimeRepository(jdbc, tx, clock, TABLES);
+        RuntimeFence firstFence = activator.activate(SEASON.code(), OwnedSyncMode.ACTIVE);
+        FakeFpl fpl = new FakeFpl(clock);
+        Harness harness = harness(clock, firstFence, fpl);
+        harness.catalogue.enqueueCycle(SEASON, clock.instant());
+        harness.drainDue();
+        observeTwice(harness, fpl, INDEPENDENT, clock);
+        assertVerified(INDEPENDENT);
+        long firstVerifiedGeneration = currentGeneration(INDEPENDENT);
+        Instant correctionDue = jdbc.queryForObject("SELECT first_verified_at FROM " + TABLES.fixtureSync()
+                + " WHERE season_id=? AND fixture_id=?", Timestamp.class, SEASON.id(), INDEPENDENT)
+                .toInstant().plus(Duration.ofHours(2));
+
+        clock.set(correctionDue);
+        harness.coordinator.tick();
+        Long correctionGeneration = jdbc.queryForObject("SELECT generation FROM " + TABLES.run()
+                + " WHERE season=? AND publication_key=? AND state='PENDING' ORDER BY generation DESC LIMIT 1",
+                Long.class, SEASON.code(), "fixture:" + INDEPENDENT);
+        assertThat(correctionGeneration).isNotNull();
+        jdbc.update("UPDATE " + TABLES.run() + " SET due_at=? WHERE season=? AND state='PENDING' AND generation<>?",
+                Timestamp.from(correctionDue.plus(Duration.ofDays(30))), SEASON.code(), correctionGeneration);
+        observe(harness, INDEPENDENT);
+        assertThat(jdbc.queryForObject("SELECT state FROM " + TABLES.run()
+                + " WHERE generation=?", String.class, correctionGeneration)).isEqualTo("COMPLETED");
+        assertThat(currentGeneration(INDEPENDENT)).isGreaterThan(firstVerifiedGeneration);
+        var receipt = jdbc.queryForMap("SELECT source_read_started_at,source_read_finished_at,published_at FROM "
+                + TABLES.receipt() + " WHERE season=? AND publication_key=?",
+                SEASON.code(), "fixture:" + INDEPENDENT);
+        Instant sourceStarted = ((Timestamp) receipt.get("source_read_started_at")).toInstant();
+        Instant sourceFinished = ((Timestamp) receipt.get("source_read_finished_at")).toInstant();
+        Instant publishedAt = ((Timestamp) receipt.get("published_at")).toInstant();
+        assertThat(sourceStarted).isAfterOrEqualTo(correctionDue);
+        assertThat(sourceFinished).isAfterOrEqualTo(sourceStarted).isBeforeOrEqualTo(publishedAt);
+        assertThat(jdbc.queryForObject("SELECT latest_generation FROM " + TABLES.receipt()
+                + " WHERE season=? AND publication_key=?", Long.class,
+                SEASON.code(), "fixture:" + INDEPENDENT)).isEqualTo(currentGeneration(INDEPENDENT));
+
+        activator.deactivate(firstFence);
+        RuntimeFence restartedFence = activator.activate(SEASON.code(), OwnedSyncMode.ACTIVE);
+        Harness restarted = harness(clock, restartedFence, fpl);
+        restarted.coordinator.tick();
+
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
+                + " WHERE season=? AND publication_key=? AND state='PENDING'",
+                Integer.class, SEASON.code(), "fixture:" + INDEPENDENT)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
+                + " WHERE generation=? AND state='COMPLETED' AND runtime_mode='ACTIVE'",
+                Integer.class, correctionGeneration)).isOne();
+        assertThat(restartedFence.epoch()).isGreaterThan(firstFence.epoch());
+    }
+
+    @Test
+    void historyOnlyCorrectionSurvivesOffBeforeFixtureRunAndQueuesFreshVerification() throws Exception {
+        cleanSeason();
+        jdbc.update("UPDATE season SET is_current=false");
+        jdbc.update("INSERT INTO season(id,code,name,start_date,end_date,is_current) VALUES "
+                + "(27,'2026-27','History correction season','2026-08-21',NULL,true)");
+        seedLegacyRow();
+
+        MutableClock clock = new MutableClock(Instant.parse("2026-09-06T17:00:00Z"));
+        PlannerRuntimeRepository activator = new PlannerRuntimeRepository(jdbc, tx, clock, TABLES);
+        RuntimeFence firstFence = activator.activate(SEASON.code(), OwnedSyncMode.ACTIVE);
+        FakeFpl fpl = new FakeFpl(clock);
+        Harness harness = harness(clock, firstFence, fpl);
+        harness.catalogue.enqueueCycle(SEASON, clock.instant());
+        harness.drainDue();
+        new PlannerInputRepository(jdbc, harness.store, TABLES, CAPTURED, clock).load(SEASON);
+        observeTwice(harness, fpl, INDEPENDENT, clock);
+        assertVerified(INDEPENDENT);
+
+        int historyPlayer = fpl.playersByFixture.get(INDEPENDENT).getFirst();
+        long verifiedGeneration = currentGeneration(INDEPENDENT);
+        Map<String, Object> fingerprintBefore = jdbc.queryForMap("SELECT fingerprint,source_read_finished_at,updated_at "
+                + "FROM " + TABLES.historyFingerprint() + " WHERE season_id=? AND player_id=? AND fixture_id=?",
+                SEASON.id(), historyPlayer, INDEPENDENT);
+        Map<String, Object> fixtureDatesBeforeRollback = jdbc.queryForMap("SELECT first_verified_at,next_due_at,updated_at,"
+                + "observation::text,observation_generation,current_verified_generation,last_verified_generation "
+                + "FROM " + TABLES.fixtureSync() + " WHERE season_id=? AND fixture_id=?",
+                SEASON.id(), INDEPENDENT);
+        Map<String, Object> historyReceiptBefore = jdbc.queryForMap("SELECT latest_generation,source_read_started_at,"
+                + "source_read_finished_at,published_at FROM " + TABLES.receipt()
+                + " WHERE season=? AND publication_key=?", SEASON.code(),
+                HistoryFixtureDispatcher.playerHistoryPublicationKey(historyPlayer));
+        int physicalRows = jdbc.queryForObject("SELECT count(*) FROM player_fixture_stats "
+                + "WHERE season_id=? AND fixture_id=?", Integer.class, SEASON.id(), INDEPENDENT);
+        int evidenceRows = jdbc.queryForObject("SELECT count(*) FROM " + TABLES.playerFixtureEvidence()
+                + " WHERE season_id=? AND fixture_id=?", Integer.class, SEASON.id(), INDEPENDENT);
+
+        // Roll back the real history publish after its callback reconciles fingerprints,
+        // invalidates the fixture and enqueues verification work.
+        fpl.correctedHistory30 = true;
+        Lease rollbackLease = enqueueHistoryAndAcquire(harness, historyPlayer);
+        tx.executeWithoutResult(status -> {
+            assertThat(harness.histories.process(rollbackLease, SEASON).outcome()).isEqualTo(Outcome.COMPLETED);
+            status.setRollbackOnly();
+        });
+        Map<String, Object> fingerprintAfterRollback = jdbc.queryForMap("SELECT fingerprint,source_read_finished_at,updated_at "
+                + "FROM " + TABLES.historyFingerprint() + " WHERE season_id=? AND player_id=? AND fixture_id=?",
+                SEASON.id(), historyPlayer, INDEPENDENT);
+        assertThat(fingerprintAfterRollback).isEqualTo(fingerprintBefore);
+        assertThat(jdbc.queryForMap("SELECT first_verified_at,next_due_at,updated_at,observation::text,"
+                + "observation_generation,current_verified_generation,last_verified_generation FROM " + TABLES.fixtureSync()
+                + " WHERE season_id=? AND fixture_id=?", SEASON.id(), INDEPENDENT))
+                .isEqualTo(fixtureDatesBeforeRollback);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
+                + " WHERE kind='FIXTURE_VERIFICATION' AND publication_key=? AND state IN ('PENDING','LEASED')",
+                Integer.class, "fixture:" + INDEPENDENT)).isZero();
+        assertThat(jdbc.queryForMap("SELECT latest_generation,source_read_started_at,source_read_finished_at,"
+                + "published_at FROM " + TABLES.receipt() + " WHERE season=? AND publication_key=?",
+                SEASON.code(), HistoryFixtureDispatcher.playerHistoryPublicationKey(historyPlayer)))
+                .isEqualTo(historyReceiptBefore);
+        assertThat(currentGeneration(INDEPENDENT)).isEqualTo(verifiedGeneration);
+        assertThat(jdbc.queryForObject("SELECT state FROM " + TABLES.run()
+                + " WHERE generation=?", String.class, rollbackLease.generation())).isEqualTo("LEASED");
+        assertThat(harness.histories.process(rollbackLease, SEASON).outcome()).isEqualTo(Outcome.COMPLETED);
+        assertThat(currentGenerationOrNull(INDEPENDENT)).isNull();
+        Map<String, Object> invalidatedObservation = jdbc.queryForMap("SELECT observation::text,observation_generation "
+                + "FROM " + TABLES.fixtureSync() + " WHERE season_id=? AND fixture_id=?",
+                SEASON.id(), INDEPENDENT);
+        assertThat(JSON.readTree((String) invalidatedObservation.get("observation"))
+                .path("coherent").booleanValue()).isFalse();
+        assertThat(jdbc.queryForObject("SELECT state FROM " + TABLES.fixtureSync()
+                + " WHERE season_id=? AND fixture_id=?", String.class, SEASON.id(), INDEPENDENT))
+                .isEqualTo("VERIFYING");
+        assertThat(jdbc.queryForObject("SELECT observation->>'coherent'='false' "
+                + "AND observation_generation=? AND current_verified_generation IS NULL "
+                + "AND first_verified_at IS NULL AND last_verified_generation=? "
+                + "AND first_finished_observed_at IS NOT NULL FROM " + TABLES.fixtureSync()
+                + " WHERE season_id=? AND fixture_id=?", Boolean.class, verifiedGeneration, verifiedGeneration,
+                SEASON.id(), INDEPENDENT)).isTrue();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM player_fixture_stats "
+                + "WHERE season_id=? AND fixture_id=?", Integer.class, SEASON.id(), INDEPENDENT))
+                .isEqualTo(physicalRows);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.playerFixtureEvidence()
+                + " WHERE season_id=? AND fixture_id=?", Integer.class, SEASON.id(), INDEPENDENT))
+                .isEqualTo(evidenceRows);
+        assertThat(readRows("ACTIVE", INDEPENDENT)).isEmpty();
+        Long invalidatedRun = jdbc.queryForObject("SELECT generation FROM " + TABLES.run()
+                + " WHERE kind='FIXTURE_VERIFICATION' AND publication_key=? AND state='PENDING'",
+                Long.class, "fixture:" + INDEPENDENT);
+        assertThat(invalidatedRun).isNotNull();
+
+        activator.deactivate(firstFence);
+        assertThat(jdbc.queryForObject("SELECT state FROM " + TABLES.run()
+                + " WHERE generation=?", String.class, invalidatedRun)).isEqualTo("FAILED");
+        RuntimeFence restartedFence = activator.activate(SEASON.code(), OwnedSyncMode.ACTIVE);
+        Harness restarted = harness(clock, restartedFence, fpl);
+        restarted.catalogue.enqueueCycle(SEASON, clock.instant());
+        restarted.drainDue();
+        int fixtureRunCount = jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
+                + " WHERE kind='FIXTURE_VERIFICATION' AND publication_key=?", Integer.class,
+                "fixture:" + INDEPENDENT);
+        assertThat(publishPlayerHistory(restarted, historyPlayer).outcome()).isEqualTo(Outcome.COMPLETED);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
+                + " WHERE kind='FIXTURE_VERIFICATION' AND publication_key=?", Integer.class,
+                "fixture:" + INDEPENDENT)).isEqualTo(fixtureRunCount);
+        assertThat(jdbc.queryForMap("SELECT observation::text,observation_generation FROM "
+                + TABLES.fixtureSync() + " WHERE season_id=? AND fixture_id=?",
+                SEASON.id(), INDEPENDENT)).isEqualTo(invalidatedObservation);
+
+        var invalidated = new PlannerInputRepository(jdbc, restarted.store, TABLES, CAPTURED, clock)
+                .load(SEASON).progress().stream().filter(progress -> progress.fixtureId() == INDEPENDENT)
+                .findFirst().orElseThrow();
+        assertThat(invalidated.verifiedAt()).isNull();
+        assertThat(invalidated.completedCorrections()).isEmpty();
+        restarted.coordinator.tick();
+        var freshRun = jdbc.queryForMap("SELECT generation,runtime_epoch,runtime_mode,state FROM "
+                + TABLES.run() + " WHERE kind='FIXTURE_VERIFICATION' AND publication_key=? "
+                + "AND state='PENDING'", "fixture:" + INDEPENDENT);
+        assertThat(((Number) freshRun.get("generation")).longValue()).isGreaterThan(invalidatedRun);
+        assertThat(((Number) freshRun.get("runtime_epoch")).longValue()).isEqualTo(restartedFence.epoch());
+        assertThat(freshRun.get("runtime_mode")).isEqualTo("ACTIVE");
+        jdbc.update("UPDATE " + TABLES.run() + " SET due_at=? WHERE season=? AND state='PENDING' "
+                        + "AND generation<>?", Timestamp.from(clock.instant().plus(Duration.ofDays(30))),
+                SEASON.code(), ((Number) freshRun.get("generation")).longValue());
+
+        observeTwice(restarted, fpl, INDEPENDENT, clock);
+        assertThat(currentGeneration(INDEPENDENT)).isGreaterThan(verifiedGeneration);
+        assertThat(readRows("ACTIVE", INDEPENDENT)).isNotEmpty();
+
+        fpl.removedHistory30 = true;
+        assertThat(publishPlayerHistory(restarted, historyPlayer).outcome()).isEqualTo(Outcome.COMPLETED);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.historyFingerprint()
+                + " WHERE season_id=? AND player_id=? AND fixture_id=?", Integer.class,
+                SEASON.id(), historyPlayer, INDEPENDENT)).isZero();
+        assertThat(currentGenerationOrNull(INDEPENDENT)).isNull();
+        assertThat(jdbc.queryForObject("SELECT observation->>'coherent'='false' "
+                + "AND observation_generation IS NOT NULL AND last_verified_generation IS NOT NULL "
+                + "FROM " + TABLES.fixtureSync() + " WHERE season_id=? AND fixture_id=?",
+                Boolean.class, SEASON.id(), INDEPENDENT)).isTrue();
+        assertThat(readRows("ACTIVE", INDEPENDENT)).isEmpty();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM player_fixture_stats "
+                + "WHERE season_id=? AND fixture_id=?", Integer.class, SEASON.id(), INDEPENDENT))
+                .isEqualTo(physicalRows);
+    }
+
+    @Test
+    void firstPendingHistoryCorrectionsKeepOwnershipAndRequireTwoFreshObservations() throws Exception {
+        cleanSeason();
+        jdbc.update("UPDATE season SET is_current=false");
+        jdbc.update("INSERT INTO season(id,code,name,start_date,end_date,is_current) VALUES "
+                + "(27,'2026-27','First pending history correction season','2026-08-21',NULL,true)");
+        seedLegacyRow();
+
+        MutableClock clock = new MutableClock(Instant.parse("2026-09-06T17:00:00Z"));
+        PlannerRuntimeRepository activator = new PlannerRuntimeRepository(jdbc, tx, clock, TABLES);
+        RuntimeFence firstFence = activator.activate(SEASON.code(), OwnedSyncMode.ACTIVE);
+        FakeFpl fpl = new FakeFpl(clock);
+        Harness harness = harness(clock, firstFence, fpl);
+        harness.catalogue.enqueueCycle(SEASON, clock.instant());
+        harness.drainDue();
+
+        int historyPlayer = fpl.playersByFixture.get(INDEPENDENT).getFirst();
+        assertThat(seedRetainedLegacyPfs(INDEPENDENT, historyPlayer)).isOne();
+        assertThat(readRows("OFF", INDEPENDENT)).hasSize(1);
+        assertThat(jdbc.queryForObject("SELECT expected_goals FROM player_fixture_stats "
+                + "WHERE season_id=? AND fixture_id=? AND player_id=?", BigDecimal.class,
+                SEASON.id(), INDEPENDENT, historyPlayer)).isEqualByComparingTo("0.77");
+
+        observe(harness, INDEPENDENT);
+        Map<String, Object> firstPending = jdbc.queryForMap("SELECT state,observation::text,"
+                + "observation_generation,current_verified_generation,last_verified_generation "
+                + "FROM " + TABLES.fixtureSync() + " WHERE season_id=? AND fixture_id=?",
+                SEASON.id(), INDEPENDENT);
+        assertThat(firstPending.get("state")).isEqualTo("VERIFYING");
+        assertThat(JSON.readTree((String) firstPending.get("observation")).path("coherent").booleanValue())
+                .isTrue();
+        assertThat(firstPending.get("observation_generation")).isNotNull();
+        assertThat(firstPending.get("current_verified_generation")).isNull();
+        assertThat(firstPending.get("last_verified_generation")).isNull();
+        long firstGeneration = ((Number) firstPending.get("observation_generation")).longValue();
+
+        fpl.correctedHistory30 = true;
+        assertThat(publishPlayerHistory(harness, historyPlayer).outcome()).isEqualTo(Outcome.COMPLETED);
+        assertThat(jdbc.queryForObject("SELECT observation->>'coherent'='false' "
+                + "AND observation_generation=? FROM " + TABLES.fixtureSync()
+                + " WHERE season_id=? AND fixture_id=?", Boolean.class,
+                firstGeneration, SEASON.id(), INDEPENDENT)).isTrue();
+        observe(harness, INDEPENDENT);
+        assertThat(jdbc.queryForObject("SELECT validation_failures[1] FROM " + TABLES.fixtureSync()
+                + " WHERE season_id=? AND fixture_id=?", String.class, SEASON.id(), INDEPENDENT))
+                .isEqualTo("NEEDS_SECOND_OBSERVATION");
+        long changedPendingGeneration = jdbc.queryForObject("SELECT observation_generation FROM "
+                + TABLES.fixtureSync() + " WHERE season_id=? AND fixture_id=?",
+                Long.class, SEASON.id(), INDEPENDENT);
+        assertThat(changedPendingGeneration).isGreaterThan(firstGeneration);
+
+        fpl.removedHistory30 = true;
+        assertThat(publishPlayerHistory(harness, historyPlayer).outcome()).isEqualTo(Outcome.COMPLETED);
+
+        Map<String, Object> invalidated = jdbc.queryForMap("SELECT observation::text,observation_generation,"
+                + "current_verified_generation,last_verified_generation FROM " + TABLES.fixtureSync()
+                + " WHERE season_id=? AND fixture_id=?", SEASON.id(), INDEPENDENT);
+        assertThat(JSON.readTree((String) invalidated.get("observation")).path("coherent").booleanValue())
+                .isFalse();
+        assertThat(invalidated.get("observation_generation")).isEqualTo(changedPendingGeneration);
+        assertThat(invalidated.get("current_verified_generation")).isNull();
+        assertThat(invalidated.get("last_verified_generation")).isNull();
+        assertThat(jdbc.queryForObject("SELECT expected_goals FROM player_fixture_stats "
+                + "WHERE season_id=? AND fixture_id=? AND player_id=?", BigDecimal.class,
+                SEASON.id(), INDEPENDENT, historyPlayer)).isEqualByComparingTo("0.77");
+        assertThat(readRows("ACTIVE", INDEPENDENT)).isEmpty();
+
+        FixtureSyncRepository repository = new FixtureSyncRepository(jdbc, TABLES);
+        var stored = tx.execute(status -> repository.lockObservation(SEASON, INDEPENDENT, clock.instant())
+                .orElseThrow());
+        assertThat(stored.generation()).isEqualTo(changedPendingGeneration);
+        assertThat(stored.observation().coherent()).isFalse();
+
+        activator.deactivate(firstFence);
+        PfsReadSource off = new PfsReadSource(jdbc, "OFF", SEASON.code(),
+                TABLES.fixtureSync(), TABLES.playerFixtureEvidence());
+        assertThat(readRows("OFF", INDEPENDENT)).isEmpty();
+        assertThat(off.fixtureReceipts(SEASON.id(), SEASON.code(), Set.of(INDEPENDENT)))
+                .containsEntry(INDEPENDENT, PfsReadSource.FixtureReceipt.UNVERIFIED_OWNED);
+
+        RuntimeFence restartedFence = activator.activate(SEASON.code(), OwnedSyncMode.ACTIVE);
+        Harness restarted = harness(clock, restartedFence, fpl);
+        fpl.removedHistory30 = false;
+        restarted.catalogue.enqueueCycle(SEASON, clock.instant());
+        restarted.drainDue();
+        assertThat(publishPlayerHistory(restarted, historyPlayer).outcome()).isEqualTo(Outcome.COMPLETED);
+        assertThat(jdbc.queryForObject("SELECT observation_generation FROM " + TABLES.fixtureSync()
+                + " WHERE season_id=? AND fixture_id=?", Long.class, SEASON.id(), INDEPENDENT))
+                .isEqualTo(changedPendingGeneration);
+        assertThat(jdbc.queryForObject("SELECT observation->>'coherent'='false' FROM " + TABLES.fixtureSync()
+                + " WHERE season_id=? AND fixture_id=?", Boolean.class, SEASON.id(), INDEPENDENT)).isTrue();
+
+        observe(restarted, INDEPENDENT);
+        assertThat(jdbc.queryForObject("SELECT validation_failures[1] FROM " + TABLES.fixtureSync()
+                + " WHERE season_id=? AND fixture_id=?", String.class, SEASON.id(), INDEPENDENT))
+                .isEqualTo("NEEDS_SECOND_OBSERVATION");
+        assertThat(jdbc.queryForObject("SELECT current_verified_generation FROM " + TABLES.fixtureSync()
+                + " WHERE season_id=? AND fixture_id=?", Long.class, SEASON.id(), INDEPENDENT)).isNull();
+        assertThat(readRows("ACTIVE", INDEPENDENT)).isEmpty();
+
+        clock.advance(Duration.ofMinutes(11));
+        observe(restarted, INDEPENDENT);
+        assertVerified(INDEPENDENT);
+        assertThat(currentGeneration(INDEPENDENT)).isGreaterThan(changedPendingGeneration);
+        assertThat(lastTwoReads(INDEPENDENT)).satisfies(reads -> {
+            assertThat(reads.get(1).started()).isAfterOrEqualTo(
+                    reads.get(0).finished().plus(Duration.ofMinutes(10)));
+            assertThat(reads.get(0).started()).isAfterOrEqualTo(reads.get(0).sourceFloor());
+            assertThat(reads.get(1).started()).isAfterOrEqualTo(reads.get(1).sourceFloor());
+        });
+        assertThat(jdbc.queryForObject("SELECT expected_goals FROM player_fixture_stats "
+                + "WHERE season_id=? AND fixture_id=? AND player_id=?", BigDecimal.class,
+                SEASON.id(), INDEPENDENT, historyPlayer)).isEqualByComparingTo("0.99");
     }
 
     @Test
@@ -265,6 +683,56 @@ class OwnedMatchdayEndToEndIntegrationTest {
                 + " WHERE generation=?", Boolean.class, run.generation())).isTrue();
     }
 
+    private static ObjectNode fixtureOverdueMessage() {
+        ObjectNode message = JSON.createObjectNode().put("event", "incident")
+                .put("incidentKey", fixtureOverdueIncidentKey(FIXTURE_OVERDUE_CATEGORY, SEASON.code(), DELAYED))
+                .put("category", FIXTURE_OVERDUE_CATEGORY).put("severity", "WARNING")
+                .put("season", SEASON.code()).put("fixtureId", DELAYED);
+        message.putObject("details").put("fixtureId", DELAYED)
+                .put("kickoff", "2026-09-06T15:30:00Z").put("status", "verification overdue");
+        return message;
+    }
+
+    private static boolean isFixtureOverdueIncident(String payload, String season, int fixtureId, String category) {
+        String incidentKey = fixtureOverdueIncidentKey(category, season, fixtureId);
+        if (incidentKey == null) return false;
+        try {
+            JsonNode message = JSON.readTree(payload);
+            if (message == null || !message.isObject()) return false;
+            JsonNode details = message.get("details");
+            return details != null && details.isObject()
+                    && hasTextField(message, "event", "incident")
+                    && hasTextField(message, "incidentKey", incidentKey)
+                    && hasTextField(message, "category", category)
+                    && hasTextField(message, "season", season)
+                    && hasFixtureId(message.get("fixtureId"), fixtureId)
+                    && hasFixtureId(details.get("fixtureId"), fixtureId)
+                    && hasTextField(details, "status", "verification overdue");
+        } catch (com.fasterxml.jackson.core.JsonProcessingException malformed) {
+            return false;
+        }
+    }
+
+    private static String fixtureOverdueIncidentKey(String category, String season, int fixtureId) {
+        String prefix = switch (category) {
+            case FIXTURE_OVERDUE_CATEGORY -> "fixture-overdue";
+            case FIXTURE_OVERDUE_12H_CATEGORY -> "fixture-overdue-12h";
+            default -> null;
+        };
+        return prefix == null ? null : prefix + ":" + season + ":" + fixtureId;
+    }
+
+    private static boolean hasTextField(JsonNode object, String field, String expected) {
+        JsonNode value = object.get(field);
+        return value != null && value.isTextual() && expected.equals(value.textValue());
+    }
+
+    private static boolean hasFixtureId(JsonNode value, int expected) {
+        if (value == null) return false;
+        if (value.isIntegralNumber()) return value.canConvertToInt() && value.intValue() == expected;
+        return value.isTextual() && Integer.toString(expected).equals(value.textValue());
+    }
+
     private static Harness harness(MutableClock clock, RuntimeFence fence, FakeFpl fpl) {
         OwnedSyncStore store = new OwnedSyncStore(jdbc, tx, clock, TABLES, fence);
         PlannerRuntimeRepository runtime = new PlannerRuntimeRepository(jdbc, tx, clock, TABLES, fence);
@@ -285,6 +753,23 @@ class OwnedMatchdayEndToEndIntegrationTest {
                 + " WHERE fixture_id=?", String.class, fixture)).isNotEqualTo("VERIFIED");
         clock.advance(Duration.ofMinutes(11));
         observe(harness, fixture);
+    }
+
+    private static Lease enqueueHistoryAndAcquire(Harness harness, int playerId) {
+        var run = harness.histories.enqueuePlayerHistory(SEASON, playerId, harness.clock.instant());
+        Lease lease = harness.store.acquire("history-regression", Duration.ofMinutes(5)).orElseThrow();
+        assertThat(lease.generation()).isEqualTo(run.generation());
+        return lease;
+    }
+
+    private static HistoryFixtureDispatcher.DispatchResult publishPlayerHistory(Harness harness, int playerId) {
+        Lease lease = enqueueHistoryAndAcquire(harness, playerId);
+        return harness.histories.process(lease, SEASON);
+    }
+
+    private static Long currentGenerationOrNull(int fixture) {
+        return jdbc.queryForObject("SELECT current_verified_generation FROM " + TABLES.fixtureSync()
+                + " WHERE season_id=? AND fixture_id=?", Long.class, SEASON.id(), fixture);
     }
 
     private static void observe(Harness harness, int fixture) {
@@ -320,10 +805,12 @@ class OwnedMatchdayEndToEndIntegrationTest {
     }
 
     private static List<Read> lastTwoReads(int fixture) {
-        return jdbc.query("SELECT source_read_started_at,source_read_finished_at FROM " + TABLES.run()
+        return jdbc.query("SELECT requested_source_after,source_read_started_at,source_read_finished_at FROM "
+                        + TABLES.run()
                         + " WHERE publication_key=? AND state='COMPLETED' AND source_read_started_at IS NOT NULL"
                         + " ORDER BY generation DESC LIMIT 2",
-                (rs, row) -> new Read(rs.getTimestamp(1).toInstant(), rs.getTimestamp(2).toInstant()),
+                (rs, row) -> new Read(rs.getTimestamp(2).toInstant(), rs.getTimestamp(3).toInstant(),
+                        rs.getTimestamp(1).toInstant()),
                 "fixture:" + fixture).reversed();
     }
 
@@ -371,6 +858,18 @@ class OwnedMatchdayEndToEndIntegrationTest {
                 """);
     }
 
+    private static int seedRetainedLegacyPfs(int fixtureId, int playerId) {
+        return jdbc.update("""
+                INSERT INTO player_fixture_stats (fixture_id,player_id,season_id,gameweek,player_team_id,
+                    opponent_team_id,was_home,kickoff_time,minutes,total_points,expected_goals,expected_assists,value)
+                SELECT f.id,p.id,f.season_id,f.gameweek,p.team_id,
+                    CASE WHEN p.team_id=f.team_h THEN f.team_a ELSE f.team_h END,
+                    p.team_id=f.team_h,f.kickoff_time,90,3,0.77,0.15,50
+                FROM fixture f JOIN player p ON p.season_id=f.season_id
+                WHERE f.season_id=? AND f.id=? AND p.id=?
+                """, SEASON.id(), fixtureId, playerId);
+    }
+
     private static void seedLegacyRow() {
         jdbc.update("INSERT INTO team(id,season_id,code,name,short_name,strength) VALUES"
                 + "(1,27,1,'Legacy home','LEG',3),(6,27,6,'Legacy away','LEA',3)");
@@ -410,7 +909,7 @@ class OwnedMatchdayEndToEndIntegrationTest {
         }
     }
 
-    private record Read(Instant started, Instant finished) { }
+    private record Read(Instant started, Instant finished, Instant sourceFloor) { }
 
     private static final class FakeFpl implements CatalogueScheduleDispatcher.Fetch,
             HistoryFixtureDispatcher.Fetch {
@@ -425,6 +924,8 @@ class OwnedMatchdayEndToEndIntegrationTest {
         private Integer failPlayerOnce;
         private boolean finished29;
         private boolean corrected29;
+        private boolean correctedHistory30;
+        private boolean removedHistory30;
         private boolean optionalUnknown;
 
         private FakeFpl(MutableClock clock) throws Exception {
@@ -527,7 +1028,9 @@ class OwnedMatchdayEndToEndIntegrationTest {
                     .put("own_goals", 0).put("penalties_saved", 0).put("penalties_missed", 0).put("saves", 0)
                     .put("yellow_cards", 0).put("red_cards", 0).put("starts", 1).put("value", 50)
                     .put("selected", 1).put("transfers_in", 0).put("transfers_out", 0)
-                    .put("expected_goals", "0.20").put("expected_goal_involvements", "0.20")
+                    .put("expected_goals", correctedHistory30 && fixture == INDEPENDENT
+                            && player == playersByFixture.get(INDEPENDENT).getFirst() ? "0.99" : "0.20")
+                    .put("expected_goal_involvements", "0.20")
                     .put("expected_goals_conceded", "1.00").put("influence", "1.0")
                     .put("creativity", "1.0").put("threat", "1.0").put("ict_index", "1.0")
                     .put("clearances_blocks_interceptions", 0).put("recoveries", 0).put("tackles", 0)
@@ -536,7 +1039,9 @@ class OwnedMatchdayEndToEndIntegrationTest {
                 row.put("expected_assists", "0.10");
             }
             ObjectNode root = JSON.createObjectNode();
-            root.putArray("history").add(row);
+            ArrayNode history = root.putArray("history");
+            if (!(removedHistory30 && fixture == INDEPENDENT
+                    && player == playersByFixture.get(INDEPENDENT).getFirst())) history.add(row);
             return JSON.writeValueAsBytes(root);
         }
     }

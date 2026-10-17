@@ -61,9 +61,8 @@ spring:
           max-output-tokens: ${FPL_MAX_TOKENS:1500}
           # Applies to the visible answer; thinking tokens are budgeted separately by the
           # level below and land on the bill as output tokens all the same.
-          # LOW to start: the cost model in docs/LLM-PRICING.md assumes ~1,500 thinking
-          # tokens/turn, and the trial raises this only if answers need it.
-          thinking-level: ${GEMINI_THINKING_LEVEL:LOW}
+          # Thinking depth is not a fixed token budget; MEDIUM may increase turn cost.
+          thinking-level: ${GEMINI_THINKING_LEVEL:MEDIUM}
     vectorstore:
       pgvector:
         table-name: fpl_embeddings
@@ -103,6 +102,12 @@ fpl:
     mode: ${OWNED_SYNC_MODE:OFF}
     playing-season: ${OWNED_SYNC_PLAYING_SEASON:}
     cutover-confirmed: ${OWNED_SYNC_CUTOVER_CONFIRMED:false}
+    importer:
+      # Opt-in hourly incremental collector; requires an already-ACTIVE matching runtime and cutover confirmation.
+      enabled: ${OWNED_SYNC_IMPORTER_ENABLED:false}
+    handoff:
+      # Operator-only OFF -> importer epoch and explicit rollback. Never acts at startup.
+      enabled: ${OWNED_SYNC_HANDOFF_ENABLED:false}
     fixture-table-name: fpl_fixture_sync
     evidence-table-name: fpl_player_fixture_evidence
     alerts:
@@ -245,6 +250,12 @@ fpl:
     # the capture writes one row per UK date at 02:00, so by 06:00 a row must exist for the
     # current UK date. Runs after the capture window; silent while healthy.
     check-at: "0 0 6,12,18 * * *"
+    # KAR-19: separate Resend sending key; opt-in, no production mail by default.
+    email-alert:
+      enabled: ${DAILY_PRICE_ALERT_EMAIL_ENABLED:false}
+      api-key: ${DAILY_PRICE_ALERT_RESEND_API_KEY:}
+      from: "${DAILY_PRICE_ALERT_EMAIL_FROM:FPL Sidekick <noreply@fpl-sidekick.com>}"
+      to: ${DAILY_PRICE_ALERT_EMAIL_TO:quantti@users.noreply.github.com}
     # Enabled 2026-08-18. Depends on the Fly machine staying up (min_machines_running = 1,
     # auto_stop_machines = false in fly.toml): a stop-when-idle machine has nothing running at
     # 02:00 to fire the cron, so reverting that setting stops the price capture — loudly now,

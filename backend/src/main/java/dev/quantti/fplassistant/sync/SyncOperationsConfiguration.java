@@ -7,6 +7,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.env.Environment;
+import org.springframework.beans.factory.ObjectProvider;
 
 /** Opt-in read/operation endpoints. Construction performs no schema write or external request. */
 @Configuration(proxyBeanMethods = false)
@@ -16,15 +17,19 @@ public class SyncOperationsConfiguration {
     @Bean
     SyncOperations syncOperations(
             @Qualifier("ownedSyncMonitoringDatabase") OwnedSyncMonitoringDatabase database,
-            Environment environment) {
+            ObjectProvider<OwnedSyncTables> tableProvider, Environment environment) {
         OwnedSyncMode mode = OwnedSyncMode.valueOf(environment.getProperty(
                 "fpl.owned-sync.mode", "OFF").trim().toUpperCase());
         boolean monitorEnabled = environment.getProperty(
                 "fpl.owned-sync.external-health.enabled", Boolean.class, false);
         OwnedSyncWatchdog.Notification notification = notification(environment);
         return new SyncOperations(database.jdbc(), database.transaction(), Clock.systemUTC(),
-                OwnedSyncTables.defaults(), mode, monitorEnabled && mode != OwnedSyncMode.OFF,
-                notification.enabled() && notification.configured(), notification.externalMonitor());
+                tableProvider.getIfAvailable(OwnedSyncTables::defaults), mode, monitorEnabled && mode != OwnedSyncMode.OFF,
+                notification.enabled() && notification.configured(), notification.externalMonitor(),
+                environment.getProperty("fpl.owned-sync.importer.enabled", Boolean.class, false),
+                environment.getProperty("fpl.owned-sync.playing-season", "").trim(),
+                environment.getProperty("fpl.owned-sync.handoff.enabled", Boolean.class, false)
+                        && environment.getProperty("fpl.owned-sync.cutover-confirmed", Boolean.class, false));
     }
 
     static OwnedSyncWatchdog.Notification notification(Environment environment) {
