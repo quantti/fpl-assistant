@@ -42,11 +42,17 @@ public class CoalescedPlayerHistoryImportConfiguration {
         return OwnedSyncMonitoringDatabase.work(environment);
     }
 
+    static OwnedSyncRequestBudget.Limits requestLimits(Environment environment) {
+        return OwnedSyncRequestBudget.Limits.defaults(environment.getProperty(
+                "fpl.owned-sync.importer.max-attempts-per-day", Integer.class, 5_000));
+    }
+
     @Bean
     OwnedSyncRequestBudget ownedImporterRequestBudget(
             @Qualifier("ownedSyncWorkDatabase") OwnedSyncMonitoringDatabase workDatabase,
-            OwnedSyncTables tables) {
-        return new OwnedSyncRequestBudget(workDatabase.jdbc(), workDatabase.transaction(), Clock.systemUTC(), tables);
+            OwnedSyncTables tables, Environment environment) {
+        return new OwnedSyncRequestBudget(workDatabase.jdbc(), workDatabase.transaction(), Clock.systemUTC(), tables,
+                requestLimits(environment));
     }
 
     @Bean(destroyMethod = "close")
@@ -89,7 +95,7 @@ public class CoalescedPlayerHistoryImportConfiguration {
         OwnedSyncWatchdog.AlertSender sender = notification.enabled() && notification.configured()
                 ? new OwnedSyncWatchdog.HttpsWebhookSender(webhook) : payload -> { };
         return new OwnedSyncWatchdog(monitoringDatabase.jdbc(), monitoringDatabase.transaction(),
-                Clock.systemUTC(), tables, notification, sender);
+                Clock.systemUTC(), tables, notification, sender, requestLimits(environment));
     }
 
     @Bean
