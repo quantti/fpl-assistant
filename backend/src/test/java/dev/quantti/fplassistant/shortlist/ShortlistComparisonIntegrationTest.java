@@ -14,6 +14,7 @@ import dev.quantti.fplassistant.testsupport.RankingSeed;
 import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
 import dev.quantti.fplassistant.tools.RankingMetrics;
 import dev.quantti.fplassistant.tools.PfsReadSource;
+import dev.quantti.fplassistant.tools.SeasonResolver;
 import dev.quantti.fplassistant.sync.HistoryParser;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -34,6 +35,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.springframework.transaction.support.TransactionTemplate;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.within;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
 
@@ -61,6 +63,7 @@ class ShortlistComparisonIntegrationTest {
     }
     @Autowired ShortlistComparison comparison;
     @Autowired ShortlistStore shortlist;
+    @Autowired SeasonResolver seasons;
     @Autowired PlayerCatalogueStore catalogues;
     @MockitoSpyBean JdbcTemplate jdbc;
     @Autowired PlatformTransactionManager transactions;
@@ -156,6 +159,8 @@ class ShortlistComparisonIntegrationTest {
         assertThat(result.asOf()).isEqualTo(NOW);
         assertThat(result.rows().getFirst().market().capturedAt()).isEqualTo(CAPTURED);
         assertThat(result.modelSeasons()).containsExactly(SEASON, SharedStatsSeed.POPULATED_SEASON_CODE);
+        assertThat(result.modelThrough().get(SEASON)).isEqualTo(jdbc.queryForObject(
+                "SELECT MAX(kickoff_time) FROM " + fixtures + " WHERE season=? AND finished", Timestamp.class, SEASON).toInstant());
         jdbc.update("UPDATE " + fixtures + " SET captured_at=? WHERE season=?", Timestamp.from(scheduleCapture.plusSeconds(30)), SEASON);
         jdbc.update("UPDATE " + events + " SET captured_at=? WHERE season=?", Timestamp.from(scheduleCapture.plusSeconds(30)), SEASON);
         assertThat(comparison.read(OWNER).scheduleCapturedAt()).isEqualTo(scheduleCapture.plusSeconds(30));
@@ -190,6 +195,7 @@ class ShortlistComparisonIntegrationTest {
         assertThat(match.defcon()).isNull();
         assertThat(match.evidence()).isEqualTo("VERIFIED");
         assertThat(row.defcon().readings()).isEqualTo(4);
+        assertThat(row.forecast().expectedCleanSheets()).isPositive();
         assertThat(jdbc.queryForObject("SELECT defensive_contribution FROM player_fixture_stats WHERE season_id=? AND fixture_id=? AND player_id=?", Integer.class, SEASON_ID, fixture, PLAYER)).isEqualTo(99);
     }
 
@@ -239,8 +245,8 @@ class ShortlistComparisonIntegrationTest {
         assertThat(row.history().get(0).evidence()).isEqualTo("MISSING");
         assertThat(row.history().get(1).minutes()).isZero();
         assertThat(row.defcon().readings()).isEqualTo(3);
-        // Four older sides still exceed the ClubRates floor: coverage, not rates, blocks this.
-        assertThat(row.forecast().expectedCleanSheets()).isNull();
+        // The incomplete fixture is omitted; four older complete fixtures still supply rates.
+        assertThat(row.forecast().expectedCleanSheets()).isPositive();
     }
 
     @Test void staleCaptureAndReusedSeasonIdentityCannotSupplyCurrentPrice() {
@@ -251,6 +257,51 @@ class ShortlistComparisonIntegrationTest {
         assertThat(archived.totals()).isNull();
         assertThat(archived.forecast().weeks()).isEmpty();
         assertThat(archived.reason()).contains("Historical");
+    }
+
+    @Test void unfinishedMatchDoesNotSuppressTheCompletedMatchModel() {
+        int fixture = comparison.read(OWNER).rows().getFirst().history().getFirst().id();
+        jdbc.update("UPDATE " + fixtures + " SET started=true,finished=false WHERE season=? AND id=?", SEASON, fixture);
+        var standardRanking = ranking.load(prices.latestCapture().orElseThrow(),
+                seasons.metricSeasons(seasons.resolve()));
+        assertThat(standardRanking.comparisonCoverage().complete()).isFalse();
+        assertThat(comparison.read(OWNER).rows().getFirst().forecast().expectedCleanSheets()).isPositive();
+    }
+
+    @Test void unverifiedOwnedMatchIsOmittedInsteadOfSuppressingTheWholeForecast() {
+        int fixture = ownLatestObservation(0);
+        jdbc.update("UPDATE " + OWNED_FIXTURES + " SET current_verified_generation=8 WHERE season_id=? AND fixture_id=?", SEASON_ID, fixture);
+        var row = comparison.read(OWNER).rows().getFirst();
+        assertThat(row.history().getFirst().minutes()).isNull();
+        assertThat(row.forecast().expectedCleanSheets()).isPositive();
+    }
+
+    @Test void anIncompleteFixtureContributesNeitherSideToTheClubOrLeagueModel() {
+        var before = comparison.read(OWNER).rows().getFirst();
+        int fixture = before.history().getFirst().id();
+        boolean home = before.history().getFirst().home();
+        jdbc.update("DELETE FROM player_fixture_stats WHERE season_id=? AND fixture_id=? AND was_home=?", SEASON_ID, fixture, !home);
+        jdbc.update("UPDATE player_fixture_stats SET expected_goals=99,expected_goals_conceded=99 WHERE season_id=? AND fixture_id=?", SEASON_ID, fixture);
+        Double oneSide = comparison.read(OWNER).rows().getFirst().forecast().expectedCleanSheets();
+        assertThat(oneSide).isPositive();
+        jdbc.update("DELETE FROM player_fixture_stats WHERE season_id=? AND fixture_id=?", SEASON_ID, fixture);
+        assertThat(comparison.read(OWNER).rows().getFirst().forecast().expectedCleanSheets()).isCloseTo(oneSide, within(1e-12));
+    }
+
+    @Test void modelCutoffExcludesTheNewestUnverifiedMatch() {
+        int latest = jdbc.queryForObject("SELECT id FROM " + fixtures + " WHERE season=? AND finished ORDER BY kickoff_time DESC,id DESC LIMIT 1", Integer.class, SEASON);
+        jdbc.update("INSERT INTO " + OWNED_FIXTURES + " (season_id,fixture_id,state,observation_generation) VALUES (?,?,'WAITING_STATS',7)", SEASON_ID, latest);
+        var result = comparison.read(OWNER);
+        Instant expected = jdbc.queryForObject("SELECT MAX(kickoff_time) FROM " + fixtures + " WHERE season=? AND finished AND id<>?", Timestamp.class, SEASON, latest).toInstant();
+        assertThat(result.modelThrough().get(SEASON)).isEqualTo(expected);
+        assertThat(result.rows().getFirst().forecast().expectedCleanSheets()).isPositive();
+    }
+
+    @Test void insufficientCompletedEvidenceRemainsUnavailable() {
+        jdbc.update("UPDATE " + fixtures + " SET finished=false WHERE season=?", SEASON);
+        var result = comparison.read(OWNER);
+        assertThat(result.rows().getFirst().forecast().expectedCleanSheets()).isNull();
+        assertThat(result.modelThrough()).doesNotContainKey(SEASON);
     }
 
     @Test void boundedFullPopulationReadHasNoPerShortlistedPlayerQueryLoop() {
@@ -293,7 +344,7 @@ class ShortlistComparisonIntegrationTest {
                 jdbc.update("UPDATE " + daily + " SET chance_of_playing_next_round=25,status='i',news='Changed',captured_at=? WHERE season=? AND price_date=? AND element_id=?", Timestamp.from(CAPTURED.plusSeconds(60)), SEASON, DAY, PLAYER);
             });
             return result;
-        }).when(ranking).load(any(), any());
+        }).when(ranking).loadCompletedComparison(any(), any());
         var row = comparison.read(OWNER).rows().getFirst();
         assertThat(row.totals().points()).isEqualTo(60);
         assertThat(row.market().chanceOfPlayingNextRound()).isEqualTo(75);

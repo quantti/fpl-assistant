@@ -33,6 +33,7 @@ const comparison = {
   sources: ['Observed totals: season 2026-27'],
   scheduleCapturedAt: '2026-09-09T01:10:00Z',
   modelSeasons: ['2026-27', '2025-26'],
+  modelThrough: { '2026-27': '2026-09-07T15:00:00Z', '2025-26': '2026-05-24T15:00:00Z' },
   rows: [
     {
       season: '2026-27',
@@ -345,7 +346,15 @@ it('puts colour-coded availability in its own cell and sorts from headers both w
   expect(table.querySelector('[data-status="a"]')?.textContent).toBe('Available');
   expect(table.querySelector('[data-status="d"]')?.textContent).toBe('Doubtful · 50%');
   expect(table.querySelector<HTMLElement>('[data-status="d"]')?.dataset.flag).toBe('amber');
-  expect(table.querySelectorAll(':scope > thead button')).toHaveLength(16);
+  expect(table.querySelectorAll(':scope > thead button')).toHaveLength(8);
+  for (const label of ['Club', 'Pos', 'Availability', 'GW6', 'GW7', 'GW8', 'GW9', 'GW10']) {
+    const header = [...table.querySelectorAll(':scope > thead th')].find(
+      (cell) => cell.textContent === label,
+    );
+    expect(header).toBeDefined();
+    expect(header!.querySelector('button')).toBeNull();
+    expect(header!.getAttribute('aria-sort')).toBeNull();
+  }
   const price = [...table.querySelectorAll(':scope > thead button')].find((button) =>
     button.textContent?.startsWith('Price'),
   ) as HTMLButtonElement;
@@ -397,13 +406,26 @@ it('summarises source limits in two sentences with a readable UTC date', async (
   const sources = host.querySelector('details');
   expect(sources?.textContent).toContain('9 Sept 2026, 12:00:00 UTC');
   expect(sources?.textContent).toContain('fixtures captured 9 Sept 2026, 01:10:00 UTC');
-  expect(sources?.textContent).toContain('2026/27 and 2025/26');
+  expect(sources?.textContent).toContain(
+    '2026/27 (through 7 Sept 2026) and 2025/26 (through 24 May 2026)',
+  );
   expect(sources?.textContent).toContain('Statistical refresh times are unverified');
   expect(sources?.textContent).toContain('uncalibrated team estimate');
+  expect(sources?.textContent).toContain('from completed matches with usable data');
   expect(sources?.querySelectorAll('p')).toHaveLength(1);
   expect(sources?.querySelector('p')?.textContent?.match(/\.(?:\s|$)/g)).toHaveLength(2);
   expect(sources?.textContent).not.toContain('2026-09-09T12:00:00Z');
   expect(sources?.textContent).not.toContain('Observed totals:');
+});
+
+it('does not replace an unknown model cutoff with the schedule or assessment timestamp', async () => {
+  apiFetchMock.mockImplementation(() =>
+    Promise.resolve(Response.json({ ...comparison, modelThrough: undefined })),
+  );
+  await mount(Response.json([stored]));
+  const sources = host.querySelector('details');
+  expect(sources?.textContent).toContain('2026/27 (through n/a) and 2025/26 (through n/a)');
+  expect(sources?.textContent).not.toContain('through 9 Sept 2026');
 });
 
 it('distinguishes two schedule captures on the same day without changing the assessment time', async () => {

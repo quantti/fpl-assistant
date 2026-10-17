@@ -27,6 +27,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
+import dev.quantti.fplassistant.sync.GameweekFinality;
+import dev.quantti.fplassistant.sync.GameweekFinalityReader;
+import dev.quantti.fplassistant.sync.OwnedSyncStore;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -223,6 +226,36 @@ class RankingMetricsIntegrationTest {
         assertThat(complete.comparisonCoverage().evidenceStatus())
                 .isEqualTo(ComparisonCoverage.EvidenceStatus.PROVISIONAL);
         assertThat(complete.gameweekFinality()).contains("provisional");
+
+        RankingMetrics comparisonMetrics = new RankingMetrics(jdbc, schedules, transactionManager,
+                clocks, dailyTable, incrementalReader());
+        var completedOnly = comparisonMetrics.loadCompletedComparison(
+                new DailyPriceSource.Capture(SEASON, CAPTURE_DATE),
+                new MetricSeasons(context(), Optional.empty(), 3, 3));
+        assertThat(completedOnly.clubRates().clubs()).doesNotContainKey(club);
+        assertThat(completedOnly.clubRates().league()).isEmpty();
+
+        // Exercise the consumer's FINALIZED branch; receipt validation belongs to the real reader tests.
+        var optional = new java.util.EnumMap<HistoryParser.Component, GameweekFinality.ComponentCoverage>(HistoryParser.Component.class);
+        for (var component : HistoryParser.Component.values()) optional.put(component, new GameweekFinality.ComponentCoverage(1, 1, true));
+        var receipt = new GameweekFinality.FinalReceipt("a".repeat(64), "b".repeat(64), 11,
+                AS_OF.minusSeconds(700), 0, AS_OF.minusSeconds(10),
+                new OwnedSyncStore.SourceRead(AS_OF.minusSeconds(600), AS_OF.minusSeconds(599)), true, optional);
+        GameweekFinalityReader finality = Mockito.mock(GameweekFinalityReader.class);
+        Mockito.when(finality.read(Mockito.eq(SEASON_ID), Mockito.eq(SEASON), Mockito.anySet()))
+                .thenReturn(Map.of(1, new GameweekFinalityReader.Result(1, GameweekFinality.State.FINALIZED,
+                                true, true, true, AS_OF.minusSeconds(700), receipt),
+                        2, new GameweekFinalityReader.Result(2, GameweekFinality.State.FINALIZED,
+                                true, true, true, AS_OF.minusSeconds(700), receipt)));
+        RankingMetrics finalizedMetrics = new RankingMetrics(jdbc, schedules, transactionManager,
+                clocks, dailyTable, incrementalReader(), finality);
+        var finalized = finalizedMetrics.loadCompletedComparison(new DailyPriceSource.Capture(SEASON, CAPTURE_DATE),
+                new MetricSeasons(context(), Optional.empty(), 3, 3));
+        assertThat(finalized.clubRates().clubs().get(club).fixturesThisSeason()).isEqualTo(2);
+        assertThat(finalized.clubRates().league()).isPresent();
+        // The regular ranking contract still permits its receipt-backed provisional evidence.
+        assertThat(loadWithReader(incrementalReader()).clubRates().clubs().get(club)
+                .fixturesThisSeason()).isEqualTo(2);
     }
 
     @Test

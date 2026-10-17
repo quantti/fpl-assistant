@@ -33,7 +33,8 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class ShortlistComparison {
     public record Response(Instant asOf, String horizon, List<String> sources, List<Row> rows,
-                           Instant scheduleCapturedAt, List<String> modelSeasons) {}
+                           Instant scheduleCapturedAt, List<String> modelSeasons,
+                           Map<String, Instant> modelThrough) {}
     public record Market(String webName, String fullName, String teamShort, int position, int nowCost,
                          String status, String news, Double ownership, Integer penalties,
                          Integer directFreeKicks, Integer corners, Instant capturedAt,
@@ -81,12 +82,12 @@ public class ShortlistComparison {
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public Response read(UUID owner) {
         List<ShortlistStore.Player> saved = shortlist.list(owner);
-        if (saved.isEmpty()) return new Response(clock.instant(), "", List.of(), List.of(), null, List.of());
+        if (saved.isEmpty()) return new Response(clock.instant(), "", List.of(), List.of(), null, List.of(), Map.of());
         var capture = prices.latestCapture();
         if (capture.isEmpty()) return new Response(clock.instant(), "Schedule unavailable", List.of(),
-                saved.stream().map(p -> unavailable(p, "No daily capture available.")).toList(), null, List.of());
+                saved.stream().map(p -> unavailable(p, "No daily capture available.")).toList(), null, List.of(), Map.of());
         var metric = seasons.metricSeasons(seasons.resolve());
-        var snapshot = ranking.load(capture.get(), metric);
+        var snapshot = ranking.loadCompletedComparison(capture.get(), metric);
         Instant asOf = snapshot.asOf();
         var horizon = HorizonFixtures.derive(snapshot.schedule(), asOf, capture.get().season(), 5);
         var candidates = snapshot.candidates().stream().collect(Collectors.toMap(
@@ -127,7 +128,7 @@ public class ShortlistComparison {
                 ScheduleSource.provenance(s.season(), s.capturedAt(), asOf)));
         sources.add("Team clean-sheet model: " + metric.played().code()
                 + metric.previous().map(s -> " and " + s.code()).orElse("")
-                + "; sum of per-fixture probabilities, not player points or a playing-time forecast. Not calibrated.");
+                + "; completed matches with usable evidence only; sum of per-fixture probabilities, not player points or a playing-time forecast. Not calibrated.");
         sources.add("Model evidence: " + snapshot.metricEvidence());
         String range = horizon.status() == HorizonFixtures.Status.KNOWN
                 ? "GW" + horizon.startGameweek() + "–" + horizon.endGameweek()
@@ -141,7 +142,7 @@ public class ShortlistComparison {
         metric.previous().ifPresent(previous -> modelSeasons.add(previous.code()));
         return new Response(asOf, range, sources, rows,
                 snapshot.schedule().snapshot().map(ScheduleSource.Snapshot::capturedAt).orElse(null),
-                List.copyOf(modelSeasons));
+                List.copyOf(modelSeasons), snapshot.clubSampleThrough());
     }
 
     private Row row(ShortlistStore.Player saved, RankingMetrics.Snapshot snapshot,
@@ -206,7 +207,7 @@ public class ShortlistComparison {
                              int club, Map<Integer, String> clubs, boolean sameSeason) {
         var window = horizon.club(club);
         if (!window.known()) return new Forecast(null, window.unknownReason().name(), List.of());
-        boolean covered = sameSeason && snapshot.comparisonCoverage().complete();
+        boolean covered = sameSeason && snapshot.comparisonCoverage().assessed();
         List<Week> weeks = new ArrayList<>();
         double sum = 0;
         boolean complete = true;
@@ -225,7 +226,7 @@ public class ShortlistComparison {
             weeks.add(new Week(gw, List.copyOf(fixtures)));
         }
         return new Forecast(complete ? sum : null,
-                complete ? null : "Team projection unavailable: incomplete comparison evidence or missing club rates.", weeks);
+                complete ? null : "Team projection unavailable: insufficient verified completed-match evidence or missing club rates.", weeks);
     }
 
     private static Match match(ScheduleSource.FixtureRow fixture, int club,
