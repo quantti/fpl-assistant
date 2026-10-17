@@ -1,5 +1,21 @@
 # Status — Phase 1
 
+## Player facts — verify current clubs and disputed claims
+
+The system prompt requires fresh, unambiguous current-club evidence from the same turn.
+Successful pick lists, `buildSquad` and `getMyTeam` already supply it, so no per-player rechecks
+are needed just to restate their clubs. Without that evidence, call `getPlayerStats`; disputed
+facts require a new lookup even in apologies and follow-up challenges, rather than agreement
+with the user or model memory. Price and availability disputes retain their dedicated tools.
+Current-club evidence comes from the daily capture or the squad's own FPL source, not a historical
+season's club; each source keeps its own age. Stale, missing, ambiguous or contradictory evidence
+cannot support a confident correction. The original regression and the review-fix regressions
+failed before their respective prompt changes. All ten tests in the player-name, availability,
+DefCon and bench-order prompt contract classes passed after integration with master `1689597`.
+This is a prompt requirement, not server-enforced tool use; no live-model evaluation or production
+read was performed. Review narrowed the initial unconditional `getPlayerStats` rule to avoid
+redundant lookups for already verified squad/pick results. Full PR CI remains the publication gate.
+
 ## KAR-19 — opt-in daily-price email reminders (2026-10-13)
 
 The existing 06:00/12:00/18:00 UK freshness check can send plain-text reminders through
