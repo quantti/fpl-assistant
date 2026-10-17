@@ -17,6 +17,18 @@ Both regressions failed on the old behavior; all 39 focused backend tests pass a
 No full local suite was run. The owner explicitly withdrew merge authority and requested staging
 inspection first: PR #162 remains open, with no production-app deployment or capture activation.
 
+Staging now runs `99b26ae` at https://fpl-assistant-staging.fly.dev/app, image
+`registry.fly.io/fpl-assistant-staging:deployment-01M552BHCTWZD01THAPTTVZCJE`
+(digest `sha256:f42e374913a1a997baacc36fcefa75c9babc5c532fafae7e1f783cc85fbb1efb`).
+Remote build/deploy succeeded; external health is UP, /app is 200, the served bundle contains the
+new source metadata/flag UI, same-origin PUT preflight is 200, and anonymous comparison is 401.
+The three staging capture-scheduler variables remain false and CORS names staging's own origin.
+Startup applies the additive daily-price schema to the shared DB; no capture or account write
+was triggered. Existing daily rows still have unknown chance until the updated writer is used.
+This was a manual owner-authorised staging deployment; PR-push automation is still unfinished.
+Latest visible full CI is green only for `f524afb` (39024044561); no run/check for `99b26ae` was
+visible at handoff. Do not reuse that earlier result as exact-head verification or merge approval.
+
 ## PR #162 review corrections: source evidence and guarded observations
 
 The two confirmed Pi Review findings are addressed without expanding the user-facing source
