@@ -230,6 +230,29 @@ it('uses shared table columns and opens a detail card from the player name', asy
   expect(host.textContent).not.toContain('Observed season totals');
 });
 
+it('retains a long player name and every double-gameweek fixture in compact rows', async () => {
+  const name = 'A deliberately very long player name that must not wrap into another line';
+  apiFetchMock.mockImplementation(() =>
+    Promise.resolve(
+      Response.json({
+        ...comparison,
+        rows: [{ ...comparison.rows[0], market: { ...comparison.rows[0].market, fullName: name } }],
+      }),
+    ),
+  );
+  await mount(Response.json([stored]));
+  const nameButton = host.querySelector<HTMLButtonElement>('button[aria-expanded]')!;
+  expect(nameButton.title).toBe(name);
+  expect(nameButton.getAttribute('aria-label')).toBe(`Details for ${name}`);
+  const week = host.querySelector(
+    ':scope table[aria-label="Player comparison"] > tbody > tr > :nth-child(12)',
+  );
+  expect(week?.textContent).toContain('CHE (H)');
+  expect(week?.textContent).toContain('LIV (A)');
+  act(() => nameButton.click());
+  expect(host.querySelector(':scope section h2')?.textContent).toBe(name);
+});
+
 it('shows name, club and position, then removes through shared state', async () => {
   await mount(Response.json([stored]));
   expect(host.textContent).toContain('Bukayo Saka');
