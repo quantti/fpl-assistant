@@ -1,6 +1,6 @@
 # Capture FPL's next-round playing chance
 
-**PROGRESS:** Task 2/3 done: storage and same-snapshot comparison DTO verified.
+**PROGRESS:** Task 3/3 done: storage, coherent DTO and FPL availability presentation verified.
 
 ## Contract and scope
 
@@ -143,3 +143,6 @@ operation with explicit target season/date; never backfill history or enable sta
 Acceptance requires a disposable-DB round trip, coherent comparison API evidence and a visible
 25/50-vs-75 distinction based on stored values. Rollback code leaves the harmless nullable column
 and captured observations intact; no DROP, destructive migration or invented historical values.
+Roll back percentage consumers together with the writer: the old writer omits the new column,
+so a new reader must not keep interpreting a retained percentage as observed in later old-writer
+captures. No rollback or data clearing is performed as part of this implementation.

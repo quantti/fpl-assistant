@@ -61,6 +61,7 @@ class DailyPlayingChanceIntegrationTest {
 
     @AfterEach void cleanup() {
         if (server != null) server.stop(0);
+        if (schema == null) return; // The disposable-database guard must have succeeded.
         jdbc.execute("DROP TABLE IF EXISTS " + TABLE);
     }
 

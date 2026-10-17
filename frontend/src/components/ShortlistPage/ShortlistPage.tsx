@@ -4,7 +4,12 @@ import { getCoreRowModel, getSortedRowModel, useReactTable } from '@tanstack/rea
 import type { ColumnDef } from '@tanstack/react-table';
 import type { CataloguePlayer, PlayerCatalogue } from '../../types';
 import { type ShortlistPlayer, useShortlist } from '../../shortlist/ShortlistContext';
-import { availability, numberText as n, sortMetric } from '../../shortlist/comparison';
+import {
+  availability,
+  availabilityBadge,
+  numberText as n,
+  sortMetric,
+} from '../../shortlist/comparison';
 import type { ComparisonRow, MetricSort } from '../../shortlist/comparison';
 import { useComparison } from '../../shortlist/useComparison';
 import ComparisonDetails from './ComparisonDetails';
@@ -245,6 +250,7 @@ function ShortlistRow({
   const pending = shortlist.isPending(player.season, player.elementId);
   const position = row?.market?.position ?? player.elementType;
   const name = displayName(player, row);
+  const badge = availabilityBadge(row?.market?.status, row?.market?.chanceOfPlayingNextRound);
   const stats = [
     ['Price', row?.market ? `£${n(row.market.nowCost / 10, 1)}m` : 'n/a'],
     ['Points', n(row?.totals?.points)],
@@ -277,9 +283,10 @@ function ShortlistRow({
           <span
             className={classes.availability}
             data-status={row?.market?.status ?? 'unknown'}
+            data-flag={badge.flag}
             title={row?.market?.news ?? undefined}
           >
-            {availability(row?.market?.status)}
+            {badge.label}
           </span>
         </td>
         {stats.map(([label, value]) => (

@@ -1,5 +1,38 @@
 # Status — Phase 1
 
+## Stored FPL playing chance (PR #162)
+
+The [approved plan](superpowers/plans/2026-10-17-daily-playing-chance.md) is implemented:
+`DailyPriceSyncService` now captures `chance_of_playing_next_round` from its existing bootstrap
+response into a nullable SMALLINT with a 0..100 CHECK. Malformed/non-integral optional values
+become NULL without losing a valid price row. Same-day updates replace or clear the chance;
+old days/seasons are never backfilled. Existing schemas upgrade idempotently, keeping RLS/keys.
+Shortlist's existing season/date-qualified daily batch query carries the field into
+`market.chanceOfPlayingNextRound` under the same REPEATABLE_READ snapshot; ranking models and
+eligibility are unchanged. No extra endpoint call or per-player SQL.
+
+Availability shows FPL's percentage when known: 75% yellow, 25/50% amber, ruled-out statuses/0%
+red. Missing or contradictory evidence does not invent a probability or doubtful severity.
+The detail card explains that this is the captured next-round estimate, not starts/minutes.
+The old DTO without the optional field remains renderable. Header sorting stays status-based.
+
+Verified: 33 focused backend tests (0 failed/skipped), 42 frontend tests, lint, format and
+TypeScript/Vite build. Parser, DTO-shape and UI assertions each failed on the previous behavior
+before implementation; schema/writer integration coverage was added with implementation, not
+claimed as prior RED. Disposable PostgreSQL + stub HTTP exercise schema upgrade twice, real
+INSERT/UPDATE/NULL clearing, historical isolation and CHECK rejection. Snapshot tests include an
+independently committed percentage/status/news/capture-time change; the response keeps the old
+snapshot. Chromium stub-data checks pass at 390/1440px in light/dark with keyboard expansion,
+cell/page bounds and all four flag tones. Badge contrast: amber 8.21:1, yellow 13.25:1, red 5.76:1.
+Parent source/diff review completed; no independent review of this follow-up was requested.
+
+No deployment or live capture was run. Existing rows remain NULL until a normal daily capture
+by the updated writer; deploying staging alone must not activate shared capture jobs. A code
+rollback must roll back percentage consumers with the writer: an old writer does not update the
+new column, so leaving a new reader running after old-writer updates could misdate a retained
+percentage. Full suite remains GitHub CI's gate, not a local claim. Existing Vite bundle warning
+and development-only npm advisory remain outside this change. Staging automation work is separate.
+
 ## Shortlist header sorting and availability (PR #162)
 
 The owner requested an actual dense comparison grid with sortable column headers. TanStack Table

@@ -1,5 +1,5 @@
 import type { ComparisonRow } from '../../shortlist/comparison';
-import { numberText as n } from '../../shortlist/comparison';
+import { availabilityBadge, numberText as n } from '../../shortlist/comparison';
 import classes from './ShortlistPage.module.css';
 
 export default function ComparisonDetails({
@@ -45,6 +45,12 @@ export default function ComparisonDetails({
         <p className={classes.note}>
           Known readings only; missing data and zero-minute matches are excluded from the DefCon
           rate.
+        </p>
+        <h3>Captured availability</h3>
+        <p>{availabilityBadge(row.market?.status, row.market?.chanceOfPlayingNextRound).label}</p>
+        <p className={classes.note}>
+          FPL's captured chance of playing next round, not a guarantee of starting or minutes. A
+          missing percentage is unknown, not 0% or 100%.
         </p>
         <h3>Captured ownership & set pieces</h3>
         <p>

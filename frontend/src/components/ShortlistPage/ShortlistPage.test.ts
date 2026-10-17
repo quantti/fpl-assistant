@@ -43,6 +43,7 @@ const comparison = {
         nowCost: 60,
         status: 'd',
         news: 'Knock',
+        chanceOfPlayingNextRound: 50,
         ownership: 12,
         penalties: 1,
         directFreeKicks: null,
@@ -324,7 +325,13 @@ it('puts colour-coded availability in its own cell and sorts from headers both w
           {
             ...comparison.rows[0],
             elementId: 18,
-            market: { ...comparison.rows[0].market, fullName: 'Alpha', status: 'a', nowCost: 90 },
+            market: {
+              ...comparison.rows[0].market,
+              fullName: 'Alpha',
+              status: 'a',
+              chanceOfPlayingNextRound: null,
+              nowCost: 90,
+            },
           },
         ],
       }),
@@ -334,7 +341,8 @@ it('puts colour-coded availability in its own cell and sorts from headers both w
   const table = host.querySelector('table[aria-label="Player comparison"]')!;
   expect(table.querySelector('th[scope="row"]')?.textContent).not.toContain('Available');
   expect(table.querySelector('[data-status="a"]')?.textContent).toBe('Available');
-  expect(table.querySelector('[data-status="d"]')?.textContent).toBe('Doubtful');
+  expect(table.querySelector('[data-status="d"]')?.textContent).toBe('Doubtful · 50%');
+  expect(table.querySelector<HTMLElement>('[data-status="d"]')?.dataset.flag).toBe('amber');
   expect(table.querySelectorAll(':scope > thead button')).toHaveLength(16);
   const price = [...table.querySelectorAll(':scope > thead button')].find((button) =>
     button.textContent?.startsWith('Price'),
