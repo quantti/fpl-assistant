@@ -1,6 +1,16 @@
 # Importer cutover: bounded request headroom
 
-**PROGRESS:** Budget code and focused tests implemented locally; PR/full CI, owner merge and production activation pending. Legacy runtime is stopped; do not describe importer as active.
+**PROGRESS:** Budget PR #165 merged as becef01; master CI/deploy 39057123698 passed. Live handoff blocked by missing SecurityConfig operator routes (401/403); runtime still OFF106. Narrow route fix passes 11 focused tests; its review/CI/deploy and importer activation remain pending.
+
+## Operator-route follow-up
+
+The live handoff route was not listed beside existing dedicated-token ops routes in
+SecurityConfig, so denyAll rejected it before SyncOperationsController. A user JWT did
+not help (403); no new runtime epoch was minted. On 17 October the owner explicitly
+approved a separate narrow correction PR, two concurrent gpt-6.1-sol read-only reviewers,
+merge only after a clean review and green CI, normal deploy, then continuation of the
+already-authorised cutover without another command. The handoff flag is false while
+waiting. No direct SQL, wildcard ops access or weakening of token/epoch guards is allowed.
 
 ## Owner request and live baseline
 
