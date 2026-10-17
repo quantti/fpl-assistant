@@ -182,7 +182,8 @@ public class DailyPriceSyncService {
                     asString(e.get("news")),
                     asInt(e.get("penalties_order")),
                     asInt(e.get("direct_freekicks_order")),
-                    asInt(e.get("corners_and_indirect_freekicks_order"))
+                    asInt(e.get("corners_and_indirect_freekicks_order")),
+                    playingChance(e.get("chance_of_playing_next_round"))
             });
         }
         return rows;
@@ -246,8 +247,9 @@ public class DailyPriceSyncService {
                 INSERT INTO %s (season, price_date, element_id, web_name, full_name,
                                 team_id, team_short, team_name, element_type, now_cost,
                                 cost_change_event, cost_change_start, selected_by_percent,
-                                status, news, penalties_order, direct_fk_order, corners_order)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                status, news, penalties_order, direct_fk_order, corners_order,
+                                chance_of_playing_next_round)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (season, price_date, element_id) DO UPDATE SET
                     web_name = EXCLUDED.web_name,
                     full_name = EXCLUDED.full_name,
@@ -264,6 +266,7 @@ public class DailyPriceSyncService {
                     penalties_order = EXCLUDED.penalties_order,
                     direct_fk_order = EXCLUDED.direct_fk_order,
                     corners_order = EXCLUDED.corners_order,
+                    chance_of_playing_next_round = EXCLUDED.chance_of_playing_next_round,
                     captured_at = NOW()
                 """.formatted(tableName);
 
@@ -275,6 +278,16 @@ public class DailyPriceSyncService {
             }
         }
         return written;
+    }
+
+    private static Integer playingChance(Object value) {
+        if (!(value instanceof Number number)) return null;
+        try {
+            int chance = new BigDecimal(number.toString()).intValueExact();
+            return chance >= 0 && chance <= 100 ? chance : null;
+        } catch (NumberFormatException | ArithmeticException invalid) {
+            return null;
+        }
     }
 
     private static Integer zeroIfNull(Integer value) {
