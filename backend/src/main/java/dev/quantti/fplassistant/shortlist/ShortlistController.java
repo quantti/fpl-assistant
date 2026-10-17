@@ -41,7 +41,8 @@ public class ShortlistController {
         UUID owner = TokenSubject.userId(jwt);
         try {
             return noStore(comparison.read(owner));
-        } catch (org.springframework.dao.DataAccessException failure) {
+        } catch (org.springframework.dao.DataAccessException
+                 | org.springframework.transaction.CannotCreateTransactionException failure) {
             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                     .cacheControl(CacheControl.noStore()).build();
         }
