@@ -4,6 +4,7 @@ import java.net.InetAddress;
 import java.time.Clock;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -18,7 +19,7 @@ import fi.karivanttinen.fplassistant.sync.CatalogueScheduleParser.Season;
 
 /** Creates the owned runtime only for an explicit STAGING or guarded ACTIVE mode. */
 @Configuration(proxyBeanMethods = false)
-@ConditionalOnExpression("T(fi.karivanttinen.fplassistant.sync.OwnedSyncMode).valueOf('${fpl.owned-sync.mode:OFF}') != T(fi.karivanttinen.fplassistant.sync.OwnedSyncMode).OFF")
+@ConditionalOnExpression("T(fi.karivanttinen.fplassistant.sync.OwnedSyncRuntimeConfiguration).legacyRuntimeEnabled('${fpl.owned-sync.mode:OFF}', ${fpl.owned-sync.importer.enabled:false})")
 public class OwnedSyncRuntimeConfiguration {
 
     @Bean(destroyMethod = "close")
@@ -99,6 +100,16 @@ public class OwnedSyncRuntimeConfiguration {
         }
     }
 
+    public static boolean legacyRuntimeEnabled(String configuredMode, boolean importerEnabled) {
+        return OwnedSyncMode.valueOf(configuredMode.trim().toUpperCase(Locale.ROOT)) != OwnedSyncMode.OFF
+                && !importerEnabled;
+    }
+
+    public static boolean catalogueCaptureEnabled(String configuredMode, boolean importerEnabled) {
+        return OwnedSyncMode.valueOf(configuredMode.trim().toUpperCase(Locale.ROOT)) != OwnedSyncMode.ACTIVE
+                || importerEnabled;
+    }
+
     static void validateLegacyArguments(OwnedSyncMode mode, ApplicationArguments arguments) {
         if (mode != OwnedSyncMode.ACTIVE) return;
         for (String option : List.of("sync-prices", "sync-schedule", "sync-defcon")) {
@@ -108,7 +119,7 @@ public class OwnedSyncRuntimeConfiguration {
         }
     }
 
-    private static Season configuredSeason(JdbcTemplate jdbc, String configured) {
+    static Season configuredSeason(JdbcTemplate jdbc, String configured) {
         List<Season> rows = jdbc.query("""
                 SELECT id, code, start_date, end_date FROM season
                 WHERE is_current=true AND (?='' OR code=?)
