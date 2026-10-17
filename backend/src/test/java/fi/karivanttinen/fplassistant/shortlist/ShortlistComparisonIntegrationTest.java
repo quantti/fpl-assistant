@@ -13,6 +13,8 @@ import java.util.UUID;
 import fi.karivanttinen.fplassistant.testsupport.RankingSeed;
 import fi.karivanttinen.fplassistant.testsupport.TapasSeed;
 import fi.karivanttinen.fplassistant.tools.RankingMetrics;
+import fi.karivanttinen.fplassistant.tools.PfsReadSource;
+import fi.karivanttinen.fplassistant.sync.HistoryParser;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -39,6 +41,8 @@ import static org.mockito.Mockito.doAnswer;
 @ActiveProfiles("test")
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 class ShortlistComparisonIntegrationTest {
+    private static final String OWNED_FIXTURES = "sc_comparison_fixture_test";
+    private static final String OWNED_EVIDENCE = "sc_comparison_evidence_test";
     private static final int SEASON_ID = 9951;
     private static final String SEASON = "SC-CUR";
     private static final UUID OWNER = UUID.fromString("99333333-3333-4333-8333-333333333333");
@@ -50,6 +54,10 @@ class ShortlistComparisonIntegrationTest {
 
     @TestConfiguration static class Time {
         @Bean @Primary Clock comparisonClock() { return Clock.fixed(NOW, ZoneOffset.UTC); }
+        @Bean @Primary PfsReadSource comparisonPfs(JdbcTemplate jdbc) {
+            return new PfsReadSource(jdbc, "OFF", SEASON,
+                    OWNED_FIXTURES, OWNED_EVIDENCE, "sc_no_current_test", "sc_no_receipt_test");
+        }
     }
     @Autowired ShortlistComparison comparison;
     @Autowired ShortlistStore shortlist;
@@ -68,6 +76,13 @@ class ShortlistComparisonIntegrationTest {
 
     @BeforeEach void seed() {
         clean();
+        jdbc.execute("CREATE TABLE " + OWNED_FIXTURES + " (season_id INTEGER, fixture_id INTEGER,"
+                + " state VARCHAR(24), observation_generation BIGINT, current_verified_generation BIGINT,"
+                + " last_verified_generation BIGINT, last_verified_at TIMESTAMPTZ, PRIMARY KEY(season_id,fixture_id))");
+        jdbc.execute("CREATE TABLE " + OWNED_EVIDENCE + " (season_id INTEGER, season_code VARCHAR(10),"
+                + " fixture_id INTEGER, player_id INTEGER, generation BIGINT, component_presence BIGINT,"
+                + " source_read_started_at TIMESTAMPTZ, source_read_finished_at TIMESTAMPTZ,"
+                + " PRIMARY KEY(season_id,fixture_id,player_id,generation))");
         jdbc.update("INSERT INTO season(id,code,name,start_date,is_current) VALUES (?,?,'Shortlist test','2026-08-01',false)", SEASON_ID, SEASON);
         TapasSeed.setCurrentSeason(jdbc, SEASON_ID);
         RankingSeed.seedSchedule(jdbc, events, fixtures, SEASON, CAPTURED, FIRST);
@@ -96,6 +111,8 @@ class ShortlistComparisonIntegrationTest {
 
     @AfterEach void clean() {
         TapasSeed.ensure(jdbc);
+        jdbc.execute("DROP TABLE IF EXISTS " + OWNED_EVIDENCE);
+        jdbc.execute("DROP TABLE IF EXISTS " + OWNED_FIXTURES);
         jdbc.update("DELETE FROM " + saved + " WHERE user_id=?", OWNER);
         jdbc.update("DELETE FROM " + aliases + " WHERE catalogue_id IN (SELECT id FROM " + catalogue + " WHERE season LIKE 'SC-%')");
         jdbc.update("DELETE FROM " + cataloguePlayers + " WHERE catalogue_id IN (SELECT id FROM " + catalogue + " WHERE season LIKE 'SC-%')");
@@ -130,6 +147,20 @@ class ShortlistComparisonIntegrationTest {
         assertThat(comparison.read(OWNER).rows().getFirst().market().chanceOfPlayingNextRound()).isEqualTo(75);
     }
 
+    @Test void sourceMetadataKeepsScheduleCaptureSeparateFromAssessmentAndMarket() {
+        Instant scheduleCapture = CAPTURED.minusSeconds(300);
+        jdbc.update("UPDATE " + fixtures + " SET captured_at=? WHERE season=?", Timestamp.from(scheduleCapture), SEASON);
+        jdbc.update("UPDATE " + events + " SET captured_at=? WHERE season=?", Timestamp.from(scheduleCapture), SEASON);
+        var result = comparison.read(OWNER);
+        assertThat(result.scheduleCapturedAt()).isEqualTo(scheduleCapture);
+        assertThat(result.asOf()).isEqualTo(NOW);
+        assertThat(result.rows().getFirst().market().capturedAt()).isEqualTo(CAPTURED);
+        assertThat(result.modelSeasons()).containsExactly(SEASON, TapasSeed.POPULATED_SEASON_CODE);
+        jdbc.update("UPDATE " + fixtures + " SET captured_at=? WHERE season=?", Timestamp.from(scheduleCapture.plusSeconds(30)), SEASON);
+        jdbc.update("UPDATE " + events + " SET captured_at=? WHERE season=?", Timestamp.from(scheduleCapture.plusSeconds(30)), SEASON);
+        assertThat(comparison.read(OWNER).scheduleCapturedAt()).isEqualTo(scheduleCapture.plusSeconds(30));
+    }
+
     @Test void realReadIncludesObservedTotalsAndFlaggedPlayersTeamForecast() {
         var result = comparison.read(OWNER);
         var row = result.rows().getFirst();
@@ -145,6 +176,59 @@ class ShortlistComparisonIntegrationTest {
         assertThat(row.history()).hasSize(5);
         assertThat(row.defcon().readings()).isEqualTo(5);
         assertThat(row.observationSources().getLast()).contains("unavailable");
+    }
+
+    @Test void ownedMissingOptionalComponentsMaskRetainedPhysicalValuesInTheResponse() {
+        int fixture = ownLatestObservation(0);
+        var row = comparison.read(OWNER).rows().getFirst();
+        var match = row.history().getFirst();
+        assertThat(match.id()).isEqualTo(fixture);
+        assertThat(match.minutes()).isEqualTo(90);
+        assertThat(match.xg()).isNull();
+        assertThat(match.xa()).isNull();
+        assertThat(match.xgi()).isNull();
+        assertThat(match.defcon()).isNull();
+        assertThat(match.evidence()).isEqualTo("VERIFIED");
+        assertThat(row.defcon().readings()).isEqualTo(4);
+        assertThat(jdbc.queryForObject("SELECT defensive_contribution FROM player_fixture_stats WHERE season_id=? AND fixture_id=? AND player_id=?", Integer.class, SEASON_ID, fixture, PLAYER)).isEqualTo(99);
+    }
+
+    @Test void ownedKnownZeroRemainsAReadingInTheResponse() {
+        long presence = HistoryParser.Component.EXPECTED_GOALS.bit()
+                | HistoryParser.Component.EXPECTED_ASSISTS.bit()
+                | HistoryParser.Component.DEFENSIVE_CONTRIBUTION.bit();
+        int fixture = ownLatestObservation(presence);
+        jdbc.update("UPDATE player_fixture_stats SET expected_goals=0,expected_assists=0,defensive_contribution=0 WHERE season_id=? AND fixture_id=? AND player_id=?", SEASON_ID, fixture, PLAYER);
+        var row = comparison.read(OWNER).rows().getFirst();
+        var match = row.history().getFirst();
+        assertThat(match.xg()).isZero();
+        assertThat(match.xa()).isZero();
+        assertThat(match.xgi()).isZero();
+        assertThat(match.defcon()).isZero();
+        assertThat(row.defcon().readings()).isEqualTo(5);
+        assertThat(row.defcon().hits()).isEqualTo(4);
+    }
+
+    @Test void ownedMismatchedReceiptCannotFallBackToThePhysicalRow() {
+        int fixture = ownLatestObservation(0);
+        jdbc.update("UPDATE " + OWNED_FIXTURES + " SET current_verified_generation=8 WHERE season_id=? AND fixture_id=?", SEASON_ID, fixture);
+        var row = comparison.read(OWNER).rows().getFirst();
+        var match = row.history().getFirst();
+        assertThat(match.id()).isEqualTo(fixture);
+        assertThat(match.minutes()).isNull();
+        assertThat(match.evidence()).isEqualTo("MISSING");
+        assertThat(match.xg()).isNull();
+        assertThat(match.defcon()).isNull();
+        assertThat(row.defcon().readings()).isEqualTo(4);
+        assertThat(jdbc.queryForObject("SELECT minutes FROM player_fixture_stats WHERE season_id=? AND fixture_id=? AND player_id=?", Integer.class, SEASON_ID, fixture, PLAYER)).isEqualTo(90);
+    }
+
+    private int ownLatestObservation(long presence) {
+        int fixture = comparison.read(OWNER).rows().getFirst().history().getFirst().id();
+        jdbc.update("UPDATE player_fixture_stats SET expected_goals=9,expected_assists=8,defensive_contribution=99 WHERE season_id=? AND fixture_id=? AND player_id=?", SEASON_ID, fixture, PLAYER);
+        jdbc.update("INSERT INTO " + OWNED_FIXTURES + " (season_id,fixture_id,state,observation_generation,current_verified_generation,last_verified_generation,last_verified_at) VALUES (?,?,'VERIFIED',7,7,7,?)", SEASON_ID, fixture, Timestamp.from(CAPTURED));
+        jdbc.update("INSERT INTO " + OWNED_EVIDENCE + " (season_id,season_code,fixture_id,player_id,generation,component_presence,source_read_started_at,source_read_finished_at) VALUES (?,?,?,?,7,?,?,?)", SEASON_ID, SEASON, fixture, PLAYER, presence, Timestamp.from(CAPTURED.minusSeconds(60)), Timestamp.from(CAPTURED));
+        return fixture;
     }
 
     @Test void absentRecentReadingDoesNotTurnIntoZeroButKnownZeroSurvives() {

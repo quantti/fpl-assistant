@@ -174,7 +174,9 @@ class ShortlistApiTest {
                 .andExpect(jsonPath("$.rows.length()").value(1))
                 .andExpect(jsonPath("$.rows[0].season").value("S-COMPARE"))
                 .andExpect(jsonPath("$.rows[0].elementId").value(31))
-                .andExpect(jsonPath("$.rows[0].market").isEmpty());
+                .andExpect(jsonPath("$.rows[0].market").isEmpty())
+                .andExpect(jsonPath("$.scheduleCapturedAt").isEmpty())
+                .andExpect(jsonPath("$.modelSeasons").isEmpty());
         mockMvc.perform(get("/api/shortlist/comparison").header("Authorization", bearer(USER_B)))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.rows").isEmpty());
     }

@@ -213,18 +213,13 @@ export default function ShortlistPage() {
               <summary>Sources & model limits</summary>
               <div className={classes.detailBody}>
                 <p className={classes.note}>
-                  FPL data assessed{' '}
-                  {new Intl.DateTimeFormat('en-GB', {
-                    day: 'numeric',
-                    month: 'short',
-                    year: 'numeric',
-                    hour: '2-digit',
-                    minute: '2-digit',
-                    timeZone: 'UTC',
-                  }).format(new Date(comparison.data.asOf))}{' '}
-                  UTC; season statistics and capture times are shown in player details. Statistical
-                  refresh times are unverified; team xCS is an uncalibrated team estimate, not a
-                  player forecast.
+                  FPL data assessed {sourceTime(comparison.data.asOf)}; fixtures captured{' '}
+                  {sourceTime(comparison.data.scheduleCapturedAt)}; team xCS seasons:{' '}
+                  {comparison.data.modelSeasons
+                    ?.map((season) => season.replace('-', '/'))
+                    .join(' and ') || 'n/a'}
+                  . Statistical refresh times are unverified; team xCS is an uncalibrated team
+                  estimate, not a player forecast.
                 </p>
               </div>
             </details>
@@ -356,6 +351,21 @@ function ShortlistRow({
       )}
     </Fragment>
   );
+}
+
+function sourceTime(value?: string | null) {
+  const date = new Date(value ?? '');
+  return Number.isNaN(date.getTime())
+    ? 'n/a'
+    : new Intl.DateTimeFormat('en-GB', {
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        timeZone: 'UTC',
+      }).format(date) + ' UTC';
 }
 
 function displayName(player: ShortlistPlayer, row?: ComparisonRow) {

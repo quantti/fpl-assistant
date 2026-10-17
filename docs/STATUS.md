@@ -1,5 +1,29 @@
 # Status — Phase 1
 
+## PR #162 review corrections: source evidence and guarded observations
+
+The two confirmed Pi Review findings are addressed without expanding the user-facing source
+note beyond two sentences. The API now carries `scheduleCapturedAt` from its immutable schedule
+snapshot and `modelSeasons` from its metric context; the frontend formats assessment and schedule
+times separately to UTC seconds and names both model seasons. Missing/old-version metadata is
+shown as n/a, not inferred from assessment time or parsed from explanatory prose. Existing source
+strings remain for API compatibility. Tests distinguish two captures within the same minute and
+an independently different market timestamp, and keep unknown-refresh/uncalibrated-model wording.
+
+The comparison integration class now injects the real PfsReadSource with isolated owned-receipt
+fixture tables. Response-level regressions assert masking of retained physical xG/xA/DefCon when
+component presence is absent, retention/counting of known zero, and no raw fallback when receipt
+and evidence generations mismatch. A temporary mutation of only comparison's supplemental query
+to `player_fixture_stats` made 2/3 new tests fail on numeric assertions (9.0 instead of NULL,
+90 minutes instead of an absent observation); the guarded query was restored before final checks.
+This tests this consumer, rather than relying on another consumer's reader tests.
+
+Verification: 22 focused backend and 46 frontend tests pass, lint/format/TypeScript/Vite build
+pass, and isolated Chromium stub-data checks pass at 390/1440px light/dark with keyboard details
+and a two-sentence source note. The original source-summary assertion failed before the fix.
+No live account test, shared database writes, capture or deploy was run. The earlier full-PR review
+was against `f524afb`; no claim that its evidence automatically covers the correction commit.
+
 ## Stored FPL playing chance (PR #162)
 
 The [approved plan](superpowers/plans/2026-10-17-daily-playing-chance.md) is implemented:
