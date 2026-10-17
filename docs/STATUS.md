@@ -1,5 +1,17 @@
 # Status — Phase 1
 
+## Player facts — verify current clubs and disputed claims
+
+The system prompt now requires a new `getPlayerStats` lookup in the same turn before
+stating/correcting a current club, including apologies and follow-up challenges. Disputed player
+facts require a new lookup rather than agreement with the user or model memory; price and
+availability disputes retain their dedicated daily-capture tools. Current-club evidence comes
+from the daily capture, not a historical season's club. Old, missing, ambiguous or contradictory
+capture evidence cannot support a confident correction. The new prompt-contract regression failed
+before the change; all nine tests in the player-name, availability, DefCon and bench-order prompt
+contract classes passed afterwards. This is a prompt requirement, not server-enforced tool use;
+no live-model evaluation, production read or deployment was performed.
+
 ## Owned sync — KAR-75 post-merge review fixes (2026-09-28)
 
 The [KAR-75 follow-up plan](superpowers/plans/2026-09-28-kar-75-owned-sync-review-followup.md)

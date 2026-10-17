@@ -21,6 +21,21 @@ class PlayerNamePromptContractTest {
     }
 
     @Test
+    void currentClubAndDisputedPlayerFactsRequireANewLookup() throws IOException {
+        assertThat(prompt()).contains(
+                "Before stating or correcting a player's current club, call getPlayerStats anew",
+                "in this turn, even in a follow-up, an apology or a challenge to your previous answer",
+                "When player facts conflict with your memory, an earlier answer or the user's claim,",
+                "verify them with a new player lookup before agreeing or disagreeing",
+                "For disputed prices use getPriceHistory; for disputed availability use getPlayerAvailability",
+                "The daily capture's club is the current-club evidence",
+                "a previous season's club describes that season only",
+                "Never overrule that evidence with model memory, strategy text or conversational agreement",
+                "If the capture is not from today, or the lookup is missing, ambiguous or contradictory,",
+                "say the current fact could not be verified rather than asserting a correction");
+    }
+
+    @Test
     void promptAllowsAccentsAndClubsRetriesOnceAndReturnsToTheQuestion() throws IOException {
         assertThat(prompt()).contains(
                 "\"konsa\" is Konsa, not Konaté",
