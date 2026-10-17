@@ -46,23 +46,9 @@ export default function ShortlistPage() {
       accessorFn: ({ player, row }) => displayName(player, row),
       sortingFn: 'text',
     },
-    {
-      id: 'club',
-      header: 'Club',
-      accessorFn: ({ player, row }) => row?.market?.teamShort ?? player.teamShort,
-      sortingFn: 'text',
-    },
-    {
-      id: 'position',
-      header: 'Pos',
-      accessorFn: ({ player, row }) => row?.market?.position ?? player.elementType,
-    },
-    {
-      id: 'status',
-      header: 'Availability',
-      accessorFn: ({ row }) => (row?.market?.status ? availability(row.market.status) : undefined),
-      sortingFn: 'text',
-    },
+    { id: 'club', header: 'Club', enableSorting: false },
+    { id: 'position', header: 'Pos', enableSorting: false },
+    { id: 'status', header: 'Availability', enableSorting: false },
     ...(['price', 'points', 'value', 'xg', 'xa', 'xgi', 'cs'] as MetricSort[]).map(
       (metric, index) => ({
         id: metric,
@@ -75,14 +61,7 @@ export default function ShortlistPage() {
     ...gameweeks.map((week) => ({
       id: `gw${week}`,
       header: `GW${week}`,
-      accessorFn: ({ row }: PlayerEntry) => {
-        const fixtures = row?.forecast.weeks.find((item) => item.gameweek === week)?.fixtures;
-        if (!fixtures || fixtures.some((fixture) => fixture.difficulty == null)) return;
-        return fixtures.length === 0
-          ? 0
-          : fixtures.reduce((sum, fixture) => sum + fixture.difficulty!, 0) / fixtures.length;
-      },
-      sortingFn: 'basic' as const,
+      enableSorting: false,
     })),
     { id: 'actions', header: 'Actions', enableSorting: false },
   ];
@@ -176,11 +155,6 @@ export default function ShortlistPage() {
                             type="button"
                             className={classes.sortHeader}
                             onClick={column.getToggleSortingHandler()}
-                            title={
-                              id.startsWith('gw')
-                                ? 'Sort by average FDR; blanks first, unknown last'
-                                : undefined
-                            }
                           >
                             {String(column.columnDef.header)}
                             <span aria-hidden="true">{indicator}</span>
@@ -216,10 +190,13 @@ export default function ShortlistPage() {
                   FPL data assessed {sourceTime(comparison.data.asOf)}; fixtures captured{' '}
                   {sourceTime(comparison.data.scheduleCapturedAt)}; team xCS seasons:{' '}
                   {comparison.data.modelSeasons
-                    ?.map((season) => season.replace('-', '/'))
+                    ?.map(
+                      (season) =>
+                        `${season.replace('-', '/')} (through ${sampleDate(comparison.data?.modelThrough?.[season])})`,
+                    )
                     .join(' and ') || 'n/a'}
                   . Statistical refresh times are unverified; team xCS is an uncalibrated team
-                  estimate, not a player forecast.
+                  estimate from completed matches with usable data, not a player forecast.
                 </p>
               </div>
             </details>
@@ -351,6 +328,18 @@ function ShortlistRow({
       )}
     </Fragment>
   );
+}
+
+function sampleDate(value?: string) {
+  const date = new Date(value ?? '');
+  return Number.isNaN(date.getTime())
+    ? 'n/a'
+    : new Intl.DateTimeFormat('en-GB', {
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric',
+        timeZone: 'UTC',
+      }).format(date);
 }
 
 function sourceTime(value?: string | null) {

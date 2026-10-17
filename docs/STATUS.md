@@ -1,5 +1,39 @@
 # Status — Phase 1
 
+## Local shortlist completed-match model and limited sorting
+
+Owner-approved correction after read-only diagnosis: the 2026-10-17 schedule capture at 11:50 UTC
+still had five elapsed fixtures unfinished at 21:50 UTC. That produced league-wide ranking
+coverage gaps, so shortlist's global coverage gate suppressed xCS despite 60 verified finished
+matches and six usable fixture-sides for each of 20 clubs. No shared-data repair was attempted.
+
+Shortlist now requests `RankingMetrics.loadCompletedComparison`: club rates and pooled league
+constants use only finished fixtures with usable data for BOTH canonical sides. Unverified owned
+evidence and still-provisional incremental matches are excluded; incremental matches become usable
+when the existing GameweekFinalityReader validates their FINALIZED receipt, without bypassing
+current-row/population proofs. Existing trusted legacy archives retain their guarded read contract. One invalid/missing side removes both sides
+from this model's cohort. Remaining evidence is blended by the same ClubRates/SeasonBlend model;
+club/league floors, missing opponent rates, source/schedule checks and unknown horizon refusal
+remain intact. Ranking/squad callers still use the unchanged `load` contract, including their
+strict comparison-population gate and receipt-backed provisional handling. The shortlist's
+outer REPEATABLE_READ snapshot and guarded PFS reads remain unchanged, with no per-player SQL.
+
+Each model season now carries the latest INCLUDED match kickoff in `modelThrough`, formatted as
+a date alongside the season in the two-sentence source note. It is sample coverage, not sync
+freshness. Missing cutoff metadata is n/a, never borrowed from capture/asOf timestamps. Club,
+position, availability and gameweek headers are plain labels; only name and numeric metrics sort.
+
+Regression coverage includes pending and unverified matches not globally suppressing xCS,
+one-sided fixtures contributing neither side, known zeros, insufficient evidence remaining n/a,
+excluded latest matches not advancing the cutoff, and unchanged normal ranking/provisional rules.
+The three new model behavior tests and header-sorting assertion failed against the old behavior.
+53 focused backend tests and 57 frontend tests pass, together with lint/format/TypeScript/Vite.
+Full-App stub browser checks pass at 3840/1920/1440px and 390px light/dark: exactly eight sortable
+headers, numeric and unavailable xCS cells, dated model samples, compact rows and keyboard details.
+The FINALIZED consumer branch uses a typed reader stub; validation of actual final receipts remains
+the existing reader suite's responsibility. No full local suite or new live account test was run.
+This change is NOT pushed or deployed until the owner explicitly requests it.
+
 ## Shortlist full-width shell and compact rows (PR #162)
 
 Owner screenshots exposed the actual remaining layout bug: ChatView still constrained shortlist
