@@ -1,5 +1,18 @@
 # Status — Phase 1
 
+## Importer operator-route security correction (2026-10-17)
+
+PR #165's master tests/deploy passed (`39057123698`), but the live handoff returned 401
+and, with a real user JWT, 403: the two importer operator routes were missing from
+SecurityConfig's exact permit list and hit denyAll before their own token authentication.
+Runtime remained OFF epoch 106; the handoff flag was disabled again. This correction
+adds only handoff/retire to that list, retaining controller-token and mode/epoch guards.
+The real filter-chain regression first failed 200 vs 401; 11 focused security/controller/
+configuration tests now pass. Default-disabled, blank/wrong/monitor tokens, user JWT
+alone, unknown routes and stale epoch remain rejected. No bypass SQL or importer
+activation occurred. Owner explicitly authorised this follow-up PR, two-reviewer gate,
+green-CI squash merge and subsequent cutover without another command.
+
 ## Incremental cutover request budget (2026-10-17; not activated)
 
 The owner authorised replacing legacy sync with the incremental importer. Legacy is now OFF
