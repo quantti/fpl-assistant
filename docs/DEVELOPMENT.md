@@ -602,7 +602,7 @@ currently set to `anthropic` in `.env.test`; production currently uses `google-g
 billed, API-key Gemini Developer API, not Vertex AI. `application.yml` maps the setting to
 `spring.ai.model.chat`, which activates only that provider's autoconfiguration — without it, the
 unused provider's blank API key fails context startup. `google-genai` uses `GEMINI_API_KEY`;
-thinking depth is `GEMINI_THINKING_LEVEL` (`LOW` default). Current provider privacy controls,
+thinking depth is `GEMINI_THINKING_LEVEL` (`MEDIUM` default). Current provider privacy controls,
 retention decisions and unresolved contract evidence are recorded in
 [`PRIVACY-OPERATIONS.md`](PRIVACY-OPERATIONS.md); do not infer them from local environment defaults.
 
