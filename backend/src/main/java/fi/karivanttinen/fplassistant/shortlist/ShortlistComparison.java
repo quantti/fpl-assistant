@@ -35,7 +35,8 @@ public class ShortlistComparison {
     public record Response(Instant asOf, String horizon, List<String> sources, List<Row> rows) {}
     public record Market(String webName, String fullName, String teamShort, int position, int nowCost,
                          String status, String news, Double ownership, Integer penalties,
-                         Integer directFreeKicks, Integer corners, Instant capturedAt) {}
+                         Integer directFreeKicks, Integer corners, Instant capturedAt,
+                         Integer chanceOfPlayingNextRound) {}
     public record Totals(Integer points, Integer minutes, Integer goals, Integer assists,
                          Integer cleanSheets, Integer saves, Integer bonus, Double xg, Double xa,
                          Double xgi, String source) {}
@@ -105,7 +106,7 @@ public class ShortlistComparison {
         Map<Integer, Map<String, Object>> duties = new HashMap<>();
         Map<Integer, List<Map<String, Object>>> observations = new HashMap<>();
         if (!ids.isEmpty()) {
-            jdbc.queryForList("SELECT element_id, penalties_order, direct_fk_order, corners_order FROM "
+            jdbc.queryForList("SELECT element_id, penalties_order, direct_fk_order, corners_order, chance_of_playing_next_round FROM "
                     + dailyTable + " WHERE season=? AND price_date=? AND element_id IN (" + ids + ")",
                     capture.get().season(), capture.get().date())
                     .forEach(r -> duties.put(integer(r, "element_id"), r));
@@ -149,7 +150,8 @@ public class ShortlistComparison {
         Market market = fresh ? new Market(player.webName(), player.fullName(), player.teamShort(), player.position(),
                 player.nowCost(), player.status(), player.news(), player.ownership(),
                 integer(duties, "penalties_order"), integer(duties, "direct_fk_order"),
-                integer(duties, "corners_order"), player.capturedAt()) : null;
+                integer(duties, "corners_order"), player.capturedAt(),
+                integer(duties, "chance_of_playing_next_round")) : null;
         boolean coherent = sameSeason && total != null
                 && player.teamId().equals(integer(total, "team_id"))
                 && player.position().equals(integer(total, "element_type"));

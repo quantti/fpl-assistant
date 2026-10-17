@@ -1,6 +1,6 @@
 # Capture FPL's next-round playing chance
 
-**PROGRESS:** Task 1/3 done: nullable storage, validation and SQL round trips verified.
+**PROGRESS:** Task 2/3 done: storage and same-snapshot comparison DTO verified.
 
 ## Contract and scope
 
