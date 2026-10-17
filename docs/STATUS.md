@@ -1,5 +1,22 @@
 # Status — Phase 1
 
+## PR #162 final advisory fixes
+
+Owner accepted both non-blocking advisories from the fresh CLEAN full-PR panel on `e9d36e5`
+(2/2 GPT 6.1 Sol, quorum 2, 0 confirmed, 2 advisories). The daily HTTP decoder now reads floating
+JSON numbers as BigDecimal before validating the optional playing chance: a source fraction such
+as `75.00000000000000000001` must not first become Double 75. Both excessive precision and
+underflow are covered through the real HTTP-to-SQL path, while decimal representations of exact
+integers remain valid. This decoder is local to DailyPriceSyncService; global web JSON settings
+and other API clients are unchanged.
+
+Comparison also maps CannotCreateTransactionException to the existing empty no-store 503,
+beside DataAccessException, without exposing connection details. A real proxied transaction
+manager fault verifies that contract and that membership listing/removal remain independent.
+Both regressions failed on the old behavior; all 39 focused backend tests pass after the fixes.
+No full local suite was run. The owner explicitly withdrew merge authority and requested staging
+inspection first: PR #162 remains open, with no production-app deployment or capture activation.
+
 ## PR #162 review corrections: source evidence and guarded observations
 
 The two confirmed Pi Review findings are addressed without expanding the user-facing source

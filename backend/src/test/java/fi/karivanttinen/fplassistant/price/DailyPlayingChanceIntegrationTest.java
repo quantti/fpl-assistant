@@ -81,6 +81,19 @@ class DailyPlayingChanceIntegrationTest {
                 .isInstanceOf(DataIntegrityViolationException.class);
     }
 
+    @Test void jsonFractionsCannotRoundIntoAnObservedInteger() {
+        for (String value : List.of("75.00000000000000000001", "74.99999999999999999999",
+                "100.00000000000000000001", "1E-400")) {
+            chance = new java.math.BigDecimal(value);
+            assertThat(sync.sync()).isEqualTo(1);
+            assertThat(jdbc.queryForObject("SELECT chance_of_playing_next_round FROM " + TABLE, Integer.class))
+                    .as("JSON fractional chance %s", value).isNull();
+        }
+        chance = new java.math.BigDecimal("75.00000000000000000000");
+        assertThat(sync.sync()).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT chance_of_playing_next_round FROM " + TABLE, Integer.class)).isEqualTo(75);
+    }
+
     @Test void writerRoundTripReplacesAndClearsOnlyTheCurrentSeasonDay() {
         LocalDate today = LocalDate.now(DailyPriceSyncService.UK);
         String season = DailyPriceSyncService.seasonCode(today);
