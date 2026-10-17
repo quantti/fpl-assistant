@@ -1,5 +1,21 @@
 # Status — Phase 1
 
+## Shortlist table follow-up (PR #162)
+
+Owner-requested replacement of the stacked comparison cards: one semantic table row per player,
+shared metric/gameweek headers, separate club and GK/DEF/MID/FWD columns, and a name button
+opening an inline detail card. The club/long-position/season subtitle is removed; season and
+capture evidence remain in the detail card. Mobile uses horizontal table scrolling with a sticky
+player column, not compressed/overlapping values. Unknown fixture evidence remains n/a beside
+known blanks and doubles. Membership, comparison reads and backend contracts are unchanged.
+
+A table/expansion regression failed against the old cards before implementation. All 16 focused
+frontend page/provider tests pass, including removal while comparison remains unavailable (review
+F4). Lint, format, TypeScript/Vite and contrast checks pass; the existing large-bundle warning
+remains. Isolated Chromium with stub data checks 390/1440px light/dark, cell/page overflow and
+keyboard expansion; this is not signed-in live validation. No backend tests were rerun for this
+UI-only change. The earlier PR review does not cover this follow-up.
+
 ## Shortlist comparison (2026-10-16; PR #162)
 
 The [reviewed plan](superpowers/plans/2026-10-16-shortlist-comparison.md) extends the existing

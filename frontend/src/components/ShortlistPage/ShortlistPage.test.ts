@@ -178,10 +178,56 @@ it('renders loading, load-error and empty states', async () => {
   expect(host.textContent).toContain('Your shortlist is empty');
 });
 
+it('uses shared table columns and opens a detail card from the player name', async () => {
+  await mount(Response.json([stored, { ...stored, elementId: 18, fullName: 'Alpha' }]));
+  const table = host.querySelector('table[aria-label="Player comparison"]');
+  expect(table).not.toBeNull();
+  const headers = [...table!.querySelectorAll(':scope > thead th')].map((cell) => cell.textContent);
+  expect(headers).toEqual([
+    'Player',
+    'Club',
+    'Pos',
+    'Price',
+    'Points',
+    'Points/£m',
+    'xG',
+    'xA',
+    'xGI',
+    'Team xCS',
+    'GW6',
+    'GW7',
+    'GW8',
+    'GW9',
+    'GW10',
+    'Actions',
+  ]);
+  expect(table!.querySelectorAll(':scope > tbody > tr')).toHaveLength(2);
+  expect(host.textContent).not.toContain('ARS · Midfielder · 2026/27 season');
+  expect(table!.textContent).toContain('MID');
+  const rows = table!.querySelectorAll(':scope > tbody > tr');
+  expect(rows[0].querySelector(':scope > :nth-child(11)')?.textContent).toBe('n/a');
+  expect(rows[1].querySelector(':scope > :nth-child(11)')?.textContent).toContain('CHE (H)');
+  expect(rows[1].querySelector(':scope > :nth-child(11)')?.textContent).toContain('LIV (A)');
+  expect(rows[1].querySelector(':scope > :nth-child(12)')?.textContent).toBe('Blank');
+  expect(host.textContent).not.toContain('Observed season totals');
+  const button = host.querySelector<HTMLButtonElement>(
+    'button[aria-expanded="false"][aria-label="Details for Bukayo Saka"]',
+  )!;
+  act(() => button.click());
+  expect(button.getAttribute('aria-expanded')).toBe('true');
+  const card = host.querySelector('section[aria-label="Bukayo Saka details"]');
+  expect(card?.id).toBe(button.getAttribute('aria-controls'));
+  expect(card?.textContent).toContain('Observed season totals');
+  expect(host.textContent).toContain('DefCon');
+  act(() => button.click());
+  expect(host.textContent).not.toContain('Observed season totals');
+});
+
 it('shows name, club and position, then removes through shared state', async () => {
   await mount(Response.json([stored]));
   expect(host.textContent).toContain('Bukayo Saka');
-  expect(host.textContent).toContain('ARS · Midfielder · 2026/27 season');
+  expect(host.textContent).toContain('ARS');
+  expect(host.textContent).toContain('MID');
   expect(host.textContent).toContain('count:1');
 
   apiFetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
@@ -223,17 +269,26 @@ it('compares all three xG metrics, value and five gameweeks with detail evidence
     expect(host.textContent).toContain(label);
   }
   expect(host.querySelector('details')).not.toBeNull();
+  act(() =>
+    host.querySelector<HTMLButtonElement>('button[aria-label="Details for Bukayo Saka"]')!.click(),
+  );
   expect(host.textContent).toContain('DefCon');
   expect(host.textContent).toContain('Stored-data age');
   expect(host.textContent).toContain('n/a');
-  const metric = (label: string) =>
-    [...host.querySelectorAll('dt')].find((item) => item.textContent === label)?.nextElementSibling
-      ?.textContent;
+  const table = host.querySelector('table[aria-label="Player comparison"]')!;
+  const metric = (label: string) => {
+    const index = [...table.querySelectorAll(':scope > thead th')].findIndex(
+      (cell) => cell.textContent === label,
+    );
+    return table.querySelector(':scope > tbody > tr')!.children[index].textContent;
+  };
   expect(metric('Points/£m')).toBe('10.0');
   expect(metric('xG')).toBe('1.20');
   expect(metric('xA')).toBe('0.30');
   expect(metric('xGI')).toBe('1.50');
-  expect(host.querySelector(':scope tbody tr')?.textContent).toContain('FUL (H)0000n/a0.00n/a');
+  expect(
+    host.querySelector(':scope section[aria-label="Bukayo Saka details"] tbody tr')?.textContent,
+  ).toContain('FUL (H)0000n/a0.00n/a');
 });
 
 it('keeps removal usable on comparison failure and retries independently', async () => {
@@ -253,6 +308,19 @@ it('keeps removal usable on comparison failure and retries independently', async
     await Promise.resolve();
   });
   expect(host.textContent).toContain('count:0');
+});
+
+it('removes a player while comparison remains unavailable', async () => {
+  apiFetchMock.mockImplementation(() => Promise.resolve(new Response(null, { status: 503 })));
+  await mount(Response.json([stored]));
+  expect(host.textContent).toContain('Comparison unavailable');
+  apiFetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+  await act(async () => {
+    host.querySelector<HTMLButtonElement>('button[aria-label="Remove Bukayo Saka"]')!.click();
+    await Promise.resolve();
+  });
+  expect(host.textContent).toContain('count:0');
+  expect(host.textContent).toContain('Your shortlist is empty');
 });
 
 it('sorts missing metrics last and filters positions without changing membership', async () => {
@@ -275,19 +343,21 @@ it('sorts missing metrics last and filters positions without changing membership
     ),
   );
   await mount(Response.json([stored, second]));
-  expect(host.querySelector(':scope li strong')?.textContent).toBe('Alpha');
+  expect(host.querySelector('button[aria-expanded]')?.textContent).toContain('Alpha');
   const selects = host.querySelectorAll('select');
   act(() => {
     selects[1].value = 'value';
     selects[1].dispatchEvent(new Event('change', { bubbles: true }));
   });
-  expect(host.querySelector(':scope li strong')?.textContent).toBe('Bukayo Saka');
+  expect(host.querySelector('button[aria-expanded]')?.textContent).toContain('Bukayo Saka');
   act(() => {
     selects[0].value = '2';
     selects[0].dispatchEvent(new Event('change', { bubbles: true }));
   });
-  expect(host.querySelectorAll('li')).toHaveLength(1);
-  expect(host.querySelector(':scope li strong')?.textContent).toBe('Alpha');
+  expect(
+    host.querySelectorAll(':scope table[aria-label="Player comparison"] > tbody > tr'),
+  ).toHaveLength(1);
+  expect(host.querySelector('button[aria-expanded]')?.textContent).toContain('Alpha');
   expect(host.textContent).toContain('count:2');
 });
 
@@ -353,12 +423,15 @@ it('uses the current captured name rather than the frozen catalogue name', async
     ),
   );
   await mount(Response.json([stored]));
-  expect(host.querySelector(':scope li strong')?.textContent).toBe('Updated Name');
+  expect(host.querySelector('button[aria-expanded]')?.textContent).toContain('Updated Name');
   expect(host.querySelector('button[aria-label="Remove Updated Name"]')).not.toBeNull();
 });
 
 it('never attaches another season with the same element id', async () => {
   await mount(Response.json([{ ...stored, season: '2025-26' }]));
   expect(host.textContent).not.toContain('£6.0m');
+  act(() =>
+    host.querySelector<HTMLButtonElement>('button[aria-label="Details for Bukayo Saka"]')!.click(),
+  );
   expect(host.textContent).toContain('2025/26 season');
 });

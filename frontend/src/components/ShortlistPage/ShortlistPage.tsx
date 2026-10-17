@@ -1,5 +1,5 @@
 import { Loader } from '@mantine/core';
-import { useState } from 'react';
+import { Fragment, useId, useState } from 'react';
 import type { CataloguePlayer, PlayerCatalogue } from '../../types';
 import { type ShortlistPlayer, useShortlist } from '../../shortlist/ShortlistContext';
 import {
@@ -39,6 +39,13 @@ export default function ShortlistPage() {
             (b.row?.market?.position ?? b.player.elementType)
         : compareNumbers(sortMetric(a.row, sort), sortMetric(b.row, sort)) || byName;
     });
+
+  const gameweeks = [
+    ...new Set(
+      comparison.data?.rows.flatMap((row) => row.forecast.weeks.map((week) => week.gameweek)),
+    ),
+  ];
+  gameweeks.sort((a, b) => a - b);
 
   return (
     <main className={classes.page}>
@@ -110,15 +117,47 @@ export default function ShortlistPage() {
             not a forecast. Team xCS = expected clean sheets over this window. FDR: 1 easiest–5
             hardest. n/a = unavailable.
           </p>
-          <ul className={classes.list}>
-            {players.map(({ player, row }) => (
-              <ShortlistRow
-                key={`${player.season}:${player.elementId}`}
-                player={player}
-                row={row}
-              />
-            ))}
-          </ul>
+          <div
+            className={classes.tableScroll}
+            role="region"
+            aria-label="Player comparison table"
+            tabIndex={0}
+          >
+            <table className={classes.table} aria-label="Player comparison">
+              <thead>
+                <tr>
+                  {[
+                    'Player',
+                    'Club',
+                    'Pos',
+                    'Price',
+                    'Points',
+                    'Points/£m',
+                    'xG',
+                    'xA',
+                    'xGI',
+                    'Team xCS',
+                    ...gameweeks.map((week) => `GW${week}`),
+                    'Actions',
+                  ].map((label) => (
+                    <th key={label} scope="col">
+                      {label}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {players.map(({ player, row }) => (
+                  <ShortlistRow
+                    key={`${player.season}:${player.elementId}`}
+                    player={player}
+                    row={row}
+                    gameweeks={gameweeks}
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
           {players.length === 0 && (
             <p className={classes.state}>No saved players in this position.</p>
           )}
@@ -141,7 +180,17 @@ export default function ShortlistPage() {
   );
 }
 
-function ShortlistRow({ player, row }: { player: ShortlistPlayer; row?: ComparisonRow }) {
+function ShortlistRow({
+  player,
+  row,
+  gameweeks,
+}: {
+  player: ShortlistPlayer;
+  row?: ComparisonRow;
+  gameweeks: number[];
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const detailsId = useId();
   const shortlist = useShortlist();
   const pending = shortlist.isPending(player.season, player.elementId);
   const position = row?.market?.position ?? player.elementType;
@@ -156,49 +205,43 @@ function ShortlistRow({ player, row }: { player: ShortlistPlayer; row?: Comparis
     ['Team xCS', n(row?.forecast.expectedCleanSheets, 2)],
   ];
   return (
-    <li className={classes.player}>
-      <div className={classes.rowHead}>
-        <div className={classes.identity}>
-          <strong>{name}</strong>
-          <span>
-            {row?.market?.teamShort ?? player.teamName} · {positionName(position)} ·{' '}
-            {seasonName(player.season)}
-          </span>
-          <span title={row?.market?.news ?? undefined}>
+    <Fragment>
+      <tr>
+        <th scope="row" className={classes.playerCell}>
+          <button
+            type="button"
+            className={classes.playerName}
+            aria-label={`Details for ${name}`}
+            aria-expanded={expanded}
+            aria-controls={expanded ? detailsId : undefined}
+            onClick={() => setExpanded(!expanded)}
+          >
+            <span aria-hidden="true">{expanded ? '▾' : '▸'}</span> {name}
+          </button>
+          <span className={classes.availability} title={row?.market?.news ?? undefined}>
             {availability(row?.market?.status)}
-            {row?.market?.news ? ` · ${row.market.news}` : ''}
           </span>
-        </div>
-        <button
-          type="button"
-          className={classes.remove}
-          disabled={pending}
-          aria-label={`Remove ${name}`}
-          onClick={() => void shortlist.toggle(catalogueFor(player), cataloguePlayerFor(player))}
-        >
-          {pending ? 'Removing…' : 'Remove'}
-        </button>
-      </div>
-      <div className={classes.comparison}>
-        <dl className={classes.stats}>
-          {stats.map(([label, value]) => (
-            <div
-              key={label}
-              className={label === 'Team xCS' && position <= 2 ? classes.emphasis : undefined}
-            >
-              <dt>{label}</dt>
-              <dd>{value}</dd>
-            </div>
-          ))}
-        </dl>
-        <div className={classes.weeks} aria-label="Upcoming gameweeks">
-          {row?.forecast.weeks.map((week) => (
-            <div key={week.gameweek} className={classes.week}>
-              <span className={classes.note}>GW{week.gameweek}</span>
-              {week.fixtures.length === 0 ? (
-                <span className={classes.note}>Blank</span>
-              ) : (
-                week.fixtures.map((fixture) => (
+          {row?.reason && <p className={classes.note}>{row.reason}</p>}
+          {row?.forecast.reason && <p className={classes.note}>{row.forecast.reason}</p>}
+        </th>
+        <td>{row?.market?.teamShort ?? player.teamShort}</td>
+        <td>{['GK', 'DEF', 'MID', 'FWD'][position - 1] ?? 'n/a'}</td>
+        {stats.map(([label, value]) => (
+          <td
+            key={label}
+            className={label === 'Team xCS' && position <= 2 ? classes.emphasis : classes.number}
+          >
+            {value}
+          </td>
+        ))}
+        {gameweeks.map((gameweek) => {
+          const week = row?.forecast.weeks.find((item) => item.gameweek === gameweek);
+          return (
+            <td key={gameweek}>
+              <div className={classes.week}>
+                {!week && 'n/a'}
+                {week?.fixtures.length === 0 && 'Blank'}
+                {week?.fixtures.map((fixture) => (
                   <span
                     key={fixture.id}
                     className={classes.fixture}
@@ -213,16 +256,42 @@ function ShortlistRow({ player, row }: { player: ShortlistPlayer; row?: Comparis
                     {fixture.opponent} ({fixture.home ? 'H' : 'A'})
                     <small>FDR {fixture.difficulty ?? 'n/a'}</small>
                   </span>
-                ))
+                ))}
+              </div>
+            </td>
+          );
+        })}
+        <td>
+          <button
+            type="button"
+            className={classes.remove}
+            disabled={pending}
+            aria-label={`Remove ${name}`}
+            onClick={() => void shortlist.toggle(catalogueFor(player), cataloguePlayerFor(player))}
+          >
+            {pending ? 'Removing…' : 'Remove'}
+          </button>
+        </td>
+      </tr>
+      {expanded && (
+        <tr>
+          <td colSpan={11 + gameweeks.length} className={classes.cardCell}>
+            <section id={detailsId} className={classes.card} aria-label={`${name} details`}>
+              <h2>{name}</h2>
+              <p className={classes.note}>{seasonName(player.season)}</p>
+              <p className={classes.note}>
+                {row?.market?.news ?? availability(row?.market?.status)}
+              </p>
+              {row ? (
+                <ComparisonDetails row={row} position={position} />
+              ) : (
+                <p>Comparison unavailable.</p>
               )}
-            </div>
-          ))}
-        </div>
-      </div>
-      {row?.reason && <p className={classes.note}>{row.reason}</p>}
-      {row?.forecast.reason && <p className={classes.note}>{row.forecast.reason}</p>}
-      {row && <ComparisonDetails row={row} position={position} />}
-    </li>
+            </section>
+          </td>
+        </tr>
+      )}
+    </Fragment>
   );
 }
 

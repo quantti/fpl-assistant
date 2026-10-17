@@ -23,8 +23,7 @@ export default function ComparisonDetails({
     ...(position === 1 ? [['Saves', t?.saves] as [string, number | null | undefined]] : []),
   ];
   return (
-    <details className={classes.details}>
-      <summary>Player details · season {row.season}</summary>
+    <div className={classes.details}>
       <div className={classes.detailBody}>
         <h3>Observed season totals</h3>
         <dl className={classes.stats}>
@@ -125,7 +124,7 @@ export default function ComparisonDetails({
           </p>
         ))}
       </div>
-    </details>
+    </div>
   );
 }
 
