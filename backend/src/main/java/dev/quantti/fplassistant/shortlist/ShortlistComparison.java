@@ -32,7 +32,8 @@ import org.springframework.transaction.annotation.Transactional;
 /** Read-only comparison; membership and its catalogue identity remain independent. */
 @Service
 public class ShortlistComparison {
-    public record Response(Instant asOf, String horizon, List<String> sources, List<Row> rows) {}
+    public record Response(Instant asOf, String horizon, List<String> sources, List<Row> rows,
+                           Instant scheduleCapturedAt, List<String> modelSeasons) {}
     public record Market(String webName, String fullName, String teamShort, int position, int nowCost,
                          String status, String news, Double ownership, Integer penalties,
                          Integer directFreeKicks, Integer corners, Instant capturedAt,
@@ -80,10 +81,10 @@ public class ShortlistComparison {
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public Response read(UUID owner) {
         List<ShortlistStore.Player> saved = shortlist.list(owner);
-        if (saved.isEmpty()) return new Response(clock.instant(), "", List.of(), List.of());
+        if (saved.isEmpty()) return new Response(clock.instant(), "", List.of(), List.of(), null, List.of());
         var capture = prices.latestCapture();
         if (capture.isEmpty()) return new Response(clock.instant(), "Schedule unavailable", List.of(),
-                saved.stream().map(p -> unavailable(p, "No daily capture available.")).toList());
+                saved.stream().map(p -> unavailable(p, "No daily capture available.")).toList(), null, List.of());
         var metric = seasons.metricSeasons(seasons.resolve());
         var snapshot = ranking.load(capture.get(), metric);
         Instant asOf = snapshot.asOf();
@@ -135,7 +136,12 @@ public class ShortlistComparison {
         List<Row> rows = saved.stream().map(p -> row(p, snapshot, horizon, candidates.get(p.elementId()),
                 totals.get(p.elementId()), duties.getOrDefault(p.elementId(), Map.of()),
                 observations.getOrDefault(p.elementId(), List.of()), clubs, fresh, sameSeason)).toList();
-        return new Response(asOf, range, sources, rows);
+        List<String> modelSeasons = new ArrayList<>();
+        modelSeasons.add(metric.played().code());
+        metric.previous().ifPresent(previous -> modelSeasons.add(previous.code()));
+        return new Response(asOf, range, sources, rows,
+                snapshot.schedule().snapshot().map(ScheduleSource.Snapshot::capturedAt).orElse(null),
+                List.copyOf(modelSeasons));
     }
 
     private Row row(ShortlistStore.Player saved, RankingMetrics.Snapshot snapshot,

@@ -2,6 +2,8 @@ export interface Comparison {
   asOf: string;
   horizon: string;
   sources: string[];
+  scheduleCapturedAt?: string | null;
+  modelSeasons?: string[];
   rows: ComparisonRow[];
 }
 

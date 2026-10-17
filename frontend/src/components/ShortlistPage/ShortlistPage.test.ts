@@ -31,6 +31,8 @@ const comparison = {
   asOf: '2026-09-09T12:00:00Z',
   horizon: 'GW6–10 · 5 editable gameweeks',
   sources: ['Observed totals: season 2026-27'],
+  scheduleCapturedAt: '2026-09-09T01:10:00Z',
+  modelSeasons: ['2026-27', '2025-26'],
   rows: [
     {
       season: '2026-27',
@@ -363,13 +365,40 @@ it('puts colour-coded availability in its own cell and sorts from headers both w
 it('summarises source limits in two sentences with a readable UTC date', async () => {
   await mount(Response.json([stored]));
   const sources = host.querySelector('details');
-  expect(sources?.textContent).toContain('9 Sept 2026, 12:00 UTC');
+  expect(sources?.textContent).toContain('9 Sept 2026, 12:00:00 UTC');
+  expect(sources?.textContent).toContain('fixtures captured 9 Sept 2026, 01:10:00 UTC');
+  expect(sources?.textContent).toContain('2026/27 and 2025/26');
   expect(sources?.textContent).toContain('Statistical refresh times are unverified');
   expect(sources?.textContent).toContain('uncalibrated team estimate');
   expect(sources?.querySelectorAll('p')).toHaveLength(1);
+  expect(sources?.querySelector('p')?.textContent?.match(/\.(?:\s|$)/g)).toHaveLength(2);
   expect(sources?.textContent).not.toContain('2026-09-09T12:00:00Z');
   expect(sources?.textContent).not.toContain('Observed totals:');
 });
+
+it('distinguishes two schedule captures on the same day without changing the assessment time', async () => {
+  apiFetchMock.mockImplementation(() =>
+    Promise.resolve(Response.json({ ...comparison, scheduleCapturedAt: '2026-09-09T01:10:30Z' })),
+  );
+  await mount(Response.json([stored]));
+  const sources = host.querySelector('details');
+  expect(sources?.textContent).toContain('fixtures captured 9 Sept 2026, 01:10:30 UTC');
+  expect(sources?.textContent).toContain('assessed 9 Sept 2026, 12:00:00 UTC');
+});
+
+it.each([undefined, null, 'invalid timestamp'])(
+  'keeps missing or invalid source metadata unavailable: %s',
+  async (scheduleCapturedAt) => {
+    apiFetchMock.mockImplementation(() =>
+      Promise.resolve(Response.json({ ...comparison, scheduleCapturedAt, modelSeasons: [] })),
+    );
+    await mount(Response.json([stored]));
+    const sources = host.querySelector('details');
+    expect(sources?.textContent).toContain('fixtures captured n/a; team xCS seasons: n/a');
+    expect(sources?.textContent).toContain('Statistical refresh times are unverified');
+    expect(sources?.textContent).not.toContain('Invalid Date');
+  },
+);
 
 it('removes a player while comparison remains unavailable', async () => {
   apiFetchMock.mockImplementation(() => Promise.resolve(new Response(null, { status: 503 })));
