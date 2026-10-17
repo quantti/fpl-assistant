@@ -23,6 +23,10 @@ pass, and isolated Chromium stub-data checks pass at 390/1440px light/dark with 
 and a two-sentence source note. The original source-summary assertion failed before the fix.
 No live account test, shared database writes, capture or deploy was run. The earlier full-PR review
 was against `f524afb`; no claim that its evidence automatically covers the correction commit.
+The two-reviewer correction-only Pi Review against `7c808b5` returned BLOCKED for both reviewers
+without an explanatory finding/error in its result (2m28s, reported $0.8887). This is not a clean
+review receipt. No automatic retry/fallback was attempted; independent correction acceptance
+remains blocked. Parent diff review and executed checks above remain separate evidence.
 
 ## Stored FPL playing chance (PR #162)
 
