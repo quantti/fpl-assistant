@@ -61,9 +61,8 @@ spring:
           max-output-tokens: ${FPL_MAX_TOKENS:1500}
           # Applies to the visible answer; thinking tokens are budgeted separately by the
           # level below and land on the bill as output tokens all the same.
-          # LOW to start: the cost model in docs/LLM-PRICING.md assumes ~1,500 thinking
-          # tokens/turn, and the trial raises this only if answers need it.
-          thinking-level: ${GEMINI_THINKING_LEVEL:LOW}
+          # Thinking depth is not a fixed token budget; MEDIUM may increase turn cost.
+          thinking-level: ${GEMINI_THINKING_LEVEL:MEDIUM}
     vectorstore:
       pgvector:
         table-name: fpl_embeddings
