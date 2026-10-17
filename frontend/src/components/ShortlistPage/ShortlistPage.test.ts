@@ -424,6 +424,22 @@ it('keeps long failure explanations out of comparison rows but available in the 
   expect(card?.textContent).toContain('Matching playing-season statistics unavailable.');
 });
 
+it('explains the team clean-sheet unit visibly and links the column header to its legend', async () => {
+  await mount(Response.json([stored]));
+  const legend = host.querySelector('#team-xcs-legend');
+  expect(legend).not.toBeNull();
+  expect(legend?.textContent).toContain('expected club clean sheets');
+  expect(legend?.textContent).toContain('1.54 ≈ 1½');
+  expect(legend?.textContent).toContain('not player points');
+  expect(legend?.textContent).toContain('forwards earn no clean-sheet points');
+  expect(legend?.closest('details, [hidden]')).toBeNull();
+  const header = [...host.querySelectorAll(':scope thead button')].find((button) =>
+    button.textContent?.startsWith('Team xCS'),
+  )!;
+  expect(header.getAttribute('aria-describedby')).toBe('team-xcs-legend');
+  expect(header.getAttribute('title')).toContain('not player points');
+});
+
 it('summarises source limits in two sentences with a readable UTC date', async () => {
   await mount(Response.json([stored]));
   const sources = host.querySelector('details');
