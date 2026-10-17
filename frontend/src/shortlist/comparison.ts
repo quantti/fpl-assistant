@@ -16,6 +16,7 @@ export interface ComparisonRow {
     nowCost: number;
     status: string | null;
     news: string | null;
+    chanceOfPlayingNextRound?: number | null;
     ownership: number | null;
     penalties: number | null;
     directFreeKicks: number | null;
@@ -91,6 +92,23 @@ export function availability(status: string | null | undefined) {
     n: 'Not available',
   };
   return status ? (labels[status] ?? 'Unknown') : 'Unknown';
+}
+
+export function availabilityBadge(status: string | null | undefined, chance?: number | null) {
+  const isKnown = chance != null && Number.isSafeInteger(chance) && chance >= 0 && chance <= 100;
+  const label = availability(status) + (isKnown ? ` · ${chance}%` : '');
+  let flag = 'unknown';
+  if (status && ['i', 's', 'u', 'n'].includes(status)) {
+    flag = 'red';
+  } else if (status === 'a') {
+    if (!isKnown || chance === 100) flag = 'available';
+  } else if (isKnown && chance === 0) {
+    flag = 'red';
+  } else if (status === 'd' && isKnown) {
+    if (chance === 75) flag = 'yellow';
+    else if (chance === 25 || chance === 50) flag = 'amber';
+  }
+  return { label, flag };
 }
 
 export type MetricSort = 'price' | 'points' | 'value' | 'xg' | 'xa' | 'xgi' | 'cs';

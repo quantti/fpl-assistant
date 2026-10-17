@@ -112,16 +112,21 @@
   border: 1px solid var(--rule-section);
   font-weight: 600;
 }
-.availability[data-status="a"] {
+.availability[data-flag="available"] {
   color: var(--pitch);
   border-color: currentColor;
 }
-.availability[data-status="d"] {
+.availability[data-flag="yellow"] {
   background: #ffe65b;
   color: #171e2e;
   border-color: #ffe65b;
 }
-.availability:is([data-status="i"], [data-status="s"], [data-status="u"], [data-status="n"]) {
+.availability[data-flag="amber"] {
+  background: #f5a623;
+  color: #171e2e;
+  border-color: #f5a623;
+}
+.availability[data-flag="red"] {
   background: #c52232;
   color: #ffffff;
   border-color: #c52232;
