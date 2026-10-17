@@ -310,6 +310,17 @@ it('keeps removal usable on comparison failure and retries independently', async
   expect(host.textContent).toContain('count:0');
 });
 
+it('summarises source limits in two sentences with a readable UTC date', async () => {
+  await mount(Response.json([stored]));
+  const sources = host.querySelector('details');
+  expect(sources?.textContent).toContain('9 Sept 2026, 12:00 UTC');
+  expect(sources?.textContent).toContain('Statistical refresh times are unverified');
+  expect(sources?.textContent).toContain('uncalibrated team estimate');
+  expect(sources?.querySelectorAll('p')).toHaveLength(1);
+  expect(sources?.textContent).not.toContain('2026-09-09T12:00:00Z');
+  expect(sources?.textContent).not.toContain('Observed totals:');
+});
+
 it('removes a player while comparison remains unavailable', async () => {
   apiFetchMock.mockImplementation(() => Promise.resolve(new Response(null, { status: 503 })));
   await mount(Response.json([stored]));

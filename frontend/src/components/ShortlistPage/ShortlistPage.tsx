@@ -165,12 +165,20 @@ export default function ShortlistPage() {
             <details className={classes.details}>
               <summary>Sources & model limits</summary>
               <div className={classes.detailBody}>
-                <p className={classes.note}>Assessed at {comparison.data.asOf}</p>
-                {comparison.data.sources.map((source) => (
-                  <p key={source} className={classes.note}>
-                    {source}
-                  </p>
-                ))}
+                <p className={classes.note}>
+                  FPL data assessed{' '}
+                  {new Intl.DateTimeFormat('en-GB', {
+                    day: 'numeric',
+                    month: 'short',
+                    year: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    timeZone: 'UTC',
+                  }).format(new Date(comparison.data.asOf))}{' '}
+                  UTC; season statistics and capture times are shown in player details. Statistical
+                  refresh times are unverified; team xCS is an uncalibrated team estimate, not a
+                  player forecast.
+                </p>
               </div>
             </details>
           )}
