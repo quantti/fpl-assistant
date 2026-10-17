@@ -1,5 +1,24 @@
 # Status — Phase 1
 
+## Shortlist full-width shell and compact rows (PR #162)
+
+Owner screenshots exposed the actual remaining layout bug: ChatView still constrained shortlist
+to the 660px chat reading column. Only the shortlist route now opts out of that maximum; chat
+and other routes keep their original measure. The table has visible row/column rules, alternating
+fills, stronger shared headers, 49px ordinary desktop rows and inline fixture/FDR cells. Unknown
+projections remain n/a; long row/forecast diagnostics move to the name-expanded detail card.
+No forecast, eligibility, data-source or backend behavior changed.
+
+Both route-marker and diagnostic-placement regressions failed before the fix. 56 focused frontend
+tests plus lint/format/TypeScript/Vite pass. The earlier standalone-component browser fixture
+could not catch the parent-shell clamp: this validation mounts the real App, ChatView, sidebar,
+header and providers with stubbed auth/HTTP, at 3840/1920/1440px and 390px light/dark touch.
+At 1920px the sidebar leaves 1660px, the table fills 1626px and all columns fit without scrolling;
+at 3840px it fills 3546px. Ordinary desktop rows measure 49px; touch rows are 61px with 44px
+controls. Narrower screens retain table-only horizontal scrolling. Restoring the old 660px clamp
+as a browser negative control fails the width criterion. Keyboard details still expose the
+reason and the chat route still measures no more than 660px. No live account data was used.
+
 ## PR #162 final advisory fixes
 
 Owner accepted both non-blocking advisories from the fresh CLEAN full-PR panel on `e9d36e5`
