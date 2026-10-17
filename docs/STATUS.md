@@ -1,6 +1,6 @@
 # Status — Phase 1
 
-## Local fixed-height shortlist rows
+## Fixed-height shortlist rows
 
 Owner requires invariant player-row height. Main data rows and the header now measure 48px on
 desktop and touch layouts. Names stay on one line with ellipsis, full title/accessibility label
@@ -15,9 +15,17 @@ four measure exactly 48px at 3840/1920/1440px and 390px light/dark touch, includ
 expansion. Header height, fixture alignment/containment, title/ellipsis and touch targets are
 also checked. The long-name DOM regression failed before implementation; 58 focused frontend
 tests, lint, format and TypeScript/Vite build pass. No backend code changed for this follow-up.
-Local only: neither this nor the preceding completed-match model change is pushed or deployed.
+Owner subsequently authorised publication: commits `ba06e44` and `9edb0c3` are pushed to PR #162,
+and staging now runs code `9edb0c3` at https://fpl-assistant-staging.fly.dev/shortlist.
+Image `deployment-01M560FC48F7GBNWMS2K2079WK`, digest
+`sha256:c4130e21be66bd62977d1f6b56787aca54368c48d989e318f248505866c45456`.
+Remote build/deploy succeeded; health is UP, /shortlist is 200, served CSS byte-matches the tested
+48px build, and the JS bundle contains completed-match sample metadata. PUT preflight is 200,
+anonymous comparison is 401, and all three staging capture flags remain false. No merge,
+production-app deploy or live account write was performed. Signed-in visual/data inspection is
+left to the owner. Exact-head full CI was not visible (empty PR check rollup) at handoff.
 
-## Local shortlist completed-match model and limited sorting
+## Shortlist completed-match model and limited sorting
 
 Owner-approved correction after read-only diagnosis: the 2026-10-17 schedule capture at 11:50 UTC
 still had five elapsed fixtures unfinished at 21:50 UTC. That produced league-wide ranking
@@ -49,7 +57,7 @@ Full-App stub browser checks pass at 3840/1920/1440px and 390px light/dark: exac
 headers, numeric and unavailable xCS cells, dated model samples, compact rows and keyboard details.
 The FINALIZED consumer branch uses a typed reader stub; validation of actual final receipts remains
 the existing reader suite's responsibility. No full local suite or new live account test was run.
-This change is NOT pushed or deployed until the owner explicitly requests it.
+Initially kept local as requested; publication was subsequently authorised and is recorded above.
 
 ## Shortlist full-width shell and compact rows (PR #162)
 
