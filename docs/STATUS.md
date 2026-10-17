@@ -19,6 +19,12 @@ controls. Narrower screens retain table-only horizontal scrolling. Restoring the
 as a browser negative control fails the width criterion. Keyboard details still expose the
 reason and the chat route still measures no more than 660px. No live account data was used.
 
+Staging was updated to code `76eff81`, image `deployment-01M55JA6ZN52WK407XG4B0NWRP`
+(digest `sha256:5c0e1aced7667599be2516298cd184478417c81b6a289583a16ebb60a82c9a4f`).
+External health is UP, /shortlist is 200 and its served CSS contains the route-specific width
+exception. Staging capture flags were false before deployment; no backend/capture change or
+production-app deployment was made. PR #162 remains open for the owner's visual inspection.
+
 ## PR #162 final advisory fixes
 
 Owner accepted both non-blocking advisories from the fresh CLEAN full-PR panel on `e9d36e5`
