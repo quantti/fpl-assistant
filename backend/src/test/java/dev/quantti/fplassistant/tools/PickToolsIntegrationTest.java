@@ -240,7 +240,7 @@ class PickToolsIntegrationTest {
     }
 
     @Test
-    void bothPickListsLabelRestrictedComparisonBeforeRowsAndKeepSourceLines() {
+    void bothPickListsUseAvailableRowsWithoutWaitingForAnUnfinishedMatch() {
         ScheduleSource.FixtureRow incident = RankingSeed.fixtures(CAPTURED_AT, FIRST_DEADLINE)
                 .stream().filter(row -> row.gameweek() == 4
                         && row.homeTeamId() <= RankingSeed.team(9)
@@ -254,11 +254,11 @@ class PickToolsIntegrationTest {
                 tools.getCaptainCandidates(5))) {
             assertThat(result).contains("Data source: FPL live prices", "Data source: season " + SEASON,
                             "Data source: FPL's own gameweek and fixture list")
-                    .contains("RESTRICTED COMPARISON POPULATION")
-                    .contains("fixture " + incident.id() + " (GW4)")
-                    .contains("not a league-wide best list")
-                    .contains("Player comparison population:");
-            int coverage = result.indexOf("RESTRICTED COMPARISON POPULATION");
+                    .contains("Comparison coverage: available recorded player rows")
+                    .contains("missing rows are unknown, not zero")
+                    .contains("Player comparison population:")
+                    .doesNotContain("RESTRICTED COMPARISON POPULATION");
+            int coverage = result.indexOf("Comparison coverage:");
             int firstRow = result.indexOf("  ", result.indexOf("Differential picks"));
             if (firstRow < 0) {
                 firstRow = result.indexOf("  ", result.indexOf("Captain candidates"));
@@ -269,11 +269,12 @@ class PickToolsIntegrationTest {
         jdbc.update("UPDATE " + scheduleSource.fixtureTable()
                 + " SET finished=true WHERE season=? AND id=?", SEASON, incident.id());
         assertThat(tools.getDifferentialPicks("any", 100, 5))
-                .contains("completed side missing usable core rows");
+                .contains("Comparison coverage: available recorded player rows")
+                .doesNotContain("completed side missing usable core rows");
         seedGhostSide(incident, incident.homeTeamId(), 1.2, 1.2);
         seedGhostSide(incident, incident.awayTeamId(), 1.2, 1.2);
         assertThat(tools.getDifferentialPicks("any", 100, 5))
-                .contains("Comparison coverage: all clubs")
+                .contains("Comparison coverage: available recorded player rows")
                 .doesNotContain("RESTRICTED COMPARISON POPULATION");
     }
 

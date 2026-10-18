@@ -7,13 +7,13 @@ import java.util.Map;
 /**
  * Merges a player's ability metrics from the season being played with the previous one.
  *
- * <p>The current-season weight is based on the player's own completed fixtures, not league
+ * <p>The current-season weight is based on the player's own recorded fixtures, not league
  * gameweeks or minutes. Ability rates blend; evidence counts add. This does not replace
  * {@link MinutesModel}'s availability and complete-current-evidence checks.
  */
 public final class SeasonBlend {
 
-    /** Weight on the season being played, indexed by completed current-season fixtures. */
+    /** Weight on the season being played, indexed by recorded current-season fixtures. */
     public static final double[] WEIGHT_BY_MATCHES =
             {0, 0.10, 0.30, 0.60, 0.80, 0.90, 0.90, 0.90, 1.0};
 

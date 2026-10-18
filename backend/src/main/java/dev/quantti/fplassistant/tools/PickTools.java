@@ -91,8 +91,8 @@ import org.springframework.stereotype.Component;
  * that is not unique in either season loses the previous-season side rather than being guessed —
  * a wrong metric attached to a recommendation is the failure this class exists to prevent.
  *
- * <p>Primary lists require today's {@code a} flag and a complete same-season current-club window.
- * A recent under-60 appearance is a factual note from the latest five complete observations only:
+ * <p>Primary lists require today's {@code a} flag and usable same-season current-club observations.
+ * A recent under-60 appearance is a factual note from the latest five recorded observations only:
  * it neither excludes a player nor changes expected points. Doubtful, stale, partial and
  * inconsistent evidence is excluded rather than weakened into a probability claim. Passing this
  * historical check never guarantees the next lineup.
@@ -133,12 +133,12 @@ public class PickTools implements FplTool {
             Suggest differential FPL picks at or below maxOwnership, optionally filtered by
             position (1=GK, 2=DEF, 3=MID, 4=FWD, or "any"). Returns up to 10 eligible players.
             Eligibility requires a fresh available ('a') daily capture with valid position/club,
-            plus coherent same-season identity and a complete current-club evidence window. The
-            window includes every expected completed fixture, latest ten at most; known zeros
-            count. Only a verified different-club observation fences the spell; otherwise expected
-            fixtures start at season start. Doubtful, stale, missing, pending or inconsistent data
-            causes abstention, and last-season history cannot certify a current role. An under-60
-            appearance in the latest five complete observations is shown as a factual note only;
+            plus coherent same-season identity and usable current-club player rows, latest ten
+            observations at most. Known zero-minute rows count; missing rows are unknown, not zero.
+            Live and provisionally finished match rows are usable and may change. A missing teammate
+            or an unfinished match never excludes a club. Doubtful availability or incoherent
+            player evidence causes abstention; last-season history cannot certify a current role.
+            An under-60 appearance in the latest five recorded observations is a factual note only;
             it neither excludes a player nor changes the score. This history does not guarantee
             the next start.
             Ranking totals full-fixture expected FPL points over every fixture the club plays in
@@ -204,12 +204,12 @@ public class PickTools implements FplTool {
     @Tool(description = """
             Suggest up to 10 FPL captain candidates from midfielders and forwards. Candidates need
             a fresh available ('a') daily capture with valid position/club, plus coherent
-            same-season identity and a complete current-club evidence window. The window includes
-            every expected completed fixture, latest ten at most; known zeros count. Only a verified
-            different-club observation fences the spell; otherwise expected fixtures start at season
-            start. Doubtful, stale, missing, pending or inconsistent data causes abstention, and
-            last-season evidence cannot certify today's role. An under-60 appearance in the latest
-            five complete observations is shown as a factual note only; it neither excludes a
+            same-season identity and usable current-club player rows, latest ten observations at
+            most. Known zero-minute rows count; missing rows are unknown, not zero. Live and
+            provisionally finished match rows are usable and may change. A missing teammate or
+            an unfinished match never excludes a club. Doubtful availability or incoherent player
+            evidence causes abstention; last-season evidence cannot certify today's role.
+            An under-60 appearance in the latest five recorded observations is a factual note only; it neither excludes a
             player nor changes the score. This history does not guarantee the next start.
             Ranking totals full-fixture expected FPL points over every fixture the club plays in
             the next nextN calendar gameweeks (clamped to 1-5, counted from the next editable
@@ -713,12 +713,12 @@ public class PickTools implements FplTool {
                 + " is partial. Club rates use Understat and the shared ramp keyed on each club's"
                 + " own completed Understat matches, independently of player evidence.\n");
         if (metric.blending()) {
-            out.append("Ability rates follow the one player-specific ramp: 1 complete current"
+            out.append("Ability rates follow the one player-specific ramp: 1 recorded current"
                     + " fixture 10%, 2: 30%, 3: 60%, 4: 80%, 5-7: 90%, 8+: 100%.\n");
         }
-        out.append("Only fresh available players with a complete current-club window qualify."
-                + " Missing/stale rows abstain rather than borrowing last season as current"
-                + " evidence. A pick also needs a known horizon holding at least one fixture: a"
+        out.append("Only fresh available players with usable current-club observations qualify."
+                + " Missing rows are unknown, not zero; live/provisional rows may change."
+                + " Last season does not certify current evidence. A pick also needs a known horizon holding at least one fixture: a"
                 + " club blanked across the whole window, or one whose schedule is unresolved,"
                 + " is counted in the exclusions below rather than ranked at zero.\n")
                 .append("Save and penalty-save points remain omitted, so goalkeepers are"

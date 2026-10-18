@@ -263,12 +263,12 @@ class SquadToolsIntegrationTest {
         assertThat(output).contains("Starting XI").contains("Bench").contains("Captain")
                 .doesNotContain("observed current-club 60+")
                 .contains("Schedule evidence: complete FPL capture")
-                .contains("Comparison coverage: all clubs")
+                .contains("Comparison coverage: available recorded player rows")
                 .contains("Player comparison population: 97 eligible of 105");
     }
 
     @Test
-    void pendingThenScheduleOnlyThenPlayedSideRecoveryControlsTheWholeSquad() {
+    void matchStatusNeverBlocksTheSquadAndLivePlayerRowsAreLabelled() {
         ScheduleSource.FixtureRow incident = RankingSeed.fixtures(CAPTURED_AT, FIRST_DEADLINE)
                 .stream().filter(row -> row.gameweek() == 4
                         && row.homeTeamId() <= RankingSeed.team(CLUBS.length)
@@ -279,29 +279,27 @@ class SquadToolsIntegrationTest {
                 Timestamp.from(AS_OF.minus(30, ChronoUnit.MINUTES)), SEASON, incident.id());
 
         String pending = tools.buildSquad("", "", "", 100.0, 5, "");
-        assertThat(pending).contains("COMPARISON_DATA_INCOMPLETE")
-                .contains("fixture " + incident.id() + " (GW4)")
-                .contains("relevant elapsed unfinished fixture")
-                .contains(clubName(incident.homeTeamId()), clubName(incident.awayTeamId()))
-                .contains("data exclusion, not evidence")
-                .doesNotContain("Starting XI");
+        assertThat(pending).contains("Starting XI", "missing rows are unknown, not zero")
+                .doesNotContain("COMPARISON_DATA_INCOMPLETE");
         assertThat(tools.buildSquad("P12000", "P12008", "Ashfield Rovers:<=0",
-                120.0, 5, "4-4-2")).contains("COMPARISON_DATA_INCOMPLETE")
-                .doesNotContain("Starting XI");
-
-        jdbc.update("UPDATE " + scheduleSource.fixtureTable()
-                + " SET finished=true WHERE season=? AND id=?", SEASON, incident.id());
-        String scheduleOnly = tools.buildSquad("", "", "", 100.0, 5, "");
-        assertThat(scheduleOnly).contains("COMPARISON_DATA_INCOMPLETE")
-                .contains("completed side missing usable core rows")
-                .doesNotContain("Starting XI");
+                120.0, 5, "4-4-2")).doesNotContain("COMPARISON_DATA_INCOMPLETE");
 
         seedPlayedSide(incident, incident.homeTeamId(),
                 FIRST_ID + (incident.homeTeamId() - RankingSeed.team(1)) * 8);
         seedPlayedSide(incident, incident.awayTeamId(),
                 FIRST_ID + (incident.awayTeamId() - RankingSeed.team(1)) * 8);
-        String recovered = tools.buildSquad("", "", "", 100.0, 5, "");
-        assertThat(recovered).contains("Starting XI", "Comparison coverage: all clubs")
+        String live = tools.buildSquad("", "", "", 100.0, 5, "");
+        assertThat(live).contains("Starting XI", "In progress: 1")
+                .doesNotContain("COMPARISON_DATA_INCOMPLETE");
+        jdbc.update("UPDATE " + scheduleSource.fixtureTable()
+                + " SET finished_provisional=true WHERE season=? AND id=?", SEASON, incident.id());
+        assertThat(tools.buildSquad("", "", "", 100.0, 5, ""))
+                .contains("Starting XI", "Finished (provisional stats): 1")
+                .doesNotContain("COMPARISON_DATA_INCOMPLETE");
+        jdbc.update("UPDATE " + scheduleSource.fixtureTable()
+                + " SET finished=true WHERE season=? AND id=?", SEASON, incident.id());
+        assertThat(tools.buildSquad("", "", "", 100.0, 5, ""))
+                .contains("Starting XI", "Comparison coverage: available recorded player rows")
                 .doesNotContain("COMPARISON_DATA_INCOMPLETE");
     }
 
@@ -568,10 +566,6 @@ class SquadToolsIntegrationTest {
         assertThat(tools.buildSquad("", "", "Ashfield Rovers:three", 100.0, 5, ""))
                 .contains("Ashfield Rovers:three").doesNotContain("Starting XI")
                 .doesNotContain(DataAge.METRIC_REFRESH);
-    }
-
-    private static String clubName(int teamId) {
-        return CLUBS[teamId - RankingSeed.team(1)];
     }
 
     private void seedPlayedSide(ScheduleSource.FixtureRow fixture, int club, int playerId) {

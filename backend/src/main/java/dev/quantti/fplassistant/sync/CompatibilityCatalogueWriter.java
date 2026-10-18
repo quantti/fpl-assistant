@@ -28,13 +28,15 @@ public final class CompatibilityCatalogueWriter {
     private final Clock clock;
     private final OwnedSyncStore store;
     private final FixtureSyncRepository fixtures;
+    private final CatalogueScheduleTables capturedTables;
 
     public CompatibilityCatalogueWriter(JdbcTemplate jdbc, Clock clock, OwnedSyncStore store,
-                                        OwnedSyncTables tables) {
+                                        OwnedSyncTables tables, CatalogueScheduleTables capturedTables) {
         this.jdbc = Objects.requireNonNull(jdbc);
         this.clock = Objects.requireNonNull(clock);
         this.store = Objects.requireNonNull(store);
         this.fixtures = new FixtureSyncRepository(jdbc, Objects.requireNonNull(tables));
+        this.capturedTables = Objects.requireNonNull(capturedTables);
     }
 
     Publication publish(Lease lease, Season season, SourceDocument bootstrap, SourceDocument fixtureDocument) {
@@ -62,6 +64,12 @@ public final class CompatibilityCatalogueWriter {
                     .filter(existingFixtures::containsKey)
                     .filter(id -> evidenceChanged(existingFixtures.get(id), sourceFixtures.get(id)))
                     .sorted().toList();
+            CatalogueScheduleWriter.writeCapturedGameweeks(jdbc, capturedTables,
+                    snapshot.gameweeks(), sourceRead.finishedAt());
+            CatalogueScheduleWriter.writeCapturedFixtures(jdbc, capturedTables,
+                    snapshot.fixtures(), sourceRead.finishedAt());
+            CatalogueScheduleWriter.deleteAbsentSchedule(jdbc, capturedTables, season.code(),
+                    snapshot.gameweeks(), snapshot.fixtures());
             IncrementalDiscovery discovery = store.observeIncrementalSnapshot(lease, snapshot);
             return new Publication(teamRows, playerRows, gameweekRows, writtenFixtureIds.size(),
                     changedFixtureIds, invalidatedFixtureIds, discovery);

@@ -10,12 +10,11 @@ import org.springframework.stereotype.Component;
 /**
  * Fires the schedule capture daily, ten minutes after the price capture on the same clock:
  * the machine is up and FPL's overnight jobs have settled. Gated by {@code fpl.schedule.scheduled}
- * so the test profile never reaches the network.
+ * so the test profile never reaches the network. ACTIVE's existing sync owns schedule publication.
  */
 @Component
 @ConditionalOnProperty(name = "fpl.schedule.scheduled", havingValue = "true")
-@ConditionalOnExpression("T(dev.quantti.fplassistant.sync.OwnedSyncRuntimeConfiguration).catalogueCaptureEnabled("
-        + "'${fpl.owned-sync.mode:OFF}', ${fpl.owned-sync.importer.enabled:false})")
+@ConditionalOnExpression("!'${fpl.owned-sync.mode:OFF}'.equalsIgnoreCase('ACTIVE')")
 public class ScheduleScheduler {
 
     private static final Logger log = LoggerFactory.getLogger(ScheduleScheduler.class);
