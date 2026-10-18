@@ -1,7 +1,7 @@
 ---
 title: FPL Wildcard and Free Hit Strategy
 kind: reference
-valid_from: 2026-08-21
+valid_from: 2026-10-18
 ---
 
 # FPL Wildcard and Free Hit Strategy
@@ -14,7 +14,7 @@ Two chip sets run this season: GW1–19 and GW20–38, each with its own Wildcar
 
 - **Wildcard (×2/season, one per set)**: unlimited free transfers for one Gameweek; the new squad is permanent. WC1 must be used by the GW19 deadline or it is lost — it does not carry into the second set. WC2 is available GW20–38.
 - **Free Hit (×2/season, one per set)**: unlimited free transfers for one Gameweek; the squad reverts afterwards. A one-week chip, not a rebuild. FH1 (GW1–19) is likewise lost if unused by the GW19 deadline.
-- Both are active until the Gameweek deadline; changes can be made and reversed freely before it. Player prices can still change while either chip is active.
+- Both allow transfers up to the Gameweek deadline without transfer points costs. Prices and personal selling-price rules still apply: unlimited transfers are not cost-free financial reversals. Player prices can change while either chip is active.
 - Distinction: WC changes the squad permanently (structure reset); FH maximises a single week without touching long-term structure.
 
 ## Scheduling foundation: blanks and doubles
@@ -96,6 +96,16 @@ Two Free Hits are available: FH1 (GW1–19, lost if unused by the GW19 deadline)
 - Overrating weak doubles: two mediocre fixtures are not automatically better than one elite fixture.
 - Neglecting captaincy improvement.
 - Using it emotionally rather than for a structural edge.
+
+## Price changes during Wildcard and Free Hit
+
+On a Wildcard, confirmed changes permanently alter the squad. Buy/sell timing can protect access to intended final picks, but no transfer points cost does not mean no selling/rebuying cost. If a player was bought at £7.0m and now costs £7.5m, selling returns £7.2m; buying back costs £7.5m. Selling a long-term hold merely to experiment can therefore make the final draft unaffordable, even while the Wildcard is active.
+
+A single £0.1m rise on a newly bought player does not create a realisable £0.1m profit: positive gains are halved and rounded down to £0.1m on sale. Use the personal selling prices and bank to cost the final squad. Check the dated official Price Changes signals for intended buys/sales, but do not chase rises that weaken the final points plan or treat a forecast as a completed change.
+
+A Free Hit is different: the original squad and bank are restored from the previous Gameweek deadline, with price changes to those original players reflected. The baseline is not the moment you pressed the chip button: normal transfers already made in that transfer window do not become permanent by preceding activation. Temporary bank changes or trading gains on Free Hit-only picks do not become permanent resources. The chip does not freeze the original squad's market prices. Do not apply a temporary squad's price gain to the budget of the restored team.
+
+See FPL Price Changes and Team Value for the distinction between market value and personal selling proceeds. These rules were checked against the official FPL Rules and FAQs on 18 October 2026; neither chip supplies a bypass of selling-price deductions or the squad budget.
 
 ## Bench Boost interplay
 
