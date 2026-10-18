@@ -1,6 +1,6 @@
 # Backend test audit and bounded pruning plan
 
-**PROGRESS:** Task 3/5 done — CI routing, four workload deletions and seven small-case removals/fixed solver seeds verified; speedups and final review pending.
+**PROGRESS:** Task 4/5 done — CI routing, four workload deletions, small pruning and test-only speedups verified; integrated final review pending.
 
 ## Owner decision and scope
 

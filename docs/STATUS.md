@@ -22,6 +22,12 @@ Seven low-value cases and orphaned test-only plumbing are removed; schedule tabl
 protect setup and cleanup, and notification JSON identity/status remains explicitly checked.
 Three fixed solver seeds replace twenty random repetitions. The 67 affected/retained cases
 pass locally with dummy AI keys and the same guarded disposable DB; no full suite was run.
+Runtime scheduling is now tested through existing Mockito executor interception, without real
+minute waits or production changes; actual cadence and callbacks remain asserted. The collector
+correction case keeps its ten fixtures but selects forty participants plus one unrelated player,
+not 657 catalogue pages; full-roster smoke coverage remains independently. All 70 runtime/collector
+cases and an 8-case targeted repeat pass. Local runtime class time was 1.251s and the compact
+collector case 7.260s; old CI timings are not a controlled same-host comparison.
 
 ## Price strategy — KAR-76 implementation (2026-10-18)
 

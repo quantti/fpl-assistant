@@ -1,6 +1,6 @@
 # GitHub Actions budget: measured use and reduction plan
 
-**PROGRESS:** Task 3/5 done — CI routing, four workload deletions and small-test pruning verified; retained-test speedups and final review pending.
+**PROGRESS:** Task 4/5 done — CI routing and scoped test pruning/speedups verified; integrated final review pending.
 
 ## Goal and scope
 
@@ -357,6 +357,18 @@ then exact-string delivery and persisted DELIVERED state. Solver invariants now 
 seeds instead of twenty random repetitions. All 67 affected/retained schedule, solver, chat,
 season-guard and end-to-end cases pass locally (0 failed/skipped), with unchanged scoped resource
 limits and disposable loopback DB. This is test pruning, not a fabricated test-first bug fix.
+
+Task 4: no production Java change or new scheduling abstraction was needed. Existing Mockito
+static interception of executor factories lets one runtime test assert the actual minute/second/
+hour scheduling parameters and execute planner/worker/retention callbacks directly; real shutdown
+regressions remain. The two old wall-clock scheduling tests are combined into that one case.
+The correction collector scenario uses the existing bootstrap filter for forty participants
+plus one unrelated player; ten fixtures, exact writes, finality intervals and no-op assertions
+remain. Its independent 657/660-player recorded-league smoke is unchanged. All 70 cases in the
+runtime/collector classes pass, followed by an 8-case focused repeat. Local runtime class time
+was 1.251s (scheduling case 0.118s); compact collector case 7.260s. Old CI figures are not a
+controlled same-host before/after comparison. No pooling framework, worker-limit change,
+production cadence change or new remote CI run was introduced.
 
 Reproduction sources: GitHub REST run/job/commit/compare/PR-file/artifact/cache metadata, the
 three linked/specified JUnit artifacts, and the checked-in workflows/tests. Raw research JSON,
