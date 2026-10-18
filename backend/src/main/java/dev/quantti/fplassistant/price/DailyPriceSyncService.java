@@ -9,6 +9,10 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -42,6 +46,8 @@ import java.net.http.HttpClient;
 public class DailyPriceSyncService {
 
     private static final Logger log = LoggerFactory.getLogger(DailyPriceSyncService.class);
+    private static final ObjectMapper JSON = new ObjectMapper()
+            .enable(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS);
 
     /** FPL applies price changes at 00:00 UK, so "today" is a UK calendar date. */
     static final ZoneId UK = ZoneId.of("Europe/London");
@@ -88,11 +94,14 @@ public class DailyPriceSyncService {
 
     /** @return number of rows written, for logging and tests */
     public int sync() {
-        @SuppressWarnings("unchecked")
-        Map<String, Object> body = restClient.get()
-                .uri(bootstrapUrl)
-                .retrieve()
-                .body(Map.class);
+        String payload = restClient.get().uri(bootstrapUrl).retrieve().body(String.class);
+        Map<String, Object> body;
+        try {
+            // Preserve numeric lexemes: Double can round a fractional chance into an integer.
+            body = payload == null ? null : JSON.readValue(payload, new TypeReference<>() {});
+        } catch (JsonProcessingException invalid) {
+            throw new org.springframework.web.client.RestClientException("Invalid FPL bootstrap JSON", invalid);
+        }
 
         // Sampled after the fetch, not before: the date labels the price that was in effect,
         // and a slow response must not straddle a UK midnight and label yesterday's fetch.
@@ -182,7 +191,8 @@ public class DailyPriceSyncService {
                     asString(e.get("news")),
                     asInt(e.get("penalties_order")),
                     asInt(e.get("direct_freekicks_order")),
-                    asInt(e.get("corners_and_indirect_freekicks_order"))
+                    asInt(e.get("corners_and_indirect_freekicks_order")),
+                    playingChance(e.get("chance_of_playing_next_round"))
             });
         }
         return rows;
@@ -246,8 +256,9 @@ public class DailyPriceSyncService {
                 INSERT INTO %s (season, price_date, element_id, web_name, full_name,
                                 team_id, team_short, team_name, element_type, now_cost,
                                 cost_change_event, cost_change_start, selected_by_percent,
-                                status, news, penalties_order, direct_fk_order, corners_order)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                status, news, penalties_order, direct_fk_order, corners_order,
+                                chance_of_playing_next_round)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (season, price_date, element_id) DO UPDATE SET
                     web_name = EXCLUDED.web_name,
                     full_name = EXCLUDED.full_name,
@@ -264,6 +275,7 @@ public class DailyPriceSyncService {
                     penalties_order = EXCLUDED.penalties_order,
                     direct_fk_order = EXCLUDED.direct_fk_order,
                     corners_order = EXCLUDED.corners_order,
+                    chance_of_playing_next_round = EXCLUDED.chance_of_playing_next_round,
                     captured_at = NOW()
                 """.formatted(tableName);
 
@@ -275,6 +287,16 @@ public class DailyPriceSyncService {
             }
         }
         return written;
+    }
+
+    private static Integer playingChance(Object value) {
+        if (!(value instanceof Number number)) return null;
+        try {
+            int chance = new BigDecimal(number.toString()).intValueExact();
+            return chance >= 0 && chance <= 100 ? chance : null;
+        } catch (NumberFormatException | ArithmeticException invalid) {
+            return null;
+        }
     }
 
     private static Integer zeroIfNull(Integer value) {

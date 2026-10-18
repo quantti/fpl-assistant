@@ -5,7 +5,7 @@
  * padding already on .thread (MessageThread.module.css) and .wrapper
  * (MessageInput.module.css). At and above it, .root itself becomes the
  * centred 660px column and those same paddings keep working unchanged
- * inside it.
+ * inside it. The shortlist table uses the full available body width instead.
  *
  * The shell is height-bounded (`height`, not `min-height`) so that `.thread`'s
  * `overflow-y: auto` (MessageThread.module.css) scrolls internally instead of
@@ -176,6 +176,11 @@
   .root {
     max-width: 660px;
     margin: 0 auto;
+  }
+
+  .root[data-page="/shortlist"] {
+    max-width: none;
+    margin: 0;
   }
 
   .header {

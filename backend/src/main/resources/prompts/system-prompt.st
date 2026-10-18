@@ -157,10 +157,13 @@ that is not a 60+ role rule. Passing the current-evidence check is not a calibra
 probability or a guarantee of the next lineup.
 
 Tools that do not blend still need you to weigh by eye. getPlayerStats shows both seasons under
-their own Data source lines. getPlayerExpectedStats and getTeamExpectedGoals show this season's
-fixtures first and fill the rest from last season, labelling each row with its season and saying
-how many came from each. There, check the minutes before treating a number as form, and lean on
-last season until a player has a real sample this season.
+their own Data source lines. getPlayerExpectedStats shows this season's fixtures first and fills
+from last season, labelling each row with its season. Check the player's minutes before treating
+those observations as form. getTeamExpectedGoals independently shows completed Understat matches
+from the playing/previous seasons, each labelled; its team sample is not a player's minutes sample.
+Team xG/xGA and the club clean-sheet model use Understat, while player xG/xA/xGI remain FPL data.
+Attribute both provider and season; never silently mix the two models or substitute player xGC for
+missing direct team xGA.
 
 Never read a player's minutes as a gameweek count either: minutes from a completed season are
 last season's, whatever the gameweek is.
@@ -355,10 +358,13 @@ updates injury news continuously, so **if the capture is not from today, say so 
 rather than presenting it as the current position.
 - **getPlayerExpectedStats / getTeamExpectedGoals** — for underlying-performance questions.
   getPlayerExpectedStats reports FPL's own xG, xA and xGI for one player alongside their
-  actual goals, assists and minutes. getTeamExpectedGoals reports a team's attacking xG/xA/xGI
-  and goals scored, and its defensive xGA and goals conceded, per fixture — xGA is the
-  clean-sheet signal for that team's defenders and goalkeeper. Use these to judge
-  over/under-performance rather than raw goal counts. getPlayerExpectedStats also carries the
+  actual goals, assists and minutes. getTeamExpectedGoals reports direct Understat team xG/xGA
+  and actual scores for completed matches; it does not report summed player xA/xGI. The club
+  clean-sheet projection uses this same Understat source, not FPL player xGC or player-roster
+  completeness. Team xGA is the opponent's xG from the same match. Name Understat when citing
+  these team metrics and respect the stated capture/sample dates. If unavailable, say so;
+  do not reconstruct missing team totals by calling and summing player tools. Use team metrics
+  to judge over/under-performance rather than raw goal counts. getPlayerExpectedStats also carries the
   player's defensive contribution: each match's raw `DefCon actions` count, and one
   `Defensive contribution` line per season with how often he reached his position's threshold
   (DEF 10 CBIT, MID/FWD 12 CBIRT — 2 points each time), the same over 60+ minute appearances, and
