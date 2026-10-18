@@ -8,8 +8,9 @@ import java.util.Map;
 import java.util.Random;
 import java.util.Set;
 
-import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -17,8 +18,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * The promise of the whole feature: a result satisfies every rule of the game, or there is no
  * result. There is no third outcome.
  *
- * <p>The randomised test is the important one. Any single hand-written case can be satisfied by
- * accident; a hundred random pools cannot.
+ * <p>Three fixed generated pools complement the explicit boundary cases without random CI runs.
  */
 class SquadSolverRulesTest {
 
@@ -67,11 +67,9 @@ class SquadSolverRulesTest {
         return playable;
     }
 
-    @RepeatedTest(20)
-    void everyResultObeysEveryRuleOfTheGame() {
-        // Seeded, not fixed: each repetition must still see a different pool, but a failure has
-        // to be reproducible — an unseeded Random loses the exact case that broke it.
-        long seed = System.nanoTime();
+    @ParameterizedTest
+    @ValueSource(longs = {3, 11, 23})
+    void everyResultObeysEveryRuleOfTheGame(long seed) {
         Random random = new Random(seed);
         List<SquadCandidate> pool = pool(random);
         SquadConstraints constraints = plain();

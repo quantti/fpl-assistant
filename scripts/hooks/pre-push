@@ -11,7 +11,7 @@
 #
 # It does not run the suite. It did until 2026-09-19; a six-minute Gradle run on every push was
 # too heavy for the cloud host this is also developed on. New tests are run while developing,
-# and the whole suite runs on GitHub for every pull request and again on the merge to master.
+# locally before push; PR CI is lightweight and the full retained suite gates master deploys.
 # The hook needs nothing but bash and git, so it installs on every host.
 #
 # After the guard it runs the frontend's static checks (KAR-60) — `npm run lint` (ESLint) and
