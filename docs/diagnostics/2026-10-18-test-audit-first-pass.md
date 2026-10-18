@@ -1,6 +1,6 @@
 # First bounded test-audit pass
 
-**PROGRESS:** Two bounded audits and approved A1/A2/S1 cleanup complete; 15/15 changed-class cases passed; further candidates remain proposals.
+**PROGRESS:** Approved A1/A2/S1 cleanup passed 15/15; approved B1/B2 changes passed their two focused tests; no further audit scope opened.
 
 Source revision: `96caea7c123ed64c66a6845b45e2e31234f8345f` (PR #173).
 [Audit plan](../superpowers/plans/2026-10-18-behavior-first-test-audit.md).
@@ -262,3 +262,29 @@ maintainability follow-up, not proof of no value or authority for a class-wide h
 The injected delays are 4 ms per intercepted receipt execution, not a hidden multi-minute wait.
 Other finality/collector families, production handback policy and the rest of the 206-file test
 tree remain unaudited. Further deletions or scope expansion require the next owner decision.
+
+## Subsequent B1/B2 approval and verification
+
+The owner approved both proposals. The working tree now uses 501 discovery IDs (still exactly
+500+1) and the existing `receiptWriteExecutions` counter for the cold-test <=20 bound. All other
+batching, row-count, nonparticipant, retry, latency and transaction assertions remain.
+
+The first launch was refused before Gradle started because another worktree's test worker was
+active. After the owner's next request, admission confirmed no active Gradle/test JVM and more
+than 2 GiB available; the sole actual run passed **2 tests, 0 failures/errors/skips**:
+
+```bash
+./gradlew --offline --console=plain test \
+  --tests fi.karivanttinen.fplassistant.sync.CoalescedPlayerHistoryCollectorIntegrationTest.coldLeaguePopulationFitsBoundedTransactionWithDatabaseRoundTripLatency \
+  --tests fi.karivanttinen.fplassistant.sync.CoalescedPlayerHistoryCollectorIntegrationTest.discoveryCandidateReceiptsUseBoundedBatchesAndSkipExistingIds
+```
+
+The same 1536 MiB/no-swap scope, host-memory guard, 360-second timeout and cleared/whitelisted
+environment were used, with dummy provider keys and the guarded disposable DB at
+`127.0.0.1:55432/postgres`. No Docker daemon/container configuration changed. Build time was
+17s; JUnit class time 3.33s, method times 0.663s and 0.271s. These are not before/after savings.
+Receipt: `/tmp/fpl-batching-check.sfMnY8/test.log` plus the collector JUnit XML. Tested source
+SHA-256: `6bcc0dcf60d4b863d03faffaae79d674b83f03b065a1c4b44488881aec9d623c`.
+`git diff --check` and parent scope review passed. The earlier 15/15 receipt remains separate;
+no full collector class, full suite, hosted CI, production service, independent panel or remote
+publication was run for B1/B2.

@@ -8,8 +8,10 @@ Owner-approved cleanup removes five duplicated prompt expectations and a disconn
 not the invalid-opt-in startup-refusal test. All 15 cases in the three changed classes pass locally;
 no full suite or hosted CI was run. Code commit `83e2413` remains local, with no push or PR.
 The follow-on read-only pass covered five receipt-batching cases, retaining the real cold-start
-incident regression. A 657→501 discovery fixture reduction and correcting a preparation-vs-execution
-counter are proposals only; no further test deletion or remote publication is assumed.
+incident regression. The owner then approved the 657→501 discovery fixture and execution-counter
+correction. After the other worktree's Gradle run ended, both changed collector methods passed
+locally (2 tests, no failures/errors/skips) on the guarded disposable DB. The earlier 15/15 is a
+separate receipt. No full suite, concurrent run, further test deletion or remote publication occurred.
 
 ## Actions budget — lightweight PR verification (2026-10-18; local)
 

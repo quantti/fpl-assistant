@@ -1,6 +1,6 @@
 # Behavior-first test audit: research and proposed next pass
 
-**PROGRESS:** Two bounded audits and approved A1/A2/S1 cleanup complete (15/15 changed-class cases); further candidates await approval.
+**PROGRESS:** Two bounded audits and approved cleanups complete locally; prior A1/A2/S1 passed 15/15 and B1/B2 passed 2/2 focused cases.
 
 ## First-pass outcome
 
@@ -13,7 +13,9 @@ implements that cleanup; all 15 cases in the three changed classes pass locally.
 consolidation remains conditional. The authorized follow-on audited only five receipt-batching
 cases: retain the real-incident regression, with proposals to reduce one discovery fixture from
 657 to 501 and replace a prepared-statement count with the existing execution counter. Those
-proposals are not implemented; additional changes and remote publication remain separate decisions.
+proposals were subsequently approved and implemented. After the other worktree's Gradle run
+ended, both changed methods passed locally (2 tests, no failures/errors/skips). Additional
+changes and remote publication remain separate decisions.
 
 ## Scope and constraints
 
