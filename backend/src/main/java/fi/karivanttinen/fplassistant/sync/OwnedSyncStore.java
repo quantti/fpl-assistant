@@ -1084,6 +1084,55 @@ public final class OwnedSyncStore {
         return Map.copyOf(result);
     }
 
+    Map<Integer, Map<Integer, FixtureVerification.Side>> incrementalHistorySides(
+            Lease lease, int seasonId, List<CatalogueScheduleParser.FixtureRow> fixtures) {
+        if (fixtures.isEmpty()) return Map.of();
+        return tx.execute(status -> {
+            LockedRun run = lockAndValidate(lease);
+            requireIncrementalRun(run);
+            Map<Integer, CatalogueScheduleParser.FixtureRow> byId = new LinkedHashMap<>();
+            for (var fixture : fixtures) {
+                if (fixture.seasonId() != seasonId || !fixture.seasonCode().equals(run.season)) {
+                    throw new IllegalArgumentException("History sides require the same source season");
+                }
+                byId.put(fixture.id(), fixture);
+            }
+            String placeholders = String.join(",", java.util.Collections.nCopies(byId.size(), "?"));
+            List<Object> parameters = new ArrayList<>();
+            parameters.add(run.season);
+            parameters.add(seasonId);
+            parameters.addAll(byId.keySet());
+            Map<Integer, Map<Integer, FixtureVerification.Side>> result = new LinkedHashMap<>();
+            jdbc.query("""
+                    /* incremental history side proof */
+                    SELECT p.fixture_id,p.player_id,p.gameweek,p.kickoff_time,
+                           p.player_team_id,p.opponent_team_id,p.was_home
+                    FROM player_fixture_stats p
+                    JOIN season s ON s.id=p.season_id AND s.code=?
+                    JOIN %s c ON c.season_id=p.season_id AND c.fixture_id=p.fixture_id AND c.player_id=p.player_id
+                    JOIN %s e ON e.season_id=c.season_id AND e.season_code=c.season_code
+                        AND e.fixture_id=c.fixture_id AND e.player_id=c.player_id AND e.generation=c.evidence_generation
+                    WHERE p.season_id=? AND p.fixture_id IN (%s) AND p.minutes>0
+                        AND p.kickoff_time IS NOT NULL AND p.was_home IS NOT NULL AND %s
+                    """.formatted(tables.playerFixtureCurrent(), tables.playerFixtureEvidence(), placeholders,
+                            IncrementalPfsEvidenceSql.currentRowProof("c", "p", "s", "e", tables.receipt())),
+                    rs -> {
+                        var fixture = byId.get(rs.getInt("fixture_id"));
+                        if (fixture.gameweek() == null || fixture.gameweek() != rs.getInt("gameweek")
+                                || !Objects.equals(fixture.kickoff(), instant(rs, "kickoff_time"))) return;
+                        boolean home = rs.getBoolean("was_home");
+                        int club = home ? fixture.homeTeamId() : fixture.awayTeamId();
+                        int opponent = home ? fixture.awayTeamId() : fixture.homeTeamId();
+                        if (rs.getInt("player_team_id") != club || rs.getInt("opponent_team_id") != opponent) return;
+                        result.computeIfAbsent(fixture.id(), ignored -> new LinkedHashMap<>())
+                                .put(rs.getInt("player_id"), home
+                                        ? FixtureVerification.Side.HOME : FixtureVerification.Side.AWAY);
+                    }, parameters.toArray());
+            result.replaceAll((fixture, sides) -> Map.copyOf(sides));
+            return Map.copyOf(result);
+        });
+    }
+
     Map<Integer, Set<Integer>> knownPlayerIds(Lease lease, int seasonId, List<Integer> fixtureIds) {
         if (fixtureIds.isEmpty()) return Map.of();
         return tx.execute(status -> {
@@ -1191,14 +1240,17 @@ public final class OwnedSyncStore {
             LockedRun run = lockAndValidate(lease);
             requireIncrementalRun(run);
             Instant recordedAt = now();
+            List<Object[]> participantReceipts = new ArrayList<>();
+            List<Object[]> populationReceipts = new ArrayList<>();
             List<Object[]> newDiscoveryCandidates = new ArrayList<>();
             List<Object[]> newKnownCandidates = new ArrayList<>();
             for (int fixtureId : candidatePlayerIdsByFixture.keySet().stream().sorted().toList()) {
                 String participantPrefix = INCREMENTAL_PARTICIPANT_RECEIPT_PREFIX + fixtureId + ":player:";
                 for (int playerId : sourceParticipantsByFixture.getOrDefault(fixtureId, Set.of())
                         .stream().sorted().toList()) {
-                    insertIncrementalReceipt(run.season, participantPrefix + playerId, run.generation,
-                            sourceRead, null, recordedAt);
+                    participantReceipts.add(new Object[] {run.season, participantPrefix + playerId, run.generation,
+                            timestamp(sourceRead.startedAt()), timestamp(sourceRead.finishedAt()), null,
+                            timestamp(recordedAt)});
                 }
                 Set<Integer> existing = previouslyDiscoveredPlayerIdsByFixture.getOrDefault(fixtureId, Set.of());
                 for (int playerId : candidatePlayerIdsByFixture.get(fixtureId).stream().sorted().toList()) {
@@ -1214,9 +1266,12 @@ public final class OwnedSyncStore {
                     newKnownCandidates.add(new Object[] {run.season, knownKey, run.generation,
                             timestamp(sourceRead.startedAt()), timestamp(sourceRead.finishedAt()), timestamp(recordedAt)});
                 }
-                insertIncrementalPopulationReceipt(run.season, INCREMENTAL_POPULATION_RECEIPT_PREFIX + fixtureId,
-                        run.generation, sourceRead, sourceFingerprints.get(fixtureId), recordedAt);
+                populationReceipts.add(new Object[] {run.season, INCREMENTAL_POPULATION_RECEIPT_PREFIX + fixtureId,
+                        run.generation, timestamp(sourceRead.startedAt()), timestamp(sourceRead.finishedAt()),
+                        sourceFingerprints.get(fixtureId), timestamp(recordedAt)});
             }
+            insertIncrementalReceipts(participantReceipts);
+            insertIncrementalPopulationReceipts(populationReceipts);
             insertIncrementalDiscoveryCandidates(newDiscoveryCandidates);
             insertIncrementalKnownCandidates(newKnownCandidates);
         });
@@ -1294,15 +1349,18 @@ public final class OwnedSyncStore {
                 VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT (season, publication_key) DO NOTHING
                 """.formatted(marker, tables.receipt());
-        for (int offset = 0; offset < candidates.size(); offset += INCREMENTAL_DISCOVERY_BATCH_SIZE) {
-            jdbc.batchUpdate(sql, candidates.subList(offset,
-                    Math.min(offset + INCREMENTAL_DISCOVERY_BATCH_SIZE, candidates.size())));
+        executeIncrementalBatches(sql, candidates);
+    }
+
+    private void executeIncrementalBatches(String sql, List<Object[]> rows) {
+        for (int offset = 0; offset < rows.size(); offset += INCREMENTAL_DISCOVERY_BATCH_SIZE) {
+            jdbc.batchUpdate(sql, rows.subList(offset,
+                    Math.min(offset + INCREMENTAL_DISCOVERY_BATCH_SIZE, rows.size())));
         }
     }
 
-    private void insertIncrementalPopulationReceipt(String season, String key, long generation,
-                                                     SourceRead read, String fingerprint, Instant publishedAt) {
-        jdbc.update("""
+    private void insertIncrementalPopulationReceipts(List<Object[]> receipts) {
+        executeIncrementalBatches("""
                 INSERT INTO %s(season, publication_key, latest_generation, source_read_started_at,
                     source_read_finished_at, source_pair_fingerprint, published_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -1314,8 +1372,7 @@ public final class OwnedSyncStore {
                     published_at=EXCLUDED.published_at
                 WHERE %s.latest_generation<=EXCLUDED.latest_generation
                   AND %s.source_pair_fingerprint IS DISTINCT FROM EXCLUDED.source_pair_fingerprint
-                """.formatted(tables.receipt(), tables.receipt(), tables.receipt()), season, key, generation,
-                timestamp(read.startedAt()), timestamp(read.finishedAt()), fingerprint, timestamp(publishedAt));
+                """.formatted(tables.receipt(), tables.receipt(), tables.receipt()), receipts);
     }
 
     private void insertIncrementalSourceFixtureReceipt(String season, String key, long generation,
@@ -1336,9 +1393,8 @@ public final class OwnedSyncStore {
                 timestamp(read.startedAt()), timestamp(read.finishedAt()), fingerprint, timestamp(publishedAt));
     }
 
-    private void insertIncrementalReceipt(String season, String key, long generation, SourceRead read,
-                                         String fingerprint, Instant publishedAt) {
-        jdbc.update("""
+    private void insertIncrementalReceipts(List<Object[]> receipts) {
+        executeIncrementalBatches("""
                 INSERT INTO %s(season, publication_key, latest_generation, source_read_started_at,
                     source_read_finished_at, source_pair_fingerprint, published_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -1354,8 +1410,7 @@ public final class OwnedSyncStore {
                        (%s.source_read_started_at,%s.source_read_finished_at)
                            <= (EXCLUDED.source_read_started_at,EXCLUDED.source_read_finished_at))
                 """.formatted(tables.receipt(), tables.receipt(), tables.receipt(),
-                tables.receipt(), tables.receipt(), tables.receipt()), season, key, generation,
-                timestamp(read.startedAt()), timestamp(read.finishedAt()), fingerprint, timestamp(publishedAt));
+                tables.receipt(), tables.receipt(), tables.receipt()), receipts);
     }
 
     private static Map<Integer, Set<Integer>> immutablePlayerIds(Map<Integer, Set<Integer>> source) {
@@ -1568,43 +1623,48 @@ public final class OwnedSyncStore {
                     WHERE %s.latest_generation<=EXCLUDED.latest_generation
                     """.formatted(tables.receipt(), tables.receipt()), run.season, key, run.generation,
                     timestamp(read.startedAt()), timestamp(read.finishedAt()), timestamp(recordedAt));
-            insertIncrementalReceipt(run.season,
+            List<Object[]> receipts = new ArrayList<>();
+            receipts.add(new Object[] {run.season,
                     IncrementalAppearanceReceipt.liveSourceKey(eventId, run.generation,
-                            read.startedAt(), read.finishedAt()),
-                    run.generation, read, null, recordedAt);
+                            read.startedAt(), read.finishedAt()), run.generation,
+                    timestamp(read.startedAt()), timestamp(read.finishedAt()), null, timestamp(recordedAt)});
             includeIncrementalSourceRead(run, read);
+            List<Object[]> participantReceipts = new ArrayList<>();
             for (Map.Entry<Integer, Set<Integer>> fixture : participants.entrySet()) {
                 String fixturePrefix = INCREMENTAL_PARTICIPANT_RECEIPT_PREFIX
                         + fixture.getKey() + ":player:";
                 for (int playerId : fixture.getValue().stream().sorted().toList()) {
-                    jdbc.update("""
-                            INSERT INTO %s(season, publication_key, latest_generation,
-                                source_read_started_at, source_read_finished_at, published_at)
-                            VALUES (?, ?, ?, ?, ?, ?)
-                            ON CONFLICT (season, publication_key) DO UPDATE SET
-                                latest_generation=EXCLUDED.latest_generation,
-                                source_read_started_at=EXCLUDED.source_read_started_at,
-                                source_read_finished_at=EXCLUDED.source_read_finished_at,
-                                published_at=EXCLUDED.published_at
-                            WHERE %s.latest_generation<=EXCLUDED.latest_generation
-                            """.formatted(tables.receipt(), tables.receipt()), run.season,
-                            fixturePrefix + playerId, run.generation, timestamp(read.startedAt()),
-                            timestamp(read.finishedAt()), timestamp(recordedAt));
+                    participantReceipts.add(new Object[] {run.season, fixturePrefix + playerId,
+                            run.generation, timestamp(read.startedAt()), timestamp(read.finishedAt()),
+                            timestamp(recordedAt)});
                 }
                 CatalogueScheduleParser.FixtureRow fixtureRow = fixturesById.get(fixture.getKey());
                 FixtureVerification.FixtureEvidence fixtureEvidence = evidence.get(fixture.getKey());
-                insertIncrementalReceipt(run.season,
+                receipts.add(new Object[] {run.season,
                         IncrementalAppearanceReceipt.snapshotKey(fixtureRow, eventId, fixtureEvidence,
-                                fixtureEvidence.liveRead()),
-                        run.generation, read, appearanceFingerprints.get(fixture.getKey()), recordedAt);
+                                fixtureEvidence.liveRead()), run.generation,
+                        timestamp(read.startedAt()), timestamp(read.finishedAt()),
+                        appearanceFingerprints.get(fixture.getKey()), timestamp(recordedAt)});
                 for (Map.Entry<Integer, FixtureVerification.Appearance> appearance
                         : new java.util.TreeMap<>(fixtureEvidence.appearances()).entrySet()) {
-                    insertIncrementalReceipt(run.season,
+                    receipts.add(new Object[] {run.season,
                             IncrementalAppearanceReceipt.playerKey(fixture.getKey(), appearance.getKey(),
-                                    appearance.getValue(), fixtureEvidence.liveRead()),
-                            run.generation, read, null, recordedAt);
+                                    appearance.getValue(), fixtureEvidence.liveRead()), run.generation,
+                            timestamp(read.startedAt()), timestamp(read.finishedAt()), null, timestamp(recordedAt)});
                 }
             }
+            executeIncrementalBatches("""
+                    INSERT INTO %s(season, publication_key, latest_generation,
+                        source_read_started_at, source_read_finished_at, published_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT (season, publication_key) DO UPDATE SET
+                        latest_generation=EXCLUDED.latest_generation,
+                        source_read_started_at=EXCLUDED.source_read_started_at,
+                        source_read_finished_at=EXCLUDED.source_read_finished_at,
+                        published_at=EXCLUDED.published_at
+                    WHERE %s.latest_generation<=EXCLUDED.latest_generation
+                    """.formatted(tables.receipt(), tables.receipt()), participantReceipts);
+            insertIncrementalReceipts(receipts);
             return Set.copyOf(invalidatedFixtures);
         });
     }

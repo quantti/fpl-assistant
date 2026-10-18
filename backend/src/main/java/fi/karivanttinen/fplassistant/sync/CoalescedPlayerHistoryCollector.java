@@ -411,6 +411,15 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
             }
         }
 
+        // shortcut: a first omitted-player page proves its side next cycle; revisit for immediate cold finality.
+        Map<Integer, Map<Integer, FixtureVerification.Side>> historySides;
+        try {
+            historySides = store.incrementalHistorySides(lease, season.id(),
+                    liveByEvent.values().stream().flatMap(List::stream).toList());
+        } catch (RuntimeException failure) {
+            return fail(lease, bounded(failure.getMessage()), requestedPlayers, committedPlayers,
+                    failedPlayers, finalPendingEvents, null);
+        }
         for (Map.Entry<Integer, List<FixtureRow>> entry : liveByEvent.entrySet()) {
             int eventId = entry.getKey();
             Instant eventFloor = entry.getValue().stream().map(fixture -> fixtureFloors.get(fixture.id()))
@@ -429,7 +438,7 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
             reads.add(read(live));
             try {
                 Map<Integer, FixtureVerification.FixtureEvidence> evidence =
-                        FixtureVerification.fixtureEvidenceByFixture(entry.getValue(), live);
+                        FixtureVerification.fixtureEvidenceByFixture(entry.getValue(), live, historySides);
                 Map<Integer, Set<Integer>> participants = new LinkedHashMap<>();
                 evidence.forEach((fixtureId, fixtureEvidence) -> {
                     participantEvidence.put(fixtureId, fixtureEvidence);

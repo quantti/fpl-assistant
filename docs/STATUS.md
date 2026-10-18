@@ -1,5 +1,13 @@
 # Status — Phase 1
 
+## PR #162 publication — authorised, gates pending
+
+Owner authorised PR publication and squash merge. Base `4c1fa71` is integrated without rewriting
+feature history; the sole conflict here retains both branches' entries. The F1/F2 fix panel at
+`638a046` was CLEAN (Sol/Astra/Luna, 3/3, no findings). The integrated PR still needs fresh full
+CI and whole-PR review before merge. Understat scheduling remains OFF; this authorisation does
+not start collection or populate the shared cache. Empty cache means explicit n/a team forecasts.
+
 ## Understat review corrections — local, not published
 
 Read-only Sol review of `4f2633a` requested F1/F2 changes. F1 is fixed in `5afc8de`:
@@ -343,6 +351,130 @@ large-chunk warning remains. [PR #162](https://github.com/quantti/fpl-assistant/
 code commits `0e1e791`–`fd17c67` and the handoff documentation. Parent reviewed the published PR;
 full exact-head CI, owner merge and live signed-in smoke verification remain separate gates.
 Neither production access nor model calibration was performed.
+
+## Production importer — verified ACTIVE111 (2026-10-18)
+
+Owner-approved handoff OFF110→ACTIVE111 succeeded at 11:20 UTC on reviewed image
+`1d105c0` (PR #168; PR/master CI and both independent reviews passed). Run342125
+completed at 11:43:16: 667/667 pages newly checked, 677 request admissions, no run error.
+All GW1–6 certificates are FINALIZED; GW7 correctly remains OPEN. The actual assistant
+reader accepts all 120 GW1–6 fixture sides, and the merged Tapas projection accepts
+proved rows. These are proof checks, not assertions from physical row counts alone.
+
+At 11:46 the watchdog recovered the remaining incidents; importer health returned 200/UP.
+Plex Kuma20 recorded DOWN→UP at 11:46:28 and another UP at 11:47:29; public monitor19
+stayed UP. Both remain active on existing SMTP notification1. One 1024 MiB Fly machine
+remains. Daily price/schedule jobs are enabled; handoff, legacy DefCon and startup-price
+are disabled. The rolling 6,000-request ledger was retained, never reset. Legacy fixture
+WAITING_STATS counters are not the new finality authority; do not restart the old verifier.
+
+[Cutover evidence](IMPORTER-CUTOVER-2026-10-17.md) separates the failed attempts, corrections
+and successful attended cycle. Future hourly/no-op/night-capture runs, sustained load and
+SMTP inbox receipt are not yet verified. Kuma monitoring continues independently.
+
+## Importer appearance proof correction (2026-10-18; implementation record)
+
+PR #167's reviewed deployment completed run342123: 667/667 player pages, 4,550 VALID PFS
+pointers and GW5 FINALIZED. GW1–4/GW6 still refused finality because fixture-stats is not
+an appearance roster: played players can have BPS<=0 or be omitted entirely. The owner
+chose a safe pause for this follow-up. Authenticated retirement left OFF110, no active work
+or unresolved permits, public health UP; existing page/row/GW5 proof remains intact.
+Independent daily price/schedule jobs remain enabled; legacy writers remain disabled.
+
+The [bounded plan](superpowers/plans/2026-10-18-importer-appearance-proof.md) keeps LIVE
+positive-minute membership and explicit coverage of fixture-stat identities/contributors,
+without demanding a positive stat value for every played player. Only missing sides may
+use a prior incremental history proof: one fenced bulk read reuses `IncrementalPfsEvidenceSql`
+and matches season, fixture, gameweek, kickoff and both clubs. Direct fixture-stat sides
+are never overwritten. Missing, withdrawn, tampered or mismatched proof remains unknown;
+a contradictory fresh history page still prevents finality. Current bootstrap club is never
+a historical-side substitute. A genuinely cold omitted player may need its first page and
+a later cycle; no new receipt protocol, schema, request, cadence or timeout is introduced.
+
+Both BPS0/-1 regressions failed against the old code; an omitted-player integration case
+also stayed RETRY_SCHEDULED instead of finalizing on its second cycle. After correction,
+89 focused tests pass (64 collector integration, 25 fixture verification), including strict
+side-proof negatives, cold pending→finalized, actual reader-side coverage and failure cleanup.
+Both independent reviews and PR/master CI passed; the guarded production result is recorded above.
+
+## Importer cold-start receipt batching (2026-10-17; implementation record)
+
+The first authorised handoff reached ACTIVE epoch 107, but run 342122 failed before its
+first player page/PFS pointer. It had recorded 2,003 live-player receipts and 2,007 participant
+receipts; the population transaction then timed out. The importer was retired to OFF epoch 108,
+with no active jobs/unresolved permits; legacy was not restarted. Nine request admissions,
+not the 6,000-attempt cap, separated this attempt from its preflight. Health remained DOWN at that rollback.
+
+`recordIncrementalPopulation` repeated participant upserts individually while holding the runtime
+fence lock. Live-event participant/appearance writes had the same per-row pattern. Fast local SQL
+hid the cost of thousands of remote JDBC executions; the heartbeat also logged a runtime-row lock
+wait, although the exact blocking database session was not captured. The fix uses the existing
+500-row JDBC batch bound for those receipts and population markers. Original transaction,
+generation, source-time, fingerprint, invalidation and rollback conditions remain unchanged;
+there is no timeout increase, schema change, ledger reset or activation in this correction.
+
+A 65-fixture regression (2,015 participants, 4,030 discovery candidates, 667 distinct players)
+injects 4 ms per receipt write execution: the old implementation failed with the same
+`TransactionTimedOutException`; the fix completes in about 0.54 s with at most 20 receipt write
+executions. A ten-fixture/800-participant live-event case also stays within 20 writes. Tests retain
+newer receipt generations/read intervals and unchanged fingerprints, and verify rollback after a
+failure in the second 500-row batch. The collector integration class passed, followed by all four
+final regressions. Independent review/full PR CI and a fresh guarded cutover with actual player
+page/PFS publication evidence remain required; these local checks are not a successful import.
+
+## Importer operator-route security correction (2026-10-17)
+
+PR #165's master tests/deploy passed (`39057123698`), but the live handoff returned 401
+and, with a real user JWT, 403: the two importer operator routes were missing from
+SecurityConfig's exact permit list and hit denyAll before their own token authentication.
+Runtime remained OFF epoch 106; the handoff flag was disabled again. This correction
+adds only handoff/retire to that list, retaining controller-token and mode/epoch guards.
+The real filter-chain regression first failed 200 vs 401; 11 focused security/controller/
+configuration tests now pass. Default-disabled, blank/wrong/monitor tokens, user JWT
+alone, unknown routes and stale epoch remain rejected. No bypass SQL or importer
+activation occurred. Owner explicitly authorised this follow-up PR, two-reviewer gate,
+green-CI squash merge and subsequent cutover without another command.
+
+## Incremental cutover request budget (2026-10-17; not activated)
+
+The owner authorised replacing legacy sync with the incremental importer. Legacy is now OFF
+(epoch 106 at 13:53 UTC), with no active owned jobs/unsettled permits and public health UP.
+Its 5,000-attempt rolling-day ledger was full; GW6's 10 VERIFIED fixtures/667 PFS rows came
+from legacy, not the importer. This branch adds a bounded importer-only 1..6,000 override
+(default still 5,000), shared with its watchdog; admission history and other safety limits remain.
+[Cutover plan](superpowers/plans/2026-10-17-importer-cutover-budget.md) estimates roughly 680
+requests for the initial 667-player pass plus source/event reads, not a guaranteed full-run cost.
+Focused unit/config checks passed; full PR CI, owner merge, operator handoff and first-cycle
+publication/monitor evidence remain required. No importer activation or ledger reset occurred.
+
+## Project-local software factory (2026-10-16)
+
+`.agents/skills/software-factory/` copies the complete vanilla bundle from `quantti/pi-config`
+`75cc2a5`, preserving its six generic files and specializing only `domain.md`. Explicit invocation
+keeps it separate from ordinary tasks; no global installation, auto-dispatch or permissions change.
+The FPL supplement maps governing sources, provenance/identity, ranking, shared-schema ownership,
+legacy/incremental proof, account isolation and safe test/publication boundaries. Historical runtime
+observations remain historical. [Adoption plan](superpowers/plans/2026-10-16-fpl-software-factory.md)
+records 12 passing offline tests, bundle/source-path checks and author-performed source review.
+These do not prove independent review, Pi runtime discovery, model compliance or effectiveness;
+no product suite, external service or production action ran locally for this change.
+[PR #161](https://github.com/quantti/fpl-assistant/pull/161) was directly reviewed at `0ceb7ff`;
+PR CI and owner merge remain pending.
+## Player facts — verify current clubs and disputed claims
+
+The system prompt requires fresh, unambiguous current-club evidence from the same turn.
+Successful pick lists, `buildSquad` and `getMyTeam` already supply it, so no per-player rechecks
+are needed just to restate their clubs. Without that evidence, call `getPlayerStats`; disputed
+facts require a new lookup even in apologies and follow-up challenges, rather than agreement
+with the user or model memory. Price and availability disputes retain their dedicated tools.
+Current-club evidence comes from the daily capture or the squad's own FPL source, not a historical
+season's club; each source keeps its own age. Stale, missing, ambiguous or contradictory evidence
+cannot support a confident correction. The original regression and the review-fix regressions
+failed before their respective prompt changes. All ten tests in the player-name, availability,
+DefCon and bench-order prompt contract classes passed after integration with master `1689597`.
+This is a prompt requirement, not server-enforced tool use; no live-model evaluation or production
+read was performed. Review narrowed the initial unconditional `getPlayerStats` rule to avoid
+redundant lookups for already verified squad/pick results. Full PR CI remains the publication gate.
 
 ## KAR-19 — opt-in daily-price email reminders (2026-10-13)
 
