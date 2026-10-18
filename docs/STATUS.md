@@ -1,5 +1,30 @@
 # Status — Phase 1
 
+## Importer cold-start receipt batching (2026-10-17; rollout pending)
+
+The first authorised handoff reached ACTIVE epoch 107, but run 342122 failed before its
+first player page/PFS pointer. It had recorded 2,003 live-player receipts and 2,007 participant
+receipts; the population transaction then timed out. The importer was retired to OFF epoch 108,
+with no active jobs/unresolved permits; legacy was not restarted. Nine request admissions,
+not the 6,000-attempt cap, separated this attempt from its preflight. Importer health stays DOWN.
+
+`recordIncrementalPopulation` repeated participant upserts individually while holding the runtime
+fence lock. Live-event participant/appearance writes had the same per-row pattern. Fast local SQL
+hid the cost of thousands of remote JDBC executions; the heartbeat also logged a runtime-row lock
+wait, although the exact blocking database session was not captured. The fix uses the existing
+500-row JDBC batch bound for those receipts and population markers. Original transaction,
+generation, source-time, fingerprint, invalidation and rollback conditions remain unchanged;
+there is no timeout increase, schema change, ledger reset or activation in this correction.
+
+A 65-fixture regression (2,015 participants, 4,030 discovery candidates, 667 distinct players)
+injects 4 ms per receipt write execution: the old implementation failed with the same
+`TransactionTimedOutException`; the fix completes in about 0.54 s with at most 20 receipt write
+executions. A ten-fixture/800-participant live-event case also stays within 20 writes. Tests retain
+newer receipt generations/read intervals and unchanged fingerprints, and verify rollback after a
+failure in the second 500-row batch. The collector integration class passed, followed by all four
+final regressions. Independent review/full PR CI and a fresh guarded cutover with actual player
+page/PFS publication evidence remain required; these local checks are not a successful import.
+
 ## Importer operator-route security correction (2026-10-17)
 
 PR #165's master tests/deploy passed (`39057123698`), but the live handoff returned 401
