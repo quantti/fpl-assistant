@@ -1,5 +1,368 @@
 # Status — Phase 1
 
+## PR #162 full-review/CI corrections
+
+The full PR panel at `013b8b1` confirmed one numeric-JSON precision defect (2/3); two new parser
+regressions failed on rounding and passed after enabling BigDecimal float decoding. All ten
+parser tests pass; test-source compilation also passes after restoring the Mockito import
+needed by master's new importer test. CI run `39141310755` had stopped at that missing import,
+not passed the backend suite. The new head still requires fresh CI and correction re-review.
+The single-reviewer HTTP total-duration advisory is recorded, not silently promoted or fixed:
+socket read timeout is not an absolute response deadline. Resolve before enabling collection;
+Understat remains OFF and no shared cache is populated by this publication.
+
+## PR #162 publication — authorised, gates pending
+
+Owner authorised PR publication and squash merge. Base `4c1fa71` is integrated without rewriting
+feature history; the sole conflict here retains both branches' entries. The F1/F2 fix panel at
+`638a046` was CLEAN (Sol/Astra/Luna, 3/3, no findings). The integrated PR still needs fresh full
+CI and whole-PR review before merge. Understat scheduling remains OFF; this authorisation does
+not start collection or populate the shared cache. Empty cache means explicit n/a team forecasts.
+
+## Understat review corrections — local, not published
+
+Read-only Sol review of `4f2633a` requested F1/F2 changes. F1 is fixed in `5afc8de`:
+FPL `short_name` codes win before partial club-name search; all 23 supported season-union
+codes round-trip, including CHE, while Manchester remains ambiguous. F2 aligns squad daily
+identities with the Understat K01–K20 fixture identities, seeds unavailable opponents with
+complete FPL sides, and checks all 20 club models plus every defender horizon leg. Changing
+only cached Understat concessions changes the same pinned defender's printed squad xPts,
+while its FPL player metrics stay equal. Player coverage gates were not weakened.
+Both regressions failed against old behavior (CHE ambiguity and zero attached squad models).
+56 focused parser/team-tool/squad/ClubRates/HorizonScorer tests now pass, 0 failed/skipped.
+A row-write test also now checks timestamp change rather than wall-clock monotonicity after
+observing a backward timestamp; the unchanged-squad assertion remains. Memory admission
+refused low-headroom runs; validation resumed only after owner released capacity. No full
+suite, independent re-review, push/deploy, scheduler activation or production collection.
+
+## Understat consumers — locally verified at `4f2633a`, not published
+
+The consumer migration replaces the RankingMetrics club SUM/MAX/finality bridge
+with one Understat aggregation inside the existing read snapshot. Player publication/evidence
+checks are unchanged. `getTeamExpectedGoals` now reads direct team xG/xGA and scores; its
+player-summed xA/xGI path and team-only helpers are removed. New source/provenance/sample/capture
+metadata and per-cell n/a explanations are implemented without changing row CSS. PFS-team tests are
+replaced by direct-source coverage; player and collector participant-proof assertions remain.
+
+Owner released the test database/backend slot before validation resumed. Guarded sequential
+focused runs now pass: 101 core/source/player/shortlist tests together (0 failed/skipped),
+73 pick/squad/ClubRates/HorizonScorer tests, 22 tests covering PFS proof and two touched collector methods,
+and the connected prompt/DataAge checks. Frontend: 61 tests, lint, format and TypeScript/Vite pass.
+The real App/ChatView/sidebar/provider shell also passes 8 Chromium cases: 3840/1920/1440/390,
+light and dark; touch emulated at 390. Headers/player rows stay 48px before/after expansion,
+8 sortable headers, single-line names/TGW and 44px touch controls hold. Desktop content widths
+are 3548/1628/1148px, mobile 358px. The n/a reason is accessible; source summary remains two
+sentences with distinct FPL and Understat sample/capture dates. Synthetic auth/API only, no live
+account or backend claim; screenshots/receipts `/tmp/understat-app-shell/`. No local full suite was run. Initial connected
+failures exposed a test fixture leaving UX-2026 captures behind; explicit cleanup fixed isolation.
+Pick fixtures now supply unavailable daily identities for all opponents instead of assuming their
+FPL ids can be guessed from Understat. No production fallback was added to satisfy synthetic tests.
+The 600-player/3000-PFS probe reports 17 queryForList calls for both 1 and 20 saved players,
+279/240ms in this run: bounded synthetic evidence, not a load guarantee. Pre-existing unused
+collector helpers found during the static audit were left unchanged.
+
+Collection audit: direct team totals remove the need to assemble player populations for team
+xG/xGA, but FPL histories are still needed for player ability/DefCon/evidence. Total FPL HTTP
+requests are not claimed to decrease; Understat adds two league fetches. A failed archive refresh
+must not block a valid current-season refresh: sync retains the failed season and reports
+the failure while committing successful seasons atomically. Existing daily prices, schedule,
+legacy DefCon suppression in ACTIVE mode and historical archives remain. Possible follow-ups:
+remove unnecessary full player reads from shortlist, consolidate current-season historical scores
+from Understat instead of football-data, and address any separate player proof compatibility gap.
+No unrelated collector was disabled, no production capture or remote publication was performed.
+Understat scheduling remains OFF. Provider-use terms/SLA, approved initial capture plus fresh
+FPL price/schedule evidence, and exact-head CI/review remain publication/rollout gates. Staging
+still runs `9edb0c3`; these local checks do not describe its current team model. Shared test
+container was left running; browser/Vite fixtures were stopped and the heavy-work slot released.
+
+## Understat team metrics — storage slice (local)
+
+Owner selected Understat for all team xG/xGA and the team-stat tool, removing team-only player
+xA/xGI sums while retaining FPL player metrics. [Migration plan](superpowers/plans/2026-10-18-understat-team-xg.md)
+supersedes the proposed team-model verification compatibility repair. At storage commit `b1a832e`,
+consumer migration was pending; that slice alone did NOT switch ClubRates or the team tool.
+
+Direct league capture uses two requests (playing/previous season), exact decimal team totals,
+strict identities/season/result parsing, gzip/size/time bounds and atomic owned-cache replacement.
+Known zeroes remain zero; missing fields fail the capture, valid empty captures remove withdrawn
+results and older captures cannot overwrite newer. The later consumer slice isolates failures
+per season rather than holding both seasons back. `--sync-understat` is explicit; daily 02:20 UK collection defaults OFF.
+19 focused tests pass after parser/client/store/sync RED cases, including disposable PostgreSQL
+rollback/correction tests. The actual Java HTTP client/parser also fetched 65 current-season
+results from the public endpoint without database access. Stored research samples match FPL UTC
+kickoffs in all 60 overlapping completed fixtures. No production schema/data write, activation,
+push or deployment; provider terms/SLA and sustained reliability remain rollout checks.
+
+## Team xCS n/a diagnosis (2026-10-18; read-only)
+
+[Repair plan](superpowers/plans/2026-10-18-shortlist-xcs-verification-compatibility.md), simplified
+from six to three tasks after pi-review found unnecessary rejection/acceptance coupling. Valid
+fixture-wide certificates are accepted automatically under their own protocol, without a new
+floor from a first identical appearance snapshot. Actual incremental ownership retains its proof
+chain; insufficient evidence remains n/a, not a per-match human approval request. Code acceptance
+is separate from live capture verification. The revision is not independently re-reviewed;
+implementation and new operational/publication actions are not authorised.
+
+The 2026-10-17 23:16 UTC model probe reproduced MCI 1.5402616728, but its modelThrough contained
+only 2025/26 and its club model covered only the 17 surviving clubs from that archive. ARS-GW10
+and BHA-GW11 lack HUL, NFO-GW8 lacks IPS; COV/HUL/IPS themselves have no archive model. A missing
+leg withholds the full-window total rather than silently summing the other matches.
+
+A further SELECT-only probe confirmed that this is not absent current-season numeric data:
+PfsReadSource exposes all 3,883 current rows as VERIFIED, with no missing xG/xGC, and all 20 clubs
+have six usable finished sides. The actual population guard excludes them: a known appearance
+snapshot makes fixtureSidePopulation label the fixture INCREMENTAL, then matched_positive accepts
+only PROVISIONAL rows backed by incremental-page watermarks. There are zero current-table rows
+and zero incremental-page markers. For fixture 1, both complete rosters expect 16/15 positive
+appearances but match zero. RankingMetrics excludes incomplete incremental sides from club rates,
+so all current-season sides disappear and only 2025/26 remains. This is a publication-path
+compatibility/transition problem; bypassing the population guard is not an accepted fix. A safe
+follow-up must preserve each protocol's actual correction rules and source-consistent participant
+proof, not impose the incremental floor on an unchanged valid fixture-wide certificate.
+
+On the morning of 2026-10-18 (UTC), the latest daily and schedule captures are still dated October 17,
+so the new day's freshness gates are an additional present-time blocker, independent of last
+night's selective n/a. No captures, account writes, session SETs or application startup were run.
+Probes used only readers/SELECTs; a local no-op transaction adapter avoided changing pooler
+session settings. The PostgreSQL probe disables server-prepared statements on the client.
+No backend change, push, deployment or merge was performed for this diagnosis.
+
+## Local Team xCS legend
+
+Added a visible note below the table explaining that Team xCS is the club's expected clean-sheet
+count over the displayed gameweeks (1.54 ≈ 1½), not player points, and that forwards earn no
+clean-sheet points. The sortable header has a matching tooltip and aria-describedby link to the
+note. A missing-legend regression failed before the change; 50 focused frontend tests plus
+lint/format/TypeScript/Vite pass. Not pushed or deployed; the current n/a diagnosis is separate.
+
+## Fixed-height shortlist rows
+
+Owner requires invariant player-row height. Main data rows and the header now measure 48px on
+desktop and touch layouts. Names stay on one line with ellipsis, full title/accessibility label
+and full name in the expanded card. Double/triple gameweek legs stay side by side, never stacked;
+all fixtures remain present and table-only horizontal scrolling handles narrower viewports.
+Touch controls keep 44px targets. Expanded detail rows alone retain natural height, and opening
+them does not change any player-row height. Focus outlines remain inside the compact controls.
+
+Before the fix the full-App browser stress case measured 57/51/79/49px for double-week,
+long-name, triple-week and normal rows; it failed the invariant-height assertion. Afterwards all
+four measure exactly 48px at 3840/1920/1440px and 390px light/dark touch, including after keyboard
+expansion. Header height, fixture alignment/containment, title/ellipsis and touch targets are
+also checked. The long-name DOM regression failed before implementation; 58 focused frontend
+tests, lint, format and TypeScript/Vite build pass. No backend code changed for this follow-up.
+Owner subsequently authorised publication: commits `ba06e44` and `9edb0c3` are pushed to PR #162,
+and staging now runs code `9edb0c3` at https://fpl-assistant-staging.fly.dev/shortlist.
+Image `deployment-01M560FC48F7GBNWMS2K2079WK`, digest
+`sha256:c4130e21be66bd62977d1f6b56787aca54368c48d989e318f248505866c45456`.
+Remote build/deploy succeeded; health is UP, /shortlist is 200, served CSS byte-matches the tested
+48px build, and the JS bundle contains completed-match sample metadata. PUT preflight is 200,
+anonymous comparison is 401, and all three staging capture flags remain false. No merge,
+production-app deploy or live account write was performed. Signed-in visual/data inspection is
+left to the owner. Exact-head full CI was not visible (empty PR check rollup) at handoff.
+
+## Shortlist completed-match model and limited sorting
+
+Owner-approved correction after read-only diagnosis: the 2026-10-17 schedule capture at 11:50 UTC
+still had five elapsed fixtures unfinished at 21:50 UTC. That produced league-wide ranking
+coverage gaps, so shortlist's global coverage gate suppressed xCS despite 60 verified finished
+matches and six usable fixture-sides for each of 20 clubs. No shared-data repair was attempted.
+
+Shortlist now requests `RankingMetrics.loadCompletedComparison`: club rates and pooled league
+constants use only finished fixtures with usable data for BOTH canonical sides. Unverified owned
+evidence and still-provisional incremental matches are excluded; incremental matches become usable
+when the existing GameweekFinalityReader validates their FINALIZED receipt, without bypassing
+current-row/population proofs. Existing trusted legacy archives retain their guarded read contract. One invalid/missing side removes both sides
+from this model's cohort. Remaining evidence is blended by the same ClubRates/SeasonBlend model;
+club/league floors, missing opponent rates, source/schedule checks and unknown horizon refusal
+remain intact. Ranking/squad callers still use the unchanged `load` contract, including their
+strict comparison-population gate and receipt-backed provisional handling. The shortlist's
+outer REPEATABLE_READ snapshot and guarded PFS reads remain unchanged, with no per-player SQL.
+
+Each model season now carries the latest INCLUDED match kickoff in `modelThrough`, formatted as
+a date alongside the season in the two-sentence source note. It is sample coverage, not sync
+freshness. Missing cutoff metadata is n/a, never borrowed from capture/asOf timestamps. Club,
+position, availability and gameweek headers are plain labels; only name and numeric metrics sort.
+
+Regression coverage includes pending and unverified matches not globally suppressing xCS,
+one-sided fixtures contributing neither side, known zeros, insufficient evidence remaining n/a,
+excluded latest matches not advancing the cutoff, and unchanged normal ranking/provisional rules.
+The three new model behavior tests and header-sorting assertion failed against the old behavior.
+53 focused backend tests and 57 frontend tests pass, together with lint/format/TypeScript/Vite.
+Full-App stub browser checks pass at 3840/1920/1440px and 390px light/dark: exactly eight sortable
+headers, numeric and unavailable xCS cells, dated model samples, compact rows and keyboard details.
+The FINALIZED consumer branch uses a typed reader stub; validation of actual final receipts remains
+the existing reader suite's responsibility. No full local suite or new live account test was run.
+Initially kept local as requested; publication was subsequently authorised and is recorded above.
+
+## Shortlist full-width shell and compact rows (PR #162)
+
+Owner screenshots exposed the actual remaining layout bug: ChatView still constrained shortlist
+to the 660px chat reading column. Only the shortlist route now opts out of that maximum; chat
+and other routes keep their original measure. The table has visible row/column rules, alternating
+fills, stronger shared headers, 49px ordinary desktop rows and inline fixture/FDR cells. Unknown
+projections remain n/a; long row/forecast diagnostics move to the name-expanded detail card.
+No forecast, eligibility, data-source or backend behavior changed.
+
+Both route-marker and diagnostic-placement regressions failed before the fix. 56 focused frontend
+tests plus lint/format/TypeScript/Vite pass. The earlier standalone-component browser fixture
+could not catch the parent-shell clamp: this validation mounts the real App, ChatView, sidebar,
+header and providers with stubbed auth/HTTP, at 3840/1920/1440px and 390px light/dark touch.
+At 1920px the sidebar leaves 1660px, the table fills 1626px and all columns fit without scrolling;
+at 3840px it fills 3546px. Ordinary desktop rows measure 49px; touch rows are 61px with 44px
+controls. Narrower screens retain table-only horizontal scrolling. Restoring the old 660px clamp
+as a browser negative control fails the width criterion. Keyboard details still expose the
+reason and the chat route still measures no more than 660px. No live account data was used.
+
+Staging was updated to code `76eff81`, image `deployment-01M55JA6ZN52WK407XG4B0NWRP`
+(digest `sha256:5c0e1aced7667599be2516298cd184478417c81b6a289583a16ebb60a82c9a4f`).
+External health is UP, /shortlist is 200 and its served CSS contains the route-specific width
+exception. Staging capture flags were false before deployment; no backend/capture change or
+production-app deployment was made. PR #162 remains open for the owner's visual inspection.
+
+## PR #162 final advisory fixes
+
+Owner accepted both non-blocking advisories from the fresh CLEAN full-PR panel on `e9d36e5`
+(2/2 GPT 6.1 Sol, quorum 2, 0 confirmed, 2 advisories). The daily HTTP decoder now reads floating
+JSON numbers as BigDecimal before validating the optional playing chance: a source fraction such
+as `75.00000000000000000001` must not first become Double 75. Both excessive precision and
+underflow are covered through the real HTTP-to-SQL path, while decimal representations of exact
+integers remain valid. This decoder is local to DailyPriceSyncService; global web JSON settings
+and other API clients are unchanged.
+
+Comparison also maps CannotCreateTransactionException to the existing empty no-store 503,
+beside DataAccessException, without exposing connection details. A real proxied transaction
+manager fault verifies that contract and that membership listing/removal remain independent.
+Both regressions failed on the old behavior; all 39 focused backend tests pass after the fixes.
+No full local suite was run. The owner explicitly withdrew merge authority and requested staging
+inspection first: PR #162 remains open, with no production-app deployment or capture activation.
+
+Staging now runs `99b26ae` at https://fpl-assistant-staging.fly.dev/app, image
+`registry.fly.io/fpl-assistant-staging:deployment-01M552BHCTWZD01THAPTTVZCJE`
+(digest `sha256:f42e374913a1a997baacc36fcefa75c9babc5c532fafae7e1f783cc85fbb1efb`).
+Remote build/deploy succeeded; external health is UP, /app is 200, the served bundle contains the
+new source metadata/flag UI, same-origin PUT preflight is 200, and anonymous comparison is 401.
+The three staging capture-scheduler variables remain false and CORS names staging's own origin.
+Startup applies the additive daily-price schema to the shared DB; no capture or account write
+was triggered. Existing daily rows still have unknown chance until the updated writer is used.
+This was a manual owner-authorised staging deployment; PR-push automation is still unfinished.
+Latest visible full CI is green only for `f524afb` (39024044561); no run/check for `99b26ae` was
+visible at handoff. Do not reuse that earlier result as exact-head verification or merge approval.
+
+## PR #162 review corrections: source evidence and guarded observations
+
+The two confirmed Pi Review findings are addressed without expanding the user-facing source
+note beyond two sentences. The API now carries `scheduleCapturedAt` from its immutable schedule
+snapshot and `modelSeasons` from its metric context; the frontend formats assessment and schedule
+times separately to UTC seconds and names both model seasons. Missing/old-version metadata is
+shown as n/a, not inferred from assessment time or parsed from explanatory prose. Existing source
+strings remain for API compatibility. Tests distinguish two captures within the same minute and
+an independently different market timestamp, and keep unknown-refresh/uncalibrated-model wording.
+
+The comparison integration class now injects the real PfsReadSource with isolated owned-receipt
+fixture tables. Response-level regressions assert masking of retained physical xG/xA/DefCon when
+component presence is absent, retention/counting of known zero, and no raw fallback when receipt
+and evidence generations mismatch. A temporary mutation of only comparison's supplemental query
+to `player_fixture_stats` made 2/3 new tests fail on numeric assertions (9.0 instead of NULL,
+90 minutes instead of an absent observation); the guarded query was restored before final checks.
+This tests this consumer, rather than relying on another consumer's reader tests.
+
+Verification: 22 focused backend and 46 frontend tests pass, lint/format/TypeScript/Vite build
+pass, and isolated Chromium stub-data checks pass at 390/1440px light/dark with keyboard details
+and a two-sentence source note. The original source-summary assertion failed before the fix.
+No live account test, shared database writes, capture or deploy was run. The earlier full-PR review
+was against `f524afb`; no claim that its evidence automatically covers the correction commit.
+The two-reviewer correction-only Pi Review against `7c808b5` returned BLOCKED for both reviewers
+without an explanatory finding/error in its result (2m28s, reported $0.8887). This is not a clean
+review receipt. No automatic retry/fallback was attempted; independent correction acceptance
+remains blocked. Parent diff review and executed checks above remain separate evidence.
+
+## Stored FPL playing chance (PR #162)
+
+The [approved plan](superpowers/plans/2026-10-17-daily-playing-chance.md) is implemented:
+`DailyPriceSyncService` now captures `chance_of_playing_next_round` from its existing bootstrap
+response into a nullable SMALLINT with a 0..100 CHECK. Malformed/non-integral optional values
+become NULL without losing a valid price row. Same-day updates replace or clear the chance;
+old days/seasons are never backfilled. Existing schemas upgrade idempotently, keeping RLS/keys.
+Shortlist's existing season/date-qualified daily batch query carries the field into
+`market.chanceOfPlayingNextRound` under the same REPEATABLE_READ snapshot; ranking models and
+eligibility are unchanged. No extra endpoint call or per-player SQL.
+
+Availability shows FPL's percentage when known: 75% yellow, 25/50% amber, ruled-out statuses/0%
+red. Missing or contradictory evidence does not invent a probability or doubtful severity.
+The detail card explains that this is the captured next-round estimate, not starts/minutes.
+The old DTO without the optional field remains renderable. Header sorting stays status-based.
+
+Verified: 33 focused backend tests (0 failed/skipped), 42 frontend tests, lint, format and
+TypeScript/Vite build. Parser, DTO-shape and UI assertions each failed on the previous behavior
+before implementation; schema/writer integration coverage was added with implementation, not
+claimed as prior RED. Disposable PostgreSQL + stub HTTP exercise schema upgrade twice, real
+INSERT/UPDATE/NULL clearing, historical isolation and CHECK rejection. Snapshot tests include an
+independently committed percentage/status/news/capture-time change; the response keeps the old
+snapshot. Chromium stub-data checks pass at 390/1440px in light/dark with keyboard expansion,
+cell/page bounds and all four flag tones. Badge contrast: amber 8.21:1, yellow 13.25:1, red 5.76:1.
+Parent source/diff review completed; no independent review of this follow-up was requested.
+
+No deployment or live capture was run. Existing rows remain NULL until a normal daily capture
+by the updated writer; deploying staging alone must not activate shared capture jobs. A code
+rollback must roll back percentage consumers with the writer: an old writer does not update the
+new column, so leaving a new reader running after old-writer updates could misdate a retained
+percentage. Full suite remains GitHub CI's gate, not a local claim. Existing Vite bundle warning
+and development-only npm advisory remain outside this change. Staging automation work is separate.
+
+## Shortlist header sorting and availability (PR #162)
+
+The owner requested an actual dense comparison grid with sortable column headers. TanStack Table
+v8 now owns client-side sorting (both directions, missing values last), replacing the sort select
+and manual comparator. Every data column is sortable; gameweek columns sort by average FDR
+(known blank = 0, incomplete ratings = unknown), not an invented expected-points score. Actions
+remain unsorted. Availability is a separate labelled badge column, with green available, yellow
+doubtful and red unavailable/injured/suspended statuses; no colour-only meaning. Alternating rows
+and shared aligned headers make rows easier to follow.
+
+The daily-capture DTO does not store FPL's chance-of-playing percentage, so 50/25% orange flags
+cannot be distinguished from 75% yellow flags: no percentage is inferred from news text or role.
+18 focused frontend tests, lint, format and build pass, with isolated Chromium light/dark checks
+at 390/1440px for cell bounds, scrolling and keyboard detail expansion. Production dependencies
+have no reported npm audit vulnerabilities; the full audit reports a high source-map-js development
+advisory, not changed here. No backend changes, production actions or staging deploy in this update.
+
+## Shortlist table follow-up (PR #162)
+
+Owner-requested replacement of the stacked comparison cards: one semantic table row per player,
+shared metric/gameweek headers, separate club and GK/DEF/MID/FWD columns, and a name button
+opening an inline detail card. The club/long-position/season subtitle is removed; season and
+capture evidence remain in the detail card. Mobile uses horizontal table scrolling with a sticky
+player column, not compressed/overlapping values. Unknown fixture evidence remains n/a beside
+known blanks and doubles. Membership, comparison reads and backend contracts are unchanged.
+
+A table/expansion regression failed against the old cards before implementation. All 16 focused
+frontend page/provider tests pass, including removal while comparison remains unavailable (review
+F4). Lint, format, TypeScript/Vite and contrast checks pass; the existing large-bundle warning
+remains. Isolated Chromium with stub data checks 390/1440px light/dark, cell/page overflow and
+keyboard expansion; this is not signed-in live validation. No backend tests were rerun for this
+UI-only change. The earlier PR review does not cover this follow-up.
+
+## Shortlist comparison (2026-10-16; PR #162)
+
+The [reviewed plan](superpowers/plans/2026-10-16-shortlist-comparison.md) extends the existing
+account-owned shortlist with current captured price/availability, season points and points/£m,
+xG/xA/xGI, five editable gameweeks of FPL FDR and existing-model team expected clean sheets.
+Expanded rows show season details, fixture-first recent observations, DefCon and captured
+ownership/set-piece duties. Missing readings/projections stay unavailable; saved old-season IDs
+never attach a new-season player's numbers. Membership/removal remain independent of comparison
+failure. Reads use one repeatable-read transaction, existing RankingMetrics/ClubRates/HorizonFixtures
+and guarded PfsReadSource; no schema, sync, provider or production changes.
+
+One independent plan review corrected the test endpoint; parent implementation review corrected
+current-name display. Final focused verification: 62 backend tests (0 failed/skipped), 14 frontend
+tests, lint, format and build pass. Isolated Chromium validates mobile light/dark, desktop and
+keyboard expansion without page overflow. A 600-player/3000-PFS disposable probe took 304/491 ms
+for 1/20 saved players with constant queryForList count; not a production load guarantee. Vite's
+large-chunk warning remains. [PR #162](https://github.com/quantti/fpl-assistant/pull/162) contains
+code commits `0e1e791`–`fd17c67` and the handoff documentation. Parent reviewed the published PR;
+full exact-head CI, owner merge and live signed-in smoke verification remain separate gates.
+Neither production access nor model calibration was performed.
+
 ## Production importer — verified ACTIVE111 (2026-10-18)
 
 Owner-approved handoff OFF110→ACTIVE111 succeeded at 11:20 UTC on reviewed image

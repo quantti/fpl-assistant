@@ -31,6 +31,7 @@ class ExpectedStatsToolsCrossSeasonTest {
 
     /** Built with the fixed clock rather than autowired; see {@link DataAgeClock}. */
     ExpectedStatsTools tools;
+    @Autowired fi.karivanttinen.fplassistant.teamxg.UnderstatStore understat;
 
     @Autowired
     SeasonResolver seasonResolver;
@@ -40,7 +41,7 @@ class ExpectedStatsToolsCrossSeasonTest {
 
     @BeforeEach
     void buildTools() {
-        tools = new ExpectedStatsTools(jdbc, seasonResolver, DataAgeClock.provider(), names);
+        tools = new ExpectedStatsTools(jdbc, seasonResolver, DataAgeClock.provider(), names, understat);
     }
 
     @Autowired
@@ -122,34 +123,6 @@ class ExpectedStatsToolsCrossSeasonTest {
     /**
      * The same fill for a club. Ashfield played both of this season's seeded fixtures and has
      * fixtures in the populated season too, so asking for four reaches back.
-     */
-    @Test
-    void aTeamsShortCurrentWindowIsAlsoFilledFromLastSeason() {
-        String result = tools.getTeamExpectedGoals(TapasSeed.ASHFIELD, 4);
-
-        assertThat(result).contains("Data source: season " + TapasSeed.POPULATED_SEASON_CODE
-                + " — a COMPLETED PREVIOUS season");
-        assertThat(result).contains("from " + TapasSeed.CURRENT_SEASON_CODE);
-        assertThat(result).contains("from " + TapasSeed.POPULATED_SEASON_CODE);
-        assertThat(result).contains("  " + TapasSeed.CURRENT_SEASON_CODE + " GW101");
-
-        // KAR-9: fixtures and their stored player rows are counted separately, per season.
-        assertThat(result)
-                .containsOnlyOnce("Metric refresh: season " + TapasSeed.CURRENT_SEASON_CODE
-                        + ", returned sample;")
-                .containsOnlyOnce("Metric refresh: season " + TapasSeed.POPULATED_SEASON_CODE
-                        + ", returned sample;")
-                .contains("Stored match coverage: " + TapasSeed.ASHFIELD + ", season " + TapasSeed.CURRENT_SEASON_CODE
-                        + " (2 returned fixtures from 2 stored player rows), known match dates from"
-                        + " 2026-08-15 15:00 UK (25 days ago) to 2026-08-16 15:00 UK (24 days ago).")
-                .contains("Stored match coverage: " + TapasSeed.ASHFIELD + ", season " + TapasSeed.POPULATED_SEASON_CODE
-                        + " (2 returned fixtures from 5 stored player rows), known match dates from"
-                        + " 2025-08-23 15:00 UK (382 days ago) to 2025-08-24 15:00 UK (381 days ago).");
-    }
-
-    /**
-     * A name that belongs to two players in the previous season cannot be bridged: attaching one
-     * of them would put another player's football on this card. Rask is exactly that pair.
      */
     @Test
     void anAmbiguousNameInThePreviousSeasonIsNotFilled() {

@@ -1,14 +1,88 @@
 import { Loader } from '@mantine/core';
+import { Fragment, useId, useState } from 'react';
+import { getCoreRowModel, getSortedRowModel, useReactTable } from '@tanstack/react-table';
+import type { ColumnDef } from '@tanstack/react-table';
 import type { CataloguePlayer, PlayerCatalogue } from '../../types';
 import { type ShortlistPlayer, useShortlist } from '../../shortlist/ShortlistContext';
+import {
+  availability,
+  availabilityBadge,
+  numberText as n,
+  sortMetric,
+} from '../../shortlist/comparison';
+import type { ComparisonRow, MetricSort } from '../../shortlist/comparison';
+import { useComparison } from '../../shortlist/useComparison';
+import ComparisonDetails from './ComparisonDetails';
 import classes from './ShortlistPage.module.css';
+
+type PlayerEntry = { player: ShortlistPlayer; row?: ComparisonRow };
 
 export default function ShortlistPage() {
   const shortlist = useShortlist();
+  const [position, setPosition] = useState('all');
+  const membershipKey = shortlist.players.map((p) => `${p.season}:${p.elementId}`).join(',');
+  const comparison = useComparison(shortlist.loadFailed || shortlist.loading ? '' : membershipKey);
+  const byKey = new Map(
+    comparison.data?.rows.map((row) => [`${row.season}:${row.elementId}`, row]),
+  );
+  const players = shortlist.players
+    .map((player) => ({ player, row: byKey.get(`${player.season}:${player.elementId}`) }))
+    .filter(
+      ({ player, row }) =>
+        position === 'all' || String(row?.market?.position ?? player.elementType) === position,
+    );
+
+  const gameweeks = [
+    ...new Set(
+      comparison.data?.rows.flatMap((row) => row.forecast.weeks.map((week) => week.gameweek)),
+    ),
+  ];
+  gameweeks.sort((a, b) => a - b);
+
+  const columns: ColumnDef<PlayerEntry>[] = [
+    {
+      id: 'name',
+      header: 'Player',
+      accessorFn: ({ player, row }) => displayName(player, row),
+      sortingFn: 'text',
+    },
+    { id: 'club', header: 'Club', enableSorting: false },
+    { id: 'position', header: 'Pos', enableSorting: false },
+    { id: 'status', header: 'Availability', enableSorting: false },
+    ...(['price', 'points', 'value', 'xg', 'xa', 'xgi', 'cs'] as MetricSort[]).map(
+      (metric, index) => ({
+        id: metric,
+        header: ['Price', 'Points', 'Points/£m', 'xG', 'xA', 'xGI', 'Team xCS'][index],
+        accessorFn: ({ row }: PlayerEntry) => sortMetric(row, metric) ?? undefined,
+        sortingFn: 'basic' as const,
+        sortDescFirst: true,
+      }),
+    ),
+    ...gameweeks.map((week) => ({
+      id: `gw${week}`,
+      header: `GW${week}`,
+      enableSorting: false,
+    })),
+    { id: 'actions', header: 'Actions', enableSorting: false },
+  ];
+  const table = useReactTable({
+    autoResetAll: false,
+    data: players,
+    columns,
+    defaultColumn: { sortUndefined: 'last', sortDescFirst: false },
+    initialState: { sorting: [{ id: 'name', desc: false }] },
+    enableSortingRemoval: false,
+    enableMultiSort: false,
+    getCoreRowModel: getCoreRowModel(),
+    getSortedRowModel: getSortedRowModel(),
+  });
 
   return (
     <main className={classes.page}>
-      <h1 className={classes.title}>Shortlist</h1>
+      <header>
+        <h1 className={classes.title}>Shortlist</h1>
+        <p className={classes.note}>Observed season numbers. Five editable gameweeks ahead.</p>
+      </header>
       {shortlist.loading ? (
         <div className={classes.state} role="status" aria-live="polite">
           <Loader size="sm" />
@@ -26,38 +100,283 @@ export default function ShortlistPage() {
           Your shortlist is empty. Add players from assistant answers.
         </p>
       ) : (
-        <ul className={classes.list}>
-          {shortlist.players.map((player) => (
-            <ShortlistRow key={`${player.season}:${player.elementId}`} player={player} />
-          ))}
-        </ul>
+        <>
+          <div className={classes.toolbar}>
+            <label>
+              Position
+              <select value={position} onChange={(event) => setPosition(event.currentTarget.value)}>
+                <option value="all">All positions</option>
+                {[1, 2, 3, 4].map((id) => (
+                  <option key={id} value={id}>
+                    {positionName(id)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <span className={classes.note}>{comparison.data?.horizon}</span>
+          </div>
+          {comparison.loading && (
+            <p className={classes.note} role="status">
+              Loading comparison…
+            </p>
+          )}
+          {comparison.failed && (
+            <div className={classes.state}>
+              <p role="alert">Comparison unavailable. Your saved players can still be removed.</p>
+              <button type="button" className={classes.remove} onClick={comparison.retry}>
+                Retry comparison
+              </button>
+            </div>
+          )}
+          <p className={classes.note}>
+            Player xG / xA / xGI are FPL season totals; xGI = xG + xA. Points/£m uses current
+            captured price, not a forecast. FDR: 1 easiest–5 hardest. n/a = unavailable.
+          </p>
+          <div
+            className={classes.tableScroll}
+            role="region"
+            aria-label="Player comparison table"
+            tabIndex={0}
+          >
+            <table className={classes.table} aria-label="Player comparison">
+              <thead>
+                <tr>
+                  {table.getFlatHeaders().map(({ id, column }) => {
+                    const direction = column.getIsSorted();
+                    const ariaSort = direction
+                      ? ({ asc: 'ascending', desc: 'descending' } as const)[direction]
+                      : undefined;
+                    const indicator = direction ? { asc: ' ↑', desc: ' ↓' }[direction] : ' ↕';
+                    return (
+                      <th key={id} scope="col" aria-sort={ariaSort}>
+                        {column.getCanSort() ? (
+                          <button
+                            type="button"
+                            className={classes.sortHeader}
+                            onClick={column.getToggleSortingHandler()}
+                            aria-describedby={id === 'cs' ? 'team-xcs-legend' : undefined}
+                            title={
+                              id === 'cs'
+                                ? 'Expected club clean sheets, not player points'
+                                : undefined
+                            }
+                          >
+                            {String(column.columnDef.header)}
+                            <span aria-hidden="true">{indicator}</span>
+                          </button>
+                        ) : (
+                          String(column.columnDef.header)
+                        )}
+                      </th>
+                    );
+                  })}
+                </tr>
+              </thead>
+              <tbody>
+                {table.getRowModel().rows.map(({ original: { player, row } }) => (
+                  <ShortlistRow
+                    key={`${player.season}:${player.elementId}`}
+                    player={player}
+                    row={row}
+                    gameweeks={gameweeks}
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p id="team-xcs-legend" className={classes.note}>
+            <strong>Team xCS</strong> = expected club clean sheets from Understat xG/xGA in the
+            displayed gameweeks (1.54 ≈ 1½), not player points; forwards earn no clean-sheet points.
+          </p>
+          {players.length === 0 && (
+            <p className={classes.state}>No saved players in this position.</p>
+          )}
+          {comparison.data && (
+            <details className={classes.details}>
+              <summary>Sources & model limits</summary>
+              <div className={classes.detailBody}>
+                <p className={classes.note}>
+                  FPL data assessed {sourceTime(comparison.data.asOf)}; fixtures captured{' '}
+                  {sourceTime(comparison.data.scheduleCapturedAt)}; player-stat refresh unverified.
+                  Understat team xCS seasons:{' '}
+                  {comparison.data.modelSeasons
+                    ?.map(
+                      (season) =>
+                        `${season.replace('-', '/')} (through ${sampleDate(comparison.data?.modelThrough?.[season])}; captured ${sourceTime(comparison.data?.modelCapturedAt?.[season])})`,
+                    )
+                    .join(' and ') || 'n/a'}
+                  ; uncalibrated team estimate from completed matches, not a player forecast.
+                </p>
+              </div>
+            </details>
+          )}
+        </>
       )}
     </main>
   );
 }
 
-function ShortlistRow({ player }: { player: ShortlistPlayer }) {
+function ShortlistRow({
+  player,
+  row,
+  gameweeks,
+}: {
+  player: ShortlistPlayer;
+  row?: ComparisonRow;
+  gameweeks: number[];
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const detailsId = useId();
   const shortlist = useShortlist();
   const pending = shortlist.isPending(player.season, player.elementId);
-
+  const position = row?.market?.position ?? player.elementType;
+  const name = displayName(player, row);
+  const badge = availabilityBadge(row?.market?.status, row?.market?.chanceOfPlayingNextRound);
+  const xcsReason =
+    row?.forecast.expectedCleanSheets == null
+      ? (row?.forecast.reason ?? 'Understat team model unavailable.')
+      : undefined;
+  const stats = [
+    ['Price', row?.market ? `£${n(row.market.nowCost / 10, 1)}m` : 'n/a'],
+    ['Points', n(row?.totals?.points)],
+    ['Points/£m', n(row?.pointsPerMillion, 1)],
+    ['xG', n(row?.totals?.xg, 2)],
+    ['xA', n(row?.totals?.xa, 2)],
+    ['xGI', n(row?.totals?.xgi, 2)],
+    ['Team xCS', n(row?.forecast.expectedCleanSheets, 2)],
+  ];
   return (
-    <li className={classes.player}>
-      <div className={classes.identity}>
-        <strong>{player.fullName}</strong>
-        <span>
-          {player.teamName} · {positionName(player.elementType)} · {seasonName(player.season)}
-        </span>
-      </div>
-      <button
-        type="button"
-        className={classes.remove}
-        disabled={pending}
-        onClick={() => void shortlist.toggle(catalogueFor(player), cataloguePlayerFor(player))}
-      >
-        {pending ? 'Removing…' : 'Remove'}
-      </button>
-    </li>
+    <Fragment>
+      <tr className={classes.playerRow}>
+        <th scope="row" className={classes.playerCell}>
+          <button
+            type="button"
+            className={classes.playerName}
+            aria-label={`Details for ${name}`}
+            title={name}
+            aria-expanded={expanded}
+            aria-controls={expanded ? detailsId : undefined}
+            onClick={() => setExpanded(!expanded)}
+          >
+            <span aria-hidden="true">{expanded ? '▾' : '▸'}</span> {name}
+          </button>
+        </th>
+        <td>{row?.market?.teamShort ?? player.teamShort}</td>
+        <td>{['GK', 'DEF', 'MID', 'FWD'][position - 1] ?? 'n/a'}</td>
+        <td>
+          <span
+            className={classes.availability}
+            data-status={row?.market?.status ?? 'unknown'}
+            data-flag={badge.flag}
+            title={row?.market?.news ?? undefined}
+          >
+            {badge.label}
+          </span>
+        </td>
+        {stats.map(([label, value]) => (
+          <td
+            key={label}
+            className={label === 'Team xCS' && position <= 2 ? classes.emphasis : classes.number}
+            title={label === 'Team xCS' ? xcsReason : undefined}
+            aria-label={
+              label === 'Team xCS' && xcsReason ? `Team xCS unavailable: ${xcsReason}` : undefined
+            }
+          >
+            {value}
+          </td>
+        ))}
+        {gameweeks.map((gameweek) => {
+          const week = row?.forecast.weeks.find((item) => item.gameweek === gameweek);
+          return (
+            <td key={gameweek}>
+              <div className={classes.week}>
+                {!week && 'n/a'}
+                {week?.fixtures.length === 0 && 'Blank'}
+                {week?.fixtures.map((fixture) => (
+                  <span
+                    key={fixture.id}
+                    className={classes.fixture}
+                    data-fdr={fixture.difficulty}
+                    title={
+                      'Understat team clean-sheet probability: ' +
+                      (fixture.cleanSheetProbability == null
+                        ? 'n/a'
+                        : n(fixture.cleanSheetProbability * 100) + '%')
+                    }
+                  >
+                    {fixture.opponent} ({fixture.home ? 'H' : 'A'})
+                    <small>FDR {fixture.difficulty ?? 'n/a'}</small>
+                  </span>
+                ))}
+              </div>
+            </td>
+          );
+        })}
+        <td>
+          <button
+            type="button"
+            className={classes.remove}
+            disabled={pending}
+            aria-label={`Remove ${name}`}
+            onClick={() => void shortlist.toggle(catalogueFor(player), cataloguePlayerFor(player))}
+          >
+            {pending ? 'Removing…' : 'Remove'}
+          </button>
+        </td>
+      </tr>
+      {expanded && (
+        <tr>
+          <td colSpan={12 + gameweeks.length} className={classes.cardCell}>
+            <section id={detailsId} className={classes.card} aria-label={`${name} details`}>
+              <h2>{name}</h2>
+              <p className={classes.note}>{seasonName(player.season)}</p>
+              {row?.reason && <p className={classes.note}>{row.reason}</p>}
+              {row?.forecast.reason && <p className={classes.note}>{row.forecast.reason}</p>}
+              <p className={classes.note}>
+                {row?.market?.news ?? availability(row?.market?.status)}
+              </p>
+              {row ? (
+                <ComparisonDetails row={row} position={position} />
+              ) : (
+                <p>Comparison unavailable.</p>
+              )}
+            </section>
+          </td>
+        </tr>
+      )}
+    </Fragment>
   );
+}
+
+function sampleDate(value?: string) {
+  const date = new Date(value ?? '');
+  return Number.isNaN(date.getTime())
+    ? 'n/a'
+    : new Intl.DateTimeFormat('en-GB', {
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric',
+        timeZone: 'UTC',
+      }).format(date);
+}
+
+function sourceTime(value?: string | null) {
+  const date = new Date(value ?? '');
+  return Number.isNaN(date.getTime())
+    ? 'n/a'
+    : new Intl.DateTimeFormat('en-GB', {
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        timeZone: 'UTC',
+      }).format(date) + ' UTC';
+}
+
+function displayName(player: ShortlistPlayer, row?: ComparisonRow) {
+  return row?.market?.fullName ?? row?.market?.webName ?? player.fullName;
 }
 
 function catalogueFor(player: ShortlistPlayer): PlayerCatalogue {
