@@ -1,6 +1,6 @@
 # Importer appearance proof for zero/negative fixture stats
 
-**PROGRESS:** Implementation and 89 focused tests verified; independent review/CI/rollout pending. Importer safely OFF110 by owner decision.
+**PROGRESS:** Implementation reviewed, 89 focused tests and PR/master CI passed; image1d105c0 verified ACTIVE111. Run342125 completed667/667 pages; GW1–6 FINALIZED and Kuma recovered UP on18 October. Future recurring/night-capture and inbox delivery observations remain unverified.
 
 ## Observed failure and boundary
 
