@@ -1,6 +1,6 @@
 # GitHub Actions budget: measured use and reduction plan
 
-**PROGRESS:** Task 2/5 done — CI routing and complete removal of the four workloads verified; small pruning, retained-test speedups and final review pending.
+**PROGRESS:** Task 3/5 done — CI routing, four workload deletions and small-test pruning verified; retained-test speedups and final review pending.
 
 ## Goal and scope
 
@@ -348,6 +348,15 @@ reset. Default Docker Desktop was unavailable; the existing `fpl-test-db` was in
 identified on the local daemon at 127.0.0.1:55432. The old `.env.test` port 15432 was refused;
 tests used explicit documented disposable credentials and loopback-pinned dummy AI keys.
 No workload was moved to a manual/tagged task; former combined scale bounds are dropped.
+
+Task 3: removed the seven named low-value cases and their newly unused script/oracle support;
+the four standalone smoke/schema files are gone. Schedule `_test` guards now precede writes
+and cleanup (JUnit teardown can run after a failed setup guard). The retained end-to-end case
+directly asserts notification event/key/category/season/root and detail fixture identity/status,
+then exact-string delivery and persisted DELIVERED state. Solver invariants now use three fixed
+seeds instead of twenty random repetitions. All 67 affected/retained schedule, solver, chat,
+season-guard and end-to-end cases pass locally (0 failed/skipped), with unchanged scoped resource
+limits and disposable loopback DB. This is test pruning, not a fabricated test-first bug fix.
 
 Reproduction sources: GitHub REST run/job/commit/compare/PR-file/artifact/cache metadata, the
 three linked/specified JUnit artifacts, and the checked-in workflows/tests. Raw research JSON,

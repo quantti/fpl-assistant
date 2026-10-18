@@ -18,6 +18,10 @@ all twelve other admission/progress cases remain. Local compilation and 35 retai
 publication and end-to-end cases pass against disposable 127.0.0.1:55432 under a 1536 MiB
 no-swap scope and host-memory stop guard. Full combined-scale resource bounds are deliberately
 no longer checked; the old memory report is marked historical. No manual/tagged workload was added.
+Seven low-value cases and orphaned test-only plumbing are removed; schedule table guards now
+protect setup and cleanup, and notification JSON identity/status remains explicitly checked.
+Three fixed solver seeds replace twenty random repetitions. The 67 affected/retained cases
+pass locally with dummy AI keys and the same guarded disposable DB; no full suite was run.
 
 ## Price strategy — KAR-76 implementation (2026-10-18)
 
