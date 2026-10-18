@@ -100,6 +100,32 @@ class PricePredictionWorkerTest {
     }
 
     @Test
+    void importerPermissionLossDuringFetchLatchesAndRevokesDespiteImmediateRestoration() {
+        environment.setProperty("fpl.owned-sync.mode", "ACTIVE");
+        environment.setProperty("fpl.owned-sync.importer.enabled", "true");
+        environment.setProperty("fpl.owned-sync.cutover-confirmed", "true");
+        environment.setProperty("fpl.owned-sync.playing-season", SEASON);
+        environment.setProperty("fpl.price-prediction.playing-season", SEASON);
+        fetcher = uri -> {
+            calls.incrementAndGet();
+            environment.setProperty("fpl.owned-sync.importer.enabled", "false");
+            return new PricePredictionHttp.Response(200, null, bytes(bootstrap()));
+        };
+        try (var worker = worker()) {
+            clock.now = READ;
+            worker.tick();
+            assertThat(calls).hasValue(1);
+            verify(store, never()).publishForecast(any(), anyString(), any(), any());
+            verify(store).revokeAndDisable();
+            environment.setProperty("fpl.owned-sync.importer.enabled", "true");
+            clock.now = READ.plusSeconds(600);
+            worker.tick();
+            assertThat(calls).hasValue(1);
+            assertThat(worker.status().permitted()).isFalse();
+        }
+    }
+
+    @Test
     void modeChangeDuringRequestPreventsPublicationAndDurablyRevokes() {
         fetcher = uri -> {
             calls.incrementAndGet();
