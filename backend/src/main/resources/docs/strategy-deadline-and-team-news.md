@@ -1,7 +1,7 @@
 ---
 title: FPL Deadline and Team News Management
 kind: reference
-valid_from: 2026-08-21
+valid_from: 2026-10-18
 ---
 
 # FPL Deadline and Team News Management
@@ -34,9 +34,17 @@ Reference document on running the weekly deadline process: where team news comes
 - The community's experience (the "20 minutes a day" thread) is that a serious season runs on far less time than most managers spend: a set-and-forget core plus Friday pressers and a deadline check is enough. The heavy hours — spreadsheets, content, tinkering — are optional, not required.
 - A workable weekly minimum: (1) Friday — scan presser headlines for your 15, react to doubtfuls; (2) before the deadline — confirm the deadline time, set the bench order, pick the captain and vice-captain; (3) after the first kick-off — stop looking. Everything else is marginal gains.
 
+## Price checks versus waiting for team news
+
+Waiting for team news is a useful default, not an unconditional rule. In 2026/27, check the official Price Changes page before the relevant UK midnight if a planned transfer is only just affordable. Use a dated official reading or tool evidence, not past price movement, and name the night it concerns. The Gameweek deadline is not the nightly price-change cutoff.
+
+Compare the target's potential new price with the outgoing player's personal selling price plus the bank. If the outgoing player bought for £5.0m is still sellable for £5.0m, the bank is £1.0m and the target costs £6.0m, a target rise to £6.1m blocks the move. A red signal for an owned player may have no selling-price effect because of profit rounding. Do not infer personal selling prices from public market prices.
+
+Act earlier only if the transfer already makes football sense and losing affordability is worse than the uncertainty from press conferences or intervening matches. If budget headroom or a credible alternative preserves the plan, wait for the better information. State which risk is being accepted; a strong official price signal is not team news or a guaranteed future price. See FPL Price Changes and Team Value for the full value and rounding examples.
+
 ## The discipline
 
 - **Only confirmed transfers and sourced rumours count** — r/FantasyPL's rule is the right one: unsourced team-news gossip is noise.
 - **Late news favours the template.** A highly-owned player is easier to swap at the deadline than a differential; if the news hits late, moving to the consensus pick costs less structure than reaching for a niche one.
 - **Keep a plan B for every pick** so a deadline-day injury costs one transfer, not a wildcard — the same rule as the GW1 draft, applied all season.
-- **Do not book transfers early in the week** when a presser or leak could change the plan; the free transfer is worth more on deadline day than on Monday.
+- **Keep early transfers conditional.** Prefer waiting when a presser or intervening match could change the plan and the move remains affordable. An official price signal threatening an otherwise justified move is a reason to weigh acting earlier, not an automatic command to buy or sell.

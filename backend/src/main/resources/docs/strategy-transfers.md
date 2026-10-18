@@ -1,7 +1,7 @@
 ---
 title: FPL Transfer Strategy
 kind: reference
-valid_from: 2026-08-21
+valid_from: 2026-10-18
 ---
 
 # FPL Transfer Strategy
@@ -34,7 +34,15 @@ Rolling is underrated; banked transfers are the cheapest flexibility in the game
 - **Injury replacement**: confirmed injury to a starter missing multiple GWs → replace immediately. Exception: injured player is benched with adequate cover.
 - **Fixture swings**: bring in the premium whose fixtures turn favourable before a price rise; sell before a difficult run.
 - **Form changes**: sustained underperformance over 4–5 GWs justifies selling. One or two blanks is variance, not a crisis.
-- **Price change management**: buy before a rise if you otherwise cannot afford; sell before a drop to protect squad value. Never let price changes force a transfer you would not otherwise make.
+- **Price change management**: check the official Price Changes signal when a planned move is close to the budget limit. Use the outgoing player's personal selling price, not market price; rounding can mean a fall does not reduce selling proceeds. Price changes can justify earlier timing, not an otherwise unwanted transfer.
+
+## Price changes and transfer timing
+
+For 2026/27, use the official Price Changes page to assess an upcoming rise or fall, not the player's past price trend. An official forecast is useful evidence for timing, not a guarantee or a forecast of football points. Check when it was read and which UK midnight it targets; if dated evidence is unavailable, keep the financial scenario conditional rather than guessing a signal.
+
+For one transfer, available funds are the outgoing player's personal selling price plus money in the bank. Suppose selling proceeds are £5.0m, the bank is £1.0m and the target costs £6.0m: a £0.1m target rise blocks that route. A fall in the outgoing player's market price matters only if it changes the personal selling price; do not count every red signal as money lost.
+
+Make an already justified transfer earlier when avoiding that loss of access outweighs the value of waiting for team news or a midweek match. If the move remains affordable, waiting buys information. Keep or roll when there is no worthwhile upgrade, and do not take a -4 hit solely to protect £0.1m. Price is an affordability constraint, not a conversion rate between money and points. See FPL Price Changes and Team Value for selling-price arithmetic and combined rise/drop examples.
 
 ## Taking hits: when justified
 
