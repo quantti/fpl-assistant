@@ -62,6 +62,8 @@ class CatalogueScheduleWriterIntegrationTest {
         tx = new TransactionTemplate(new DataSourceTransactionManager(dataSource));
         new OwnedSyncSchema(jdbc, OWNED).initialize();
         createCapturedTables();
+        new fi.karivanttinen.fplassistant.schedule.ScheduleSchema(jdbc,
+                CAPTURED.gameweek(), CAPTURED.fixture()).ensureSchema();
         createFailureTables();
         bootstrap = resource("bootstrap-static.json");
         fixtures = resource("fixtures.json");

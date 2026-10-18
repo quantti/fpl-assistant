@@ -59,6 +59,45 @@ then passed, including importer activation/request-limit and forecast lifecycle 
 Independent review, correction PR/full CI and deliberate production arming remain pending.
 Forecasts remain OFF.
 
+## Match status and ranking data (2026-10-18)
+
+The owner approved treating match state as information, not a player-data eligibility gate.
+The incremental compatibility publication now refreshes `fpl_gameweek` and `fpl_fixture`
+from its already-validated source pair inside the existing fenced transaction. Both halves
+carry the same source-read completion time; no additional HTTP request or scheduler is added.
+The independent daily schedule writer stays disabled under ACTIVE to avoid competing writes.
+The owned fixture capture now preserves nullable `finished_provisional`, and `ScheduleSource`
+distinguishes finished, provisionally finished, in-progress and not-started matches.
+
+A new schedule-publication regression failed first (0 captured events, expected 38).
+The first slice passed 37 focused schedule/schema/source/compatibility/writer tests and two
+collector retry/no-op regressions. Atomic capture failure rolls back the core publication too.
+
+Ranking now uses up to ten available current-club player observations, including live and
+provisionally finished matches, rather than requiring every club fixture/player page. Missing
+rows remain unknown, not invented zero-minute appearances; recorded zeroes stay in the sample.
+No usable player rows means unknown individual evidence. A teammate's missing page no longer
+marks the entire comparison incomplete or refuses a squad. Individual `PfsReadSource` receipt,
+physical fingerprint, source-watermark and correction checks remain unchanged, as do availability,
+identity, invalid-minute and horizon checks. The output dates captured match-state counts, warns
+that live/provisional figures can change, and does not claim full league coverage. Prompt/tool
+contracts explicitly forbid turning missing comparison data into an unsupported hold/sell call.
+
+Three new regressions failed first on live rows, provisional full time and missing teammate rows.
+The integrated focused run passed **312 tests across 36 classes, 0 failed/skipped**, using disposable
+`localhost:55432` PostgreSQL, dummy provider keys and a 1536 MiB cgroup/no-swap limit with the host
+memory stop guard. Coverage includes schedule migration/publication/rollback, importer retries,
+ranking, pick/squad consumers, prompts, PFS correction guards, horizon and bounded legacy-writer
+recovery. An expanded run exposed a custom test fixture missing the new capture column; custom
+writer fixtures now run the same schema initializer and the rerun passed. No local full suite,
+live-model evaluation, production write, activation or deployment was performed. Publication
+and hosted verification remain separate gates. After the owner's requested rebase onto master `96caea7`,
+the same focused selection passed **309/309 across 35 classes, 0 failed/skipped** at `83bf85d`;
+the lower count follows master's deliberate test pruning. Runtime code was unchanged by rebase;
+the prompt-test conflict retained master's deletion and this change's new contract assertion.
+Current master policy runs lightweight PR checks and the full retained suite before deployment.
+The owner explicitly authorised PR publication and squash merge after the rebase and green checks.
+
 ## Price strategy — KAR-76 implementation (2026-10-18)
 
 The [price-prediction plan](superpowers/plans/2026-10-18-kar-76-price-predictions.md)

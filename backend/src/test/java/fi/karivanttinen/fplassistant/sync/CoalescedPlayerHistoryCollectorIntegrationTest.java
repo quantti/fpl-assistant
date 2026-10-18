@@ -95,6 +95,8 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
             "fpl_collector_request_attempt_test", "fpl_collector_fixture_test",
             "fpl_collector_pfs_evidence_test", "fpl_collector_slot_test", "fpl_collector_runtime_test",
             "fpl_collector_fixture_dependency_test");
+    private static final CatalogueScheduleTables CAPTURED = new CatalogueScheduleTables(
+            "fpl_collector_daily_test", "fpl_collector_gameweek_test", "fpl_collector_schedule_test");
     private static final int SEASON_ID = 27;
     private static final int KNOWN_PLAYER = 99001;
     private static final int FINAL_PENDING_PLAYER = 99002;
@@ -157,6 +159,8 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         assertThat(season).isEqualTo(new Season(27, "2026-27", LocalDate.of(2026, 8, 21), null));
         new OwnedSyncSchema(jdbc, TABLES).initialize();
         new DefensiveStatsSchema(jdbc).ensureColumns();
+        new fi.karivanttinen.fplassistant.schedule.ScheduleSchema(jdbc,
+                CAPTURED.gameweek(), CAPTURED.fixture()).ensureSchema();
         bootstrap = resource("bootstrap-static.json");
         fixtures = resource("fixtures.json");
         eventThreeLive = resource("event-3-live.json");
@@ -212,6 +216,8 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
     void cleanUp() {
         if (!cleanupAuthorized || jdbc == null) return;
         clearOwnedTables();
+        jdbc.update("DELETE FROM " + CAPTURED.gameweek());
+        jdbc.update("DELETE FROM " + CAPTURED.fixture());
         jdbc.update("DELETE FROM player_fixture_stats WHERE season_id=?", SEASON_ID);
         jdbc.update("DELETE FROM fixture WHERE season_id=?", SEASON_ID);
         jdbc.update("DELETE FROM gameweek WHERE season_id=?", SEASON_ID);
@@ -4697,7 +4703,7 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
                 OwnedSyncStore.Validation.unchecked(), setup.fixtureSource());
         store.validateStagedPayloads(lease, List.of(bootstrapPayload, fixturesPayload),
                 OwnedSyncStore.Validation.valid());
-        new CompatibilityCatalogueWriter(jdbc, clock, store, TABLES)
+        new CompatibilityCatalogueWriter(jdbc, clock, store, TABLES, CAPTURED)
                 .publish(lease, season, bootstrapDocument, fixtureDocument);
         store.completeStaged(lease, store.incrementalSourceInterval(lease), List.of(bootstrapRead, fixturesRead));
     }
@@ -5509,7 +5515,8 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
     }
 
     private CoalescedPlayerHistoryCollector compatibilityCollector(boolean enabled) {
-        CompatibilityCatalogueWriter compatibility = new CompatibilityCatalogueWriter(jdbc, clock, store, TABLES);
+        CompatibilityCatalogueWriter compatibility = new CompatibilityCatalogueWriter(jdbc, clock, store, TABLES,
+                CAPTURED);
         return new CoalescedPlayerHistoryCollector(season, enabled, store, publisher, compatibility, fetch, clock,
                 "compatibility-collector-test");
     }
@@ -5520,7 +5527,7 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         publisher = new IncrementalPlayerFixturePublisher(
                 new IncrementalPfsRepository(targetJdbc, clock, store, TABLES));
         CompatibilityCatalogueWriter compatibility = new CompatibilityCatalogueWriter(targetJdbc, clock,
-                store, TABLES);
+                store, TABLES, CAPTURED);
         return new CoalescedPlayerHistoryCollector(season, enabled, store, publisher, compatibility, fetch, clock,
                 "compatibility-collector-test");
     }
@@ -5546,7 +5553,7 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         long fixturesId = store.stage(lease, Endpoint.fixtures(), fixturesRead,
                 Validation.unchecked(), fixtures);
         store.validateStagedPayloads(lease, List.of(bootstrapId, fixturesId), Validation.valid());
-        new CompatibilityCatalogueWriter(jdbc, clock, store, TABLES)
+        new CompatibilityCatalogueWriter(jdbc, clock, store, TABLES, CAPTURED)
                 .publish(lease, season, bootstrapDocument, fixturesDocument);
         return new StagedCorePair(lease, bootstrapRead, fixturesRead);
     }
