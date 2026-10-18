@@ -1,5 +1,21 @@
 # Status — Phase 1
 
+## Understat review corrections — local, not published
+
+Read-only Sol review of `4f2633a` requested F1/F2 changes. F1 is fixed in `5afc8de`:
+FPL `short_name` codes win before partial club-name search; all 23 supported season-union
+codes round-trip, including CHE, while Manchester remains ambiguous. F2 aligns squad daily
+identities with the Understat K01–K20 fixture identities, seeds unavailable opponents with
+complete FPL sides, and checks all 20 club models plus every defender horizon leg. Changing
+only cached Understat concessions changes the same pinned defender's printed squad xPts,
+while its FPL player metrics stay equal. Player coverage gates were not weakened.
+Both regressions failed against old behavior (CHE ambiguity and zero attached squad models).
+56 focused parser/team-tool/squad/ClubRates/HorizonScorer tests now pass, 0 failed/skipped.
+A row-write test also now checks timestamp change rather than wall-clock monotonicity after
+observing a backward timestamp; the unchanged-squad assertion remains. Memory admission
+refused low-headroom runs; validation resumed only after owner released capacity. No full
+suite, independent re-review, push/deploy, scheduler activation or production collection.
+
 ## Understat consumers — locally verified at `4f2633a`, not published
 
 The consumer migration replaces the RankingMetrics club SUM/MAX/finality bridge
