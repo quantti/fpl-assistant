@@ -95,6 +95,7 @@ public class DailyPriceSchema {
                     penalties_order SMALLINT,
                     direct_fk_order SMALLINT,
                     corners_order SMALLINT,
+                    chance_of_playing_next_round SMALLINT,
                     captured_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     PRIMARY KEY (season, price_date, element_id)
                 )
@@ -128,6 +129,18 @@ public class DailyPriceSchema {
         for (String column : new String[] {"penalties_order", "direct_fk_order", "corners_order"}) {
             jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s SMALLINT"
                     .formatted(tableName, column));
+        }
+
+        // No backfill: today's bootstrap cannot establish a historical playing chance.
+        jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS chance_of_playing_next_round SMALLINT"
+                .formatted(tableName));
+        String chanceCheck = tableName + "_playing_chance_check";
+        if (!Boolean.TRUE.equals(jdbc.queryForObject("""
+                SELECT EXISTS (SELECT 1 FROM pg_constraint
+                    WHERE conrelid = to_regclass(?) AND conname = ?)
+                """, Boolean.class, tableName, chanceCheck))) {
+            jdbc.execute(("ALTER TABLE %s ADD CONSTRAINT %s CHECK "
+                    + "(chance_of_playing_next_round BETWEEN 0 AND 100)").formatted(tableName, chanceCheck));
         }
 
         // Added after the table already existed in production, so CREATE TABLE alone would not

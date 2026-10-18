@@ -11,6 +11,9 @@ import java.util.List;
 import java.util.Map;
 
 import dev.quantti.fplassistant.schedule.ScheduleSource;
+import dev.quantti.fplassistant.schedule.HorizonFixtures;
+import dev.quantti.fplassistant.tools.ClubRates;
+import dev.quantti.fplassistant.tools.SeasonResolver;
 import dev.quantti.fplassistant.testsupport.FictitiousTestData;
 import dev.quantti.fplassistant.testsupport.RankingSeed;
 import dev.quantti.fplassistant.testsupport.TapasSeed;
@@ -78,6 +81,9 @@ class SquadToolsIntegrationTest {
 
     @Autowired
     SquadTools tools;
+    @Autowired CandidatePool pool;
+    @Autowired SeasonResolver seasonResolver;
+    @Autowired dev.quantti.fplassistant.teamxg.UnderstatStore understat;
 
     @Autowired
     ScheduleSource scheduleSource;
@@ -111,6 +117,14 @@ class SquadToolsIntegrationTest {
             }
         }
         insert(STAR_ID, STAR_NAME, STAR_NAME + " Fictitious", 0, 4, 88, 5.0, 1.50);
+        RankingSeed.seedTeamXg(understat, 2026, CAPTURED_AT, FIRST_DEADLINE);
+        // Opponents need identities and complete FPL sides, but no selectable extra players.
+        for (int club = CLUBS.length + 1; club <= 20; club++) {
+            insert(LAST_ID - club, "Identity" + club, "Reserve Player " + club,
+                    club - 1, 4, 45, 0, defaultXg(4));
+            jdbc.update("UPDATE " + dailyTable + " SET status='u' WHERE season=? AND element_id=?",
+                    SEASON, LAST_ID - club);
+        }
     }
 
     @AfterEach
@@ -119,6 +133,7 @@ class SquadToolsIntegrationTest {
             return;
         }
         TapasSeed.ensure(jdbc);
+        jdbc.update("DELETE FROM fpl_understat_capture_test");
         jdbc.update("DELETE FROM player_fixture_stats WHERE season_id = ?"
                 + " AND player_id BETWEEN ? AND ?", SEASON_ID, FIRST_ID, LAST_ID);
         jdbc.update("DELETE FROM player WHERE season_id = ? AND id BETWEEN ? AND ?",
@@ -174,7 +189,8 @@ class SquadToolsIntegrationTest {
                     captured_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, 'a', NULL, ?)
                 """.formatted(dailyTable), SEASON, Date.valueOf(TODAY), elementId, webName,
-                fullName, team, "C%02d".formatted(clubIndex), CLUBS[clubIndex], position, cost,
+                fullName, team, "K%02d".formatted(clubIndex + 1),
+                clubIndex < CLUBS.length ? CLUBS[clubIndex] : "Reserve Club " + (clubIndex + 1), position, cost,
                 ownership, Timestamp.from(CAPTURED_AT));
         jdbc.update("""
                 INSERT INTO player (id, season_id, team_id, first_name, second_name, web_name,
@@ -205,6 +221,42 @@ class SquadToolsIntegrationTest {
     }
 
     @Test
+    void understatClubRatesAttachToTheSquadAndChangeDefenderProjectionWithoutChangingPlayerStats() {
+        var capture = pool.latestCapture().orElseThrow();
+        var metric = seasonResolver.metricSeasons(seasonResolver.resolve());
+        var before = pool.load(capture, metric);
+        assertThat(before.snapshot().clubRates().clubs()).hasSize(20);
+        var defender = before.candidates().stream()
+                .filter(c -> c.elementId() == FIRST_ID + 3).findFirst().orElseThrow();
+        assertThat(defender.mayStart()).isTrue();
+        var horizon = HorizonFixtures.derive(before.snapshot().schedule(), AS_OF, SEASON, 5);
+        var window = horizon.club(defender.teamId());
+        assertThat(window.fixtures()).hasSize(5).allSatisfy(fixture ->
+                assertThat(ClubRates.projectedGoalsAgainst(before.snapshot().clubRates(),
+                        defender.teamId(), fixture.opponentTeamId(), fixture.home())).isPresent());
+        var initial = HorizonScorer.projection(defender, window, before.snapshot().clubRates());
+        assertThat(initial.available()).isTrue();
+        assertThat(tools.buildSquad(defender.webName(), "", "", 100.0, 5, "").lines()
+                .filter(line -> line.contains(defender.webName()) && line.contains("xPts over")))
+                .singleElement().asString().contains(String.format(java.util.Locale.ROOT,
+                        "%.2f xPts over 5 fixtures", initial.optimizerPoints()));
+
+        jdbc.update("UPDATE fpl_understat_match_test SET away_xg=away_xg*3 WHERE home_team='K01'");
+        jdbc.update("UPDATE fpl_understat_match_test SET home_xg=home_xg*3 WHERE away_team='K01'");
+        var after = pool.load(capture, metric);
+        var sameDefender = after.candidates().stream()
+                .filter(c -> c.elementId() == defender.elementId()).findFirst().orElseThrow();
+        assertThat(sameDefender.metrics()).isEqualTo(defender.metrics());
+        var changed = HorizonScorer.projection(sameDefender, window, after.snapshot().clubRates());
+        assertThat(changed.available()).isTrue();
+        assertThat(changed.optimizerPoints()).isLessThan(initial.optimizerPoints());
+        assertThat(tools.buildSquad(defender.webName(), "", "", 100.0, 5, "").lines()
+                .filter(line -> line.contains(defender.webName()) && line.contains("xPts over")))
+                .singleElement().asString().contains(String.format(java.util.Locale.ROOT,
+                        "%.2f xPts over 5 fixtures", changed.optimizerPoints()));
+    }
+
+    @Test
     void aPlainRequestReturnsFifteenRealEligiblePlayersAndComputedEvidence() {
         String output = tools.buildSquad("", "", "", 100.0, 5, "");
 
@@ -212,7 +264,7 @@ class SquadToolsIntegrationTest {
                 .doesNotContain("observed current-club 60+")
                 .contains("Schedule evidence: complete FPL capture")
                 .contains("Comparison coverage: all clubs")
-                .contains("Player comparison population: 97 eligible of 97");
+                .contains("Player comparison population: 97 eligible of 105");
     }
 
     @Test
@@ -333,7 +385,8 @@ class SquadToolsIntegrationTest {
         assertThat(jdbc.update("UPDATE player_fixture_stats"
                 + " SET defensive_contribution = defensive_contribution WHERE season_id = ?"
                 + " AND player_id BETWEEN ? AND ?", SEASON_ID, FIRST_ID, LAST_ID)).isPositive();
-        assertThat(pfsWrite(STAR_ID)).as("the trigger restamps the row").isAfter(pfsWrittenBefore);
+        // A wall clock can move backwards; a row write need not have a monotonic timestamp.
+        assertThat(pfsWrite(STAR_ID)).as("the trigger restamps the row").isNotEqualTo(pfsWrittenBefore);
 
         assertThat(tools.buildSquad("", "", "", 100.0, 5, "")).isEqualTo(before);
         assertThat(before).contains("Captain: " + STAR_NAME, "xPts over", DataAge.RANKING_METRIC_REFRESH);
@@ -384,9 +437,9 @@ class SquadToolsIntegrationTest {
 
     @Test
     void aClubQuotaWrittenAsTheShortNameStillResolves() {
-        String output = tools.buildSquad("", "", "C00:3", 100.0, 5, "");
+        String output = tools.buildSquad("", "", "K01:3", 100.0, 5, "");
 
-        assertThat(output).contains("C00: 3/3").doesNotContain("could not find a club");
+        assertThat(output).contains("K01: 3/3").doesNotContain("could not find a club");
     }
 
     /** Name-resolution refusals carry no data block, so they carry no refresh notice either. */

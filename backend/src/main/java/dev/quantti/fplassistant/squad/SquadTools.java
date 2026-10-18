@@ -37,10 +37,10 @@ import org.springframework.stereotype.Component;
  * claimed a club constraint it had not met, and produced a total that did not match its own
  * table. None of those are prompt failures; they are the wrong tool for the job.
  *
- * <p><b>Provenance is three lines.</b> Prices, clubs, ownership and availability come from the
- * daily capture; metrics come from {@code player_fixture_stats}, which may be a season behind;
+ * <p><b>Provenance separates four sources.</b> Prices, clubs, ownership and availability come from the
+ * daily capture; player metrics come from {@code player_fixture_stats}, which may be a season behind;
  * the fixtures every projection is summed over come from the FPL schedule capture. One banner
- * cannot describe three sources, and a price or a fixture attributed to the wrong season is the
+ * cannot describe those sources or Understat's separate team xG/xGA capture. A price or fixture attributed to the wrong season is the
  * error the provenance convention exists to prevent. The schedule line is a <em>source</em> line,
  * not a second season banner: historical metrics stay labelled historical even when prices and
  * future fixtures are the season being played. This is a documented exception, like
@@ -91,10 +91,9 @@ public class SquadTools implements FplTool {
             a blank removes one. It does not use realised points, observed minutes, 60+ rates or
             expected minutes. A fixture with no published FDR is scored at a neutral 3 and labelled.
             Unknown projections have zero optimiser weight but are printed n/a/unscored, never as
-            a zero forecast. NOT ranked on form. The reply attributes three sources — the daily
-            price capture, the metric season and the FPL schedule capture — and adds the factual
-            evidence note where applicable; the metric season line covers the metrics only, while
-            price and fixtures come from the other two. Relay a refusal as written.
+            a zero forecast. NOT ranked on form. The reply attributes daily prices, the FPL player
+            metric season, FPL schedule and Understat team xG/xGA with separate capture/sample dates.
+            The metric season line covers FPL player metrics only. Relay a refusal as written.
             """)
     public String buildSquad(String mustInclude, String mustExclude, String clubQuota,
                              double budget, int nextN, String formation) {
@@ -232,11 +231,8 @@ public class SquadTools implements FplTool {
             blendNote += " Clean sheets are projected per fixture from club expected-goal rates:"
                     + " the club's expected concession times the opponent's expected scoring"
                     + " rate over the league mean, adjusted for venue."
-                    + (metric.blending()
-                            ? " Club rates blend " + metric.played().code() + " with "
-                                    + metric.previousCode() + " on the same ramp keyed on the"
-                                    + " club's completed fixtures."
-                            : "")
+                    + " Club rates use the separately attributed Understat seasons, with the same"
+                    + " ramp keyed on each club's own completed Understat fixtures."
                     + " FDR scales the attacking term only; a fixture with no club projection"
                     + " contributes no clean sheet and its row is partial.";
 
