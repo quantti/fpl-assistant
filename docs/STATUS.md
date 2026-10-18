@@ -1,5 +1,14 @@
 # Status — Phase 1
 
+## Test audit — first bounded cleanup (2026-10-18; local)
+
+The [source-backed plan](superpowers/plans/2026-10-18-behavior-first-test-audit.md) and
+[first-pass report](diagnostics/2026-10-18-test-audit-first-pass.md) record the bounded audit.
+Owner-approved cleanup removes five duplicated prompt expectations and a disconnected JDBC mock,
+not the invalid-opt-in startup-refusal test. All 15 cases in the three changed classes pass locally;
+no full suite or hosted CI was run. Code commit `83e2413` remains local, with no push or PR.
+Further audit is authorized; further test deletion is not assumed.
+
 ## Actions budget — lightweight PR verification (2026-10-18; local)
 
 Owner-selected policy removes full backend CI from PRs: targeted local tests before push,
