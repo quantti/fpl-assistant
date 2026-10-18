@@ -1,6 +1,26 @@
 # Status — Phase 1
 
-## Importer appearance proof correction (2026-10-18; not deployed)
+## Production importer — verified ACTIVE111 (2026-10-18)
+
+Owner-approved handoff OFF110→ACTIVE111 succeeded at 11:20 UTC on reviewed image
+`1d105c0` (PR #168; PR/master CI and both independent reviews passed). Run342125
+completed at 11:43:16: 667/667 pages newly checked, 677 request admissions, no run error.
+All GW1–6 certificates are FINALIZED; GW7 correctly remains OPEN. The actual assistant
+reader accepts all 120 GW1–6 fixture sides, and the merged Tapas projection accepts
+proved rows. These are proof checks, not assertions from physical row counts alone.
+
+At 11:46 the watchdog recovered the remaining incidents; importer health returned 200/UP.
+Plex Kuma20 recorded DOWN→UP at 11:46:28 and another UP at 11:47:29; public monitor19
+stayed UP. Both remain active on existing SMTP notification1. One 1024 MiB Fly machine
+remains. Daily price/schedule jobs are enabled; handoff, legacy DefCon and startup-price
+are disabled. The rolling 6,000-request ledger was retained, never reset. Legacy fixture
+WAITING_STATS counters are not the new finality authority; do not restart the old verifier.
+
+[Cutover evidence](IMPORTER-CUTOVER-2026-10-17.md) separates the failed attempts, corrections
+and successful attended cycle. Future hourly/no-op/night-capture runs, sustained load and
+SMTP inbox receipt are not yet verified. Kuma monitoring continues independently.
+
+## Importer appearance proof correction (2026-10-18; implementation record)
 
 PR #167's reviewed deployment completed run342123: 667/667 player pages, 4,550 VALID PFS
 pointers and GW5 FINALIZED. GW1–4/GW6 still refused finality because fixture-stats is not
@@ -23,15 +43,15 @@ Both BPS0/-1 regressions failed against the old code; an omitted-player integrat
 also stayed RETRY_SCHEDULED instead of finalizing on its second cycle. After correction,
 89 focused tests pass (64 collector integration, 25 fixture verification), including strict
 side-proof negatives, cold pending→finalized, actual reader-side coverage and failure cleanup.
-Independent review, full PR/master CI and a fresh guarded activation remain required.
+Both independent reviews and PR/master CI passed; the guarded production result is recorded above.
 
-## Importer cold-start receipt batching (2026-10-17; rollout pending)
+## Importer cold-start receipt batching (2026-10-17; implementation record)
 
 The first authorised handoff reached ACTIVE epoch 107, but run 342122 failed before its
 first player page/PFS pointer. It had recorded 2,003 live-player receipts and 2,007 participant
 receipts; the population transaction then timed out. The importer was retired to OFF epoch 108,
 with no active jobs/unresolved permits; legacy was not restarted. Nine request admissions,
-not the 6,000-attempt cap, separated this attempt from its preflight. Importer health stays DOWN.
+not the 6,000-attempt cap, separated this attempt from its preflight. Health remained DOWN at that rollback.
 
 `recordIncrementalPopulation` repeated participant upserts individually while holding the runtime
 fence lock. Live-event participant/appearance writes had the same per-row pattern. Fast local SQL
