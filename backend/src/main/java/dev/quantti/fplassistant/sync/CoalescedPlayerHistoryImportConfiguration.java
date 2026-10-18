@@ -8,6 +8,7 @@ import java.util.Locale;
 import java.util.UUID;
 
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
@@ -71,7 +72,10 @@ public class CoalescedPlayerHistoryImportConfiguration {
     CoalescedPlayerHistoryCollector ownedImporterCollector(
             @Qualifier("ownedSyncWorkDatabase") OwnedSyncMonitoringDatabase workDatabase,
             OwnedSyncHttpClient http, ImporterActivation activation, OwnedSyncTables tables,
-            OwnedSyncStore.RuntimeFence ownedImporterFence) {
+            OwnedSyncStore.RuntimeFence ownedImporterFence,
+            @Value("${fpl.daily-price.table-name}") String dailyTable,
+            @Value("${fpl.schedule.gameweek-table-name}") String gameweekTable,
+            @Value("${fpl.schedule.fixture-table-name}") String fixtureTable) {
         JdbcTemplate jdbc = workDatabase.jdbc();
         new IncrementalImporterSchemaPreflight(jdbc, tables).requireReady();
         Clock clock = Clock.systemUTC();
@@ -81,7 +85,7 @@ public class CoalescedPlayerHistoryImportConfiguration {
         IncrementalPlayerFixturePublisher publisher = new IncrementalPlayerFixturePublisher(
                 new IncrementalPfsRepository(jdbc, clock, store, tables));
         CompatibilityCatalogueWriter compatibility = new CompatibilityCatalogueWriter(
-                jdbc, clock, store, tables);
+                jdbc, clock, store, tables, new CatalogueScheduleTables(dailyTable, gameweekTable, fixtureTable));
         return new CoalescedPlayerHistoryCollector(season, true, store, publisher, compatibility,
                 http, clock, instanceId());
     }

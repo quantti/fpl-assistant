@@ -136,9 +136,9 @@ public final class CatalogueScheduleWriter {
                 store.enqueue(SyncKind.FIXTURE_VERIFICATION, season.code(), key, key, read.finishedAt());
             });
             written += writeCoreFixtures(snapshot.fixtures(), publishedAt);
-            written += writeCapturedGameweeks(snapshot.gameweeks(), read.finishedAt());
-            written += writeCapturedFixtures(snapshot.fixtures(), read.finishedAt());
-            deleteAbsentSchedule(season.code(), snapshot.gameweeks(), snapshot.fixtures());
+            written += writeCapturedGameweeks(jdbc, capturedTables, snapshot.gameweeks(), read.finishedAt());
+            written += writeCapturedFixtures(jdbc, capturedTables, snapshot.fixtures(), read.finishedAt());
+            deleteAbsentSchedule(jdbc, capturedTables, season.code(), snapshot.gameweeks(), snapshot.fixtures());
             return written;
         });
     }
@@ -266,7 +266,8 @@ public final class CatalogueScheduleWriter {
         return CatalogueCompatibilityRows.writeFixtures(jdbc, rows, publicationTime, false).size();
     }
 
-    private int writeCapturedGameweeks(List<GameweekRow> rows, Instant sourceTime) {
+    static int writeCapturedGameweeks(JdbcTemplate jdbc, CatalogueScheduleTables capturedTables,
+                                     List<GameweekRow> rows, Instant sourceTime) {
         String sql = """
                 INSERT INTO %s (season, id, name, deadline_time, finished, data_checked, is_current,
                     is_next, average_entry_score, highest_score, most_captained,
@@ -279,19 +280,20 @@ public final class CatalogueScheduleWriter {
                     highest_score=EXCLUDED.highest_score, most_captained=EXCLUDED.most_captained,
                     most_transferred_in=EXCLUDED.most_transferred_in, captured_at=EXCLUDED.captured_at
                 """.formatted(capturedTables.gameweek());
-        return batch(sql, rows.stream().map(row -> new Object[]{row.seasonCode(), row.id(), row.name(),
+        return batch(jdbc, sql, rows.stream().map(row -> new Object[]{row.seasonCode(), row.id(), row.name(),
                 timestamp(row.deadline()), row.finished(), row.dataChecked(), row.current(), row.next(),
                 field(row.fields(), "average_entry_score"), field(row.fields(), "highest_score"),
                 field(row.fields(), "most_captained"), field(row.fields(), "most_transferred_in"),
                 timestamp(sourceTime)}).toList());
     }
 
-    private int writeCapturedFixtures(List<FixtureRow> rows, Instant sourceTime) {
+    static int writeCapturedFixtures(JdbcTemplate jdbc, CatalogueScheduleTables capturedTables,
+                                    List<FixtureRow> rows, Instant sourceTime) {
         String sql = """
                 INSERT INTO %s (season, id, gameweek, team_h, team_a, team_h_name, team_h_short,
                     team_a_name, team_a_short, team_h_difficulty, team_a_difficulty, kickoff_time,
-                    started, finished, team_h_score, team_a_score, captured_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    started, finished, team_h_score, team_a_score, captured_at, finished_provisional)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (season, id) DO UPDATE SET gameweek=EXCLUDED.gameweek,
                     team_h=EXCLUDED.team_h, team_a=EXCLUDED.team_a,
                     team_h_name=EXCLUDED.team_h_name, team_h_short=EXCLUDED.team_h_short,
@@ -299,29 +301,32 @@ public final class CatalogueScheduleWriter {
                     team_h_difficulty=EXCLUDED.team_h_difficulty,
                     team_a_difficulty=EXCLUDED.team_a_difficulty, kickoff_time=EXCLUDED.kickoff_time,
                     started=EXCLUDED.started, finished=EXCLUDED.finished,
+                    finished_provisional=EXCLUDED.finished_provisional,
                     team_h_score=EXCLUDED.team_h_score, team_a_score=EXCLUDED.team_a_score,
                     captured_at=EXCLUDED.captured_at
                 """.formatted(capturedTables.fixture());
-        return batch(sql, rows.stream().map(row -> new Object[]{row.seasonCode(), row.id(), row.gameweek(),
+        return batch(jdbc, sql, rows.stream().map(row -> new Object[]{row.seasonCode(), row.id(), row.gameweek(),
                 row.homeTeamId(), row.awayTeamId(), row.homeTeamName(), row.homeTeamShort(),
                 row.awayTeamName(), row.awayTeamShort(), row.homeDifficulty(), row.awayDifficulty(),
                 timestamp(row.kickoff()), row.started(), row.finished(), row.homeScore(), row.awayScore(),
-                timestamp(sourceTime)}).toList());
+                timestamp(sourceTime), field(row.fields(), "finished_provisional")}).toList());
     }
 
     private void deleteAbsentDailyPrices(String season, LocalDate day, List<DailyPriceRow> rows) {
-        deleteAbsent(capturedTables.dailyPrice(), "season = ? AND price_date = ?", new Object[]{season,
+        deleteAbsent(jdbc, capturedTables.dailyPrice(), "season = ? AND price_date = ?", new Object[]{season,
                 java.sql.Date.valueOf(day)}, "element_id", rows.stream().map(DailyPriceRow::elementId).toArray(Integer[]::new));
     }
 
-    private void deleteAbsentSchedule(String season, List<GameweekRow> gameweeks, List<FixtureRow> fixtures) {
-        deleteAbsent(capturedTables.fixture(), "season = ?", new Object[]{season}, "id",
+    static void deleteAbsentSchedule(JdbcTemplate jdbc, CatalogueScheduleTables capturedTables,
+                                     String season, List<GameweekRow> gameweeks, List<FixtureRow> fixtures) {
+        deleteAbsent(jdbc, capturedTables.fixture(), "season = ?", new Object[]{season}, "id",
                 fixtures.stream().map(FixtureRow::id).toArray(Integer[]::new));
-        deleteAbsent(capturedTables.gameweek(), "season = ?", new Object[]{season}, "id",
+        deleteAbsent(jdbc, capturedTables.gameweek(), "season = ?", new Object[]{season}, "id",
                 gameweeks.stream().map(GameweekRow::id).toArray(Integer[]::new));
     }
 
-    private void deleteAbsent(String table, String predicate, Object[] prefix, String idColumn, Integer[] ids) {
+    private static void deleteAbsent(JdbcTemplate jdbc, String table, String predicate, Object[] prefix,
+                                     String idColumn, Integer[] ids) {
         jdbc.update(connection -> {
             PreparedStatement statement = connection.prepareStatement(
                     "DELETE FROM " + table + " WHERE " + predicate
@@ -335,6 +340,10 @@ public final class CatalogueScheduleWriter {
     }
 
     private int batch(String sql, List<Object[]> rows) {
+        return batch(jdbc, sql, rows);
+    }
+
+    private static int batch(JdbcTemplate jdbc, String sql, List<Object[]> rows) {
         int count = 0;
         for (int value : jdbc.batchUpdate(sql, rows)) count += Math.max(0, value);
         return count;

@@ -43,7 +43,20 @@ public class ScheduleSource {
 
     public record FixtureRow(int id, Integer gameweek, int homeTeamId, int awayTeamId,
                              Instant kickoff, boolean started, boolean finished,
-                             Integer homeDifficulty, Integer awayDifficulty, Instant capturedAt) {
+                             Integer homeDifficulty, Integer awayDifficulty, Instant capturedAt,
+                             Boolean finishedProvisional) {
+        public FixtureRow(int id, Integer gameweek, int homeTeamId, int awayTeamId,
+                          Instant kickoff, boolean started, boolean finished,
+                          Integer homeDifficulty, Integer awayDifficulty, Instant capturedAt) {
+            this(id, gameweek, homeTeamId, awayTeamId, kickoff, started, finished,
+                    homeDifficulty, awayDifficulty, capturedAt, null);
+        }
+
+        public String status() {
+            if (finished) return "Finished";
+            if (Boolean.TRUE.equals(finishedProvisional)) return "Finished (provisional stats)";
+            return started ? "In progress" : "Not started";
+        }
     }
 
     public enum CompletenessReason {
@@ -151,7 +164,7 @@ public class ScheduleSource {
                         instantOf(rs.getObject("captured_at"))), selected.season());
         List<FixtureRow> fixtures = jdbc.query("""
                 SELECT id, gameweek, team_h, team_a, kickoff_time, started, finished,
-                       team_h_difficulty, team_a_difficulty, captured_at
+                       team_h_difficulty, team_a_difficulty, captured_at, finished_provisional
                 FROM %s WHERE season = ? ORDER BY id
                 """.formatted(fixtureTable), (rs, rowNum) -> new FixtureRow(
                         rs.getInt("id"), nullableInteger(rs.getObject("gameweek")),
@@ -160,7 +173,8 @@ public class ScheduleSource {
                         rs.getBoolean("started"), rs.getBoolean("finished"),
                         nullableInteger(rs.getObject("team_h_difficulty")),
                         nullableInteger(rs.getObject("team_a_difficulty")),
-                        instantOf(rs.getObject("captured_at"))), selected.season());
+                        instantOf(rs.getObject("captured_at")),
+                        rs.getObject("finished_provisional", Boolean.class)), selected.season());
         return new View(snapshot, events, fixtures, assess(snapshot, events, fixtures));
     }
 
