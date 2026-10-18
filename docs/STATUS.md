@@ -70,11 +70,28 @@ The owned fixture capture now preserves nullable `finished_provisional`, and `Sc
 distinguishes finished, provisionally finished, in-progress and not-started matches.
 
 A new schedule-publication regression failed first (0 captured events, expected 38).
-37 focused schedule/schema/source/compatibility/writer tests and two collector retry/no-op
-regressions pass on disposable loopback PostgreSQL with the checked-in memory limits.
-Atomic capture failure rolls back the core publication too. The ranking-state gate correction
-is still pending; this first slice alone does not restore player comparison. No production
-write, activation or deployment was performed.
+The first slice passed 37 focused schedule/schema/source/compatibility/writer tests and two
+collector retry/no-op regressions. Atomic capture failure rolls back the core publication too.
+
+Ranking now uses up to ten available current-club player observations, including live and
+provisionally finished matches, rather than requiring every club fixture/player page. Missing
+rows remain unknown, not invented zero-minute appearances; recorded zeroes stay in the sample.
+No usable player rows means unknown individual evidence. A teammate's missing page no longer
+marks the entire comparison incomplete or refuses a squad. Individual `PfsReadSource` receipt,
+physical fingerprint, source-watermark and correction checks remain unchanged, as do availability,
+identity, invalid-minute and horizon checks. The output dates captured match-state counts, warns
+that live/provisional figures can change, and does not claim full league coverage. Prompt/tool
+contracts explicitly forbid turning missing comparison data into an unsupported hold/sell call.
+
+Three new regressions failed first on live rows, provisional full time and missing teammate rows.
+The integrated focused run passed **312 tests across 36 classes, 0 failed/skipped**, using disposable
+`localhost:55432` PostgreSQL, dummy provider keys and a 1536 MiB cgroup/no-swap limit with the host
+memory stop guard. Coverage includes schedule migration/publication/rollback, importer retries,
+ranking, pick/squad consumers, prompts, PFS correction guards, horizon and bounded legacy-writer
+recovery. An expanded run exposed a custom test fixture missing the new capture column; custom
+writer fixtures now run the same schema initializer and the rerun passed. No local full suite,
+live-model evaluation, production write, activation or deployment was performed. Publication
+and full PR CI remain separate gates.
 
 ## Price strategy — KAR-76 implementation (2026-10-18)
 

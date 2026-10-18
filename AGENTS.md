@@ -129,7 +129,7 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
   setting is genuinely needed, use the direct host or the session pooler, never 6543.
 - Player prices stored as integers ×10 (`now_cost=75` = £7.5m). `element_type`: 1=GK, 2=DEF, 3=MID, 4=FWD.
 - External APIs (vaastav CSVs, football-data.org, FPL `bootstrap-static`) are hit only at sync time, never at chat time — everything queries Supabase.
-- **Today's price and today's injury flags come from `fpl_daily_price`, not from the tapas `player` table.** That table is synced weekly by `tapas-fpl-app` and was measured 85 days stale; `fpl_daily_price` is captured daily at 02:00 UK from FPL's own API (prices change at 00:00 UK) and owes tapas nothing, so it also survives the season changeover. It carries `status`/`news` — the availability picture — and `penalties_order`/`direct_fk_order`/`corners_order` — the set-piece picture — alongside `now_cost`. Set-piece duty lives here rather than in the strategy corpus because a written list of takers is written before anyone has taken one, and the first weeks of a season revise it. Dated rows, so it answers *when* a flag appeared; it cannot be backfilled, since FPL publishes only today's state. **The daily-capture tools (`getPriceHistory`, `getPlayerAvailability`, `getFlaggedPlayers`, `getSetPieceTakers`) are a documented exception like `HistoricalTools`: they use `DailyPriceSource.provenance()` (season + capture date) instead of `SeasonContext.provenance()`, because the resolver would attribute changeover-window data to the wrong season. Do not "fix" them back onto `SeasonContext.provenance()`.** **`GameweekTools` and `FixtureTools` are the same kind of exception when a schedule capture exists: they read `fpl_gameweek`/`fpl_fixture` (FPL's own `events` and `/api/fixtures/`, captured daily at 02:10 UK) under `ScheduleSource.provenance()`, and fall back to the tapas tables under `SeasonContext.provenance()` only before the first capture. Gameweek status on the capture path is derived from `deadline_time` against the clock, never from the captured `is_current` flag.** `PickTools` (`getDifferentialPicks`, `getCaptainCandidates`) reads its candidate pool from this table too, beside `SquadTools.buildSquad`: metrics attach by element id while the capture and the resolved season are the same season, and by unique `web_name` when they are not. Note that `element_id` in this table is season-scoped (FPL renumbers every season) — every query keyed on it must also filter on `season`.
+- **Today's price and today's injury flags come from `fpl_daily_price`, not from the tapas `player` table.** That table is synced weekly by `tapas-fpl-app` and was measured 85 days stale; `fpl_daily_price` is captured daily at 02:00 UK from FPL's own API (prices change at 00:00 UK) and owes tapas nothing, so it also survives the season changeover. It carries `status`/`news` — the availability picture — and `penalties_order`/`direct_fk_order`/`corners_order` — the set-piece picture — alongside `now_cost`. Set-piece duty lives here rather than in the strategy corpus because a written list of takers is written before anyone has taken one, and the first weeks of a season revise it. Dated rows, so it answers *when* a flag appeared; it cannot be backfilled, since FPL publishes only today's state. **The daily-capture tools (`getPriceHistory`, `getPlayerAvailability`, `getFlaggedPlayers`, `getSetPieceTakers`) are a documented exception like `HistoricalTools`: they use `DailyPriceSource.provenance()` (season + capture date) instead of `SeasonContext.provenance()`, because the resolver would attribute changeover-window data to the wrong season. Do not "fix" them back onto `SeasonContext.provenance()`.** **`GameweekTools` and `FixtureTools` are the same kind of exception when a schedule capture exists: they read `fpl_gameweek`/`fpl_fixture` (FPL's own `events` and `/api/fixtures/`, captured daily at 02:10 UK outside ACTIVE, or from the existing hourly importer's validated source pair under ACTIVE) under `ScheduleSource.provenance()`, and fall back to the tapas tables under `SeasonContext.provenance()` only before the first capture. Gameweek status on the capture path is derived from `deadline_time` against the clock, never from the captured `is_current` flag.** `PickTools` (`getDifferentialPicks`, `getCaptainCandidates`) reads its candidate pool from this table too, beside `SquadTools.buildSquad`: metrics attach by element id while the capture and the resolved season are the same season, and by unique `web_name` when they are not. Note that `element_id` in this table is season-scoped (FPL renumbers every season) — every query keyed on it must also filter on `season`.
 - **Ranking reads are one coherent snapshot, `RankingMetrics`.** `PickTools` and `CandidatePool`
   load the whole selected daily capture, its current/previous metric evidence and one immutable
   `ScheduleSource.View` inside a read-only `REPEATABLE_READ` transaction; do not reintroduce
@@ -158,13 +158,15 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
   a labelled neutral 3. `PickTools` clamps its request to 1–5 gameweeks, `buildSquad` takes its
   own and both truncate at the season's end and disclose it. There is no bypass, for a pin, a
   budget or a relaxation.
-- **Primary selection uses availability and complete current evidence, `MinutesModel`.** The
-  selected daily capture must be fresh and say `status = 'a'`, with a valid position and club;
-  identity/current club must be coherent across the same-season sources. The latest up-to-ten
-  completed fixtures for that current-club spell must be complete; known zero-minute rows stay in
-  the denominator. Missing/stale/pending/invalid data means abstention. Only a verified
-  different-club observation fences a new spell. Without one, enumerate from season start: a first
-  PFS/daily appearance is not a registration date, and a newcomer may need ten complete fixtures.
+- **Primary selection uses availability and usable player rows, `MinutesModel` (owner correction
+  2026-10-18).** The selected daily capture must be fresh and say `status = 'a'`, with a valid
+  position and club; identity/current club must be coherent across the same-season sources.
+  Use the latest up-to-ten recorded current-club observations, including live and provisionally
+  finished matches. Match status is information, never an admission gate. Missing rows are unknown,
+  not zero; another player's missing data never excludes a whole club. Known zero-minute rows
+  remain in the sample. A verified different-club observation fences the spell. Keep individual
+  source receipts, correction fences and invalid identity/minutes checks; no usable player rows
+  means unknown evidence, not a zero projection.
   **Minutes never exclude a player, alter eligibility, break a tie or alter a recommendation
   score**, including for GKs and DEFs. If any of the last five complete observations is below 60,
   `PickTools` may print a neutral fact with the opponent and minutes; it is not a risk label or
@@ -186,7 +188,7 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
   `exp(-xGA)` on the concession `ClubRates.projectedGoalsAgainst` projects for that club against
   that opponent at that venue (KAR-30), `null` and labelled partial when no club projection
   exists, never the player's season-average xGC. `SeasonBlend` blends ability on the player's own
-  completed current-season fixture count (1:10%, 2:30%, 3:60%, 4:80%, 5–7:90%, 8+:100%), never on
+  recorded current-season fixture count (1:10%, 2:30%, 3:60%, 4:80%, 5–7:90%, 8+:100%), never on
   minutes. Club rates are read inside the same `RankingMetrics` snapshot from direct Understat
   completed-match xG/xGA, not FPL player SUM/MAX. The opponent's xG is that side's xGA; observed
   zero is valid. Explicit canonical club identities bridge to the daily pool, and league constants
@@ -268,7 +270,7 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
   must display `n/a`/unscored, and infeasibility must name the current-evidence rule plus the
   interacting constraints, never imply that budget alone fixes it.
 - **Cross-season weighting is one ramp in one place, `SeasonBlend`.** Ability rates blend the
-  season being played with the previous one on a weight driven by the player's own completed
+  season being played with the previous one on a weight driven by the player's own recorded
   current-season fixtures: 1 → 10%, 2 → 30%, 3 → 60%, 4 → 80%, 5-7 → 90%, 8+ → 100%.
   Evidence counts used by ability/DefCon floors may add, but raw current-evidence eligibility
   above never does. A player with no previous-season record is ranked on this season alone when it

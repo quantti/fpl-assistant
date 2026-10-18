@@ -31,4 +31,16 @@ class WildcardCoveragePromptContractTest {
                 "Budget, pins, formation, club quotas and",
                 "user challenges a specific club's");
     }
+
+    @Test
+    void unfinishedMatchesNeverBlockAvailablePlayerDataOrImplyAHoldRecommendation() throws IOException {
+        assertThat(prompt()).contains(
+                "Match status is information, never an exclusion",
+                "one missing player or fixture must not exclude a whole club",
+                "Live/provisional figures may change",
+                "An unfinished match alone is not a data gap",
+                "Never turn a failed comparison into",
+                "a recommendation to hold or sell a player");
+        assertThat(prompt()).doesNotContain("no missing/invalid minutes or newer unresolved result");
+    }
 }

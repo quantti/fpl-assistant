@@ -69,6 +69,8 @@ class OwnedMatchdayEndToEndIntegrationTest {
         new DefensiveStatsSchema(jdbc).ensureColumns();
         new OwnedSyncSchema(jdbc, TABLES).initialize();
         createCapturedTables();
+        new fi.karivanttinen.fplassistant.schedule.ScheduleSchema(jdbc,
+                CAPTURED.gameweek(), CAPTURED.fixture()).ensureSchema();
         tx = new TransactionTemplate(new DataSourceTransactionManager(dataSource));
     }
 

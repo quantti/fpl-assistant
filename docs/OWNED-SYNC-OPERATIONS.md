@@ -254,9 +254,13 @@ Invalid prerequisites fail startup before collection. Importer startup neither i
 nor changes modes/epochs, but **successful startup can fetch and publish immediately**.
 
 The compatibility writer now conditionally upserts named `team`, `player`, `gameweek` and `fixture`
-columns alongside independently valid PFS page publication. It does not publish `fpl_daily_price`,
-`fpl_gameweek` or `fpl_fixture`; existing daily price/availability and schedule jobs retain their own
-capture times and freshness contracts. My-team and unrelated jobs remain separate. The importer
+columns alongside independently valid PFS page publication. The same guarded transaction now
+refreshes `fpl_gameweek` and `fpl_fixture` from that validated pair, with a shared source-read time
+and `finished_provisional` preserved. No extra source requests are needed. ACTIVE disables the
+independent daily schedule writer. `fpl_daily_price` stays on its existing daily price/availability
+path. My-team and unrelated jobs remain separate. Ranking uses available individual player rows,
+including live/provisionally finished matches; match state and other players' missing rows do not
+block comparison. Source receipts, correction fences and invalid-row checks remain in force. The importer
 records a fenced heartbeat each minute and runs the existing watchdog's importer-specific checks
 every five minutes on separate executors; alert delivery retains its 30-second executor. Importer
 checks omit legacy fixture/capture signals, while existing legacy watchdog behavior is unchanged
