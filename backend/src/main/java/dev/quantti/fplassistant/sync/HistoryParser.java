@@ -35,6 +35,18 @@ public final class HistoryParser {
     private static final DecimalShape EXPECTED = new DecimalShape(5, 2);
     private static final DecimalShape ICT = new DecimalShape(6, 1);
 
+    /** Fields whose absence or invalid type rejects an entire current-season player page. */
+    public static final Set<String> MANDATORY_HISTORY_FIELDS = Set.of(
+            "element", "fixture", "round", "opponent_team", "was_home", "minutes",
+            "total_points", "bonus", "bps", "goals_scored", "assists", "clean_sheets",
+            "goals_conceded", "own_goals", "penalties_saved", "penalties_missed", "saves",
+            "yellow_cards", "red_cards", "starts", "value", "selected", "transfers_in",
+            "transfers_out");
+
+    /** Optional source components are independently tracked by {@link Component} presence bits. */
+    public static final Set<Component> OPTIONAL_HISTORY_COMPONENTS =
+            java.util.Collections.unmodifiableSet(EnumSet.allOf(Component.class));
+
     private HistoryParser() {
     }
 

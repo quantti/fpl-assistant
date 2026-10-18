@@ -13,10 +13,13 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import dev.quantti.fplassistant.sync.CatalogueScheduleParser.FixtureRow;
 import dev.quantti.fplassistant.sync.CatalogueScheduleParser.ReadInterval;
@@ -281,6 +284,129 @@ class FixtureVerificationTest {
     }
 
     @Test
+    void finalityAppearanceEvidenceIgnoresZeroMinuteFixtureAndLiveIdentities() throws Exception {
+        String stats = "[{\"identifier\":\"minutes\",\"h\":[{\"element\":1,\"value\":90},"
+                + "{\"element\":9,\"value\":0}],\"a\":[{\"element\":2,\"value\":90},"
+                + "{\"element\":658,\"value\":0}]}]";
+        Inputs input = inputs(BASE, true, live(player(1, 90, 2, 0), player(2, 90, 3, 0),
+                player(9, 0, 0, 0), player(557, 0, 0, 0), player(658, 0, 0, 0)), List.of(), stats);
+
+        var evidence = FixtureVerification.fixtureEvidenceByFixture(List.of(input.fixture), input.live)
+                .get(input.fixture.id());
+
+        assertThat(evidence.complete()).isTrue();
+        assertThat(evidence.positivePlayerIds()).containsExactlyInAnyOrder(1, 2);
+        assertThat(evidence.appearances()).containsEntry(1,
+                new FixtureVerification.Appearance(FixtureVerification.Side.HOME, 90));
+        assertThat(evidence.appearances()).containsEntry(2,
+                new FixtureVerification.Appearance(FixtureVerification.Side.AWAY, 90));
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {0, -1})
+    void finalityAppearanceEvidenceRetainsPlayedPlayersWithNonpositiveFixtureBps(int bps) {
+        String stats = "[{\"identifier\":\"bps\",\"h\":[{\"element\":1,\"value\":" + bps
+                + "}],\"a\":[{\"element\":2,\"value\":3}]}]";
+        Inputs input = inputs(BASE, true, live(player(1, 90, 2, 0), player(2, 90, 3, 0)),
+                List.of(), stats);
+
+        var evidence = FixtureVerification.fixtureEvidenceByFixture(List.of(input.fixture), input.live)
+                .get(input.fixture.id());
+
+        assertThat(evidence.complete()).isTrue();
+        assertThat(evidence.positivePlayerIds()).containsExactlyInAnyOrder(1, 2);
+        assertThat(evidence.appearances()).containsEntry(1,
+                new FixtureVerification.Appearance(FixtureVerification.Side.HOME, 90));
+    }
+
+    @Test
+    void finalityAppearanceEvidenceAbstainsWhenPositiveLivePlayerHasNoFixtureSide() throws Exception {
+        Inputs input = inputs(BASE, true, live(player(1, 90, 2, 0), player(2, 90, 3, 0),
+                player(3, 45, 1, 0)), List.of(), MANIFEST);
+
+        var evidence = FixtureVerification.fixtureEvidenceByFixture(List.of(input.fixture), input.live)
+                .get(input.fixture.id());
+
+        assertThat(evidence.complete()).isFalse();
+        assertThat(evidence.positivePlayerIds()).containsExactlyInAnyOrder(1, 2, 3);
+        assertThat(evidence.appearances()).doesNotContainKey(3);
+    }
+
+    @Test
+    void provedHistoryOnlyFillsMissingSidesAndNeverCreatesLiveAppearances() {
+        Inputs input = inputs(BASE, true, live(player(1, 90, 2, 0), player(2, 90, 3, 0),
+                player(3, 45, 1, 0), player(4, 0, 0, 0)), List.of(), MANIFEST);
+        var hints = Map.of(input.fixture.id(), Map.of(1, FixtureVerification.Side.AWAY,
+                3, FixtureVerification.Side.HOME, 4, FixtureVerification.Side.AWAY,
+                5, FixtureVerification.Side.AWAY));
+
+        var evidence = FixtureVerification.fixtureEvidenceByFixture(List.of(input.fixture), input.live, hints)
+                .get(input.fixture.id());
+
+        assertThat(evidence.complete()).isTrue();
+        assertThat(evidence.appearances()).containsEntry(1,
+                new FixtureVerification.Appearance(FixtureVerification.Side.HOME, 90));
+        assertThat(evidence.appearances()).containsEntry(3,
+                new FixtureVerification.Appearance(FixtureVerification.Side.HOME, 45));
+        assertThat(evidence.appearances()).doesNotContainKeys(4, 5);
+        Inputs missingLive = inputs(BASE, true, live(player(1, 90, 2, 0)), List.of(), MANIFEST);
+        assertThat(FixtureVerification.fixtureEvidenceByFixture(List.of(missingLive.fixture), missingLive.live,
+                Map.of(missingLive.fixture.id(), Map.of(2, FixtureVerification.Side.AWAY)))
+                .get(missingLive.fixture.id()).complete()).isFalse();
+    }
+
+    @Test
+    void parsedSourceStatsAndLiveRosterMustAgreeBidirectionallyIncludingKnownZeroMinuteRows() throws Exception {
+        byte[] fixtureBytes = resource("fixtures.json");
+        JsonNode fixtureRoot = JSON.readTree(fixtureBytes);
+        // Select the actual captured fixture 29 object, then replace only its fixture-local stats.
+        ObjectNode target = null;
+        for (JsonNode node : fixtureRoot) {
+            if (node.path("id").asInt() == 29) target = (ObjectNode) node;
+        }
+        assertThat(target).isNotNull();
+        target.set("stats", fixtureStats(true, true));
+        SourceDocument bootstrap = new SourceDocument(resource("bootstrap-static.json"), interval(BASE));
+        SourceDocument fixtures = new SourceDocument(JSON.writeValueAsBytes(fixtureRoot), interval(BASE));
+        FixtureRow fixture = CatalogueScheduleParser.parse(SEASON, bootstrap, fixtures).fixtures().stream()
+                .filter(row -> row.id() == 29).findFirst().orElseThrow();
+
+        var inconsistent = FixtureVerification.fixtureEvidenceByFixture(List.of(fixture),
+                liveDocument(15, 10, 26, 0, 40, 90, 2, 0)).get(29);
+        assertThat(inconsistent.complete()).isFalse();
+        assertThat(inconsistent.positivePlayerIds()).containsExactlyInAnyOrder(15, 40);
+
+        target.set("stats", fixtureStats(false, true));
+        fixtures = new SourceDocument(JSON.writeValueAsBytes(fixtureRoot), interval(BASE));
+        fixture = CatalogueScheduleParser.parse(SEASON, bootstrap, fixtures).fixtures().stream()
+                .filter(row -> row.id() == 29).findFirst().orElseThrow();
+        var explainedZeros = FixtureVerification.fixtureEvidenceByFixture(List.of(fixture),
+                liveDocument(15, 10, 26, 0, 40, 90, 2, 0)).get(29);
+        assertThat(explainedZeros.complete()).isTrue();
+        assertThat(explainedZeros.positivePlayerIds()).containsExactlyInAnyOrder(15, 40);
+
+        var unexplainedZero = FixtureVerification.fixtureEvidenceByFixture(List.of(fixture),
+                liveDocument(15, 10, 26, 0, 40, 90)).get(29);
+        assertThat(unexplainedZero.complete()).isFalse();
+    }
+
+    @Test
+    void recordedFixture29StatUnionMatchesPositiveLiveForThatCaptureOnly() throws Exception {
+        byte[] bootstrap = resource("bootstrap-static.json");
+        byte[] fixtures = resource("fixtures.json");
+        ReadInterval read = interval(Instant.parse("2026-09-13T17:45:06Z"));
+        var snapshot = CatalogueScheduleParser.parse(SEASON, new SourceDocument(bootstrap, read),
+                new SourceDocument(fixtures, read));
+        FixtureRow fixture = snapshot.fixtures().stream().filter(row -> row.id() == 29).findFirst().orElseThrow();
+        var evidence = FixtureVerification.fixtureEvidenceByFixture(List.of(fixture),
+                new SourceDocument(resource("event-3-live.json"), read)).get(fixture.id());
+
+        assertThat(evidence.complete()).isTrue();
+        assertThat(evidence.positivePlayerIds())
+                .containsExactlyInAnyOrderElementsOf(FixtureVerification.fixtureStatParticipantIds(fixture));
+    }
+
+    @Test
     void capturedLiveAndCatalogueFixtureStayPendingWhenMostAppearedHistoriesAreAbsent() throws Exception {
         byte[] bootstrap = resource("bootstrap-static.json");
         byte[] fixtures = resource("fixtures.json");
@@ -303,6 +429,38 @@ class FixtureVerificationTest {
         assertThat(result.reasons()).contains(Reason.MISSING_HISTORY,
                 Reason.FIXTURE_STAT_PARTICIPANT_MISSING);
         assertThat(result.observation().fingerprint()).hasSize(64);
+    }
+
+    private static ArrayNode fixtureStats(boolean goalByPlayer26, boolean includeZeroContributor) {
+        ArrayNode stats = JSON.createArrayNode();
+        ObjectNode minutes = stats.addObject();
+        minutes.put("identifier", "minutes");
+        ArrayNode homeMinutes = minutes.putArray("h");
+        homeMinutes.addObject().put("element", 15).put("value", 10);
+        homeMinutes.addObject().put("element", 26).put("value", 0);
+        if (includeZeroContributor) homeMinutes.addObject().put("element", 2).put("value", 0);
+        minutes.putArray("a").addObject().put("element", 40).put("value", 90);
+        ObjectNode goals = stats.addObject();
+        goals.put("identifier", "goals_scored");
+        goals.putArray("h").addObject().put("element", 26).put("value", goalByPlayer26 ? 1 : 0);
+        goals.putArray("a");
+        return stats;
+    }
+
+    private static SourceDocument liveDocument(int... playerMinutes) throws Exception {
+        ObjectNode root = JSON.createObjectNode();
+        ArrayNode elements = root.putArray("elements");
+        for (int i = 0; i < playerMinutes.length; i += 2) {
+            ObjectNode player = elements.addObject();
+            player.put("id", playerMinutes[i]);
+            ObjectNode explanation = player.putArray("explain").addObject();
+            explanation.put("fixture", 29);
+            explanation.putArray("stats").addObject().put("identifier", "minutes")
+                    .put("value", playerMinutes[i + 1]).put("points", playerMinutes[i + 1] >= 60 ? 2 : 1)
+                    .put("points_modification", 0);
+        }
+        Instant started = BASE.plusSeconds(2);
+        return new SourceDocument(JSON.writeValueAsBytes(root), interval(started));
     }
 
     private static Inputs normal(Instant start) throws Exception {

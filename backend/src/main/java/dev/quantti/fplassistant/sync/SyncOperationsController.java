@@ -64,6 +64,38 @@ public final class SyncOperationsController {
         }
     }
 
+    @PostMapping("/ops/sync/importer/handoff")
+    public Map<String, Long> handoffImporter(
+            @RequestHeader(value = OPERATOR_HEADER, required = false) String token,
+            @RequestBody ImporterHandoffRequest request) {
+        requireEnabled(operationsEnabled);
+        requireToken(operatorToken, token);
+        try {
+            return Map.of("runtimeEpoch", operations.handoffImporter(
+                    request.playingSeason(), request.expectedOffEpoch()));
+        } catch (SyncOperations.StaleOperatorRequestException | DataIntegrityViolationException stale) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Importer handoff is fenced or unavailable");
+        } catch (IllegalArgumentException invalid) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, invalid.getMessage());
+        }
+    }
+
+    @PostMapping("/ops/sync/importer/retire")
+    public Map<String, Long> retireImporter(
+            @RequestHeader(value = OPERATOR_HEADER, required = false) String token,
+            @RequestBody ImporterRetireRequest request) {
+        requireEnabled(operationsEnabled);
+        requireToken(operatorToken, token);
+        try {
+            return Map.of("offEpoch", operations.retireImporter(
+                    request.playingSeason(), request.expectedImporterEpoch()));
+        } catch (SyncOperations.StaleOperatorRequestException | DataIntegrityViolationException stale) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Importer rollback is fenced or unavailable");
+        } catch (IllegalArgumentException invalid) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, invalid.getMessage());
+        }
+    }
+
     @PostMapping("/ops/sync/alerts/retry")
     public Map<String, Long> redriveAlert(
             @RequestHeader(value = OPERATOR_HEADER, required = false) String token,
@@ -101,5 +133,7 @@ public final class SyncOperationsController {
     }
 
     public record RetryRequest(long failedGeneration, long expectedRuntimeEpoch) { }
+    public record ImporterHandoffRequest(String playingSeason, long expectedOffEpoch) { }
+    public record ImporterRetireRequest(String playingSeason, long expectedImporterEpoch) { }
     public record AlertRetryRequest(long failedAlertId) { }
 }
