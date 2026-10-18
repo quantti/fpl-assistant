@@ -1,5 +1,30 @@
 # Status — Phase 1
 
+## Team xCS n/a diagnosis (2026-10-18; read-only)
+
+The 2026-10-17 23:16 UTC model probe reproduced MCI 1.5402616728, but its modelThrough contained
+only 2025/26 and its club model covered only the 17 surviving clubs from that archive. ARS-GW10
+and BHA-GW11 lack HUL, NFO-GW8 lacks IPS; COV/HUL/IPS themselves have no archive model. A missing
+leg withholds the full-window total rather than silently summing the other matches.
+
+A further SELECT-only probe confirmed that this is not absent current-season numeric data:
+PfsReadSource exposes all 3,883 current rows as VERIFIED, with no missing xG/xGC, and all 20 clubs
+have six usable finished sides. The actual population guard excludes them: a known appearance
+snapshot makes fixtureSidePopulation label the fixture INCREMENTAL, then matched_positive accepts
+only PROVISIONAL rows backed by incremental-page watermarks. There are zero current-table rows
+and zero incremental-page markers. For fixture 1, both complete rosters expect 16/15 positive
+appearances but match zero. RankingMetrics excludes incomplete incremental sides from club rates,
+so all current-season sides disappear and only 2025/26 remains. This is a publication-path
+compatibility/transition problem; bypassing the population guard is not an accepted fix. A safe
+follow-up must preserve correction floors and complete, source-consistent participant proof.
+
+On the morning of 2026-10-18 (UTC), the latest daily and schedule captures are still dated October 17,
+so the new day's freshness gates are an additional present-time blocker, independent of last
+night's selective n/a. No captures, account writes, session SETs or application startup were run.
+Probes used only readers/SELECTs; a local no-op transaction adapter avoided changing pooler
+session settings. The PostgreSQL probe disables server-prepared statements on the client.
+No backend change, push, deployment or merge was performed for this diagnosis.
+
 ## Local Team xCS legend
 
 Added a visible note below the table explaining that Team xCS is the club's expected clean-sheet
