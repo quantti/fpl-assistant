@@ -29,7 +29,7 @@ public class UnderstatJobs implements ApplicationRunner {
         try {
             log.info("Understat captured {} completed matches", capture());
         } catch (Exception e) {
-            log.error("Understat capture failed; previous stored capture retained", e);
+            log.error("Understat capture failed; failed seasons retained, successful seasons may have updated", e);
         }
     }
 

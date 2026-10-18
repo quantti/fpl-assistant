@@ -34,6 +34,7 @@ const comparison = {
   scheduleCapturedAt: '2026-09-09T01:10:00Z',
   modelSeasons: ['2026-27', '2025-26'],
   modelThrough: { '2026-27': '2026-09-07T15:00:00Z', '2025-26': '2026-05-24T15:00:00Z' },
+  modelCapturedAt: { '2026-27': '2026-09-09T01:20:00Z', '2025-26': '2026-09-09T01:20:00Z' },
   rows: [
     {
       season: '2026-27',
@@ -446,11 +447,14 @@ it('summarises source limits in two sentences with a readable UTC date', async (
   expect(sources?.textContent).toContain('9 Sept 2026, 12:00:00 UTC');
   expect(sources?.textContent).toContain('fixtures captured 9 Sept 2026, 01:10:00 UTC');
   expect(sources?.textContent).toContain(
-    '2026/27 (through 7 Sept 2026) and 2025/26 (through 24 May 2026)',
+    'Understat team xCS seasons: 2026/27 (through 7 Sept 2026; captured 9 Sept 2026, 01:20:00 UTC)',
   );
-  expect(sources?.textContent).toContain('Statistical refresh times are unverified');
+  expect(sources?.textContent).toContain(
+    '2025/26 (through 24 May 2026; captured 9 Sept 2026, 01:20:00 UTC)',
+  );
+  expect(sources?.textContent).toContain('player-stat refresh unverified');
   expect(sources?.textContent).toContain('uncalibrated team estimate');
-  expect(sources?.textContent).toContain('from completed matches with usable data');
+  expect(sources?.textContent).toContain('from completed matches');
   expect(sources?.querySelectorAll('p')).toHaveLength(1);
   expect(sources?.querySelector('p')?.textContent?.match(/\.(?:\s|$)/g)).toHaveLength(2);
   expect(sources?.textContent).not.toContain('2026-09-09T12:00:00Z');
@@ -463,7 +467,12 @@ it('does not replace an unknown model cutoff with the schedule or assessment tim
   );
   await mount(Response.json([stored]));
   const sources = host.querySelector('details');
-  expect(sources?.textContent).toContain('2026/27 (through n/a) and 2025/26 (through n/a)');
+  expect(sources?.textContent).toContain(
+    '2026/27 (through n/a; captured 9 Sept 2026, 01:20:00 UTC)',
+  );
+  expect(sources?.textContent).toContain(
+    '2025/26 (through n/a; captured 9 Sept 2026, 01:20:00 UTC)',
+  );
   expect(sources?.textContent).not.toContain('through 9 Sept 2026');
 });
 
@@ -485,11 +494,50 @@ it.each([undefined, null, 'invalid timestamp'])(
     );
     await mount(Response.json([stored]));
     const sources = host.querySelector('details');
-    expect(sources?.textContent).toContain('fixtures captured n/a; team xCS seasons: n/a');
-    expect(sources?.textContent).toContain('Statistical refresh times are unverified');
+    expect(sources?.textContent).toContain('fixtures captured n/a; player-stat refresh unverified');
+    expect(sources?.textContent).toContain('Understat team xCS seasons: n/a');
     expect(sources?.textContent).not.toContain('Invalid Date');
   },
 );
+
+it('exposes the specific missing-opponent reason without adding row text', async () => {
+  const reason = 'GW8 vs IPS: Understat opponent model unavailable; full-window total withheld.';
+  apiFetchMock.mockImplementation(() =>
+    Promise.resolve(
+      Response.json({
+        ...comparison,
+        rows: [
+          {
+            ...comparison.rows[0],
+            forecast: {
+              ...comparison.rows[0].forecast,
+              expectedCleanSheets: null,
+              reason,
+            },
+          },
+        ],
+      }),
+    ),
+  );
+  await mount(Response.json([stored]));
+  const cell = host.querySelector(':scope td[aria-label^="Team xCS unavailable:"]');
+  expect(cell?.textContent).toBe('n/a');
+  expect(cell?.getAttribute('title')).toBe(reason);
+  expect(cell?.getAttribute('aria-label')).toContain(reason);
+  expect(host.querySelector(':scope tbody > tr')?.textContent).not.toContain('GW8 vs IPS');
+  act(() => host.querySelector<HTMLButtonElement>(':scope button[aria-expanded]')!.click());
+  expect(host.querySelector(':scope section')?.textContent).toContain(reason);
+});
+
+it('does not present archived-only team modelling as current FPL data', async () => {
+  apiFetchMock.mockImplementation(() =>
+    Promise.resolve(Response.json({ ...comparison, modelSeasons: ['2025-26'] })),
+  );
+  await mount(Response.json([stored]));
+  const text = host.querySelector('details')?.textContent;
+  expect(text).toContain('Understat team xCS seasons: 2025/26');
+  expect(text).not.toContain('2026/27');
+});
 
 it('removes a player while comparison remains unavailable', async () => {
   apiFetchMock.mockImplementation(() => Promise.resolve(new Response(null, { status: 503 })));

@@ -1,6 +1,6 @@
 # Use Understat for all team xG/xGA
 
-**PROGRESS:** Task 1/3 done — capture/storage verified locally; consumer migration remains.
+**PROGRESS:** Task 2/3 done — direct team consumers and per-season failure isolation pass focused backend/frontend gates; final App-shell validation/audit closeout remains.
 
 ## Contract
 
@@ -24,8 +24,9 @@ bound HTTP time/body size. Understat datetimes are interpreted as UTC; verify ag
 fixture samples and public client convention, never silently apply the host timezone.
 
 Store only owned `fpl_understat_capture` and `fpl_understat_match` tables, configurable `_test`
-names, RLS, atomic per-capture replacement and capture timestamps. A valid empty capture removes
-old results instead of resurrecting them; a failed fetch/parse preserves the preceding capture.
+names, RLS, atomic per-season replacement and capture timestamps. Update valid seasons even if
+another season's fetch/parse fails; retain the failed season's preceding capture and report an
+operational failure. A valid empty capture removes old results instead of resurrecting them.
 Store exact decimals. One match supplies both teams' xG/xGA, goals and venue/date, so no player
 roster, player histories or incremental finality is required for a team observation.
 

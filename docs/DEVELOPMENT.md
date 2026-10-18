@@ -517,6 +517,41 @@ parser were verified against a real captured response on 2026-08-15 — the chec
 lives in `backend/src/test/resources/football-data-fixtures/` and is proven by
 `FootballDataCapturedResponseTest`.
 
+## Understat team xG/xGA (local migration)
+
+Team models and `getTeamExpectedGoals` use direct Understat match totals; FPL player
+xG/xA/xGI and DefCon remain separate. Understat's home/away xG supplies both teams' xG/xGA.
+The team tool no longer reports summed player xA/xGI. There is no FPL aggregate fallback.
+
+`fpl_understat_capture` and `fpl_understat_match` are owned, RLS-enabled caches. One sync fetches
+`getLeagueData/EPL/{year}` for the playing and preceding seasons: two requests, not one per player.
+Each season is replaced atomically, including withdrawn matches and valid empty captures.
+A season's failed fetch/parse retains that season's previous observations but does not block a
+valid update to the other season; the job still reports the operational failure.
+Capture and latest included match dates are disclosed separately. No external calls at chat time.
+
+`UNDERSTAT_SCHEDULED` defaults to `false`; the optional schedule is 02:20 Europe/London.
+After explicit operational approval, `--sync-understat` performs one capture and exits. It uses
+the database's playing-season identity, not its fallback FPL metric season. Do not run that flag
+against shared Supabase merely to test this feature, or turn on staging's collectors. Initial live
+capture/deployment, permitted provider use and sustained endpoint reliability are still rollout
+checks; a successful public HTTP read is not that approval.
+
+Collection simplification: team xG/xGA no longer depends on player-roster completeness, optional
+player xGC masks or incremental finality. Those proofs remain for player data. This adds two
+Understat league requests, not a claimed net reduction in FPL requests: player histories are still
+needed. Shortlist still shares the full ranking reader; separating its identity/team-only reads
+is a possible follow-up SQL/read-volume simplification, not a collector deletion. Daily FPL prices/availability, FPL deadlines/FDR/schedules, player ability and
+DefCon still have distinct purposes and are not removed. The legacy/incremental proof
+compatibility issue can still affect player eligibility; switching the team provider is not a
+claim that the separate player publication path is repaired. The legacy DefCon scheduler already
+stays off in ACTIVE mode, so do not add a second suppression mechanism. Understat also supplies
+scores, making the current-season football-data result collector a possible separate
+consolidation; keep its existing job and vaastav archives unchanged in this migration.
+
+The implementation and its new consumer regressions require focused verification; test database
+and build/test admission must be coordinated with the owner's other session before running.
+
 ## Price history and enrichment tools (Phase 4)
 
 `fpl_player_price` (current season only) is populated by `StartupPriceSyncRunner`, which

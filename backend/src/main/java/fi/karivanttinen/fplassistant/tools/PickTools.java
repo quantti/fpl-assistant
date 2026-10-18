@@ -35,10 +35,10 @@ import org.springframework.stereotype.Component;
  * window — or a known window with nothing in it — is excluded and counted rather than ranked on
  * an invented zero.
  *
- * <p><b>Three sources, three provenance lines</b> — the shape {@code SquadTools} and the my-team
- * tools already use. The candidate pool (identity, club, price, ownership, availability, news)
+ * <p><b>Separate FPL and team-model provenance</b> — the FPL source lines retain the shape
+ * {@code SquadTools} and the my-team tools use. The candidate pool (identity, club, price, ownership, availability, news)
  * comes from {@code fpl_daily_price} at its latest capture and carries
- * {@link DailyPriceSource#provenance}; the metrics come from {@code player_fixture_stats} and
+ * {@link DailyPriceSource#provenance}; the player metrics come from {@code player_fixture_stats} and
  * carry {@link SeasonContext#provenance()}; the fixture population every Score is totalled over
  * comes from the FPL schedule capture and carries
  * {@link fi.karivanttinen.fplassistant.schedule.ScheduleSource#provenance}. The third line is a
@@ -53,7 +53,9 @@ import org.springframework.stereotype.Component;
  * fall back to the weekly table — a pool built from stale prices is the bug, not a degraded
  * answer.
  *
- * <p>Under the three source lines every reply that read the metrics carries
+ * <p>Understat direct match totals supply the club clean-sheet model and have their own
+ * source/capture/sample line. They do not inherit FPL player coverage or refresh claims.
+ * Under the FPL source lines every reply that read the player metrics carries
  * {@link DataAge#METRIC_REFRESH} (KAR-9): the core-stat sync time of {@code player_fixture_stats}
  * is unknowable, and a factual recent-minutes note dates an observation rather than a metric
  * refresh. It is fixed text — no query, no clock read and no row-write timestamp stands in for
@@ -149,10 +151,10 @@ public class PickTools implements FplTool {
             Ties break on the average FDR of those same fixtures, then ownership. Ability rates
             can blend seasons on the shared ramp; current-role eligibility never does. NOT ranked
             by form. The reply
-            attributes three sources — the daily price capture, the metric season and the FPL
-            schedule capture — and shows the editable gameweek range, any truncation at the end of
-            the season, window evidence, exclusions and partial components. The metric season line
-            covers the metrics only; price and fixtures come from the other two. Use for
+            attributes the daily price capture, FPL player metric season, FPL schedule and
+            Understat team xG/xGA source. It shows the editable gameweek range, season-end
+            truncation, exclusions and partial components. The metric season line covers FPL
+            player metrics only; Understat carries its own seasons and capture/sample dates. Use for
             pick/differential questions with strategy guidance; do not fill an empty list with
             ineligible names. If whole-club comparison evidence is unavailable, the eligible-only
             rows are labelled RESTRICTED COMPARISON POPULATION before the rows; they are not a
@@ -708,7 +710,8 @@ public class PickTools implements FplTool {
                 + " probability and DefCon. Observed minutes, 60+ history and realised points"
                 + " do not alter the ranking. A recent under-60 appearance is a factual note on"
                 + " that player's row only. A fixture with no club projection is n/a and its row"
-                + " is partial.\n");
+                + " is partial. Club rates use Understat and the shared ramp keyed on each club's"
+                + " own completed Understat matches, independently of player evidence.\n");
         if (metric.blending()) {
             out.append("Ability rates follow the one player-specific ramp: 1 complete current"
                     + " fixture 10%, 2: 30%, 3: 60%, 4: 80%, 5-7: 90%, 8+: 100%.\n");

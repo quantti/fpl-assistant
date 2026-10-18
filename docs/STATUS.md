@@ -1,17 +1,48 @@
 # Status — Phase 1
 
+## Understat consumers — locally verified, final shell check pending
+
+The consumer migration replaces the RankingMetrics club SUM/MAX/finality bridge
+with one Understat aggregation inside the existing read snapshot. Player publication/evidence
+checks are unchanged. `getTeamExpectedGoals` now reads direct team xG/xGA and scores; its
+player-summed xA/xGI path and team-only helpers are removed. New source/provenance/sample/capture
+metadata and per-cell n/a explanations are implemented without changing row CSS. PFS-team tests are
+replaced by direct-source coverage; player and collector participant-proof assertions remain.
+
+Owner released the test database/backend slot before validation resumed. Guarded sequential
+focused runs now pass: 101 core/source/player/shortlist tests together (0 failed/skipped),
+73 pick/squad/ClubRates/HorizonScorer tests, 22 tests covering PFS proof and two touched collector methods,
+and the connected prompt/DataAge checks. Frontend: 61 tests, lint, format and TypeScript/Vite pass.
+The full-App shell browser check remains pending. No local full suite was run. Initial connected
+failures exposed a test fixture leaving UX-2026 captures behind; explicit cleanup fixed isolation.
+Pick fixtures now supply unavailable daily identities for all opponents instead of assuming their
+FPL ids can be guessed from Understat. No production fallback was added to satisfy synthetic tests.
+The 600-player/3000-PFS probe reports 17 queryForList calls for both 1 and 20 saved players,
+279/240ms in this run: bounded synthetic evidence, not a load guarantee. Pre-existing unused
+collector helpers found during the static audit were left unchanged.
+
+Collection audit: direct team totals remove the need to assemble player populations for team
+xG/xGA, but FPL histories are still needed for player ability/DefCon/evidence. Total FPL HTTP
+requests are not claimed to decrease; Understat adds two league fetches. A failed archive refresh
+must not block a valid current-season refresh: sync retains the failed season and reports
+the failure while committing successful seasons atomically. Existing daily prices, schedule,
+legacy DefCon suppression in ACTIVE mode and historical archives remain. Possible follow-ups:
+remove unnecessary full player reads from shortlist, consolidate current-season historical scores
+from Understat instead of football-data, and address any separate player proof compatibility gap.
+No unrelated collector was disabled, no production capture or remote publication was performed.
+
 ## Understat team metrics — storage slice (local)
 
 Owner selected Understat for all team xG/xGA and the team-stat tool, removing team-only player
 xA/xGI sums while retaining FPL player metrics. [Migration plan](superpowers/plans/2026-10-18-understat-team-xg.md)
-supersedes the proposed team-model verification compatibility repair. Consumer migration is still
-pending; this storage slice alone does NOT switch ClubRates or the team tool.
+supersedes the proposed team-model verification compatibility repair. At storage commit `b1a832e`,
+consumer migration was pending; that slice alone did NOT switch ClubRates or the team tool.
 
 Direct league capture uses two requests (playing/previous season), exact decimal team totals,
 strict identities/season/result parsing, gzip/size/time bounds and atomic owned-cache replacement.
 Known zeroes remain zero; missing fields fail the capture, valid empty captures remove withdrawn
-results, older captures cannot overwrite newer, and either season's failure preserves both old
-captures. `--sync-understat` is explicit; daily 02:20 UK collection defaults OFF.
+results and older captures cannot overwrite newer. The later consumer slice isolates failures
+per season rather than holding both seasons back. `--sync-understat` is explicit; daily 02:20 UK collection defaults OFF.
 19 focused tests pass after parser/client/store/sync RED cases, including disposable PostgreSQL
 rollback/correction tests. The actual Java HTTP client/parser also fetched 65 current-season
 results from the public endpoint without database access. Stored research samples match FPL UTC

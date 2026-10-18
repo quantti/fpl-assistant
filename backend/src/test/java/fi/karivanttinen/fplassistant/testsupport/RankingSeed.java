@@ -97,6 +97,20 @@ public final class RankingSeed {
                         .toList());
     }
 
+    /** Direct team totals, independent of whatever player rows the test happens to seed. */
+    public static void seedTeamXg(fi.karivanttinen.fplassistant.teamxg.UnderstatStore store,
+                                  int year, Instant capturedAt, Instant firstDeadline) {
+        var matches = fixtures(capturedAt, firstDeadline).stream().filter(f -> f.gameweek() <= 3)
+                .map(f -> new fi.karivanttinen.fplassistant.teamxg.UnderstatParser.Match(f.id(), f.kickoff(),
+                        "K%02d".formatted(f.homeTeamId() - team(1) + 1),
+                        "K%02d".formatted(f.awayTeamId() - team(1) + 1), 1, 1,
+                        java.math.BigDecimal.valueOf(1.2), java.math.BigDecimal.valueOf(1.2))).toList();
+        store.replace(List.of(new fi.karivanttinen.fplassistant.teamxg.UnderstatStore.Capture(
+                        fi.karivanttinen.fplassistant.teamxg.UnderstatParser.season(year), capturedAt, matches),
+                new fi.karivanttinen.fplassistant.teamxg.UnderstatStore.Capture(
+                        fi.karivanttinen.fplassistant.teamxg.UnderstatParser.season(year - 1), capturedAt, List.of())));
+    }
+
     public static void cleanSchedule(JdbcTemplate jdbc, String gameweekTable, String fixtureTable,
                                      String season) {
         jdbc.update("DELETE FROM " + fixtureTable + " WHERE season = ?", season);

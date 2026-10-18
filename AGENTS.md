@@ -15,7 +15,8 @@ Auth (Supabase JWT) + Stripe billing are deferred to the last phase. Build the c
 - **DB:** Supabase PostgreSQL — shared with the `tapas-fpl-app` project (`~/dev/tapas-fpl-app`). FPL stats (players, fixtures, gw stats, ownership, xG/xA) already live there. New tables added by this project, all `fpl_`-prefixed or otherwise unambiguous because the
 schema is shared: `fpl_embeddings`, `pl_match_result`, `fpl_player_price`, `fpl_daily_price`,
 `fpl_user_profile`, `fpl_conversation`, `fpl_message`, `fpl_usage_event`,
-`fpl_invite_redemption`, `fpl_gameweek`, `fpl_fixture`. Never take a generic
+`fpl_invite_redemption`, `fpl_gameweek`, `fpl_fixture`, `fpl_understat_capture`,
+`fpl_understat_match`. Never take a generic
 name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own it first.
 - **LLM provider:** swappable via `SPRING_AI_PROVIDER` env var (`anthropic` application default, `openai` or `google-genai`); production currently uses the billed, API-key Gemini Developer API (`google-genai`), while OpenAI is used only for RAG embeddings. `OPENAI_API_KEY` is therefore required regardless of the chat setting from Phase 2 onward, and its embedding autoconfiguration activates independently of the chat provider. Current privacy/account evidence lives in `docs/PRIVACY-OPERATIONS.md`; do not infer it from provider defaults.
 - **Chat transport:** `POST /api/chat` returns `text/event-stream` (SSE). Frontend reads via `fetch` + `ReadableStream`.
@@ -45,7 +46,7 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
     per player and carry one *season* banner only:** the previous season is named on every pick
     and in the footer, not on a second season `Data source:` line, because a second season banner
     would claim every number below it is last season's and under blending none purely is. That
-    banner sits between two other **source** lines, three in all since KAR-35: above it the daily
+    banner sits between two other **source** lines, three FPL source lines since KAR-35: above it the daily
     capture's `DailyPriceSource.provenance()` for the pool — identity, club, price, ownership,
     availability, `fpl_daily_price` since KAR-32 — and below it the schedule capture's
     `ScheduleSource.provenance()` for the fixture population every horizon expected-points total
@@ -57,7 +58,8 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
     separate `Schedule evidence:` sentence carries the exact capture instant, the `asOf` instant
     it was judged at, the editable gameweek range with any end-of-season truncation, and the
     players the schedule alone removed. Do not fold the schedule line into the banner, and do not
-    turn it into a second season banner. `ExpectedStatsTools` is the
+    turn it into a second season banner. Team xG/xGA additionally carries its own Understat
+    capture/sample line, separate from those FPL sources. `getPlayerExpectedStats` is the
     opposite case and does get a second line — it shows fixtures as rows, fills a short
     current-season window from last season, labels each row with its own season, and the second
     banner therefore describes a labelled block rather than the whole reply.
@@ -168,6 +170,15 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
   `PickTools` may print a neutral fact with the opponent and minutes; it is not a risk label or
   forecast. This evidence is not a calibrated probability or a future-start guarantee; no pin,
   budget or relaxation bypasses the non-minute evidence requirements.
+- **Team xG/xGA uses Understat (owner decision 2026-10-18).** `fpl_understat_capture` and
+  `fpl_understat_match` hold atomic playing/previous-season captures. Reads stay in Supabase;
+  collection is sync-time only and defaults OFF. Resolve the playing year from `SeasonResolver`'s
+  playing-season identity, not its fallback player-metric season. `getTeamExpectedGoals` reports
+  direct xG/xGA and scores, not player-summed xA/xGI; its capture/season provenance replaces the
+  FPL season banner and DataAge notices. Pick/squad/shortlist club projections use this same
+  source with a separate Understat source line. Player FPL xG/xA/xGI, DefCon and publication
+  guards remain unchanged. No silent FPL fallback, no importer activation and no shared-data
+  capture without operational authority. Provider terms/reliability remain rollout checks.
 - **Expected ranking points are full-fixture expected FPL points.**
   `ExpectedPoints.expectedPerFixture` uses a fixed two appearance points, xG/xA ability,
   fixture-specific clean-sheet probability and DefCon action-rate evidence. It does **not** use
@@ -176,11 +187,11 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
   that opponent at that venue (KAR-30), `null` and labelled partial when no club projection
   exists, never the player's season-average xGC. `SeasonBlend` blends ability on the player's own
   completed current-season fixture count (1:10%, 2:30%, 3:60%, 4:80%, 5–7:90%, 8+:100%), never on
-  minutes. Club rates are read inside the same `RankingMetrics` snapshot: team xG is `SUM` over
-  the club's players per side, team xGC is `MAX` (FPL stamps the team figure on every player), an
-  unpopulated side (`xGC = 0`) is excluded, clubs bridge across seasons by unique `short_name` the
-  way players bridge by `web_name`, and the league mean and home/away factors pool both seasons
-  without a ramp. Known zero DefCon is evidence; unavailable components print partial/n/a rather
+  minutes. Club rates are read inside the same `RankingMetrics` snapshot from direct Understat
+  completed-match xG/xGA, not FPL player SUM/MAX. The opponent's xG is that side's xGA; observed
+  zero is valid. Explicit canonical club identities bridge to the daily pool, and league constants
+  include all captured clubs of both seasons without a ramp. FPL player publication/roster gaps
+  do not invalidate independently captured Understat team evidence. Known zero DefCon is evidence; unavailable components print partial/n/a rather
   than zero. Pick lists and `HorizonScorer` total the same expected per-fixture value over the
   club's fixtures in the horizon. Average FDR is a tie-break for picks and scales only the squad's
   attacking term; the clean sheet already carries the opponent, so an FDR multiplier on it would

@@ -1,7 +1,6 @@
 package fi.karivanttinen.fplassistant.teamxg;
 
 import java.time.Clock;
-import java.util.ArrayList;
 import java.util.List;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
@@ -20,14 +19,22 @@ public class UnderstatSyncService {
 
     public int sync(int playingYear) {
         UnderstatParser.season(playingYear);
-        List<UnderstatStore.Capture> captures = new ArrayList<>();
+        int written = 0;
+        RuntimeException failure = null;
         for (int year : new int[]{playingYear - 1, playingYear}) {
-            String body = client.fetch(year);
-            var capturedAt = clock.instant();
-            captures.add(new UnderstatStore.Capture(UnderstatParser.season(year), capturedAt,
-                    UnderstatParser.parse(year, body, capturedAt)));
+            try {
+                String body = client.fetch(year);
+                var capturedAt = clock.instant();
+                var matches = UnderstatParser.parse(year, body, capturedAt);
+                store.replace(List.of(new UnderstatStore.Capture(UnderstatParser.season(year), capturedAt, matches)));
+                written += matches.size();
+            } catch (RuntimeException e) {
+                if (failure == null) failure = e;
+                else if (failure != e) failure.addSuppressed(e);
+            }
         }
-        store.replace(captures);
-        return captures.stream().mapToInt(c -> c.matches().size()).sum();
+        if (failure != null) throw new IllegalStateException(
+                "Understat capture failed for at least one season; failed seasons retained, other seasons may have updated", failure);
+        return written;
     }
 }

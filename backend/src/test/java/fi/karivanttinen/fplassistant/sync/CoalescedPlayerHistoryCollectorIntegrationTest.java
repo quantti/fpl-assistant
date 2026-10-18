@@ -31,7 +31,6 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
@@ -74,18 +73,12 @@ import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.SourceRead;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.SyncKind;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.Validation;
 import fi.karivanttinen.fplassistant.testsupport.TapasSeed;
-import fi.karivanttinen.fplassistant.tools.ExpectedStatsTools;
 import fi.karivanttinen.fplassistant.tools.PfsReadSource;
-import fi.karivanttinen.fplassistant.tools.PlayerNameSearch;
-import fi.karivanttinen.fplassistant.tools.SeasonContext;
-import fi.karivanttinen.fplassistant.tools.SeasonResolver;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.mockito.Mockito;
-import org.springframework.beans.factory.support.StaticListableBeanFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.ConnectionProxy;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
@@ -2586,12 +2579,6 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
                 });
         assertThat(partial.get(new PfsReadSource.FixtureSide(DOUBLE_FIXTURE_ONE, DOUBLE_AWAY_ONE)).complete())
                 .isTrue();
-        ExpectedStatsTools teamStats = collectorTeamStats(reader);
-        String partialTeam = teamStats.getTeamExpectedGoals(capture.fixture().homeTeamName(), 5);
-        assertThat(partialTeam).contains("incomplete positive-appearance evidence",
-                "n/a (incomplete team-side evidence)").doesNotContain("xG 0.10");
-        assertThat(teamStats.getTeamExpectedGoals(capture.fixture().awayTeamName(), 5))
-                .contains("xG 0.25", "(scored 0)");
         Map<String, Object> playerAProof = playerPageProof(DOUBLE_FIXTURE_ONE, 259);
         Map<String, Object> playerAPage = pageWatermark(259);
         int playerAEvidenceCount = playerEvidenceCount(DOUBLE_FIXTURE_ONE, 259);
@@ -2626,11 +2613,6 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.receipt()
                 + " WHERE season=? AND publication_key LIKE ?", Integer.class, season.code(),
                 IncrementalAppearanceReceipt.SNAPSHOT_PREFIX + DOUBLE_FIXTURE_ONE + ":%")).isEqualTo(2);
-        String completeTeam = teamStats.getTeamExpectedGoals(capture.fixture().homeTeamName(), 5);
-        assertThat(completeTeam).contains("xG 1.00", "(scored 1)",
-                        "provisional incremental rows; FPL has not supplied a checked-gameweek final import.")
-                .doesNotContain("incomplete positive-appearance evidence",
-                        "FPL checked; final import completed");
 
         fetch.clearCalls();
         fetch.clearPageOutcomes();
@@ -2795,8 +2777,6 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
                 SEASON_ID, season.code(), "fixture", "season_id", SEASON_ID, Set.of(fixtureId), clock.instant());
         assertThat(complete.get(new PfsReadSource.FixtureSide(fixtureId, DOUBLE_HOME_ONE)).complete()).isTrue();
         assertThat(complete.get(new PfsReadSource.FixtureSide(fixtureId, DOUBLE_AWAY_ONE)).complete()).isTrue();
-        assertThat(collectorTeamStats(reader).getTeamExpectedGoals(capture.fixture().homeTeamName(), 5))
-                .contains("xG 1.00", "(scored 1)", "provisional incremental rows");
         assertThat(jdbc.queryForObject("SELECT data_checked FROM " + TABLES.gameweekStatSync()
                 + " WHERE season_id=? AND gameweek=?", Boolean.class, SEASON_ID,
                 capture.fixture().gameweek())).isFalse();
@@ -4991,19 +4971,6 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         return jdbc.queryForMap("SELECT latest_generation,source_read_started_at,source_read_finished_at,"
                 + "source_pair_fingerprint FROM " + TABLES.receipt()
                 + " WHERE season=? AND publication_key=?", season.code(), key);
-    }
-
-    private ExpectedStatsTools collectorTeamStats(PfsReadSource reader) {
-        SeasonContext context = new SeasonContext(SEASON_ID, season.code(), true,
-                season.code(), season.startsOn());
-        SeasonResolver resolver = Mockito.mock(SeasonResolver.class);
-        Mockito.when(resolver.resolve()).thenReturn(context);
-        Mockito.when(resolver.previousSeason(context)).thenReturn(Optional.empty());
-        var clocks = new StaticListableBeanFactory(Map.of("collectorTestClock", clock))
-                .getBeanProvider(Clock.class);
-        return new ExpectedStatsTools(jdbc, resolver, clocks, reader,
-                Mockito.mock(PlayerNameSearch.class), new GameweekFinalityReader(jdbc, clock, TABLES),
-                new DataSourceTransactionManager(dataSource));
     }
 
     private Map<String, Object> playerPageProof(int fixtureId, int playerId) {

@@ -129,8 +129,8 @@ export default function ShortlistPage() {
             </div>
           )}
           <p className={classes.note}>
-            xG / xA / xGI are season totals; xGI = xG + xA. Points/£m uses current captured price,
-            not a forecast. FDR: 1 easiest–5 hardest. n/a = unavailable.
+            Player xG / xA / xGI are FPL season totals; xGI = xG + xA. Points/£m uses current
+            captured price, not a forecast. FDR: 1 easiest–5 hardest. n/a = unavailable.
           </p>
           <div
             className={classes.tableScroll}
@@ -185,8 +185,8 @@ export default function ShortlistPage() {
             </table>
           </div>
           <p id="team-xcs-legend" className={classes.note}>
-            <strong>Team xCS</strong> = expected club clean sheets in the displayed gameweeks (1.54
-            ≈ 1½), not player points; forwards earn no clean-sheet points.
+            <strong>Team xCS</strong> = expected club clean sheets from Understat xG/xGA in the
+            displayed gameweeks (1.54 ≈ 1½), not player points; forwards earn no clean-sheet points.
           </p>
           {players.length === 0 && (
             <p className={classes.state}>No saved players in this position.</p>
@@ -197,15 +197,15 @@ export default function ShortlistPage() {
               <div className={classes.detailBody}>
                 <p className={classes.note}>
                   FPL data assessed {sourceTime(comparison.data.asOf)}; fixtures captured{' '}
-                  {sourceTime(comparison.data.scheduleCapturedAt)}; team xCS seasons:{' '}
+                  {sourceTime(comparison.data.scheduleCapturedAt)}; player-stat refresh unverified.
+                  Understat team xCS seasons:{' '}
                   {comparison.data.modelSeasons
                     ?.map(
                       (season) =>
-                        `${season.replace('-', '/')} (through ${sampleDate(comparison.data?.modelThrough?.[season])})`,
+                        `${season.replace('-', '/')} (through ${sampleDate(comparison.data?.modelThrough?.[season])}; captured ${sourceTime(comparison.data?.modelCapturedAt?.[season])})`,
                     )
                     .join(' and ') || 'n/a'}
-                  . Statistical refresh times are unverified; team xCS is an uncalibrated team
-                  estimate from completed matches with usable data, not a player forecast.
+                  ; uncalibrated team estimate from completed matches, not a player forecast.
                 </p>
               </div>
             </details>
@@ -232,6 +232,10 @@ function ShortlistRow({
   const position = row?.market?.position ?? player.elementType;
   const name = displayName(player, row);
   const badge = availabilityBadge(row?.market?.status, row?.market?.chanceOfPlayingNextRound);
+  const xcsReason =
+    row?.forecast.expectedCleanSheets == null
+      ? (row?.forecast.reason ?? 'Understat team model unavailable.')
+      : undefined;
   const stats = [
     ['Price', row?.market ? `£${n(row.market.nowCost / 10, 1)}m` : 'n/a'],
     ['Points', n(row?.totals?.points)],
@@ -273,6 +277,10 @@ function ShortlistRow({
           <td
             key={label}
             className={label === 'Team xCS' && position <= 2 ? classes.emphasis : classes.number}
+            title={label === 'Team xCS' ? xcsReason : undefined}
+            aria-label={
+              label === 'Team xCS' && xcsReason ? `Team xCS unavailable: ${xcsReason}` : undefined
+            }
           >
             {value}
           </td>
@@ -290,7 +298,7 @@ function ShortlistRow({
                     className={classes.fixture}
                     data-fdr={fixture.difficulty}
                     title={
-                      'Team clean-sheet probability: ' +
+                      'Understat team clean-sheet probability: ' +
                       (fixture.cleanSheetProbability == null
                         ? 'n/a'
                         : n(fixture.cleanSheetProbability * 100) + '%')

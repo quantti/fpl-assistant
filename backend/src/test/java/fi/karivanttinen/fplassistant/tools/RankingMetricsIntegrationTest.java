@@ -27,9 +27,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
-import fi.karivanttinen.fplassistant.sync.GameweekFinality;
 import fi.karivanttinen.fplassistant.sync.GameweekFinalityReader;
-import fi.karivanttinen.fplassistant.sync.OwnedSyncStore;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -43,7 +41,6 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.PlatformTransactionManager;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.within;
 
 @SpringBootTest
 @ActiveProfiles("test")
@@ -74,6 +71,8 @@ class RankingMetricsIntegrationTest {
     }
 
     @Autowired RankingMetrics metrics;
+    @Autowired fi.karivanttinen.fplassistant.teamxg.UnderstatStore understat;
+    @Autowired GameweekFinalityReader finalityReader;
     @Autowired JdbcTemplate jdbc;
     @Autowired ScheduleSource schedules;
     @Autowired PlatformTransactionManager transactionManager;
@@ -86,6 +85,7 @@ class RankingMetricsIntegrationTest {
     void setUp() {
         TapasSeed.ensure(jdbc);
         cleanUp();
+        jdbc.update("DELETE FROM fpl_understat_capture_test");
         jdbc.update("""
                 INSERT INTO season (id, code, name, start_date, is_current) VALUES
                     (?, ?, 'KAR-31 previous test season', DATE '2025-08-01', false),
@@ -168,7 +168,7 @@ class RankingMetricsIntegrationTest {
     }
 
     @Test
-    void incompleteIncrementalFixtureSideNeverFeedsClubRatesUntilEveryPositivePageArrives() {
+    void playerCoverageWaitsForEveryPositivePageIndependentlyOfTheTeamModel() {
         int club = RankingSeed.team(1);
         seedAverageLeague(2, 1.40, 1.40);
         int fixture = fixtureFor(club, 1);
@@ -217,45 +217,15 @@ class RankingMetricsIntegrationTest {
 
         seedIncrementalRow(PLAYER + 1, fixture, 11);
         RankingMetrics.Snapshot complete = loadWithReader(incrementalReader());
-        ClubRates.ClubRate rate = complete.clubRates().clubs().get(club);
-        assertThat(rate).isNotNull();
-        assertThat(rate.fixturesThisSeason()).isEqualTo(2);
-        assertThat(rate.attack()).isCloseTo(1.30, within(1e-9));
-        assertThat(complete.clubRates().league()).isPresent();
+        assertThat(complete.clubRates().clubs()).isEmpty();
+        assertThat(complete.clubRates().league()).isEmpty();
         assertThat(complete.comparisonCoverage().affectedClubs()).isEmpty();
         assertThat(complete.comparisonCoverage().evidenceStatus())
                 .isEqualTo(ComparisonCoverage.EvidenceStatus.PROVISIONAL);
         assertThat(complete.gameweekFinality()).contains("provisional");
 
-        RankingMetrics comparisonMetrics = new RankingMetrics(jdbc, schedules, transactionManager,
-                clocks, dailyTable, incrementalReader());
-        var completedOnly = comparisonMetrics.loadCompletedComparison(
-                new DailyPriceSource.Capture(SEASON, CAPTURE_DATE),
-                new MetricSeasons(context(), Optional.empty(), 3, 3));
-        assertThat(completedOnly.clubRates().clubs()).doesNotContainKey(club);
-        assertThat(completedOnly.clubRates().league()).isEmpty();
-
-        // Exercise the consumer's FINALIZED branch; receipt validation belongs to the real reader tests.
-        var optional = new java.util.EnumMap<HistoryParser.Component, GameweekFinality.ComponentCoverage>(HistoryParser.Component.class);
-        for (var component : HistoryParser.Component.values()) optional.put(component, new GameweekFinality.ComponentCoverage(1, 1, true));
-        var receipt = new GameweekFinality.FinalReceipt("a".repeat(64), "b".repeat(64), 11,
-                AS_OF.minusSeconds(700), 0, AS_OF.minusSeconds(10),
-                new OwnedSyncStore.SourceRead(AS_OF.minusSeconds(600), AS_OF.minusSeconds(599)), true, optional);
-        GameweekFinalityReader finality = Mockito.mock(GameweekFinalityReader.class);
-        Mockito.when(finality.read(Mockito.eq(SEASON_ID), Mockito.eq(SEASON), Mockito.anySet()))
-                .thenReturn(Map.of(1, new GameweekFinalityReader.Result(1, GameweekFinality.State.FINALIZED,
-                                true, true, true, AS_OF.minusSeconds(700), receipt),
-                        2, new GameweekFinalityReader.Result(2, GameweekFinality.State.FINALIZED,
-                                true, true, true, AS_OF.minusSeconds(700), receipt)));
-        RankingMetrics finalizedMetrics = new RankingMetrics(jdbc, schedules, transactionManager,
-                clocks, dailyTable, incrementalReader(), finality);
-        var finalized = finalizedMetrics.loadCompletedComparison(new DailyPriceSource.Capture(SEASON, CAPTURE_DATE),
-                new MetricSeasons(context(), Optional.empty(), 3, 3));
-        assertThat(finalized.clubRates().clubs().get(club).fixturesThisSeason()).isEqualTo(2);
-        assertThat(finalized.clubRates().league()).isPresent();
-        // The regular ranking contract still permits its receipt-backed provisional evidence.
-        assertThat(loadWithReader(incrementalReader()).clubRates().clubs().get(club)
-                .fixturesThisSeason()).isEqualTo(2);
+        // Player finality stays separate; without an Understat capture there is no team model.
+        assertThat(complete.clubCapturedAt()).isEmpty();
     }
 
     @Test
@@ -293,7 +263,7 @@ class RankingMetricsIntegrationTest {
         PfsReadSource reader = new PfsReadSource(mutatingJdbc, "OFF", SEASON,
                 READER_FIXTURES, READER_EVIDENCE, READER_CURRENT, READER_RECEIPT);
         RankingMetrics atomicMetrics = new RankingMetrics(mutatingJdbc, schedules, transactionManager,
-                clocks, dailyTable, reader);
+                clocks, dailyTable, reader, finalityReader, understat);
 
         RankingMetrics.Snapshot first = atomicMetrics.load(new DailyPriceSource.Capture(SEASON, CAPTURE_DATE),
                 new MetricSeasons(context(), Optional.empty(), 3, 3));
@@ -827,128 +797,6 @@ class RankingMetricsIntegrationTest {
                 club, gameweek);
     }
 
-    @Test
-    void clubSidesSumTheirPlayersAttackAndReadTheTeamConcessionOnce() {
-        int club = RankingSeed.team(1);
-        seedAverageLeague(2, 1.40, 1.40);
-        List<Integer> fixtures = List.of(fixtureFor(club, 1), fixtureFor(club, 2));
-        // A second player of the same club in the same two fixtures: xG adds, xGC does not.
-        seedDaily(PLAYER, "Second", club, 2, "a", CAPTURE_DATE, CAPTURED_AT);
-        for (int fixture : fixtures) {
-            seedPfs(PLAYER, fixture, 90, club, club, null);
-            jdbc.update("UPDATE player_fixture_stats SET expected_goals = 0.60,"
-                            + " expected_goals_conceded = 1.40"
-                            + " WHERE season_id = ? AND player_id = ? AND fixture_id = ?",
-                    SEASON_ID, PLAYER, fixture);
-        }
-
-        ClubRates.Rates rates = load(CAPTURE_DATE).clubRates();
-        ClubRates.ClubRate rate = rates.clubs().get(club);
-
-        assertThat(rate.fixturesThisSeason()).isEqualTo(2);
-        assertThat(rate.attack()).isCloseTo(2.00, within(1e-9));        // 1.40 ghost + 0.60
-        assertThat(rate.defence()).isCloseTo(1.40, within(1e-9));       // MAX, not 2.80
-        assertThat(rates.league()).isPresent();
-        assertThat(rates.league().orElseThrow().sides()).isEqualTo(40);
-    }
-
-    @Test
-    void clubSidesStopAtTheSnapshotInstantAndAtUnpopulatedConcession() {
-        int club = RankingSeed.team(1);
-        seedAverageLeague(3, 1.40, 1.40);
-        List<Integer> fixtures = List.of(fixtureFor(club, 1), fixtureFor(club, 2),
-                fixtureFor(club, 3));
-        // Third fixture finished but dated after asOf: not this snapshot's evidence.
-        finishFixture(fixtures.get(2), AS_OF.plus(1, ChronoUnit.DAYS));
-        // Second fixture's team concession never written: the side is unpopulated, not perfect.
-        jdbc.update("UPDATE player_fixture_stats SET expected_goals_conceded = 0"
-                        + " WHERE season_id = ? AND fixture_id = ? AND was_home = ?",
-                SEASON_ID, fixtures.get(1), fixtureInvolvesAsHome(fixtures.get(1), club));
-
-        ClubRates.ClubRate rate = load(CAPTURE_DATE).clubRates().clubs().get(club);
-
-        assertThat(rate).isNull();   // one usable side is under the two-side floor
-    }
-
-    private boolean fixtureInvolvesAsHome(int fixtureId, int club) {
-        Integer home = jdbc.queryForObject("SELECT team_h FROM " + fixtureTable
-                + " WHERE season = ? AND id = ?", Integer.class, SEASON, fixtureId);
-        return home != null && home == club;
-    }
-
-    @Test
-    void previousSeasonClubSidesBridgeByShortNameAndRampOnTheClubsOwnFixtures() {
-        int club = RankingSeed.team(1);
-        seedAverageLeague(2, 1.40, 1.40);
-        seedDaily(PLAYER, "Bridged", club, 2, "a", CAPTURE_DATE, CAPTURED_AT);
-        // The capture stamps every club 'K31'; give last season one club with that short name
-        // and 38 sides, plus a spare with another name that must not attach.
-        jdbc.update("""
-                INSERT INTO team (id, season_id, code, name, short_name, strength) VALUES
-                    (9861, ?, 9861, 'Prior Same Name', 'K31', 3),
-                    (9862, ?, 9862, 'Prior Other', 'PRO', 3),
-                    (9863, ?, 9863, 'Prior Relegated', 'ZZZ', 3)
-                """, PREVIOUS_SEASON_ID, PREVIOUS_SEASON_ID, PREVIOUS_SEASON_ID);
-        for (int index = 0; index < 38; index++) {
-            int fixture = 986_100 + index;
-            boolean home = index % 2 == 0;
-            Instant kickoff = Instant.parse("2025-08-01T12:00:00Z").plus(index, ChronoUnit.DAYS);
-            jdbc.update("""
-                    INSERT INTO fixture (id, season_id, gameweek, code, team_h, team_a,
-                                         kickoff_time, started, finished)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, true, true)
-                    """, fixture, PREVIOUS_SEASON_ID, index + 1, fixture,
-                    home ? 9861 : 9862, home ? 9862 : 9861, Timestamp.from(kickoff));
-            jdbc.update("""
-                    INSERT INTO player_fixture_stats (
-                        fixture_id, player_id, season_id, gameweek, player_team_id,
-                        opponent_team_id, was_home, kickoff_time, minutes, total_points,
-                        expected_goals, expected_assists, expected_goals_conceded, value, starts)
-                    VALUES (?, ?, ?, ?, 9861, 9862, ?, ?, 90, 4, 1.00, 0.10, 2.00, 50, 1)
-                    """, fixture, GHOST_BASE + 1, PREVIOUS_SEASON_ID, index + 1, home,
-                    Timestamp.from(kickoff));
-        }
-
-        // A relegated club: it bridges to nothing, so it carries no rate — but its sides still
-        // belong to the league the surviving clubs are measured against.
-        for (int index = 0; index < 2; index++) {
-            int fixture = 986_300 + index;
-            boolean home = index % 2 == 0;
-            Instant kickoff = Instant.parse("2025-08-01T12:00:00Z").plus(index, ChronoUnit.DAYS);
-            jdbc.update("""
-                    INSERT INTO fixture (id, season_id, gameweek, code, team_h, team_a,
-                                         kickoff_time, started, finished)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, true, true)
-                    """, fixture, PREVIOUS_SEASON_ID, index + 1, fixture,
-                    home ? 9863 : 9862, home ? 9862 : 9863, Timestamp.from(kickoff));
-            jdbc.update("""
-                    INSERT INTO player_fixture_stats (
-                        fixture_id, player_id, season_id, gameweek, player_team_id,
-                        opponent_team_id, was_home, kickoff_time, minutes, total_points,
-                        expected_goals, expected_assists, expected_goals_conceded, value, starts)
-                    VALUES (?, ?, ?, ?, 9863, 9862, ?, ?, 90, 1, 0.40, 0.05, 2.60, 45, 1)
-                    """, fixture, GHOST_BASE + 2, PREVIOUS_SEASON_ID, index + 1, home,
-                    Timestamp.from(kickoff));
-        }
-
-        ClubRates.ClubRate rate = loadWithPrevious().clubRates().clubs().get(club);
-
-        assertThat(rate.hasPrevious()).isTrue();
-        assertThat(rate.fixturesThisSeason()).isEqualTo(2);
-        assertThat(rate.weight()).isEqualTo(SeasonBlend.weight(2));
-        assertThat(rate.attack()).isCloseTo(0.30 * 1.40 + 0.70 * 1.00, within(1e-9));
-        assertThat(rate.defence()).isCloseTo(0.30 * 1.40 + 0.70 * 2.00, within(1e-9));
-        // No other club has a captured player in this test, so nothing else bridges: club 2
-        // stays on this season alone, which is what an unbridged club must do.
-        assertThat(loadWithPrevious().clubRates().clubs().get(RankingSeed.team(2)).hasPrevious())
-                .isFalse();
-        // The league pools every side of each season, bridged or not: 40 this season, 38 from the
-        // club that bridges and 2 from the relegated one, which itself gets no rate.
-        ClubRates.Rates rates = loadWithPrevious().clubRates();
-        assertThat(rates.league().orElseThrow().sides()).isEqualTo(40 + 38 + 2);
-        assertThat(rates.clubs()).doesNotContainKey(9863);
-    }
-
     private void createReaderTables() {
         jdbc.execute("""
                 CREATE TABLE %s (season_id INTEGER NOT NULL, fixture_id INTEGER NOT NULL,
@@ -1095,7 +943,7 @@ class RankingMetricsIntegrationTest {
 
     private RankingMetrics.Snapshot loadWithReader(PfsReadSource reader) {
         RankingMetrics isolatedMetrics = new RankingMetrics(jdbc, schedules, transactionManager,
-                clocks, dailyTable, reader);
+                clocks, dailyTable, reader, finalityReader, understat);
         return isolatedMetrics.load(new DailyPriceSource.Capture(SEASON, CAPTURE_DATE),
                 new MetricSeasons(context(), java.util.Optional.empty(), 3, 3));
     }

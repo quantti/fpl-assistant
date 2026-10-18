@@ -5,6 +5,7 @@ export interface Comparison {
   scheduleCapturedAt?: string | null;
   modelSeasons?: string[];
   modelThrough?: Record<string, string>;
+  modelCapturedAt?: Record<string, string>;
   rows: ComparisonRow[];
 }
 
