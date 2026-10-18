@@ -574,13 +574,18 @@ Each season is replaced atomically, including withdrawn matches and valid empty 
 A season's failed fetch/parse retains that season's previous observations but does not block a
 valid update to the other season; the job still reports the operational failure.
 Capture and latest included match dates are disclosed separately. No external calls at chat time.
+Each HTTP response has a 30-second absolute deadline covering headers and the complete body;
+timeout cancels the request. Raw and gzip-decoded bodies are each limited to 5 MB.
 
 `UNDERSTAT_SCHEDULED` defaults to `false`; the optional schedule is 02:20 Europe/London.
 After explicit operational approval, `--sync-understat` performs one capture and exits. It uses
 the database's playing-season identity, not its fallback FPL metric season. Do not run that flag
 against shared Supabase merely to test this feature, or turn on staging's collectors. Initial live
-capture/deployment, permitted provider use and sustained endpoint reliability are still rollout
-checks; a successful public HTTP read is not that approval.
+capture/deployment, permitted provider use and sustained endpoint reliability are rollout checks;
+a successful public HTTP read is not that approval. The owner has now confirmed permission for
+the intended use and authorised initial capture/activation after the deadline fix is deployed.
+Do not start a second full Spring application just to run the capture alongside production's
+ACTIVE importer: isolate the Understat client/store invocation so no core scheduler starts.
 
 Collection simplification: team xG/xGA no longer depends on player-roster completeness, optional
 player xGC masks or incremental finality. Those proofs remain for player data. This adds two

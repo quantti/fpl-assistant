@@ -52,6 +52,52 @@ class UnderstatClientTest {
     }
 
     @Test
+    void boundsTheWholeResponseEvenWhenTheServerKeepsSendingBytes() throws Exception {
+        var disconnected = new java.util.concurrent.CountDownLatch(1);
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/", exchange -> {
+            exchange.sendResponseHeaders(200, 0);
+            try (var body = exchange.getResponseBody()) {
+                for (int i = 0; i < 660; i++) {
+                    body.write(' ');
+                    body.flush();
+                    Thread.sleep(50);
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } catch (java.io.IOException ignored) {
+                disconnected.countDown();
+            }
+        });
+        server.start();
+        try {
+            var client = new UnderstatClient("http://127.0.0.1:" + server.getAddress().getPort());
+            long started = System.nanoTime();
+            assertThatThrownBy(() -> client.fetch(2026)).isInstanceOf(IllegalStateException.class)
+                    .hasRootCauseInstanceOf(java.util.concurrent.TimeoutException.class);
+            assertThat(java.time.Duration.ofNanos(System.nanoTime() - started))
+                    .isLessThan(java.time.Duration.ofSeconds(35));
+            assertThat(disconnected.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                    .as("deadline cancels the underlying response before server shutdown").isTrue();
+        } finally { server.stop(0); }
+    }
+
+    @Test
+    void boundsRawPayloadSizeAsWellAsDecompressedSize() throws Exception {
+        byte[] body = " ".repeat(5_000_001).getBytes(StandardCharsets.UTF_8);
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/", exchange -> {
+            exchange.sendResponseHeaders(200, body.length);
+            try (var out = exchange.getResponseBody()) { out.write(body); }
+        });
+        server.start();
+        try {
+            var client = new UnderstatClient("http://127.0.0.1:" + server.getAddress().getPort());
+            assertThatThrownBy(() -> client.fetch(2026)).isInstanceOf(IllegalStateException.class);
+        } finally { server.stop(0); }
+    }
+
+    @Test
     void rejectsHttpFailureInsteadOfTreatingItAsAnEmptySeason() throws Exception {
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/", exchange -> { exchange.sendResponseHeaders(503, -1); exchange.close(); });
