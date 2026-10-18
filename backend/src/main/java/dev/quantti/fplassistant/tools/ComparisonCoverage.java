@@ -129,8 +129,7 @@ public record ComparisonCoverage(List<AffectedClub> affectedClubs,
         affected.sort(Comparator.comparing(AffectedClub::teamName,
                 Comparator.nullsLast(String.CASE_INSENSITIVE_ORDER)));
         exclusions.sort(Comparator.comparingInt(PlayerExclusion::elementId));
-        boolean incomplete = !assessed || !affected.isEmpty() || exclusions.stream()
-                .anyMatch(row -> row.eligibility() == MinutesModel.Eligibility.UNKNOWN_CURRENT_EVIDENCE);
+        boolean incomplete = !assessed || !affected.isEmpty();
         EvidenceStatus status = incomplete ? EvidenceStatus.INCOMPLETE
                 : checkedFinalEvidence ? EvidenceStatus.CHECKED_FINAL
                 : provisionalEvidence ? EvidenceStatus.PROVISIONAL : EvidenceStatus.LEGACY;
