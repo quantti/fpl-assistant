@@ -29,11 +29,15 @@ from dated daily observations and unknown personal selling proceeds.
 
 Each implementation unit received independent read-only review. A scheduler lifecycle
 finding was reproduced by three regression cases, fixed and confirmed resolved on re-review;
-storage and tools reviews found no blockers. The final local focused run passed 265 cases
+storage and tools reviews found no blockers. After merging current master, final review
+found an upstream disputed-price instruction still pointing unconditionally at daily history.
+It now follows forecast-first/daily-dated-fallback routing; its new regression failed before
+the fix. The final local focused run passed 266 cases
 across 21 classes, including disposable-loopback DB integration, old daily-history/schedule
 behavior, strategy/ingestion and prompt contracts. No local full suite, live-model evaluation,
 production DB operation, corpus ingestion, deployment or activation was performed. KAR-76
-remains In Progress pending final PR review and CI; production rollout is a separate approval.
+remains In Progress with PR #170 open, pending final fix review and CI; production rollout
+is a separate approval.
 
 ## Production importer — verified ACTIVE111 (2026-10-18)
 

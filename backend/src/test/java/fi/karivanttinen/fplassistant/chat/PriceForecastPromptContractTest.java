@@ -32,6 +32,17 @@ class PriceForecastPromptContractTest {
     }
 
     @Test
+    void disputedCurrentPriceUsesTheSameForecastFirstRoutingAsTheOriginalQuestion() throws Exception {
+        String corrections = prompt().split("## Current player facts and corrections", 2)[1]
+                .split("## Which season the numbers are from", 2)[0];
+        assertThat(corrections).contains(
+                "For disputed current prices, use getPlayerPriceForecast if that tool is available",
+                "only the latest dated daily observation", "not proof of the current price",
+                "for disputed availability use getPlayerAvailability")
+                .doesNotContain("For disputed prices use getPriceHistory;");
+    }
+
+    @Test
     void separatesPreDailyCaptureDisagreementAndUnknownPersonalSellingProceeds() throws Exception {
         assertThat(prompt()).contains("Before the 02:00 UK daily capture", "daily capture shows the older price",
                 "never mix stale cached prices with newer prices to calculate affordability",

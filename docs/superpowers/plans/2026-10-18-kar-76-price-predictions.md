@@ -229,3 +229,10 @@ then reported a conflict with newer master, so merged master `4c1fa71` into this
 branch, retaining both STATUS entries and all upstream prompt/config/runtime changes.
 The same 265 focused cases passed on the merged tree. PR CI must run on the updated head;
 the earlier conflicting head had no checks. No production configuration or rollout changed.
+
+The merged-tree review found one P2 integration issue: the upstream disputed-player-facts
+paragraph still unconditionally selected daily history for disputed prices. Aligned it with
+the new forecast-first/daily-dated-fallback rule, retaining the other current-fact checks.
+A new correction-block regression failed before the fix; the full 266-case focused rerun
+passed afterwards, including the adjusted upstream player-name prompt contract. The merged
+review otherwise confirmed upstream STATUS content and config/runtime code were preserved.
