@@ -1,5 +1,21 @@
 # Status — Phase 1
 
+## Match-status CI follow-up (2026-10-18)
+
+PR #174 merged as `d4ae08e`, but master run `39166550753` failed 3 of 1,950 tests and
+correctly skipped deployment. All three failures reproduced locally before this follow-up.
+The isolated importer context omitted the three capture-table properties newly consumed by
+its real collector factory; it now supplies explicit test-only names. The shortlist comparison
+test still expected unfinished fixtures to block normal player ranking; it now asserts usable
+player coverage and the visible in-progress match state while retaining the independent team
+forecast assertion. No runtime code or production data was changed.
+
+Both affected classes passed 23/23 locally. The connected local command
+`./gradlew test --tests '*ShortlistComparisonIntegrationTest' --tests '*OwnedSyncImporterContextIntegrationTest' --tests '*RankingMetricsIntegrationTest' --tests '*CompatibilityCatalogueWriterIntegrationTest'`
+passed **56/56, 0 failed/skipped**, against disposable `localhost:55432` with dummy AI keys and
+the 1536 MiB/no-swap scope plus host-memory guard. Local verification preceded publication;
+the full retained suite remains the master release gate, not a local full-suite claim.
+
 ## Actions budget — lightweight PR verification (2026-10-18; local)
 
 Owner-selected policy removes full backend CI from PRs: targeted local tests before push,
