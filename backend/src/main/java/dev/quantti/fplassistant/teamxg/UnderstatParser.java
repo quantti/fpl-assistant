@@ -112,8 +112,11 @@ public final class UnderstatParser {
         if (input == null || input.isBlank()) return List.of();
         String query = normalize(input);
         if (query.isEmpty()) return List.of();
+        for (String code : CLUBS.values()) {
+            if (code.equalsIgnoreCase(query)) return List.of(code);
+        }
         return CLUBS.entrySet().stream()
-                .filter(e -> normalize(e.getKey()).contains(query) || normalize(e.getValue()).equals(query))
+                .filter(e -> normalize(e.getKey()).contains(query))
                 .map(Map.Entry::getValue).distinct().sorted().toList();
     }
 
