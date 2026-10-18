@@ -19,8 +19,15 @@ import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
+import org.springframework.transaction.CannotCreateTransactionException;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doThrow;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
@@ -44,6 +51,7 @@ class ShortlistApiTest {
     @Autowired PlayerCatalogueStore catalogues;
     @Autowired ShortlistStore shortlist;
     @Autowired ShortlistSchema schema;
+    @MockitoSpyBean PlatformTransactionManager transactions;
     @Value("${fpl.daily-price.table-name}") String dailyTable;
     @Value("${fpl.shortlist.table-name}") String shortlistTable;
     @Value("${fpl.shortlist.catalogue-table-name}") String catalogueTable;
@@ -156,6 +164,48 @@ class ShortlistApiTest {
 
         assertThat(shortlist.list(USER_A)).isEmpty();
         assertThat(shortlist.list(USER_B)).hasSize(1);
+    }
+
+    @Test
+    void comparisonIsOwnerScopedNoStoreAndKeepsMembershipWithoutCaptures() throws Exception {
+        var catalogue = seedCatalogue("S-COMPARE", 31, "Saved", "Saved Player",
+                1, "AAA", "Alpha", 2);
+        shortlist.put(USER_A, catalogue.id(), catalogue.season(), 31).orElseThrow();
+        jdbc.update("DELETE FROM " + dailyTable + " WHERE season LIKE ?", SEASON_PREFIX + "%");
+
+        mockMvc.perform(get("/api/shortlist/comparison")).andExpect(status().isUnauthorized());
+        mockMvc.perform(get("/api/shortlist/comparison").header("Authorization", bearer("bad")))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(get("/api/shortlist/comparison").header("Authorization", bearer(USER_A)))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$.rows.length()").value(1))
+                .andExpect(jsonPath("$.rows[0].season").value("S-COMPARE"))
+                .andExpect(jsonPath("$.rows[0].elementId").value(31))
+                .andExpect(jsonPath("$.rows[0].market").isEmpty())
+                .andExpect(jsonPath("$.scheduleCapturedAt").isEmpty())
+                .andExpect(jsonPath("$.modelSeasons").isEmpty())
+                .andExpect(jsonPath("$.modelThrough").isEmpty());
+        mockMvc.perform(get("/api/shortlist/comparison").header("Authorization", bearer(USER_B)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.rows").isEmpty());
+    }
+
+    @Test
+    void transactionOpenFailureReturnsNoStore503WithoutBlockingMembership() throws Exception {
+        var catalogue = seedCatalogue("S-OUTAGE", 32, "Saved", "Saved Player", 1, "AAA", "Alpha", 2);
+        shortlist.put(USER_A, catalogue.id(), catalogue.season(), 32).orElseThrow();
+        doThrow(new CannotCreateTransactionException("private connection details"))
+                .when(transactions).getTransaction(any(TransactionDefinition.class));
+        mockMvc.perform(get("/api/shortlist/comparison").header("Authorization", bearer(USER_A)))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(content().string(""));
+        mockMvc.perform(get("/api/shortlist").header("Authorization", bearer(USER_A)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(1));
+        mockMvc.perform(delete("/api/shortlist").header("Authorization", bearer(USER_A))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"season\":\"S-OUTAGE\",\"elementId\":32}"))
+                .andExpect(status().isNoContent());
     }
 
     @Test

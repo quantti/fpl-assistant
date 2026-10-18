@@ -425,12 +425,6 @@
   "src/components/ShortlistPage/ShortlistPage.test.ts": {
     "unicorn/no-global-object-property-assignment": {
       "count": 1
-    },
-    "unicorn/prefer-promise-with-resolvers": {
-      "count": 1
-    },
-    "unicorn/prefer-spread": {
-      "count": 2
     }
   },
   "src/components/ShortlistPage/ShortlistPage.tsx": {

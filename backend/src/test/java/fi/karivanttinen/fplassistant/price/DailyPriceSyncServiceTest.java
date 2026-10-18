@@ -62,6 +62,31 @@ class DailyPriceSyncServiceTest {
     }
 
     @Test
+    void capturesOnlyIntegralPlayingChancesWithoutInventingZero() {
+        for (Object value : java.util.Arrays.asList(0, 25, 50, 75, 100, 50.0,
+                null, "75", true, -1, 101, 25.5, Double.NaN, Double.POSITIVE_INFINITY,
+                new java.math.BigDecimal("75.00000000000000000001"), Long.MAX_VALUE)) {
+            var element = new java.util.HashMap<String, Object>();
+            element.put("id", 302);
+            element.put("web_name", "Chance");
+            element.put("now_cost", 100);
+            element.put("chance_of_playing_next_round", value);
+            Object[] row = DailyPriceSyncService.toRows(Map.of("elements", List.of(element)),
+                    LocalDate.of(2026, 10, 17), "2026-27").getFirst();
+            assertThat(row).hasSize(19);
+            Integer expected = null;
+            if (java.util.Arrays.asList(0, 25, 50, 75, 100, 50.0).contains(value)) {
+                expected = ((Number) value).intValue();
+            }
+            assertThat(row[18]).as("playing chance %s", value).isEqualTo(expected);
+        }
+        Object[] absent = DailyPriceSyncService.toRows(Map.of("elements", List.of(Map.of(
+                "id", 302, "web_name", "Chance", "now_cost", 100))),
+                LocalDate.of(2026, 10, 17), "2026-27").getFirst();
+        assertThat(absent[18]).isNull();
+    }
+
+    @Test
     void mapsEveryElementToARow() throws Exception {
         List<Object[]> rows = DailyPriceSyncService.toRows(
                 fixture(), LocalDate.of(2026, 8, 18), "2026-27");

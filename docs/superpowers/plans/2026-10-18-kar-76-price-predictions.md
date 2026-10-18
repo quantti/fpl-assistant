@@ -1,6 +1,6 @@
 # KAR-76 — price strategy and official price forecasts
 
-**PROGRESS:** Task 6/7 done; tools and prompt routing implemented and independently reviewed. Final verification/PR remains; no deployment, corpus ingestion, runtime activation or production writes performed.
+**PROGRESS:** Task 6/7 done; implementation and routing correction independently reviewed, PR #170 open. Latest master integration passed 269 focused tests; integration review and latest-head full CI remain. No deployment, corpus ingestion, runtime activation or production writes performed.
 
 ## Scope and decisions
 
@@ -236,3 +236,11 @@ the new forecast-first/daily-dated-fallback rule, retaining the other current-fa
 A new correction-block regression failed before the fix; the full 266-case focused rerun
 passed afterwards, including the adjusted upstream player-name prompt contract. The merged
 review otherwise confirmed upstream STATUS content and config/runtime code were preserved.
+
+The routing correction at `a30c66a` passed independent re-review with no blockers; its PR
+CI also passed. Master then advanced to `a949a20` (shortlist/direct Understat team xG),
+causing another STATUS-only conflict. Integrated that master while retaining both branches'
+entries, the forecast-first correction and both disabled-by-default collector configurations.
+All 269 focused tests across 22 classes passed on this integrated tree with zero failures
+or skips, including the new upstream team-xG prompt contract. Integration review and full
+CI on the new PR head remain required; the old head's green CI is not reused as that proof.

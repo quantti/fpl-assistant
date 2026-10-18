@@ -240,6 +240,13 @@ fpl:
     # Spacing between requests. ~600 players at 150ms is about a minute and a half of polite
     # traffic against a public API nobody is paying for.
     request-delay-ms: ${DEFCON_REQUEST_DELAY_MS:150}
+  understat:
+    capture-table-name: fpl_understat_capture
+    match-table-name: fpl_understat_match
+    base-url: https://understat.com
+    fetch-at: "0 20 2 * * *"
+    # Local implementation does not authorise a new shared-database collector.
+    scheduled: ${UNDERSTAT_SCHEDULED:false}
   daily-price:
     table-name: fpl_daily_price
     # FPL's own bootstrap-static. Read-only, unauthenticated, and the only source in this

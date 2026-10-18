@@ -139,7 +139,7 @@ export default function ChatView({ route }: Props) {
           failed={conversations.failed}
           onRetry={conversations.refresh}
         />
-        <div className={classes.root}>
+        <div className={classes.root} data-page={route}>
           <VisuallyHidden role="status">
             {isSelecting ? 'Loading conversation…' : ''}
           </VisuallyHidden>
