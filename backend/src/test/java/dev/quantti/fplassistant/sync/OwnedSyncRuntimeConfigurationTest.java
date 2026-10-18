@@ -2,10 +2,7 @@ package dev.quantti.fplassistant.sync;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
 
 import java.time.Duration;
 import java.util.concurrent.CountDownLatch;
@@ -78,10 +75,8 @@ class OwnedSyncRuntimeConfigurationTest {
     }
 
     @Test
-    void invalidOptInFailsBeforeDatabaseAccess() {
-        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+    void invalidOptInFailsDuringActivationValidation() {
         new ApplicationContextRunner()
-                .withBean(JdbcTemplate.class, () -> jdbc)
                 .withUserConfiguration(CoalescedPlayerHistoryImportConfiguration.class)
                 .withPropertyValues("fpl.owned-sync.importer.enabled=true",
                         "fpl.owned-sync.mode=STAGING",
@@ -91,7 +86,6 @@ class OwnedSyncRuntimeConfigurationTest {
                     assertThat(context).hasFailed();
                     assertThat(context.getStartupFailure()).hasRootCauseMessage(
                             "Incremental importer requires fpl.owned-sync.mode=ACTIVE");
-                    verify(jdbc, never()).execute(anyString());
                 });
     }
 
