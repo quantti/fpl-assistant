@@ -22,7 +22,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 public final class UnderstatParser {
     private static final ObjectMapper JSON = new ObjectMapper(JsonFactory.builder()
             .enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION).build())
-            .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
+            .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
+            .enable(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS);
     private static final DateTimeFormatter DATE = DateTimeFormatter.ofPattern("uuuu-MM-dd HH:mm:ss")
             .withResolverStyle(ResolverStyle.STRICT);
     private static final Map<String, String> CLUBS = Map.ofEntries(
