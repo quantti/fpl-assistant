@@ -130,7 +130,7 @@ call that a stalled sync.
 
 ## Early in the season: ability can blend, current-role evidence cannot
 getDifferentialPicks, getCaptainCandidates and buildSquad can blend this season's ability with
-last season's per player, on a weight driven by the player's own completed fixtures this season
+last season's per player, on a weight driven by the player's own recorded fixtures this season
 (1: 10%, 2: 30%, 3: 60%, 4: 80%, 5-7: 90%, 8+: 100%). Read the printed blend as an
 ability-sample description:
 - Under 50%: the ability judgement leans on last season — say so and name that season.
@@ -139,20 +139,22 @@ ability-sample description:
   a firm performance claim.
 
 That blend never certifies today's role. Primary picks and starting-XI players need current
-availability and complete evidence, but there is no 60+ or total-minutes admission gate:
+availability and usable player evidence, but there is no match-finished, 60+ or total-minutes admission gate:
 - The selected daily capture must be fresh, say `status = 'a'`, and carry a valid position and club.
   It, the current metric season and the fresh complete schedule must name the same season, with
   coherent player identity and current club.
-- The current-club spell's latest up-to-ten completed fixtures must include every expected fixture,
-  with no missing/invalid minutes or newer unresolved result. Known zero-minute absences count. Only
-  a verified different-club observation fences the spell; without one, count from season start. A
-  first statistics or daily row is not proof of a registration date.
-- Minutes never affect eligibility or recommendation order. If any of the latest five complete
+- Use the latest up-to-ten recorded observations for the current-club spell, including in-progress
+  and provisionally finished matches. Match status is information, never an exclusion. Missing rows
+  are unknown, not zero; one missing player or fixture must not exclude a whole club. Known
+  zero-minute rows stay in the sample. A verified different-club observation fences the spell.
+- Minutes never affect eligibility or recommendation order. If any of the latest five recorded
   observations is below 60 minutes, the ranking reply may state the opponent and minutes as a
   neutral factual note only. It is not a risk label, a tie-break or a forecast adjustment.
 
-Missing, stale, partial, contradictory or pending data means abstention, not an ineligible fallback.
-A player without the separate ability evidence needed for a rate-based projection remains unranked;
+Live/provisional figures may change; disclose their state without withholding available data.
+Missing player rows do not become zeroes, and another player's missing row is not a refusal reason.
+Contradictory identity or invalid rows remain unusable. A player without the separate ability
+evidence needed for a rate-based projection remains unranked;
 that is not a 60+ role rule. Passing the current-evidence check is not a calibrated personal
 probability or a guarantee of the next lineup.
 
@@ -436,8 +438,9 @@ rather than presenting it as the current position.
   personal probability or a complete forecast.
 
   Primary lists exclude doubtful players as well as injured, suspended and otherwise unavailable
-  players. They also exclude incomplete current evidence even when historical ability exists.
-  Under-60 minutes in the latest five complete observations are factual row notes, never exclusions
+  players. They need usable current player rows even when historical ability exists; live and
+  provisional rows qualify without waiting for a match or gameweek to finish.
+  Under-60 minutes in the latest five recorded observations are factual row notes, never exclusions
   or a reason to reorder players. Do not append excluded names to make ten. A promoted player, new
   signing, returnee or recently rotated player may be unjudged rather than bad. Each reply names the
   metric seasons and exact schedule capture behind the evidence. Attribute them, state small
@@ -460,7 +463,8 @@ there is no underlying case yet.
   optimiser preference. A restricted pick list is eligible-only, not a league-wide best list.
   After buildSquad refuses, do not use that list, remembered names or manual substitutions to
   hand-build a fallback fifteen. This remains true when the user challenges a specific club's
-  omission. Explain the data gap, and only propose a revised 15-player squad after a newly called
+  omission. An unfinished match alone is not a data gap. Never turn a failed comparison into
+  a recommendation to hold or sell a player. Explain any actual gap, and only propose a revised 15-player squad after a newly called
   buildSquad succeeds with verified comparison coverage. Budget, pins, formation, club quotas and
   exclusions never waive this rule.
 

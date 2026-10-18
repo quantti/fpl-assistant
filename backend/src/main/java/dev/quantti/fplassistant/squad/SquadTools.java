@@ -70,19 +70,17 @@ public class SquadTools implements FplTool {
             comma-separated. budget is millions, default 100.0; for a wildcard use squad value
             plus bank from getMyTeam. nextN defaults to 5. formation may force "3-4-3".
             Every XI player needs a fresh available ('a') daily capture with valid position/club,
-            coherent same-season identity and a complete current-club evidence window. Minutes do
-            not affect a player's score or XI eligibility; an under-60 appearance in the latest
-            five complete observations is a factual pick-list note only. Only a verified
-            different-club observation fences the spell; otherwise expected fixtures start at
-            season start. Doubtful, stale, missing, pending or inconsistent data causes abstention,
-            and last-season history cannot certify the current role. Every starter must also play
+            coherent same-season identity and usable current-club player observations. Live and
+            provisionally finished match rows are usable; missing rows are unknown, not zero.
+            Minutes do not affect a player's score or XI eligibility; an under-60 appearance in
+            the latest five recorded observations is a factual pick-list note only. Doubtful
+            availability or incoherent player evidence causes abstention, and last-season history
+            cannot certify the current role. Every starter must also play
             for a club with at least one fixture in the editable window of the next nextN calendar
             gameweeks, counted from the next deadline in the captured schedule. A club blanked
             across that window, or one whose schedule is unresolved, can be bought for the bench
-            only; its rows print a real zero and an n/a respectively, never each other. A general
-            squad is refused as COMPARISON_DATA_INCOMPLETE when a relevant elapsed unfinished
-            fixture or a completed club side without usable verified core rows removes a whole
-            club from comparison. Filters, pins and constraints cannot hide or waive that refusal.
+            only; its rows print a real zero and an n/a respectively, never each other.
+            An unfinished match or another player's missing data never excludes a whole club.
             An ineligible mustInclude may be bought only on the bench. This history is not a
             future-start guarantee, and a pin, budget or relaxed template/premium default cannot
             waive it. Ranking uses full-fixture expected points: xG/xA ability, fixture-specific
@@ -137,12 +135,6 @@ public class SquadTools implements FplTool {
             String evidenceHeader = priceProvenance + "\n" + metricProvenance
                     + "\n" + scheduleProvenance + "\n" + loaded.snapshot().metricEvidence()
                     + "\n" + scheduleNote;
-            if (horizon.status() == HorizonFixtures.Status.KNOWN
-                    && loaded.snapshot().comparisonCoverage().assessed()
-                    && !loaded.snapshot().comparisonCoverage().complete()) {
-                return evidenceHeader + "\n" + ComparisonCoverageFormatter.refusal(
-                        loaded.snapshot().comparisonCoverage(), loaded.snapshot().asOf());
-            }
             if (candidates.isEmpty()) {
                 return evidenceHeader + "\nNo players are available to pick from today's capture.";
             }

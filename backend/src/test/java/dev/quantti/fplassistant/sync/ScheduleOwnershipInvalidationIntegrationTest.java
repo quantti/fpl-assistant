@@ -81,6 +81,9 @@ class ScheduleOwnershipInvalidationIntegrationTest {
                 SEASON.id(), SEASON.code(), "Schedule ownership test", SEASON.startsOn());
         new OwnedSyncSchema(jdbc, OWNED).initialize();
         createCapturedTables();
+        new dev.quantti.fplassistant.schedule.ScheduleSchema(jdbc,
+                CAPTURED.gameweek(), CAPTURED.fixture()).ensureSchema();
+        jdbc.execute("ALTER TABLE " + FAIL_FIXTURE + " ADD COLUMN IF NOT EXISTS finished_provisional BOOLEAN");
         tx = new TransactionTemplate(new DataSourceTransactionManager(dataSource));
     }
 

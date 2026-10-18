@@ -17,6 +17,18 @@ class ScheduleSourceTest {
     private static final Instant FIRST_DEADLINE = Instant.parse("2026-08-14T17:30:00Z");
 
     @Test
+    void matchStateDistinguishesFullTimeFromStatisticalFinality() {
+        assertThat(new ScheduleSource.FixtureRow(1, 7, 1, 2, NOW, true, true,
+                3, 3, CAPTURED, false).status()).isEqualTo("Finished");
+        assertThat(new ScheduleSource.FixtureRow(1, 7, 1, 2, NOW, true, false,
+                3, 3, CAPTURED, true).status()).isEqualTo("Finished (provisional stats)");
+        assertThat(new ScheduleSource.FixtureRow(1, 7, 1, 2, NOW, true, false,
+                3, 3, CAPTURED, false).status()).isEqualTo("In progress");
+        assertThat(new ScheduleSource.FixtureRow(1, 7, 1, 2, NOW, false, false,
+                3, 3, CAPTURED, null).status()).isEqualTo("Not started");
+    }
+
+    @Test
     void namesTheSeasonAndTheCaptureAge() {
         String line = ScheduleSource.provenance("2026-27", Instant.parse("2026-08-29T01:10:00Z"), NOW);
 

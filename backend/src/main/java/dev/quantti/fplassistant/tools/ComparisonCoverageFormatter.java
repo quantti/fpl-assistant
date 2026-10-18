@@ -42,8 +42,8 @@ public final class ComparisonCoverageFormatter {
                     + " unavailable or season-incompatible. " + evidenceStatus(coverage) + " "
                     + playerCounts(coverage);
         }
-        return "Comparison coverage: all clubs with relevant current-role fixtures have played-side"
-                + " core evidence. " + evidenceStatus(coverage) + " " + playerCounts(coverage);
+        return "Comparison coverage: available recorded player rows; missing rows do not remove a club. "
+                + evidenceStatus(coverage) + " " + playerCounts(coverage);
     }
 
     private static String evidenceStatus(ComparisonCoverage coverage) {
