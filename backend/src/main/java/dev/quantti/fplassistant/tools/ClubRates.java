@@ -17,9 +17,8 @@ import java.util.Set;
  * Poisson goals model does, so a defender's clean-sheet chance differs against a side scoring
  * 2.2 a game and one scoring 0.9 (KAR-30).
  *
- * <p>Rates are per club and per fixture-side. A side's expected goals are the sum over its
- * players; its expected goals conceded are the team figure FPL stamps on every player, read once
- * with {@code MAX} — see {@code ExpectedStatsTools}. The current and previous seasons blend on the
+ * <p>Rates are per club and per fixture-side from direct Understat match totals; xGA is the
+ * opponent's xG from the same result, not a player aggregate. The current and previous seasons blend on the
  * one shared ramp, {@link SeasonBlend#weight}, keyed on the club's own completed fixtures this
  * season. League constants are pooled over both seasons and not ramped: the league mean and the
  * home/away effect are not a club's property. They are pooled over <em>every</em> club of each
@@ -121,7 +120,7 @@ public final class ClubRates {
     /**
      * The chance-of-conceding input for one fixture: what {@code defendingClub} is expected to
      * let in against {@code opponent}, at home or away. Empty when either club or the league
-     * has no rate; never zero.
+     * has no rate; a genuine zero projection remains zero, not a missing-data sentinel.
      */
     public static OptionalDouble projectedGoalsAgainst(Rates rates, int defendingClub,
                                                        int opponent, boolean defendingAtHome) {
@@ -145,13 +144,13 @@ public final class ClubRates {
      * seasons, still belongs in the population its rivals are measured against. Empty below
      * {@link #MIN_LEAGUE_SIDES} or when one venue is unrepresented.
      */
-    public static Optional<League> league(Map<Integer, SeasonSide> current,
-                                          Map<Integer, SeasonSide> previous) {
+    public static Optional<League> league(Map<?, SeasonSide> current,
+                                          Map<?, SeasonSide> previous) {
         int sides = 0;
         int homeSides = 0;
         double xg = 0;
         double homeXg = 0;
-        for (Map<Integer, SeasonSide> season : java.util.List.of(current, previous)) {
+        for (Map<?, SeasonSide> season : java.util.List.of(current, previous)) {
             for (SeasonSide side : season.values()) {
                 sides += side.fixtures();
                 homeSides += side.homeFixtures();

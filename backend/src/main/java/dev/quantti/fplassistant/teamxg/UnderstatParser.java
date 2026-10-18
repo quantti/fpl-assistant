@@ -36,7 +36,13 @@ public final class UnderstatParser {
             Map.entry("Manchester City", "MCI"), Map.entry("Manchester United", "MUN"),
             Map.entry("Newcastle United", "NEW"), Map.entry("Nottingham Forest", "NFO"),
             Map.entry("Sunderland", "SUN"), Map.entry("Tottenham", "TOT"),
-            Map.entry("West Ham", "WHU"), Map.entry("Wolverhampton Wanderers", "WOL"));
+            Map.entry("West Ham", "WHU"), Map.entry("Wolverhampton Wanderers", "WOL"),
+            Map.entry("Man City", "MCI"), Map.entry("Man Utd", "MUN"), Map.entry("Man United", "MUN"),
+            Map.entry("Wolves", "WOL"), Map.entry("Brighton & Hove Albion", "BHA"),
+            Map.entry("Hull City", "HUL"), Map.entry("Ipswich Town", "IPS"),
+            Map.entry("Leeds United", "LEE"), Map.entry("Coventry City", "COV"),
+            Map.entry("West Ham United", "WHU"), Map.entry("Tottenham Hotspur", "TOT"),
+            Map.entry("Sunderland AFC", "SUN"), Map.entry("AFC Bournemouth", "BOU"));
 
     public record Match(long id, Instant kickoff, String home, String away,
                         int homeGoals, int awayGoals, BigDecimal homeXg, BigDecimal awayXg) {}
@@ -100,6 +106,19 @@ public final class UnderstatParser {
             throw new IllegalArgumentException("Expected a nonnegative match value at most 100");
         }
         return decimal;
+    }
+
+    public static List<String> matchingClubs(String input) {
+        if (input == null || input.isBlank()) return List.of();
+        String query = normalize(input);
+        if (query.isEmpty()) return List.of();
+        return CLUBS.entrySet().stream()
+                .filter(e -> normalize(e.getKey()).contains(query) || normalize(e.getValue()).equals(query))
+                .map(Map.Entry::getValue).distinct().sorted().toList();
+    }
+
+    private static String normalize(String value) {
+        return value.toLowerCase(java.util.Locale.ROOT).replaceAll("[^a-z0-9]", "");
     }
 
     private static String club(JsonNode node) {

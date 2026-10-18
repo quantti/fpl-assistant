@@ -78,6 +78,7 @@ class SquadToolsIntegrationTest {
 
     @Autowired
     SquadTools tools;
+    @Autowired dev.quantti.fplassistant.teamxg.UnderstatStore understat;
 
     @Autowired
     ScheduleSource scheduleSource;
@@ -111,6 +112,7 @@ class SquadToolsIntegrationTest {
             }
         }
         insert(STAR_ID, STAR_NAME, STAR_NAME + " Fictitious", 0, 4, 88, 5.0, 1.50);
+        RankingSeed.seedTeamXg(understat, 2026, CAPTURED_AT, FIRST_DEADLINE);
     }
 
     @AfterEach

@@ -34,7 +34,7 @@ import org.springframework.transaction.annotation.Transactional;
 public class ShortlistComparison {
     public record Response(Instant asOf, String horizon, List<String> sources, List<Row> rows,
                            Instant scheduleCapturedAt, List<String> modelSeasons,
-                           Map<String, Instant> modelThrough) {}
+                           Map<String, Instant> modelThrough, Map<String, Instant> modelCapturedAt) {}
     public record Market(String webName, String fullName, String teamShort, int position, int nowCost,
                          String status, String news, Double ownership, Integer penalties,
                          Integer directFreeKicks, Integer corners, Instant capturedAt,
@@ -82,12 +82,12 @@ public class ShortlistComparison {
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public Response read(UUID owner) {
         List<ShortlistStore.Player> saved = shortlist.list(owner);
-        if (saved.isEmpty()) return new Response(clock.instant(), "", List.of(), List.of(), null, List.of(), Map.of());
+        if (saved.isEmpty()) return new Response(clock.instant(), "", List.of(), List.of(), null, List.of(), Map.of(), Map.of());
         var capture = prices.latestCapture();
         if (capture.isEmpty()) return new Response(clock.instant(), "Schedule unavailable", List.of(),
-                saved.stream().map(p -> unavailable(p, "No daily capture available.")).toList(), null, List.of(), Map.of());
+                saved.stream().map(p -> unavailable(p, "No daily capture available.")).toList(), null, List.of(), Map.of(), Map.of());
         var metric = seasons.metricSeasons(seasons.resolve());
-        var snapshot = ranking.loadCompletedComparison(capture.get(), metric);
+        var snapshot = ranking.load(capture.get(), metric);
         Instant asOf = snapshot.asOf();
         var horizon = HorizonFixtures.derive(snapshot.schedule(), asOf, capture.get().season(), 5);
         var candidates = snapshot.candidates().stream().collect(Collectors.toMap(
@@ -126,9 +126,8 @@ public class ShortlistComparison {
         sources.add("Observed totals: season " + metric.played().code() + ". Points/£m = season points / current price in millions; not a forecast.");
         snapshot.schedule().snapshot().ifPresent(s -> sources.add(
                 ScheduleSource.provenance(s.season(), s.capturedAt(), asOf)));
-        sources.add("Team clean-sheet model: " + metric.played().code()
-                + metric.previous().map(s -> " and " + s.code()).orElse("")
-                + "; completed matches with usable evidence only; sum of per-fixture probabilities, not player points or a playing-time forecast. Not calibrated.");
+        sources.add("Team clean-sheet model: Understat completed-match xG/xGA; sum of per-fixture probabilities,"
+                + " not player points or a playing-time forecast. Not calibrated.");
         sources.add("Model evidence: " + snapshot.metricEvidence());
         String range = horizon.status() == HorizonFixtures.Status.KNOWN
                 ? "GW" + horizon.startGameweek() + "–" + horizon.endGameweek()
@@ -137,12 +136,11 @@ public class ShortlistComparison {
         List<Row> rows = saved.stream().map(p -> row(p, snapshot, horizon, candidates.get(p.elementId()),
                 totals.get(p.elementId()), duties.getOrDefault(p.elementId(), Map.of()),
                 observations.getOrDefault(p.elementId(), List.of()), clubs, fresh, sameSeason)).toList();
-        List<String> modelSeasons = new ArrayList<>();
-        modelSeasons.add(metric.played().code());
-        metric.previous().ifPresent(previous -> modelSeasons.add(previous.code()));
+        List<String> modelSeasons = snapshot.clubSampleThrough().keySet().stream()
+                .sorted(Comparator.reverseOrder()).toList();
         return new Response(asOf, range, sources, rows,
                 snapshot.schedule().snapshot().map(ScheduleSource.Snapshot::capturedAt).orElse(null),
-                List.copyOf(modelSeasons), snapshot.clubSampleThrough());
+                modelSeasons, snapshot.clubSampleThrough(), snapshot.clubCapturedAt());
     }
 
     private Row row(ShortlistStore.Player saved, RankingMetrics.Snapshot snapshot,
@@ -165,7 +163,7 @@ public class ShortlistComparison {
         Totals stats = coherent ? totals(total, snapshot.asOf()) : null;
         String reason = !fresh ? "Current daily capture unavailable."
                 : !coherent ? "Matching playing-season statistics unavailable." : null;
-        var forecast = fresh ? forecast(snapshot, horizon, player.teamId(), clubs, sameSeason)
+        var forecast = fresh ? forecast(snapshot, horizon, player.teamId(), clubs)
                 : new Forecast(null, "Current daily identity unavailable.", List.of());
         if (!coherent) return new Row(saved.season(), saved.elementId(), market, stats, null, reason,
                 forecast, List.of(), "Matching season/club observations unavailable.", null, List.of());
@@ -204,29 +202,42 @@ public class ShortlistComparison {
     }
 
     static Forecast forecast(RankingMetrics.Snapshot snapshot, HorizonFixtures.Result horizon,
-                             int club, Map<Integer, String> clubs, boolean sameSeason) {
+                             int club, Map<Integer, String> clubs) {
         var window = horizon.club(club);
         if (!window.known()) return new Forecast(null, window.unknownReason().name(), List.of());
-        boolean covered = sameSeason && snapshot.comparisonCoverage().assessed();
         List<Week> weeks = new ArrayList<>();
         double sum = 0;
         boolean complete = true;
+        String reason = null;
         for (int gw = horizon.startGameweek(); gw <= horizon.endGameweek(); gw++) {
             List<Fixture> fixtures = new ArrayList<>();
             for (var f : window.fixtures()) {
                 if (f.gameweek() != gw) continue;
-                var projection = covered ? ClubRates.projectedGoalsAgainst(snapshot.clubRates(), club,
-                        f.opponentTeamId(), f.home()) : java.util.OptionalDouble.empty();
+                var projection = ClubRates.projectedGoalsAgainst(snapshot.clubRates(), club,
+                        f.opponentTeamId(), f.home());
                 Double probability = projection.isPresent() && Double.isFinite(projection.getAsDouble())
                         && projection.getAsDouble() >= 0 ? Math.exp(-projection.getAsDouble()) : null;
-                if (probability == null) complete = false; else sum += probability;
+                if (probability == null) {
+                    complete = false;
+                    if (reason == null) {
+                        if (snapshot.clubRates().clubs().isEmpty() && snapshot.clubCapturedAt().isEmpty()) {
+                            reason = "No stored Understat team xG/xGA capture; full-window total unavailable.";
+                        } else if (!snapshot.clubRates().clubs().containsKey(club)) {
+                            reason = "Understat match evidence insufficient for " + clubName(clubs, club) + ".";
+                        } else if (!snapshot.clubRates().clubs().containsKey(f.opponentTeamId())) {
+                            reason = "GW" + gw + " vs " + clubName(clubs, f.opponentTeamId())
+                                    + ": Understat opponent model unavailable; full-window total withheld.";
+                        } else {
+                            reason = "Understat league model unavailable; full-window total withheld.";
+                        }
+                    }
+                } else sum += probability;
                 fixtures.add(new Fixture(f.id(), clubName(clubs, f.opponentTeamId()), f.home(),
                         f.hasValidDifficulty() ? f.difficulty() : null, probability));
             }
             weeks.add(new Week(gw, List.copyOf(fixtures)));
         }
-        return new Forecast(complete ? sum : null,
-                complete ? null : "Team projection unavailable: insufficient verified completed-match evidence or missing club rates.", weeks);
+        return new Forecast(complete ? sum : null, reason, weeks);
     }
 
     private static Match match(ScheduleSource.FixtureRow fixture, int club,

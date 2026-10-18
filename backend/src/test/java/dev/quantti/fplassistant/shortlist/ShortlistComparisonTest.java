@@ -34,7 +34,7 @@ class ShortlistComparisonTest {
     @Test
     void doublesCountTwiceAndBlankWeeksStayInFiveWeekWindow() {
         var forecast = ShortlistComparison.forecast(snapshot(true), horizon(List.of(
-                fixture(1, 6, 2, 3), fixture(2, 6, 2, 0), fixture(3, 8, 2, 4))), 1, Map.of(2, "OPP"), true);
+                fixture(1, 6, 2, 3), fixture(2, 6, 2, 0), fixture(3, 8, 2, 4))), 1, Map.of(2, "OPP"));
         assertThat(forecast.weeks()).hasSize(5);
         assertThat(forecast.weeks().getFirst().fixtures()).hasSize(2);
         assertThat(forecast.weeks().get(1).fixtures()).isEmpty();
@@ -43,16 +43,18 @@ class ShortlistComparisonTest {
     }
 
     @Test
-    void missingProjectionAndIncompleteCoverageNeverBecomePartialTotals() {
-        assertThat(ShortlistComparison.forecast(snapshot(true), horizon(List.of(
-                fixture(1, 6, 2, 3), fixture(2, 7, 99, 3))), 1, Map.of(), true).expectedCleanSheets()).isNull();
+    void missingProjectionNeverBecomesPartialTotalButFplPlayerCoverageDoesNotGateUnderstat() {
+        var missing = ShortlistComparison.forecast(snapshot(true), horizon(List.of(
+                fixture(1, 6, 2, 3), fixture(2, 7, 99, 3))), 1, Map.of(99, "HUL"));
+        assertThat(missing.expectedCleanSheets()).isNull();
+        assertThat(missing.reason()).contains("GW7 vs HUL", "Understat opponent model unavailable");
         assertThat(ShortlistComparison.forecast(snapshot(false), horizon(List.of(fixture(1, 6, 2, 3))),
-                1, Map.of(), true).expectedCleanSheets()).isNull();
+                1, Map.of()).expectedCleanSheets()).isCloseTo(Math.exp(-1.2), within(1e-9));
         assertThat(ShortlistComparison.forecast(snapshot(true), horizon(List.of()),
-                1, Map.of(), true).expectedCleanSheets()).isZero();
+                1, Map.of()).expectedCleanSheets()).isZero();
         var unknown = new HorizonFixtures.Result(NOW, Optional.empty(), 5, HorizonFixtures.Status.NO_EDITABLE_GAMEWEEK,
                 HorizonFixtures.UnknownReason.NO_EDITABLE_GAMEWEEK, null, null, Map.of());
-        assertThat(ShortlistComparison.forecast(snapshot(true), unknown, 1, Map.of(), true).expectedCleanSheets()).isNull();
+        assertThat(ShortlistComparison.forecast(snapshot(true), unknown, 1, Map.of()).expectedCleanSheets()).isNull();
     }
 
     @Test

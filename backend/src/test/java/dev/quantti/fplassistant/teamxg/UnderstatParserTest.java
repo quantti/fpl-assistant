@@ -61,6 +61,17 @@ class UnderstatParserTest {
     }
 
     @Test
+    void clubSearchIsExplicitAndAmbiguousNamesAreNotGuessed() {
+        assertThat(UnderstatParser.matchingClubs("Man City")).containsExactly("MCI");
+        assertThat(UnderstatParser.matchingClubs("NFO")).containsExactly("NFO");
+        assertThat(UnderstatParser.matchingClubs("Leeds United")).containsExactly("LEE");
+        assertThat(UnderstatParser.matchingClubs("Brighton & Hove Albion")).containsExactly("BHA");
+        assertThat(UnderstatParser.matchingClubs("Manchester")).containsExactly("MCI", "MUN");
+        assertThat(UnderstatParser.matchingClubs("!")).isEmpty();
+        assertThat(UnderstatParser.matchingClubs("Unknown")).isEmpty();
+    }
+
+    @Test
     void acceptsKnownEmptyButRejectsMissingDatesDuplicateKeysAndTrailingJson() {
         assertThat(UnderstatParser.parse(2026, "{\"dates\":[]}", NOW)).isEmpty();
         for (String body : new String[]{"{}", "{\"dates\":null}", "{\"dates\":[],\"dates\":[]}", "{\"dates\":[]}{}"}) {

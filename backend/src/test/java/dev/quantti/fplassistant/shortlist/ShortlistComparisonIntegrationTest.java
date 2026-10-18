@@ -62,6 +62,8 @@ class ShortlistComparisonIntegrationTest {
         }
     }
     @Autowired ShortlistComparison comparison;
+    @Autowired dev.quantti.fplassistant.teamxg.UnderstatStore understat;
+    private List<dev.quantti.fplassistant.teamxg.UnderstatParser.Match> teamMatches;
     @Autowired ShortlistStore shortlist;
     @Autowired SeasonResolver seasons;
     @Autowired PlayerCatalogueStore catalogues;
@@ -106,6 +108,13 @@ class ShortlistComparisonIntegrationTest {
                         f.gameweek(), team, home ? f.awayTeamId() : f.homeTeamId(), home, Timestamp.from(f.kickoff())});
             }
         }
+        teamMatches = RankingSeed.fixtures(CAPTURED, FIRST).stream().filter(f -> f.gameweek() <= 5)
+                .map(f -> new dev.quantti.fplassistant.teamxg.UnderstatParser.Match(f.id(), f.kickoff(),
+                        "C" + (f.homeTeamId() - RankingSeed.team(1) + 1),
+                        "C" + (f.awayTeamId() - RankingSeed.team(1) + 1), 1, 1,
+                        java.math.BigDecimal.valueOf(2), java.math.BigDecimal.ONE)).toList();
+        understat.replace(List.of(new dev.quantti.fplassistant.teamxg.UnderstatStore.Capture(
+                "2026-27", CAPTURED.minusSeconds(120), teamMatches)));
         jdbc.batchUpdate("INSERT INTO player_fixture_stats(fixture_id,player_id,season_id,gameweek,player_team_id,opponent_team_id,was_home,kickoff_time,minutes,total_points,value,expected_goals,expected_assists,expected_goals_conceded,defensive_contribution) VALUES(?,?,?,?,?,?,?,?,90,6,60,1.2,0.3,1.2,10)", readings);
         jdbc.update("UPDATE " + daily + " SET full_name=web_name,team_name=team_short,chance_of_playing_next_round=75 WHERE season=?", SEASON);
         var cat = catalogues.forCapture(SEASON, DAY).orElseThrow();
@@ -114,6 +123,7 @@ class ShortlistComparisonIntegrationTest {
 
     @AfterEach void clean() {
         SharedStatsSeed.ensure(jdbc);
+        jdbc.update("DELETE FROM fpl_understat_capture_test");
         jdbc.execute("DROP TABLE IF EXISTS " + OWNED_EVIDENCE);
         jdbc.execute("DROP TABLE IF EXISTS " + OWNED_FIXTURES);
         jdbc.update("DELETE FROM " + saved + " WHERE user_id=?", OWNER);
@@ -158,8 +168,9 @@ class ShortlistComparisonIntegrationTest {
         assertThat(result.scheduleCapturedAt()).isEqualTo(scheduleCapture);
         assertThat(result.asOf()).isEqualTo(NOW);
         assertThat(result.rows().getFirst().market().capturedAt()).isEqualTo(CAPTURED);
-        assertThat(result.modelSeasons()).containsExactly(SEASON, SharedStatsSeed.POPULATED_SEASON_CODE);
-        assertThat(result.modelThrough().get(SEASON)).isEqualTo(jdbc.queryForObject(
+        assertThat(result.modelSeasons()).containsExactly("2026-27");
+        assertThat(result.modelCapturedAt()).containsEntry("2026-27", CAPTURED.minusSeconds(120));
+        assertThat(result.modelThrough().get("2026-27")).isEqualTo(jdbc.queryForObject(
                 "SELECT MAX(kickoff_time) FROM " + fixtures + " WHERE season=? AND finished", Timestamp.class, SEASON).toInstant());
         jdbc.update("UPDATE " + fixtures + " SET captured_at=? WHERE season=?", Timestamp.from(scheduleCapture.plusSeconds(30)), SEASON);
         jdbc.update("UPDATE " + events + " SET captured_at=? WHERE season=?", Timestamp.from(scheduleCapture.plusSeconds(30)), SEASON);
@@ -245,7 +256,7 @@ class ShortlistComparisonIntegrationTest {
         assertThat(row.history().get(0).evidence()).isEqualTo("MISSING");
         assertThat(row.history().get(1).minutes()).isZero();
         assertThat(row.defcon().readings()).isEqualTo(3);
-        // The incomplete fixture is omitted; four older complete fixtures still supply rates.
+        // Missing FPL player observations do not erase the independently captured Understat model.
         assertThat(row.forecast().expectedCleanSheets()).isPositive();
     }
 
@@ -268,7 +279,7 @@ class ShortlistComparisonIntegrationTest {
         assertThat(comparison.read(OWNER).rows().getFirst().forecast().expectedCleanSheets()).isPositive();
     }
 
-    @Test void unverifiedOwnedMatchIsOmittedInsteadOfSuppressingTheWholeForecast() {
+    @Test void unverifiedFplMatchDoesNotSuppressIndependentUnderstatForecast() {
         int fixture = ownLatestObservation(0);
         jdbc.update("UPDATE " + OWNED_FIXTURES + " SET current_verified_generation=8 WHERE season_id=? AND fixture_id=?", SEASON_ID, fixture);
         var row = comparison.read(OWNER).rows().getFirst();
@@ -276,32 +287,46 @@ class ShortlistComparisonIntegrationTest {
         assertThat(row.forecast().expectedCleanSheets()).isPositive();
     }
 
-    @Test void anIncompleteFixtureContributesNeitherSideToTheClubOrLeagueModel() {
+    @Test void corruptOrMissingFplSidesCannotContaminateTheUnderstatModel() {
         var before = comparison.read(OWNER).rows().getFirst();
         int fixture = before.history().getFirst().id();
         boolean home = before.history().getFirst().home();
         jdbc.update("DELETE FROM player_fixture_stats WHERE season_id=? AND fixture_id=? AND was_home=?", SEASON_ID, fixture, !home);
         jdbc.update("UPDATE player_fixture_stats SET expected_goals=99,expected_goals_conceded=99 WHERE season_id=? AND fixture_id=?", SEASON_ID, fixture);
         Double oneSide = comparison.read(OWNER).rows().getFirst().forecast().expectedCleanSheets();
-        assertThat(oneSide).isPositive();
+        assertThat(oneSide).isCloseTo(before.forecast().expectedCleanSheets(), within(1e-12));
         jdbc.update("DELETE FROM player_fixture_stats WHERE season_id=? AND fixture_id=?", SEASON_ID, fixture);
         assertThat(comparison.read(OWNER).rows().getFirst().forecast().expectedCleanSheets()).isCloseTo(oneSide, within(1e-12));
     }
 
-    @Test void modelCutoffExcludesTheNewestUnverifiedMatch() {
-        int latest = jdbc.queryForObject("SELECT id FROM " + fixtures + " WHERE season=? AND finished ORDER BY kickoff_time DESC,id DESC LIMIT 1", Integer.class, SEASON);
-        jdbc.update("INSERT INTO " + OWNED_FIXTURES + " (season_id,fixture_id,state,observation_generation) VALUES (?,?,'WAITING_STATS',7)", SEASON_ID, latest);
+    @Test void modelCutoffFollowsTheUnderstatCaptureNotFplVerificationState() {
+        Instant latest = teamMatches.stream().map(dev.quantti.fplassistant.teamxg.UnderstatParser.Match::kickoff)
+                .max(Instant::compareTo).orElseThrow();
+        jdbc.update("UPDATE " + fixtures + " SET finished=false WHERE season=? AND kickoff_time=?", SEASON, Timestamp.from(latest));
+        assertThat(comparison.read(OWNER).modelThrough()).containsEntry("2026-27", latest);
+        var corrected = teamMatches.stream().filter(m -> m.kickoff().isBefore(latest)).toList();
+        understat.replace(List.of(new dev.quantti.fplassistant.teamxg.UnderstatStore.Capture(
+                "2026-27", CAPTURED, corrected)));
         var result = comparison.read(OWNER);
-        Instant expected = jdbc.queryForObject("SELECT MAX(kickoff_time) FROM " + fixtures + " WHERE season=? AND finished AND id<>?", Timestamp.class, SEASON, latest).toInstant();
-        assertThat(result.modelThrough().get(SEASON)).isEqualTo(expected);
+        assertThat(result.modelThrough().get("2026-27")).isBefore(latest);
+        assertThat(result.modelCapturedAt()).containsEntry("2026-27", CAPTURED);
         assertThat(result.rows().getFirst().forecast().expectedCleanSheets()).isPositive();
     }
 
-    @Test void insufficientCompletedEvidenceRemainsUnavailable() {
-        jdbc.update("UPDATE " + fixtures + " SET finished=false WHERE season=?", SEASON);
+    @Test void emptyUnderstatEvidenceRemainsUnavailableEvenWithCompleteFplRows() {
+        understat.replace(List.of(new dev.quantti.fplassistant.teamxg.UnderstatStore.Capture(
+                "2026-27", CAPTURED, List.of())));
         var result = comparison.read(OWNER);
         assertThat(result.rows().getFirst().forecast().expectedCleanSheets()).isNull();
-        assertThat(result.modelThrough()).doesNotContainKey(SEASON);
+        assertThat(result.rows().getFirst().forecast().reason()).contains("Understat");
+        assertThat(result.modelThrough()).isEmpty();
+    }
+
+    @Test void missingUnderstatCaptureNamesTheActualReason() {
+        jdbc.update("DELETE FROM fpl_understat_capture_test");
+        var row = comparison.read(OWNER).rows().getFirst();
+        assertThat(row.forecast().expectedCleanSheets()).isNull();
+        assertThat(row.forecast().reason()).contains("No stored Understat", "full-window total unavailable");
     }
 
     @Test void boundedFullPopulationReadHasNoPerShortlistedPlayerQueryLoop() {
@@ -344,7 +369,7 @@ class ShortlistComparisonIntegrationTest {
                 jdbc.update("UPDATE " + daily + " SET chance_of_playing_next_round=25,status='i',news='Changed',captured_at=? WHERE season=? AND price_date=? AND element_id=?", Timestamp.from(CAPTURED.plusSeconds(60)), SEASON, DAY, PLAYER);
             });
             return result;
-        }).when(ranking).loadCompletedComparison(any(), any());
+        }).when(ranking).load(any(), any());
         var row = comparison.read(OWNER).rows().getFirst();
         assertThat(row.totals().points()).isEqualTo(60);
         assertThat(row.market().chanceOfPlayingNextRound()).isEqualTo(75);
