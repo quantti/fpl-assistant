@@ -51,6 +51,18 @@ class PriceForecastToolsGateTest {
     }
 
     @Test
+    void confirmedImporterRegistersToolsWithoutReadingStore() {
+        runner.withPropertyValues("fpl.price-prediction.enabled=true",
+                "fpl.price-prediction.playing-season=2026-27", "fpl.owned-sync.mode=ACTIVE",
+                "fpl.owned-sync.importer.enabled=true", "fpl.owned-sync.cutover-confirmed=true",
+                "fpl.owned-sync.playing-season=2026-27").run(context -> {
+            assertThat(context).hasSingleBean(PriceForecastTools.class);
+            assertThat(context.getBeansOfType(FplTool.class)).hasSize(1);
+            verifyNoInteractions(store);
+        });
+    }
+
+    @Test
     void enabledOffRegistersOnlyWithDependenciesAndNoExternalIo() {
         runner.withPropertyValues("fpl.price-prediction.enabled=true", "fpl.owned-sync.mode=OFF")
                 .run(context -> {
