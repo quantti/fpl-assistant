@@ -215,15 +215,22 @@ public final class FixtureVerification {
     }
 
     /**
-     * Builds fixture-local live-minute and fixture-stat side evidence. Complete requires the live
-     * positive-minute roster to equal the positive-stat contributors, every zero-only stats identity
-     * to have an explicit zero-minute live explanation, mapped sides on both clubs, and a nonempty
-     * fixture-stats capture. It does not certify API-wide or league-wide population completeness.
+     * Builds fixture-local live-minute and fixture-stat side evidence. Complete requires LIVE to
+     * cover every stats identity and positive-stat contributor, with mapped positive-minute players
+     * on both clubs and nonempty fixture stats. It does not certify API-wide or league-wide completeness.
      */
     public static Map<Integer, FixtureEvidence> fixtureEvidenceByFixture(
             Collection<FixtureRow> fixtures, SourceDocument liveDocument) {
+        return fixtureEvidenceByFixture(fixtures, liveDocument, Map.of());
+    }
+
+    /** History sides must be independently proved for this exact fixture, not today's club. */
+    public static Map<Integer, FixtureEvidence> fixtureEvidenceByFixture(
+            Collection<FixtureRow> fixtures, SourceDocument liveDocument,
+            Map<Integer, Map<Integer, Side>> provedHistorySides) {
         Objects.requireNonNull(fixtures);
         Objects.requireNonNull(liveDocument);
+        Objects.requireNonNull(provedHistorySides);
         LiveManifest live = parseLive(liveDocument);
         Map<Integer, FixtureEvidence> result = new HashMap<>();
         for (FixtureRow fixture : fixtures) {
@@ -240,20 +247,20 @@ public final class FixtureVerification {
                 if (!player.appeared()) continue;
                 positivePlayers.add(player.playerId());
                 Side side = stats.participantSides().get(player.playerId());
+                if (side == null) {
+                    side = provedHistorySides.getOrDefault(fixture.id(), Map.of()).get(player.playerId());
+                }
                 if (side != null) appearances.put(player.playerId(), new Appearance(side, player.minutes()));
             }
             boolean sourceSides = stats.participantSides().containsValue(Side.HOME)
                     && stats.participantSides().containsValue(Side.AWAY);
             boolean bothLiveSides = appearances.values().stream().anyMatch(row -> row.side() == Side.HOME)
                     && appearances.values().stream().anyMatch(row -> row.side() == Side.AWAY);
-            boolean zeroOnlyExplained = stats.participantSides().keySet().stream().allMatch(playerId -> {
-                LivePlayer player = livePlayers.get(playerId);
-                return player != null && (positiveStatsPlayers.contains(playerId)
-                        ? player.appeared() : !player.appeared());
-            });
-            boolean complete = !stats.stats().isEmpty() && sourceSides && bothLiveSides && zeroOnlyExplained
+            boolean statsCovered = stats.participantSides().keySet().stream().allMatch(livePlayers::containsKey);
+            // Fixture stats describe actions, not a roster: played players can have BPS <= 0.
+            boolean complete = !stats.stats().isEmpty() && sourceSides && bothLiveSides && statsCovered
                     && appearances.keySet().equals(positivePlayers)
-                    && positiveStatsPlayers.equals(positivePlayers);
+                    && positivePlayers.containsAll(positiveStatsPlayers);
             FixtureEvidence evidence = new FixtureEvidence(complete, positivePlayers, appearances,
                     liveDocument.readInterval());
             if (result.putIfAbsent(fixture.id(), evidence) != null) {

@@ -18,6 +18,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import fi.karivanttinen.fplassistant.sync.CatalogueScheduleParser.FixtureRow;
 import fi.karivanttinen.fplassistant.sync.CatalogueScheduleParser.ReadInterval;
@@ -300,6 +302,23 @@ class FixtureVerificationTest {
                 new FixtureVerification.Appearance(FixtureVerification.Side.AWAY, 90));
     }
 
+    @ParameterizedTest
+    @ValueSource(ints = {0, -1})
+    void finalityAppearanceEvidenceRetainsPlayedPlayersWithNonpositiveFixtureBps(int bps) {
+        String stats = "[{\"identifier\":\"bps\",\"h\":[{\"element\":1,\"value\":" + bps
+                + "}],\"a\":[{\"element\":2,\"value\":3}]}]";
+        Inputs input = inputs(BASE, true, live(player(1, 90, 2, 0), player(2, 90, 3, 0)),
+                List.of(), stats);
+
+        var evidence = FixtureVerification.fixtureEvidenceByFixture(List.of(input.fixture), input.live)
+                .get(input.fixture.id());
+
+        assertThat(evidence.complete()).isTrue();
+        assertThat(evidence.positivePlayerIds()).containsExactlyInAnyOrder(1, 2);
+        assertThat(evidence.appearances()).containsEntry(1,
+                new FixtureVerification.Appearance(FixtureVerification.Side.HOME, 90));
+    }
+
     @Test
     void finalityAppearanceEvidenceAbstainsWhenPositiveLivePlayerHasNoFixtureSide() throws Exception {
         Inputs input = inputs(BASE, true, live(player(1, 90, 2, 0), player(2, 90, 3, 0),
@@ -311,6 +330,29 @@ class FixtureVerificationTest {
         assertThat(evidence.complete()).isFalse();
         assertThat(evidence.positivePlayerIds()).containsExactlyInAnyOrder(1, 2, 3);
         assertThat(evidence.appearances()).doesNotContainKey(3);
+    }
+
+    @Test
+    void provedHistoryOnlyFillsMissingSidesAndNeverCreatesLiveAppearances() {
+        Inputs input = inputs(BASE, true, live(player(1, 90, 2, 0), player(2, 90, 3, 0),
+                player(3, 45, 1, 0), player(4, 0, 0, 0)), List.of(), MANIFEST);
+        var hints = Map.of(input.fixture.id(), Map.of(1, FixtureVerification.Side.AWAY,
+                3, FixtureVerification.Side.HOME, 4, FixtureVerification.Side.AWAY,
+                5, FixtureVerification.Side.AWAY));
+
+        var evidence = FixtureVerification.fixtureEvidenceByFixture(List.of(input.fixture), input.live, hints)
+                .get(input.fixture.id());
+
+        assertThat(evidence.complete()).isTrue();
+        assertThat(evidence.appearances()).containsEntry(1,
+                new FixtureVerification.Appearance(FixtureVerification.Side.HOME, 90));
+        assertThat(evidence.appearances()).containsEntry(3,
+                new FixtureVerification.Appearance(FixtureVerification.Side.HOME, 45));
+        assertThat(evidence.appearances()).doesNotContainKeys(4, 5);
+        Inputs missingLive = inputs(BASE, true, live(player(1, 90, 2, 0)), List.of(), MANIFEST);
+        assertThat(FixtureVerification.fixtureEvidenceByFixture(List.of(missingLive.fixture), missingLive.live,
+                Map.of(missingLive.fixture.id(), Map.of(2, FixtureVerification.Side.AWAY)))
+                .get(missingLive.fixture.id()).complete()).isFalse();
     }
 
     @Test
