@@ -1,6 +1,32 @@
 # Status — Phase 1
 
+## Understat team metrics — storage slice (local)
+
+Owner selected Understat for all team xG/xGA and the team-stat tool, removing team-only player
+xA/xGI sums while retaining FPL player metrics. [Migration plan](superpowers/plans/2026-10-18-understat-team-xg.md)
+supersedes the proposed team-model verification compatibility repair. Consumer migration is still
+pending; this storage slice alone does NOT switch ClubRates or the team tool.
+
+Direct league capture uses two requests (playing/previous season), exact decimal team totals,
+strict identities/season/result parsing, gzip/size/time bounds and atomic owned-cache replacement.
+Known zeroes remain zero; missing fields fail the capture, valid empty captures remove withdrawn
+results, older captures cannot overwrite newer, and either season's failure preserves both old
+captures. `--sync-understat` is explicit; daily 02:20 UK collection defaults OFF.
+19 focused tests pass after parser/client/store/sync RED cases, including disposable PostgreSQL
+rollback/correction tests. The actual Java HTTP client/parser also fetched 65 current-season
+results from the public endpoint without database access. Stored research samples match FPL UTC
+kickoffs in all 60 overlapping completed fixtures. No production schema/data write, activation,
+push or deployment; provider terms/SLA and sustained reliability remain rollout checks.
+
 ## Team xCS n/a diagnosis (2026-10-18; read-only)
+
+[Repair plan](superpowers/plans/2026-10-18-shortlist-xcs-verification-compatibility.md), simplified
+from six to three tasks after pi-review found unnecessary rejection/acceptance coupling. Valid
+fixture-wide certificates are accepted automatically under their own protocol, without a new
+floor from a first identical appearance snapshot. Actual incremental ownership retains its proof
+chain; insufficient evidence remains n/a, not a per-match human approval request. Code acceptance
+is separate from live capture verification. The revision is not independently re-reviewed;
+implementation and new operational/publication actions are not authorised.
 
 The 2026-10-17 23:16 UTC model probe reproduced MCI 1.5402616728, but its modelThrough contained
 only 2025/26 and its club model covered only the 17 surviving clubs from that archive. ARS-GW10
@@ -16,7 +42,8 @@ and zero incremental-page markers. For fixture 1, both complete rosters expect 1
 appearances but match zero. RankingMetrics excludes incomplete incremental sides from club rates,
 so all current-season sides disappear and only 2025/26 remains. This is a publication-path
 compatibility/transition problem; bypassing the population guard is not an accepted fix. A safe
-follow-up must preserve correction floors and complete, source-consistent participant proof.
+follow-up must preserve each protocol's actual correction rules and source-consistent participant
+proof, not impose the incremental floor on an unchanged valid fixture-wide certificate.
 
 On the morning of 2026-10-18 (UTC), the latest daily and schedule captures are still dated October 17,
 so the new day's freshness gates are an additional present-time blocker, independent of last
