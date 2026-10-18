@@ -61,6 +61,17 @@ class UnderstatParserTest {
     }
 
     @Test
+    void exactFplShortNamesTakePrecedenceOverPartialClubNames() {
+        for (String code : new String[]{"ARS", "AVL", "BOU", "BRE", "BHA", "BUR", "CHE", "COV",
+                "CRY", "EVE", "FUL", "HUL", "IPS", "LEE", "LIV", "MCI", "MUN", "NEW", "NFO",
+                "SUN", "TOT", "WHU", "WOL"}) {
+            assertThat(UnderstatParser.matchingClubs(code)).as(code).containsExactly(code);
+            assertThat(UnderstatParser.matchingClubs(" " + code.toLowerCase(java.util.Locale.ROOT) + " "))
+                    .as("normalised " + code).containsExactly(code);
+        }
+    }
+
+    @Test
     void clubSearchIsExplicitAndAmbiguousNamesAreNotGuessed() {
         assertThat(UnderstatParser.matchingClubs("Man City")).containsExactly("MCI");
         assertThat(UnderstatParser.matchingClubs("NFO")).containsExactly("NFO");
