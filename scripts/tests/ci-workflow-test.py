@@ -46,6 +46,10 @@ class CiWorkflowTest(unittest.TestCase):
         self.assertIn("needs.test.result == 'success'", deploy)
         self.assertIn("needs.test.outputs.docs_only == 'false'", deploy)
         self.assertIn("cancel-in-progress: false", deploy)
+        self.assertIn("id: current", deploy)
+        self.assertIn("git fetch --no-tags origin master", deploy)
+        self.assertIn("scripts/ci-scope.py deployment", deploy)
+        self.assertEqual(deploy.count("if: steps.current.outputs.deploy_allowed == 'true'"), 3)
         self.assertIn("https://fpl-sidekick.com/actuator/health", deploy)
 
     def test_scopes(self):
@@ -66,9 +70,9 @@ class CiWorkflowTest(unittest.TestCase):
                     "commit", "--quiet", "-m", "fixture")
                 return git("rev-parse", "HEAD")
 
-            def scope(event, base, head):
+            def scope(event, base, head, ref="refs/heads/master"):
                 result = subprocess.check_output(
-                    [sys.executable, str(SCOPE), event, "refs/heads/master", base, head],
+                    [sys.executable, str(SCOPE), event, ref, base, head],
                     cwd=cwd, env=env, text=True)
                 return dict(line.split("=", 1) for line in result.splitlines())
 
@@ -113,6 +117,17 @@ class CiWorkflowTest(unittest.TestCase):
             # Do not truncate classification at GitHub's usual 300-file listing boundary.
             many = commit([f"docs/bulk/{n}.md" for n in range(301)] + ["backend/Bulk.java"])
             self.assertEqual(scope("push", deleted, many)["docs_only"], "false")
+
+            # B may finish verification before older A; A must not deploy after B.
+            self.assertEqual(scope("deployment", deleted, many), {"deploy_allowed": "false"})
+            self.assertEqual(scope("deployment", many, many), {"deploy_allowed": "true"})
+            later_docs = commit(["docs/after-code.md"])
+            self.assertEqual(scope("deployment", many, later_docs), {"deploy_allowed": "true"})
+            self.assertEqual(scope("deployment", deleted, later_docs), {"deploy_allowed": "false"})
+            self.assertEqual(scope("deployment", later_docs, many), {"deploy_allowed": "false"})
+            self.assertEqual(scope("deployment", many, later_docs, ref="refs/heads/feature"),
+                             {"deploy_allowed": "false"})
+            self.assertEqual(scope("deployment", "1" * 40, "1" * 40), {"deploy_allowed": "false"})
 
 
 if __name__ == "__main__":

@@ -370,6 +370,19 @@ was 1.251s (scheduling case 0.118s); compact collector case 7.260s. Old CI figur
 controlled same-host before/after comparison. No pooling framework, worker-limit change,
 production cadence change or new remote CI run was introduced.
 
+Final-review fix: all three source reviewers confirmed that independent master verification
+could complete out of order and deploy an older application after a newer release. A fresh
+master fetch and tested-ancestor/content check now runs inside the serialized deployment slot;
+Fly setup/deploy/health are skipped for superseded or unverifiable application revisions.
+The tested checkout remains eligible when later commits are only allowlisted docs. Two offline
+regression methods first failed on the missing guard, then passed with reversed A/B completion,
+intervening docs, missing refs and non-master cases; all 17 shell cases and YAML parsing pass.
+The singleton Postgres-for-docs advisory is intentionally deferred: the first-version plan
+already accepts that small setup cost, with no extra classifier job/framework. GitHub's pending
+job replacement still means a latest desired release may need manual master redispatch rather
+than an automatic retry service. Drain old workflow versions before first rollout; they do not
+gain this guard retroactively. Integrated re-review and final focused verification remain pending.
+
 Reproduction sources: GitHub REST run/job/commit/compare/PR-file/artifact/cache metadata, the
 three linked/specified JUnit artifacts, and the checked-in workflows/tests. Raw research JSON,
 XML and analysis scripts are local under `/tmp/fpl-actions-usage-20261018/` (temporary, not a

@@ -428,7 +428,14 @@ Master runs the full retained default backend suite before deployment. A failed 
 blocks deploy. Docs-only master changes are a green no-op with no deployment; manual redeploy
 on master always runs the full gate, even after docs-only changes. Other refs cannot deploy.
 Master test runs do not share a concurrency group: a docs-only push must not cancel or replace
-pending code verification. Production deploys remain separately serialized.
+pending code verification. Production deploys remain separately serialized. Inside that slot,
+the job fetches master again and deploys its tested checkout only if it is still current or all
+subsequent changes are allowlisted docs. A later application change blocks the older deploy,
+so out-of-order test completion cannot roll production back. GitHub concurrency does not
+promise FIFO and can replace pending jobs; if the desired latest release has no deployment
+left queued, request a new master `workflow_dispatch` (which reruns full verification).
+Before first rollout of this workflow change, drain older master/deploy runs: an already-started
+old workflow does not acquire the new guard retroactively.
 A full local suite is still available by hand — see the memory-scoped command above — but
 nothing requires it.
 `scripts/tests/pre-push-test.sh` keeps the stub-only contracts for the master guard and for

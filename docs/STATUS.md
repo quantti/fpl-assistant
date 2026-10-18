@@ -28,6 +28,12 @@ correction case keeps its ten fixtures but selects forty participants plus one u
 not 657 catalogue pages; full-roster smoke coverage remains independently. All 70 runtime/collector
 cases and an 8-case targeted repeat pass. Local runtime class time was 1.251s and the compact
 collector case 7.260s; old CI timings are not a controlled same-host comparison.
+Integrated review found an out-of-order master deployment risk (3/3). A fresh master ancestry/
+content guard now runs inside the deployment slot, rejecting superseded application revisions
+but allowing only later allowlisted docs. Offline reversed-completion/docs/invalid-ref guards,
+17 shell cases and YAML parsing pass. The initial rollout must drain older workflow runs;
+GitHub pending-job replacement may still require a manual master redispatch for an undelivered
+latest release. No automatic retry/deployment service was introduced.
 
 ## Price strategy — KAR-76 implementation (2026-10-18)
 

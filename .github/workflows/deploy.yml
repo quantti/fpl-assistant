@@ -198,13 +198,22 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Reject superseded application revisions inside the deployment slot
+        id: current
+        run: |
+          git fetch --no-tags origin master
+          python3 scripts/ci-scope.py deployment "$GITHUB_REF" "$GITHUB_SHA" "$(git rev-parse FETCH_HEAD)" >> "$GITHUB_OUTPUT"
 
       - uses: superfly/flyctl-actions/setup-flyctl@master
+        if: steps.current.outputs.deploy_allowed == 'true'
 
       # Deploying restarts the single always-on machine. A deploy landing near 02:00 UK can make
       # that day's price capture miss its window; DailyPriceFreshnessCheck logs an ERROR the next
       # morning when it does.
       - name: Deploy to Fly.io
+        if: steps.current.outputs.deploy_allowed == 'true'
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
         run: |
@@ -219,6 +228,7 @@ jobs:
       # every user's point of view. This check is also what would catch a DNS or certificate
       # regression on the domain, which nothing else in the pipeline looks at.
       - name: Smoke test the deployed health endpoint
+        if: steps.current.outputs.deploy_allowed == 'true'
         run: |
           curl --fail --silent --show-error \
                --retry 10 --retry-delay 15 --retry-all-errors \
