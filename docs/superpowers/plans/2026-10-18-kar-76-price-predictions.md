@@ -223,3 +223,9 @@ format/history/schedule checks, strategy/ingestion and all prompt contracts. No 
 was run locally. Minor descriptive-variable naming cleanup was included in this run.
 Next: commit to the existing feature branch, open the PR, independently review its complete
 change and require green full PR CI before handing it back. Rollout/ingestion remain separate.
+
+Published PR #170 at `1a3fef6`; independent full-change review found no blockers. GitHub
+then reported a conflict with newer master, so merged master `4c1fa71` into this feature
+branch, retaining both STATUS entries and all upstream prompt/config/runtime changes.
+The same 265 focused cases passed on the merged tree. PR CI must run on the updated head;
+the earlier conflicting head had no checks. No production configuration or rollout changed.

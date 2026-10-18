@@ -1,9 +1,11 @@
 package fi.karivanttinen.fplassistant.sync;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.math.BigDecimal;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
@@ -15,6 +17,7 @@ import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -54,6 +57,8 @@ import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import fi.karivanttinen.fplassistant.sync.CatalogueScheduleParser.Season;
+import fi.karivanttinen.fplassistant.defcon.DefensiveStatsSchema;
+import fi.karivanttinen.fplassistant.sync.HistoryParser.HistoryRow;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.EndpointKind;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.Lease;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.RuntimeFence;
@@ -65,25 +70,53 @@ import fi.karivanttinen.fplassistant.sync.OwnedSyncHttpClient.WaitPhase;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.Validation;
 import fi.karivanttinen.fplassistant.sync.OwnedSyncStore.ValidationState;
 import fi.karivanttinen.fplassistant.testsupport.TapasSeed;
+import fi.karivanttinen.fplassistant.tools.PfsReadSource;
 
 /** Failing baseline for real two-worker HTTP admission under a fixture-first backlog. */
 class OwnedMatchdayAdmissionProgressIntegrationTest {
 
     private static final ObjectMapper JSON = new ObjectMapper();
-    private static final OwnedSyncTables TABLES = OwnedSyncTables.tests();
+    private static final OwnedSyncTables TABLES = new OwnedSyncTables(
+            "fpl_acc_run_test", "fpl_acc_payload_test", "fpl_acc_receipt_test",
+            "fpl_acc_request_state_test", "fpl_acc_request_attempt_test", "fpl_acc_fixture_test",
+            "fpl_acc_pfs_evidence_test", "fpl_acc_planner_slot_test", "fpl_acc_planner_runtime_test",
+            "fpl_acc_fixture_manifest_test");
     private static final CatalogueScheduleTables CAPTURED = new CatalogueScheduleTables(
-            "fpl_admission_daily_price_test", "fpl_admission_gameweek_test", "fpl_admission_fixture_test");
+            "fpl_acc_daily_price_test", "fpl_acc_gameweek_test", "fpl_acc_fixture_capture_test");
     private static final Season SEASON = new Season(27, "2026-27", LocalDate.of(2026, 8, 21), null);
     private static final Instant START = Instant.parse("2026-10-01T12:00:00Z");
     private static final Duration RESPONSE_TIME = Duration.ofMillis(100);
+    private static final Duration PLANNER_TICK_PENDING_RESPONSE = Duration.ofMinutes(1).plusMillis(100);
     private static final Duration WORKER_DELAY = Duration.ofSeconds(1);
     private static final Duration VIRTUAL_LIMIT = Duration.ofSeconds(60);
     private static final Duration DRAIN_VIRTUAL_LIMIT = Duration.ofHours(2);
+    private static final Duration ROSTER_BASELINE_VIRTUAL_LIMIT = Duration.ofSeconds(400);
+    private static final Duration ACTIVE_RECOVERY_VIRTUAL_LIMIT = Duration.ofHours(48);
+    private static final Duration BLOCKED_HISTORY_HOLD = Duration.ofHours(1);
+    private static final int ACTIVE_RECOVERY_CLAIM_LIMIT = 6_000;
+    private static final int ACTIVE_RECOVERY_DISPATCH_LIMIT = 6_000;
+    private static final ZoneId UK = ZoneId.of("Europe/London");
+    private static final Instant ACTIVE_PRICE_CAPTURE = LocalDate.of(2026, 10, 1)
+            .atTime(2, 0).atZone(UK).toInstant();
+    private static final Instant ACTIVE_SCHEDULE_CAPTURE = LocalDate.of(2026, 10, 1)
+            .atTime(2, 10).atZone(UK).toInstant();
+    private static final Instant ACTIVE_RECOVERY_START = Instant.parse("2026-10-01T00:00:00Z");
+    private static final Instant LEGACY_GATE_OBSERVED_AT = Instant.parse("2026-09-30T10:00:00Z");
+    private static final Instant LEGACY_DAILY_DUE = Instant.parse("2026-10-01T02:00:00Z");
+    private static final Instant BASELINE_SOURCE_START = Instant.parse("2026-09-26T12:00:00Z");
+    private static final Instant SAME_FINGERPRINT_CORRECTION =
+            BASELINE_SOURCE_START.plus(Duration.ofHours(49));
     private static final int DISPATCH_LIMIT = 150;
     private static final int DRAIN_ADMISSION_LIMIT = 5_000;
     private static final int DRAIN_DISPATCH_LIMIT = 6_000;
+    private static final int ROSTER_BASELINE_ADMISSION_LIMIT = 350;
+    private static final int ROSTER_BASELINE_DISPATCH_LIMIT = 500;
+    private static final long ROSTER_BASELINE_WALL_LIMIT_NANOS = TimeUnit.SECONDS.toNanos(240);
+    private static final long ROSTER_BASELINE_DRAIN_RESERVE_NANOS = TimeUnit.SECONDS.toNanos(30);
     private static final int FIXTURE_RUNS = 50;
     private static final int HISTORY_RUNS = 68;
+    private static final int FULL_ROSTER_PLAYERS = 657;
+    private static final int FULL_ROSTER_CLUBS = 20;
     private static final int SEEDED_PARTIALS = 10;
     private static final long WALL_LIMIT_NANOS = TimeUnit.SECONDS.toNanos(110);
     private static final long DRAIN_WALL_LIMIT_NANOS = TimeUnit.SECONDS.toNanos(300);
@@ -116,6 +149,4703 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
     @AfterAll
     static void closePool() {
         if (dataSource != null) dataSource.close();
+    }
+
+    @Test
+    @Timeout(value = 300, unit = TimeUnit.SECONDS)
+    void minutePlannerTickObservesPublishedParentBeforeFirstPendingDiagnostic() throws Exception {
+        SourceData activeSource = SourceData.load();
+        Set<Integer> neverPublished = java.util.stream.IntStream.rangeClosed(41, 50).boxed()
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+        prepareActiveAcceptanceSeason();
+        MutableClock clock = new MutableClock(BASELINE_SOURCE_START);
+        long wallStartedAt = System.nanoTime();
+        long wallDeadline = wallStartedAt + TimeUnit.MINUTES.toNanos(4);
+        long baselineEpoch = -1;
+        try {
+            try (Harness baseline = Harness.active(1, wallDeadline, wallStartedAt, activeSource,
+                    clock, true, false)) {
+                baselineEpoch = baseline.fence.epoch();
+                baseline.catalogue.enqueueCycle(SEASON, clock.instant());
+                assertThat(baseline.dispatchOneWithControlledResponse("schedule-boundary-baseline-price"))
+                        .isEqualTo(1);
+                assertThat(baseline.dispatchOneWithControlledResponse("schedule-boundary-baseline-schedule"))
+                        .isEqualTo(1);
+                new PlannerInputRepository(jdbc, baseline.store, TABLES, CAPTURED, clock).load(SEASON);
+                advanceGlobalTimeline(clock, LEGACY_GATE_OBSERVED_AT);
+                baseline.catalogue.enqueueSchedule(SEASON, clock.instant());
+                assertThat(baseline.dispatchOneWithControlledResponse("schedule-boundary-old-root"))
+                        .isEqualTo(1);
+                new PlannerInputRepository(jdbc, baseline.store, TABLES, CAPTURED, clock).load(SEASON);
+                advanceGlobalTimeline(clock, ACTIVE_RECOVERY_START);
+                seedLegacyDailyOnlyGates(baseline, neverPublished);
+            }
+
+            try (Harness resumed = Harness.active(1, wallDeadline, wallStartedAt, activeSource,
+                    clock, false, true)) {
+                var beforePrice = resumed.coordinator.tick();
+                assertThat(beforePrice.nextDueAt()).isEqualTo(ACTIVE_PRICE_CAPTURE);
+                Instant previousScheduleSlot = Instant.parse("2026-09-30T01:10:00Z");
+                assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.plannerSlot()
+                        + " WHERE season=? AND kind='DAILY_SCHEDULE' AND due_at=?", Integer.class,
+                        SEASON.code(), Timestamp.from(previousScheduleSlot))).isEqualTo(1);
+
+                advanceGlobalTimeline(clock, ACTIVE_PRICE_CAPTURE);
+                resumed.coordinator.tick();
+                assertThat(resumed.dispatchOneWithControlledResponse("schedule-boundary-price"))
+                        .isEqualTo(1);
+                assertThat(resumed.store.currentCanonicalParentEvidence(SEASON.code(), 41, clock.instant())
+                        .currentPublished()).isTrue();
+                assertThat(resumed.dispatchOneWithControlledResponse("schedule-boundary-before-cutover"))
+                        .isEqualTo(1);
+                assertThat(jdbc.queryForObject("SELECT source_read_started_at FROM " + TABLES.receipt()
+                        + " WHERE season=? AND publication_key=?", Timestamp.class,
+                        SEASON.code(), CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY).toInstant())
+                        .isEqualTo(LEGACY_GATE_OBSERVED_AT);
+
+                Instant beforeScheduleCapture = ACTIVE_SCHEDULE_CAPTURE.minusSeconds(1);
+                advanceGlobalTimeline(clock, beforeScheduleCapture);
+                var beforeScheduledSlot = resumed.coordinator.tick();
+                assertThat(beforeScheduledSlot.nextDueAt()).isEqualTo(ACTIVE_SCHEDULE_CAPTURE);
+                assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.plannerSlot()
+                        + " WHERE season=? AND kind='DAILY_SCHEDULE' AND due_at=?", Integer.class,
+                        SEASON.code(), Timestamp.from(ACTIVE_SCHEDULE_CAPTURE))).isZero();
+                Map<String, Object> scheduleBeforeCapture = jdbc.queryForMap("SELECT generation,due_at "
+                        + "FROM " + TABLES.run() + " WHERE season=? AND runtime_mode='ACTIVE' AND runtime_epoch=? "
+                        + "AND coalescing_key=? AND publication_key=? AND state='PENDING'",
+                        SEASON.code(), resumed.fence.epoch(), CatalogueScheduleDispatcher.SCHEDULE_COALESCING_KEY,
+                        CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY);
+                assertThat(((Timestamp) scheduleBeforeCapture.get("due_at")).toInstant())
+                        .isEqualTo(LEGACY_DAILY_DUE);
+
+                advanceGlobalTimeline(clock, ACTIVE_SCHEDULE_CAPTURE);
+                resumed.coordinator.tick();
+                assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.plannerSlot()
+                        + " WHERE season=? AND kind='DAILY_SCHEDULE' AND due_at=?", Integer.class,
+                        SEASON.code(), Timestamp.from(ACTIVE_SCHEDULE_CAPTURE))).isEqualTo(1);
+                Map<String, Object> scheduleRun = jdbc.queryForMap("SELECT generation,due_at,requested_source_after "
+                        + "FROM " + TABLES.run() + " WHERE season=? AND runtime_mode='ACTIVE' AND runtime_epoch=? "
+                        + "AND coalescing_key=? AND publication_key=? AND state='PENDING'",
+                        SEASON.code(), resumed.fence.epoch(), CatalogueScheduleDispatcher.SCHEDULE_COALESCING_KEY,
+                        CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY);
+                assertThat(scheduleRun.get("generation")).isEqualTo(scheduleBeforeCapture.get("generation"));
+                assertThat(((Timestamp) scheduleRun.get("due_at")).toInstant())
+                        .isEqualTo(ACTIVE_SCHEDULE_CAPTURE);
+                assertThat(((Timestamp) scheduleRun.get("requested_source_after")).toInstant())
+                        .isEqualTo(ACTIVE_SCHEDULE_CAPTURE);
+                assertThat(resumed.dispatchOneWithControlledResponse("schedule-boundary-at-capture"))
+                        .isEqualTo(1);
+                assertThat(jdbc.queryForObject("SELECT source_read_started_at FROM " + TABLES.receipt()
+                        + " WHERE season=? AND publication_key=?", Timestamp.class,
+                        SEASON.code(), CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY).toInstant())
+                        .isEqualTo(LEGACY_GATE_OBSERVED_AT);
+                Instant stagedStart = jdbc.queryForObject("SELECT min(p.read_started_at) FROM " + TABLES.payload()
+                        + " p JOIN " + TABLES.run() + " r ON r.generation=p.run_generation "
+                        + "WHERE r.generation=? AND p.endpoint_kind IN ('BOOTSTRAP_STATIC','FIXTURES') "
+                        + "AND p.validation_state='VALID'", Timestamp.class,
+                        ((Number) scheduleRun.get("generation")).longValue()).toInstant();
+                assertThat(stagedStart).isEqualTo(ACTIVE_SCHEDULE_CAPTURE);
+                assertThat(jdbc.queryForObject("SELECT due_at FROM " + TABLES.run()
+                        + " WHERE generation=?", Timestamp.class,
+                        ((Number) scheduleRun.get("generation")).longValue()).toInstant())
+                        .isEqualTo(LEGACY_DAILY_DUE);
+
+                advanceGlobalTimeline(clock, LEGACY_DAILY_DUE);
+                resumed.coordinator.tick();
+                assertThat(resumed.store.currentCanonicalParentEvidence(SEASON.code(), 41, clock.instant())
+                        .currentPublished()).isTrue();
+                var beforeFreshReceipt = new PlannerInputRepository(jdbc, resumed.store, TABLES, CAPTURED, clock)
+                        .load(SEASON);
+                var oldPublishedFixture = beforeFreshReceipt.fixtures().stream()
+                        .filter(row -> row.id() == 41).findFirst().orElseThrow();
+                assertThat(oldPublishedFixture.recoverySourceStatus())
+                        .as("the existing exact current publication remains known before the due capture is published")
+                        .isEqualTo(fi.karivanttinen.fplassistant.sync.SharedFixtureRecoveryPolicy.SourceStatus.FINISHED);
+                assertThat(pendingFixtureRuns(resumed.fence.epoch(), neverPublished))
+                        .as("a valid old current publication can materialize overdue recovery before the new receipt")
+                        .isEqualTo(neverPublished.size());
+                ManualDriver preparationGoal = new ManualDriver(resumed,
+                        DriverGoal.firstPendingFixtures(neverPublished), Duration.ofMinutes(15), 200, 200, 200,
+                        PLANNER_TICK_PENDING_RESPONSE);
+                preparationGoal.maxActiveWorkers = 1;
+                assertThat(preparationGoal.hasDueCanonicalRuns()).isTrue();
+                assertThat(preparationGoal.goalSatisfied())
+                        .as("no target can become first-pending before its new parent is observed")
+                        .isFalse();
+
+                assertThat(resumed.dispatchOneWithControlledResponse("schedule-boundary-publication"))
+                        .isEqualTo(1);
+                assertDailyCapture(CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY, ACTIVE_SCHEDULE_CAPTURE);
+                assertThat(jdbc.queryForObject("SELECT source_read_started_at FROM " + TABLES.receipt()
+                        + " WHERE season=? AND publication_key=?", Timestamp.class,
+                        SEASON.code(), CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY).toInstant())
+                        .isEqualTo(ACTIVE_SCHEDULE_CAPTURE);
+                Instant parentPublishedAt = clock.instant();
+                ParentSelectionDiagnostic initialParent = plannerParentSelection(resumed, 41);
+                Map<String, Object> initialMarker = targetFinishedMarker(41);
+                List<Map<String, Object>> initialRootReceipts = canonicalRootReceipts();
+                var initialParentEvidence = resumed.store.currentCanonicalParentEvidence(
+                        SEASON.code(), 41, clock.instant());
+                System.out.printf("OWNED_PLANNER_MARKER initialAt=%s newestValid=%s currentPublished=%s "
+                                + "marker=%s parent=%s nextPlannerTick=%s roots=%s%n",
+                        clock.instant(), initialParent.newestValidCandidate(), initialParent.currentPublishedParent(),
+                        initialMarker, initialParentEvidence, preparationGoal.nextPlannerTickAt, initialRootReceipts);
+                assertThat(initialParent.currentPublishedParent().publicationGeneration())
+                        .as("the selected exact source pair is current-published")
+                        .isNotNull();
+                assertThat(initialParent.currentPublishedParent().fixtureFinished())
+                        .as("the selected parent body itself says this target is finished")
+                        .isTrue();
+                assertThat(initialParentEvidence).isEqualTo(
+                        new OwnedSyncStore.CanonicalParentEvidence(true, false));
+                assertThat(markerMatches(initialMarker, initialParent.currentPublishedParent())).isFalse();
+                assertCanonicalSourceInterval(initialParent.currentPublishedParent(), initialRootReceipts);
+
+                Set<Integer> firstFixturePlayers = activeSource.requiredHistoryPlayersByFixture(50).get(41);
+                int timingHistoryPlayer = activeSource.playerIds().stream()
+                        .filter(playerId -> !firstFixturePlayers.contains(playerId)).findFirst().orElseThrow();
+                Instant tickAt = preparationGoal.nextPlannerTickAt;
+                resumed.histories.enqueuePlayerHistory(SEASON, timingHistoryPlayer, tickAt.minusMillis(50));
+                resumed.http.setWaitObserverForTests(preparationGoal::observeWait);
+                preparationGoal.run();
+
+                ParentSelectionDiagnostic observedParent = plannerParentSelection(resumed, 41);
+                Map<String, Object> observedMarker = targetFinishedMarker(41);
+                var observedParentEvidence = resumed.store.currentCanonicalParentEvidence(
+                        SEASON.code(), 41, clock.instant());
+                List<Map<String, Object>> finalRootReceipts = canonicalRootReceipts();
+                var minuteTick = preparationGoal.plannerTicks.stream()
+                        .filter(tick -> tick.at().equals(tickAt)).findFirst().orElseThrow();
+                var plannerInputAtOneMinute = preparationGoal.plannerSnapshotAtFirstFixedTick;
+                assertThat(plannerInputAtOneMinute).isNotNull();
+                var plannerFixtureAtOneMinute = plannerInputAtOneMinute.fixtures().stream()
+                        .filter(row -> row.id() == 41).findFirst().orElseThrow();
+                System.out.printf("OWNED_PLANNER_MARKER next=%s newestValid=%s currentPublished=%s marker=%s "
+                                + "parent=%s roots=%s tick=%s stop=%s claims=%d dispatches=%d firstPending=%s "
+                                + "targetTransitions=%s gates=%s ticks=%s admissions=%s runStates=%s fixtureRuns=%s "
+                                + "virtualElapsed=%s%n",
+                        clock.instant(), observedParent.newestValidCandidate(), observedParent.currentPublishedParent(),
+                        observedMarker, observedParentEvidence, finalRootReceipts, minuteTick,
+                        preparationGoal.stopReason, preparationGoal.claims, preparationGoal.dispatches,
+                        preparationGoal.firstPendingObservations, preparationGoal.targetTransitions,
+                        fixtureGateTrace(neverPublished), preparationGoal.plannerTicks,
+                        preparationGoal.admissions.subList(Math.max(0, preparationGoal.admissions.size() - 20),
+                                preparationGoal.admissions.size()),
+                        jdbc.queryForList("SELECT kind,state,count(*) count,max(attempt_count) attempts,"
+                                + "min(due_at) min_due,max(due_at) max_due FROM " + TABLES.run()
+                                + " WHERE season=? AND runtime_mode='ACTIVE' AND runtime_epoch=? GROUP BY kind,state "
+                                + "ORDER BY kind,state", SEASON.code(), resumed.fence.epoch()),
+                        jdbc.queryForList("SELECT generation,publication_key,state,attempt_count,due_at,"
+                                + "requested_source_after FROM " + TABLES.run()
+                                + " WHERE season=? AND runtime_mode='ACTIVE' AND runtime_epoch=?"
+                                + " AND kind='FIXTURE_VERIFICATION' AND publication_key IN ("
+                                + neverPublished.stream().sorted().map(id -> "'fixture:" + id + "'")
+                                        .collect(java.util.stream.Collectors.joining(","))
+                                + ") ORDER BY generation", SEASON.code(), resumed.fence.epoch()),
+                        Duration.between(preparationGoal.startAt, clock.instant()));
+                assertThat(preparationGoal.stopReason).isIn("DRAINED", "VIRTUAL_LIMIT");
+                assertThat(preparationGoal.claims).isLessThanOrEqualTo(200);
+                assertThat(Duration.between(preparationGoal.startAt, clock.instant()))
+                        .isLessThanOrEqualTo(Duration.ofMinutes(15));
+                assertThat(minuteTick.at()).isEqualTo(preparationGoal.plannerTicks.getFirst().at()
+                        .plus(Duration.ofMinutes(1)));
+                assertThat(Duration.between(parentPublishedAt, minuteTick.at()))
+                        .isLessThanOrEqualTo(Duration.ofMinutes(1));
+                assertThat(minuteTick.activeWorkers()).isNotEmpty();
+                assertThat(minuteTick.pendingResponseReleases()).contains(tickAt.plusMillis(100));
+                assertThat(minuteTick.acknowledgedWorkerStates().values())
+                        .anySatisfy(state -> assertThat(state).startsWith("PENDING_RESPONSE"));
+                assertThat(plannerFixtureAtOneMinute.recoverySourceStatus())
+                        .isEqualTo(fi.karivanttinen.fplassistant.sync.SharedFixtureRecoveryPolicy.SourceStatus.FINISHED);
+                assertThat(minuteTick.completedWorkers())
+                        .as("an in-flight source callback is not collected before its controlled response release")
+                        .isEmpty();
+                Set<Integer> callbacksInFlight = minuteTick.acknowledgedWorkerStates().entrySet().stream()
+                        .filter(entry -> entry.getValue().startsWith("PENDING_RESPONSE"))
+                        .map(Map.Entry::getKey).collect(java.util.stream.Collectors.toSet());
+                assertThat(callbacksInFlight).isNotEmpty();
+                assertThat(minuteTick.workerGenerations().keySet()).containsAll(callbacksInFlight);
+                assertThat(preparationGoal.plannerTicks.getFirst().activeWorkers())
+                        .as("the initial zero-delay planner tick runs while the driver is idle")
+                        .isEmpty();
+                if (preparationGoal.firstPendingObservations.isEmpty()) {
+                    assertThat(preparationGoal.stopReason)
+                            .as("this bounded diagnostic is not target acceptance")
+                            .isEqualTo("VIRTUAL_LIMIT");
+                } else {
+                    assertThat(preparationGoal.firstPendingObservations.keySet())
+                            .containsAnyElementsOf(neverPublished);
+                }
+                assertThat(observedParent.currentPublishedParent())
+                        .isEqualTo(initialParent.currentPublishedParent());
+                assertThat(observedParent.newestValidCandidate())
+                        .isEqualTo(initialParent.newestValidCandidate());
+                assertThat(observedParentEvidence).isEqualTo(
+                        new OwnedSyncStore.CanonicalParentEvidence(true, true));
+                assertThat(markerMatches(observedMarker, observedParent.currentPublishedParent())).isTrue();
+                assertThat(observedMarker.get("first_finished_observed_at"))
+                        .isEqualTo(initialMarker.get("first_finished_observed_at"));
+                assertThat(finalRootReceipts).as("both canonical parent keys remain stable after the marker is known")
+                        .isEqualTo(initialRootReceipts);
+                assertThat(canonicalAttemptsAfter(resumed, minuteTick.at()))
+                        .as("no canonical root refresh follows the marker")
+                        .isZero();
+                for (int index = 1; index < preparationGoal.plannerTicks.size(); index++) {
+                    assertThat(Duration.between(preparationGoal.plannerTicks.get(index - 1).at(),
+                            preparationGoal.plannerTicks.get(index).at()))
+                            .as("manual planner ticks use fixed delay, not the plan's next source due")
+                            .isEqualTo(Duration.ofMinutes(1));
+                }
+                assertThat(activeClaimAttempts(baselineEpoch)
+                        + activeClaimAttempts(resumed.fence.epoch())).isLessThan(300);
+            }
+        } finally {
+            cleanActiveAcceptanceSeason();
+        }
+    }
+
+    @Test
+    @Timeout(value = 180, unit = TimeUnit.SECONDS)
+    void diagnosticNewestUnpublishedPairDoesNotShadowPublishedPlannerParent() throws Exception {
+        SourceData activeSource = SourceData.load();
+        prepareActiveAcceptanceSeason();
+        MutableClock clock = new MutableClock(BASELINE_SOURCE_START);
+        long wallStartedAt = System.nanoTime();
+        long wallDeadline = wallStartedAt + TimeUnit.SECONDS.toNanos(150);
+        try (Harness harness = Harness.active(1, wallDeadline, wallStartedAt, activeSource,
+                clock, true, false)) {
+            harness.dispatchCanonicalCycle();
+            var repository = new PlannerInputRepository(jdbc, harness.store, TABLES, CAPTURED, clock);
+            repository.load(SEASON);
+            ParentSelectionDiagnostic published = plannerParentSelection(harness, 41);
+            assertThat(published.newestValidCandidate())
+                    .isEqualTo(published.currentPublishedParent());
+
+            harness.seedNewerUnpublishedCanonicalPairWithoutAdvancingDemand();
+            ParentSelectionDiagnostic afterUnpublished = plannerParentSelection(harness, 41);
+            var plannerInput = repository.load(SEASON);
+            var fixture = plannerInput.fixtures().stream().filter(row -> row.id() == 41)
+                    .findFirst().orElseThrow();
+            Map<String, Object> marker = targetFinishedMarker(41);
+            System.out.printf("OWNED_UNPUBLISHED_PARENT newestValid=%s currentPublished=%s visited=%d "
+                            + "plannerSource=%s marker=%s currentPublishedEvidence=%s%n",
+                    afterUnpublished.newestValidCandidate(), afterUnpublished.currentPublishedParent(),
+                    afterUnpublished.parseableCandidatesVisited(), fixture.recoverySourceStatus(), marker,
+                    harness.store.currentCanonicalParentEvidence(SEASON.code(), 41, clock.instant()));
+            assertThat(afterUnpublished.newestValidCandidate().publicationGeneration()).isNull();
+            assertThat(afterUnpublished.newestValidCandidate().sourceGeneration())
+                    .isGreaterThan(published.currentPublishedParent().sourceGeneration());
+            assertThat(afterUnpublished.newestValidCandidate().fixturesRead().finishedAt())
+                    .isAfter(published.currentPublishedParent().fixturesRead().finishedAt());
+            assertThat(afterUnpublished.currentPublishedParent())
+                    .isEqualTo(published.currentPublishedParent());
+            assertThat(fixture.recoverySourceStatus())
+                    .isEqualTo(fi.karivanttinen.fplassistant.sync.SharedFixtureRecoveryPolicy.SourceStatus.FINISHED);
+            assertThat(markerMatches(marker, afterUnpublished.currentPublishedParent())).isTrue();
+            assertThat(nullableLong(marker.get("finished_parent_generation")))
+                    .isEqualTo(afterUnpublished.currentPublishedParent().sourceGeneration());
+            assertThat(nullableLong(marker.get("finished_parent_publication_generation")))
+                    .isEqualTo(afterUnpublished.currentPublishedParent().publicationGeneration());
+            assertThat(nullableLong(marker.get("finished_parent_bootstrap_payload_id")))
+                    .isEqualTo(afterUnpublished.currentPublishedParent().bootstrapPayloadId());
+            assertThat(nullableLong(marker.get("finished_parent_fixtures_payload_id")))
+                    .isEqualTo(afterUnpublished.currentPublishedParent().fixturesPayloadId());
+        } finally {
+            cleanActiveAcceptanceSeason();
+        }
+    }
+
+    @Test
+    void activeAcceptanceCleanupPreservesSharedCaptureSeasonAndOtherFixtureEvidence() {
+        OwnedSyncTables otherClassTables = OwnedSyncTables.tests();
+        new OwnedSyncSchema(jdbc, otherClassTables).initialize();
+        int fixtureId = 99027;
+        int seeded = 0;
+        try {
+            seeded = jdbc.update("INSERT INTO " + otherClassTables.fixtureSync()
+                            + "(season_id,season_code,fixture_id,state,updated_at) "
+                            + "VALUES (27,'2026-27',?,'SCHEDULED',?)",
+                    fixtureId, Timestamp.from(START));
+            assertThat(seeded).isOne();
+
+            prepareActiveAcceptanceSeason();
+            assertThat(jdbc.queryForObject("SELECT code FROM season WHERE id=27", String.class))
+                    .isEqualTo("2026-27");
+            assertThat(jdbc.queryForObject("SELECT start_date FROM season WHERE id=27", java.sql.Date.class))
+                    .isEqualTo(java.sql.Date.valueOf("2026-08-21"));
+            assertThat(jdbc.queryForObject("SELECT is_current FROM season WHERE id=27", Boolean.class)).isTrue();
+            assertThat(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM " + otherClassTables.fixtureSync()
+                    + " WHERE season_id=27 AND fixture_id=?)", Boolean.class, fixtureId)).isTrue();
+
+            cleanActiveAcceptanceSeason();
+            assertThat(jdbc.queryForObject("SELECT code FROM season WHERE id=27", String.class))
+                    .isEqualTo("2026-27");
+            assertThat(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM " + otherClassTables.fixtureSync()
+                    + " WHERE season_id=27 AND fixture_id=?)", Boolean.class, fixtureId)).isTrue();
+            assertThat(jdbc.queryForObject("SELECT is_current FROM season WHERE id=?", Boolean.class,
+                    TapasSeed.CURRENT_SEASON_ID)).isTrue();
+        } finally {
+            try {
+                cleanActiveAcceptanceSeason();
+            } finally {
+                if (seeded == 1) {
+                    jdbc.update("DELETE FROM " + otherClassTables.fixtureSync()
+                            + " WHERE season_id=27 AND fixture_id=?", fixtureId);
+                }
+            }
+        }
+    }
+
+    @Test
+    @Timeout(value = 300, unit = TimeUnit.SECONDS)
+    void compactActiveBaselineAndOracleRetainRealReceiptsAcrossReactivation() throws Exception {
+        SourceData compactSource = SourceData.load();
+        Set<Integer> fixtureIds = Set.of(1);
+        prepareActiveAcceptanceSeason();
+        MutableClock clock = new MutableClock(BASELINE_SOURCE_START);
+        long wallStartedAt = System.nanoTime();
+        long wallDeadline = wallStartedAt + TimeUnit.MINUTES.toNanos(4);
+        String publicationChecksum;
+        String fingerprintChecksum;
+        Map<Integer, Long> initialReceipts;
+        Map<Integer, Long> correctionReceipts;
+        Map<Integer, Instant> firstVerifiedAt;
+        long baselineEpoch;
+        try {
+            try (Harness baseline = Harness.active(1, wallDeadline, wallStartedAt, compactSource,
+                    clock, true, false)) {
+                baseline.dispatchCanonicalCycle();
+                new PlannerInputRepository(jdbc, baseline.store, TABLES, CAPTURED, clock).load(SEASON);
+                reconcileHistoryFingerprints(baseline, fixtureIds);
+                Map<Integer, FixtureVerification.Decision> first = publishDirectFixtureBatch(baseline, 1, 1);
+                assertThat(first.get(1).state()).isEqualTo(FixtureVerification.State.PENDING);
+                assertThat(first.get(1).reasons())
+                        .containsExactly(FixtureVerification.Reason.NEEDS_SECOND_OBSERVATION);
+                Instant firstFinished = first.get(1).observation().reads().completedAt();
+                advanceGlobalTimeline(clock, firstFinished.plus(Duration.ofMinutes(11)));
+                Map<Integer, FixtureVerification.Decision> verified = publishDirectFixtureBatch(baseline, 1, 1);
+                assertThat(verified.get(1).state()).isEqualTo(FixtureVerification.State.VERIFIED);
+                assertThat(verified.get(1).observation().reads().startedAt())
+                        .isAfterOrEqualTo(firstFinished.plus(Duration.ofMinutes(10)));
+                assertTargetReceiptIntervalNegativeCases(baseline, 1);
+                assertBaselineCandidateCoverage(fixtureIds, compactSource);
+                assertReceiptBackedFixtures(baseline.fence, fixtureIds);
+
+                initialReceipts = Map.of(1, jdbc.queryForObject("SELECT latest_generation FROM "
+                        + TABLES.receipt() + " WHERE season=? AND publication_key=?", Long.class,
+                        SEASON.code(), "fixture:1"));
+                firstVerifiedAt = fixtureFirstVerifiedTimes(fixtureIds);
+                advanceGlobalTimeline(clock, SAME_FINGERPRINT_CORRECTION);
+                correctionReceipts = publishSameFingerprintCorrectionBatch(baseline, 1, 1);
+                assertQualifyingBaselineReceipts(fixtureIds, correctionReceipts, initialReceipts, firstVerifiedAt);
+                assertBaselineCandidateCoverage(fixtureIds, compactSource);
+                assertReceiptBackedFixtures(baseline.fence, fixtureIds);
+                publicationChecksum = baselinePublicationChecksum(fixtureIds);
+                fingerprintChecksum = historyFingerprintChecksum(fixtureIds);
+                FixtureOracle oracle = sourceFixtureOracles(compactSource, fixtureIds).get(1);
+                assertStoredFixtureOracle(1, oracle);
+                baselineEpoch = baseline.fence.epoch();
+            }
+
+            try (Harness resumed = Harness.active(1, wallDeadline, wallStartedAt, compactSource,
+                    clock, false, true)) {
+                resumed.dispatchCanonicalCycle();
+                new PlannerInputRepository(jdbc, resumed.store, TABLES, CAPTURED, clock).load(SEASON);
+                for (Map.Entry<Integer, Long> receipt : correctionReceipts.entrySet()) {
+                    assertThat(jdbc.queryForObject("SELECT latest_generation FROM " + TABLES.receipt()
+                                    + " WHERE season=? AND publication_key=?", Long.class,
+                            SEASON.code(), "fixture:" + receipt.getKey())).isEqualTo(receipt.getValue());
+                    assertThat(jdbc.queryForObject("SELECT last_verified_generation FROM " + TABLES.fixtureSync()
+                                    + " WHERE season_id=? AND fixture_id=?", Long.class,
+                            SEASON.id(), receipt.getKey())).isEqualTo(receipt.getValue());
+                    assertThat(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM " + TABLES.run()
+                                    + " WHERE generation=? AND runtime_mode='ACTIVE' AND runtime_epoch=?"
+                                    + " AND state='COMPLETED')", Boolean.class, receipt.getValue(), baselineEpoch))
+                            .isTrue();
+                }
+                assertThat(baselinePublicationChecksum(fixtureIds)).isEqualTo(publicationChecksum);
+                assertThat(historyFingerprintChecksum(fixtureIds)).isEqualTo(fingerprintChecksum);
+                assertCanonicalPairProof(resumed, compactSource);
+                PayloadReadProbe.Snapshot workerReadsBeforeOracle = resumed.payloadReads.snapshot();
+                CanonicalParentProof diagnosticParent = currentCanonicalParentProof(resumed);
+                assertThat(diagnosticParent.currentPublished()).isTrue();
+                assertThat(diagnosticParent.immutable()).isTrue();
+                assertThat(numberLong(diagnosticParent.trace().get("diagnosticPayloadQueries"))).isEqualTo(1);
+                assertThat(numberLong(diagnosticParent.trace().get("diagnosticPayloadRawBytes"))).isPositive();
+                assertThat(resumed.payloadReads.snapshot())
+                        .as("non-probe oracle body reads are separate from worker measurements")
+                        .isEqualTo(workerReadsBeforeOracle);
+                assertStoredFixtureOracle(1, sourceFixtureOracles(compactSource, fixtureIds).get(1));
+            }
+        } finally {
+            cleanActiveAcceptanceSeason();
+        }
+    }
+
+    @Test
+    void realPlannerAndSourcesKeepTheTwelveHourUnknownParentGateAndFirstPendingState() throws Exception {
+        Instant due = LEGACY_DAILY_DUE;
+        Instant firstFinished = LEGACY_GATE_OBSERVED_AT;
+        assertThat(firstFinished.plus(Duration.ofHours(12))).isBeforeOrEqualTo(due);
+        var fixtureRead = new CatalogueScheduleParser.ReadInterval(due.minusMillis(40), due.minusMillis(30));
+        var liveRead = new CatalogueScheduleParser.ReadInterval(due.minusMillis(20), due.minusMillis(10));
+        var historyRead = new CatalogueScheduleParser.ReadInterval(due.minusMillis(9), due.minusMillis(5));
+        var bootstrap = new CatalogueScheduleParser.SourceDocument(source.bootstrapBytes(), fixtureRead);
+        var fixtures = new CatalogueScheduleParser.SourceDocument(source.fixtureBytes(), fixtureRead);
+        var snapshot = CatalogueScheduleParser.parse(SEASON, bootstrap, fixtures);
+        var fixture = snapshot.fixtures().stream().filter(row -> row.id() == 41).findFirst().orElseThrow();
+        var live = new CatalogueScheduleParser.SourceDocument(source.liveBytes(fixture.gameweek()), liveRead);
+        Set<Integer> candidates = candidatePlayers(snapshot, fixture, live);
+        List<HistoryParser.CanonicalFixture> canonical = snapshot.fixtures().stream()
+                .map(HistoryParser::canonicalFixture).toList();
+        List<HistoryParser.HistoryBatch> histories = candidates.stream().sorted()
+                .map(playerId -> HistoryParser.parse(SEASON, playerId,
+                        new CatalogueScheduleParser.SourceDocument(source.historyBytes(playerId), historyRead),
+                        canonical))
+                .toList();
+        FixtureVerification.Decision first = FixtureVerification.verify(SEASON, fixture, fixtureRead,
+                live, histories, null, due);
+        assertThat(first.state()).isEqualTo(FixtureVerification.State.PENDING);
+        assertThat(first.reasons()).containsExactly(FixtureVerification.Reason.NEEDS_SECOND_OBSERVATION);
+        assertThat(first.observation().coherent()).isTrue();
+
+        AdaptiveMatchdayPlanner.Fixture unknown = new AdaptiveMatchdayPlanner.Fixture(fixture.id(),
+                fixture.gameweek(), fixture.kickoff(), true, true, true, firstFinished, candidates,
+                SharedFixtureRecoveryPolicy.SourceStatus.UNKNOWN);
+        AdaptiveMatchdayPlanner.Fixture finished = new AdaptiveMatchdayPlanner.Fixture(fixture.id(),
+                fixture.gameweek(), fixture.kickoff(), true, true, true, firstFinished, candidates,
+                SharedFixtureRecoveryPolicy.SourceStatus.FINISHED);
+        AdaptiveMatchdayPlanner.FixtureProgress progress = new AdaptiveMatchdayPlanner.FixtureProgress(
+                fixture.id(), true, firstFinished, null, 0, due, null, firstFinished, Set.of(),
+                AdaptiveMatchdayPlanner.RecoveryMetadata.empty());
+        AdaptiveMatchdayPlanner planner = new AdaptiveMatchdayPlanner(Clock.fixed(due, ZoneOffset.UTC));
+        var blocked = planner.plan(new AdaptiveMatchdayPlanner.Input(SEASON.code(), 0,
+                List.of(unknown), List.of(progress), List.of()));
+        assertThat(blocked.dueSlots()).noneMatch(slot -> slot.kind()
+                == AdaptiveMatchdayPlanner.WorkKind.FIXTURE_VERIFICATION);
+        var eligible = planner.plan(new AdaptiveMatchdayPlanner.Input(SEASON.code(), 0,
+                List.of(finished), List.of(progress), List.of()));
+        assertThat(eligible.dueSlots()).filteredOn(slot -> slot.kind()
+                == AdaptiveMatchdayPlanner.WorkKind.FIXTURE_VERIFICATION)
+                .singleElement().satisfies(slot -> {
+                    assertThat(slot.reason()).isEqualTo(AdaptiveMatchdayPlanner.SlotReason.DAILY_RECOVERY);
+                    assertThat(slot.dueAt()).isEqualTo(due);
+                    assertThat(slot.fixtureIds()).containsExactly(fixture.id());
+                });
+    }
+
+    @Test
+    void unrelatedDailyDeadlineDoesNotProveFixtureSpecificRecoveryWork() {
+        Instant now = ACTIVE_PRICE_CAPTURE;
+        int fixtureId = 99;
+        AdaptiveMatchdayPlanner.Fixture fixture = new AdaptiveMatchdayPlanner.Fixture(fixtureId, 1,
+                now.minus(Duration.ofHours(1)), true, true, true, now.minus(Duration.ofHours(14)),
+                Set.of(1), SharedFixtureRecoveryPolicy.SourceStatus.UNKNOWN);
+        AdaptiveMatchdayPlanner.FixtureProgress progress = new AdaptiveMatchdayPlanner.FixtureProgress(
+                fixtureId, true, now.minus(Duration.ofHours(14)), now.minus(Duration.ofHours(13)), 1,
+                now.minus(Duration.ofHours(1)), null, null, Set.of(),
+                AdaptiveMatchdayPlanner.RecoveryMetadata.empty());
+        AdaptiveMatchdayPlanner.Plan plan = new AdaptiveMatchdayPlanner(Clock.fixed(now, ZoneOffset.UTC)).plan(
+                new AdaptiveMatchdayPlanner.Input(SEASON.code(), 0, List.of(fixture), List.of(progress), List.of()));
+        SharedFixtureRecoveryPolicy.Decision recovery = fixtureOnlyRecoveryDecision(fixture, progress, now);
+        Instant fixtureOnlyDue = fixtureOnlyFutureDue(SEASON.code(), 0, Clock.fixed(now, ZoneOffset.UTC),
+                fixture, progress, recovery);
+        AdaptiveMatchdayPlanner.WorkSlot dailySlot = new AdaptiveMatchdayPlanner.WorkSlot(
+                SEASON.code() + ":daily_schedule:unrelated", AdaptiveMatchdayPlanner.WorkKind.DAILY_SCHEDULE,
+                ACTIVE_SCHEDULE_CAPTURE, Set.of(), Set.of(), AdaptiveMatchdayPlanner.SlotReason.ROUTINE, 2);
+
+        assertThat(plan.dueSlots()).anyMatch(slot -> slot.kind()
+                == AdaptiveMatchdayPlanner.WorkKind.DAILY_CATALOGUE);
+        assertThat(plan.nextDueAt()).contains(ACTIVE_SCHEDULE_CAPTURE);
+        assertThat(plan.dueSlots()).noneMatch(slot -> slot.fixtureIds().contains(fixtureId));
+        assertThat(recovery.action()).isEqualTo(SharedFixtureRecoveryPolicy.Action.WAIT_FOR_PARENT);
+        assertThat(fixtureOnlyDue).isNull();
+        assertThat(hasFixtureSpecificFutureWork(fixtureId, false,
+                List.of(new PlannerRuntimeRepository.DurableSlot(dailySlot, now)), fixtureOnlyDue,
+                plan.nextDueAt().orElse(null), now))
+                .as("an unrelated daily wake and a pending observation cannot stand in for this fixture's work")
+                .isFalse();
+    }
+
+    @Test
+    @Timeout(value = 300, unit = TimeUnit.SECONDS)
+    void scheduleCorrectionCanRepublishOnlyAfterTwoFreshCoordinatorBatches() throws Exception {
+        SourceData scheduleSource = SourceData.loadActiveAcceptanceRoster();
+        prepareActiveAcceptanceSeason();
+        MutableClock clock = new MutableClock(BASELINE_SOURCE_START);
+        long wallStartedAt = System.nanoTime();
+        long wallDeadline = wallStartedAt + TimeUnit.MINUTES.toNanos(4);
+        try {
+            try (Harness baseline = Harness.active(1, wallDeadline, wallStartedAt, scheduleSource,
+                    clock, true, false)) {
+                baseline.dispatchCanonicalCycle();
+                new PlannerInputRepository(jdbc, baseline.store, TABLES, CAPTURED, clock).load(SEASON);
+                reconcileHistoryFingerprints(baseline, Set.of(3));
+                Map<Integer, FixtureVerification.Decision> first = publishDirectFixtureBatch(baseline, 3, 3);
+                assertThat(first.get(3).state()).isEqualTo(FixtureVerification.State.PENDING);
+                assertThat(first.get(3).reasons())
+                        .containsExactly(FixtureVerification.Reason.NEEDS_SECOND_OBSERVATION);
+                advanceGlobalTimeline(clock, first.get(3).observation().reads().completedAt()
+                        .plus(Duration.ofMinutes(11)));
+                Map<Integer, FixtureVerification.Decision> verified = publishDirectFixtureBatch(baseline, 3, 3);
+                assertThat(verified.get(3).state()).isEqualTo(FixtureVerification.State.VERIFIED);
+
+                FixtureOwnershipSnapshot before = fixtureOwnershipSnapshot(3);
+                Map<Integer, FixturePublicationComponents> beforeComponents =
+                        fixturePublicationComponents(Set.of(3));
+                String oldHeaderFingerprint = before.verifiedHeader();
+                String oldCanonicalFingerprint = canonicalScheduleFrame().get("source_pair_fingerprint").toString();
+                assertThat(before.currentVerifiedGeneration()).isNotNull();
+                assertThat(before.lastVerifiedGeneration()).isEqualTo(before.currentVerifiedGeneration());
+                scheduleSource.correctFixtureScores(Set.of(3));
+                baseline.catalogue.enqueueSchedule(SEASON, clock.instant());
+                assertThat(baseline.dispatchOneWithControlledResponse("fixture-3-schedule-correction")).isEqualTo(1);
+                new PlannerInputRepository(jdbc, baseline.store, TABLES, CAPTURED, clock).load(SEASON);
+
+                FixtureOwnershipSnapshot after = fixtureOwnershipSnapshot(3);
+                Map<Integer, FixturePublicationComponents> afterComponents =
+                        fixturePublicationComponents(Set.of(3));
+                Map<String, Object> correctedRootFrame = canonicalScheduleFrame();
+                Map<String, Object> correctedFixtureRoot = canonicalRootFixtureHeader(baseline, 3);
+                String correctedCanonicalFingerprint = correctedRootFrame
+                        .get("source_pair_fingerprint").toString();
+                FixtureOracle correctedOracle = sourceFixtureOracles(scheduleSource, Set.of(3)).get(3);
+                System.out.printf("OWNED_SCHEDULE_INVALIDATION fixture=3 before=%s after=%s components=%s "
+                                + "rootFingerprint=%s->%s correctedOracle=%s%n",
+                        before.flags(), after.flags(), fixturePublicationComponentDiffs(beforeComponents, afterComponents),
+                        oldCanonicalFingerprint, correctedCanonicalFingerprint, correctedOracle);
+                assertThat(correctedCanonicalFingerprint).isNotEqualTo(oldCanonicalFingerprint);
+                assertThat(correctedOracle.headerFingerprint()).isNotEqualTo(oldHeaderFingerprint);
+                assertThat(correctedOracle.statsFingerprint()).isEqualTo(before.verifiedStatsFingerprint());
+                assertScheduleInvalidationRetainsActualOwnership(3, before, after);
+                assertScheduleCorrectionComponentTransition(beforeComponents, afterComponents, Set.of(3));
+                assertThat(jdbc.queryForObject("SELECT count(*) FROM player_fixture_stats"
+                        + " WHERE season_id=? AND fixture_id=3", Integer.class, SEASON.id())).isPositive();
+                assertThat(pfsRows("OFF", 3)).as("fixture 3 physical PFS is masked after revocation").isEmpty();
+                assertThat(pfsRows("ACTIVE", 3)).as("fixture 3 is unreadable until reverified").isEmpty();
+
+                List<Long> correctionRuns = afterComponents.get(3).verificationRunGenerations();
+                baseline.catalogue.enqueueSchedule(SEASON, clock.instant());
+                assertThat(baseline.dispatchOneWithControlledResponse("fixture-3-unrelated-schedule-refresh"))
+                        .isEqualTo(1);
+                new PlannerInputRepository(jdbc, baseline.store, TABLES, CAPTURED, clock).load(SEASON);
+                Map<String, Object> unrelatedRootFrame = canonicalScheduleFrame();
+                String unrelatedCanonicalFingerprint = unrelatedRootFrame
+                        .get("source_pair_fingerprint").toString();
+                Map<Integer, FixturePublicationComponents> unrelatedComponents =
+                        fixturePublicationComponents(Set.of(3));
+                assertThat(unrelatedCanonicalFingerprint).isNotEqualTo(correctedCanonicalFingerprint);
+                assertThat(unrelatedRootFrame.get("source_bootstrap_sha256"))
+                        .as("unrelated capture did not change bootstrap content").isEqualTo(correctedRootFrame.get("source_bootstrap_sha256"));
+                assertThat(unrelatedRootFrame.get("source_fixtures_sha256"))
+                        .as("unrelated capture did not change fixture-source content").isEqualTo(correctedRootFrame.get("source_fixtures_sha256"));
+                assertThat(canonicalRootFixtureHeader(baseline, 3))
+                        .as("unrelated publication preserves the authoritative fixture source")
+                        .isEqualTo(correctedFixtureRoot);
+                assertThat(unrelatedComponents.get(3).sourceHeader()).isEqualTo(afterComponents.get(3).sourceHeader());
+                assertThat(unrelatedComponents.get(3).capturedHeader())
+                        .isEqualTo(afterComponents.get(3).capturedHeader());
+                assertThat(unrelatedComponents.get(3).latestGeneration()).isEqualTo(before.lastVerifiedGeneration());
+                assertThat(unrelatedComponents.get(3).ownership().currentVerifiedGeneration()).isNull();
+                assertThat(unrelatedComponents.get(3).verificationRunGenerations()).isEqualTo(correctionRuns);
+                assertThat(fixtureOwnershipSnapshot(3).lastVerifiedGeneration())
+                        .isEqualTo(before.lastVerifiedGeneration());
+                System.out.printf("OWNED_UNRELATED_SCHEDULE_PUBLICATION fixture=3 rootFingerprint=%s->%s "
+                                + "fixtureHeader=%s runs=%s currentReceipt=%s%n",
+                        correctedCanonicalFingerprint, unrelatedCanonicalFingerprint,
+                        unrelatedComponents.get(3).sourceHeader(), correctionRuns,
+                        unrelatedComponents.get(3).latestGeneration());
+
+                long firstFreshGeneration = dispatchFixtureUntilFreshObservation(baseline, 3,
+                        before.observationGeneration());
+                FixtureOwnershipSnapshot freshPending = fixtureOwnershipSnapshot(3);
+                Map<String, Object> firstFreshRun = fixtureRunSourceFrame(firstFreshGeneration);
+                String details = "fixture 3 first post-correction observation=" + freshPending.flags();
+                assertThat(freshPending.state()).as(details).isEqualTo("VERIFYING");
+                assertThat(freshPending.currentVerifiedGeneration()).as(details).isNull();
+                assertThat(freshPending.lastVerifiedGeneration()).as(details)
+                        .isEqualTo(before.lastVerifiedGeneration());
+                assertThat(freshPending.verifiedHeader()).as(details + " retains last-good header proof")
+                        .isEqualTo(before.verifiedHeader());
+                assertThat(freshPending.verifiedStatsFingerprint()).as(details + " retains last-good stats proof")
+                        .isEqualTo(before.verifiedStatsFingerprint());
+                FixturePublicationComponents pendingComponents = fixturePublicationComponents(Set.of(3)).get(3);
+                assertThat(pendingComponents.receiptIdentity()).as(details + " retains receipt identity")
+                        .isEqualTo(beforeComponents.get(3).receiptIdentity());
+                assertThat(pendingComponents.latestGeneration()).as(details + " retains receipt generation")
+                        .isEqualTo(before.lastVerifiedGeneration());
+                assertThat(pendingComponents.pfsRows()).as(details + " retains physical last-good PFS")
+                        .isEqualTo(beforeComponents.get(3).pfsRows());
+                assertThat(pendingComponents.evidenceRows()).as(details + " retains last-good evidence")
+                        .isEqualTo(beforeComponents.get(3).evidenceRows());
+                assertThat(pendingComponents.verificationValid()).as(details + " old receipt is not current-valid")
+                        .isFalse();
+                assertThat(freshPending.observationGeneration()).as(details).isEqualTo(firstFreshGeneration);
+                assertThat(freshPending.observationCoherent()).as(details).isEqualTo("true");
+                assertThat(freshPending.validationFailures()).contains("NEEDS_SECOND_OBSERVATION");
+                assertThat(pfsRows("OFF", 3)).as("fresh pending data remains masked").isEmpty();
+                assertThat(firstFreshRun.get("state")).isEqualTo("COMPLETED");
+                assertThat(firstFreshRun.get("runtime_epoch")).isEqualTo(baseline.fence.epoch());
+                assertThat(firstFreshRun.get("source_read_started_at")).isNotNull();
+                assertThat(firstFreshRun.get("source_read_finished_at")).isNotNull();
+                assertThat(firstFreshRun.get("fixture_score")).isEqualTo(1);
+                assertPendingObservationMatchesSource(baseline, 3, firstFreshGeneration,
+                        correctedOracle.requiredPlayers(), scheduleSource);
+
+                FixtureVerification.Observation firstObservation = fixtureObservation(3);
+                SourceRead firstBatch = observationInterval(firstObservation);
+                Timestamp persistedDue = jdbc.queryForObject("SELECT next_due_at FROM " + TABLES.fixtureSync()
+                        + " WHERE season_id=? AND fixture_id=?", Timestamp.class, SEASON.id(), 3);
+                assertThat(persistedDue).isNotNull();
+                Instant secondStart = firstBatch.finishedAt().plus(Duration.ofMinutes(11));
+                if (persistedDue.toInstant().isAfter(secondStart)) secondStart = persistedDue.toInstant();
+                baseline.advanceControlledTime(secondStart);
+                var secondRun = baseline.histories.enqueuePersistedFixtureRetry(SEASON, 3, secondStart);
+                assertThat(secondRun.generation()).isGreaterThan(firstFreshGeneration);
+                long correctedGeneration = dispatchFixtureUntilVerified(baseline, 3,
+                        before.lastVerifiedGeneration());
+                FixtureOwnershipSnapshot corrected = fixtureOwnershipSnapshot(3);
+                Map<Integer, FixturePublicationComponents> correctedComponents =
+                        fixturePublicationComponents(Set.of(3));
+                assertThat(corrected.state()).isEqualTo("VERIFIED");
+                assertThat(corrected.currentVerifiedGeneration()).isEqualTo(correctedGeneration);
+                assertThat(corrected.lastVerifiedGeneration()).isEqualTo(correctedGeneration);
+                assertThat(correctedGeneration).isGreaterThan(before.lastVerifiedGeneration());
+                assertThat(fixtureReadEvidenceProof(baseline, 3, correctedGeneration,
+                        correctedOracle.requiredPlayers())).isTrue();
+                Map<String, Object> completedCorrectionRun = fixtureRunSourceFrame(correctedGeneration);
+                SourceRead secondBatch = observationInterval(fixtureObservation(3));
+                assertThat(secondBatch.startedAt()).isAfterOrEqualTo(firstBatch.finishedAt()
+                        .plus(Duration.ofMinutes(10)));
+                assertThat(completedCorrectionRun.get("fixture_score")).isEqualTo(1);
+                assertStoredFixtureOracle(3, correctedOracle);
+                assertPhysicalPfsMatchesSource(3, scheduleSource, correctedGeneration);
+                assertPfsMetricRowsUnchanged(beforeComponents.get(3).pfsRows(),
+                        correctedComponents.get(3).pfsRows());
+                assertThat(correctedComponents.get(3).sourceHeader().get("team_h_score")).isEqualTo(1);
+                assertThat(changedHeaderFields(beforeComponents.get(3).sourceHeader(),
+                        correctedComponents.get(3).sourceHeader())).containsExactly("team_h_score");
+                assertThat(correctedComponents.get(3).capturedHeader().get("team_h_score")).isEqualTo(1);
+                assertThat(changedHeaderFields(beforeComponents.get(3).capturedHeader(),
+                        correctedComponents.get(3).capturedHeader())).containsExactly("team_h_score");
+                assertThat(correctedComponents.get(3).evidenceRows()).hasSizeGreaterThan(
+                        beforeComponents.get(3).evidenceRows().size());
+                assertThat(pfsRows("ACTIVE", 3)).isNotEmpty();
+                System.out.printf("OWNED_SCHEDULE_CORRECTION_PUBLISHED fixture=3 oldGeneration=%d "
+                                + "firstFresh=%d corrected=%d batches=%s/%s root=%s oracle=%s componentDiff=%s%n",
+                        before.lastVerifiedGeneration(), firstFreshGeneration, correctedGeneration,
+                        firstBatch, secondBatch, canonicalScheduleFrame(), correctedOracle,
+                        fixturePublicationComponentDiffs(beforeComponents, correctedComponents));
+            }
+        } finally {
+            cleanActiveAcceptanceSeason();
+        }
+    }
+
+    @Test
+    @Timeout(value = 300, unit = TimeUnit.SECONDS)
+    void scoreCorrectionSourceDiffIsExactlyFixturesOneThroughFive() throws Exception {
+        SourceData source = SourceData.loadActiveAcceptanceRoster();
+        prepareActiveAcceptanceSeason();
+        MutableClock clock = new MutableClock(BASELINE_SOURCE_START);
+        long wallStartedAt = System.nanoTime();
+        long wallDeadline = wallStartedAt + TimeUnit.MINUTES.toNanos(4);
+        Set<Integer> fixtureIds = java.util.stream.IntStream.rangeClosed(1, 40).boxed()
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+        Set<Integer> changedIds = Set.of(1, 2, 3, 4, 5);
+        try {
+            try (Harness harness = Harness.active(1, wallDeadline, wallStartedAt, source, clock, true, false)) {
+                harness.dispatchCanonicalCycle();
+                new PlannerInputRepository(jdbc, harness.store, TABLES, CAPTURED, clock).load(SEASON);
+                Map<Integer, FixtureHeaderState> oldRows = currentFixtureHeaderStates(fixtureIds);
+                Map<Integer, FixtureSourceState> oldRoot = currentCanonicalFixtureStates(harness, 1);
+                Map<String, Object> oldRootFrame = canonicalScheduleFrame();
+
+                source.correctFixtureScores(changedIds);
+                harness.catalogue.enqueueSchedule(SEASON, clock.instant());
+                assertThat(harness.dispatchOneWithControlledResponse("five-fixture-source-diff")).isEqualTo(1);
+                new PlannerInputRepository(jdbc, harness.store, TABLES, CAPTURED, clock).load(SEASON);
+                Map<Integer, FixtureHeaderState> newRows = currentFixtureHeaderStates(fixtureIds);
+                Map<Integer, FixtureSourceState> newRoot = currentCanonicalFixtureStates(harness, 1);
+                Map<String, Object> newRootFrame = canonicalScheduleFrame();
+
+                Set<Integer> changedCore = new java.util.TreeSet<>();
+                Set<Integer> changedCapture = new java.util.TreeSet<>();
+                Set<Integer> changedRoot = new java.util.TreeSet<>();
+                for (int fixtureId : fixtureIds) {
+                    FixtureHeaderState before = oldRows.get(fixtureId);
+                    FixtureHeaderState after = newRows.get(fixtureId);
+                    FixtureSourceState oldSource = oldRoot.get(fixtureId);
+                    FixtureSourceState newSource = newRoot.get(fixtureId);
+                    Set<String> coreFields = changedHeaderFields(before.core(), after.core());
+                    Set<String> captureFields = changedHeaderFields(before.captured(), after.captured());
+                    if (!coreFields.isEmpty()) changedCore.add(fixtureId);
+                    if (!captureFields.isEmpty()) changedCapture.add(fixtureId);
+                    if (!oldSource.headerFingerprint().equals(newSource.headerFingerprint())) changedRoot.add(fixtureId);
+                    if (changedIds.contains(fixtureId)) {
+                        assertThat(coreFields).as("fixture %d corrected core header", fixtureId)
+                                .containsExactly("team_h_score");
+                        assertThat(captureFields).as("fixture %d corrected capture header", fixtureId)
+                                .containsExactly("captured_home_score");
+                        assertThat(before.core().get("team_h_score")).isEqualTo(0);
+                        assertThat(after.core().get("team_h_score")).isEqualTo(1);
+                        assertThat(before.captured().get("captured_home_score")).isEqualTo(0);
+                        assertThat(after.captured().get("captured_home_score")).isEqualTo(1);
+                        assertThat(oldSource.homeScore()).isEqualTo(0);
+                        assertThat(newSource.homeScore()).isEqualTo(1);
+                        assertThat(oldSource.headerFingerprint()).isNotEqualTo(newSource.headerFingerprint());
+                    } else {
+                        assertThat(coreFields).as("fixture %d unrelated core header", fixtureId).isEmpty();
+                        assertThat(captureFields).as("fixture %d unrelated captured header", fixtureId).isEmpty();
+                        assertThat(oldSource).as("fixture %d authoritative source remains unchanged", fixtureId)
+                                .isEqualTo(newSource);
+                    }
+                    assertThat(oldSource.statsFingerprint()).as("fixture %d metric fingerprint", fixtureId)
+                            .isEqualTo(newSource.statsFingerprint());
+                }
+                assertThat(changedCore).containsExactlyInAnyOrderElementsOf(changedIds);
+                assertThat(changedCapture).containsExactlyInAnyOrderElementsOf(changedIds);
+                assertThat(changedRoot).containsExactlyInAnyOrderElementsOf(changedIds);
+                assertThat(newRootFrame.get("source_pair_fingerprint"))
+                        .isNotEqualTo(oldRootFrame.get("source_pair_fingerprint"));
+                assertThat(newRootFrame.get("source_bootstrap_sha256"))
+                        .isEqualTo(oldRootFrame.get("source_bootstrap_sha256"));
+                assertThat(newRootFrame.get("source_fixtures_sha256"))
+                        .isNotEqualTo(oldRootFrame.get("source_fixtures_sha256"));
+                System.out.printf("OWNED_FIVE_FIXTURE_SOURCE_DIFF changed=%s core=%s capture=%s root=%s "
+                                + "scheduleHashes=%s->%s fixtureHeaderDiffs=%s%n",
+                        changedIds, changedCore, changedCapture, changedRoot,
+                        List.of(oldRootFrame.get("source_bootstrap_sha256"), oldRootFrame.get("source_fixtures_sha256")),
+                        List.of(newRootFrame.get("source_bootstrap_sha256"), newRootFrame.get("source_fixtures_sha256")),
+                        changedIds.stream().sorted().collect(java.util.stream.Collectors.toMap(
+                                id -> id, id -> changedHeaderFields(oldRows.get(id).core(), newRows.get(id).core()),
+                                (left, right) -> left, TreeMap::new)));
+            }
+        } finally {
+            cleanActiveAcceptanceSeason();
+        }
+    }
+
+    @Test
+    @Timeout(value = 1_800, unit = TimeUnit.SECONDS)
+    void combinedActiveRecoveryPublishesAllTenNeverPublishedFixturesAfterRestart() throws Exception {
+        assertThat(ACTIVE_RECOVERY_VIRTUAL_LIMIT).isEqualTo(Duration.ofHours(48));
+        assertThat(ACTIVE_RECOVERY_CLAIM_LIMIT).isEqualTo(6_000);
+        assertThat(ACTIVE_RECOVERY_DISPATCH_LIMIT).isEqualTo(6_000);
+        SourceData activeSource = SourceData.loadActiveAcceptanceRoster();
+        assertThat(activeSource.playerIds()).hasSize(FULL_ROSTER_PLAYERS).doesNotHaveDuplicates();
+        assertThat(activeSource.teamCount()).isEqualTo(FULL_ROSTER_CLUBS);
+        assertThat(activeSource.finishedFixtureCount()).isEqualTo(FIXTURE_RUNS);
+        Set<Integer> neverPublished = java.util.stream.IntStream.rangeClosed(41, 50).boxed()
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+        prepareActiveAcceptanceSeason();
+
+        MutableClock clock = new MutableClock(BASELINE_SOURCE_START);
+        long wallStartedAt = System.nanoTime();
+        long wallDeadline = wallStartedAt + TimeUnit.SECONDS.toNanos(1_500);
+        PayloadReadProbe.Snapshot blockedRetryBodies;
+        PayloadReadProbe.Snapshot completePublicationBodies;
+        ActiveAcceptanceMetrics accepted;
+        Map<Integer, Long> servedCorrectionReceipts;
+        Set<Integer> changedCorrections = Set.of(1, 2, 3, 4, 5);
+        Instant correctionEffectiveFloor;
+        Map<Integer, Long> initialBaselineReceipts;
+        Map<Integer, Instant> baselineFirstVerifiedAt;
+        Map<Integer, FixturePublicationComponents> baselineComponents;
+        String servedFingerprintChecksum;
+        FixtureOwnershipSnapshot fixtureThreeBeforeScheduleCorrection;
+        FixtureOwnershipSnapshot fixtureThreeAfterScheduleCorrection;
+        String baselineScheduleFingerprint;
+        String correctedScheduleFingerprint;
+        try {
+            try (Harness baseline = Harness.active(1, wallDeadline, wallStartedAt, activeSource,
+                    clock, true, false)) {
+                baseline.dispatchCanonicalCycle();
+                new PlannerInputRepository(jdbc, baseline.store, TABLES, CAPTURED, clock).load(SEASON);
+                Set<Integer> baselineFixtures = java.util.stream.IntStream.rangeClosed(1, 40).boxed()
+                        .collect(java.util.stream.Collectors.toUnmodifiableSet());
+                reconcileHistoryFingerprints(baseline, baselineFixtures);
+                assertThat(baseline.store.currentCanonicalParentEvidence(SEASON.code(), 1, clock.instant())
+                        .currentPublished()).as("the active canonical source pair is independently published")
+                        .isTrue();
+                Map<Integer, FixtureVerification.Decision> firstObservations =
+                        publishDirectFixtureBatch(baseline, 1, 40);
+                assertThat(firstObservations.values()).allSatisfy(decision -> {
+                    assertThat(decision.state()).isEqualTo(FixtureVerification.State.PENDING);
+                    assertThat(decision.reasons()).containsExactly(FixtureVerification.Reason.NEEDS_SECOND_OBSERVATION);
+                });
+                clock.advance(Duration.ofMinutes(11));
+                Map<Integer, FixtureVerification.Decision> baselineVerifications =
+                        publishDirectFixtureBatch(baseline, 1, 40);
+                assertThat(baselineVerifications.values()).allSatisfy(decision ->
+                        assertThat(decision.state()).isEqualTo(FixtureVerification.State.VERIFIED));
+                Set<Integer> baselineFixtureIds = java.util.stream.IntStream.rangeClosed(1, 40).boxed()
+                        .collect(java.util.stream.Collectors.toUnmodifiableSet());
+                assertBaselineCandidateCoverage(baselineFixtureIds, activeSource);
+                assertReceiptBackedFixtures(baseline.fence, baselineFixtureIds);
+                servedCorrectionReceipts = new TreeMap<>();
+                for (int fixtureId : baselineFixtureIds) {
+                    servedCorrectionReceipts.put(fixtureId, jdbc.queryForObject("SELECT latest_generation FROM "
+                            + TABLES.receipt() + " WHERE season=? AND publication_key=?",
+                            Long.class, SEASON.code(), "fixture:" + fixtureId));
+                }
+
+                baselineFirstVerifiedAt = fixtureFirstVerifiedTimes(baselineFixtureIds);
+                initialBaselineReceipts = Map.copyOf(servedCorrectionReceipts);
+                advanceGlobalTimeline(clock, SAME_FINGERPRINT_CORRECTION);
+                servedCorrectionReceipts.putAll(publishSameFingerprintCorrectionBatch(baseline, 1, 40));
+                assertThat(servedCorrectionReceipts).hasSize(40);
+                assertQualifyingBaselineReceipts(baselineFixtureIds, servedCorrectionReceipts,
+                        initialBaselineReceipts, baselineFirstVerifiedAt);
+                servedFingerprintChecksum = historyFingerprintChecksum(baselineFixtureIds);
+                for (int fixtureId : baselineFixtureIds) {
+                    Instant firstVerified = jdbc.queryForObject("SELECT first_verified_at FROM "
+                            + TABLES.fixtureSync() + " WHERE season_id=? AND fixture_id=?",
+                            Timestamp.class, SEASON.id(), fixtureId).toInstant();
+                    Instant correctionRead = jdbc.queryForObject("SELECT source_read_started_at FROM "
+                            + TABLES.receipt() + " WHERE season=? AND publication_key=?",
+                            Timestamp.class, SEASON.code(), "fixture:" + fixtureId).toInstant();
+                    assertThat(correctionRead)
+                            .as("fixture %d has a same-fingerprint read covering 48h", fixtureId)
+                            .isAfterOrEqualTo(firstVerified.plus(Duration.ofHours(48)));
+                }
+
+                fixtureThreeBeforeScheduleCorrection = fixtureOwnershipSnapshot(3);
+                Map<Integer, FixturePublicationComponents> beforeScheduleComponents =
+                        fixturePublicationComponents(baselineFixtureIds);
+                baselineScheduleFingerprint = canonicalScheduleFrame()
+                        .get("source_pair_fingerprint").toString();
+                Instant sourceCorrectionAppliedAt = clock.instant();
+                activeSource.correctFixtureScores(changedCorrections);
+                baseline.catalogue.enqueueSchedule(SEASON, clock.instant());
+                assertThat(baseline.dispatchOneWithControlledResponse("schedule-correction")).isEqualTo(1);
+                Map<String, Object> correctedScheduleFrame = canonicalScheduleFrame();
+                correctedScheduleFingerprint = correctedScheduleFrame.get("source_pair_fingerprint").toString();
+                correctionEffectiveFloor = ((Timestamp) correctedScheduleFrame.get("source_read_finished_at")).toInstant();
+                assertThat(correctionEffectiveFloor).isAfterOrEqualTo(sourceCorrectionAppliedAt);
+                assertThat(correctedScheduleFingerprint).isNotEqualTo(baselineScheduleFingerprint);
+                Map<Integer, FixtureOracle> correctedSourceOracles =
+                        sourceFixtureOracles(activeSource, changedCorrections);
+                for (int fixtureId : changedCorrections) {
+                    assertThat(correctedSourceOracles.get(fixtureId).headerFingerprint())
+                            .as("fixture %d actual source header changed", fixtureId)
+                            .isNotEqualTo(beforeScheduleComponents.get(fixtureId).ownership().verifiedHeader());
+                    assertThat(correctedSourceOracles.get(fixtureId).statsFingerprint())
+                            .as("fixture %d stats manifest is unchanged by a score-only correction", fixtureId)
+                            .isEqualTo(beforeScheduleComponents.get(fixtureId).ownership().verifiedStatsFingerprint());
+                }
+                assertScheduleCorrectionsArePending(servedCorrectionReceipts, changedCorrections);
+                Map<Integer, FixturePublicationComponents> afterScheduleComponents =
+                        fixturePublicationComponents(baselineFixtureIds);
+                assertScheduleCorrectionComponentTransition(beforeScheduleComponents, afterScheduleComponents,
+                        changedCorrections);
+                fixtureThreeAfterScheduleCorrection = fixtureOwnershipSnapshot(3);
+                System.out.printf("OWNED_ACTIVE_SCHEDULE_INVALIDATION fixture=3 before=%s after=%s%n",
+                        fixtureThreeBeforeScheduleCorrection.flags(), fixtureThreeAfterScheduleCorrection.flags());
+                assertScheduleInvalidationRetainsActualOwnership(3, fixtureThreeBeforeScheduleCorrection,
+                        fixtureThreeAfterScheduleCorrection);
+                // Preserve the publication/core/evidence baseline after the intentional source correction.
+                baselineComponents = afterScheduleComponents;
+
+                advanceGlobalTimeline(clock, LEGACY_GATE_OBSERVED_AT);
+                baseline.catalogue.enqueueSchedule(SEASON, clock.instant());
+                assertThat(baseline.dispatchOneWithControlledResponse("legacy-gate-snapshot")).isEqualTo(1);
+                new PlannerInputRepository(jdbc, baseline.store, TABLES, CAPTURED, clock).load(SEASON);
+                advanceGlobalTimeline(clock, ACTIVE_RECOVERY_START);
+                seedLegacyDailyOnlyGates(baseline, neverPublished);
+                assertLegacyDailyOnlyGates(neverPublished);
+                assertNeverPublished(neverPublished);
+            }
+            assertThat(runtimeMode()).isEqualTo("OFF");
+            assertThat(pfsRows("OFF", 3)).isEmpty();
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM player_fixture_stats WHERE season_id=? AND fixture_id=3",
+                    Integer.class, SEASON.id())).isGreaterThan(0);
+
+            try (Harness resumed = Harness.active(1, wallDeadline, wallStartedAt, activeSource,
+                    clock, false, false)) {
+                assertRetainedReceiptHistory(servedCorrectionReceipts);
+                assertPostRecoveryPublicationComponents(baselineComponents,
+                        fixturePublicationComponents(java.util.stream.IntStream.rangeClosed(1, 40).boxed()
+                                .collect(java.util.stream.Collectors.toUnmodifiableSet())), Set.of(1, 2, 3, 4, 5),
+                        Set.of(), resumed, activeSource);
+                assertThat(historyFingerprintChecksum(java.util.stream.IntStream.rangeClosed(1, 40).boxed()
+                        .collect(java.util.stream.Collectors.toUnmodifiableSet())))
+                        .as("baseline history fingerprints remain unchanged after reactivation")
+                        .isEqualTo(servedFingerprintChecksum);
+                var beforeParent = resumed.coordinator.tick();
+                assertThat(pendingFixtureRuns(resumed.fence.epoch(), neverPublished)).isZero();
+                assertNeverPublished(neverPublished);
+                assertThat(beforeParent.dueSlots()).isGreaterThanOrEqualTo(0);
+                assertThat(beforeParent.nextDueAt()).isEqualTo(ACTIVE_PRICE_CAPTURE);
+                assertThat(ACTIVE_PRICE_CAPTURE.atZone(UK).getHour()).isEqualTo(2);
+                assertThat(ACTIVE_SCHEDULE_CAPTURE.atZone(UK).getHour()).isEqualTo(2);
+                assertThat(ACTIVE_SCHEDULE_CAPTURE.atZone(UK).getMinute()).isEqualTo(10);
+                assertThat(LEGACY_DAILY_DUE.atZone(UK).getHour()).isEqualTo(3);
+                assertThat(LEGACY_DAILY_DUE.atZone(UK).getMinute()).isZero();
+
+                ManualDriver preparationDriver = new ManualDriver(resumed,
+                        DriverGoal.pendingFixtures(neverPublished),
+                        ACTIVE_RECOVERY_VIRTUAL_LIMIT.plus(
+                                Duration.between(ACTIVE_RECOVERY_START, LEGACY_DAILY_DUE)),
+                        Math.max(0, ACTIVE_RECOVERY_CLAIM_LIMIT - activeClaimAttempts(resumed.fence.epoch())),
+                        Math.max(0, ACTIVE_RECOVERY_CLAIM_LIMIT - resumed.durableAdmissionCount()),
+                        Math.max(0, ACTIVE_RECOVERY_DISPATCH_LIMIT - resumed.controlledDispatchCalls));
+                preparationDriver.additionalFirstPendingFixtureIds = changedCorrections;
+                resumed.http.setWaitObserverForTests(preparationDriver::observeWait);
+                preparationDriver.run();
+                System.out.printf("OWNED_ACTIVE_PREPARATION stop=%s clock=%s next=%s sourceReceipts=%s "
+                                + "pending=%d fixtureRuns=%s gates=%s claims=%d admissions=%d dispatches=%d "
+                                + "driverClaims=%d driverAdmissions=%d%n",
+                        preparationDriver.stopReason, clock.instant(), preparationDriver.plannerNextDue,
+                        jdbc.queryForList("SELECT publication_key,latest_generation,source_read_started_at,"
+                                + "source_read_finished_at,published_at FROM "
+                                + TABLES.receipt() + " WHERE season=? AND publication_key IN (?,?)"
+                                + " ORDER BY publication_key", SEASON.code(),
+                                CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY,
+                                CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY),
+                        pendingFixtureRuns(resumed.fence.epoch(), neverPublished),
+                        jdbc.queryForList("SELECT generation,publication_key,state,attempt_count,due_at "
+                                + "FROM " + TABLES.run() + " WHERE season=? AND runtime_mode='ACTIVE' "
+                                + "AND runtime_epoch=? AND kind='FIXTURE_VERIFICATION' "
+                                + "AND state IN ('PENDING','LEASED') ORDER BY due_at,generation",
+                                SEASON.code(), resumed.fence.epoch()), fixtureGateTrace(neverPublished),
+                        activeClaimAttempts(resumed.fence.epoch()), resumed.durableAdmissionCount(),
+                        preparationDriver.dispatches + resumed.controlledDispatchCalls,
+                        preparationDriver.claims, preparationDriver.admissions.size());
+                assertThat(clock.instant()).isAfterOrEqualTo(LEGACY_DAILY_DUE);
+                assertThat(preparationDriver.stopReason).isEqualTo("DRAINED");
+                assertThat(preparationDriver.goalSatisfied()).isTrue();
+                assertThat(resumed.store.currentCanonicalParentEvidence(SEASON.code(), 41, clock.instant())
+                        .currentPublished()).isTrue();
+                assertThat(pendingFixtureRuns(resumed.fence.epoch(), neverPublished))
+                        .as("legacy DAILY_ONLY jobs become work at their real 03:00 UK due: gateTrace=%s pending=%s",
+                                fixtureGateTrace(neverPublished),
+                                jdbc.queryForList("SELECT generation,publication_key,state FROM " + TABLES.run()
+                                        + " WHERE season=? AND runtime_mode='ACTIVE' AND runtime_epoch=?"
+                                        + " AND kind='FIXTURE_VERIFICATION' AND state IN ('PENDING','LEASED')",
+                                        SEASON.code(), resumed.fence.epoch()))
+                        .isEqualTo(10);
+                assertDailyCapture(CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY,
+                        ACTIVE_PRICE_CAPTURE);
+                assertDailyCapture(CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY,
+                        ACTIVE_SCHEDULE_CAPTURE);
+                assertNeverPublished(neverPublished);
+                int nonCanonicalAttemptsBefore = nonCanonicalAttempts(resumed.fence.epoch());
+                resumed.catalogue.enqueueSchedule(SEASON, clock.instant());
+                assertThat(resumed.dispatchOneWithControlledResponse("canonical-preemption")).isEqualTo(1);
+                assertThat(nonCanonicalAttempts(resumed.fence.epoch()))
+                        .as("a due canonical refresh preempts the queued fixture/history backlog")
+                        .isEqualTo(nonCanonicalAttemptsBefore);
+                assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
+                        + " WHERE season=? AND runtime_mode='ACTIVE' AND runtime_epoch=? AND kind='CATALOGUE_SCHEDULE' "
+                        + "AND state='COMPLETED'", Integer.class, SEASON.code(), resumed.fence.epoch()))
+                        .isGreaterThanOrEqualTo(1);
+
+                Map<Long, Instant> heldHistoryRuns = new TreeMap<>();
+                mergeHistoryDueTimes(heldHistoryRuns, deferPendingHistoriesUntil(
+                        clock.instant().plus(BLOCKED_HISTORY_HOLD)));
+                for (int attempt = 0; attempt < ACTIVE_RECOVERY_DISPATCH_LIMIT
+                        && pendingManifestCount(resumed.fence.epoch()) == 0; attempt++) {
+                    assertThat(resumed.dispatchOneWithControlledResponse("active-fixture-manifest-" + attempt))
+                            .isEqualTo(1);
+                    mergeHistoryDueTimes(heldHistoryRuns, deferPendingHistoriesUntil(
+                            clock.instant().plus(BLOCKED_HISTORY_HOLD)));
+                }
+                long blockedGeneration = newestPendingManifestGeneration(resumed.fence.epoch());
+                int blockedAttemptsBefore = jdbc.queryForObject("SELECT attempt_count FROM " + TABLES.run()
+                        + " WHERE generation=?", Integer.class, blockedGeneration);
+                mergeHistoryDueTimes(heldHistoryRuns, deferPendingHistoriesUntil(
+                        clock.instant().plus(BLOCKED_HISTORY_HOLD)));
+                boolean sawBodyFreeBlockedRetry = false;
+                resumed.resetPayloadReads();
+                blockedRetryBodies = resumed.payloadReads.snapshot();
+                for (int attempt = 0; attempt < ACTIVE_RECOVERY_DISPATCH_LIMIT; attempt++) {
+                    int getsBefore = resumed.server.returnedGets();
+                    resumed.resetPayloadReads();
+                    int claimed = resumed.dispatchOneWithControlledResponse("active-blocked-retry-" + attempt);
+                    ControlledDispatchTrace trace = resumed.controlledDispatchTrace.getLast();
+                    if (trace.generation() == blockedGeneration) {
+                        assertThat(claimed).isEqualTo(1);
+                        blockedRetryBodies = resumed.payloadReads.snapshot();
+                        assertThat(resumed.server.returnedGets()).as("blocked retry makes no HTTP request")
+                                .isEqualTo(getsBefore);
+                        sawBodyFreeBlockedRetry = true;
+                        break;
+                    }
+                    if (claimed == 0) {
+                        OwnedMatchdayCoordinator.TickResult tick = resumed.coordinator.tick();
+                        Instant nextEvent = tick.nextDueAt();
+                        Instant nextRunDue = resumed.earliestActiveRunDue();
+                        if (nextRunDue != null && (nextEvent == null || nextRunDue.isBefore(nextEvent))) {
+                            nextEvent = nextRunDue;
+                        }
+                        if (nextEvent == null) break;
+                        if (!nextEvent.isAfter(clock.instant())) {
+                            throw new AssertionError("global timeline found due queue work that was not claimable: "
+                                    + "now=" + clock.instant() + " nextEvent=" + nextEvent
+                                    + " runs=" + jdbc.queryForList("SELECT generation,state,due_at,"
+                                    + "requested_source_after FROM " + TABLES.run()
+                                    + " WHERE season=? AND runtime_mode='ACTIVE' AND runtime_epoch=?"
+                                    + " AND state IN ('PENDING','LEASED') ORDER BY generation",
+                                    SEASON.code(), resumed.fence.epoch()));
+                        }
+                        resumed.advanceControlledTime(nextEvent);
+                        continue;
+                    }
+                    mergeHistoryDueTimes(heldHistoryRuns, deferPendingHistoriesUntil(
+                            clock.instant().plus(BLOCKED_HISTORY_HOLD)));
+                }
+                assertThat(sawBodyFreeBlockedRetry).as("FIFO dispatcher eventually retries the blocked manifest")
+                        .isTrue();
+                assertThat(jdbc.queryForObject("SELECT state='PENDING' AND attempt_count=? FROM "
+                        + TABLES.run() + " WHERE generation=?", Boolean.class,
+                        blockedAttemptsBefore + 1, blockedGeneration))
+                        .as("the real blocked fixture lane retries the same unfinished manifest")
+                        .isTrue();
+                assertThat(blockedRetryBodies.bodyValues()).as("blocked manifest retries hydrate no bodies")
+                        .isZero();
+                assertThat(blockedRetryBodies.logicalBodies().values())
+                        .allSatisfy(metrics -> assertThat(metrics.bodyValues()).isZero());
+                assertThat(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM " + TABLES.fixtureDependencyManifest()
+                        + " WHERE run_generation=? AND cardinality(required_player_ids)>0)",
+                        Boolean.class, blockedGeneration)).isTrue();
+                restoreHistoryDueTimes(heldHistoryRuns);
+
+                resumed.resetPayloadReads();
+                int claimsBeforeDriver = activeClaimAttempts(resumed.fence.epoch());
+                int admissionsBeforeDriver = resumed.durableAdmissionCount();
+                int dispatchesBeforeDriver = resumed.controlledDispatchCalls + preparationDriver.dispatches;
+                Duration virtualRemaining = ACTIVE_RECOVERY_VIRTUAL_LIMIT.minus(
+                        Duration.between(LEGACY_DAILY_DUE, clock.instant()));
+                if (virtualRemaining.isNegative()) virtualRemaining = Duration.ZERO;
+                ManualDriver driver = new ManualDriver(resumed,
+                        DriverGoal.fixtures(neverPublished), virtualRemaining,
+                        Math.max(0, ACTIVE_RECOVERY_CLAIM_LIMIT - claimsBeforeDriver),
+                        Math.max(0, ACTIVE_RECOVERY_CLAIM_LIMIT - admissionsBeforeDriver),
+                        Math.max(0, ACTIVE_RECOVERY_DISPATCH_LIMIT - dispatchesBeforeDriver));
+                driver.additionalFirstPendingFixtureIds = changedCorrections;
+                resumed.http.setWaitObserverForTests(driver::observeWait);
+                driver.run();
+                completePublicationBodies = resumed.payloadReads.snapshot();
+                System.out.printf("OWNED_ACTIVE_RECOVERY_DRIVER stop=%s clock=%s next=%s "
+                                + "claims=%d admissions=%d dispatches=%d lastAdmissions=%s completions=%d "
+                                + "pendingTarget=%d gates=%s%n",
+                        driver.stopReason, clock.instant(), driver.plannerNextDue,
+                        activeClaimAttempts(resumed.fence.epoch()), resumed.durableAdmissionCount(),
+                        preparationDriver.dispatches + driver.dispatches + resumed.controlledDispatchCalls,
+                        driver.admissions.subList(Math.max(0, driver.admissions.size() - 10),
+                                driver.admissions.size()), driver.completions.size(),
+                        pendingFixtureRuns(resumed.fence.epoch(), neverPublished), fixtureGateTrace(neverPublished));
+                Map<Integer, FirstPendingObservation> firstPendingObservations = new TreeMap<>(
+                        preparationDriver.firstPendingObservations);
+                driver.firstPendingObservations.forEach(firstPendingObservations::putIfAbsent);
+                accepted = activeAcceptanceMetrics(resumed, preparationDriver, driver, neverPublished,
+                        servedCorrectionReceipts, firstPendingObservations);
+                Map<Integer, FixturePublicationComponents> finalComponents = fixturePublicationComponents(
+                        java.util.stream.IntStream.rangeClosed(1, 40).boxed()
+                                .collect(java.util.stream.Collectors.toUnmodifiableSet()));
+                System.out.println(activeAcceptanceTrace(resumed, preparationDriver, driver,
+                        neverPublished, accepted, blockedRetryBodies, completePublicationBodies));
+                System.out.printf("OWNED_TASK4_CORRECTION_ACCEPTANCE changedSourceIds=%s sourceFrame=%s->%s "
+                                + "outcomes=%s componentDiffs=%s%n",
+                        List.of(1, 2, 3, 4, 5), baselineScheduleFingerprint, correctedScheduleFingerprint,
+                        changedCorrectionTrace(baselineComponents, finalComponents, servedCorrectionReceipts,
+                                accepted.republishedChangedCorrections(), accepted.pendingChangedCorrections(),
+                                activeSource, resumed), fixturePublicationComponentDiffs(baselineComponents,
+                                finalComponents));
+                assertThat(accepted.verifiedFixtureIds()).as("combined ACTIVE acceptance trace above")
+                        .containsExactlyInAnyOrderElementsOf(neverPublished);
+                assertThat(accepted.verifiedReceipts()).isEqualTo(10);
+                assertThat(accepted.verifiedReceiptGenerations().keySet())
+                        .containsExactlyInAnyOrderElementsOf(neverPublished);
+                assertThat(accepted.verifiedReceiptGenerations().values()).hasSize(10).doesNotHaveDuplicates()
+                        .allMatch(generation -> generation > 0);
+                assertThat(accepted.firstNewClaim()).isNotNull().isAfterOrEqualTo(LEGACY_DAILY_DUE);
+                assertThat(neverPublished).contains(accepted.firstNewFixture());
+                assertThat(accepted.firstNewGeneration()).isPositive();
+                assertThat(firstPendingObservations.keySet())
+                        .as("each target has a recorded coherent first-pending generation")
+                        .containsAll(neverPublished);
+                for (int fixtureId : neverPublished) {
+                    FirstPendingObservation firstPending = firstPendingObservations.get(fixtureId);
+                    long receiptGeneration = accepted.verifiedReceiptGenerations().get(fixtureId);
+                    assertThat(firstPending.generation())
+                            .as("fixture %d publishes a newer-generation receipt than its first pending observation",
+                                    fixtureId)
+                            .isLessThan(receiptGeneration);
+                    assertThat(firstPending.reads().startedAt())
+                            .as("fixture %d first source observation respects the due-time floor", fixtureId)
+                            .isAfterOrEqualTo(LEGACY_DAILY_DUE);
+                }
+                assertThat(accepted.firstNewAttempt()).isPositive();
+                assertThat(accepted.firstNewWorker()).isNotBlank();
+                assertThat(accepted.firstVerifiedAt()).isNotNull().isAfterOrEqualTo(accepted.firstNewClaim());
+                assertThat(accepted.maxVirtualElapsed()).isLessThanOrEqualTo(ACTIVE_RECOVERY_VIRTUAL_LIMIT);
+                assertThat(accepted.dispatches()).isLessThanOrEqualTo(ACTIVE_RECOVERY_DISPATCH_LIMIT);
+                assertThat(accepted.claims()).isLessThanOrEqualTo(ACTIVE_RECOVERY_CLAIM_LIMIT);
+                assertThat(accepted.missingHistoryEvidence()).isZero();
+                assertThat(accepted.badFixtureManifests()).isZero();
+                assertThat(accepted.badBatchPairs()).isZero();
+                assertThat(accepted.failedRuns()).isZero();
+                assertThat(accepted.republishedChangedCorrections())
+                        .noneMatch(accepted.pendingChangedCorrections()::contains);
+                Set<Integer> changedCorrectionOutcomes = new java.util.TreeSet<>(
+                        accepted.republishedChangedCorrections());
+                changedCorrectionOutcomes.addAll(accepted.pendingChangedCorrections());
+                assertThat(changedCorrectionOutcomes).containsExactly(1, 2, 3, 4, 5);
+                assertThat(accepted.servedCorrectionReceipts())
+                        .as("unchanged fixtures 6-40 plus changed fixtures still safely pending retain old receipts")
+                        .isEqualTo(35 + accepted.pendingChangedCorrections().size());
+                assertThat(accepted.correctionReplayRuns()).isZero();
+                assertThat(accepted.sawReadyFixture()).isTrue();
+                assertThat(accepted.sawBlockedFixture()).isTrue();
+                assertThat(accepted.sawUntouchedFixture()).isTrue();
+                assertThat(accepted.preferentialHistoryClaims()).isPositive();
+                assertThat(accepted.fifoHistoryClaims()).isPositive();
+                assertThat(completePublicationBodies.bodyFamily(PayloadReadProbe.BodyFamily.OWN_ANCHORS)
+                        .bodyValues()).isPositive();
+                assertThat(completePublicationBodies.bodyFamily(PayloadReadProbe.BodyFamily.CROSS_RUN_HISTORIES)
+                        .bodyValues()).isPositive();
+                assertWorkerCanonicalPairReads(completePublicationBodies);
+                assertThat(completePublicationBodies.bodyFamily(PayloadReadProbe.BodyFamily.OWN_ANCHORS).rawBytes())
+                        .isPositive();
+                assertThat(completePublicationBodies.bodyFamily(PayloadReadProbe.BodyFamily.CROSS_RUN_HISTORIES)
+                        .rawBytes()).isPositive();
+
+                if (!accepted.pendingChangedCorrections().isEmpty()) {
+                    assertChangedCorrectionsRemainScheduled(resumed, accepted.pendingChangedCorrections(),
+                            servedCorrectionReceipts);
+                }
+                assertPostRecoveryPublicationComponents(baselineComponents, finalComponents,
+                        changedCorrections, accepted.republishedChangedCorrections(), resumed, activeSource);
+                Map<Integer, Map<String, Object>> correctionPublicationProofs =
+                        assertChangedCorrectionPublicationProofs(resumed, activeSource, changedCorrections,
+                                accepted.republishedChangedCorrections(), servedCorrectionReceipts,
+                                firstPendingObservations, correctionEffectiveFloor);
+                System.out.println("OWNED_TASK153_CORRECTION_PUBLICATION_PROOFS " + correctionPublicationProofs);
+                Map<Integer, String> changedFixtureTrace = changedCorrectionTrace(baselineComponents,
+                        finalComponents, servedCorrectionReceipts, accepted.republishedChangedCorrections(),
+                        accepted.pendingChangedCorrections(), activeSource, resumed);
+                System.out.println("OWNED_ACTIVE_CHANGED_FIXTURE_TRACE " + changedFixtureTrace);
+                if (accepted.republishedChangedCorrections().contains(3)) {
+                    assertThat(fixtureThreeBeforeScheduleCorrection.currentVerifiedGeneration())
+                            .isNotNull().isLessThan(fixtureOwnershipSnapshot(3).currentVerifiedGeneration());
+                    assertThat(pfsRows("ACTIVE", 3)).isNotEmpty();
+                } else {
+                    assertThat(fixtureOwnershipSnapshot(3).currentVerifiedGeneration()).isNull();
+                    assertThat(pfsRows("ACTIVE", 3)).isEmpty();
+                }
+                assertCurrentCanonicalSourceMatches(resumed, activeSource);
+                assertThat(pfsRows("ACTIVE", 45)).isNotEmpty();
+                assertOptionalComponentIsMasked(45, sourcePlayerForFixture(activeSource, 45));
+                assertCanonicalPairProof(resumed, activeSource);
+                assertThat(historyFingerprintChecksum(java.util.stream.IntStream.rangeClosed(1, 40).boxed()
+                        .collect(java.util.stream.Collectors.toUnmodifiableSet())))
+                        .as("history fingerprint identities remain stable through target recovery")
+                        .isEqualTo(servedFingerprintChecksum);
+
+                System.out.printf("OWNED_ACTIVE_RECOVERY firstNewFixture=%d firstNewGeneration=%d "
+                                + "firstNewAttempt=%d firstNewWorker=%s firstNewClaim=%s firstVerifiedAt=%s "
+                                + "finalFixtureVerifiedAt=%s elapsedVirtualSeconds=%.3f "
+                                + "claims=%d dispatches=%d verified=%d receipts=%s ids=%s "
+                                + "servedCorrections=%d correctionReplayRuns=%d "
+                                + "pendingChangedCorrections=%s republishedChangedCorrections=%s outcomes=%s "
+                                + "blockedBodyReads=%s/%s/%s completeBodyReads=%s/%s/%s "
+                                + "ready=%s blocked=%s untouched=%s historyPreferenceClaims=%d historyFifoClaims=%d "
+                                + "canonicalPreemptions=%d pendingUnknownGates=%d%n",
+                        accepted.firstNewFixture(), accepted.firstNewGeneration(), accepted.firstNewAttempt(),
+                        accepted.firstNewWorker(), accepted.firstNewClaim(), accepted.firstVerifiedAt(),
+                        accepted.lastVerifiedAt(), accepted.maxVirtualElapsed().toNanos() / 1e9,
+                        accepted.claims(), accepted.dispatches(), accepted.verifiedReceipts(),
+                        accepted.verifiedReceiptGenerations(), accepted.verifiedFixtureIds(),
+                        accepted.servedCorrectionReceipts(), accepted.correctionReplayRuns(),
+                        accepted.pendingChangedCorrections(), accepted.republishedChangedCorrections(),
+                        accepted.changedCorrectionOutcomes(),
+                        blockedRetryBodies.bodyFamily(PayloadReadProbe.BodyFamily.OWN_ANCHORS).counts(),
+                        blockedRetryBodies.bodyFamily(PayloadReadProbe.BodyFamily.CROSS_RUN_HISTORIES).counts(),
+                        blockedRetryBodies.bodyFamily(PayloadReadProbe.BodyFamily.CANONICAL_PAIRS).counts(),
+                        completePublicationBodies.bodyFamily(PayloadReadProbe.BodyFamily.OWN_ANCHORS).counts(),
+                        completePublicationBodies.bodyFamily(PayloadReadProbe.BodyFamily.CROSS_RUN_HISTORIES).counts(),
+                        completePublicationBodies.bodyFamily(PayloadReadProbe.BodyFamily.CANONICAL_PAIRS).counts(),
+                        accepted.sawReadyFixture(), accepted.sawBlockedFixture(), accepted.sawUntouchedFixture(),
+                        accepted.preferentialHistoryClaims(), accepted.fifoHistoryClaims(),
+                        accepted.canonicalPreemptions(), accepted.pendingUnknownGates());
+            }
+        } finally {
+            cleanActiveAcceptanceSeason();
+        }
+    }
+
+    private static void prepareActiveAcceptanceSeason() {
+        TapasSeed.ensureOwnedSyncCaptureSeason(jdbc);
+        createActiveCapturedTables();
+        new DefensiveStatsSchema(jdbc).ensureColumns();
+        cleanActiveAcceptanceSeason();
+        TapasSeed.setCurrentSeason(jdbc, SEASON.id());
+    }
+
+    private static void createActiveCapturedTables() {
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS %s (
+                    season varchar(10) NOT NULL, price_date date NOT NULL, element_id integer NOT NULL,
+                    web_name varchar(100) NOT NULL, full_name varchar(200), team_id integer,
+                    team_short varchar(10), team_name varchar(100), element_type smallint,
+                    now_cost integer NOT NULL, cost_change_event integer NOT NULL DEFAULT 0,
+                    cost_change_start integer NOT NULL DEFAULT 0, selected_by_percent numeric(5,2),
+                    status varchar(4), news text, penalties_order smallint, direct_fk_order smallint,
+                    corners_order smallint, captured_at timestamptz NOT NULL DEFAULT now(),
+                    PRIMARY KEY(season, price_date, element_id))
+                """.formatted(CAPTURED.dailyPrice()));
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS %s (
+                    season varchar(10) NOT NULL, id integer NOT NULL, name varchar(50),
+                    deadline_time timestamptz NOT NULL, finished boolean NOT NULL DEFAULT false,
+                    data_checked boolean NOT NULL DEFAULT false, is_current boolean NOT NULL DEFAULT false,
+                    is_next boolean NOT NULL DEFAULT false, average_entry_score integer,
+                    highest_score integer, most_captained integer, most_transferred_in integer,
+                    captured_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(season,id))
+                """.formatted(CAPTURED.gameweek()));
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS %s (
+                    season varchar(10) NOT NULL, id integer NOT NULL, gameweek integer,
+                    team_h integer NOT NULL, team_a integer NOT NULL, team_h_name varchar(100),
+                    team_h_short varchar(10), team_a_name varchar(100), team_a_short varchar(10),
+                    team_h_difficulty smallint, team_a_difficulty smallint, kickoff_time timestamptz,
+                    started boolean NOT NULL DEFAULT false, finished boolean NOT NULL DEFAULT false,
+                    team_h_score integer, team_a_score integer,
+                    captured_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(season,id))
+                """.formatted(CAPTURED.fixture()));
+    }
+
+    private static void cleanActiveAcceptanceSeason() {
+        TapasSeed.ensureOwnedSyncCaptureSeason(jdbc);
+        clearOwnedRows();
+        for (String table : List.of(CAPTURED.fixture(), CAPTURED.gameweek(), CAPTURED.dailyPrice())) {
+            jdbc.update("DELETE FROM " + table + " WHERE season=?", SEASON.code());
+        }
+        jdbc.update("DELETE FROM player_fixture_stats WHERE season_id=?", SEASON.id());
+        jdbc.update("DELETE FROM fixture WHERE season_id=?", SEASON.id());
+        jdbc.update("DELETE FROM gameweek WHERE season_id=?", SEASON.id());
+        jdbc.update("DELETE FROM player WHERE season_id=?", SEASON.id());
+        jdbc.update("DELETE FROM team WHERE season_id=?", SEASON.id());
+        TapasSeed.setCurrentSeason(jdbc, TapasSeed.CURRENT_SEASON_ID);
+    }
+
+    private static Map<Integer, FixtureVerification.Decision> publishDirectFixtureBatch(Harness harness,
+                                                                                         int fromInclusive,
+                                                                                         int toInclusive)
+            throws Exception {
+        Map<Integer, Long> generations = new TreeMap<>();
+        for (int fixtureId = fromInclusive; fixtureId <= toInclusive; fixtureId++) {
+            generations.put(fixtureId, harness.histories.enqueueFixtureVerification(
+                    SEASON, fixtureId, harness.clock.instant()).generation());
+        }
+        refreshActiveCanonical(harness, "active-baseline-root");
+        Map<Integer, FixtureVerification.Decision> decisions = new TreeMap<>();
+        for (Map.Entry<Integer, Long> entry : generations.entrySet()) {
+            decisions.put(entry.getKey(), publishDirectFixtureObservation(
+                    harness, entry.getKey(), entry.getValue()));
+        }
+        return Map.copyOf(decisions);
+    }
+
+    private static FixtureVerification.Decision publishDirectFixtureObservation(Harness harness,
+                                                                                 int fixtureId,
+                                                                                 long generation)
+            throws IOException {
+        Map<String, Object> queued = jdbc.queryForMap("SELECT requested_source_after,state,publication_key FROM "
+                + TABLES.run() + " WHERE generation=?", generation);
+        assertThat(queued.get("state")).isEqualTo("PENDING");
+        assertThat(queued.get("publication_key")).isEqualTo("fixture:" + fixtureId);
+        Instant sourceFloor = ((Timestamp) queued.get("requested_source_after")).toInstant();
+        Lease lease = harness.store.acquireForSeason(SEASON.code(), "active-baseline-" + fixtureId,
+                Duration.ofMinutes(5)).orElseThrow();
+        assertThat(lease.generation()).isEqualTo(generation);
+
+        RootDocuments root = currentCanonicalDocuments(harness, fixtureId);
+        assertThat(root.bootstrap().readInterval().startedAt()).isAfterOrEqualTo(sourceFloor);
+        assertThat(root.fixtures().readInterval().startedAt()).isAfterOrEqualTo(sourceFloor);
+        var snapshot = CatalogueScheduleParser.parse(SEASON, root.bootstrap(), root.fixtures());
+        var fixture = snapshot.fixtures().stream().filter(row -> row.id() == fixtureId).findFirst().orElseThrow();
+        Instant sourceBase = later(harness.clock.instant(),
+                root.fixtures().readInterval().completedAt().plusMillis(1));
+        Instant liveFinished = sourceBase.plusMillis(20);
+        var live = new CatalogueScheduleParser.SourceDocument(harness.source.liveBytes(fixture.gameweek()),
+                new CatalogueScheduleParser.ReadInterval(sourceBase, liveFinished));
+        Set<Integer> candidatePlayers = candidatePlayers(snapshot, fixture, live);
+        assertThat(candidatePlayers).hasSizeBetween(1, 86);
+        Instant historyStarted = liveFinished.plusMillis(1);
+        Instant historyFinished = historyStarted.plusMillis(20);
+        var historyInterval = new CatalogueScheduleParser.ReadInterval(historyStarted, historyFinished);
+        Map<Integer, CatalogueScheduleParser.SourceDocument> histories = new TreeMap<>();
+        candidatePlayers.forEach(playerId -> histories.put(playerId,
+                new CatalogueScheduleParser.SourceDocument(harness.source.historyBytes(playerId), historyInterval)));
+        assertThat(histories).hasSize(candidatePlayers.size());
+        int knownZeroMinuteRows = 0;
+        List<HistoryParser.CanonicalFixture> canonical = snapshot.fixtures().stream()
+                .map(HistoryParser::canonicalFixture).toList();
+        for (int playerId : candidatePlayers) {
+            var batch = HistoryParser.parse(SEASON, playerId, histories.get(playerId), canonical);
+            List<HistoryParser.HistoryRow> fixtureRows = batch.rows().stream()
+                    .filter(row -> row.fixtureId() == fixtureId).toList();
+            assertThat(fixtureRows)
+                    .as("candidate %d has a real fixture row, including known zero minutes", playerId)
+                    .hasSize(1);
+            if (fixtureRows.getFirst().minutes() == 0) knownZeroMinuteRows++;
+        }
+        assertThat(knownZeroMinuteRows).as("known zero-minute candidates stay in the baseline denominator")
+                .isPositive();
+        harness.advanceControlledTime(historyFinished);
+        return harness.publisher.publish(lease, SEASON, fixtureId, root.bootstrap(), root.fixtures(), live, histories);
+    }
+
+    private static Map<Integer, Long> publishSameFingerprintCorrectionBatch(Harness harness,
+                                                                             int fromInclusive, int toInclusive)
+            throws Exception {
+        Map<Integer, FixtureVerification.Decision> decisions =
+                publishDirectFixtureBatch(harness, fromInclusive, toInclusive);
+        assertThat(decisions.values()).allSatisfy(decision ->
+                assertThat(decision.state()).isEqualTo(FixtureVerification.State.VERIFIED));
+        Map<Integer, Long> receipts = new TreeMap<>();
+        for (int fixtureId = fromInclusive; fixtureId <= toInclusive; fixtureId++) {
+            receipts.put(fixtureId, jdbc.queryForObject("SELECT latest_generation FROM " + TABLES.receipt()
+                    + " WHERE season=? AND publication_key=?", Long.class,
+                    SEASON.code(), "fixture:" + fixtureId));
+        }
+        return Map.copyOf(receipts);
+    }
+
+    private static void reconcileHistoryFingerprints(Harness harness, Set<Integer> fixtureIds) throws IOException {
+        RootDocuments root = currentCanonicalDocuments(harness, fixtureIds.iterator().next());
+        var snapshot = CatalogueScheduleParser.parse(SEASON, root.bootstrap(), root.fixtures());
+        Set<Integer> candidates = fixtureIds.stream().flatMap(id -> {
+            var fixture = snapshot.fixtures().stream().filter(row -> row.id() == id).findFirst().orElseThrow();
+            Set<Integer> players = snapshot.players().stream()
+                    .filter(player -> player.teamId() == fixture.homeTeamId()
+                            || player.teamId() == fixture.awayTeamId())
+                    .map(CatalogueScheduleParser.PlayerRow::id)
+                    .collect(java.util.stream.Collectors.toCollection(java.util.TreeSet::new));
+            var live = new CatalogueScheduleParser.SourceDocument(harness.source.liveBytes(fixture.gameweek()),
+                    root.fixtures().readInterval());
+            players.addAll(FixtureVerification.participantIds(fixture, live));
+            return players.stream();
+        }).collect(java.util.stream.Collectors.toCollection(java.util.TreeSet::new));
+        List<HistoryParser.CanonicalFixture> canonical = snapshot.fixtures().stream()
+                .map(HistoryParser::canonicalFixture).toList();
+        for (int playerId : candidates) {
+            Instant started = harness.clock.instant();
+            Instant finished = started.plusMillis(20);
+            var document = new CatalogueScheduleParser.SourceDocument(harness.source.historyBytes(playerId),
+                    new CatalogueScheduleParser.ReadInterval(started, finished));
+            HistoryParser.HistoryBatch batch = HistoryParser.parse(SEASON, playerId, document, canonical);
+            harness.advanceControlledTime(finished);
+            harness.publisher.reconcileHistoryFingerprints(batch);
+            harness.advanceControlledTime(finished.plusMillis(1));
+        }
+        for (int fixtureId : fixtureIds) {
+            var fixture = snapshot.fixtures().stream().filter(row -> row.id() == fixtureId).findFirst().orElseThrow();
+            var live = new CatalogueScheduleParser.SourceDocument(harness.source.liveBytes(fixture.gameweek()),
+                    root.fixtures().readInterval());
+            List<Integer> expected = candidatePlayers(snapshot, fixture, live).stream().sorted().toList();
+            List<Integer> fingerprintPlayers = jdbc.queryForList("SELECT player_id FROM "
+                    + TABLES.historyFingerprint() + " WHERE season_id=? AND fixture_id=? ORDER BY player_id",
+                    Integer.class, SEASON.id(), fixtureId);
+            assertThat(fingerprintPlayers)
+                    .as("every candidate, including known-zero players, has a source fingerprint for fixture %d",
+                            fixtureId)
+                    .containsExactlyElementsOf(expected);
+        }
+    }
+
+    private static Set<Integer> candidatePlayers(CatalogueScheduleParser.Snapshot snapshot,
+                                                  CatalogueScheduleParser.FixtureRow fixture,
+                                                  CatalogueScheduleParser.SourceDocument live) {
+        Set<Integer> players = snapshot.players().stream()
+                .filter(player -> player.teamId() == fixture.homeTeamId()
+                        || player.teamId() == fixture.awayTeamId())
+                .map(CatalogueScheduleParser.PlayerRow::id)
+                .collect(java.util.stream.Collectors.toCollection(java.util.TreeSet::new));
+        players.addAll(FixtureVerification.participantIds(fixture, live));
+        return Set.copyOf(players);
+    }
+
+    private static void refreshActiveCanonical(Harness harness, String workerPrefix) throws Exception {
+        harness.catalogue.enqueueCycle(SEASON, harness.clock.instant());
+        assertThat(harness.dispatchOneWithControlledResponse(workerPrefix + "-price")).isEqualTo(1);
+        assertThat(harness.dispatchOneWithControlledResponse(workerPrefix + "-schedule")).isEqualTo(1);
+    }
+
+    private static RootDocuments currentCanonicalDocuments(Harness harness, int fixtureId) {
+        assertThat(harness.store.currentCanonicalParentEvidence(SEASON.code(), fixtureId,
+                harness.clock.instant()).currentPublished()).isTrue();
+        Map<String, Object> root = jdbc.queryForMap("SELECT b.body bootstrap_body,b.read_started_at bootstrap_started,"
+                + "b.read_finished_at bootstrap_finished,p.source_bootstrap_sha256 bootstrap_hash,"
+                + "f.body fixtures_body,f.read_started_at fixtures_started,f.read_finished_at fixtures_finished,"
+                + "p.source_fixtures_sha256 fixtures_hash,p.source_bootstrap_sha256,p.source_fixtures_sha256,"
+                + "p.published_at"
+                + " FROM " + TABLES.receipt() + " p JOIN " + TABLES.run() + " r"
+                + " ON r.generation=p.latest_generation JOIN " + TABLES.payload() + " b"
+                + " ON b.id=p.source_bootstrap_payload_id JOIN " + TABLES.payload() + " f"
+                + " ON f.id=p.source_fixtures_payload_id WHERE p.season=? AND p.publication_key=?"
+                + " AND r.kind='CATALOGUE_SCHEDULE' AND r.state='COMPLETED' AND r.runtime_mode='ACTIVE'"
+                + " AND r.runtime_epoch=? AND b.validation_state='VALID' AND f.validation_state='VALID'"
+                + " AND b.source_published AND f.source_published ORDER BY p.published_at DESC LIMIT 1",
+                SEASON.code(), CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY, harness.fence.epoch());
+        byte[] bootstrapBytes = (byte[]) root.get("bootstrap_body");
+        byte[] fixtureBytes = (byte[]) root.get("fixtures_body");
+        assertThat(root.get("bootstrap_hash")).isEqualTo(OwnedSyncStore.sha256(bootstrapBytes));
+        assertThat(root.get("fixtures_hash")).isEqualTo(OwnedSyncStore.sha256(fixtureBytes));
+        assertThat(root.get("source_bootstrap_sha256")).isEqualTo(root.get("bootstrap_hash"));
+        assertThat(root.get("source_fixtures_sha256")).isEqualTo(root.get("fixtures_hash"));
+        assertThat(((Timestamp) root.get("published_at")).toInstant()).isBeforeOrEqualTo(harness.clock.instant());
+        return new RootDocuments(
+                new CatalogueScheduleParser.SourceDocument(bootstrapBytes,
+                        new CatalogueScheduleParser.ReadInterval(
+                                ((Timestamp) root.get("bootstrap_started")).toInstant(),
+                                ((Timestamp) root.get("bootstrap_finished")).toInstant())),
+                new CatalogueScheduleParser.SourceDocument(fixtureBytes,
+                        new CatalogueScheduleParser.ReadInterval(
+                                ((Timestamp) root.get("fixtures_started")).toInstant(),
+                                ((Timestamp) root.get("fixtures_finished")).toInstant())));
+    }
+
+    private static Map<String, Object> canonicalScheduleFrame() {
+        return jdbc.queryForMap("SELECT p.latest_generation,p.source_pair_fingerprint,"
+                + "p.source_bootstrap_payload_id,p.source_fixtures_payload_id,p.source_read_started_at,"
+                + "p.source_read_finished_at,p.source_bootstrap_read_started_at,p.source_bootstrap_read_finished_at,"
+                + "p.source_fixtures_read_started_at,p.source_fixtures_read_finished_at,p.source_bootstrap_sha256,"
+                + "p.source_fixtures_sha256,p.published_at,r.runtime_mode,r.runtime_epoch "
+                + "FROM " + TABLES.receipt() + " p JOIN " + TABLES.run()
+                + " r ON r.generation=p.latest_generation AND r.season=p.season WHERE p.season=? "
+                + "AND p.publication_key=?", SEASON.code(), CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY);
+    }
+
+    private static void assertCurrentCanonicalSourceMatches(Harness harness, SourceData source) {
+        RootDocuments current = currentCanonicalDocuments(harness, 3);
+        assertThat(current.bootstrap().bytes()).containsExactly(source.bootstrapBytes());
+        assertThat(current.fixtures().bytes()).containsExactly(source.fixtureBytes());
+        Map<String, Object> root = canonicalRootFixtureHeader(harness, 3);
+        assertThat(root.get("home_score")).isEqualTo(1);
+    }
+
+    private static Map<String, Object> canonicalRootFixtureHeader(Harness harness, int fixtureId) {
+        RootDocuments documents = currentCanonicalDocuments(harness, fixtureId);
+        var snapshot = CatalogueScheduleParser.parse(SEASON, documents.bootstrap(), documents.fixtures());
+        var fixture = snapshot.fixtures().stream().filter(row -> row.id() == fixtureId).findFirst().orElseThrow();
+        return Map.of("fixture_id", fixture.id(), "home_score", fixture.homeScore(),
+                "away_score", fixture.awayScore(), "header_fingerprint", FixtureVerification.verifiedHeader(fixture),
+                "stats_fingerprint", FixtureStatsFingerprint.of(fixture));
+    }
+
+    private static long dispatchFixtureUntilFreshObservation(Harness harness, int fixtureId,
+                                                              Long previousObservation) throws Exception {
+        for (int dispatch = 0; dispatch < 500; dispatch++) {
+            FixtureOwnershipSnapshot current = fixtureOwnershipSnapshot(fixtureId);
+            if (current.observationGeneration() != null
+                    && (previousObservation == null || current.observationGeneration() > previousObservation)
+                    && "true".equals(current.observationCoherent())
+                    && current.validationFailures().contains("NEEDS_SECOND_OBSERVATION")) {
+                return current.observationGeneration();
+            }
+            int claimed = harness.dispatchOneWithControlledResponse("fixture-" + fixtureId + "-fresh-first-" + dispatch);
+            if (claimed != 0) continue;
+            Instant now = harness.clock.instant();
+            Instant next = harness.earliestActiveRunDue();
+            if (next == null) {
+                throw new AssertionError("coordinator drained before fixture " + fixtureId
+                        + " recorded a fresh first observation: " + current.flags());
+            }
+            if (!next.isAfter(now)) {
+                throw new AssertionError("coordinator could not claim due correction work: fixture=" + fixtureId
+                        + " next=" + next + " now=" + now + " state=" + current.flags());
+            }
+            harness.advanceControlledTime(next);
+        }
+        throw new AssertionError("fixture " + fixtureId + " exceeded bounded first-observation dispatches");
+    }
+
+    private static long dispatchFixtureUntilVerified(Harness harness, int fixtureId,
+                                                      long previousVerifiedGeneration) throws Exception {
+        for (int dispatch = 0; dispatch < 500; dispatch++) {
+            FixtureOwnershipSnapshot current = fixtureOwnershipSnapshot(fixtureId);
+            if (current.currentVerifiedGeneration() != null
+                    && current.currentVerifiedGeneration() > previousVerifiedGeneration
+                    && "VERIFIED".equals(current.state())) {
+                return current.currentVerifiedGeneration();
+            }
+            int claimed = harness.dispatchOneWithControlledResponse("fixture-" + fixtureId + "-fresh-second-" + dispatch);
+            if (claimed != 0) continue;
+            Instant now = harness.clock.instant();
+            Instant next = harness.earliestActiveRunDue();
+            if (next == null) {
+                Timestamp fixtureDue = jdbc.queryForObject("SELECT next_due_at FROM " + TABLES.fixtureSync()
+                        + " WHERE season_id=? AND fixture_id=?", Timestamp.class, SEASON.id(), fixtureId);
+                if (fixtureDue == null) {
+                    throw new AssertionError("coordinator drained without a receipt or persisted fixture due: "
+                            + current.flags());
+                }
+                next = fixtureDue.toInstant();
+                if (next.isBefore(now)) next = now;
+                harness.advanceControlledTime(next);
+                harness.histories.enqueuePersistedFixtureRetry(SEASON, fixtureId, next);
+                continue;
+            }
+            if (!next.isAfter(now)) {
+                throw new AssertionError("coordinator could not claim due second-batch work: fixture=" + fixtureId
+                        + " next=" + next + " now=" + now + " state=" + current.flags());
+            }
+            harness.advanceControlledTime(next);
+        }
+        throw new AssertionError("fixture " + fixtureId + " exceeded bounded second-observation dispatches");
+    }
+
+    private static Map<String, Object> fixtureRunSourceFrame(long generation) {
+        Map<String, Object> row = jdbc.queryForMap("SELECT r.generation,r.publication_key,r.state,r.runtime_mode,"
+                + "r.runtime_epoch,r.requested_source_after,r.source_read_started_at,r.source_read_finished_at,"
+                + "r.completed_at,m.source_floor,m.required_player_ids,m.fixtures_payload_id,f.body fixtures_body "
+                + "FROM " + TABLES.run() + " r JOIN " + TABLES.fixtureDependencyManifest()
+                + " m ON m.run_generation=r.generation JOIN " + TABLES.payload()
+                + " f ON f.id=m.fixtures_payload_id WHERE r.generation=?", generation);
+        Map<String, Object> result = new TreeMap<>(row);
+        try {
+            ArrayNode fixtureRows = (ArrayNode) JSON.readTree((byte[]) row.get("fixtures_body"));
+            JsonNode target = null;
+            String publicationKey = (String) row.get("publication_key");
+            int fixtureId = Integer.parseInt(publicationKey.substring("fixture:".length()));
+            for (JsonNode candidate : fixtureRows) {
+                if (candidate.path("id").asInt() == fixtureId) {
+                    target = candidate;
+                    break;
+                }
+            }
+            if (target != null) result.put("fixture_score", target.path("team_h_score").intValue());
+            else result.put("fixture_score", null);
+        } catch (IOException invalid) {
+            throw new IllegalArgumentException("fixture run staged invalid fixture source", invalid);
+        }
+        result.remove("fixtures_body");
+        result.put("source_payload_roles", jdbc.queryForList("SELECT id,endpoint_kind,event_id,player_id,"
+                + "validation_state,source_published,read_started_at,read_finished_at FROM " + TABLES.payload()
+                + " WHERE run_generation=? ORDER BY id", generation));
+        return result;
+    }
+
+    private static FixtureVerification.Observation fixtureObservation(int fixtureId) {
+        String observation = jdbc.queryForObject("SELECT observation::text FROM " + TABLES.fixtureSync()
+                + " WHERE season_id=? AND fixture_id=?", String.class, SEASON.id(), fixtureId);
+        return FixtureObservationCodec.decode(observation);
+    }
+
+    private static SourceRead observationInterval(FixtureVerification.Observation observation) {
+        return new SourceRead(observation.reads().startedAt(), observation.reads().completedAt());
+    }
+
+    private static void assertPendingObservationMatchesSource(Harness harness, int fixtureId, long generation,
+                                                               Set<Integer> requiredPlayers, SourceData source)
+            throws IOException {
+        Map<String, Object> row = jdbc.queryForMap("SELECT observation::text,observation_generation,"
+                + "current_verified_generation,last_verified_generation,validation_failures::text "
+                + "FROM " + TABLES.fixtureSync() + " WHERE season_id=? AND fixture_id=?", SEASON.id(), fixtureId);
+        FixtureVerification.Observation observation = FixtureObservationCodec.decode((String) row.get("observation"));
+        assertThat(row.get("observation_generation")).isEqualTo(generation);
+        assertThat(row.get("current_verified_generation")).isNull();
+        assertThat(observation.coherent()).isTrue();
+        assertThat(observation.finished()).isTrue();
+        assertThat(observation.reads().histories().keySet()).containsExactlyInAnyOrderElementsOf(requiredPlayers);
+        Map<String, Object> run = fixtureRunSourceFrame(generation);
+        Instant wanted = ((Timestamp) run.get("requested_source_after")).toInstant();
+        Instant completed = ((Timestamp) run.get("completed_at")).toInstant();
+        Instant runStarted = ((Timestamp) run.get("source_read_started_at")).toInstant();
+        Instant runFinished = ((Timestamp) run.get("source_read_finished_at")).toInstant();
+        assertThat(runStarted).isAfterOrEqualTo(wanted);
+        assertThat(runFinished).isAfterOrEqualTo(runStarted).isBeforeOrEqualTo(completed);
+        assertThat(run.get("source_floor")).isEqualTo(run.get("requested_source_after"));
+        assertThat(run.get("fixture_score")).isEqualTo(1);
+        List<Map<String, Object>> ownPayloads = jdbc.queryForList("SELECT endpoint_kind,body,validation_state,"
+                + "read_started_at,read_finished_at FROM " + TABLES.payload()
+                + " WHERE run_generation=? ORDER BY id", generation);
+        assertThat(ownPayloads).filteredOn(payload -> "BOOTSTRAP_STATIC".equals(payload.get("endpoint_kind")))
+                .isNotEmpty().allSatisfy(payload -> assertThat(payload.get("body")).isEqualTo(source.bootstrapBytes()));
+        assertThat(ownPayloads).filteredOn(payload -> "FIXTURES".equals(payload.get("endpoint_kind")))
+                .isNotEmpty().allSatisfy(payload -> assertThat(payload.get("body")).isEqualTo(source.fixtureBytes()));
+        int event = sourceGameweek(source, fixtureId);
+        assertThat(ownPayloads).filteredOn(payload -> "EVENT_LIVE".equals(payload.get("endpoint_kind")))
+                .isNotEmpty().allSatisfy(payload -> assertThat(payload.get("body")).isEqualTo(source.liveBytes(event)));
+        ownPayloads.forEach(payload -> {
+            assertThat(payload.get("validation_state")).isEqualTo("VALID");
+            assertThat(((Timestamp) payload.get("read_started_at")).toInstant()).isAfterOrEqualTo(wanted);
+            assertThat(((Timestamp) payload.get("read_finished_at")).toInstant()).isBeforeOrEqualTo(completed);
+        });
+        for (int playerId : requiredPlayers) {
+            var read = observation.reads().histories().get(playerId);
+            Map<String, Object> evidence = jdbc.queryForMap("SELECT hp.body,hp.validation_state,hp.read_started_at,"
+                    + "hp.read_finished_at,hr.kind,hr.state,hr.runtime_mode,hr.runtime_epoch,hr.completed_at "
+                    + "FROM " + TABLES.payload() + " hp JOIN " + TABLES.run()
+                    + " hr ON hr.generation=hp.run_generation WHERE hp.endpoint_kind='ELEMENT_SUMMARY' "
+                    + "AND hp.event_id IS NULL AND hp.player_id=? AND hp.read_started_at=? AND hp.read_finished_at=?",
+                    playerId, Timestamp.from(read.startedAt()), Timestamp.from(read.completedAt()));
+            assertThat(evidence.get("body")).isEqualTo(source.historyBytes(playerId));
+            assertThat(read.startedAt()).isAfterOrEqualTo(wanted);
+            assertThat(read.startedAt()).isAfterOrEqualTo(observation.reads().fixture().completedAt().plusMillis(1));
+            assertThat(evidence.get("validation_state")).isEqualTo("VALID");
+            assertThat(evidence.get("kind")).isEqualTo("PLAYER_HISTORY");
+            assertThat(evidence.get("state")).isEqualTo("COMPLETED");
+            assertThat(evidence.get("runtime_mode")).isEqualTo("ACTIVE");
+            assertThat(((Number) evidence.get("runtime_epoch")).longValue()).isEqualTo(harness.fence.epoch());
+            assertThat(((Timestamp) evidence.get("read_started_at")).toInstant()).isAfterOrEqualTo(wanted);
+            assertThat(((Timestamp) evidence.get("completed_at")).toInstant()).isBeforeOrEqualTo(completed);
+        }
+        assertCurrentCanonicalSourceMatches(harness, source);
+    }
+
+    private static String componentChecksum(List<String> rows) {
+        return OwnedSyncStore.sha256(String.join("\n", rows.stream().sorted().toList()));
+    }
+
+    private static Map<Integer, FixtureHeaderState> currentFixtureHeaderStates(Set<Integer> fixtureIds) {
+        List<Integer> ids = sorted(fixtureIds);
+        List<Map<String, Object>> rows = jdbc.queryForList("SELECT f.id,f.gameweek,f.team_h,f.team_a,"
+                + "f.team_h_score,f.team_a_score,f.kickoff_time,f.started,f.finished,f.finished_provisional,"
+                + "f.minutes,f.stats::text core_stats,c.gameweek captured_gameweek,c.team_h captured_team_h,"
+                + "c.team_a captured_team_a,c.kickoff_time captured_kickoff,c.started captured_started,"
+                + "c.finished captured_finished,c.team_h_score captured_home_score,"
+                + "c.team_a_score captured_away_score FROM fixture f JOIN " + CAPTURED.fixture()
+                + " c ON c.season=? AND c.id=f.id WHERE f.season_id=? AND f.id IN ("
+                + placeholders(ids.size()) + ") ORDER BY f.id", concat(SEASON.code(), SEASON.id(), ids));
+        Map<Integer, FixtureHeaderState> result = new TreeMap<>();
+        for (Map<String, Object> row : rows) {
+            int fixtureId = ((Number) row.get("id")).intValue();
+            Map<String, Object> core = new TreeMap<>();
+            for (String field : List.of("gameweek", "team_h", "team_a", "team_h_score", "team_a_score",
+                    "kickoff_time", "started", "finished", "finished_provisional", "minutes", "core_stats")) {
+                core.put(field, row.get(field));
+            }
+            Map<String, Object> captured = new TreeMap<>();
+            for (String field : List.of("captured_gameweek", "captured_team_h", "captured_team_a",
+                    "captured_kickoff", "captured_started", "captured_finished", "captured_home_score",
+                    "captured_away_score")) {
+                captured.put(field, row.get(field));
+            }
+            result.put(fixtureId, new FixtureHeaderState(Map.copyOf(core), Map.copyOf(captured)));
+        }
+        assertThat(result.keySet()).containsExactlyInAnyOrderElementsOf(fixtureIds);
+        return Map.copyOf(result);
+    }
+
+    private static Map<Integer, FixtureSourceState> currentCanonicalFixtureStates(Harness harness, int fixtureId) {
+        RootDocuments root = currentCanonicalDocuments(harness, fixtureId);
+        var snapshot = CatalogueScheduleParser.parse(SEASON, root.bootstrap(), root.fixtures());
+        Map<Integer, FixtureSourceState> result = new TreeMap<>();
+        for (var fixture : snapshot.fixtures()) {
+            result.put(fixture.id(), new FixtureSourceState(FixtureVerification.verifiedHeader(fixture),
+                    FixtureStatsFingerprint.of(fixture), fixture.homeScore(), fixture.awayScore()));
+        }
+        return Map.copyOf(result);
+    }
+
+    private static int sourceGameweek(SourceData source, int fixtureId) throws IOException {
+        var read = new CatalogueScheduleParser.ReadInterval(START, START);
+        var snapshot = CatalogueScheduleParser.parse(SEASON,
+                new CatalogueScheduleParser.SourceDocument(source.bootstrapBytes(), read),
+                new CatalogueScheduleParser.SourceDocument(source.fixtureBytes(), read));
+        return snapshot.fixtures().stream().filter(row -> row.id() == fixtureId)
+                .findFirst().orElseThrow().gameweek();
+    }
+
+    private static Map<Integer, String> changedCorrectionTrace(
+            Map<Integer, FixturePublicationComponents> baseline,
+            Map<Integer, FixturePublicationComponents> current,
+            Map<Integer, Long> baselineReceiptGenerations,
+            Set<Integer> republished, Set<Integer> pending,
+            SourceData source, Harness harness) throws IOException {
+        Map<Integer, FixtureOracle> oracles = sourceFixtureOracles(source, Set.of(1, 2, 3, 4, 5));
+        Map<Integer, String> result = new TreeMap<>();
+        for (int fixtureId : List.of(1, 2, 3, 4, 5)) {
+            FixturePublicationComponents old = baseline.get(fixtureId);
+            FixturePublicationComponents now = current.get(fixtureId);
+            Long actualGeneration = now.latestGeneration();
+            Map<String, Object> sync = jdbc.queryForMap("SELECT state,observation_generation,"
+                    + "current_verified_generation,last_verified_generation,validation_failures::text "
+                    + "FROM " + TABLES.fixtureSync() + " WHERE season_id=? AND fixture_id=?", SEASON.id(), fixtureId);
+            List<Map<String, Object>> runs = jdbc.queryForList("SELECT generation,state,runtime_mode,runtime_epoch,"
+                    + "requested_source_after,source_read_started_at,source_read_finished_at,completed_at "
+                    + "FROM " + TABLES.run() + " WHERE season=? AND kind='FIXTURE_VERIFICATION' "
+                    + "AND publication_key=? ORDER BY generation", SEASON.code(), "fixture:" + fixtureId);
+            Map<String, Object> receipt = jdbc.queryForMap("SELECT to_jsonb(p)::text receipt_json,p.latest_generation "
+                    + "FROM " + TABLES.receipt() + " p WHERE p.season=? AND p.publication_key=?",
+                    SEASON.code(), "fixture:" + fixtureId);
+            Map<String, Object> oracle = Map.of("headerFingerprint", oracles.get(fixtureId).headerFingerprint(),
+                    "statsFingerprint", oracles.get(fixtureId).statsFingerprint(),
+                    "observationFingerprint", oracles.get(fixtureId).observationFingerprint(),
+                    "requiredPlayers", oracles.get(fixtureId).requiredPlayers());
+            List<Map<String, Object>> payloadRoles = actualGeneration == null ? List.of()
+                    : jdbc.queryForList("SELECT id,endpoint_kind,event_id,player_id,validation_state,source_published,"
+                            + "read_started_at,read_finished_at FROM " + TABLES.payload()
+                            + " WHERE run_generation=? ORDER BY endpoint_kind,id", actualGeneration);
+            List<Map<String, Object>> sourceEvidence = actualGeneration == null ? List.of()
+                    : jdbc.queryForList("SELECT player_id,generation,component_presence,source_read_started_at,"
+                            + "source_read_finished_at FROM " + TABLES.playerFixtureEvidence()
+                            + " WHERE season_id=? AND fixture_id=? AND generation=? ORDER BY player_id",
+                            SEASON.id(), fixtureId, actualGeneration);
+            List<Integer> pfsPlayerIds = jdbc.queryForList("SELECT player_id FROM player_fixture_stats "
+                    + "WHERE season_id=? AND fixture_id=? ORDER BY player_id", Integer.class, SEASON.id(), fixtureId);
+            String outcome = republished.contains(fixtureId) ? "REPUBLISHED"
+                    : pending.contains(fixtureId) ? "PENDING" : "INVALID";
+            result.put(fixtureId, "outcome=" + outcome + ", baselineReceipt=" + baselineReceiptGenerations.get(fixtureId)
+                    + ", baselineReceiptJson=" + old.receiptIdentity() + ", currentReceipt=" + receipt
+                    + ", sync=" + sync + ", baselineOwnership=" + old.ownership()
+                    + ", coreHeader=" + now.sourceHeader() + ", capturedHeader=" + now.capturedHeader()
+                    + ", authoritativeRoot=" + canonicalRootFixtureHeader(harness, fixtureId)
+                    + ", sourceOracle=" + oracle + ", pfsPlayerIds=" + pfsPlayerIds
+                    + ", pfsChecksums=" + componentChecksum(old.pfsRows()) + "->" + componentChecksum(now.pfsRows())
+                    + ", evidenceChecksums=" + componentChecksum(old.evidenceRows()) + "->"
+                    + componentChecksum(now.evidenceRows()) + ", currentGenerationRoles=" + payloadRoles
+                    + ", currentGenerationEvidence=" + sourceEvidence + ", runs=" + runs
+                    + ", componentDiff=" + fixturePublicationComponentDiffs(Map.of(fixtureId, old),
+                            Map.of(fixtureId, now)));
+        }
+        return Map.copyOf(result);
+    }
+
+    private static ParentSelectionDiagnostic plannerParentSelection(Harness harness, int fixtureId) {
+        List<ParentSourceDiagnostic> validCandidates = new ArrayList<>();
+        harness.store.findInLatestValidPublicPayloadPairs(SEASON.code(), 20, pair -> {
+            try {
+                var sourcePair = OwnedSyncStore.CanonicalSourcePair.from(pair.bootstrap(), pair.fixtures());
+                Long publicationGeneration = harness.store.currentPublishedCanonicalPair(
+                        SEASON.code(), sourcePair, harness.clock.instant())
+                        .map(OwnedSyncStore.CanonicalPublication::publicationGeneration).orElse(null);
+                validCandidates.add(parentDiagnostic(harness, fixtureId, pair, publicationGeneration));
+                return java.util.Optional.of(Boolean.TRUE);
+            } catch (IllegalArgumentException ignored) {
+                return java.util.Optional.empty();
+            }
+        });
+        ParentSourceDiagnostic newestValid = validCandidates.stream().findFirst()
+                .orElseThrow(() -> new AssertionError("planner source selection returned no parseable pair"));
+        ParentSourceDiagnostic currentPublished = harness.store.findInLatestCurrentPublishedCanonicalPairs(
+                SEASON.code(), 20, harness.clock.instant(), selected -> {
+                    try {
+                        return java.util.Optional.of(parentDiagnostic(harness, fixtureId,
+                                selected.pair(), selected.publication().publicationGeneration()));
+                    } catch (IllegalArgumentException ignored) {
+                        return java.util.Optional.empty();
+                    }
+                }).orElseThrow(() -> new AssertionError("native current-publication selection returned no pair"));
+        return new ParentSelectionDiagnostic(newestValid, currentPublished, validCandidates.size());
+    }
+
+    private static ParentSourceDiagnostic parentDiagnostic(Harness harness, int fixtureId,
+                                                            OwnedSyncStore.PublicPayloadPair pair,
+                                                            Long publicationGeneration) {
+        var snapshot = CatalogueScheduleParser.parse(SEASON,
+                new CatalogueScheduleParser.SourceDocument(pair.bootstrap().body(),
+                        new CatalogueScheduleParser.ReadInterval(pair.bootstrap().read().startedAt(),
+                                pair.bootstrap().read().finishedAt())),
+                new CatalogueScheduleParser.SourceDocument(pair.fixtures().body(),
+                        new CatalogueScheduleParser.ReadInterval(pair.fixtures().read().startedAt(),
+                                pair.fixtures().read().finishedAt())));
+        var fixture = snapshot.fixtures().stream().filter(row -> row.id() == fixtureId)
+                .findFirst().orElseThrow();
+        var sourcePair = OwnedSyncStore.CanonicalSourcePair.from(pair.bootstrap(), pair.fixtures());
+        return new ParentSourceDiagnostic(pair.runGeneration(), publicationGeneration,
+                pair.bootstrap().id(), pair.fixtures().id(), pair.bootstrap().read(),
+                pair.fixtures().read(), fixture.finished(), sourcePair.fingerprint(),
+                OwnedSyncStore.sha256(FixtureVerification.verifiedHeader(fixture)));
+    }
+
+    private static Map<String, Object> targetFinishedMarker(int fixtureId) {
+        return jdbc.queryForMap("SELECT first_finished_observed_at,finished_parent_generation,"
+                + "finished_parent_publication_generation,finished_parent_bootstrap_payload_id,"
+                + "finished_parent_fixtures_payload_id,finished_parent_source_fingerprint,"
+                + "finished_parent_fixture_fingerprint,finished_parent_finished FROM "
+                + TABLES.fixtureSync() + " WHERE season_id=? AND fixture_id=?", SEASON.id(), fixtureId);
+    }
+
+    private static boolean markerMatches(Map<String, Object> marker, ParentSourceDiagnostic parent) {
+        return Boolean.TRUE.equals(marker.get("finished_parent_finished"))
+                && java.util.Objects.equals(nullableLong(marker.get("finished_parent_generation")),
+                        parent.sourceGeneration())
+                && java.util.Objects.equals(nullableLong(marker.get("finished_parent_publication_generation")),
+                        parent.publicationGeneration())
+                && java.util.Objects.equals(nullableLong(marker.get("finished_parent_bootstrap_payload_id")),
+                        parent.bootstrapPayloadId())
+                && java.util.Objects.equals(nullableLong(marker.get("finished_parent_fixtures_payload_id")),
+                        parent.fixturesPayloadId())
+                && java.util.Objects.equals(marker.get("finished_parent_source_fingerprint"),
+                        parent.sourceFingerprint())
+                && java.util.Objects.equals(marker.get("finished_parent_fixture_fingerprint"),
+                        parent.fixtureFingerprint());
+    }
+
+    private static List<Map<String, Object>> canonicalRootReceipts() {
+        return jdbc.queryForList("SELECT publication_key,latest_generation,source_bootstrap_payload_id,"
+                + "source_fixtures_payload_id,source_read_started_at,source_read_finished_at,published_at FROM "
+                + TABLES.receipt() + " WHERE season=? AND publication_key IN (?,?) ORDER BY publication_key",
+                SEASON.code(), CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY,
+                CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY);
+    }
+
+    private static void assertCanonicalSourceInterval(ParentSourceDiagnostic parent,
+                                                      List<Map<String, Object>> receipts) {
+        Map<String, Object> publication = receipts.stream().filter(row ->
+                java.util.Objects.equals(nullableLong(row.get("latest_generation")),
+                        parent.publicationGeneration())
+                        && java.util.Objects.equals(nullableLong(row.get("source_bootstrap_payload_id")),
+                                parent.bootstrapPayloadId())
+                        && java.util.Objects.equals(nullableLong(row.get("source_fixtures_payload_id")),
+                                parent.fixturesPayloadId())).findFirst().orElseThrow();
+        Instant sourceStarted = ((Timestamp) publication.get("source_read_started_at")).toInstant();
+        Instant sourceFinished = ((Timestamp) publication.get("source_read_finished_at")).toInstant();
+        assertThat(sourceStarted).isBeforeOrEqualTo(parent.bootstrapRead().startedAt())
+                .isBeforeOrEqualTo(parent.fixturesRead().startedAt());
+        assertThat(sourceFinished).isAfterOrEqualTo(parent.bootstrapRead().finishedAt())
+                .isAfterOrEqualTo(parent.fixturesRead().finishedAt());
+        assertThat(((Timestamp) publication.get("published_at")).toInstant()).isAfterOrEqualTo(sourceFinished);
+    }
+
+    private static int canonicalAttemptsAfter(Harness harness, Instant instant) {
+        return jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
+                + " WHERE season=? AND runtime_mode='ACTIVE' AND runtime_epoch=?"
+                + " AND kind='CATALOGUE_SCHEDULE' AND publication_key IN (?,?) AND last_attempt_at>?",
+                Integer.class, SEASON.code(), harness.fence.epoch(),
+                CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY,
+                CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY, Timestamp.from(instant));
+    }
+
+    private static Instant later(Instant first, Instant second) {
+        return first.isAfter(second) ? first : second;
+    }
+
+    private static void advanceGlobalTimeline(MutableClock clock, Instant target) {
+        Instant current = clock.instant();
+        if (target.isBefore(current)) throw new IllegalArgumentException("test time cannot move backwards");
+        clock.advance(Duration.between(current, target));
+    }
+
+    private static void assertReceiptBackedFixtures(RuntimeFence fence, Set<Integer> fixtureIds) {
+        for (int fixtureId : fixtureIds) {
+            Long current = jdbc.queryForObject("SELECT current_verified_generation FROM " + TABLES.fixtureSync()
+                    + " WHERE season_id=? AND fixture_id=?", Long.class, SEASON.id(), fixtureId);
+            assertThat(current).as("fixture %d has current owned verification", fixtureId).isNotNull();
+            assertThat(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM " + TABLES.receipt()
+                    + " p JOIN " + TABLES.run() + " r ON r.generation=p.latest_generation"
+                    + " WHERE p.season=? AND p.publication_key=? AND p.latest_generation=?"
+                    + " AND r.runtime_mode=? AND r.runtime_epoch=? AND r.state='COMPLETED')",
+                    Boolean.class, SEASON.code(), "fixture:" + fixtureId, current,
+                    fence.mode().name(), fence.epoch())).as("fixture %d receipt belongs to the current epoch", fixtureId)
+                    .isTrue();
+        }
+    }
+
+    private static void assertRetainedReceiptHistory(Map<Integer, Long> served) {
+        assertThat(served).hasSize(40);
+        for (int fixtureId = 1; fixtureId <= 40; fixtureId++) {
+            long generation = served.get(fixtureId);
+            assertThat(jdbc.queryForObject("SELECT latest_generation FROM " + TABLES.receipt()
+                    + " WHERE season=? AND publication_key=?", Long.class,
+                    SEASON.code(), "fixture:" + fixtureId)).isEqualTo(generation);
+            assertThat(jdbc.queryForObject("SELECT last_verified_generation FROM " + TABLES.fixtureSync()
+                    + " WHERE season_id=? AND fixture_id=?", Long.class,
+                    SEASON.id(), fixtureId)).isEqualTo(generation);
+            assertThat(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM " + TABLES.run()
+                    + " WHERE generation=? AND runtime_mode='ACTIVE' AND runtime_epoch=1"
+                    + " AND state='COMPLETED')", Boolean.class, generation)).isTrue();
+        }
+    }
+
+    private static void assertBaselineCandidateCoverage(Set<Integer> fixtureIds, SourceData source) {
+        Map<Integer, Set<Integer>> required = source.requiredHistoryPlayersByFixture(
+                fixtureIds.stream().mapToInt(Integer::intValue).max().orElseThrow());
+        for (int fixtureId : fixtureIds) {
+            int candidateCount = required.get(fixtureId).size();
+            long generation = jdbc.queryForObject("SELECT latest_generation FROM " + TABLES.receipt()
+                    + " WHERE season=? AND publication_key=?", Long.class,
+                    SEASON.code(), "fixture:" + fixtureId);
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM player_fixture_stats"
+                    + " WHERE season_id=? AND fixture_id=?", Integer.class, SEASON.id(), fixtureId))
+                    .as("the baseline stores every current-club candidate for fixture %d", fixtureId)
+                    .isEqualTo(candidateCount);
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.playerFixtureEvidence()
+                    + " WHERE season_id=? AND fixture_id=? AND generation=?", Integer.class,
+                    SEASON.id(), fixtureId, generation)).isEqualTo(candidateCount);
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM player_fixture_stats"
+                    + " WHERE season_id=? AND fixture_id=? AND minutes=0", Integer.class,
+                    SEASON.id(), fixtureId)).as("known zero-minute rows count in the baseline")
+                    .isPositive();
+            assertThat(jdbc.queryForObject("SELECT expected_participants=received_participants"
+                    + " AND cardinality(missing_player_ids)=0 FROM " + TABLES.fixtureSync()
+                    + " WHERE season_id=? AND fixture_id=?", Boolean.class, SEASON.id(), fixtureId)).isTrue();
+        }
+    }
+
+    private static Map<Integer, Instant> fixtureFirstVerifiedTimes(Set<Integer> fixtureIds) {
+        Map<Integer, Instant> result = new TreeMap<>();
+        for (int fixtureId : fixtureIds) {
+            result.put(fixtureId, jdbc.queryForObject("SELECT first_verified_at FROM " + TABLES.fixtureSync()
+                    + " WHERE season_id=? AND fixture_id=?", Timestamp.class,
+                    SEASON.id(), fixtureId).toInstant());
+        }
+        return Map.copyOf(result);
+    }
+
+    private static void assertQualifyingBaselineReceipts(Set<Integer> fixtureIds,
+                                                          Map<Integer, Long> generations,
+                                                          Map<Integer, Long> initialReceipts,
+                                                          Map<Integer, Instant> firstVerifiedAt) {
+        for (int fixtureId : fixtureIds) {
+            Map<String, Object> row = jdbc.queryForMap("SELECT p.latest_generation,p.source_read_started_at,"
+                    + "p.source_read_finished_at,p.published_at,r.requested_source_after,r.source_read_started_at "
+                    + "run_source_started,r.source_read_finished_at run_source_finished,r.completed_at,"
+                    + "fs.data_checked_transition_at FROM " + TABLES.receipt() + " p JOIN " + TABLES.run()
+                    + " r ON r.generation=p.latest_generation JOIN " + TABLES.fixtureSync()
+                    + " fs ON fs.season_id=? AND p.publication_key='fixture:' || fs.fixture_id::text"
+                    + " WHERE p.season=? AND p.publication_key=? AND fs.fixture_id=? AND r.state='COMPLETED'"
+                    + " AND r.runtime_mode='ACTIVE' AND r.runtime_epoch=1",
+                    SEASON.id(), SEASON.code(), "fixture:" + fixtureId, fixtureId);
+            Instant sourceStarted = ((Timestamp) row.get("source_read_started_at")).toInstant();
+            Instant sourceFinished = ((Timestamp) row.get("source_read_finished_at")).toInstant();
+            Instant publishedAt = ((Timestamp) row.get("published_at")).toInstant();
+            Instant completedAt = ((Timestamp) row.get("completed_at")).toInstant();
+            Instant transitionAt = ((Timestamp) row.get("data_checked_transition_at")).toInstant();
+            assertThat(((Number) row.get("latest_generation")).longValue()).isEqualTo(generations.get(fixtureId))
+                    .isGreaterThan(initialReceipts.get(fixtureId));
+            assertThat(((Timestamp) row.get("run_source_started")).toInstant()).isEqualTo(sourceStarted);
+            assertThat(((Timestamp) row.get("run_source_finished")).toInstant()).isEqualTo(sourceFinished);
+            assertThat(sourceStarted).isAfterOrEqualTo(((Timestamp) row.get("requested_source_after")).toInstant());
+            assertThat(sourceStarted).isAfterOrEqualTo(transitionAt);
+            assertThat(sourceStarted).isAfterOrEqualTo(firstVerifiedAt.get(fixtureId).plus(Duration.ofHours(48)));
+            assertThat(sourceFinished).isAfterOrEqualTo(sourceStarted);
+            assertThat(completedAt).isAfterOrEqualTo(sourceFinished);
+            assertThat(publishedAt).isAfterOrEqualTo(completedAt);
+            assertThat(List.of(sourceStarted, sourceFinished, completedAt, publishedAt))
+                    .allSatisfy(value -> assertThat(isDatabaseMicrosecond(value)).isTrue());
+        }
+    }
+
+    private static Map<Integer, FixturePublicationComponents> fixturePublicationComponents(Set<Integer> fixtureIds) {
+        Map<Integer, FixturePublicationComponents> result = new TreeMap<>();
+        for (int fixtureId : fixtureIds.stream().sorted().toList()) {
+            List<Map<String, Object>> receiptRows = jdbc.queryForList("SELECT to_jsonb(p)::text receipt_identity,"
+                    + "p.latest_generation,(fs.state='VERIFIED' AND fs.current_verified_generation=p.latest_generation"
+                    + " AND EXISTS (SELECT 1 FROM " + TABLES.run() + " r WHERE r.generation=p.latest_generation"
+                    + " AND r.season=p.season AND r.kind='FIXTURE_VERIFICATION' AND r.publication_key=p.publication_key"
+                    + " AND r.state='COMPLETED' AND r.runtime_mode='ACTIVE' AND r.runtime_epoch>0"
+                    + " AND r.completed_at<=p.published_at AND r.source_read_started_at=p.source_read_started_at"
+                    + " AND r.source_read_finished_at=p.source_read_finished_at)) verification_valid"
+                    + " FROM " + TABLES.receipt() + " p JOIN " + TABLES.fixtureSync()
+                    + " fs ON p.publication_key='fixture:' || fs.fixture_id::text AND fs.season_id=?"
+                    + " WHERE p.season=? AND fs.fixture_id=?", SEASON.id(), SEASON.code(), fixtureId);
+            List<String> pfsRows = jdbc.queryForList("SELECT to_jsonb(p)::text FROM player_fixture_stats p"
+                            + " WHERE p.season_id=? AND p.fixture_id=? ORDER BY p.player_id",
+                    String.class, SEASON.id(), fixtureId);
+            List<String> evidenceRows = jdbc.queryForList("SELECT to_jsonb(e)::text FROM "
+                            + TABLES.playerFixtureEvidence() + " e WHERE e.season_id=? AND e.fixture_id=?"
+                            + " ORDER BY e.generation,e.player_id",
+                    String.class, SEASON.id(), fixtureId);
+            Map<String, Object> sourceHeader = jdbc.queryForMap("SELECT id,season_id,gameweek,code,team_h,team_a,"
+                    + "team_h_score,team_a_score,kickoff_time,started,finished,finished_provisional,minutes,"
+                    + "stats::text stats FROM fixture WHERE season_id=? AND id=?", SEASON.id(), fixtureId);
+            Map<String, Object> capturedHeader = jdbc.queryForMap("SELECT id,season,gameweek,team_h,team_a,"
+                    + "kickoff_time,started,finished,team_h_score,team_a_score FROM " + CAPTURED.fixture()
+                    + " WHERE season=? AND id=?", SEASON.code(), fixtureId);
+            List<Long> runGenerations = jdbc.queryForList("SELECT generation FROM " + TABLES.run()
+                            + " WHERE season=? AND kind='FIXTURE_VERIFICATION' AND publication_key=? ORDER BY generation",
+                    Long.class, SEASON.code(), "fixture:" + fixtureId);
+            Map<String, Object> receipt = receiptRows.isEmpty() ? Map.of() : receiptRows.getFirst();
+            result.put(fixtureId, new FixturePublicationComponents((String) receipt.get("receipt_identity"),
+                    nullableLong(receipt.get("latest_generation")), Boolean.TRUE.equals(receipt.get("verification_valid")),
+                    List.copyOf(pfsRows), List.copyOf(evidenceRows), sourceHeader, capturedHeader,
+                    List.copyOf(runGenerations), fixtureOwnershipSnapshot(fixtureId)));
+        }
+        return Map.copyOf(result);
+    }
+
+    private static void assertScheduleCorrectionComponentTransition(
+            Map<Integer, FixturePublicationComponents> before,
+            Map<Integer, FixturePublicationComponents> after, Set<Integer> changed) {
+        System.out.println("OWNED_TASK4_SCHEDULE_COMPONENT_DIFF "
+                + fixturePublicationComponentDiffs(before, after));
+        assertThat(after.keySet()).containsExactlyInAnyOrderElementsOf(before.keySet());
+        for (int fixtureId : before.keySet()) {
+            FixturePublicationComponents old = before.get(fixtureId);
+            FixturePublicationComponents updated = after.get(fixtureId);
+            String details = "fixture " + fixtureId + " schedule component diff="
+                    + fixturePublicationComponentDiffs(Map.of(fixtureId, old), Map.of(fixtureId, updated));
+            assertThat(updated.receiptIdentity()).as(details + " receipt publication identity").isEqualTo(old.receiptIdentity());
+            assertThat(updated.latestGeneration()).as(details + " receipt latest generation")
+                    .isEqualTo(old.latestGeneration());
+            assertThat(updated.pfsRows()).as(details + " immutable physical PFS rows").isEqualTo(old.pfsRows());
+            assertThat(updated.evidenceRows()).as(details + " source evidence rows").isEqualTo(old.evidenceRows());
+            if (changed.contains(fixtureId)) {
+                assertThat(changedHeaderFields(old.sourceHeader(), updated.sourceHeader()))
+                        .as(details + " corrected core source-header fields").containsExactly("team_h_score");
+                assertThat(old.sourceHeader().get("team_h_score")).isEqualTo(0);
+                assertThat(updated.sourceHeader().get("team_h_score")).isEqualTo(1);
+                assertThat(changedHeaderFields(old.capturedHeader(), updated.capturedHeader()))
+                        .as(details + " corrected captured source-header fields").containsExactly("team_h_score");
+                assertThat(old.capturedHeader().get("team_h_score")).isEqualTo(0);
+                assertThat(updated.capturedHeader().get("team_h_score")).isEqualTo(1);
+                assertThat(old.verificationValid()).as(details).isTrue();
+                assertThat(updated.verificationValid()).as(details).isFalse();
+                assertThat(updated.ownership().currentVerifiedGeneration()).as(details).isNull();
+                assertThat(updated.ownership().lastVerifiedGeneration()).as(details)
+                        .isEqualTo(old.latestGeneration());
+                assertScheduleInvalidationRetainsActualOwnership(fixtureId, old.ownership(), updated.ownership());
+                assertThat(updated.verificationRunGenerations()).as(details + " queued source correction")
+                        .containsAll(old.verificationRunGenerations());
+                assertThat(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM " + TABLES.run()
+                        + " WHERE season=? AND publication_key=? AND kind='FIXTURE_VERIFICATION'"
+                        + " AND runtime_mode='ACTIVE' AND runtime_epoch=1 AND state='PENDING')",
+                        Boolean.class, SEASON.code(), "fixture:" + fixtureId))
+                        .as(details + " schedule invalidation enqueues its correction").isTrue();
+            } else {
+                assertThat(updated.sourceHeader()).as(details + " unchanged core source header")
+                        .isEqualTo(old.sourceHeader());
+                assertThat(updated.capturedHeader()).as(details + " unchanged captured source header")
+                        .isEqualTo(old.capturedHeader());
+                assertThat(updated.verificationValid()).as(details).isTrue();
+                assertThat(updated.ownership().state()).as(details).isEqualTo("VERIFIED");
+                assertThat(updated.ownership().currentVerifiedGeneration()).as(details)
+                        .isEqualTo(old.latestGeneration());
+                assertThat(updated.ownership().lastVerifiedGeneration()).as(details)
+                        .isEqualTo(old.latestGeneration());
+                assertThat(updated.verificationRunGenerations()).as(details + " no correction replay")
+                        .isEqualTo(old.verificationRunGenerations());
+            }
+        }
+    }
+
+    private static void assertPostRecoveryPublicationComponents(
+            Map<Integer, FixturePublicationComponents> expected,
+            Map<Integer, FixturePublicationComponents> actual, Set<Integer> changed,
+            Set<Integer> republished, Harness harness, SourceData source) throws IOException {
+        Map<Integer, String> diffs = fixturePublicationComponentDiffs(expected, actual);
+        System.out.println("OWNED_TASK4_POST_RECOVERY_COMPONENT_DIFF " + diffs);
+        assertThat(actual.keySet()).containsExactlyInAnyOrderElementsOf(expected.keySet());
+        assertThat(republished).isSubsetOf(changed);
+        for (int fixtureId : expected.keySet()) {
+            FixturePublicationComponents baseline = expected.get(fixtureId);
+            FixturePublicationComponents recovered = actual.get(fixtureId);
+            String details = "fixture " + fixtureId + " post-recovery component diff="
+                    + fixturePublicationComponentDiffs(Map.of(fixtureId, baseline), Map.of(fixtureId, recovered));
+            assertThat(recovered.sourceHeader()).as(details + " core header after schedule correction")
+                    .isEqualTo(baseline.sourceHeader());
+            assertThat(recovered.capturedHeader()).as(details + " captured header after schedule correction")
+                    .isEqualTo(baseline.capturedHeader());
+            if (changed.contains(fixtureId)) {
+                assertThat(baseline.verificationValid()).as(details + " invalidated before recovery").isFalse();
+                assertThat(recovered.verificationRunGenerations()).as(details + " preserve run history")
+                        .containsAll(baseline.verificationRunGenerations());
+                if (republished.contains(fixtureId)) {
+                    assertThat(recovered.latestGeneration()).as(details + " new receipt generation")
+                            .isGreaterThan(baseline.latestGeneration());
+                    assertThat(recovered.verificationValid()).as(details + " exact new publication is valid").isTrue();
+                    assertThat(recovered.ownership().state()).as(details).isEqualTo("VERIFIED");
+                    assertThat(recovered.ownership().currentVerifiedGeneration()).as(details)
+                            .isEqualTo(recovered.latestGeneration());
+                    assertThat(recovered.ownership().lastVerifiedGeneration()).as(details)
+                            .isEqualTo(recovered.latestGeneration());
+                    assertThat(recovered.verificationRunGenerations()).as(details + " current run is retained")
+                            .contains(recovered.latestGeneration());
+                    assertThat(recovered.evidenceRows()).as(details + " retain old and append fresh source evidence")
+                            .containsAll(baseline.evidenceRows());
+                    FixtureOracle oracle = sourceFixtureOracles(source, Set.of(fixtureId)).get(fixtureId);
+                    assertThat(oracle.headerFingerprint()).as(details + " fixture-specific source actually changed")
+                            .isNotEqualTo(baseline.ownership().verifiedHeader());
+                    assertThat(recovered.ownership().verifiedHeader()).as(details + " authoritative source header")
+                            .isEqualTo(oracle.headerFingerprint());
+                    assertThat(recovered.ownership().verifiedStatsFingerprint())
+                            .as(details + " validated source stats fingerprint").isEqualTo(oracle.statsFingerprint());
+                    assertStoredFixtureOracle(fixtureId, oracle);
+                    assertThat(fixtureReadEvidenceProof(harness, fixtureId, recovered.latestGeneration(),
+                            oracle.requiredPlayers())).as(details + " complete current-source evidence").isTrue();
+                    assertPhysicalPfsMatchesSource(fixtureId, source, recovered.latestGeneration());
+                    assertPfsMetricRowsUnchanged(baseline.pfsRows(), recovered.pfsRows());
+                } else {
+                    assertThat(recovered.receiptIdentity()).as(details + " retain old receipt")
+                            .isEqualTo(baseline.receiptIdentity());
+                    assertThat(recovered.latestGeneration()).as(details + " retain old receipt generation")
+                            .isEqualTo(baseline.latestGeneration());
+                    assertThat(recovered.verificationValid()).as(details + " remains actually invalid").isFalse();
+                    assertThat(recovered.ownership().state()).as(details).isNotEqualTo("VERIFIED");
+                    assertThat(recovered.ownership().currentVerifiedGeneration()).as(details).isNull();
+                    assertThat(recovered.ownership().lastVerifiedGeneration()).as(details)
+                            .isEqualTo(baseline.latestGeneration());
+                    assertThat(recovered.ownership().verifiedHeader()).as(details + " retained last good header")
+                            .isEqualTo(baseline.ownership().verifiedHeader());
+                    assertThat(recovered.ownership().verifiedStatsFingerprint())
+                            .as(details + " retained last good stats fingerprint")
+                            .isEqualTo(baseline.ownership().verifiedStatsFingerprint());
+                    assertThat(recovered.pfsRows()).as(details + " retain physical PFS until fresh proof")
+                            .isEqualTo(baseline.pfsRows());
+                    assertThat(recovered.evidenceRows()).as(details + " retain old source evidence")
+                            .isEqualTo(baseline.evidenceRows());
+                    if (java.util.Objects.equals(recovered.ownership().observationGeneration(),
+                            baseline.ownership().observationGeneration())) {
+                        assertInvalidatedOwnershipRemains(fixtureId, baseline.ownership(), recovered.ownership());
+                    } else {
+                        assertThat(recovered.ownership().observationGeneration()).as(details)
+                                .isGreaterThan(baseline.ownership().observationGeneration());
+                        assertThat(recovered.ownership().state()).as(details + " pending observation")
+                                .isEqualTo("VERIFYING");
+                        assertThat(recovered.ownership().observationCoherent()).as(details)
+                                .isEqualTo("true");
+                        assertThat(recovered.ownership().validationFailures()).as(details)
+                                .contains("NEEDS_SECOND_OBSERVATION");
+                        assertThat(recovered.ownership().observationFingerprint()).as(details).isNotBlank();
+                    }
+                }
+            } else {
+                assertThat(recovered.receiptIdentity()).as(details + " unchanged receipt identity")
+                        .isEqualTo(baseline.receiptIdentity());
+                assertThat(recovered.latestGeneration()).as(details + " unchanged receipt generation")
+                        .isEqualTo(baseline.latestGeneration());
+                assertThat(recovered.pfsRows()).as(details + " immutable physical PFS content")
+                        .isEqualTo(baseline.pfsRows());
+                assertThat(recovered.evidenceRows()).as(details + " immutable per-player source evidence")
+                        .isEqualTo(baseline.evidenceRows());
+                assertThat(recovered.verificationValid()).as(details + " unchanged verified receipt").isTrue();
+                assertThat(recovered.ownership().state()).as(details).isEqualTo("VERIFIED");
+                assertThat(recovered.ownership().currentVerifiedGeneration()).as(details)
+                        .isEqualTo(baseline.latestGeneration());
+                assertThat(recovered.ownership().lastVerifiedGeneration()).as(details)
+                        .isEqualTo(baseline.latestGeneration());
+                assertThat(recovered.verificationRunGenerations()).as(details + " no restart replay")
+                        .isEqualTo(baseline.verificationRunGenerations());
+            }
+        }
+    }
+
+    private static void assertChangedCorrectionsRemainScheduled(Harness harness, Set<Integer> fixtureIds,
+                                                                  Map<Integer, Long> actualVerifiedGenerations) {
+        PlannerInputRepository inputs = new PlannerInputRepository(jdbc, harness.store, TABLES, CAPTURED,
+                harness.clock);
+        PlannerInputRepository.PlannerSnapshot snapshot = inputs.load(SEASON);
+        List<AdaptiveMatchdayPlanner.Fixture> fixtures = snapshot.fixtures().stream()
+                .filter(fixture -> fixtureIds.contains(fixture.id())).toList();
+        List<AdaptiveMatchdayPlanner.FixtureProgress> progress = snapshot.progress().stream()
+                .filter(row -> fixtureIds.contains(row.fixtureId())).toList();
+        assertThat(progress).as("an invalidated receipt is not completion evidence for its old corrections")
+                .allSatisfy(row -> assertThat(row.completedCorrections()).isEmpty());
+        AdaptiveMatchdayPlanner.Plan fixturePlan = new AdaptiveMatchdayPlanner(harness.clock).plan(
+                new AdaptiveMatchdayPlanner.Input(SEASON.code(), snapshot.playerIds().size(), fixtures,
+                        progress, List.of()));
+        OwnedMatchdayCoordinator.TickResult coordinatorTick = harness.coordinator.tick();
+        PlannerRuntimeRepository runtime = new PlannerRuntimeRepository(jdbc, tx, harness.clock, TABLES,
+                harness.fence);
+        List<PlannerRuntimeRepository.DurableSlot> ledger = runtime.loadSlots(SEASON.code());
+        for (int fixtureId : fixtureIds.stream().sorted().toList()) {
+            Map<String, Object> row = jdbc.queryForMap("SELECT state,observation,observation_generation,"
+                    + "current_verified_generation,last_verified_generation,next_due_at,validation_failures::text"
+                    + " validation_failures FROM " + TABLES.fixtureSync()
+                    + " WHERE season_id=? AND fixture_id=?", SEASON.id(), fixtureId);
+            assertThat(row.get("current_verified_generation")).as("fixture %d remains unverified", fixtureId).isNull();
+            assertThat(nullableLong(row.get("last_verified_generation")))
+                    .as("fixture %d retains its actual last publication", fixtureId)
+                    .isEqualTo(actualVerifiedGenerations.get(fixtureId));
+            boolean queued = jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM " + TABLES.run()
+                    + " WHERE season=? AND coalescing_key=? AND publication_key=?"
+                    + " AND kind='FIXTURE_VERIFICATION' AND runtime_mode='ACTIVE' AND runtime_epoch=?"
+                    + " AND state IN ('PENDING','LEASED') AND generation>?)", Boolean.class, SEASON.code(),
+                    "fixture:" + fixtureId, "fixture:" + fixtureId, harness.fence.epoch(),
+                    actualVerifiedGenerations.get(fixtureId));
+            boolean pendingObservation = "VERIFYING".equals(row.get("state"))
+                    && "true".equals(jdbc.queryForObject("SELECT observation->>'coherent' FROM "
+                            + TABLES.fixtureSync() + " WHERE season_id=? AND fixture_id=?",
+                            String.class, SEASON.id(), fixtureId))
+                    && row.get("observation_generation") != null
+                    && String.valueOf(row.get("validation_failures")).contains("NEEDS_SECOND_OBSERVATION")
+                    && jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM " + TABLES.run()
+                            + " WHERE generation=? AND season=? AND coalescing_key=? AND publication_key=?"
+                            + " AND kind='FIXTURE_VERIFICATION' AND runtime_mode='ACTIVE'"
+                            + " AND runtime_epoch=? AND state='COMPLETED')", Boolean.class,
+                            nullableLong(row.get("observation_generation")), SEASON.code(),
+                            "fixture:" + fixtureId, "fixture:" + fixtureId, harness.fence.epoch());
+            AdaptiveMatchdayPlanner.Fixture fixture = fixtures.stream()
+                    .filter(value -> value.id() == fixtureId).findFirst().orElseThrow();
+            AdaptiveMatchdayPlanner.FixtureProgress fixtureProgress = progress.stream()
+                    .filter(value -> value.fixtureId() == fixtureId).findFirst().orElseThrow();
+            SharedFixtureRecoveryPolicy.Decision fixtureRecovery = fixtureOnlyRecoveryDecision(
+                    fixture, fixtureProgress, harness.clock.instant());
+            Instant fixtureOnlyDue = fixtureOnlyFutureDue(SEASON.code(), snapshot.playerIds().size(),
+                    harness.clock, fixture, fixtureProgress, fixtureRecovery);
+            boolean fixtureWork = hasFixtureSpecificFutureWork(fixtureId, queued, ledger, fixtureOnlyDue,
+                    coordinatorTick.nextDueAt(), harness.clock.instant());
+            System.out.printf("OWNED_TASK4_CORRECTION_WORK fixture=%d completedCorrections=%s queued=%s "
+                            + "pendingObservation=%s fixtureRecovery=%s fixtureOnlyDue=%s coordinatorNext=%s globalPlanNext=%s "
+                            + "durableFixtureSlot=%s row=%s%n",
+                    fixtureId, fixtureProgress.completedCorrections(), queued, pendingObservation, fixtureRecovery,
+                    fixtureOnlyDue, coordinatorTick.nextDueAt(), fixturePlan.nextDueAt().orElse(null),
+                    hasFutureFixtureSlot(fixtureId, ledger, harness.clock.instant()), row);
+            assertThat(fixtureWork)
+                    .as("fixture %d remains unverified with exact queued/durable work or a fixture-only future "
+                                    + "recovery decision and coordinator wake; queued=%s pendingObservation=%s "
+                                    + "fixtureRecovery=%s fixtureOnlyDue=%s coordinatorNext=%s globalPlanNext=%s row=%s",
+                            fixtureId, queued, pendingObservation, fixtureRecovery, fixtureOnlyDue,
+                            coordinatorTick.nextDueAt(),
+                            fixturePlan.nextDueAt().orElse(null), row)
+                    .isTrue();
+        }
+    }
+
+    private static SharedFixtureRecoveryPolicy.Decision fixtureOnlyRecoveryDecision(
+            AdaptiveMatchdayPlanner.Fixture fixture, AdaptiveMatchdayPlanner.FixtureProgress progress,
+            Instant now) {
+        AdaptiveMatchdayPlanner.RecoveryMetadata recovery = progress.recovery();
+        return SharedFixtureRecoveryPolicy.decide(new SharedFixtureRecoveryPolicy.Input(now,
+                fixture.recoverySourceStatus(), progress.verifiedAt() != null,
+                progress.firstFinishedObservedAt(), progress.nextDueAt(), recovery.dueReason(),
+                recovery.transportRetryAt(), recovery.cooldownUntil(), recovery.recoveryDay(),
+                recovery.episodeStartedAt(), recovery.episodeUntil(), recovery.publishedAt(),
+                recovery.dependencyRetryAt()));
+    }
+
+    private static boolean hasFutureFixtureSlot(int fixtureId,
+                                                List<PlannerRuntimeRepository.DurableSlot> slots, Instant now) {
+        return slots.stream().map(PlannerRuntimeRepository.DurableSlot::slot).anyMatch(slot ->
+                (slot.kind() == AdaptiveMatchdayPlanner.WorkKind.FIXTURE_VERIFICATION
+                        || slot.kind() == AdaptiveMatchdayPlanner.WorkKind.FIXTURE_CORRECTION)
+                        && slot.fixtureIds().equals(Set.of(fixtureId))
+                        && slot.id().endsWith(":fixtures=" + fixtureId + ":" + slot.dueAt())
+                        && slot.dueAt().isAfter(now));
+    }
+
+    private static Instant fixtureOnlyFutureDue(String season, int activePlayerCount, Clock clock,
+                                                AdaptiveMatchdayPlanner.Fixture fixture,
+                                                AdaptiveMatchdayPlanner.FixtureProgress progress,
+                                                SharedFixtureRecoveryPolicy.Decision recovery) {
+        Instant now = clock.instant();
+        Instant candidate = switch (recovery.action()) {
+            case WAIT -> recovery.notBefore();
+            case NORMAL -> progress.nextDueAt();
+            case WAIT_FOR_PARENT, WAIT_FOR_SOURCE, RESERVE_EPISODE, CONTINUE_EPISODE -> null;
+        };
+        if (candidate == null || !candidate.isAfter(now)) return null;
+        AdaptiveMatchdayPlanner.Plan plan = new AdaptiveMatchdayPlanner(clock).plan(
+                new AdaptiveMatchdayPlanner.Input(season, activePlayerCount, List.of(fixture),
+                        List.of(progress), List.of()));
+        return plan.nextDueAt().filter(candidate::equals).orElse(null);
+    }
+
+    private static boolean hasFixtureSpecificFutureWork(int fixtureId, boolean queuedRun,
+                                                         List<PlannerRuntimeRepository.DurableSlot> slots,
+                                                         Instant fixtureOnlyDue, Instant coordinatorNext, Instant now) {
+        boolean policyFuture = fixtureOnlyDue != null && fixtureOnlyDue.isAfter(now)
+                && coordinatorNext != null && coordinatorNext.isAfter(now)
+                && !coordinatorNext.isAfter(fixtureOnlyDue);
+        return queuedRun || hasFutureFixtureSlot(fixtureId, slots, now) || policyFuture;
+    }
+
+    private static void assertWorkerCanonicalPairReads(PayloadReadProbe.Snapshot workerReads) {
+        PayloadReadProbe.FamilyMetrics pairReads = workerReads.bodyFamily(
+                PayloadReadProbe.BodyFamily.CANONICAL_PAIRS);
+        assertThat(pairReads.bodyValues()).isIn(0L, 2L);
+        if (pairReads.bodyValues() == 0) {
+            assertThat(pairReads.attempts()).isZero();
+            assertThat(pairReads.resultRows()).isZero();
+            assertThat(pairReads.rawBytes()).isZero();
+        } else {
+            assertThat(pairReads.attempts()).isEqualTo(1);
+            assertThat(pairReads.resultRows()).isEqualTo(1);
+            assertThat(pairReads.rawBytes()).isPositive();
+        }
+    }
+
+    private static Map<Integer, String> fixturePublicationComponentDiffs(
+            Map<Integer, FixturePublicationComponents> before,
+            Map<Integer, FixturePublicationComponents> after) {
+        Map<Integer, String> result = new TreeMap<>();
+        Set<Integer> fixtureIds = new java.util.TreeSet<>(before.keySet());
+        fixtureIds.addAll(after.keySet());
+        for (int fixtureId : fixtureIds) {
+            FixturePublicationComponents old = before.get(fixtureId);
+            FixturePublicationComponents updated = after.get(fixtureId);
+            if (old == null || updated == null) {
+                result.put(fixtureId, "componentSnapshot=" + (old == null ? "missing-before" : "missing-after"));
+                continue;
+            }
+            List<String> changes = new ArrayList<>();
+            if (!java.util.Objects.equals(old.receiptIdentity(), updated.receiptIdentity())) {
+                changes.add("receiptIdentity=" + old.receiptIdentity() + "->" + updated.receiptIdentity());
+            }
+            if (!java.util.Objects.equals(old.latestGeneration(), updated.latestGeneration())) {
+                changes.add("latestGeneration=" + old.latestGeneration() + "->" + updated.latestGeneration());
+            }
+            if (old.verificationValid() != updated.verificationValid()) {
+                changes.add("verificationValid=" + old.verificationValid() + "->" + updated.verificationValid());
+            }
+            Set<String> sourceChanges = changedHeaderFields(old.sourceHeader(), updated.sourceHeader());
+            if (!sourceChanges.isEmpty()) changes.add("sourceHeader=" + sourceChanges.stream().collect(
+                    java.util.stream.Collectors.toMap(field -> field,
+                            field -> old.sourceHeader().get(field) + "->" + updated.sourceHeader().get(field),
+                            (first, second) -> first, TreeMap::new)));
+            if (!old.pfsRows().equals(updated.pfsRows())) {
+                changes.add("PFS=" + rowDifference(old.pfsRows(), updated.pfsRows()));
+            }
+            Set<String> capturedChanges = changedHeaderFields(old.capturedHeader(), updated.capturedHeader());
+            if (!capturedChanges.isEmpty()) changes.add("capturedHeader=" + capturedChanges.stream().collect(
+                    java.util.stream.Collectors.toMap(field -> field,
+                            field -> old.capturedHeader().get(field) + "->" + updated.capturedHeader().get(field),
+                            (first, second) -> first, TreeMap::new)));
+            if (!old.evidenceRows().equals(updated.evidenceRows())) {
+                changes.add("sourceEvidence=" + rowDifference(old.evidenceRows(), updated.evidenceRows()));
+            }
+            if (!old.ownership().equals(updated.ownership())) {
+                changes.add("ownership=" + old.ownership().flags() + "->" + updated.ownership().flags());
+            }
+            if (!old.verificationRunGenerations().equals(updated.verificationRunGenerations())) {
+                changes.add("verificationRuns=" + old.verificationRunGenerations()
+                        + "->" + updated.verificationRunGenerations());
+            }
+            if (!changes.isEmpty()) result.put(fixtureId, String.join(";", changes));
+        }
+        return Map.copyOf(result);
+    }
+
+    private static Set<String> changedHeaderFields(Map<String, Object> before, Map<String, Object> after) {
+        Set<String> keys = new java.util.TreeSet<>(before.keySet());
+        keys.addAll(after.keySet());
+        return keys.stream().filter(key -> !java.util.Objects.equals(before.get(key), after.get(key)))
+                .collect(java.util.stream.Collectors.toCollection(java.util.TreeSet::new));
+    }
+
+    private static String rowDifference(List<String> before, List<String> after) {
+        Set<String> removed = new java.util.TreeSet<>(before);
+        removed.removeAll(after);
+        Set<String> added = new java.util.TreeSet<>(after);
+        added.removeAll(before);
+        return "rows=" + before.size() + "->" + after.size() + ",removed="
+                + removed.stream().limit(2).toList() + ",added=" + added.stream().limit(2).toList();
+    }
+
+    private static String baselinePublicationChecksum(Set<Integer> fixtureIds) {
+        StringBuilder canonical = new StringBuilder();
+        for (int fixtureId : fixtureIds.stream().sorted().toList()) {
+            Map<String, Object> receipt = jdbc.queryForMap("SELECT p.latest_generation,p.source_read_started_at,"
+                    + "p.source_read_finished_at,p.published_at,p.source_pair_fingerprint,"
+                    + "p.source_bootstrap_sha256,p.source_fixtures_sha256,fs.last_verified_generation,"
+                    + "fs.verified_header,fs.verified_stats_fingerprint,fs.observation->>'fingerprint' observation_fp,"
+                    + "fs.expected_participants,fs.received_participants,fs.missing_player_ids::text missing"
+                    + " FROM " + TABLES.receipt() + " p JOIN " + TABLES.fixtureSync()
+                    + " fs ON p.publication_key='fixture:' || fs.fixture_id::text AND fs.season_id=?"
+                    + " WHERE p.season=? AND fs.fixture_id=?", SEASON.id(), SEASON.code(), fixtureId);
+            canonical.append(fixtureId).append('|').append(receipt).append('\n');
+            jdbc.queryForList("SELECT to_jsonb(p)::text FROM player_fixture_stats p"
+                            + " WHERE p.season_id=? AND p.fixture_id=? ORDER BY p.player_id",
+                    String.class, SEASON.id(), fixtureId).forEach(row -> canonical.append("p|").append(row).append('\n'));
+            jdbc.queryForList("SELECT to_jsonb(e)::text FROM " + TABLES.playerFixtureEvidence()
+                            + " e WHERE e.season_id=? AND e.fixture_id=? ORDER BY e.generation,e.player_id",
+                    String.class, SEASON.id(), fixtureId).forEach(row -> canonical.append("e|").append(row).append('\n'));
+        }
+        return OwnedSyncStore.sha256(canonical.toString());
+    }
+
+    private static String historyFingerprintChecksum(Set<Integer> fixtureIds) {
+        String keys = fixtureIds.stream().sorted().map(String::valueOf)
+                .collect(java.util.stream.Collectors.joining(","));
+        String rows = jdbc.queryForList("SELECT player_id || ':' || fixture_id || ':' || fingerprint FROM "
+                        + TABLES.historyFingerprint() + " WHERE season_id=? AND fixture_id IN (" + keys + ")"
+                        + " ORDER BY fixture_id,player_id", String.class, SEASON.id()).stream()
+                .collect(java.util.stream.Collectors.joining("\n"));
+        return OwnedSyncStore.sha256(rows);
+    }
+
+    private static void assertScheduleCorrectionsArePending(Map<Integer, Long> served, Set<Integer> changed) {
+        for (int fixtureId = 1; fixtureId <= 40; fixtureId++) {
+            Long current = jdbc.queryForObject("SELECT current_verified_generation FROM " + TABLES.fixtureSync()
+                    + " WHERE season_id=? AND fixture_id=?", Long.class, SEASON.id(), fixtureId);
+            if (changed.contains(fixtureId)) {
+                assertThat(current).as("changed fixture %d loses current verification", fixtureId).isNull();
+                assertThat(jdbc.queryForObject("SELECT last_verified_generation FROM " + TABLES.fixtureSync()
+                        + " WHERE season_id=? AND fixture_id=?", Long.class, SEASON.id(), fixtureId))
+                        .isEqualTo(served.get(fixtureId));
+            } else {
+                assertThat(current).as("unmodified fixture %d retains its receipt", fixtureId)
+                        .isEqualTo(served.get(fixtureId));
+            }
+        }
+    }
+
+    private static FixtureOwnershipSnapshot fixtureOwnershipSnapshot(int fixtureId) {
+        Map<String, Object> row = jdbc.queryForMap("SELECT state,observation::text observation,"
+                + "observation->>'coherent' observation_coherent,observation->>'fingerprint' observation_fingerprint,"
+                + "observation_generation,current_verified_generation,last_verified_generation,verified_header,"
+                + "verified_stats_fingerprint,validation_failures::text validation_failures,next_due_at FROM "
+                + TABLES.fixtureSync() + " WHERE season_id=? AND fixture_id=?", SEASON.id(), fixtureId);
+        Timestamp nextDue = (Timestamp) row.get("next_due_at");
+        return new FixtureOwnershipSnapshot((String) row.get("state"), (String) row.get("observation"),
+                (String) row.get("observation_coherent"), (String) row.get("observation_fingerprint"),
+                nullableLong(row.get("observation_generation")),
+                nullableLong(row.get("current_verified_generation")),
+                nullableLong(row.get("last_verified_generation")), (String) row.get("verified_header"),
+                (String) row.get("verified_stats_fingerprint"), (String) row.get("validation_failures"),
+                nextDue == null ? null : nextDue.toInstant());
+    }
+
+    private static Long nullableLong(Object value) {
+        return value instanceof Number number ? number.longValue() : null;
+    }
+
+    private static void assertScheduleInvalidationRetainsActualOwnership(int fixtureId,
+                                                                         FixtureOwnershipSnapshot before,
+                                                                         FixtureOwnershipSnapshot after) {
+        String details = "fixture " + fixtureId + " schedule ownership before=" + before.flags()
+                + " after=" + after.flags();
+        assertThat(before.state()).as(details).isEqualTo("VERIFIED");
+        assertThat(before.currentVerifiedGeneration()).as(details).isNotNull();
+        assertThat(before.lastVerifiedGeneration()).as(details).isEqualTo(before.currentVerifiedGeneration());
+        if (before.observation() != null) {
+            assertThat(before.observationCoherent()).as(details).isEqualTo("true");
+        }
+        assertInvalidatedOwnershipRemains(fixtureId, before, after);
+    }
+
+    private static void assertInvalidatedOwnershipRemains(int fixtureId,
+                                                           FixtureOwnershipSnapshot expected,
+                                                           FixtureOwnershipSnapshot actual) {
+        String details = "fixture " + fixtureId + " retained invalidation ownership expected="
+                + expected.flags() + " actual=" + actual.flags();
+        assertThat(actual.state()).as(details).isNotEqualTo("VERIFIED");
+        assertThat(actual.currentVerifiedGeneration()).as(details).isNull();
+        assertThat(actual.lastVerifiedGeneration()).as(details).isNotNull()
+                .isEqualTo(expected.lastVerifiedGeneration());
+        assertThat(actual.observationGeneration()).as(details).isEqualTo(expected.observationGeneration());
+        assertThat(actual.verifiedHeader()).as(details + " retained verified source header")
+                .isEqualTo(expected.verifiedHeader());
+        assertThat(actual.verifiedStatsFingerprint()).as(details + " retained verified statistics fingerprint")
+                .isEqualTo(expected.verifiedStatsFingerprint());
+        if (expected.observation() == null) {
+            assertThat(actual.observation()).as(details + "; do not invent an observation pair").isNull();
+        } else {
+            assertThat(actual.observationCoherent()).as(details).isEqualTo("false");
+            assertThat(jdbc.queryForObject("SELECT (?::jsonb - 'coherent')=(?::jsonb - 'coherent')",
+                    Boolean.class, expected.observation(), actual.observation())).as(details).isTrue();
+        }
+    }
+
+    private static void assertUnverifiedAfterScheduleCorrection(int fixtureId,
+                                                                  FixtureOwnershipSnapshot verifiedBaseline,
+                                                                  FixtureOwnershipSnapshot actual) {
+        String details = "fixture " + fixtureId + " remains unverified after schedule correction baseline="
+                + verifiedBaseline.flags() + " actual=" + actual.flags();
+        assertThat(actual.state()).as(details).isNotEqualTo("VERIFIED");
+        assertThat(actual.currentVerifiedGeneration()).as(details).isNull();
+        assertThat(actual.lastVerifiedGeneration()).as(details).isNotNull()
+                .isEqualTo(verifiedBaseline.lastVerifiedGeneration());
+        assertThat(actual.verifiedHeader()).as(details + " retained verified source header")
+                .isEqualTo(verifiedBaseline.verifiedHeader());
+        assertThat(actual.verifiedStatsFingerprint()).as(details + " retained verified statistics fingerprint")
+                .isEqualTo(verifiedBaseline.verifiedStatsFingerprint());
+    }
+
+    private static void seedLegacyDailyOnlyGates(Harness harness, Set<Integer> fixtureIds) {
+        jdbc.update("UPDATE " + TABLES.fixtureSync()
+                + " SET alert_state='DAILY_ONLY', next_due_at=NULL, due_reason=NULL, updated_at=?"
+                + " WHERE season_id=? AND fixture_id IN (" + placeholders(fixtureIds.size()) + ")",
+                concat(Timestamp.from(harness.clock.instant()), SEASON.id(), sorted(fixtureIds)));
+        FixtureSyncRepository repository = new FixtureSyncRepository(jdbc, TABLES);
+        harness.store.withinRuntimeFence(() -> {
+            fixtureIds.stream().sorted().forEach(fixtureId ->
+                    repository.scheduleNextAttempt(SEASON, fixtureId, harness.clock.instant()));
+            return null;
+        });
+        jdbc.update("UPDATE " + TABLES.fixtureSync() + " SET due_reason=NULL WHERE season_id=?"
+                + " AND fixture_id IN (" + placeholders(fixtureIds.size()) + ")",
+                concat(SEASON.id(), sorted(fixtureIds)));
+    }
+
+    private static void assertLegacyDailyOnlyGates(Set<Integer> fixtureIds) {
+        for (int fixtureId : fixtureIds) {
+            Map<String, Object> gate = jdbc.queryForMap("SELECT alert_state,due_reason,next_due_at,attempt_count"
+                    + " FROM " + TABLES.fixtureSync() + " WHERE season_id=? AND fixture_id=?",
+                    SEASON.id(), fixtureId);
+            assertThat(gate.get("alert_state")).isEqualTo("DAILY_ONLY");
+            assertThat(gate.get("due_reason")).isNull();
+            assertThat(((Timestamp) gate.get("next_due_at")).toInstant()).isEqualTo(LEGACY_DAILY_DUE);
+            assertThat(gate.get("attempt_count")).isEqualTo(0);
+            Instant firstFinished = jdbc.queryForObject("SELECT first_finished_observed_at FROM "
+                    + TABLES.fixtureSync() + " WHERE season_id=? AND fixture_id=?",
+                    Timestamp.class, SEASON.id(), fixtureId).toInstant();
+            assertThat(firstFinished.plus(Duration.ofHours(12)))
+                    .as("the planner's real first-finished observation is at least 12h old at the preserved due")
+                    .isBeforeOrEqualTo(LEGACY_DAILY_DUE);
+            Map<String, Object> checked = jdbc.queryForMap("SELECT data_checked_transition_at,last_data_checked"
+                    + " FROM " + TABLES.fixtureSync() + " WHERE season_id=? AND fixture_id=?",
+                    SEASON.id(), fixtureId);
+            assertThat(checked.get("last_data_checked")).isEqualTo(true);
+            assertThat(((Timestamp) checked.get("data_checked_transition_at")).toInstant())
+                    .as("the first real checked-source transition predates the 48h baseline publication")
+                    .isBeforeOrEqualTo(SAME_FINGERPRINT_CORRECTION);
+        }
+    }
+
+    private static List<Map<String, Object>> fixtureGateTrace(Set<Integer> fixtureIds) {
+        String ids = fixtureIds.stream().sorted().map(String::valueOf)
+                .collect(java.util.stream.Collectors.joining(","));
+        return jdbc.queryForList("SELECT fixture_id,state,first_finished_observed_at,next_due_at,due_reason,"
+                + "alert_state,attempt_count,recovery_day,recovery_started_at,recovery_until,"
+                + "current_verified_generation,last_verified_generation FROM " + TABLES.fixtureSync()
+                + " WHERE season_id=? AND fixture_id IN (" + ids + ") ORDER BY fixture_id", SEASON.id());
+    }
+
+    private static String runtimeMode() {
+        return jdbc.queryForObject("SELECT runtime_mode FROM " + TABLES.plannerRuntime()
+                + " WHERE instance_id=?", String.class, "mode:" + SEASON.code());
+    }
+
+    private static List<Map<String, Object>> pfsRows(String mode, int fixtureId) {
+        PfsReadSource readSource = new PfsReadSource(jdbc, mode, SEASON.code(),
+                TABLES.fixtureSync(), TABLES.playerFixtureEvidence());
+        return jdbc.queryForList("WITH " + readSource.cte()
+                + " SELECT * FROM pfs_read WHERE season_id=? AND fixture_id=? ORDER BY player_id",
+                SEASON.id(), fixtureId);
+    }
+
+    private static void assertOptionalComponentIsMasked(int fixtureId, int playerId) {
+        Object physical = jdbc.queryForObject("SELECT defensive_contribution FROM player_fixture_stats"
+                + " WHERE season_id=? AND fixture_id=? AND player_id=?", Object.class,
+                SEASON.id(), fixtureId, playerId);
+        Object storedExpectedGoals = jdbc.queryForObject("SELECT expected_goals FROM player_fixture_stats"
+                + " WHERE season_id=? AND fixture_id=? AND player_id=?", Object.class,
+                SEASON.id(), fixtureId, playerId);
+        Map<String, Object> visible = pfsRows("ACTIVE", fixtureId).stream()
+                .filter(row -> ((Number) row.get("player_id")).intValue() == playerId)
+                .findFirst().orElseThrow();
+        assertThat(physical).isNull();
+        assertThat(visible.get("defensive_contribution")).isNull();
+        assertThat(storedExpectedGoals).isNotNull();
+        assertThat(visible.get("expected_goals")).isNotNull();
+        Map<String, Object> knownZero = pfsRows("ACTIVE", fixtureId).stream()
+                .filter(row -> row.get("defensive_contribution") instanceof Number value
+                        && value.intValue() == 0)
+                .findFirst().orElseThrow();
+        assertThat(jdbc.queryForObject("SELECT defensive_contribution FROM player_fixture_stats"
+                + " WHERE season_id=? AND fixture_id=? AND player_id=?", Object.class,
+                SEASON.id(), fixtureId, knownZero.get("player_id"))).isEqualTo(0);
+    }
+
+    private static int sourcePlayerForFixture(SourceData source, int fixtureId) {
+        return source.optionalOmittedPlayerId();
+    }
+
+    private static void assertDailyCapture(String publicationKey, Instant scheduledAt) {
+        Map<String, Object> receipt = jdbc.queryForMap("SELECT source_read_started_at,source_read_finished_at,"
+                + "published_at FROM " + TABLES.receipt() + " WHERE season=? AND publication_key=?",
+                SEASON.code(), publicationKey);
+        Instant startedAt = ((Timestamp) receipt.get("source_read_started_at")).toInstant();
+        Instant finishedAt = ((Timestamp) receipt.get("source_read_finished_at")).toInstant();
+        Instant publishedAt = ((Timestamp) receipt.get("published_at")).toInstant();
+        assertThat(startedAt).as("%s source frame starts no earlier than its UK schedule", publicationKey)
+                .isAfterOrEqualTo(scheduledAt);
+        assertThat(finishedAt).as("%s source frame is ordered", publicationKey).isAfterOrEqualTo(startedAt);
+        assertThat(publishedAt).as("%s publication follows the captured source frame", publicationKey)
+                .isAfterOrEqualTo(finishedAt);
+        assertThat(List.of(startedAt, finishedAt, publishedAt)).allSatisfy(instant ->
+                assertThat(isDatabaseMicrosecond(instant)).as("%s source timestamp precision", publicationKey)
+                        .isTrue());
+    }
+
+    private static void assertNeverPublished(Set<Integer> fixtureIds) {
+        String keys = fixtureIds.stream().sorted().map(id -> "'fixture:" + id + "'")
+                .collect(java.util.stream.Collectors.joining(","));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.receipt()
+                + " WHERE season=? AND publication_key IN (" + keys + ") AND latest_generation IS NOT NULL",
+                Integer.class, SEASON.code())).isZero();
+    }
+
+    private static int activeClaimAttempts(long epoch) {
+        return jdbc.queryForObject("SELECT COALESCE(sum(attempt_count),0) FROM " + TABLES.run()
+                + " WHERE season=? AND runtime_mode='ACTIVE' AND runtime_epoch=?",
+                Integer.class, SEASON.code(), epoch);
+    }
+
+    private static int nonCanonicalAttempts(long epoch) {
+        return jdbc.queryForObject("SELECT COALESCE(sum(attempt_count),0) FROM " + TABLES.run()
+                + " WHERE season=? AND runtime_mode='ACTIVE' AND runtime_epoch=?"
+                + " AND kind IN ('PLAYER_HISTORY','FIXTURE_VERIFICATION')", Integer.class, SEASON.code(), epoch);
+    }
+
+    private static int pendingFixtureRuns(long epoch, Set<Integer> fixtureIds) {
+        String keys = fixtureIds.stream().sorted().map(id -> "'fixture:" + id + "'")
+                .collect(java.util.stream.Collectors.joining(","));
+        return jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
+                + " WHERE season=? AND kind='FIXTURE_VERIFICATION' AND runtime_mode='ACTIVE'"
+                + " AND runtime_epoch=? AND state IN ('PENDING','LEASED')"
+                + " AND publication_key IN (" + keys + ")", Integer.class, SEASON.code(), epoch);
+    }
+
+    private static Map<Long, Instant> deferPendingHistoriesUntil(Instant dueAt) {
+        Map<Long, Instant> originals = new TreeMap<>();
+        jdbc.query("SELECT generation,due_at FROM " + TABLES.run()
+                        + " WHERE season=? AND kind='PLAYER_HISTORY' AND runtime_mode='ACTIVE'"
+                        + " AND state='PENDING' AND due_at<? ORDER BY generation",
+                (rs, row) -> originals.put(rs.getLong("generation"), rs.getTimestamp("due_at").toInstant()),
+                SEASON.code(), Timestamp.from(dueAt));
+        originals.forEach((generation, originalDue) -> jdbc.update("UPDATE " + TABLES.run()
+                + " SET due_at=? WHERE generation=? AND state='PENDING'", Timestamp.from(dueAt), generation));
+        return Map.copyOf(originals);
+    }
+
+    private static void restoreHistoryDueTimes(Map<Long, Instant> originals) {
+        originals.forEach((generation, dueAt) -> jdbc.update("UPDATE " + TABLES.run()
+                + " SET due_at=? WHERE generation=? AND state='PENDING'", Timestamp.from(dueAt), generation));
+    }
+
+    private static int pendingManifestCount(long epoch) {
+        return jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run() + " r JOIN "
+                + TABLES.fixtureDependencyManifest() + " m ON m.run_generation=r.generation"
+                + " WHERE r.season=? AND r.kind='FIXTURE_VERIFICATION' AND r.runtime_mode='ACTIVE'"
+                + " AND r.runtime_epoch=? AND r.state='PENDING'", Integer.class, SEASON.code(), epoch);
+    }
+
+    private static void mergeHistoryDueTimes(Map<Long, Instant> retained, Map<Long, Instant> fresh) {
+        fresh.forEach(retained::putIfAbsent);
+    }
+
+    private static long newestPendingManifestGeneration(long epoch) {
+        return jdbc.queryForObject("SELECT r.generation FROM " + TABLES.run() + " r JOIN "
+                + TABLES.fixtureDependencyManifest() + " m ON m.run_generation=r.generation"
+                + " WHERE r.season=? AND r.kind='FIXTURE_VERIFICATION' AND r.runtime_mode='ACTIVE'"
+                + " AND r.runtime_epoch=? AND r.state='PENDING'"
+                + " ORDER BY r.last_attempt_at DESC,r.generation DESC LIMIT 1", Long.class, SEASON.code(), epoch);
+    }
+
+    private static String placeholders(int count) {
+        return String.join(",", java.util.Collections.nCopies(count, "?"));
+    }
+
+    private static Object[] concat(Object first, Object second, List<Integer> rest) {
+        Object[] result = new Object[2 + rest.size()];
+        result[0] = first;
+        result[1] = second;
+        for (int index = 0; index < rest.size(); index++) result[index + 2] = rest.get(index);
+        return result;
+    }
+
+    private static Object[] concat(Object first, List<Integer> rest) {
+        Object[] result = new Object[1 + rest.size()];
+        result[0] = first;
+        for (int index = 0; index < rest.size(); index++) result[index + 1] = rest.get(index);
+        return result;
+    }
+
+    private static List<Integer> sorted(Set<Integer> ids) {
+        return ids.stream().sorted().toList();
+    }
+
+    private static void assertStoredFixtureOracle(int fixtureId, FixtureOracle oracle) {
+        Map<String, Object> stored = jdbc.queryForMap("SELECT verified_header,verified_stats_fingerprint,"
+                + "observation->>'fingerprint' observation_fingerprint FROM " + TABLES.fixtureSync()
+                + " WHERE season_id=? AND fixture_id=?", SEASON.id(), fixtureId);
+        assertThat(stored.get("verified_header")).isEqualTo(oracle.headerFingerprint());
+        assertThat(stored.get("verified_stats_fingerprint")).isEqualTo(oracle.statsFingerprint());
+        assertThat(stored.get("observation_fingerprint")).isEqualTo(oracle.observationFingerprint());
+    }
+
+    private static Map<Integer, FixtureOracle> sourceFixtureOracles(SourceData source,
+                                                                     Set<Integer> fixtureIds) throws IOException {
+        var read = new CatalogueScheduleParser.ReadInterval(START, START);
+        var fixtureRead = new CatalogueScheduleParser.ReadInterval(START, START);
+        var liveRead = new CatalogueScheduleParser.ReadInterval(START.plusMillis(1), START.plusMillis(2));
+        var historyRead = new CatalogueScheduleParser.ReadInterval(START.plusMillis(3), START.plusMillis(4));
+        var bootstrap = new CatalogueScheduleParser.SourceDocument(source.bootstrapBytes(), read);
+        var fixtures = new CatalogueScheduleParser.SourceDocument(source.fixtureBytes(), read);
+        var snapshot = CatalogueScheduleParser.parse(SEASON, bootstrap, fixtures);
+        List<HistoryParser.CanonicalFixture> canonical = snapshot.fixtures().stream()
+                .map(HistoryParser::canonicalFixture).toList();
+        Map<Integer, FixtureOracle> result = new TreeMap<>();
+        for (int fixtureId : fixtureIds) {
+            var fixture = snapshot.fixtures().stream().filter(row -> row.id() == fixtureId)
+                    .findFirst().orElseThrow();
+            var live = new CatalogueScheduleParser.SourceDocument(source.liveBytes(fixture.gameweek()), liveRead);
+            Set<Integer> candidates = candidatePlayers(snapshot, fixture, live);
+            List<HistoryParser.HistoryBatch> histories = candidates.stream().sorted()
+                    .map(playerId -> HistoryParser.parse(SEASON, playerId,
+                            new CatalogueScheduleParser.SourceDocument(source.historyBytes(playerId), historyRead),
+                            canonical))
+                    .toList();
+            FixtureVerification.Decision expected = FixtureVerification.verify(SEASON, fixture, fixtureRead,
+                    live, histories, null, START.plusMillis(5));
+            result.put(fixtureId, new FixtureOracle(
+                    FixtureVerification.verifiedHeader(fixture),
+                    FixtureStatsFingerprint.of(fixture), expected.observation().fingerprint(),
+                    fixture.gameweek(), candidates, expected.expectedParticipants(), expected.receivedParticipants()));
+        }
+        return Map.copyOf(result);
+    }
+
+    private static Map<Integer, HistoryRow> sourceHistoryRows(SourceData source, int fixtureId) throws IOException {
+        var sourceRead = new CatalogueScheduleParser.ReadInterval(START, START);
+        var bootstrap = new CatalogueScheduleParser.SourceDocument(source.bootstrapBytes(), sourceRead);
+        var fixtures = new CatalogueScheduleParser.SourceDocument(source.fixtureBytes(), sourceRead);
+        var snapshot = CatalogueScheduleParser.parse(SEASON, bootstrap, fixtures);
+        var fixture = snapshot.fixtures().stream().filter(row -> row.id() == fixtureId).findFirst().orElseThrow();
+        var live = new CatalogueScheduleParser.SourceDocument(source.liveBytes(fixture.gameweek()), sourceRead);
+        List<HistoryParser.CanonicalFixture> canonical = snapshot.fixtures().stream()
+                .map(HistoryParser::canonicalFixture).toList();
+        Map<Integer, HistoryRow> rows = new TreeMap<>();
+        for (int playerId : candidatePlayers(snapshot, fixture, live).stream().sorted().toList()) {
+            var history = new CatalogueScheduleParser.SourceDocument(source.historyBytes(playerId), sourceRead);
+            List<HistoryRow> fixtureRows = HistoryParser.parse(SEASON, playerId, history, canonical).rows().stream()
+                    .filter(row -> row.fixtureId() == fixtureId).toList();
+            assertThat(fixtureRows).as("source history for player %d and fixture %d", playerId, fixtureId)
+                    .hasSize(1);
+            rows.put(playerId, fixtureRows.getFirst());
+        }
+        return Map.copyOf(rows);
+    }
+
+    private static void assertPhysicalPfsMatchesSource(int fixtureId, SourceData source, long generation)
+            throws IOException {
+        Map<Integer, HistoryRow> expected = sourceHistoryRows(source, fixtureId);
+        List<Map<String, Object>> actual = jdbc.queryForList("SELECT player_id,gameweek,player_team_id,"
+                + "opponent_team_id,was_home,kickoff_time,minutes,total_points,bonus,bps,goals_scored,assists,"
+                + "clean_sheets,goals_conceded,own_goals,penalties_saved,penalties_missed,saves,yellow_cards,"
+                + "red_cards,value,selected,transfers_in,transfers_out,starts,expected_goals,expected_assists,"
+                + "expected_goal_involvements,expected_goals_conceded,influence,creativity,threat,ict_index,"
+                + "clearances_blocks_interceptions,recoveries,tackles,defensive_contribution FROM player_fixture_stats "
+                + "WHERE season_id=? AND fixture_id=? ORDER BY player_id", SEASON.id(), fixtureId);
+        assertThat(actual).as("complete physical PFS rows for fixture %d", fixtureId).hasSize(expected.size());
+        for (Map<String, Object> row : actual) {
+            int playerId = ((Number) row.get("player_id")).intValue();
+            HistoryRow sourceRow = expected.get(playerId);
+            assertThat(sourceRow).as("source history exists for stored PFS player %d", playerId).isNotNull();
+            assertThat(((Number) row.get("gameweek")).intValue()).isEqualTo(sourceRow.gameweek());
+            assertThat(((Number) row.get("player_team_id")).intValue()).isEqualTo(sourceRow.playerTeamId());
+            assertThat(((Number) row.get("opponent_team_id")).intValue()).isEqualTo(sourceRow.opponentTeamId());
+            assertThat(row.get("was_home")).isEqualTo(sourceRow.wasHome());
+            assertThat(((Timestamp) row.get("kickoff_time")).toInstant()).isEqualTo(sourceRow.kickoffTime());
+            assertThat(((Number) row.get("minutes")).intValue()).isEqualTo((int) sourceRow.minutes());
+            assertThat(((Number) row.get("total_points")).intValue()).isEqualTo((int) sourceRow.totalPoints());
+            assertThat(((Number) row.get("bonus")).intValue()).isEqualTo((int) sourceRow.bonus());
+            assertThat(((Number) row.get("bps")).intValue()).isEqualTo((int) sourceRow.bps());
+            assertThat(((Number) row.get("goals_scored")).intValue()).isEqualTo((int) sourceRow.goalsScored());
+            assertThat(((Number) row.get("assists")).intValue()).isEqualTo((int) sourceRow.assists());
+            assertThat(((Number) row.get("clean_sheets")).intValue()).isEqualTo((int) sourceRow.cleanSheets());
+            assertThat(((Number) row.get("goals_conceded")).intValue()).isEqualTo((int) sourceRow.goalsConceded());
+            assertThat(((Number) row.get("own_goals")).intValue()).isEqualTo((int) sourceRow.ownGoals());
+            assertThat(((Number) row.get("penalties_saved")).intValue()).isEqualTo((int) sourceRow.penaltiesSaved());
+            assertThat(((Number) row.get("penalties_missed")).intValue()).isEqualTo((int) sourceRow.penaltiesMissed());
+            assertThat(((Number) row.get("saves")).intValue()).isEqualTo((int) sourceRow.saves());
+            assertThat(((Number) row.get("yellow_cards")).intValue()).isEqualTo((int) sourceRow.yellowCards());
+            assertThat(((Number) row.get("red_cards")).intValue()).isEqualTo((int) sourceRow.redCards());
+            assertThat(((Number) row.get("value")).intValue()).isEqualTo(sourceRow.value());
+            assertThat(((Number) row.get("selected")).intValue()).isEqualTo(sourceRow.selected());
+            assertThat(((Number) row.get("transfers_in")).intValue()).isEqualTo(sourceRow.transfersIn());
+            assertThat(((Number) row.get("transfers_out")).intValue()).isEqualTo(sourceRow.transfersOut());
+            assertThat(((Number) row.get("starts")).intValue()).isEqualTo((int) sourceRow.starts());
+            assertOptionalMetric(row, "expected_goals", sourceRow.expectedGoals(),
+                    sourceRow.has(HistoryParser.Component.EXPECTED_GOALS));
+            assertOptionalMetric(row, "expected_assists", sourceRow.expectedAssists(),
+                    sourceRow.has(HistoryParser.Component.EXPECTED_ASSISTS));
+            assertOptionalMetric(row, "expected_goal_involvements", sourceRow.expectedGoalInvolvements(),
+                    sourceRow.has(HistoryParser.Component.EXPECTED_GOAL_INVOLVEMENTS));
+            assertOptionalMetric(row, "expected_goals_conceded", sourceRow.expectedGoalsConceded(),
+                    sourceRow.has(HistoryParser.Component.EXPECTED_GOALS_CONCEDED));
+            assertOptionalMetric(row, "influence", sourceRow.influence(),
+                    sourceRow.has(HistoryParser.Component.INFLUENCE));
+            assertOptionalMetric(row, "creativity", sourceRow.creativity(),
+                    sourceRow.has(HistoryParser.Component.CREATIVITY));
+            assertOptionalMetric(row, "threat", sourceRow.threat(),
+                    sourceRow.has(HistoryParser.Component.THREAT));
+            assertOptionalMetric(row, "ict_index", sourceRow.ictIndex(),
+                    sourceRow.has(HistoryParser.Component.ICT_INDEX));
+            assertOptionalMetric(row, "clearances_blocks_interceptions", sourceRow.clearancesBlocksInterceptions(),
+                    sourceRow.has(HistoryParser.Component.CLEARANCES_BLOCKS_INTERCEPTIONS));
+            assertOptionalMetric(row, "recoveries", sourceRow.recoveries(),
+                    sourceRow.has(HistoryParser.Component.RECOVERIES));
+            assertOptionalMetric(row, "tackles", sourceRow.tackles(),
+                    sourceRow.has(HistoryParser.Component.TACKLES));
+            assertOptionalMetric(row, "defensive_contribution", sourceRow.defensiveContribution(),
+                    sourceRow.has(HistoryParser.Component.DEFENSIVE_CONTRIBUTION));
+        }
+        List<Map<String, Object>> evidence = jdbc.queryForList("SELECT player_id,generation,component_presence "
+                + "FROM " + TABLES.playerFixtureEvidence() + " WHERE season_id=? AND fixture_id=? AND generation=? "
+                + "ORDER BY player_id", SEASON.id(), fixtureId, generation);
+        assertThat(evidence).as("current source evidence rows for fixture %d", fixtureId).hasSize(expected.size());
+        for (Map<String, Object> row : evidence) {
+            int playerId = ((Number) row.get("player_id")).intValue();
+            assertThat(row.get("generation")).isEqualTo(generation);
+            assertThat(((Number) row.get("component_presence")).longValue())
+                    .isEqualTo(expected.get(playerId).presenceMask());
+        }
+    }
+
+    private static void assertOptionalMetric(Map<String, Object> row, String field,
+                                             Object expected, boolean present) {
+        if (!present) return;
+        Object actual = row.get(field);
+        if (expected instanceof BigDecimal decimal) {
+            assertThat((BigDecimal) actual).as("validated source metric %s", field)
+                    .isEqualByComparingTo(decimal);
+        } else {
+            assertThat(((Number) actual).intValue()).as("validated source metric %s", field)
+                    .isEqualTo(((Number) expected).intValue());
+        }
+    }
+
+    private static void assertPfsMetricRowsUnchanged(List<String> before, List<String> after) throws IOException {
+        List<String> normalizedBefore = before.stream().map(OwnedMatchdayAdmissionProgressIntegrationTest::withoutPfsTimestamp)
+                .sorted().toList();
+        List<String> normalizedAfter = after.stream().map(OwnedMatchdayAdmissionProgressIntegrationTest::withoutPfsTimestamp)
+                .sorted().toList();
+        assertThat(normalizedAfter).as("a score-only source correction does not invent player-stat changes")
+                .isEqualTo(normalizedBefore);
+    }
+
+    private static String withoutPfsTimestamp(String row) {
+        try {
+            ObjectNode object = (ObjectNode) JSON.readTree(row);
+            object.remove("updated_at");
+            return JSON.writeValueAsString(object);
+        } catch (IOException invalid) {
+            throw new IllegalArgumentException("invalid stored PFS JSON", invalid);
+        }
+    }
+
+    private static FixtureSourceBatchProof fullSourceObservationProof(Harness harness, int fixtureId,
+                                                                          FixtureOracle oracle, SourceData source,
+                                                                          CanonicalParentProof parent, long generation,
+                                                                          FixtureVerification.Observation observation,
+                                                                          int expectedParticipants,
+                                                                          int receivedParticipants,
+                                                                          int missingParticipants,
+                                                                          boolean requireCurrentReceipt) {
+        Map<String, Object> trace = fixtureManifestPredicateTrace(harness, fixtureId, oracle, parent,
+                generation, observation, expectedParticipants, receivedParticipants, missingParticipants,
+                requireCurrentReceipt);
+        boolean sourceBodyHashesMatch = fixtureGenerationBodiesMatchSource(harness, fixtureId, generation,
+                oracle, source, observation);
+        boolean sourceProof = Boolean.TRUE.equals(trace.get("sourceObservationProof"))
+                && sourceBodyHashesMatch;
+        trace.put("sourceBodyHashesMatch", sourceBodyHashesMatch);
+        trace.put("sourceObservationProof", sourceProof);
+        Map<String, Object> run = fixtureRunSourceFrame(generation);
+        return new FixtureSourceBatchProof(generation, sourceRunInterval(run),
+                ((Timestamp) run.get("requested_source_after")).toInstant(), sourceProof,
+                java.util.Collections.unmodifiableMap(trace));
+    }
+
+    private static FixtureSourcePairProof fullSourceObservationPairProof(Harness harness, int fixtureId,
+                                                                           FixtureOracle oracle, SourceData source,
+                                                                           CanonicalParentProof parent,
+                                                                           FirstPendingObservation firstPending,
+                                                                           long currentGeneration,
+                                                                           FixtureVerification.Observation currentObservation,
+                                                                           Instant effectiveFloor) {
+        FixtureSourceBatchProof first = fullSourceObservationProof(harness, fixtureId, oracle, source, parent,
+                firstPending.generation(), firstPending.observation(), firstPending.expectedParticipants(),
+                firstPending.receivedParticipants(), firstPending.missingParticipants(), false);
+        Map<String, Object> participants = jdbc.queryForMap("SELECT expected_participants,received_participants,"
+                + "cardinality(missing_player_ids) missing_count FROM " + TABLES.fixtureSync()
+                + " WHERE season_id=? AND fixture_id=?", SEASON.id(), fixtureId);
+        FixtureSourceBatchProof second = fullSourceObservationProof(harness, fixtureId, oracle, source, parent,
+                currentGeneration, currentObservation, Math.toIntExact(numberLong(participants.get("expected_participants"))),
+                Math.toIntExact(numberLong(participants.get("received_participants"))),
+                Math.toIntExact(numberLong(participants.get("missing_count"))),
+                true);
+        boolean capturedFirstPending = firstPendingCaptureMatches(firstPending, fixtureId, first.generation(),
+                first.interval(), first.requestedFloor(), effectiveFloor);
+        boolean generationOrder = first.generation() < second.generation();
+        boolean independentIntervals = correctionBatchesValid(first.interval(), second.interval(), effectiveFloor);
+        boolean activeEpochThree = harness.fence.mode() == OwnedSyncMode.ACTIVE && harness.fence.epoch() == 3;
+        return new FixtureSourcePairProof(first, second, capturedFirstPending, generationOrder,
+                independentIntervals, activeEpochThree);
+    }
+
+    private static boolean firstPendingCaptureMatches(FirstPendingObservation first, int fixtureId,
+                                                       long sourceGeneration, SourceRead sourceInterval,
+                                                       Instant requestedFloor, Instant effectiveFloor) {
+        return first != null && first.observation() != null
+                && firstPendingIdentityMatches(first.generation(), sourceGeneration, first.seasonId(),
+                        first.seasonCode(), first.currentVerifiedGeneration(), first.observation().fixtureId(),
+                        first.observation().seasonId(), first.observation().seasonCode(),
+                        first.observation().coherent(), first.observation().finished(), first.reasons())
+                && fixtureId == first.observation().fixtureId()
+                && first.reads().equals(observationInterval(first.observation()))
+                && !requestedFloor.isBefore(effectiveFloor)
+                && !sourceInterval.startedAt().isBefore(effectiveFloor)
+                && !sourceInterval.finishedAt().isBefore(sourceInterval.startedAt());
+    }
+
+    private static boolean firstPendingIdentityMatches(long capturedGeneration, long sourceGeneration,
+                                                        int capturedSeasonId, String capturedSeasonCode,
+                                                        Long currentVerifiedGeneration, int observationFixtureId,
+                                                        int observationSeasonId, String observationSeasonCode,
+                                                        boolean coherent, boolean finished, String reasons) {
+        return capturedGeneration > 0 && capturedGeneration == sourceGeneration
+                && capturedSeasonId == SEASON.id() && SEASON.code().equals(capturedSeasonCode)
+                && currentVerifiedGeneration == null && observationFixtureId > 0
+                && observationSeasonId == SEASON.id() && SEASON.code().equals(observationSeasonCode)
+                && coherent && finished && reasons.contains("NEEDS_SECOND_OBSERVATION");
+    }
+
+    private static Map<Integer, Map<String, Object>> assertChangedCorrectionPublicationProofs(
+            Harness harness, SourceData source, Set<Integer> changedFixtures, Set<Integer> republished,
+            Map<Integer, Long> baselineReceipts, Map<Integer, FirstPendingObservation> firstPending,
+            Instant correctionEffectiveFloor) throws IOException {
+        assertThat(changedFixtures).containsExactlyInAnyOrder(1, 2, 3, 4, 5);
+        assertThat(republished).as("every corrected fixture requires a full independent source-publication proof")
+                .containsExactlyInAnyOrderElementsOf(changedFixtures);
+        CanonicalParentProof parent = currentCanonicalParentProof(harness);
+        assertThat(parent.currentPublished()).isTrue();
+        assertThat(parent.immutable()).isTrue();
+        Map<Integer, FixtureOracle> oracles = sourceFixtureOracles(source, changedFixtures);
+        Map<Integer, Map<String, Object>> proofs = new TreeMap<>();
+        Duration minimumGap = null;
+        for (int fixtureId : changedFixtures.stream().sorted().toList()) {
+            long oldGeneration = baselineReceipts.get(fixtureId);
+            FixtureOwnershipSnapshot ownership = fixtureOwnershipSnapshot(fixtureId);
+            Map<String, Object> receipt = jdbc.queryForMap("SELECT p.latest_generation,p.source_read_started_at,"
+                    + "p.source_read_finished_at,p.published_at,p.source_bootstrap_payload_id,"
+                    + "p.source_fixtures_payload_id,p.source_pair_fingerprint,r.state,r.runtime_mode,"
+                    + "r.runtime_epoch,r.completed_at,r.source_read_started_at run_started,"
+                    + "r.source_read_finished_at run_finished FROM " + TABLES.receipt() + " p JOIN "
+                    + TABLES.run() + " r ON r.generation=p.latest_generation AND r.season=p.season"
+                    + " WHERE p.season=? AND p.publication_key=?", SEASON.code(), "fixture:" + fixtureId);
+            long latestGeneration = numberLong(receipt.get("latest_generation"));
+            long currentGeneration = ownership.currentVerifiedGeneration() == null
+                    ? 0 : ownership.currentVerifiedGeneration();
+            assertThat(currentGeneration).as("fixture %d has a new current receipt", fixtureId)
+                    .isGreaterThan(oldGeneration).isEqualTo(latestGeneration);
+            FirstPendingObservation first = firstPending.get(fixtureId);
+            assertThat(first).as("fixture %d captured its first post-invalidation observation", fixtureId)
+                    .isNotNull();
+            assertThat(first.generation()).as("fixture %d captured first source generation follows invalidated receipt", fixtureId)
+                    .isGreaterThan(oldGeneration).isLessThan(currentGeneration);
+            assertThat(first.observation().fingerprint()).isEqualTo(oracles.get(fixtureId).observationFingerprint());
+
+            FixtureOracle oracle = oracles.get(fixtureId);
+            FixtureVerification.Observation currentObservation = fixtureObservation(fixtureId);
+            FixtureSourcePairProof pair = fullSourceObservationPairProof(harness, fixtureId, oracle, source,
+                    parent, first, currentGeneration, currentObservation, correctionEffectiveFloor);
+            Map<String, Object> firstProof = pair.first().trace();
+            Map<String, Object> finalProof = pair.second().trace();
+            SourceRead firstSourceRun = pair.first().interval();
+            SourceRead finalSourceRun = pair.second().interval();
+            Instant firstWanted = pair.first().requestedFloor();
+            Instant finalWanted = pair.second().requestedFloor();
+            assertThat(firstProof.get("sourceObservationProof"))
+                    .as("fixture %d exact captured first corrected source batch proof=%s", fixtureId, firstProof)
+                    .isEqualTo(true);
+            assertThat(firstProof.get("publishedManifestProof"))
+                    .as("fixture %d first batch is not independently treated as a publication", fixtureId)
+                    .isEqualTo(false);
+            assertThat(finalProof.get("sourceObservationProof"))
+                    .as("fixture %d current corrected source batch", fixtureId).isEqualTo(true);
+            assertThat(finalProof.get("publishedManifestProof"))
+                    .as("fixture %d full current-receipt publication proof", fixtureId).isEqualTo(true);
+            assertThat(pair.capturedFirstPending()).as("fixture %d map generation is exactly the first pair", fixtureId)
+                    .isTrue();
+            assertThat(pair.generationOrder()).as("fixture %d current receipt follows first pending generation", fixtureId)
+                    .isTrue();
+            assertThat(pair.independentIntervals())
+                    .as("fixture %d two corrected source intervals have the required ten-minute gap", fixtureId)
+                    .isTrue();
+            assertThat(pair.activeEpochThree()).as("fixture %d proof uses ACTIVE epoch 3", fixtureId).isTrue();
+            assertThat(ownership.lastVerifiedGeneration()).isEqualTo(currentGeneration);
+            assertThat(ownership.verifiedHeader()).isEqualTo(oracle.headerFingerprint());
+            assertThat(firstProof.get("requiredIdsMatchSource")).isEqualTo(true);
+            assertThat(finalProof.get("requiredIdsMatchSource")).isEqualTo(true);
+            assertThat(firstProof.get("sourceBodyHashesMatch")).isEqualTo(true);
+            assertThat(finalProof.get("sourceBodyHashesMatch")).isEqualTo(true);
+            Duration gap = Duration.between(firstSourceRun.finishedAt(), finalSourceRun.startedAt());
+            if (minimumGap == null || gap.compareTo(minimumGap) < 0) minimumGap = gap;
+
+            Instant sourceFinished = ((Timestamp) receipt.get("source_read_finished_at")).toInstant();
+            Instant completedAt = ((Timestamp) receipt.get("completed_at")).toInstant();
+            Instant publishedAt = ((Timestamp) receipt.get("published_at")).toInstant();
+            Instant now = harness.clock.instant();
+            assertThat(((Timestamp) receipt.get("run_started")).toInstant())
+                    .isEqualTo(((Timestamp) receipt.get("source_read_started_at")).toInstant());
+            assertThat(((Timestamp) receipt.get("run_finished")).toInstant()).isEqualTo(sourceFinished);
+            assertThat(sourceFinished).isBeforeOrEqualTo(completedAt);
+            assertThat(completedAt).isBeforeOrEqualTo(publishedAt);
+            assertThat(publishedAt).isBeforeOrEqualTo(now);
+            assertThat(receipt.get("state")).isEqualTo("COMPLETED");
+            assertThat(receipt.get("runtime_mode")).isEqualTo("ACTIVE");
+            assertThat(numberLong(receipt.get("runtime_epoch"))).isEqualTo(harness.fence.epoch());
+            Map<String, Object> proof = new TreeMap<>();
+            proof.put("outcome", "REPUBLISHED");
+            proof.put("oldReceipt", oldGeneration);
+            proof.put("firstPendingGeneration", first.generation());
+            proof.put("currentReceiptGeneration", currentGeneration);
+            proof.put("firstSourceInterval", firstSourceRun);
+            proof.put("secondSourceInterval", finalSourceRun);
+            proof.put("firstRequestedFloor", firstWanted);
+            proof.put("secondRequestedFloor", finalWanted);
+            proof.put("independentBatchGap", gap);
+            proof.put("receiptInterval", List.of(receipt.get("source_read_started_at"),
+                    receipt.get("source_read_finished_at"), receipt.get("completed_at"), receipt.get("published_at")));
+            proof.put("firstProof", firstProof);
+            proof.put("finalProof", finalProof);
+            proofs.put(fixtureId, Map.copyOf(proof));
+        }
+        if (!republished.isEmpty()) {
+            assertThat(minimumGap).as("minimum changed-fixture independent-batch gap").isNotNull()
+                    .isGreaterThanOrEqualTo(Duration.ofMinutes(10));
+        }
+        return Map.copyOf(proofs);
+    }
+
+    private static SourceRead sourceRunInterval(Map<String, Object> run) {
+        return new SourceRead(((Timestamp) run.get("source_read_started_at")).toInstant(),
+                ((Timestamp) run.get("source_read_finished_at")).toInstant());
+    }
+
+    private static ActiveAcceptanceMetrics activeAcceptanceMetrics(Harness harness,
+                                                                  ManualDriver preparationDriver,
+                                                                  ManualDriver driver,
+                                                                  Set<Integer> targetFixtures,
+                                                                  Map<Integer, Long> expectedCorrectionReceipts,
+                                                                  Map<Integer, FirstPendingObservation> firstPendingObservations) throws IOException {
+        Set<Integer> verified = new java.util.TreeSet<>();
+        Map<Integer, Long> verifiedReceiptGenerations = new TreeMap<>();
+        List<Map<String, Object>> fixtureProofs = new ArrayList<>();
+        Instant firstVerified = null;
+        Instant lastVerified = null;
+        int missingReceipts = 0;
+        int badManifests = 0;
+        int badBatchPairs = 0;
+        Map<Integer, Set<Integer>> requiredByFixture = harness.source.requiredHistoryPlayersByFixture(FIXTURE_RUNS);
+        Map<Integer, FixtureOracle> sourceOracles = sourceFixtureOracles(harness.source, targetFixtures);
+        CanonicalParentProof canonicalParent = currentCanonicalParentProof(harness);
+        for (int fixtureId : targetFixtures.stream().sorted().toList()) {
+            FixtureOracle oracle = sourceOracles.get(fixtureId);
+            Map<String, Object> proof = fixtureManifestPredicateTrace(harness, fixtureId, oracle, canonicalParent);
+            fixtureProofs.add(proof);
+            List<Map<String, Object>> receiptRows = jdbc.queryForList("SELECT fs.current_verified_generation,"
+                    + "fs.first_verified_at,fs.last_verified_at,p.latest_generation,p.published_at,r.state,"
+                    + "r.runtime_mode,r.runtime_epoch FROM " + TABLES.fixtureSync() + " fs"
+                    + " JOIN " + TABLES.receipt() + " p ON p.season=? AND p.publication_key='fixture:' || fs.fixture_id::text"
+                    + " AND p.latest_generation=fs.current_verified_generation"
+                    + " JOIN " + TABLES.run() + " r ON r.generation=p.latest_generation"
+                    + " WHERE fs.season_id=? AND fs.fixture_id=? AND fs.state='VERIFIED'",
+                    SEASON.code(), SEASON.id(), fixtureId);
+            if (receiptRows.size() != 1) {
+                missingReceipts++;
+                proof.put("status", "missing_receipt");
+                continue;
+            }
+            Map<String, Object> receipt = receiptRows.getFirst();
+            long generation = ((Number) receipt.get("current_verified_generation")).longValue();
+            if (generation != ((Number) receipt.get("latest_generation")).longValue()
+                    || !"COMPLETED".equals(receipt.get("state"))
+                    || !"ACTIVE".equals(receipt.get("runtime_mode"))
+                    || ((Number) receipt.get("runtime_epoch")).longValue() != harness.fence.epoch()) {
+                badManifests++;
+                proof.put("status", "bad_published_manifest");
+                proof.put("receiptGeneration", generation);
+                continue;
+            }
+            Integer[] rawIds = jdbc.queryForObject("SELECT required_player_ids FROM "
+                            + TABLES.fixtureDependencyManifest() + " WHERE run_generation=?",
+                    (rs, row) -> (Integer[]) rs.getArray(1).getArray(), generation);
+            Set<Integer> requiredIds = Set.of(rawIds);
+            boolean requiredIdsMatch = requiredIds.equals(requiredByFixture.get(fixtureId))
+                    && requiredIds.equals(oracle.requiredPlayers());
+            boolean fixtureEvidence = fixtureReadEvidenceProof(harness, fixtureId, generation, requiredIds);
+            boolean stagedSources = Boolean.TRUE.equals(proof.get("publishedManifestProof"));
+            boolean participantCounts = Boolean.TRUE.equals(proof.get("participantCounts"));
+            boolean sourceFloor = Boolean.TRUE.equals(proof.get("sourceFloorWanted"));
+            FirstPendingObservation firstPending = firstPendingObservations.get(fixtureId);
+            assertThat(firstPending).as("fixture %d exact first-pending observation is captured", fixtureId)
+                    .isNotNull();
+            FixtureSourcePairProof pair = fullSourceObservationPairProof(harness, fixtureId, oracle,
+                    harness.source, canonicalParent, firstPending, generation, fixtureObservation(fixtureId),
+                    LEGACY_DAILY_DUE);
+            proof.put("firstPendingPairProof", pair.trace());
+            boolean batchValid = pair.valid();
+            if (!batchValid) badBatchPairs++;
+            boolean latestGeneration = numberLong(proof.get("latestTargetGeneration")) == generation;
+            boolean fullCurrentSource = pair.second().valid();
+            boolean validManifest = requiredIdsMatch && fixtureEvidence && stagedSources
+                    && participantCounts && sourceFloor && latestGeneration && fullCurrentSource;
+            if (!validManifest) badManifests++;
+            boolean validProof = validManifest && batchValid;
+            proof.put("status", validProof ? "verified"
+                    : validManifest ? "bad_batch_pair" : "bad_published_manifest");
+            proof.put("batchProof", batchValid);
+            proof.put("firstPendingGeneration", firstPending.generation());
+            proof.put("requiredIdsMatch", requiredIdsMatch);
+            proof.put("fixtureReadEvidenceProof", fixtureEvidence);
+            proof.put("receiptGeneration", generation);
+            proof.put("latestGenerationGate", latestGeneration);
+            if (validProof) {
+                verified.add(fixtureId);
+                verifiedReceiptGenerations.put(fixtureId, generation);
+                Instant fixtureLast = ((Timestamp) receipt.get("last_verified_at")).toInstant();
+                if (firstVerified == null || fixtureLast.isBefore(firstVerified)) firstVerified = fixtureLast;
+                if (lastVerified == null || fixtureLast.isAfter(lastVerified)) lastVerified = fixtureLast;
+            }
+        }
+        String targetKeys = targetFixtures.stream().sorted().map(id -> "'fixture:" + id + "'")
+                .collect(java.util.stream.Collectors.joining(","));
+        int missingHistoryEvidence = jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
+                + " r JOIN " + TABLES.fixtureDependencyManifest() + " m ON m.run_generation=r.generation"
+                + " JOIN " + TABLES.payload() + " f ON f.id=m.fixtures_payload_id"
+                + " CROSS JOIN LATERAL unnest(m.required_player_ids) AS required(player_id)"
+                + " WHERE r.season=? AND r.runtime_mode='ACTIVE' AND r.runtime_epoch=?"
+                + " AND r.kind='FIXTURE_VERIFICATION' AND r.state='COMPLETED'"
+                + " AND r.publication_key IN (" + targetKeys + ") AND r.generation IN (SELECT fs.current_verified_generation"
+                + " FROM " + TABLES.fixtureSync() + " fs WHERE fs.season_id=? AND fs.fixture_id BETWEEN 41 AND 50)"
+                + " AND NOT EXISTS (SELECT 1 FROM " + TABLES.payload() + " hp JOIN " + TABLES.run()
+                + " hr ON hr.generation=hp.run_generation WHERE hp.endpoint_kind='ELEMENT_SUMMARY'"
+                + " AND hp.event_id IS NULL AND hp.player_id=required.player_id AND hp.validation_state='VALID'"
+                + " AND hp.read_started_at>=GREATEST(r.requested_source_after,m.source_floor,"
+                + " f.read_finished_at + INTERVAL '1 millisecond') AND hp.read_finished_at<=r.completed_at"
+                + " AND hp.staged_at<=r.completed_at AND hr.kind='PLAYER_HISTORY' AND hr.state='COMPLETED'"
+                + " AND hr.completed_at<=r.completed_at AND hr.coalescing_key='player-history:' || required.player_id::text"
+                + " AND hr.publication_key=hr.coalescing_key AND hr.season=r.season"
+                + " AND hr.runtime_mode=r.runtime_mode AND hr.runtime_epoch=r.runtime_epoch)", Integer.class,
+                SEASON.code(), harness.fence.epoch(), SEASON.id());
+        int servedCorrectionReceipts = 0;
+        for (Map.Entry<Integer, Long> entry : expectedCorrectionReceipts.entrySet()) {
+            Long current = jdbc.queryForObject("SELECT latest_generation FROM " + TABLES.receipt()
+                    + " WHERE season=? AND publication_key=?", Long.class,
+                    SEASON.code(), "fixture:" + entry.getKey());
+            if (entry.getValue().equals(current)) servedCorrectionReceipts++;
+        }
+        Set<Integer> pendingChangedCorrections = new java.util.TreeSet<>();
+        Set<Integer> republishedChangedCorrections = new java.util.TreeSet<>();
+        Map<Integer, String> changedCorrectionOutcomes = new TreeMap<>();
+        for (int fixtureId : List.of(1, 2, 3, 4, 5)) {
+            Map<String, Object> row = jdbc.queryForMap("SELECT p.latest_generation,fs.state,"
+                    + "fs.current_verified_generation,fs.last_verified_generation,p.published_at,r.state run_state,"
+                    + "r.runtime_mode,r.runtime_epoch,r.completed_at FROM " + TABLES.receipt() + " p JOIN "
+                    + TABLES.fixtureSync() + " fs ON p.publication_key='fixture:' || fs.fixture_id::text "
+                    + "AND fs.season_id=? JOIN " + TABLES.run() + " r ON r.generation=p.latest_generation "
+                    + "WHERE p.season=? AND fs.fixture_id=?", SEASON.id(), SEASON.code(), fixtureId);
+            long oldGeneration = expectedCorrectionReceipts.get(fixtureId);
+            long latestGeneration = ((Number) row.get("latest_generation")).longValue();
+            Long currentGeneration = nullableLong(row.get("current_verified_generation"));
+            Long lastGeneration = nullableLong(row.get("last_verified_generation"));
+            if (latestGeneration == oldGeneration && currentGeneration == null
+                    && java.util.Objects.equals(lastGeneration, oldGeneration)
+                    && !"VERIFIED".equals(row.get("state"))) {
+                pendingChangedCorrections.add(fixtureId);
+                changedCorrectionOutcomes.put(fixtureId, "PENDING oldReceipt=" + oldGeneration
+                        + " lastVerified=" + lastGeneration + " state=" + row.get("state"));
+            } else if (latestGeneration > oldGeneration && currentGeneration != null
+                    && currentGeneration == latestGeneration && lastGeneration != null
+                    && lastGeneration == latestGeneration && "VERIFIED".equals(row.get("state"))
+                    && "COMPLETED".equals(row.get("run_state"))
+                    && "ACTIVE".equals(row.get("runtime_mode"))
+                    && ((Number) row.get("runtime_epoch")).longValue() == harness.fence.epoch()
+                    && row.get("completed_at") != null
+                    && !((Timestamp) row.get("completed_at")).toInstant()
+                            .isAfter(((Timestamp) row.get("published_at")).toInstant())) {
+                republishedChangedCorrections.add(fixtureId);
+                changedCorrectionOutcomes.put(fixtureId, "REPUBLISHED oldReceipt=" + oldGeneration
+                        + " currentReceipt=" + latestGeneration + " epoch=" + row.get("runtime_epoch"));
+            } else {
+                changedCorrectionOutcomes.put(fixtureId, "INVALID oldReceipt=" + oldGeneration + " row=" + row);
+            }
+        }
+        int correctionReplayRuns = jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
+                + " WHERE season=? AND runtime_mode='ACTIVE' AND runtime_epoch=?"
+                + " AND kind='FIXTURE_VERIFICATION' AND publication_key IN ("
+                + java.util.stream.IntStream.rangeClosed(6, 40).mapToObj(id -> "'fixture:" + id + "'")
+                .collect(java.util.stream.Collectors.joining(",")) + ")",
+                Integer.class, SEASON.code(), harness.fence.epoch());
+        List<AdmissionTrace> traces = new ArrayList<>(harness.singleDispatchAdmissions);
+        traces.addAll(preparationDriver.admissions);
+        traces.addAll(driver.admissions);
+        int firstNewFixture = -1;
+        long firstNewGeneration = 0;
+        int firstNewAttempt = 0;
+        String firstNewWorker = null;
+        Instant firstNewClaim = null;
+        for (AdmissionTrace trace : traces) {
+            if (trace.generation() <= 0 || !"FIXTURE_VERIFICATION".equals(trace.kind())
+                    || trace.claimedAt() == null || trace.publicationKey() == null) continue;
+            String key = trace.publicationKey();
+            if (!key.startsWith("fixture:")) continue;
+            int fixtureId = Integer.parseInt(key.substring("fixture:".length()));
+            if (!targetFixtures.contains(fixtureId)) continue;
+            if (firstNewClaim == null || trace.claimedAt().isBefore(firstNewClaim)) {
+                firstNewClaim = trace.claimedAt();
+                firstNewFixture = fixtureId;
+                firstNewGeneration = trace.generation();
+                firstNewAttempt = trace.attemptCount();
+                firstNewWorker = trace.worker();
+            }
+        }
+        int claims = jdbc.queryForObject("SELECT COALESCE(sum(attempt_count),0) FROM " + TABLES.run()
+                + " WHERE season=? AND runtime_mode='ACTIVE' AND runtime_epoch=?",
+                Integer.class, SEASON.code(), harness.fence.epoch());
+        int failedRuns = jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
+                + " WHERE season=? AND runtime_mode='ACTIVE' AND runtime_epoch=? AND state='FAILED'",
+                Integer.class, SEASON.code(), harness.fence.epoch());
+        int canonicalPreemptions = jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
+                + " WHERE season=? AND runtime_mode='ACTIVE' AND runtime_epoch=?"
+                + " AND kind='CATALOGUE_SCHEDULE' AND state='COMPLETED' AND attempt_count>0",
+                Integer.class, SEASON.code(), harness.fence.epoch());
+        int pendingUnknownGates = jdbc.queryForObject("SELECT count(*) FROM " + TABLES.fixtureSync()
+                + " WHERE season_id=? AND fixture_id BETWEEN 41 AND 50 AND state<>'VERIFIED'",
+                Integer.class, SEASON.id());
+
+        return new ActiveAcceptanceMetrics(
+                Collections.unmodifiableSet(new java.util.TreeSet<>(verified)),
+                Collections.unmodifiableMap(new TreeMap<>(verifiedReceiptGenerations)),
+                verified.size(), missingReceipts, targetFixtures.size() - fixtureProofs.size(),
+                List.copyOf(fixtureProofs), canonicalParent.trace(), servedCorrectionReceipts, correctionReplayRuns,
+                Collections.unmodifiableSet(new java.util.TreeSet<>(pendingChangedCorrections)),
+                Collections.unmodifiableSet(new java.util.TreeSet<>(republishedChangedCorrections)),
+                Collections.unmodifiableMap(new TreeMap<>(changedCorrectionOutcomes)),
+                firstVerified, lastVerified, firstNewFixture, firstNewGeneration, firstNewAttempt,
+                firstNewWorker, firstNewClaim,
+                Duration.between(LEGACY_DAILY_DUE, harness.clock.instant()), claims,
+                preparationDriver.dispatches + driver.dispatches + harness.controlledDispatchCalls,
+                missingHistoryEvidence, badManifests,
+                badBatchPairs, failedRuns, driver.sawReadyFixture, driver.sawBlockedFixture,
+                driver.sawUntouchedFixture, driver.preferentialHistoryClaims, driver.fifoHistoryClaims,
+                canonicalPreemptions, pendingUnknownGates);
+    }
+
+    private static CanonicalParentProof currentCanonicalParentProof(Harness harness) {
+        String sql = "SELECT p.publication_key,p.latest_generation,p.published_at,"
+                + "p.source_read_started_at receipt_started,p.source_read_finished_at receipt_finished,"
+                + "p.source_pair_fingerprint,p.source_bootstrap_payload_id,p.source_fixtures_payload_id,"
+                + "p.source_bootstrap_read_started_at,p.source_bootstrap_read_finished_at,"
+                + "p.source_fixtures_read_started_at,p.source_fixtures_read_finished_at,"
+                + "p.source_bootstrap_sha256,p.source_fixtures_sha256,"
+                + "r.generation publication_generation,r.kind publication_kind,r.coalescing_key publication_coalescing,"
+                + "r.publication_key publication_key,r.state publication_state,r.runtime_mode publication_mode,"
+                + "r.runtime_epoch publication_epoch,r.completed_at,r.source_read_started_at run_started,"
+                + "r.source_read_finished_at run_finished,"
+                + "b.id b_id,b.run_generation b_generation,b.endpoint_kind b_role,b.event_id b_event,"
+                + "b.player_id b_player,b.validation_state b_validation,b.source_published b_published,"
+                + "b.read_started_at b_started,b.read_finished_at b_finished,b.body AS b_body,"
+                + "f.id f_id,f.run_generation f_generation,f.endpoint_kind f_role,f.event_id f_event,"
+                + "f.player_id f_player,f.validation_state f_validation,f.source_published f_published,"
+                + "f.read_started_at f_started,f.read_finished_at f_finished,f.body AS f_body,"
+                + "sr.generation source_run_generation,sr.kind source_run_kind,sr.season source_run_season,"
+                + "sr.coalescing_key source_coalescing,sr.publication_key source_publication,"
+                + "sr.runtime_mode source_mode,sr.runtime_epoch source_epoch "
+                + "FROM " + TABLES.receipt() + " p JOIN " + TABLES.run() + " r"
+                + " ON r.generation=p.latest_generation AND r.season=p.season"
+                + " JOIN " + TABLES.payload() + " b ON b.id=p.source_bootstrap_payload_id"
+                + " AND b.endpoint_kind='BOOTSTRAP_STATIC' AND b.event_id IS NULL AND b.player_id IS NULL"
+                + " AND b.validation_state='VALID' AND b.source_published IS TRUE"
+                + " AND b.read_started_at=p.source_bootstrap_read_started_at"
+                + " AND b.read_finished_at=p.source_bootstrap_read_finished_at"
+                + " JOIN " + TABLES.payload() + " f ON f.id=p.source_fixtures_payload_id"
+                + " AND f.endpoint_kind='FIXTURES' AND f.event_id IS NULL AND f.player_id IS NULL"
+                + " AND f.validation_state='VALID' AND f.source_published IS TRUE"
+                + " AND f.read_started_at=p.source_fixtures_read_started_at"
+                + " AND f.read_finished_at=p.source_fixtures_read_finished_at"
+                + " JOIN " + TABLES.run() + " sr ON sr.generation=b.run_generation"
+                + " AND sr.season=p.season AND sr.kind='CATALOGUE_SCHEDULE'"
+                + " AND sr.runtime_mode='ACTIVE' AND sr.runtime_epoch=r.runtime_epoch"
+                + " AND ((sr.coalescing_key=? AND sr.publication_key=?)"
+                + " OR (sr.coalescing_key=? AND sr.publication_key=?))"
+                + " WHERE p.season=? AND p.publication_key IN (?,?)"
+                + " AND r.kind='CATALOGUE_SCHEDULE' AND r.runtime_mode='ACTIVE' AND r.runtime_epoch=?"
+                + " AND r.state='COMPLETED' AND r.completed_at<=p.published_at AND p.published_at<=?"
+                + " AND r.source_read_started_at=p.source_read_started_at"
+                + " AND r.source_read_finished_at=p.source_read_finished_at"
+                + " AND r.source_read_started_at=LEAST(b.read_started_at,f.read_started_at)"
+                + " AND r.source_read_finished_at=GREATEST(b.read_finished_at,f.read_finished_at)"
+                + " AND b.run_generation=f.run_generation AND b.body IS NOT NULL AND f.body IS NOT NULL"
+                + " AND p.source_bootstrap_sha256 IS NOT NULL AND p.source_fixtures_sha256 IS NOT NULL"
+                + " AND p.source_pair_fingerprint IS NOT NULL"
+                + " AND b.read_started_at<=b.read_finished_at AND f.read_started_at<=f.read_finished_at"
+                + " AND ((p.publication_key=? AND r.coalescing_key=? AND r.publication_key=?)"
+                + " OR (p.publication_key=? AND r.coalescing_key=? AND r.publication_key=?))"
+                + " AND (SELECT max(d.requested_source_after) FROM " + TABLES.run() + " d"
+                + " WHERE d.kind='CATALOGUE_SCHEDULE' AND d.season=r.season"
+                + " AND d.runtime_mode=r.runtime_mode AND d.runtime_epoch=r.runtime_epoch"
+                + " AND d.coalescing_key=r.coalescing_key AND d.publication_key=r.publication_key)"
+                + " <= b.read_started_at"
+                + " AND (SELECT max(d.requested_source_after) FROM " + TABLES.run() + " d"
+                + " WHERE d.kind='CATALOGUE_SCHEDULE' AND d.season=r.season"
+                + " AND d.runtime_mode=r.runtime_mode AND d.runtime_epoch=r.runtime_epoch"
+                + " AND d.coalescing_key=r.coalescing_key AND d.publication_key=r.publication_key)"
+                + " <= f.read_started_at"
+                + " AND (SELECT max(d.requested_source_after) FROM " + TABLES.run() + " d"
+                + " WHERE d.kind='CATALOGUE_SCHEDULE' AND d.season=sr.season"
+                + " AND d.runtime_mode=sr.runtime_mode AND d.runtime_epoch=sr.runtime_epoch"
+                + " AND d.coalescing_key=sr.coalescing_key AND d.publication_key=sr.publication_key)"
+                + " <= b.read_started_at"
+                + " AND (SELECT max(d.requested_source_after) FROM " + TABLES.run() + " d"
+                + " WHERE d.kind='CATALOGUE_SCHEDULE' AND d.season=sr.season"
+                + " AND d.runtime_mode=sr.runtime_mode AND d.runtime_epoch=sr.runtime_epoch"
+                + " AND d.coalescing_key=sr.coalescing_key AND d.publication_key=sr.publication_key)"
+                + " <= f.read_started_at"
+                + " ORDER BY GREATEST(b.read_finished_at,f.read_finished_at) DESC,"
+                + "p.published_at DESC,r.generation DESC";
+        List<CanonicalParentProof> rows = jdbc.query(sql, (rs, index) -> {
+            String publicationKey = rs.getString("publication_key");
+            long publicationGeneration = rs.getLong("publication_generation");
+            long sourceGeneration = rs.getLong("b_generation");
+            long bootstrapId = rs.getLong("b_id");
+            long fixturesId = rs.getLong("f_id");
+            Timestamp publishedAtValue = rs.getTimestamp("published_at");
+            Timestamp completedAtValue = rs.getTimestamp("completed_at");
+            Timestamp runStartedValue = rs.getTimestamp("run_started");
+            Timestamp runFinishedValue = rs.getTimestamp("run_finished");
+            Timestamp receiptStartedValue = rs.getTimestamp("receipt_started");
+            Timestamp receiptFinishedValue = rs.getTimestamp("receipt_finished");
+            Timestamp bStartedValue = rs.getTimestamp("b_started");
+            Timestamp bFinishedValue = rs.getTimestamp("b_finished");
+            Timestamp fStartedValue = rs.getTimestamp("f_started");
+            Timestamp fFinishedValue = rs.getTimestamp("f_finished");
+            String bHash = rs.getString("source_bootstrap_sha256");
+            String fHash = rs.getString("source_fixtures_sha256");
+            String fingerprint = rs.getString("source_pair_fingerprint");
+            byte[] bootstrapBody = rs.getBytes("b_body");
+            byte[] fixturesBody = rs.getBytes("f_body");
+            boolean publicationIdentity = "CATALOGUE_SCHEDULE".equals(rs.getString("publication_kind"))
+                    && "ACTIVE".equals(rs.getString("publication_mode"))
+                    && rs.getLong("publication_epoch") == harness.fence.epoch()
+                    && (CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY.equals(publicationKey)
+                    && CatalogueScheduleDispatcher.CATALOGUE_PRICE_COALESCING_KEY.equals(
+                            rs.getString("publication_coalescing"))
+                    || CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY.equals(publicationKey)
+                    && CatalogueScheduleDispatcher.SCHEDULE_COALESCING_KEY.equals(
+                            rs.getString("publication_coalescing")));
+            boolean sourceIdentity = rs.getLong("source_run_generation") == sourceGeneration
+                    && "CATALOGUE_SCHEDULE".equals(rs.getString("source_run_kind"))
+                    && SEASON.code().equals(rs.getString("source_run_season"))
+                    && "ACTIVE".equals(rs.getString("source_mode"))
+                    && rs.getLong("source_epoch") == harness.fence.epoch()
+                    && (CatalogueScheduleDispatcher.CATALOGUE_PRICE_COALESCING_KEY.equals(
+                            rs.getString("source_coalescing"))
+                    && CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY.equals(
+                            rs.getString("source_publication"))
+                    || CatalogueScheduleDispatcher.SCHEDULE_COALESCING_KEY.equals(
+                            rs.getString("source_coalescing"))
+                    && CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY.equals(
+                            rs.getString("source_publication")));
+            boolean payloadIdentity = bootstrapId > 0 && fixturesId > 0
+                    && sourceGeneration > 0 && sourceGeneration == rs.getLong("f_generation")
+                    && "BOOTSTRAP_STATIC".equals(rs.getString("b_role"))
+                    && rs.getObject("b_event") == null && rs.getObject("b_player") == null
+                    && "FIXTURES".equals(rs.getString("f_role"))
+                    && rs.getObject("f_event") == null && rs.getObject("f_player") == null
+                    && "VALID".equals(rs.getString("b_validation"))
+                    && "VALID".equals(rs.getString("f_validation"))
+                    && rs.getBoolean("b_published") && rs.getBoolean("f_published")
+                    && bStartedValue != null && bFinishedValue != null
+                    && fStartedValue != null && fFinishedValue != null
+                    && bStartedValue.equals(rs.getTimestamp("source_bootstrap_read_started_at"))
+                    && bFinishedValue.equals(rs.getTimestamp("source_bootstrap_read_finished_at"))
+                    && fStartedValue.equals(rs.getTimestamp("source_fixtures_read_started_at"))
+                    && fFinishedValue.equals(rs.getTimestamp("source_fixtures_read_finished_at"));
+            boolean sourceInterval = canonicalSourceSpanProof(runStartedValue, runFinishedValue,
+                    receiptStartedValue, receiptFinishedValue, completedAtValue, publishedAtValue,
+                    bStartedValue, bFinishedValue, fStartedValue, fFinishedValue, harness.clock.instant());
+            boolean currentPublished = rs.getLong("latest_generation") == publicationGeneration
+                    && "COMPLETED".equals(rs.getString("publication_state"))
+                    && publicationIdentity && sourceIdentity && payloadIdentity && sourceInterval
+                    && fingerprint != null && bHash != null && fHash != null;
+            boolean immutable = payloadIdentity && bootstrapBody != null && fixturesBody != null
+                    && bHash != null && fHash != null
+                    && bHash.equals(OwnedSyncStore.sha256(bootstrapBody))
+                    && fHash.equals(OwnedSyncStore.sha256(fixturesBody));
+            if (immutable) {
+                try {
+                    var pair = OwnedSyncStore.CanonicalSourcePair.of(
+                            new OwnedSyncStore.CanonicalSourcePayload(bootstrapId, sourceGeneration,
+                                    EndpointKind.BOOTSTRAP_STATIC,
+                                    new SourceRead(bStartedValue.toInstant(), bFinishedValue.toInstant()), bHash),
+                            new OwnedSyncStore.CanonicalSourcePayload(fixturesId, sourceGeneration,
+                                    EndpointKind.FIXTURES,
+                                    new SourceRead(fStartedValue.toInstant(), fFinishedValue.toInstant()), fHash));
+                    immutable = pair.fingerprint().equals(fingerprint);
+                } catch (RuntimeException malformed) {
+                    immutable = false;
+                }
+            }
+            Map<String, Object> trace = new TreeMap<>();
+            trace.put("canonicalLane", publicationKey);
+            trace.put("publicationGeneration", publicationGeneration);
+            trace.put("publisherKeys", java.util.Arrays.asList(rs.getString("publication_coalescing"),
+                    rs.getString("publication_key")));
+            trace.put("sourceGeneration", sourceGeneration);
+            trace.put("sourceKeys", java.util.Arrays.asList(rs.getString("source_coalescing"),
+                    rs.getString("source_publication")));
+            trace.put("currentEpoch", publicationIdentity && sourceIdentity);
+            trace.put("sourcePairIds", List.of(bootstrapId, fixturesId));
+            trace.put("sourcePairFingerprint", fingerprint);
+            trace.put("sourceIntervals", java.util.Arrays.asList(bStartedValue, bFinishedValue,
+                    fStartedValue, fFinishedValue));
+            trace.put("receiptInterval", java.util.Arrays.asList(receiptStartedValue,
+                    receiptFinishedValue, completedAtValue, publishedAtValue));
+            trace.put("diagnosticPayloadQueries", 1);
+            trace.put("diagnosticPayloadRawBytes", (bootstrapBody == null ? 0 : bootstrapBody.length)
+                    + (fixturesBody == null ? 0 : fixturesBody.length));
+            trace.put("bodyHashMatches", immutable);
+            trace.put("currentPublished", currentPublished);
+            trace.put("immutable", immutable);
+            return new CanonicalParentProof(publicationKey, publicationGeneration, sourceGeneration,
+                    bootstrapId, fixturesId, fingerprint, currentPublished, immutable,
+                    java.util.Collections.unmodifiableMap(trace));
+        }, CatalogueScheduleDispatcher.CATALOGUE_PRICE_COALESCING_KEY,
+                CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY,
+                CatalogueScheduleDispatcher.SCHEDULE_COALESCING_KEY,
+                CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY,
+                SEASON.code(), CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY,
+                CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY, harness.fence.epoch(),
+                Timestamp.from(harness.clock.instant()),
+                CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY,
+                CatalogueScheduleDispatcher.CATALOGUE_PRICE_COALESCING_KEY,
+                CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY,
+                CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY,
+                CatalogueScheduleDispatcher.SCHEDULE_COALESCING_KEY,
+                CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY);
+        return rows.stream().filter(CanonicalParentProof::currentPublished)
+                .filter(CanonicalParentProof::immutable).findFirst().orElseGet(CanonicalParentProof::missing);
+    }
+
+    private static boolean canonicalSourceSpanProof(Timestamp runStarted, Timestamp runFinished,
+                                                     Timestamp receiptStarted, Timestamp receiptFinished,
+                                                     Timestamp completedAt, Timestamp publishedAt,
+                                                     Timestamp bootstrapStarted, Timestamp bootstrapFinished,
+                                                     Timestamp fixturesStarted, Timestamp fixturesFinished,
+                                                     Instant asOf) {
+        if (bootstrapStarted == null || bootstrapFinished == null || fixturesStarted == null
+                || fixturesFinished == null || runStarted == null || runFinished == null) return false;
+        Timestamp expectedStarted = earlier(bootstrapStarted, fixturesStarted);
+        Timestamp expectedFinished = later(bootstrapFinished, fixturesFinished);
+        return !bootstrapStarted.after(bootstrapFinished) && !fixturesStarted.after(fixturesFinished)
+                && runStarted.equals(expectedStarted) && runFinished.equals(expectedFinished)
+                && receiptIntervalProof(runStarted, runFinished, receiptStarted, receiptFinished,
+                        completedAt, publishedAt, asOf)
+                && databaseMicroseconds(bootstrapStarted, bootstrapFinished, fixturesStarted, fixturesFinished);
+    }
+
+    private static Timestamp earlier(Timestamp first, Timestamp second) {
+        if (first == null || second == null) return null;
+        return first.before(second) ? first : second;
+    }
+
+    private static Timestamp later(Timestamp first, Timestamp second) {
+        if (first == null || second == null) return null;
+        return first.after(second) ? first : second;
+    }
+
+    private static boolean receiptIntervalProof(Timestamp sourceStarted, Timestamp sourceFinished,
+                                               Timestamp receiptStarted, Timestamp receiptFinished,
+                                               Timestamp completedAt, Timestamp publishedAt, Instant asOf) {
+        if (!databaseMicroseconds(sourceStarted, sourceFinished, receiptStarted, receiptFinished,
+                completedAt, publishedAt)) return false;
+        return !sourceStarted.after(sourceFinished) && sourceStarted.equals(receiptStarted)
+                && sourceFinished.equals(receiptFinished) && !sourceFinished.after(completedAt)
+                && !completedAt.after(publishedAt) && !publishedAt.toInstant().isAfter(asOf);
+    }
+
+    private static boolean databaseMicroseconds(Timestamp... values) {
+        for (Timestamp value : values) {
+            if (value == null || value.getNanos() % 1_000 != 0) return false;
+        }
+        return true;
+    }
+
+    private static long numberLong(Object value) {
+        return value instanceof Number number ? number.longValue() : 0;
+    }
+
+    private static int fixtureId(String publicationKey) {
+        String prefix = "fixture:";
+        if (publicationKey == null || !publicationKey.startsWith(prefix)) return -1;
+        return Integer.parseInt(publicationKey.substring(prefix.length()));
+    }
+
+    private static Map<String, Object> fixtureManifestPredicateTrace(Harness harness, int fixtureId,
+                                                                       FixtureOracle oracle,
+                                                                       CanonicalParentProof parent) {
+        Map<String, Object> current = jdbc.queryForMap("SELECT current_verified_generation,observation::text,"
+                + "expected_participants,received_participants,cardinality(missing_player_ids) missing_count FROM "
+                + TABLES.fixtureSync() + " WHERE season_id=? AND fixture_id=?", SEASON.id(), fixtureId);
+        long generation = numberLong(current.get("current_verified_generation"));
+        if (generation <= 0) throw new AssertionError("fixture " + fixtureId + " has no current generation");
+        return fixtureManifestPredicateTrace(harness, fixtureId, oracle, parent, generation,
+                FixtureObservationCodec.decode((String) current.get("observation")),
+                numberLong(current.get("expected_participants")), numberLong(current.get("received_participants")),
+                numberLong(current.get("missing_count")), true);
+    }
+
+    private static Map<String, Object> fixtureManifestPredicateTrace(Harness harness, int fixtureId,
+                                                                       FixtureOracle oracle,
+                                                                       CanonicalParentProof parent,
+                                                                       long requestedGeneration,
+                                                                       FixtureVerification.Observation observation,
+                                                                       long expectedParticipants,
+                                                                       long receivedParticipants,
+                                                                       long missingParticipants,
+                                                                       boolean requireCurrentReceipt) {
+        Map<String, Object> row = jdbc.queryForMap("SELECT fs.fixture_id,fs.state fixture_state,"
+                + "fs.season_id,fs.season_code,fs.observation_generation,fs.current_verified_generation,"
+                + "fs.last_verified_generation,"
+                + "fs.observation->>'coherent' coherent,fs.observation->>'fingerprint' observation_fp,"
+                + "fs.verified_header,fs.verified_stats_fingerprint,fs.validation_failures::text validation_failures,"
+                + "fs.finished_parent_generation,"
+                + "fs.finished_parent_publication_generation,fs.finished_parent_bootstrap_payload_id,"
+                + "fs.finished_parent_fixtures_payload_id,fs.finished_parent_source_fingerprint,"
+                + "fs.finished_parent_fixture_fingerprint,fs.finished_parent_finished,"
+                + "fs.recovery_day,fs.recovery_started_at,fs.recovery_until,"
+                + "LEAST(f.read_started_at,l.read_started_at,(SELECT min(e.source_read_started_at) FROM "
+                + TABLES.playerFixtureEvidence() + " e WHERE e.season_id=fs.season_id"
+                + " AND e.fixture_id=fs.fixture_id AND e.generation=r.generation)) fixture_started,"
+                + "GREATEST(f.read_finished_at,l.read_finished_at,(SELECT max(e.source_read_finished_at) FROM "
+                + TABLES.playerFixtureEvidence() + " e WHERE e.season_id=fs.season_id"
+                + " AND e.fixture_id=fs.fixture_id AND e.generation=r.generation)) fixture_finished,"
+                + "fs.expected_participants,fs.received_participants,cardinality(fs.missing_player_ids) missing_count,"
+                + "fx.gameweek fixture_event,latest.generation latest_target_generation,"
+                + "r.generation run_generation,r.kind,r.season,r.coalescing_key,r.publication_key,"
+                + "r.runtime_mode,r.runtime_epoch,r.state run_state,r.requested_source_after,r.completed_at,"
+                + "r.last_error run_error,r.source_read_started_at run_started,r.source_read_finished_at run_finished,"
+                + "m.run_generation manifest_generation,m.event_id,m.source_floor,"
+                + "cardinality(m.required_player_ids) manifest_player_count,"
+                + "fpl_sync_required_ids_valid(m.required_player_ids) membership_known,"
+                + "b.id b_id,b.run_generation b_generation,b.endpoint_kind b_role,b.event_id b_event,"
+                + "b.player_id b_player,b.validation_state b_validation,b.body IS NOT NULL b_body,"
+                + "b.read_started_at b_started,b.read_finished_at b_finished,"
+                + "f.id f_id,f.run_generation f_generation,f.endpoint_kind f_role,f.event_id f_event,"
+                + "f.player_id f_player,f.validation_state f_validation,f.body IS NOT NULL f_body,"
+                + "f.read_started_at f_started,f.read_finished_at f_finished,"
+                + "l.id l_id,l.run_generation l_generation,l.endpoint_kind l_role,l.event_id l_event,"
+                + "l.player_id l_player,l.validation_state l_validation,l.body IS NOT NULL l_body,"
+                + "l.read_started_at l_started,l.read_finished_at l_finished,"
+                + "p.latest_generation receipt_latest,p.source_read_started_at receipt_started,"
+                + "p.source_read_finished_at receipt_finished,p.published_at receipt_published,"
+                + "(SELECT min(e.source_read_started_at) FROM " + TABLES.playerFixtureEvidence()
+                + " e WHERE e.season_id=fs.season_id AND e.fixture_id=fs.fixture_id"
+                + " AND e.generation=r.generation) evidence_started,"
+                + "(SELECT max(e.source_read_finished_at) FROM " + TABLES.playerFixtureEvidence()
+                + " e WHERE e.season_id=fs.season_id AND e.fixture_id=fs.fixture_id"
+                + " AND e.generation=r.generation) evidence_finished,"
+                + "GREATEST(r.requested_source_after,m.source_floor,"
+                + "f.read_finished_at + INTERVAL '1 millisecond') effective_floor "
+                + "FROM " + TABLES.fixtureSync() + " fs JOIN fixture fx"
+                + " ON fx.season_id=fs.season_id AND fx.id=fs.fixture_id"
+                + " LEFT JOIN LATERAL (SELECT generation FROM " + TABLES.run()
+                + " WHERE season=? AND runtime_mode='ACTIVE' AND runtime_epoch=?"
+                + " AND kind='FIXTURE_VERIFICATION' AND coalescing_key=? AND publication_key=?"
+                + " ORDER BY generation DESC LIMIT 1) latest ON TRUE"
+                + " LEFT JOIN " + TABLES.run() + " r ON r.generation=? LEFT JOIN "
+                + TABLES.fixtureDependencyManifest()
+                + " m ON m.run_generation=r.generation LEFT JOIN " + TABLES.payload()
+                + " b ON b.id=m.bootstrap_payload_id AND b.run_generation=r.generation LEFT JOIN "
+                + TABLES.payload() + " f ON f.id=m.fixtures_payload_id AND f.run_generation=r.generation"
+                + " LEFT JOIN " + TABLES.payload() + " l ON l.id=m.live_payload_id AND l.run_generation=r.generation"
+                + " LEFT JOIN " + TABLES.receipt()
+                + " p ON p.season=? AND p.publication_key='fixture:' || fs.fixture_id::text"
+                + " WHERE fs.season_id=? AND fs.fixture_id=?",
+                SEASON.code(), harness.fence.epoch(), "fixture:" + fixtureId, "fixture:" + fixtureId,
+                requestedGeneration, SEASON.code(), SEASON.id(), fixtureId);
+        Instant historyStarted = observation.reads().histories().values().stream()
+                .map(read -> read.startedAt()).min(Instant::compareTo).orElse(null);
+        Instant historyFinished = observation.reads().histories().values().stream()
+                .map(read -> read.completedAt()).max(Instant::compareTo).orElse(null);
+        row.put("evidence_started", historyStarted == null ? null : Timestamp.from(historyStarted));
+        row.put("evidence_finished", historyFinished == null ? null : Timestamp.from(historyFinished));
+        if (historyStarted != null && historyFinished != null) {
+            Instant fixtureStarted = List.of(observation.reads().fixture().startedAt(),
+                    observation.reads().live().startedAt(), historyStarted).stream()
+                    .min(Instant::compareTo).orElseThrow();
+            Instant fixtureFinished = List.of(observation.reads().fixture().completedAt(),
+                    observation.reads().live().completedAt(), historyFinished).stream()
+                    .max(Instant::compareTo).orElseThrow();
+            row.put("fixture_started", Timestamp.from(fixtureStarted));
+            row.put("fixture_finished", Timestamp.from(fixtureFinished));
+        }
+        var actualParent = harness.store.currentCanonicalParentEvidence(SEASON.code(), fixtureId,
+                harness.clock.instant());
+        long generation = numberLong(row.get("run_generation"));
+        long currentGeneration = numberLong(row.get("current_verified_generation"));
+        long latestGeneration = numberLong(row.get("latest_target_generation"));
+        long manifestGeneration = numberLong(row.get("manifest_generation"));
+        long receiptLatest = numberLong(row.get("receipt_latest"));
+        Timestamp wanted = (Timestamp) row.get("requested_source_after");
+        Timestamp floor = (Timestamp) row.get("source_floor");
+        Timestamp effective = (Timestamp) row.get("effective_floor");
+        Timestamp receiptStarted = (Timestamp) row.get("receipt_started");
+        Timestamp receiptFinished = (Timestamp) row.get("receipt_finished");
+        Timestamp receiptPublished = (Timestamp) row.get("receipt_published");
+        Timestamp bStarted = (Timestamp) row.get("b_started");
+        Timestamp bFinished = (Timestamp) row.get("b_finished");
+        Timestamp fStarted = (Timestamp) row.get("f_started");
+        Timestamp fFinished = (Timestamp) row.get("f_finished");
+        Timestamp lStarted = (Timestamp) row.get("l_started");
+        Timestamp lFinished = (Timestamp) row.get("l_finished");
+        boolean generationRolesMatch = generation > 0 && generation == requestedGeneration
+                && generation == manifestGeneration && generation == numberLong(row.get("b_generation"))
+                && generation == numberLong(row.get("f_generation"))
+                && generation == numberLong(row.get("l_generation"));
+        boolean currentReceiptGeneration = generation == currentGeneration
+                && generation == numberLong(row.get("observation_generation")) && generation == receiptLatest;
+        boolean generationGate = generationRolesMatch && (!requireCurrentReceipt || currentReceiptGeneration);
+        boolean epochCurrent = "ACTIVE".equals(row.get("runtime_mode"))
+                && numberLong(row.get("runtime_epoch")) == harness.fence.epoch();
+        boolean seasonCurrent = numberLong(row.get("season_id")) == SEASON.id()
+                && SEASON.code().equals(row.get("season_code")) && SEASON.code().equals(row.get("season"));
+        boolean keyCurrent = "FIXTURE_VERIFICATION".equals(row.get("kind"))
+                && ("fixture:" + fixtureId).equals(row.get("coalescing_key"))
+                && ("fixture:" + fixtureId).equals(row.get("publication_key"));
+        boolean sourceFloorWanted = wanted != null && floor != null && wanted.equals(floor)
+                && bStarted != null && fStarted != null && lStarted != null
+                && !bStarted.before(floor) && !fStarted.before(floor)
+                && effective != null && !lStarted.before(effective);
+        boolean readIdentity = "BOOTSTRAP_STATIC".equals(row.get("b_role"))
+                && row.get("b_event") == null && row.get("b_player") == null
+                && "FIXTURES".equals(row.get("f_role")) && row.get("f_event") == null
+                && row.get("f_player") == null && "EVENT_LIVE".equals(row.get("l_role"))
+                && row.get("l_player") == null && java.util.Objects.equals(row.get("l_event"), oracle.gameweek());
+        boolean anchorValidation = "VALID".equals(row.get("b_validation"))
+                && "VALID".equals(row.get("f_validation")) && "VALID".equals(row.get("l_validation"));
+        boolean bodyPresent = Boolean.TRUE.equals(row.get("b_body"))
+                && Boolean.TRUE.equals(row.get("f_body")) && Boolean.TRUE.equals(row.get("l_body"));
+        boolean timeOrder = bStarted != null && bFinished != null && fStarted != null && fFinished != null
+                && lStarted != null && lFinished != null && rTimestamp(row, "completed_at") != null
+                && !bFinished.after(rTimestamp(row, "completed_at"))
+                && !fFinished.after(rTimestamp(row, "completed_at"))
+                && !lFinished.after(rTimestamp(row, "completed_at"))
+                && !lStarted.before(Timestamp.from(fFinished.toInstant().plusMillis(1)));
+        boolean eventHeader = java.util.Objects.equals(row.get("event_id"), oracle.gameweek())
+                && java.util.Objects.equals(row.get("fixture_event"), oracle.gameweek())
+                && oracle.headerFingerprint().equals(row.get("verified_header"))
+                && oracle.statsFingerprint().equals(row.get("verified_stats_fingerprint"))
+                && oracle.observationFingerprint().equals(observation.fingerprint());
+        boolean membershipKnown = Boolean.TRUE.equals(row.get("membership_known"));
+        Integer[] rawRequiredIds = jdbc.queryForObject("SELECT required_player_ids FROM "
+                        + TABLES.fixtureDependencyManifest() + " WHERE run_generation=?",
+                (rs, index) -> (Integer[]) rs.getArray(1).getArray(), generation);
+        boolean requiredIdsMatch = rawRequiredIds != null
+                && new java.util.TreeSet<>(java.util.Arrays.asList(rawRequiredIds))
+                        .equals(new java.util.TreeSet<>(oracle.requiredPlayers()));
+        boolean coherent = observation.coherent();
+        boolean participantsMatch = expectedParticipants == oracle.expectedParticipants()
+                && receivedParticipants == oracle.receivedParticipants() && missingParticipants == 0;
+        boolean markerMatches = parent.currentPublished() && parent.immutable()
+                && Boolean.TRUE.equals(row.get("finished_parent_finished"))
+                && numberLong(row.get("finished_parent_generation")) == parent.sourceGeneration()
+                && numberLong(row.get("finished_parent_publication_generation")) == parent.publicationGeneration()
+                && numberLong(row.get("finished_parent_bootstrap_payload_id")) == parent.bootstrapPayloadId()
+                && numberLong(row.get("finished_parent_fixtures_payload_id")) == parent.fixturesPayloadId()
+                && java.util.Objects.equals(row.get("finished_parent_source_fingerprint"), parent.sourceFingerprint())
+                && OwnedSyncStore.sha256(oracle.headerFingerprint())
+                        .equals(row.get("finished_parent_fixture_fingerprint"));
+        boolean recoveryWindow = jdbc.queryForObject("SELECT recovery_day IS NOT NULL"
+                + " AND recovery_started_at IS NOT NULL AND recovery_until>recovery_started_at"
+                + " AND recovery_until<=recovery_started_at+INTERVAL '12 hours'"
+                + " AND recovery_day=CASE WHEN (recovery_started_at AT TIME ZONE 'Europe/London')::time"
+                + " < TIME '03:00' THEN (recovery_started_at AT TIME ZONE 'Europe/London')::date-1"
+                + " ELSE (recovery_started_at AT TIME ZONE 'Europe/London')::date END FROM "
+                + TABLES.fixtureSync() + " WHERE season_id=? AND fixture_id=?", Boolean.class,
+                SEASON.id(), fixtureId);
+        boolean runCompleted = "COMPLETED".equals(row.get("run_state"));
+        boolean observationIntervalMatches = observation.reads().startedAt()
+                .equals(rTimestamp(row, "fixture_started").toInstant())
+                && observation.reads().completedAt().equals(rTimestamp(row, "fixture_finished").toInstant());
+        boolean sourceIntervals = generation > 0 && sourceIntervalProof(generation, row);
+        boolean targetReceiptInterval = receiptIntervalProof(rTimestamp(row, "run_started"),
+                rTimestamp(row, "run_finished"), receiptStarted, receiptFinished,
+                rTimestamp(row, "completed_at"), receiptPublished, harness.clock.instant());
+        boolean timestampPrecision = timestampPrecision(row, wanted, floor, bStarted, bFinished,
+                fStarted, fFinished, lStarted, lFinished, rTimestamp(row, "evidence_started"),
+                rTimestamp(row, "evidence_finished"),
+                rTimestamp(row, "run_started"), rTimestamp(row, "run_finished"),
+                rTimestamp(row, "completed_at"), receiptStarted, receiptFinished, receiptPublished,
+                rTimestamp(row, "fixture_started"), rTimestamp(row, "fixture_finished"), effective);
+        boolean parentCurrent = parent.currentPublished() && parent.immutable()
+                && actualParent.currentPublished();
+        boolean parentProofMatchesProduction = parent.currentPublished() == actualParent.currentPublished();
+        boolean historyPayloadProof = fixtureReadPayloadProof(harness, fixtureId, generation,
+                oracle.requiredPlayers(), observation);
+        boolean committedEvidenceProof = requireCurrentReceipt
+                && fixtureReadEvidenceProof(harness, fixtureId, generation, oracle.requiredPlayers(), observation);
+        boolean evidenceProof = historyPayloadProof && (!requireCurrentReceipt || committedEvidenceProof);
+        Map<String, Boolean> sourceObservationChecks = new TreeMap<>();
+        sourceObservationChecks.put("generationRolesMatch", generationRolesMatch);
+        sourceObservationChecks.put("epochCurrent", epochCurrent);
+        sourceObservationChecks.put("seasonCurrent", seasonCurrent);
+        sourceObservationChecks.put("keyCurrent", keyCurrent);
+        sourceObservationChecks.put("runCompleted", runCompleted);
+        sourceObservationChecks.put("sourceFloorWanted", sourceFloorWanted);
+        sourceObservationChecks.put("readIdentity", readIdentity);
+        sourceObservationChecks.put("anchorValidation", anchorValidation);
+        sourceObservationChecks.put("bodyPresent", bodyPresent);
+        sourceObservationChecks.put("timeOrder", timeOrder);
+        sourceObservationChecks.put("eventHeader", eventHeader);
+        sourceObservationChecks.put("membershipKnown", membershipKnown);
+        sourceObservationChecks.put("requiredIdsMatch", requiredIdsMatch);
+        sourceObservationChecks.put("coherent", coherent);
+        sourceObservationChecks.put("participantsMatch", participantsMatch);
+        sourceObservationChecks.put("observationIntervalMatches", observationIntervalMatches);
+        sourceObservationChecks.put("sourceIntervals", sourceIntervals);
+        sourceObservationChecks.put("timestampPrecision", timestampPrecision);
+        sourceObservationChecks.put("historyPayloadProof", historyPayloadProof);
+        boolean sourceObservationProof = sourceObservationProof(sourceObservationChecks);
+        boolean publishedManifestProof = sourceObservationProof && evidenceProof && generationGate && markerMatches
+                && recoveryWindow && targetReceiptInterval && parentCurrent && parentProofMatchesProduction
+                && actualParent.fixtureFinished();
+        Map<String, Object> result = new TreeMap<>();
+        result.put("fixtureId", fixtureId);
+        result.put("status", currentGeneration == 0 || receiptLatest != currentGeneration
+                ? "missing_receipt" : "unclassified");
+        result.put("generation", generation);
+        result.put("latestTargetGeneration", latestGeneration);
+        result.put("currentVerifiedGeneration", currentGeneration);
+        result.put("receiptLatestGeneration", receiptLatest);
+        result.put("fixtureState", row.get("fixture_state"));
+        result.put("runState", row.get("run_state"));
+        result.put("runReason", row.get("run_error"));
+        result.put("validationFailures", row.get("validation_failures"));
+        result.put("generationEpochKey", Map.of("generation", generationGate,
+                "generationRolesMatch", generationRolesMatch, "currentReceiptGeneration", currentReceiptGeneration,
+                "epochCurrent", epochCurrent, "seasonCurrent", seasonCurrent, "keyCurrent", keyCurrent));
+        result.put("sourceFloorWanted", sourceFloorWanted);
+        result.put("effectiveFloor", effective);
+        Map<String, Object> sourceReads = new TreeMap<>();
+        sourceReads.put("bootstrap", java.util.Arrays.asList(bStarted, bFinished));
+        sourceReads.put("bootstrapPayloadId", row.get("b_id"));
+        sourceReads.put("fixtures", java.util.Arrays.asList(fStarted, fFinished));
+        sourceReads.put("fixturesPayloadId", row.get("f_id"));
+        sourceReads.put("live", java.util.Arrays.asList(lStarted, lFinished));
+        sourceReads.put("livePayloadId", row.get("l_id"));
+        sourceReads.put("history", java.util.Arrays.asList(row.get("evidence_started"), row.get("evidence_finished")));
+        sourceReads.put("fixtureRun", java.util.Arrays.asList(row.get("run_started"), row.get("run_finished")));
+        sourceReads.put("fixtureReceipt", java.util.Arrays.asList(receiptStarted, receiptFinished,
+                row.get("completed_at"), receiptPublished));
+        result.put("sourceRead3Anchors", sourceReads);
+        result.put("anchorRolesValid", readIdentity && anchorValidation);
+        result.put("coherentBodyPresent", Map.of("coherent", coherent, "bodyPresent", bodyPresent));
+        result.put("eventHeader", eventHeader);
+        result.put("membershipKnown", membershipKnown);
+        result.put("requiredIdsMatchSource", requiredIdsMatch);
+        Map<String, Object> participants = new TreeMap<>();
+        participants.put("expected", row.get("expected_participants"));
+        participants.put("received", row.get("received_participants"));
+        participants.put("missing", row.get("missing_count"));
+        result.put("participants", participants);
+        result.put("parentCurrentPublished", parent.currentPublished());
+        result.put("parentImmutable", parent.immutable());
+        result.put("parentRootMarkerMatches", markerMatches);
+        result.put("parentProofMatchesProduction", parentProofMatchesProduction);
+        result.put("parentCanonicalLane", parent.trace());
+        result.put("actualRuleCurrentPublished", actualParent.currentPublished());
+        result.put("actualRuleFixtureFinished", actualParent.fixtureFinished());
+        result.put("recoveryWindow", recoveryWindow);
+        result.put("sourceIntervalsCoherent", sourceIntervals);
+        result.put("runCompleted", runCompleted);
+        result.put("observationIntervalMatches", observationIntervalMatches);
+        result.put("targetReceiptInterval", targetReceiptInterval);
+        result.put("timestampPrecision", timestampPrecision);
+        result.put("participantCounts", participantsMatch);
+        result.put("historyPayloadProof", historyPayloadProof);
+        result.put("fixtureReadEvidenceProof", committedEvidenceProof);
+        result.put("sourceObservationChecks", java.util.Collections.unmodifiableMap(sourceObservationChecks));
+        result.put("sourceObservationProof", sourceObservationProof);
+        result.put("publishedManifestProof", publishedManifestProof);
+        result.put("manifestPlayerCount", numberLong(row.get("manifest_player_count")));
+        result.put("batchIntervals", fixtureBatchTrace(harness, fixtureId));
+        return result;
+    }
+
+    private static boolean sourceObservationProof(Map<String, Boolean> checks) {
+        return List.of("generationRolesMatch", "epochCurrent", "seasonCurrent", "keyCurrent", "runCompleted",
+                "sourceFloorWanted", "readIdentity", "anchorValidation", "bodyPresent", "timeOrder",
+                "eventHeader", "membershipKnown", "requiredIdsMatch", "coherent", "participantsMatch",
+                "observationIntervalMatches", "sourceIntervals", "timestampPrecision", "historyPayloadProof")
+                .stream().allMatch(key -> Boolean.TRUE.equals(checks.get(key)));
+    }
+
+    private static void assertSourceObservationProofNegativeCases() {
+        List<String> checks = List.of("generationRolesMatch", "epochCurrent", "seasonCurrent", "keyCurrent",
+                "runCompleted", "sourceFloorWanted", "readIdentity", "anchorValidation", "bodyPresent",
+                "timeOrder", "eventHeader", "membershipKnown", "requiredIdsMatch", "coherent",
+                "participantsMatch", "observationIntervalMatches", "sourceIntervals", "timestampPrecision",
+                "historyPayloadProof");
+        Map<String, Boolean> valid = new TreeMap<>();
+        checks.forEach(key -> valid.put(key, true));
+        assertThat(sourceObservationProof(valid)).isTrue();
+        assertThat(firstPendingIdentityMatches(42, 42, SEASON.id(), SEASON.code(), null, 41,
+                SEASON.id(), SEASON.code(), true, true, "{NEEDS_SECOND_OBSERVATION}")).isTrue();
+        assertThat(firstPendingIdentityMatches(42, 43, SEASON.id(), SEASON.code(), null, 41,
+                SEASON.id(), SEASON.code(), true, true, "{NEEDS_SECOND_OBSERVATION}")).isFalse();
+        assertThat(firstPendingIdentityMatches(42, 42, SEASON.id() + 1, SEASON.code(), null, 41,
+                SEASON.id(), SEASON.code(), true, true, "{NEEDS_SECOND_OBSERVATION}")).isFalse();
+        assertThat(firstPendingIdentityMatches(42, 42, SEASON.id(), SEASON.code(), 42L, 41,
+                SEASON.id(), SEASON.code(), true, true, "{NEEDS_SECOND_OBSERVATION}"))
+                .as("first pending evidence must be captured before any current receipt").isFalse();
+        Instant pairFloor = Instant.parse("2026-09-30T12:00:00Z");
+        SourceRead pairFirstInterval = new SourceRead(pairFloor, pairFloor.plus(Duration.ofMinutes(1)));
+        SourceRead pairSecondInterval = new SourceRead(pairFloor.plus(Duration.ofMinutes(11)),
+                pairFloor.plus(Duration.ofMinutes(12)));
+        FixtureSourceBatchProof pairFirst = new FixtureSourceBatchProof(42, pairFirstInterval, pairFloor,
+                true, new TreeMap<String, Object>(valid));
+        FixtureSourceBatchProof pairSecond = new FixtureSourceBatchProof(43, pairSecondInterval,
+                pairSecondInterval.startedAt(), true, new TreeMap<String, Object>(valid));
+        assertThat(correctionBatchesValid(pairFirstInterval, pairSecondInterval, pairFloor)).isTrue();
+        assertThat(new FixtureSourcePairProof(pairFirst, pairSecond, false, true, true, true).valid())
+                .as("a different captured generation cannot substitute for the first pair").isFalse();
+        assertThat(new FixtureSourcePairProof(pairFirst, pairSecond, true, true, true, false).valid())
+                .as("the pair must belong to ACTIVE epoch 3").isFalse();
+        for (String failedCheck : List.of("generationRolesMatch", "epochCurrent", "seasonCurrent",
+                "readIdentity", "anchorValidation", "bodyPresent", "sourceFloorWanted", "requiredIdsMatch",
+                "participantsMatch", "historyPayloadProof")) {
+            Map<String, Boolean> invalid = new TreeMap<>(valid);
+            invalid.put(failedCheck, false);
+            assertThat(sourceObservationProof(invalid))
+                    .as("first pending source proof rejects %s", failedCheck).isFalse();
+            Instant floor = Instant.parse("2026-09-30T12:00:00Z");
+            SourceRead firstInterval = new SourceRead(floor, floor.plus(Duration.ofMinutes(1)));
+            SourceRead secondInterval = new SourceRead(floor.plus(Duration.ofMinutes(11)),
+                    floor.plus(Duration.ofMinutes(12)));
+            assertThat(correctionBatchesValid(firstInterval, secondInterval, floor)).isTrue();
+            FixtureSourceBatchProof invalidFirst = new FixtureSourceBatchProof(1, firstInterval, floor,
+                    sourceObservationProof(invalid), new TreeMap<String, Object>(invalid));
+            FixtureSourceBatchProof validSecond = new FixtureSourceBatchProof(2, secondInterval,
+                    secondInterval.startedAt(), true, new TreeMap<String, Object>(valid));
+            FixtureSourcePairProof pair = new FixtureSourcePairProof(invalidFirst, validSecond,
+                    true, true, true, true);
+            assertThat(pair.valid()).as("two valid intervals cannot excuse first-proof %s", failedCheck).isFalse();
+        }
+        Map<String, Boolean> incomplete = new TreeMap<>(valid);
+        incomplete.remove("historyPayloadProof");
+        assertThat(sourceObservationProof(incomplete))
+                .as("missing source proof evidence cannot pass by omission").isFalse();
+    }
+
+    private static Timestamp rTimestamp(Map<String, Object> row, String key) {
+        return (Timestamp) row.get(key);
+    }
+
+    private static boolean sourceIntervalProof(long generation, Map<String, Object> row) {
+        Timestamp runStarted = (Timestamp) row.get("run_started");
+        Timestamp runFinished = (Timestamp) row.get("run_finished");
+        Timestamp completedAt = (Timestamp) row.get("completed_at");
+        Timestamp bStarted = (Timestamp) row.get("b_started");
+        Timestamp bFinished = (Timestamp) row.get("b_finished");
+        Timestamp fStarted = (Timestamp) row.get("f_started");
+        Timestamp fFinished = (Timestamp) row.get("f_finished");
+        Timestamp lStarted = (Timestamp) row.get("l_started");
+        Timestamp lFinished = (Timestamp) row.get("l_finished");
+        Timestamp evidenceStarted = (Timestamp) row.get("evidence_started");
+        Timestamp evidenceFinished = (Timestamp) row.get("evidence_finished");
+        Timestamp fixtureStarted = (Timestamp) row.get("fixture_started");
+        Timestamp fixtureFinished = (Timestamp) row.get("fixture_finished");
+        if (runStarted == null || runFinished == null || completedAt == null || bStarted == null || bFinished == null
+                || fStarted == null || fFinished == null || lStarted == null || lFinished == null
+                || evidenceStarted == null || evidenceFinished == null
+                || fixtureStarted == null || fixtureFinished == null) return false;
+        SourceRead bootstrap = new SourceRead(bStarted.toInstant(), bFinished.toInstant());
+        SourceRead fixtures = new SourceRead(fStarted.toInstant(), fFinished.toInstant());
+        SourceRead live = new SourceRead(lStarted.toInstant(), lFinished.toInstant());
+        SourceRead histories = new SourceRead(evidenceStarted.toInstant(), evidenceFinished.toInstant());
+        return fullSourceIntervalProof(generation, numberLong(row.get("run_generation")),
+                new SourceRead(runStarted.toInstant(), runFinished.toInstant()), completedAt.toInstant(),
+                List.of(bootstrap, fixtures, live, histories), List.of(fixtures, live, histories),
+                new SourceRead(fixtureStarted.toInstant(), fixtureFinished.toInstant()));
+    }
+
+    private static boolean fullSourceIntervalProof(long generation, long expectedGeneration, SourceRead runInterval,
+                                                   Instant completedAt, List<SourceRead> allSourceReads,
+                                                   List<SourceRead> fixtureSourceReads,
+                                                   SourceRead expectedFixtureInterval) {
+        if (completedAt == null || allSourceReads.isEmpty() || fixtureSourceReads.isEmpty()) return false;
+        Instant expectedStarted = allSourceReads.stream().map(SourceRead::startedAt)
+                .min(Instant::compareTo).orElseThrow();
+        Instant expectedFinished = allSourceReads.stream().map(SourceRead::finishedAt)
+                .max(Instant::compareTo).orElseThrow();
+        Instant fixtureStarted = fixtureSourceReads.stream().map(SourceRead::startedAt)
+                .min(Instant::compareTo).orElseThrow();
+        Instant fixtureFinished = fixtureSourceReads.stream().map(SourceRead::finishedAt)
+                .max(Instant::compareTo).orElseThrow();
+        return generation == expectedGeneration
+                && allSourceReads.stream().allMatch(read -> !read.startedAt().isAfter(read.finishedAt()))
+                && runInterval.startedAt().equals(expectedStarted) && runInterval.finishedAt().equals(expectedFinished)
+                && expectedFixtureInterval.startedAt().equals(fixtureStarted)
+                && expectedFixtureInterval.finishedAt().equals(fixtureFinished)
+                && !expectedFixtureInterval.startedAt().isBefore(runInterval.startedAt())
+                && !expectedFixtureInterval.finishedAt().isAfter(runInterval.finishedAt())
+                && !runInterval.startedAt().isAfter(runInterval.finishedAt())
+                && !runInterval.finishedAt().isAfter(completedAt)
+                && java.util.stream.Stream.concat(allSourceReads.stream(), fixtureSourceReads.stream())
+                        .allMatch(read -> isDatabaseMicrosecond(read.startedAt())
+                                && isDatabaseMicrosecond(read.finishedAt()))
+                && isDatabaseMicrosecond(runInterval.startedAt()) && isDatabaseMicrosecond(runInterval.finishedAt())
+                && isDatabaseMicrosecond(completedAt) && isDatabaseMicrosecond(expectedFixtureInterval.startedAt())
+                && isDatabaseMicrosecond(expectedFixtureInterval.finishedAt());
+    }
+
+    private static boolean timestampPrecision(Map<String, Object> row, Timestamp... values) {
+        for (Timestamp value : values) {
+            if (value == null || value.getNanos() % 1_000 != 0) return false;
+        }
+        for (String column : List.of("completed_at", "run_started", "run_finished", "receipt_started",
+                "receipt_finished", "receipt_published", "fixture_started", "fixture_finished",
+                "evidence_started", "evidence_finished", "recovery_started_at", "recovery_until")) {
+            Timestamp value = (Timestamp) row.get(column);
+            if (value != null && value.getNanos() % 1_000 != 0) return false;
+        }
+        return true;
+    }
+
+    private static List<Map<String, Object>> fixtureBatchTrace(Harness harness, int fixtureId) {
+        return jdbc.queryForList("SELECT generation,state,runtime_mode,runtime_epoch,source_read_started_at,"
+                + "source_read_finished_at,completed_at FROM " + TABLES.run()
+                + " WHERE season=? AND runtime_mode='ACTIVE' AND runtime_epoch=?"
+                + " AND kind='FIXTURE_VERIFICATION' AND publication_key=?"
+                + " AND state='COMPLETED' ORDER BY generation ASC LIMIT 2",
+                SEASON.code(), harness.fence.epoch(), "fixture:" + fixtureId);
+    }
+
+    private static Map<String, Object> legacyFixtureManifestPredicateTrace(Harness harness, int fixtureId,
+                                                                            long generation, FixtureOracle oracle) {
+        Map<String, Object> row = jdbc.queryForMap("SELECT r.generation,r.kind,r.season,r.coalescing_key,"
+                + "r.publication_key,r.runtime_mode,r.runtime_epoch,r.state,r.requested_source_after,"
+                + "r.source_read_started_at run_started,r.source_read_finished_at run_finished,r.completed_at,"
+                + "m.run_generation manifest_generation,m.event_id,m.source_floor,"
+                + "b.id b_id,b.run_generation b_generation,b.endpoint_kind b_role,b.event_id b_event,"
+                + "b.player_id b_player,b.validation_state b_validation,b.body IS NOT NULL b_body,"
+                + "b.read_started_at b_started,b.read_finished_at b_finished,"
+                + "f.id f_id,f.run_generation f_generation,f.endpoint_kind f_role,f.event_id f_event,"
+                + "f.player_id f_player,f.validation_state f_validation,f.body IS NOT NULL f_body,"
+                + "f.read_started_at f_started,f.read_finished_at f_finished,"
+                + "l.id l_id,l.run_generation l_generation,l.endpoint_kind l_role,l.event_id l_event,"
+                + "l.player_id l_player,l.validation_state l_validation,l.body IS NOT NULL l_body,"
+                + "l.read_started_at l_started,l.read_finished_at l_finished,"
+                + "p.latest_generation receipt_latest,fs.season_id,fs.season_code,fs.state fixture_state,"
+                + "fs.current_verified_generation,fs.observation_generation,fs.observation->>'coherent' coherent,"
+                + "fs.verified_header,fs.verified_stats_fingerprint,fs.observation->>'fingerprint' observation_fp,"
+                + "fs.finished_parent_generation,fs.finished_parent_publication_generation,"
+                + "fs.finished_parent_bootstrap_payload_id,fs.finished_parent_fixtures_payload_id,"
+                + "fs.finished_parent_source_fingerprint,fs.finished_parent_fixture_fingerprint,"
+                + "fs.finished_parent_finished,fs.expected_participants,fs.received_participants,"
+                + "cardinality(fs.missing_player_ids) missing_count,fx.gameweek fixture_event,"
+                + "fpl_sync_required_ids_valid(m.required_player_ids) membership_known,"
+                + "(SELECT min(e.source_read_started_at) FROM " + TABLES.playerFixtureEvidence()
+                + " e WHERE e.season_id=fs.season_id AND e.fixture_id=fs.fixture_id AND e.generation=r.generation)"
+                + " evidence_started,(SELECT max(e.source_read_finished_at) FROM "
+                + TABLES.playerFixtureEvidence() + " e WHERE e.season_id=fs.season_id AND e.fixture_id=fs.fixture_id"
+                + " AND e.generation=r.generation) evidence_finished,"
+                + "GREATEST(r.requested_source_after,m.source_floor,f.read_finished_at + INTERVAL '1 millisecond')"
+                + " effective_floor FROM " + TABLES.run() + " r LEFT JOIN "
+                + TABLES.fixtureDependencyManifest() + " m ON m.run_generation=r.generation LEFT JOIN "
+                + TABLES.payload() + " b ON b.id=m.bootstrap_payload_id LEFT JOIN " + TABLES.payload()
+                + " f ON f.id=m.fixtures_payload_id LEFT JOIN " + TABLES.payload()
+                + " l ON l.id=m.live_payload_id JOIN " + TABLES.receipt()
+                + " p ON p.season=r.season AND p.publication_key=r.publication_key"
+                + " AND p.latest_generation=r.generation JOIN " + TABLES.fixtureSync()
+                + " fs ON fs.season_id=? AND fs.fixture_id=? AND fs.current_verified_generation=r.generation"
+                + " JOIN fixture fx ON fx.season_id=fs.season_id AND fx.id=fs.fixture_id"
+                + " WHERE r.generation=?", SEASON.id(), fixtureId, generation);
+        List<Integer> required = List.of((Integer[]) jdbc.queryForObject("SELECT required_player_ids FROM "
+                + TABLES.fixtureDependencyManifest() + " WHERE run_generation=?",
+                (rs, index) -> (Integer[]) rs.getArray(1).getArray(), generation));
+        boolean requiredIdsMatch = new java.util.TreeSet<>(required)
+                .equals(new java.util.TreeSet<>(oracle.requiredPlayers()));
+        List<Map<String, Object>> parents = jdbc.queryForList("SELECT p.publication_key,p.latest_generation,"
+                + "b.run_generation source_generation,p.source_bootstrap_payload_id,"
+                + "p.source_fixtures_payload_id,p.source_pair_fingerprint,p.source_bootstrap_sha256,"
+                + "p.source_fixtures_sha256,p.published_at,r.state,r.runtime_mode,r.runtime_epoch,"
+                + "b.validation_state b_validation,f.validation_state f_validation,"
+                + "b.source_published b_published,f.source_published f_published "
+                + "FROM " + TABLES.receipt() + " p JOIN " + TABLES.run()
+                + " r ON r.generation=p.latest_generation JOIN " + TABLES.payload()
+                + " b ON b.id=p.source_bootstrap_payload_id JOIN " + TABLES.payload()
+                + " f ON f.id=p.source_fixtures_payload_id WHERE p.season=? AND p.publication_key IN (?,?)"
+                + " AND p.published_at<=? ORDER BY p.published_at DESC,p.latest_generation DESC LIMIT 1",
+                SEASON.code(), CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY,
+                CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY, Timestamp.from(harness.clock.instant()));
+        Map<String, Object> parent = parents.isEmpty() ? Map.of() : parents.getFirst();
+        boolean parentMarkerMatches = !parent.isEmpty()
+                && java.util.Objects.equals(row.get("finished_parent_generation"), parent.get("source_generation"))
+                && java.util.Objects.equals(row.get("finished_parent_publication_generation"),
+                        parent.get("latest_generation"))
+                && java.util.Objects.equals(row.get("finished_parent_bootstrap_payload_id"),
+                        parent.get("source_bootstrap_payload_id"))
+                && java.util.Objects.equals(row.get("finished_parent_fixtures_payload_id"),
+                        parent.get("source_fixtures_payload_id"))
+                && java.util.Objects.equals(row.get("finished_parent_source_fingerprint"),
+                        parent.get("source_pair_fingerprint"))
+                && Boolean.TRUE.equals(row.get("finished_parent_finished"));
+        List<Map<String, Object>> scheduleParents = jdbc.queryForList("SELECT p.latest_generation,"
+                + "b.run_generation source_generation,p.source_bootstrap_payload_id,p.source_fixtures_payload_id,"
+                + "p.source_pair_fingerprint FROM " + TABLES.receipt() + " p JOIN " + TABLES.payload()
+                + " b ON b.id=p.source_bootstrap_payload_id WHERE p.season=? AND p.publication_key=?",
+                SEASON.code(), CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY);
+        Map<String, Object> scheduleParent = scheduleParents.isEmpty() ? Map.of() : scheduleParents.getFirst();
+        boolean scheduleOnlyMarkerMatches = !scheduleParent.isEmpty()
+                && java.util.Objects.equals(row.get("finished_parent_generation"),
+                        scheduleParent.get("source_generation"))
+                && java.util.Objects.equals(row.get("finished_parent_publication_generation"),
+                        scheduleParent.get("latest_generation"))
+                && java.util.Objects.equals(row.get("finished_parent_bootstrap_payload_id"),
+                        scheduleParent.get("source_bootstrap_payload_id"))
+                && java.util.Objects.equals(row.get("finished_parent_fixtures_payload_id"),
+                        scheduleParent.get("source_fixtures_payload_id"))
+                && java.util.Objects.equals(row.get("finished_parent_source_fingerprint"),
+                        scheduleParent.get("source_pair_fingerprint"));
+        boolean sourceReceiptHashesMatch = !parent.isEmpty()
+                && OwnedSyncStore.sha256(harness.source.bootstrapBytes()).equals(parent.get("source_bootstrap_sha256"))
+                && OwnedSyncStore.sha256(harness.source.fixtureBytes()).equals(parent.get("source_fixtures_sha256"));
+        var actualParent = harness.store.currentCanonicalParentEvidence(SEASON.code(), fixtureId,
+                harness.clock.instant());
+
+        Map<String, Object> result = new TreeMap<>();
+        result.put("generation", generation);
+        result.put("runState", row.get("state"));
+        result.put("fixtureState", row.get("fixture_state"));
+        result.put("anchorValidation", "VALID".equals(row.get("b_validation"))
+                && "VALID".equals(row.get("f_validation")) && "VALID".equals(row.get("l_validation")));
+        result.put("bodyPresent", Boolean.TRUE.equals(row.get("b_body"))
+                && Boolean.TRUE.equals(row.get("f_body")) && Boolean.TRUE.equals(row.get("l_body")));
+        result.put("readIdentity", "BOOTSTRAP_STATIC".equals(row.get("b_role")) && row.get("b_event") == null
+                && row.get("b_player") == null && "FIXTURES".equals(row.get("f_role"))
+                && row.get("f_event") == null && row.get("f_player") == null
+                && "EVENT_LIVE".equals(row.get("l_role")) && row.get("l_player") == null);
+        result.put("generation", java.util.Objects.equals(row.get("generation"), row.get("manifest_generation"))
+                && java.util.Objects.equals(row.get("generation"), row.get("b_generation"))
+                && java.util.Objects.equals(row.get("generation"), row.get("f_generation"))
+                && java.util.Objects.equals(row.get("generation"), row.get("l_generation"))
+                && java.util.Objects.equals(row.get("generation"), row.get("receipt_latest"))
+                && java.util.Objects.equals(row.get("generation"), row.get("current_verified_generation"))
+                && java.util.Objects.equals(row.get("generation"), row.get("observation_generation")));
+        result.put("epoch", "ACTIVE".equals(row.get("runtime_mode"))
+                && ((Number) row.get("runtime_epoch")).longValue() == harness.fence.epoch());
+        result.put("season", SEASON.code().equals(row.get("season"))
+                && SEASON.code().equals(row.get("season_code"))
+                && ((Number) row.get("season_id")).intValue() == SEASON.id());
+        result.put("key", "FIXTURE_VERIFICATION".equals(row.get("kind"))
+                && ("fixture:" + fixtureId).equals(row.get("coalescing_key"))
+                && ("fixture:" + fixtureId).equals(row.get("publication_key")));
+        result.put("eventHeader", java.util.Objects.equals(row.get("event_id"), oracle.gameweek())
+                && java.util.Objects.equals(row.get("l_event"), oracle.gameweek())
+                && java.util.Objects.equals(row.get("fixture_event"), oracle.gameweek())
+                && oracle.headerFingerprint().equals(row.get("verified_header"))
+                && oracle.statsFingerprint().equals(row.get("verified_stats_fingerprint"))
+                && oracle.observationFingerprint().equals(row.get("observation_fp")));
+        result.put("sourceFloor", java.util.Objects.equals(row.get("source_floor"),
+                        row.get("requested_source_after"))
+                && !((Timestamp) row.get("b_started")).before((Timestamp) row.get("source_floor"))
+                && !((Timestamp) row.get("f_started")).before((Timestamp) row.get("source_floor"))
+                && !((Timestamp) row.get("l_started")).before((Timestamp) row.get("source_floor")));
+        result.put("latestWanted", java.util.Objects.equals(row.get("source_floor"),
+                row.get("requested_source_after")));
+        result.put("membershipKnown", Boolean.TRUE.equals(row.get("membership_known")));
+        result.put("requiredIdsMatchSource", requiredIdsMatch);
+        result.put("coherent", "true".equals(row.get("coherent")));
+        result.put("fixtureReadEvidenceProof", fixtureReadEvidenceProof(harness, fixtureId, generation,
+                Set.copyOf(required)));
+        result.put("canonicalMatchesCurrent", parentMarkerMatches);
+        result.put("canonicalLane", parent.get("publication_key"));
+        result.put("scheduleOnlyMarkerMatches", scheduleOnlyMarkerMatches);
+        result.put("receiptHash", sourceReceiptHashesMatch);
+        result.put("actualRuleCurrentPublished", actualParent.currentPublished());
+        result.put("actualRuleFixtureFinished", actualParent.fixtureFinished());
+        result.put("participants", Map.of("expected", row.get("expected_participants"),
+                "received", row.get("received_participants"), "missing", row.get("missing_count")));
+        result.put("sourceTimes", Map.of("wanted", row.get("requested_source_after"),
+                "manifestFloor", row.get("source_floor"), "effectiveFloor", row.get("effective_floor"),
+                "bootstrap", List.of(row.get("b_started"), row.get("b_finished")),
+                "fixtures", List.of(row.get("f_started"), row.get("f_finished")),
+                "live", List.of(row.get("l_started"), row.get("l_finished")),
+                "histories", List.of(row.get("evidence_started"), row.get("evidence_finished")),
+                "fixtureRead", List.of(row.get("run_started"), row.get("run_finished")),
+                "completed", row.get("completed_at")));
+        result.put("manifestCount", required.size());
+        return result;
+    }
+
+    private static boolean fixtureReadEvidenceProof(Harness harness, int fixtureId, long generation,
+                                                    Set<Integer> requiredPlayers) {
+        List<Map<String, Object>> observations = jdbc.queryForList("SELECT observation::text FROM "
+                + TABLES.fixtureSync() + " WHERE season_id=? AND fixture_id=?"
+                + " AND current_verified_generation=? AND observation_generation=?",
+                SEASON.id(), fixtureId, generation, generation);
+        if (observations.size() != 1) return false;
+        FixtureVerification.Observation observation;
+        try {
+            observation = FixtureObservationCodec.decode((String) observations.getFirst().get("observation"));
+        } catch (RuntimeException malformed) {
+            return false;
+        }
+        return fixtureReadEvidenceProof(harness, fixtureId, generation, requiredPlayers, observation);
+    }
+
+    private static boolean fixtureReadEvidenceProof(Harness harness, int fixtureId, long generation,
+                                                    Set<Integer> requiredPlayers,
+                                                    FixtureVerification.Observation observation) {
+        if (observation.fixtureId() != fixtureId || observation.seasonId() != SEASON.id()
+                || !observation.seasonCode().equals(SEASON.code()) || !observation.coherent()
+                || !observation.finished() || !observation.reads().histories().keySet().equals(requiredPlayers)) {
+            return false;
+        }
+        Map<String, Object> manifest = jdbc.queryForMap("SELECT r.requested_source_after,r.completed_at,"
+                + "m.source_floor,f.read_started_at AS fixtures_started,f.read_finished_at AS fixtures_finished,"
+                + "l.read_started_at AS live_started,l.read_finished_at AS live_finished"
+                + " FROM " + TABLES.run() + " r JOIN " + TABLES.fixtureDependencyManifest()
+                + " m ON m.run_generation=r.generation JOIN " + TABLES.payload()
+                + " f ON f.id=m.fixtures_payload_id JOIN " + TABLES.payload()
+                + " l ON l.id=m.live_payload_id WHERE r.generation=? AND f.run_generation=r.generation"
+                + " AND l.run_generation=r.generation", generation);
+        Instant requestedFloor = ((Timestamp) manifest.get("requested_source_after")).toInstant();
+        Instant sourceFloor = ((Timestamp) manifest.get("source_floor")).toInstant();
+        Instant completedAt = ((Timestamp) manifest.get("completed_at")).toInstant();
+        SourceRead fixtureRead = new SourceRead(observation.reads().fixture().startedAt(),
+                observation.reads().fixture().completedAt());
+        SourceRead liveRead = new SourceRead(observation.reads().live().startedAt(),
+                observation.reads().live().completedAt());
+        if (!fixtureRead.startedAt().equals(((Timestamp) manifest.get("fixtures_started")).toInstant())
+                || !fixtureRead.finishedAt().equals(((Timestamp) manifest.get("fixtures_finished")).toInstant())
+                || !liveRead.startedAt().equals(((Timestamp) manifest.get("live_started")).toInstant())
+                || !liveRead.finishedAt().equals(((Timestamp) manifest.get("live_finished")).toInstant())
+                || !sourceFloor.equals(requestedFloor) || fixtureRead.startedAt().isBefore(sourceFloor)
+                || liveRead.startedAt().isBefore(sourceFloor)
+                || liveRead.startedAt().isBefore(fixtureRead.finishedAt().plusMillis(1))
+                || fixtureRead.finishedAt().isAfter(completedAt) || liveRead.finishedAt().isAfter(completedAt)) {
+            return false;
+        }
+        if (!isDatabaseMicrosecond(fixtureRead.startedAt()) || !isDatabaseMicrosecond(fixtureRead.finishedAt())
+                || !isDatabaseMicrosecond(liveRead.startedAt()) || !isDatabaseMicrosecond(liveRead.finishedAt())
+                || !isDatabaseMicrosecond(requestedFloor) || !isDatabaseMicrosecond(sourceFloor)
+                || !isDatabaseMicrosecond(completedAt)) return false;
+
+        List<Map<String, Object>> evidence = jdbc.queryForList("SELECT e.player_id,e.source_read_started_at,"
+                + "e.source_read_finished_at,hp.id AS payload_id,hp.validation_state,"
+                + "hp.read_started_at AS history_started,hp.read_finished_at AS history_finished,hp.staged_at,"
+                + "hr.kind,hr.state,hr.season,hr.runtime_mode,hr.runtime_epoch,hr.coalescing_key,"
+                + "hr.publication_key,hr.completed_at AS history_completed FROM "
+                + TABLES.playerFixtureEvidence() + " e LEFT JOIN " + TABLES.payload()
+                + " hp ON hp.endpoint_kind='ELEMENT_SUMMARY' AND hp.event_id IS NULL"
+                + " AND hp.player_id=e.player_id AND hp.read_started_at=e.source_read_started_at"
+                + " AND hp.read_finished_at=e.source_read_finished_at LEFT JOIN " + TABLES.run()
+                + " hr ON hr.generation=hp.run_generation WHERE e.season_id=? AND e.fixture_id=?"
+                + " AND e.generation=?", SEASON.id(), fixtureId, generation);
+        if (evidence.size() != requiredPlayers.size()) return false;
+        Set<Integer> evidencePlayers = new java.util.TreeSet<>();
+        Instant effectiveFloor = fixtureRead.finishedAt().plusMillis(1);
+        for (Map<String, Object> row : evidence) {
+            int playerId = ((Number) row.get("player_id")).intValue();
+            if (!evidencePlayers.add(playerId) || !requiredPlayers.contains(playerId)
+                    || row.get("payload_id") == null) return false;
+            Instant startedAt = ((Timestamp) row.get("source_read_started_at")).toInstant();
+            Instant finishedAt = ((Timestamp) row.get("source_read_finished_at")).toInstant();
+            Instant payloadStartedAt = ((Timestamp) row.get("history_started")).toInstant();
+            Instant payloadFinishedAt = ((Timestamp) row.get("history_finished")).toInstant();
+            Instant historyCompletedAt = ((Timestamp) row.get("history_completed")).toInstant();
+            var observed = observation.reads().histories().get(playerId);
+            if (observed == null || !observed.startedAt().equals(startedAt)
+                    || !observed.completedAt().equals(finishedAt)
+                    || !payloadStartedAt.equals(startedAt) || !payloadFinishedAt.equals(finishedAt)
+                    || payloadStartedAt.isBefore(requestedFloor) || payloadStartedAt.isBefore(sourceFloor)
+                    || payloadStartedAt.isBefore(effectiveFloor) || payloadFinishedAt.isAfter(completedAt)
+                    || historyCompletedAt.isAfter(completedAt)
+                    || ((Timestamp) row.get("staged_at")).toInstant().isAfter(completedAt)
+                    || !"VALID".equals(row.get("validation_state"))
+                    || !"PLAYER_HISTORY".equals(row.get("kind")) || !"COMPLETED".equals(row.get("state"))
+                    || !SEASON.code().equals(row.get("season")) || !"ACTIVE".equals(row.get("runtime_mode"))
+                    || ((Number) row.get("runtime_epoch")).longValue() != harness.fence.epoch()
+                    || !("player-history:" + playerId).equals(row.get("coalescing_key"))
+                    || !row.get("coalescing_key").equals(row.get("publication_key"))
+                    || !isDatabaseMicrosecond(startedAt) || !isDatabaseMicrosecond(finishedAt)
+                    || !isDatabaseMicrosecond(payloadStartedAt) || !isDatabaseMicrosecond(payloadFinishedAt)
+                    || !isDatabaseMicrosecond(historyCompletedAt)) return false;
+        }
+        return evidencePlayers.equals(requiredPlayers);
+    }
+
+    private static boolean fixtureReadPayloadProof(Harness harness, int fixtureId, long generation,
+                                                   Set<Integer> requiredPlayers,
+                                                   FixtureVerification.Observation observation) {
+        Map<String, Object> manifest = jdbc.queryForMap("SELECT r.requested_source_after,r.completed_at,"
+                + "m.source_floor,f.read_finished_at fixtures_finished FROM " + TABLES.run() + " r JOIN "
+                + TABLES.fixtureDependencyManifest() + " m ON m.run_generation=r.generation JOIN "
+                + TABLES.payload() + " f ON f.id=m.fixtures_payload_id WHERE r.generation=?"
+                + " AND f.run_generation=r.generation", generation);
+        Instant requestedFloor = ((Timestamp) manifest.get("requested_source_after")).toInstant();
+        Instant sourceFloor = ((Timestamp) manifest.get("source_floor")).toInstant();
+        Instant effectiveFloor = List.of(requestedFloor, sourceFloor,
+                ((Timestamp) manifest.get("fixtures_finished")).toInstant().plusMillis(1))
+                .stream().max(Instant::compareTo).orElseThrow();
+        Instant runCompleted = ((Timestamp) manifest.get("completed_at")).toInstant();
+        if (!observation.reads().histories().keySet().equals(requiredPlayers)
+                || !isDatabaseMicrosecond(requestedFloor) || !isDatabaseMicrosecond(sourceFloor)
+                || !isDatabaseMicrosecond(effectiveFloor) || !isDatabaseMicrosecond(runCompleted)) return false;
+        List<Map<String, Object>> histories = fixtureHistoryPayloadRows(harness, requiredPlayers, observation);
+        if (histories.size() != requiredPlayers.size()) return false;
+        Set<Integer> seen = new java.util.TreeSet<>();
+        for (Map<String, Object> row : histories) {
+            int playerId = ((Number) row.get("expected_player_id")).intValue();
+            var observed = observation.reads().histories().get(playerId);
+            if (!seen.add(playerId) || !requiredPlayers.contains(playerId) || observed == null
+                    || row.get("payload_id") == null || row.get("history_generation") == null
+                    || !"ELEMENT_SUMMARY".equals(row.get("endpoint_kind"))
+                    || row.get("event_id") != null
+                    || !"VALID".equals(row.get("validation_state")) || !Boolean.TRUE.equals(row.get("body_present"))
+                    || !observed.startedAt().equals(((Timestamp) row.get("read_started_at")).toInstant())
+                    || !observed.completedAt().equals(((Timestamp) row.get("read_finished_at")).toInstant())
+                    || observed.startedAt().isBefore(effectiveFloor) || observed.completedAt().isAfter(runCompleted)
+                    || ((Timestamp) row.get("staged_at")).toInstant().isAfter(runCompleted)
+                    || !"PLAYER_HISTORY".equals(row.get("history_kind"))
+                    || !"COMPLETED".equals(row.get("history_state"))
+                    || !SEASON.code().equals(row.get("history_season"))
+                    || !"ACTIVE".equals(row.get("history_mode"))
+                    || numberLong(row.get("history_epoch")) != harness.fence.epoch()
+                    || !("player-history:" + playerId).equals(row.get("history_coalescing"))
+                    || !row.get("history_coalescing").equals(row.get("history_publication"))
+                    || ((Timestamp) row.get("history_completed")).toInstant().isAfter(runCompleted)) return false;
+        }
+        return seen.equals(requiredPlayers);
+    }
+
+    private static List<Map<String, Object>> fixtureHistoryPayloadRows(Harness harness, Set<Integer> requiredPlayers,
+                                                                        FixtureVerification.Observation observation) {
+        List<Integer> players = requiredPlayers.stream().sorted().toList();
+        String values = players.stream().map(ignored -> "(?::integer,?::timestamptz,?::timestamptz)")
+                .collect(java.util.stream.Collectors.joining(","));
+        List<Object> parameters = new ArrayList<>();
+        for (int playerId : players) {
+            var read = observation.reads().histories().get(playerId);
+            if (read == null) return List.of();
+            parameters.add(playerId);
+            parameters.add(Timestamp.from(read.startedAt()));
+            parameters.add(Timestamp.from(read.completedAt()));
+        }
+        String sql = "SELECT expected.player_id expected_player_id,hp.id payload_id,hp.endpoint_kind,hp.event_id,"
+                + "hp.validation_state,hp.body IS NOT NULL body_present,hp.body,hp.read_started_at,hp.read_finished_at,"
+                + "hp.staged_at,hr.generation history_generation,hr.kind history_kind,hr.state history_state,"
+                + "hr.season history_season,hr.runtime_mode history_mode,hr.runtime_epoch history_epoch,"
+                + "hr.coalescing_key history_coalescing,hr.publication_key history_publication,"
+                + "hr.completed_at history_completed FROM (VALUES " + values + ")"
+                + " AS expected(player_id,read_started_at,read_finished_at) LEFT JOIN " + TABLES.payload()
+                + " hp ON hp.player_id=expected.player_id AND hp.endpoint_kind='ELEMENT_SUMMARY'"
+                + " AND hp.event_id IS NULL AND hp.read_started_at=expected.read_started_at"
+                + " AND hp.read_finished_at=expected.read_finished_at LEFT JOIN " + TABLES.run()
+                + " hr ON hr.generation=hp.run_generation ORDER BY expected.player_id";
+        return jdbc.queryForList(sql, parameters.toArray());
+    }
+
+    private static void assertFixtureGenerationBodiesMatchSource(Harness harness, int fixtureId, long generation,
+                                                                  FixtureOracle oracle, SourceData source,
+                                                                  FixtureVerification.Observation observation) {
+        assertThat(fixtureGenerationBodiesMatchSource(harness, fixtureId, generation, oracle, source, observation))
+                .as("fixture %d generation %d source bodies and hashes", fixtureId, generation).isTrue();
+    }
+
+    private static boolean fixtureGenerationBodiesMatchSource(Harness harness, int fixtureId, long generation,
+                                                                FixtureOracle oracle, SourceData source,
+                                                                FixtureVerification.Observation observation) {
+        List<Map<String, Object>> anchors = jdbc.queryForList("SELECT p.endpoint_kind,p.event_id,p.player_id,"
+                + "p.validation_state,p.read_started_at,p.read_finished_at,p.body FROM "
+                + TABLES.fixtureDependencyManifest() + " m JOIN " + TABLES.payload()
+                + " p ON p.id=m.bootstrap_payload_id WHERE m.run_generation=? UNION ALL SELECT"
+                + " p.endpoint_kind,p.event_id,p.player_id,p.validation_state,p.read_started_at,p.read_finished_at,p.body"
+                + " FROM " + TABLES.fixtureDependencyManifest() + " m JOIN " + TABLES.payload()
+                + " p ON p.id=m.fixtures_payload_id WHERE m.run_generation=? UNION ALL SELECT"
+                + " p.endpoint_kind,p.event_id,p.player_id,p.validation_state,p.read_started_at,p.read_finished_at,p.body"
+                + " FROM " + TABLES.fixtureDependencyManifest() + " m JOIN " + TABLES.payload()
+                + " p ON p.id=m.live_payload_id WHERE m.run_generation=? ORDER BY endpoint_kind",
+                generation, generation, generation);
+        if (anchors.size() != 3
+                || !anchorBodyMatches(anchors, "BOOTSTRAP_STATIC", null, source.bootstrapBytes())
+                || !anchorBodyMatches(anchors, "FIXTURES", null, source.fixtureBytes())
+                || !anchorBodyMatches(anchors, "EVENT_LIVE", oracle.gameweek(), source.liveBytes(oracle.gameweek()))) {
+            return false;
+        }
+        List<Map<String, Object>> histories = fixtureHistoryPayloadRows(harness, oracle.requiredPlayers(), observation);
+        if (histories.size() != oracle.requiredPlayers().size()) return false;
+        for (Map<String, Object> row : histories) {
+            int playerId = ((Number) row.get("expected_player_id")).intValue();
+            var read = observation.reads().histories().get(playerId);
+            if (read == null || row.get("payload_id") == null
+                    || !"ELEMENT_SUMMARY".equals(row.get("endpoint_kind")) || row.get("event_id") != null
+                    || !"VALID".equals(row.get("validation_state"))
+                    || !bodyMatches((byte[]) row.get("body"), source.historyBytes(playerId))
+                    || !Timestamp.from(read.startedAt()).equals(row.get("read_started_at"))
+                    || !Timestamp.from(read.completedAt()).equals(row.get("read_finished_at"))) return false;
+        }
+        return true;
+    }
+
+    private static boolean anchorBodyMatches(List<Map<String, Object>> anchors, String role,
+                                             Integer eventId, byte[] expectedBody) {
+        List<Map<String, Object>> matches = anchors.stream()
+                .filter(row -> role.equals(row.get("endpoint_kind"))).toList();
+        if (matches.size() != 1) return false;
+        Map<String, Object> row = matches.getFirst();
+        return java.util.Objects.equals(row.get("event_id"), eventId) && row.get("player_id") == null
+                && "VALID".equals(row.get("validation_state"))
+                && bodyMatches((byte[]) row.get("body"), expectedBody);
+    }
+
+    private static boolean bodyMatches(byte[] actualBody, byte[] expectedBody) {
+        return actualBody != null && java.util.Arrays.equals(actualBody, expectedBody)
+                && OwnedSyncStore.sha256(actualBody).equals(OwnedSyncStore.sha256(expectedBody));
+    }
+
+    private static boolean correctionBatchesValid(SourceRead first, SourceRead second, Instant correctionFloor) {
+        return !first.startedAt().isAfter(first.finishedAt())
+                && !second.startedAt().isAfter(second.finishedAt())
+                && !first.startedAt().isBefore(correctionFloor)
+                && !second.startedAt().isBefore(correctionFloor)
+                && !second.startedAt().isBefore(first.finishedAt().plus(Duration.ofMinutes(10)));
+    }
+
+    private static void assertCorrectionBatchPairNegativeCases() {
+        Instant floor = Instant.parse("2026-09-30T12:00:00Z");
+        SourceRead first = new SourceRead(floor, floor.plus(Duration.ofMinutes(1)));
+        SourceRead exactBoundary = new SourceRead(floor.plus(Duration.ofMinutes(11)),
+                floor.plus(Duration.ofMinutes(12)));
+        SourceRead oneMillisecondEarly = new SourceRead(
+                first.finishedAt().plus(Duration.ofMinutes(10)).minusMillis(1),
+                floor.plus(Duration.ofMinutes(12)));
+        assertThat(correctionBatchesValid(first, exactBoundary, floor))
+                .as("independent source batches exactly ten minutes apart are accepted").isTrue();
+        assertThat(correctionBatchesValid(new SourceRead(floor.minusMillis(1), first.finishedAt()),
+                exactBoundary, floor)).as("a first source read before the correction floor is rejected").isFalse();
+        assertThat(correctionBatchesValid(first,
+                new SourceRead(floor.minusMillis(1), floor.plus(Duration.ofMinutes(12))), floor))
+                .as("a second source read before the correction floor is rejected").isFalse();
+        assertThat(correctionBatchesValid(first, oneMillisecondEarly, floor))
+                .as("source batches less than ten minutes apart are rejected").isFalse();
+        assertThatThrownBy(() -> new SourceRead(floor.plusSeconds(1), floor))
+                .as("a reversed first source interval is rejected")
+                .isInstanceOf(IllegalArgumentException.class).hasMessage("source read interval is reversed");
+        assertThatThrownBy(() -> new SourceRead(floor.plus(Duration.ofMinutes(12)),
+                floor.plus(Duration.ofMinutes(11))))
+                .as("a reversed second source interval is rejected")
+                .isInstanceOf(IllegalArgumentException.class).hasMessage("source read interval is reversed");
+    }
+
+    private static boolean isDatabaseMicrosecond(Instant instant) {
+        return instant.getNano() % 1_000 == 0;
+    }
+
+    private static String activeAcceptanceTrace(Harness harness, ManualDriver preparationDriver,
+                                                ManualDriver driver, Set<Integer> targetFixtures,
+                                                ActiveAcceptanceMetrics metrics,
+                                                PayloadReadProbe.Snapshot blockedRetryBodies,
+                                                PayloadReadProbe.Snapshot completePublicationBodies) {
+        String keys = targetFixtures.stream().sorted().map(id -> "'fixture:" + id + "'")
+                .collect(java.util.stream.Collectors.joining(","));
+        List<Map<String, Object>> syncRows = jdbc.queryForList("SELECT fixture_id,state,attempt_count,"
+                + "observation_generation,validation_failures,source_read_started_at,source_read_finished_at,"
+                + "first_finished_observed_at,next_due_at,due_reason,dependency_retry_at,alert_state,"
+                + "recovery_day,recovery_started_at,recovery_until,current_verified_generation,"
+                + "last_verified_generation,last_error FROM " + TABLES.fixtureSync()
+                + " WHERE season_id=? AND fixture_id BETWEEN 41 AND 50 ORDER BY fixture_id", SEASON.id());
+        List<Map<String, Object>> fixtureRuns = jdbc.queryForList("SELECT generation,publication_key,state,"
+                + "attempt_count,due_at,requested_source_after,last_attempt_at,last_error FROM " + TABLES.run()
+                + " WHERE season=? AND runtime_mode='ACTIVE' AND runtime_epoch=?"
+                + " AND kind='FIXTURE_VERIFICATION' AND publication_key IN (" + keys + ")"
+                + " ORDER BY generation", SEASON.code(), harness.fence.epoch());
+        List<Map<String, Object>> recoverySlots = jdbc.queryForList("SELECT slot_id,kind,due_at,fixture_ids,"
+                + "reason,enqueued_at FROM " + TABLES.plannerSlot()
+                + " WHERE season=? AND fixture_ids && ARRAY[41,42,43,44,45,46,47,48,49,50]::integer[]"
+                + " ORDER BY enqueued_at,slot_id", SEASON.code());
+        List<Map<String, Object>> manifests = jdbc.queryForList("SELECT r.generation,r.publication_key,r.state,"
+                + "r.attempt_count,r.due_at,m.source_floor,cardinality(m.required_player_ids) AS required_players,"
+                + "(SELECT count(*) FROM unnest(m.required_player_ids) required(player_id) WHERE EXISTS("
+                + "SELECT 1 FROM " + TABLES.payload() + " hp JOIN " + TABLES.run()
+                + " hr ON hr.generation=hp.run_generation WHERE hp.player_id=required.player_id"
+                + " AND hp.endpoint_kind='ELEMENT_SUMMARY' AND hp.validation_state='VALID'"
+                + " AND hr.runtime_mode='ACTIVE' AND hr.runtime_epoch=? AND hr.state='COMPLETED'"
+                + " AND hp.read_started_at>=GREATEST(r.requested_source_after,m.source_floor)))"
+                + " AS fresh_histories FROM " + TABLES.fixtureDependencyManifest() + " m JOIN "
+                + TABLES.run() + " r ON r.generation=m.run_generation"
+                + " WHERE r.season=? AND r.runtime_mode='ACTIVE' AND r.runtime_epoch=?"
+                + " AND r.publication_key IN (" + keys + ") ORDER BY r.generation",
+                harness.fence.epoch(), SEASON.code(), harness.fence.epoch());
+        return "OWNED_ACTIVE_RECOVERY_TRACE stop=" + driver.stopReason
+                + " firstNewFixture=" + metrics.firstNewFixture()
+                + " firstNewGeneration=" + metrics.firstNewGeneration()
+                + " firstNewAttempt=" + metrics.firstNewAttempt()
+                + " firstNewWorker=" + metrics.firstNewWorker()
+                + " firstNewClaim=" + metrics.firstNewClaim()
+                + " firstPending=" + driver.firstPendingObservations
+                + " verifiedReceipts=" + metrics.verifiedReceiptGenerations()
+                + " servedCorrections=" + metrics.servedCorrectionReceipts()
+                + " changedCorrectionOutcomes=" + metrics.changedCorrectionOutcomes()
+                + " correctionReplayRuns=" + metrics.correctionReplayRuns()
+                + " preparationStarts=" + preparationDriver.dispatches
+                + " preparationClaims=" + preparationDriver.claims
+                + " driverStarts=" + driver.dispatches + " driverCompletions=" + driver.completions.size()
+                + " driverClaims=" + driver.claims
+                + " virtualNow=" + harness.clock.instant() + " maxVirtual=" + metrics.maxVirtualElapsed()
+                + " claims=" + metrics.claims() + " dispatches=" + metrics.dispatches()
+                + " admitted=" + harness.durableAdmissionCount() + " endpoints=" + harness.server.getsByEndpoint()
+                + " returnedBytes=" + harness.server.returnedRawBytes()
+                + " verified=" + metrics.verifiedFixtureIds() + " failedRuns=" + metrics.failedRuns()
+                + " recoverySlots=" + recoverySlots
+                + " missingHistory=" + metrics.missingHistoryEvidence() + " badManifests=" + metrics.badFixtureManifests()
+                + " missingReceipts=" + metrics.missingReceipts() + " zeroSkipped=" + metrics.skippedFixtureTraces()
+                + " targetRows=" + metrics.fixtureProofs().size() + "/" + targetFixtures.size()
+                + " badBatches=" + metrics.badBatchPairs() + " sourceProofFlags=" + metrics.fixtureProofs()
+                + " canonicalParent=" + metrics.canonicalParentProof()
+                + " driverFirst10Transitions=" + mergeTargetTransitions(preparationDriver, driver)
+                + " lastNextWake=" + driver.lastNextWake
+                + " advancesWithReadyTargets=" + driver.advancesWithReadyTargets
+                + " bounds={virtual=" + metrics.maxVirtualElapsed() + "/" + ACTIVE_RECOVERY_VIRTUAL_LIMIT
+                + ",claims=" + metrics.claims() + "/" + ACTIVE_RECOVERY_CLAIM_LIMIT
+                + ",dispatches=" + metrics.dispatches() + "/" + ACTIVE_RECOVERY_DISPATCH_LIMIT
+                + ",wallSeconds=" + Duration.ofNanos(System.nanoTime() - harness.wallStartedAtNanos).toMillis() / 1000.0
+                + "/1500} blockedRetryWorkerLogicalReads=" + logicalReadStats(blockedRetryBodies)
+                + " workerPublicationLogicalReads=" + logicalReadStats(completePublicationBodies)
+                + " diagnosticCanonicalParentPayload={queries="
+                + metrics.canonicalParentProof().get("diagnosticPayloadQueries") + ",rawBytes="
+                + metrics.canonicalParentProof().get("diagnosticPayloadRawBytes") + "}"
+                + " syncRows=" + syncRows + " fixtureRuns=" + fixtureRuns + " manifests=" + manifests;
+    }
+
+    private static Map<Integer, List<String>> mergeTargetTransitions(ManualDriver preparationDriver,
+                                                                       ManualDriver driver) {
+        Map<Integer, List<String>> result = new TreeMap<>();
+        for (ManualDriver selected : List.of(preparationDriver, driver)) {
+            selected.targetTransitions.forEach((fixtureId, transitions) -> {
+                List<String> combined = result.computeIfAbsent(fixtureId, ignored -> new ArrayList<>());
+                for (String transition : transitions) {
+                    if (combined.size() == 10) break;
+                    combined.add(transition);
+                }
+            });
+        }
+        return result;
+    }
+
+    private static Map<PayloadReadProbe.BodyFamily, String> logicalReadStats(PayloadReadProbe.Snapshot snapshot) {
+        Map<PayloadReadProbe.BodyFamily, String> result = new java.util.EnumMap<>(PayloadReadProbe.BodyFamily.class);
+        snapshot.logicalBodies().forEach((family, metrics) -> result.put(family, metrics.counts()));
+        return result;
+    }
+
+    private static void assertTargetReceiptIntervalNegativeCases(Harness harness, int fixtureId) throws IOException {
+        assertCorrectionBatchPairNegativeCases();
+        assertSourceObservationProofNegativeCases();
+        Map<String, Object> receipt = jdbc.queryForMap("SELECT r.source_read_started_at run_started,"
+                + "r.source_read_finished_at run_finished,r.completed_at,p.source_read_started_at receipt_started,"
+                + "p.source_read_finished_at receipt_finished,p.published_at receipt_published FROM "
+                + TABLES.fixtureSync() + " fs JOIN " + TABLES.receipt() + " p ON p.season=fs.season_code"
+                + " AND p.publication_key='fixture:' || fs.fixture_id::text"
+                + " AND p.latest_generation=fs.current_verified_generation JOIN " + TABLES.run()
+                + " r ON r.generation=p.latest_generation AND r.season=p.season"
+                + " WHERE fs.season_id=? AND fs.fixture_id=? AND fs.state='VERIFIED'"
+                + " AND r.kind='FIXTURE_VERIFICATION' AND r.runtime_mode='ACTIVE' AND r.runtime_epoch=?",
+                SEASON.id(), fixtureId, harness.fence.epoch());
+        Timestamp runStarted = rTimestamp(receipt, "run_started");
+        Timestamp runFinished = rTimestamp(receipt, "run_finished");
+        Timestamp receiptStarted = rTimestamp(receipt, "receipt_started");
+        Timestamp receiptFinished = rTimestamp(receipt, "receipt_finished");
+        Timestamp completedAt = rTimestamp(receipt, "completed_at");
+        Timestamp publishedAt = rTimestamp(receipt, "receipt_published");
+        Instant now = harness.clock.instant();
+
+        assertThat(receiptIntervalProof(runStarted, runFinished, receiptStarted, receiptFinished,
+                completedAt, publishedAt, now)).as("actual current receipt interval").isTrue();
+        assertThat(receiptIntervalProof(runStarted, runFinished, null, receiptFinished,
+                completedAt, publishedAt, now)).as("NULL receipt start is rejected").isFalse();
+        assertThat(receiptIntervalProof(runStarted, runFinished,
+                Timestamp.from(runStarted.toInstant().plusNanos(1_000)), receiptFinished,
+                completedAt, publishedAt, now)).as("a one-microsecond receipt/run start mismatch is rejected")
+                .isFalse();
+        assertThat(receiptIntervalProof(runStarted, runFinished, receiptStarted, receiptFinished,
+                completedAt, Timestamp.from(now.plusNanos(1_000)), now))
+                .as("a future publication timestamp is rejected").isFalse();
+        assertJointlyShortenedFixtureFinishIsRejected(harness, fixtureId);
+        assertJointlyShortenedCanonicalStartIsRejected(harness);
+    }
+
+    private static void assertJointlyShortenedFixtureFinishIsRejected(Harness harness, int fixtureId) {
+        Map<String, Object> row = jdbc.queryForMap("SELECT fs.current_verified_generation,r.source_read_started_at,"
+                + "r.source_read_finished_at,p.source_read_started_at receipt_started,"
+                + "p.source_read_finished_at receipt_finished,r.completed_at,p.published_at FROM "
+                + TABLES.fixtureSync() + " fs JOIN " + TABLES.receipt()
+                + " p ON p.season=fs.season_code AND p.publication_key='fixture:' || fs.fixture_id::text"
+                + " AND p.latest_generation=fs.current_verified_generation JOIN " + TABLES.run()
+                + " r ON r.generation=p.latest_generation AND r.season=p.season"
+                + " WHERE fs.season_id=? AND fs.fixture_id=? AND fs.state='VERIFIED'",
+                SEASON.id(), fixtureId);
+        long generation = numberLong(row.get("current_verified_generation"));
+        Timestamp runStarted = rTimestamp(row, "source_read_started_at");
+        Timestamp runFinished = rTimestamp(row, "source_read_finished_at");
+        Timestamp receiptStarted = rTimestamp(row, "receipt_started");
+        Timestamp receiptFinished = rTimestamp(row, "receipt_finished");
+        Timestamp completedAt = rTimestamp(row, "completed_at");
+        Timestamp publishedAt = rTimestamp(row, "published_at");
+        RootDocuments root = currentCanonicalDocuments(harness, fixtureId);
+        FixtureVerification.Observation observation = fixtureObservation(fixtureId);
+        SourceRead bootstrap = sourceRead(root.bootstrap());
+        SourceRead fixtures = new SourceRead(observation.reads().fixture().startedAt(),
+                observation.reads().fixture().completedAt());
+        SourceRead live = new SourceRead(observation.reads().live().startedAt(),
+                observation.reads().live().completedAt());
+        List<SourceRead> histories = observation.reads().histories().values().stream()
+                .map(read -> new SourceRead(read.startedAt(), read.completedAt())).toList();
+        List<SourceRead> allReads = new ArrayList<>(List.of(bootstrap, fixtures, live));
+        allReads.addAll(histories);
+        List<SourceRead> fixtureReads = new ArrayList<>(List.of(fixtures, live));
+        fixtureReads.addAll(histories);
+        SourceRead fixtureInterval = observationInterval(observation);
+        assertThat(fullSourceIntervalProof(generation, generation,
+                new SourceRead(runStarted.toInstant(), runFinished.toInstant()), completedAt.toInstant(),
+                allReads, fixtureReads, fixtureInterval))
+                .as("actual fixture run spans bootstrap, fixture, live and every history read").isTrue();
+        Timestamp shortenedFinish = Timestamp.from(fixtures.finishedAt());
+        assertThat(shortenedFinish).isBefore(runFinished);
+        try {
+            jdbc.update("UPDATE " + TABLES.run() + " SET source_read_finished_at=? WHERE generation=?",
+                    shortenedFinish, generation);
+            jdbc.update("UPDATE " + TABLES.receipt() + " SET source_read_finished_at=?"
+                    + " WHERE season=? AND publication_key=? AND latest_generation=?",
+                    shortenedFinish, SEASON.code(), "fixture:" + fixtureId, generation);
+            Map<String, Object> shortened = jdbc.queryForMap("SELECT r.source_read_started_at run_started,"
+                    + "r.source_read_finished_at run_finished,p.source_read_started_at receipt_started,"
+                    + "p.source_read_finished_at receipt_finished,r.completed_at,p.published_at FROM "
+                    + TABLES.run() + " r JOIN " + TABLES.receipt()
+                    + " p ON p.season=r.season AND p.publication_key=r.publication_key"
+                    + " AND p.latest_generation=r.generation WHERE r.generation=?", generation);
+            assertThat(receiptIntervalProof(rTimestamp(shortened, "run_started"),
+                    rTimestamp(shortened, "run_finished"), rTimestamp(shortened, "receipt_started"),
+                    rTimestamp(shortened, "receipt_finished"), rTimestamp(shortened, "completed_at"),
+                    rTimestamp(shortened, "published_at"), harness.clock.instant()))
+                    .as("jointly shortened run and receipt retain the local receipt predicate").isTrue();
+            assertThat(fullSourceIntervalProof(generation, generation,
+                    new SourceRead(rTimestamp(shortened, "run_started").toInstant(),
+                            rTimestamp(shortened, "run_finished").toInstant()),
+                    rTimestamp(shortened, "completed_at").toInstant(), allReads, fixtureReads, fixtureInterval))
+                    .as("a receipt ending before its latest history read is not full-source proof").isFalse();
+        } finally {
+            jdbc.update("UPDATE " + TABLES.run() + " SET source_read_finished_at=? WHERE generation=?",
+                    runFinished, generation);
+            jdbc.update("UPDATE " + TABLES.receipt() + " SET source_read_finished_at=?"
+                    + " WHERE season=? AND publication_key=? AND latest_generation=?",
+                    receiptFinished, SEASON.code(), "fixture:" + fixtureId, generation);
+        }
+    }
+
+    private static void assertJointlyShortenedCanonicalStartIsRejected(Harness harness) {
+        CanonicalParentProof selected = currentCanonicalParentProof(harness);
+        assertThat(selected.currentPublished()).isTrue();
+        Map<String, Object> row = jdbc.queryForMap("SELECT p.publication_key,p.latest_generation,"
+                + "p.source_read_started_at receipt_started,p.source_read_finished_at receipt_finished,"
+                + "p.published_at,r.source_read_started_at run_started,r.source_read_finished_at run_finished,"
+                + "r.completed_at,b.read_started_at bootstrap_started,b.read_finished_at bootstrap_finished,"
+                + "f.read_started_at fixtures_started,f.read_finished_at fixtures_finished,"
+                + "p.source_bootstrap_sha256,p.source_fixtures_sha256,p.source_pair_fingerprint FROM "
+                + TABLES.receipt() + " p JOIN " + TABLES.run() + " r ON r.generation=p.latest_generation"
+                + " AND r.season=p.season JOIN " + TABLES.payload() + " b ON b.id=p.source_bootstrap_payload_id"
+                + " JOIN " + TABLES.payload() + " f ON f.id=p.source_fixtures_payload_id"
+                + " WHERE p.season=? AND p.publication_key=? AND p.latest_generation=?",
+                SEASON.code(), selected.publicationKey(), selected.publicationGeneration());
+        long generation = numberLong(row.get("latest_generation"));
+        Timestamp runStarted = rTimestamp(row, "run_started");
+        Timestamp receiptStarted = rTimestamp(row, "receipt_started");
+        Timestamp runFinished = rTimestamp(row, "run_finished");
+        Timestamp receiptFinished = rTimestamp(row, "receipt_finished");
+        Timestamp completedAt = rTimestamp(row, "completed_at");
+        Timestamp publishedAt = rTimestamp(row, "published_at");
+        Timestamp bootstrapStarted = rTimestamp(row, "bootstrap_started");
+        Timestamp bootstrapFinished = rTimestamp(row, "bootstrap_finished");
+        Timestamp fixturesStarted = rTimestamp(row, "fixtures_started");
+        Timestamp fixturesFinished = rTimestamp(row, "fixtures_finished");
+        String bootstrapHash = (String) row.get("source_bootstrap_sha256");
+        String fixturesHash = (String) row.get("source_fixtures_sha256");
+        String fingerprint = (String) row.get("source_pair_fingerprint");
+        assertThat(fixturesStarted).isAfter(bootstrapStarted);
+        assertThat(canonicalSourceSpanProof(runStarted, runFinished, receiptStarted, receiptFinished,
+                completedAt, publishedAt, bootstrapStarted, bootstrapFinished, fixturesStarted, fixturesFinished,
+                harness.clock.instant())).isTrue();
+        try {
+            jdbc.update("UPDATE " + TABLES.run() + " SET source_read_started_at=? WHERE generation=?",
+                    fixturesStarted, generation);
+            jdbc.update("UPDATE " + TABLES.receipt() + " SET source_read_started_at=?"
+                    + " WHERE season=? AND publication_key=? AND latest_generation=?",
+                    fixturesStarted, SEASON.code(), selected.publicationKey(), generation);
+            Map<String, Object> shortened = jdbc.queryForMap("SELECT p.source_read_started_at receipt_started,"
+                    + "p.source_read_finished_at receipt_finished,p.published_at,"
+                    + "r.source_read_started_at run_started,r.source_read_finished_at run_finished,r.completed_at,"
+                    + "b.read_started_at bootstrap_started,b.read_finished_at bootstrap_finished,"
+                    + "f.read_started_at fixtures_started,f.read_finished_at fixtures_finished,"
+                    + "p.source_bootstrap_sha256,p.source_fixtures_sha256,p.source_pair_fingerprint FROM "
+                    + TABLES.receipt() + " p JOIN " + TABLES.run()
+                    + " r ON r.generation=p.latest_generation AND r.season=p.season JOIN " + TABLES.payload()
+                    + " b ON b.id=p.source_bootstrap_payload_id JOIN " + TABLES.payload()
+                    + " f ON f.id=p.source_fixtures_payload_id WHERE p.season=? AND p.publication_key=?"
+                    + " AND p.latest_generation=?", SEASON.code(), selected.publicationKey(), generation);
+            assertThat(receiptIntervalProof(rTimestamp(shortened, "run_started"),
+                    rTimestamp(shortened, "run_finished"), rTimestamp(shortened, "receipt_started"),
+                    rTimestamp(shortened, "receipt_finished"), rTimestamp(shortened, "completed_at"),
+                    rTimestamp(shortened, "published_at"), harness.clock.instant()))
+                    .as("jointly shortened canonical run and receipt retain the local receipt predicate").isTrue();
+            assertThat(canonicalSourceSpanProof(rTimestamp(shortened, "run_started"),
+                    rTimestamp(shortened, "run_finished"), rTimestamp(shortened, "receipt_started"),
+                    rTimestamp(shortened, "receipt_finished"), rTimestamp(shortened, "completed_at"),
+                    rTimestamp(shortened, "published_at"), rTimestamp(shortened, "bootstrap_started"),
+                    rTimestamp(shortened, "bootstrap_finished"), rTimestamp(shortened, "fixtures_started"),
+                    rTimestamp(shortened, "fixtures_finished"), harness.clock.instant()))
+                    .as("full published-source proof includes the actual earliest body start").isFalse();
+            assertThat(shortened.get("source_bootstrap_sha256")).isEqualTo(bootstrapHash);
+            assertThat(shortened.get("source_fixtures_sha256")).isEqualTo(fixturesHash);
+            assertThat(shortened.get("source_pair_fingerprint")).isEqualTo(fingerprint);
+        } finally {
+            jdbc.update("UPDATE " + TABLES.run() + " SET source_read_started_at=? WHERE generation=?",
+                    runStarted, generation);
+            jdbc.update("UPDATE " + TABLES.receipt() + " SET source_read_started_at=?"
+                    + " WHERE season=? AND publication_key=? AND latest_generation=?",
+                    receiptStarted, SEASON.code(), selected.publicationKey(), generation);
+        }
+    }
+
+    private static SourceRead sourceRead(CatalogueScheduleParser.SourceDocument document) {
+        return new SourceRead(document.readInterval().startedAt(), document.readInterval().completedAt());
+    }
+
+    private static void assertCanonicalPairProof(Harness harness, SourceData source) {
+        Map<String, Object> parent = jdbc.queryForMap("SELECT p.source_pair_fingerprint,"
+                + "p.source_bootstrap_sha256,p.source_fixtures_sha256,p.source_bootstrap_payload_id,"
+                + "p.source_fixtures_payload_id,p.source_read_started_at receipt_started,"
+                + "p.source_read_finished_at receipt_finished,p.published_at,"
+                + "r.source_read_started_at run_started,r.source_read_finished_at run_finished,r.completed_at,"
+                + "b.run_generation AS source_generation,b.read_started_at AS bootstrap_started,"
+                + "b.read_finished_at AS bootstrap_finished,f.read_started_at AS fixtures_started,"
+                + "f.read_finished_at AS fixtures_finished FROM " + TABLES.receipt() + " p"
+                + " JOIN " + TABLES.run() + " r ON r.generation=p.latest_generation AND r.season=p.season"
+                + " JOIN " + TABLES.payload() + " b ON b.id=p.source_bootstrap_payload_id"
+                + " JOIN " + TABLES.payload() + " f ON f.id=p.source_fixtures_payload_id"
+                + " WHERE p.season=? AND p.publication_key=? AND p.latest_generation=r.generation"
+                + " AND r.kind='CATALOGUE_SCHEDULE' AND r.runtime_mode='ACTIVE'"
+                + " AND r.runtime_epoch=? AND r.state='COMPLETED' AND b.run_generation=f.run_generation"
+                + " AND b.validation_state='VALID' AND f.validation_state='VALID'"
+                + " AND b.source_published=true AND f.source_published=true"
+                + " ORDER BY p.published_at DESC LIMIT 1", SEASON.code(),
+                CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY, harness.fence.epoch());
+        long sourceGeneration = ((Number) parent.get("source_generation")).longValue();
+        String bootstrapHash = (String) parent.get("source_bootstrap_sha256");
+        String fixturesHash = (String) parent.get("source_fixtures_sha256");
+        assertThat(bootstrapHash).isEqualTo(OwnedSyncStore.sha256(source.bootstrapBytes()));
+        assertThat(fixturesHash).isEqualTo(OwnedSyncStore.sha256(source.fixtureBytes()));
+        Timestamp publishedAt = rTimestamp(parent, "published_at");
+        Timestamp runStarted = rTimestamp(parent, "run_started");
+        Timestamp runFinished = rTimestamp(parent, "run_finished");
+        Timestamp receiptStarted = rTimestamp(parent, "receipt_started");
+        Timestamp receiptFinished = rTimestamp(parent, "receipt_finished");
+        Timestamp completedAt = rTimestamp(parent, "completed_at");
+        Timestamp bootstrapStarted = rTimestamp(parent, "bootstrap_started");
+        Timestamp bootstrapFinished = rTimestamp(parent, "bootstrap_finished");
+        Timestamp fixturesStarted = rTimestamp(parent, "fixtures_started");
+        Timestamp fixturesFinished = rTimestamp(parent, "fixtures_finished");
+        assertThat(databaseMicroseconds(publishedAt, runStarted, runFinished, receiptStarted, receiptFinished,
+                completedAt, bootstrapStarted, bootstrapFinished, fixturesStarted, fixturesFinished)).isTrue();
+        assertThat(bootstrapStarted).isBeforeOrEqualTo(bootstrapFinished);
+        assertThat(fixturesStarted).isBeforeOrEqualTo(fixturesFinished);
+        assertThat(runStarted).isEqualTo(earlier(bootstrapStarted, fixturesStarted));
+        assertThat(runFinished).isEqualTo(later(bootstrapFinished, fixturesFinished));
+        assertThat(receiptIntervalProof(runStarted, runFinished, receiptStarted, receiptFinished,
+                completedAt, publishedAt, harness.clock.instant())).isTrue();
+        var pair = OwnedSyncStore.CanonicalSourcePair.of(
+                new OwnedSyncStore.CanonicalSourcePayload(((Number) parent.get("source_bootstrap_payload_id")).longValue(),
+                        sourceGeneration, EndpointKind.BOOTSTRAP_STATIC,
+                        new SourceRead(bootstrapStarted.toInstant(), bootstrapFinished.toInstant()), bootstrapHash),
+                new OwnedSyncStore.CanonicalSourcePayload(((Number) parent.get("source_fixtures_payload_id")).longValue(),
+                        sourceGeneration, EndpointKind.FIXTURES,
+                        new SourceRead(fixturesStarted.toInstant(), fixturesFinished.toInstant()), fixturesHash));
+        assertThat(parent.get("source_pair_fingerprint")).isEqualTo(pair.fingerprint());
     }
 
     @Test
@@ -246,6 +4976,96 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                 .isZero();
         assertThat(metrics.predecessorWaits()).as("real FIFO wait advancement was observed").isGreaterThan(0);
         assertThat(metrics.spacingWaits()).as("real spacing wait advancement was observed").isGreaterThan(0);
+    }
+
+    @Test
+    @Timeout(value = 255, unit = TimeUnit.SECONDS)
+    void fullRosterTwoWorkersStageSourceCompleteFixtureWithinBudget() throws Exception {
+        SourceData fullRoster = SourceData.loadFullRoster();
+        JsonNode bootstrap = JSON.readTree(fullRoster.bootstrapBytes());
+        Map<Integer, Integer> clubSizes = new HashMap<>();
+        bootstrap.withArray("elements").forEach(player ->
+                clubSizes.merge(player.get("team").intValue(), 1, Integer::sum));
+        assertThat(fullRoster.playerIds()).hasSize(FULL_ROSTER_PLAYERS).doesNotHaveDuplicates();
+        assertThat(fullRoster.playerIds()).isEqualTo(fullRoster.playerIds().stream().sorted().toList());
+        assertThat(clubSizes).hasSize(FULL_ROSTER_CLUBS);
+        assertThat(clubSizes.values()).allMatch(size -> size >= 25 && size <= 43);
+        Map<Integer, Set<Integer>> requiredByFixture = fullRoster.requiredHistoryPlayersByFixture(FIXTURE_RUNS);
+        assertThat(requiredByFixture).hasSize(FIXTURE_RUNS);
+        assertThat(requiredByFixture.values()).allSatisfy(players ->
+                assertThat(players.size()).isBetween(50, 86));
+
+        long wallStartedAt = System.nanoTime();
+        long wallDeadline = wallStartedAt + ROSTER_BASELINE_WALL_LIMIT_NANOS;
+        RosterBaselineMetrics metrics;
+        try (Harness harness = new Harness(1, wallDeadline, wallStartedAt, fullRoster)) {
+            harness.seedCanonicalPair();
+            harness.seedPreAnchorHistories();
+            harness.seedMixedBacklog();
+            harness.resetPayloadReads();
+            metrics = harness.driveRosterBaseline();
+            harness.assertStagedHistoryCoverage();
+        }
+        double wallSeconds = (System.nanoTime() - wallStartedAt) / 1_000_000_000.0;
+        double postWorkSeconds = wallSeconds - metrics.workWallSeconds();
+        System.out.printf("OWNED_ADMISSION_ROSTER_BASELINE stop=%s firstStageFixture=%s "
+                        + "firstStageSeconds=%s firstStageAdmissions=%s admissions=%d dispatchStarts=%d "
+                        + "completedDispatches=%d endpoints=%s returnedGets=%d returnedRawBytes=%d "
+                        + "payloadBodyValues=%d payloadReturnedRawBytes=%d preAnchorHistories=%d "
+                        + "historyRunsCompleted=%d historyRunsPending=%d historyJobsNotYetClaimed=%d "
+                        + "historyRequestsAdvancedPastPreAnchor=%d "
+                        + "repeatedHistoryGets=%d playersWithRepeatedHistoryGets=%d fixturesCompleted=%d "
+                        + "untouchedFixtures=%d readyCoverage=%d manifests=%d validManifests=%d "
+                        + "manifestRequiredIds=%d..%d manifestOverlap=%d manifestedPlayers=%d "
+                        + "unmanifestedRosterPlayers=%d manifestMismatches=%d sourceFloorMismatches=%d "
+                        + "epochMismatches=%d failedRuns=%d invalidPayloads=%d uncertainAttempts=%d "
+                        + "unresolvedAttempts=%d virtualSeconds=%.3f wallSeconds=%.3f%n",
+                metrics.stopReason(), metrics.firstStageFixture(), offset(metrics.firstStageAt()),
+                metrics.firstStageAt() == null ? "none" : metrics.admissionsAtFirstStage(),
+                metrics.admissions(), metrics.dispatchStarts(),
+                metrics.completedDispatches(), metrics.endpoints(), metrics.returnedGets(), metrics.returnedRawBytes(),
+                metrics.payloadReads().bodyValues(), metrics.payloadReads().rawBytes(),
+                metrics.preAnchorHistories(), metrics.historyRunsCompleted(), metrics.historyRunsPending(),
+                metrics.historyJobsNotYetClaimed(), metrics.historyRequestsAdvancedPastPreAnchor(),
+                metrics.repeatedHistoryGets(), metrics.playersWithRepeatedHistoryGets(),
+                metrics.fixturesCompleted(), metrics.untouchedFixtures(),
+                metrics.readyCoverage(), metrics.manifests(), metrics.validManifests(),
+                metrics.minimumManifestPlayers(), metrics.maximumManifestPlayers(), metrics.manifestOverlap(),
+                metrics.manifestedPlayers(), metrics.unmanifestedRosterPlayers(), metrics.manifestMismatches(),
+                metrics.sourceFloorMismatches(), metrics.epochMismatches(), metrics.failedRuns(),
+                metrics.invalidPayloads(), metrics.uncertainAttempts(), metrics.unresolvedAttempts(),
+                metrics.virtualSeconds(), metrics.workWallSeconds());
+        System.out.printf("OWNED_ADMISSION_ROSTER_DB_BODY_READS oldOwn=%s guardedSingle=%s canonicalPair=%s "
+                        + "other=%s totals=%d/%d/%d/%d%n",
+                metrics.payloadReads().family(PayloadReadProbe.Family.OLD_OWN_CHECKPOINT).counts(),
+                metrics.payloadReads().family(PayloadReadProbe.Family.GUARDED_SINGLE).counts(),
+                metrics.payloadReads().family(PayloadReadProbe.Family.CANONICAL_PAIR).counts(),
+                metrics.payloadReads().family(PayloadReadProbe.Family.OTHER_BODY_SELECT).counts(),
+                metrics.payloadReads().attempts(), metrics.payloadReads().resultRows(),
+                metrics.payloadReads().bodyValues(), metrics.payloadReads().rawBytes());
+
+        assertThat(metrics.stopReason()).isEqualTo("STAGED");
+        assertThat(metrics.firstStageAt()).isNotNull();
+        assertThat(metrics.fixturesCompleted()).isGreaterThan(0);
+        assertThat(metrics.payloadReads().rawBytes()).isLessThanOrEqualTo(70_000_000);
+        assertThat(metrics.virtualSeconds()).isLessThanOrEqualTo(ROSTER_BASELINE_VIRTUAL_LIMIT.toNanos() / 1e9);
+        assertThat(metrics.admissions()).isLessThanOrEqualTo(ROSTER_BASELINE_ADMISSION_LIMIT);
+        assertThat(metrics.dispatchStarts()).isLessThanOrEqualTo(ROSTER_BASELINE_DISPATCH_LIMIT);
+        assertThat(metrics.workWallSeconds()).isLessThanOrEqualTo(ROSTER_BASELINE_WALL_LIMIT_NANOS / 1e9);
+        assertThat(postWorkSeconds).as("post-work metrics and cleanup fit within the existing reserve")
+                .isLessThanOrEqualTo(DRAIN_CLEANUP_RESERVE_NANOS / 1e9);
+        assertThat(metrics.manifestMismatches()).isZero();
+        assertThat(metrics.sourceFloorMismatches()).isZero();
+        assertThat(metrics.epochMismatches()).isZero();
+        assertThat(metrics.failedRuns()).isZero();
+        assertThat(metrics.invalidPayloads()).isZero();
+        assertThat(metrics.uncertainAttempts()).isZero();
+        assertThat(metrics.unresolvedAttempts()).isZero();
+        if (metrics.manifests() > 0) {
+            assertThat(metrics.minimumManifestPlayers()).isBetween(50, 86);
+            assertThat(metrics.maximumManifestPlayers()).isBetween(50, 86);
+            assertThat(metrics.validManifests()).isEqualTo(metrics.manifests());
+        }
     }
 
     @Test
@@ -444,7 +5264,141 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                                       int predecessorWaits, int spacingWaits,
                                       double virtualSeconds, double wallSeconds) { }
 
+    private record RosterBaselineMetrics(String stopReason, Instant firstStageAt, Integer firstStageFixture,
+                                         Integer admissionsAtFirstStage, int admissions, int dispatchStarts,
+                                         int completedDispatches, Map<EndpointKind, Integer> endpoints,
+                                         int returnedGets, long returnedRawBytes,
+                                         PayloadReadProbe.Snapshot payloadReads, int preAnchorHistories,
+                                         int historyRunsCompleted, int historyRunsPending,
+                                         int historyJobsNotYetClaimed, int historyRequestsAdvancedPastPreAnchor,
+                                         int repeatedHistoryGets,
+                                         int playersWithRepeatedHistoryGets, int fixturesCompleted,
+                                         int untouchedFixtures, int readyCoverage, int manifests,
+                                         int validManifests, int minimumManifestPlayers,
+                                         int maximumManifestPlayers, int manifestOverlap, int manifestedPlayers,
+                                         int unmanifestedRosterPlayers, int manifestMismatches,
+                                         int sourceFloorMismatches, int epochMismatches, int failedRuns,
+                                         int invalidPayloads, int uncertainAttempts, int unresolvedAttempts,
+                                         double virtualSeconds, double workWallSeconds) { }
+
     private record SeededFixture(int fixtureId, long generation) { }
+
+    private enum DriverGoalKind { VERIFIED_FIXTURES, PENDING_FIXTURE_RUNS, FIRST_PENDING_OBSERVATION }
+
+    private record DriverGoal(Set<Integer> fixtureIds, DriverGoalKind kind) {
+        static DriverGoal fixtures(Set<Integer> ids) {
+            return new DriverGoal(Set.copyOf(ids), DriverGoalKind.VERIFIED_FIXTURES);
+        }
+        static DriverGoal pendingFixtures(Set<Integer> ids) {
+            return new DriverGoal(Set.copyOf(ids), DriverGoalKind.PENDING_FIXTURE_RUNS);
+        }
+        static DriverGoal firstPendingFixtures(Set<Integer> ids) {
+            return new DriverGoal(Set.copyOf(ids), DriverGoalKind.FIRST_PENDING_OBSERVATION);
+        }
+    }
+
+    private record FirstPendingObservation(long generation, int seasonId, String seasonCode,
+                                           Long currentVerifiedGeneration, SourceRead reads, String reasons,
+                                           FixtureVerification.Observation observation,
+                                           int expectedParticipants, int receivedParticipants,
+                                           int missingParticipants) { }
+
+    private record FixtureSourceBatchProof(long generation, SourceRead interval, Instant requestedFloor,
+                                           boolean valid, Map<String, Object> trace) { }
+
+    private record FixtureSourcePairProof(FixtureSourceBatchProof first, FixtureSourceBatchProof second,
+                                          boolean capturedFirstPending, boolean generationOrder,
+                                          boolean independentIntervals, boolean activeEpochThree) {
+        boolean valid() {
+            return first.valid() && second.valid() && capturedFirstPending && generationOrder
+                    && independentIntervals && activeEpochThree;
+        }
+
+        Map<String, Object> trace() {
+            Map<String, Object> trace = new TreeMap<>();
+            trace.put("firstPendingGeneration", first.generation());
+            trace.put("currentReceiptGeneration", second.generation());
+            trace.put("firstInterval", first.interval());
+            trace.put("secondInterval", second.interval());
+            trace.put("firstRequestedFloor", first.requestedFloor());
+            trace.put("secondRequestedFloor", second.requestedFloor());
+            trace.put("capturedFirstPendingMatches", capturedFirstPending);
+            trace.put("generationOrder", generationOrder);
+            trace.put("independentIntervals", independentIntervals);
+            trace.put("activeEpochThree", activeEpochThree);
+            trace.put("pairProof", valid());
+            trace.put("firstSourceProof", first.valid());
+            trace.put("secondSourceProof", second.valid());
+            trace.put("firstProof", first.trace());
+            trace.put("secondProof", second.trace());
+            return java.util.Collections.unmodifiableMap(trace);
+        }
+    }
+
+    private record FixtureOwnershipSnapshot(String state, String observation, String observationCoherent,
+                                            String observationFingerprint, Long observationGeneration,
+                                            Long currentVerifiedGeneration, Long lastVerifiedGeneration,
+                                            String verifiedHeader, String verifiedStatsFingerprint,
+                                            String validationFailures, Instant nextDueAt) {
+        String flags() {
+            return "{state=" + state + ", observation=" + (observation == null ? "NULL" : "present")
+                    + ", coherent=" + observationCoherent + ", fingerprint=" + observationFingerprint
+                    + ", observation_generation=" + observationGeneration
+                    + ", current_verified_generation=" + currentVerifiedGeneration
+                    + ", last_verified_generation=" + lastVerifiedGeneration
+                    + ", verified_header=" + verifiedHeader + ", verified_stats=" + verifiedStatsFingerprint
+                    + ", validation_failures=" + validationFailures + ", next_due_at=" + nextDueAt + "}";
+        }
+    }
+
+    private record FixturePublicationComponents(String receiptIdentity, Long latestGeneration,
+                                                boolean verificationValid, List<String> pfsRows,
+                                                List<String> evidenceRows, Map<String, Object> sourceHeader,
+                                                Map<String, Object> capturedHeader,
+                                                List<Long> verificationRunGenerations,
+                                                FixtureOwnershipSnapshot ownership) { }
+
+    private record RootDocuments(CatalogueScheduleParser.SourceDocument bootstrap,
+                                 CatalogueScheduleParser.SourceDocument fixtures) { }
+
+    private record ParentSourceDiagnostic(long sourceGeneration, Long publicationGeneration,
+                                          long bootstrapPayloadId, long fixturesPayloadId,
+                                          SourceRead bootstrapRead, SourceRead fixturesRead,
+                                          boolean fixtureFinished, String sourceFingerprint,
+                                          String fixtureFingerprint) { }
+
+    private record ParentSelectionDiagnostic(ParentSourceDiagnostic newestValidCandidate,
+                                              ParentSourceDiagnostic currentPublishedParent,
+                                              int parseableCandidatesVisited) { }
+
+    private record FixtureHeaderState(Map<String, Object> core, Map<String, Object> captured) { }
+    private record FixtureSourceState(String headerFingerprint, String statsFingerprint,
+                                      Integer homeScore, Integer awayScore) { }
+
+    private record FixtureOracle(String headerFingerprint, String statsFingerprint,
+                                 String observationFingerprint, int gameweek,
+                                 Set<Integer> requiredPlayers, int expectedParticipants,
+                                 int receivedParticipants) { }
+
+    private record ActiveAcceptanceMetrics(Set<Integer> verifiedFixtureIds,
+                                           Map<Integer, Long> verifiedReceiptGenerations,
+                                           int verifiedReceipts, int missingReceipts, int skippedFixtureTraces,
+                                           List<Map<String, Object>> fixtureProofs,
+                                           Map<String, Object> canonicalParentProof,
+                                           int servedCorrectionReceipts,
+                                           int correctionReplayRuns, Set<Integer> pendingChangedCorrections,
+                                           Set<Integer> republishedChangedCorrections,
+                                           Map<Integer, String> changedCorrectionOutcomes,
+                                           Instant firstVerifiedAt, Instant lastVerifiedAt,
+                                           int firstNewFixture, long firstNewGeneration, int firstNewAttempt,
+                                           String firstNewWorker, Instant firstNewClaim,
+                                           Duration maxVirtualElapsed,
+                                           int claims, int dispatches, int missingHistoryEvidence,
+                                           int badFixtureManifests, int badBatchPairs, int failedRuns,
+                                           boolean sawReadyFixture, boolean sawBlockedFixture,
+                                           boolean sawUntouchedFixture, int preferentialHistoryClaims,
+                                           int fifoHistoryClaims, int canonicalPreemptions,
+                                           int pendingUnknownGates) { }
 
     private record ColdParentEvidence(int pendingParents, boolean historyDeferred,
                                       boolean canonicalParentCompleted, boolean historyCompleted,
@@ -453,8 +5407,24 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
 
     private record DispatchCompletion(int worker, boolean claimed, Instant completedAt) { }
 
-    private record AdmissionTrace(int ordinal, long generation, int worker,
-                                  EndpointKind endpoint, String path, Instant admittedAt) { }
+    private record CanonicalParentProof(String publicationKey, long publicationGeneration,
+                                        long sourceGeneration, long bootstrapPayloadId,
+                                        long fixturesPayloadId, String sourceFingerprint,
+                                        boolean currentPublished, boolean immutable,
+                                        Map<String, Object> trace) {
+        private static CanonicalParentProof missing() {
+            return new CanonicalParentProof("missing", 0, 0, 0, 0, null, false, false,
+                    Map.of("canonicalLane", "missing", "currentPublished", false, "immutable", false));
+        }
+    }
+
+    private record AdmissionTrace(int ordinal, long generation, String worker,
+                                  EndpointKind endpoint, String path, Instant admittedAt,
+                                  Instant claimedAt, int attemptCount, String kind,
+                                  String publicationKey) { }
+
+    private record ControlledDispatchTrace(int ordinal, boolean claimed, long generation,
+                                           SyncKind kind, Instant completedAt) { }
 
     private record RunProgress(int attemptCount, String state, Instant lastAttemptAt, Instant completedAt) { }
 
@@ -499,14 +5469,24 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
         private final long wallStartedAtNanos;
         private final long cleanupDeadline;
         private final boolean finiteDrain;
+        private final SourceData source;
+        private final boolean cleanOnClose;
+        private final String instanceId = "admission-repro";
         private volatile String finiteStopReason;
-        private final MutableClock clock = new MutableClock(START);
+        private final MutableClock clock;
         private final RuntimeFence fence;
         private final PlannerRuntimeRepository activation;
         private final OwnedSyncStore store;
         private final PayloadReadProbe payloadReads;
         private final OwnedSyncRequestBudget budget;
         private final OwnedSyncDbOperations dbOperations;
+        private final FixtureSyncPublisher publisher;
+        private final CatalogueScheduleDispatcher catalogue;
+        private final HistoryFixtureDispatcher histories;
+        private final List<AdmissionTrace> singleDispatchAdmissions = new ArrayList<>();
+        private final List<ControlledDispatchTrace> controlledDispatchTrace = new ArrayList<>();
+        private int singleAdmissionOrdinal;
+        private int controlledDispatchCalls;
         private final AtomicLong turnNanoTime = new AtomicLong(System.nanoTime());
         private final RequestServer server;
         private final OwnedSyncHttpClient http;
@@ -526,23 +5506,46 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
         private Set<Integer> seededHistoryPlayerIds = Set.of();
 
         Harness(int firstWorker, long wallDeadline) throws Exception {
-            this(firstWorker, wallDeadline, wallDeadline - WALL_LIMIT_NANOS, false);
+            this(firstWorker, wallDeadline, wallDeadline - WALL_LIMIT_NANOS, false,
+                    OwnedMatchdayAdmissionProgressIntegrationTest.source);
         }
 
         Harness(int firstWorker, long wallDeadline, long wallStartedAtNanos) throws Exception {
-            this(firstWorker, wallDeadline, wallStartedAtNanos, true);
+            this(firstWorker, wallDeadline, wallStartedAtNanos, true,
+                    OwnedMatchdayAdmissionProgressIntegrationTest.source);
+        }
+
+        Harness(int firstWorker, long wallDeadline, long wallStartedAtNanos, SourceData source) throws Exception {
+            this(firstWorker, wallDeadline, wallStartedAtNanos, true, source);
         }
 
         private Harness(int firstWorker, long wallDeadline, long wallStartedAtNanos,
-                        boolean finiteDrain) throws Exception {
+                        boolean finiteDrain, SourceData source) throws Exception {
+            this(firstWorker, wallDeadline, wallStartedAtNanos, finiteDrain, source,
+                    new MutableClock(START), OwnedSyncMode.STAGING, true, true);
+        }
+
+        static Harness active(int firstWorker, long wallDeadline, long wallStartedAtNanos,
+                              SourceData source, MutableClock clock,
+                              boolean clearBeforeActivate, boolean cleanOnClose) throws Exception {
+            return new Harness(firstWorker, wallDeadline, wallStartedAtNanos, true, source,
+                    clock, OwnedSyncMode.ACTIVE, clearBeforeActivate, cleanOnClose);
+        }
+
+        private Harness(int firstWorker, long wallDeadline, long wallStartedAtNanos,
+                        boolean finiteDrain, SourceData source, MutableClock clock,
+                        OwnedSyncMode mode, boolean clearBeforeActivate, boolean cleanOnClose) throws Exception {
             this.firstWorker = firstWorker;
             this.wallDeadline = wallDeadline;
             this.wallStartedAtNanos = wallStartedAtNanos;
             this.finiteDrain = finiteDrain;
+            this.source = source;
+            this.clock = clock;
+            this.cleanOnClose = cleanOnClose;
             this.cleanupDeadline = wallDeadline + (finiteDrain ? DRAIN_CLEANUP_RESERVE_NANOS : 0);
-            clearOwnedRows();
+            if (clearBeforeActivate) clearOwnedRows();
             activation = new PlannerRuntimeRepository(jdbc, tx, clock, TABLES);
-            fence = activation.activate(SEASON.code(), OwnedSyncMode.STAGING);
+            fence = activation.activate(SEASON.code(), mode);
             payloadReads = new PayloadReadProbe(jdbc.getDataSource());
             payloadReads.setQueryTimeout(10);
             store = new OwnedSyncStore(payloadReads, tx, clock, TABLES, fence);
@@ -551,18 +5554,89 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
             server = new RequestServer(source, clock);
             http = new OwnedSyncHttpClient(budget, server.baseUri(), Duration.ofSeconds(30), clock,
                     dbOperations, Duration.ofSeconds(180), turnNanoTime::get);
-            var catalogue = CatalogueScheduleDispatcher.staging(store, http, clock);
-            var histories = HistoryFixtureDispatcher.staging(store, http, clock);
+            publisher = new FixtureSyncPublisher(jdbc, clock, store,
+                    new FixtureSyncRepository(jdbc, TABLES), TABLES);
+            if (mode == OwnedSyncMode.ACTIVE) {
+                catalogue = new CatalogueScheduleDispatcher(store,
+                        new CatalogueScheduleWriter(jdbc, clock, store, TABLES, CAPTURED), http, clock);
+                histories = new HistoryFixtureDispatcher(store, publisher, http, clock);
+            } else {
+                catalogue = CatalogueScheduleDispatcher.staging(store, http, clock);
+                histories = HistoryFixtureDispatcher.staging(store, http, clock);
+            }
             PlannerRuntimeRepository runtime = new PlannerRuntimeRepository(jdbc, tx, clock, TABLES, fence);
             PlannerInputRepository inputs = new PlannerInputRepository(jdbc, store, TABLES, CAPTURED, clock);
             coordinator = new OwnedMatchdayCoordinator(SEASON, new AdaptiveMatchdayPlanner(clock), inputs,
-                    runtime, store, catalogue, histories, "admission-repro");
+                    runtime, store, catalogue, histories, instanceId);
             long watchdogDelay = Math.max(1, wallDeadline - System.nanoTime());
             watchdogTask = watchdog.schedule(this::emergencyStop, watchdogDelay, TimeUnit.NANOSECONDS);
         }
 
         void resetPayloadReads() {
             payloadReads.reset();
+        }
+
+        void dispatchCanonicalCycle() throws Exception {
+            catalogue.enqueueCycle(SEASON, clock.instant());
+            dispatchDueUntilIdle("baseline-canonical");
+        }
+
+        int dispatchDueUntilIdle(String workerPrefix) throws Exception {
+            int dispatched = 0;
+            for (int index = 0; index < ACTIVE_RECOVERY_DISPATCH_LIMIT; index++) {
+                int claimed = dispatchOneWithControlledResponse(workerPrefix + "-" + index);
+                if (claimed == 0) return dispatched;
+                dispatched++;
+            }
+            throw new AssertionError("dispatcher exceeded its declared bound: "
+                    + workerPrefix + " dispatched=" + dispatched + " now=" + clock.instant());
+        }
+
+        int dispatchCanonicalDueUntilIdle(String workerPrefix) throws Exception {
+            int dispatched = 0;
+            for (int index = 0; index < ACTIVE_RECOVERY_DISPATCH_LIMIT; index++) {
+                int dueCanonical = jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
+                        + " WHERE season=? AND runtime_mode=? AND runtime_epoch=?"
+                        + " AND kind='CATALOGUE_SCHEDULE' AND due_at<=? AND requested_source_after<=?"
+                        + " AND (state='PENDING' OR (state='LEASED' AND lease_expires_at<=?))",
+                        Integer.class, SEASON.code(), fence.mode().name(), fence.epoch(),
+                        Timestamp.from(clock.instant()), Timestamp.from(clock.instant()), Timestamp.from(clock.instant()));
+                if (dueCanonical == 0) return dispatched;
+                int claimed = dispatchOneWithControlledResponse(workerPrefix + "-" + index);
+                if (claimed == 0) return dispatched;
+                dispatched++;
+            }
+            throw new AssertionError("canonical dispatcher exceeded its declared bound: "
+                    + workerPrefix + " dispatched=" + dispatched + " now=" + clock.instant());
+        }
+
+        void seedNewerUnpublishedCanonicalPairWithoutAdvancingDemand() throws IOException {
+            Instant sourceFloor = BASELINE_SOURCE_START;
+            clock.advance(Duration.ofMillis(1));
+            Instant now = clock.instant();
+            long generation = jdbc.queryForObject("INSERT INTO " + TABLES.run()
+                    + "(kind,season,coalescing_key,publication_key,priority,due_at,requested_source_after,"
+                    + "runtime_mode,runtime_epoch,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?) "
+                    + "RETURNING generation", Long.class, SyncKind.CATALOGUE_SCHEDULE.name(), SEASON.code(),
+                    CatalogueScheduleDispatcher.CATALOGUE_PRICE_COALESCING_KEY,
+                    CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY, 0, Timestamp.from(now),
+                    Timestamp.from(sourceFloor), fence.mode().name(), fence.epoch(), Timestamp.from(now),
+                    Timestamp.from(now));
+            Lease lease = store.acquireForSeason(SEASON.code(), "seed-unpublished-canonical",
+                    Duration.ofMinutes(5)).orElseThrow();
+            assertThat(lease.generation()).isEqualTo(generation);
+            SourceRead read = new SourceRead(clock.instant(), clock.instant());
+            CatalogueScheduleParser.parse(SEASON,
+                    new CatalogueScheduleParser.SourceDocument(source.bootstrapBytes(),
+                            new CatalogueScheduleParser.ReadInterval(read.startedAt(), read.finishedAt())),
+                    new CatalogueScheduleParser.SourceDocument(source.fixtureBytes(),
+                            new CatalogueScheduleParser.ReadInterval(read.startedAt(), read.finishedAt())));
+            long bootstrapId = store.stage(lease, OwnedSyncStore.Endpoint.bootstrap(), read,
+                    Validation.unchecked(), source.bootstrapBytes());
+            long fixturesId = store.stage(lease, OwnedSyncStore.Endpoint.fixtures(), read,
+                    Validation.unchecked(), source.fixtureBytes());
+            store.validateStagedPayloads(lease, List.of(bootstrapId, fixturesId), Validation.valid());
+            store.completeStaged(lease, read, List.of(read, read));
         }
 
         void seedCanonicalPair() {
@@ -583,6 +5657,21 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                     Validation.unchecked(), source.fixtureBytes());
             store.validateStagedPayloads(lease, List.of(bootstrapId, fixturesId), Validation.valid());
             store.completeStaged(lease, read, List.of(read, read));
+        }
+
+        void seedPreAnchorHistories() {
+            var read = new SourceRead(clock.instant(), clock.instant());
+            var interval = new CatalogueScheduleParser.ReadInterval(read.startedAt(), read.finishedAt());
+            var snapshot = CatalogueScheduleParser.parse(SEASON,
+                    new CatalogueScheduleParser.SourceDocument(source.bootstrapBytes(), interval),
+                    new CatalogueScheduleParser.SourceDocument(source.fixtureBytes(), interval));
+            source.playerIds().stream().sorted().forEach(playerId ->
+                    seedValidHistory(snapshot, playerId, clock.instant()));
+            assertThat(jdbc.queryForObject("SELECT count(DISTINCT p.player_id) FROM " + TABLES.payload()
+                    + " p JOIN " + TABLES.run() + " r ON r.generation=p.run_generation"
+                    + " WHERE r.season=? AND r.kind='PLAYER_HISTORY' AND p.endpoint_kind='ELEMENT_SUMMARY'"
+                    + " AND p.validation_state='VALID' AND p.read_started_at<=?",
+                    Integer.class, SEASON.code(), Timestamp.from(START))).isEqualTo(source.playerIds().size());
         }
 
         void seedMixedBacklog() {
@@ -618,8 +5707,8 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                 jdbc.update("UPDATE " + TABLES.run() + " SET due_at=? WHERE generation=?",
                         Timestamp.from(clock.instant()), generation);
             }
-            assertThat(source.playerIds()).as("the established baseline seeds 68 initially due histories")
-                    .hasSize(HISTORY_RUNS);
+            assertThat(source.playerIds()).as("history jobs follow the coordinator's player-id ordering")
+                    .hasSize(source.fullRoster() ? FULL_ROSTER_PLAYERS : HISTORY_RUNS);
             Set<Integer> requiredPlayers = requiredHistoryPlayersByFixture.values().stream()
                     .flatMap(Set::stream).collect(java.util.stream.Collectors.toCollection(java.util.TreeSet::new));
             List<Integer> historiesToEnqueue = new ArrayList<>(source.playerIds());
@@ -634,8 +5723,8 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                     + " WHERE season=? AND kind='FIXTURE_VERIFICATION'", Integer.class, SEASON.code()))
                     .isEqualTo(FIXTURE_RUNS);
             assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
-                    + " WHERE season=? AND kind='PLAYER_HISTORY'", Integer.class, SEASON.code()))
-                    .isEqualTo(seededHistoryPlayerIds.size());
+                    + " WHERE season=? AND kind='PLAYER_HISTORY' AND state='PENDING'",
+                    Integer.class, SEASON.code())).isEqualTo(seededHistoryPlayerIds.size());
             assertThat(seededFixtureRuns).hasSize(FIXTURE_RUNS);
             assertThat(seededHistoryPlayerIds).containsAll(requiredPlayers);
             assertThat(seededPartialGenerations).hasSize(SEEDED_PARTIALS);
@@ -980,6 +6069,14 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
             return metrics(driver);
         }
 
+        RosterBaselineMetrics driveRosterBaseline() throws Exception {
+            ManualDriver driver = new ManualDriver(this, ROSTER_BASELINE_VIRTUAL_LIMIT,
+                    ROSTER_BASELINE_ADMISSION_LIMIT, ROSTER_BASELINE_DISPATCH_LIMIT);
+            http.setWaitObserverForTests(driver::observeWait);
+            driver.run();
+            return rosterBaselineMetrics(driver);
+        }
+
         FiniteDrainMetrics driveFiniteDrain() throws Exception {
             ManualDriver driver = new ManualDriver(this, true);
             http.setWaitObserverForTests(driver::observeWait);
@@ -1010,6 +6107,134 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                     metrics.claims(), metrics.deferrals(), metrics.predecessorWaits(), metrics.spacingWaits(),
                     metrics.virtualSeconds(), metrics.wallSeconds());
             return metrics;
+        }
+
+        void assertStagedHistoryCoverage() {
+            int missingHistories = jdbc.queryForObject("""
+                    SELECT count(*) FROM %s r
+                    JOIN %s m ON m.run_generation = r.generation
+                    JOIN %s f ON f.id = m.fixtures_payload_id
+                    CROSS JOIN LATERAL unnest(m.required_player_ids) AS required(player_id)
+                    WHERE r.season = ? AND r.runtime_mode = ? AND r.runtime_epoch = ?
+                      AND r.kind = 'FIXTURE_VERIFICATION' AND r.state = 'COMPLETED'
+                      AND NOT EXISTS (
+                          SELECT 1 FROM %s hp JOIN %s hr ON hr.generation = hp.run_generation
+                          WHERE hp.endpoint_kind = 'ELEMENT_SUMMARY' AND hp.event_id IS NULL
+                            AND hp.player_id = required.player_id AND hp.validation_state = 'VALID'
+                            AND hp.read_started_at >= GREATEST(r.requested_source_after, m.source_floor,
+                                f.read_finished_at + INTERVAL '1 millisecond')
+                            AND hp.read_finished_at <= r.completed_at AND hp.staged_at <= r.completed_at
+                            AND hr.kind = 'PLAYER_HISTORY' AND hr.state = 'COMPLETED'
+                            AND hr.completed_at <= r.completed_at
+                            AND hr.coalescing_key = 'player-history:' || required.player_id::text
+                            AND hr.publication_key = 'player-history:' || required.player_id::text
+                            AND hr.season = r.season AND hr.runtime_mode = r.runtime_mode
+                            AND hr.runtime_epoch = r.runtime_epoch
+                      )
+                    """.formatted(TABLES.run(), TABLES.fixtureDependencyManifest(), TABLES.payload(),
+                    TABLES.payload(), TABLES.run()), Integer.class, SEASON.code(), fence.mode().name(), fence.epoch());
+            assertThat(missingHistories).as("every staged fixture has complete post-anchor history evidence").isZero();
+        }
+
+        private RosterBaselineMetrics rosterBaselineMetrics(ManualDriver driver) {
+            String fixturePlaceholders = String.join(",", seededFixtureRuns.stream()
+                    .map(ignored -> "?").toList());
+            Object[] fixtureGenerations = seededFixtureRuns.stream()
+                    .map(SeededFixture::generation).toArray();
+            List<Map.Entry<Integer, Instant>> staged = jdbc.query("SELECT substring(publication_key from 9)::int, "
+                            + "completed_at FROM " + TABLES.run() + " WHERE generation IN ("
+                            + fixturePlaceholders + ") AND kind='FIXTURE_VERIFICATION' AND state='COMPLETED' "
+                            + "ORDER BY completed_at,generation LIMIT 1",
+                    (rs, row) -> Map.entry(rs.getInt(1), rs.getTimestamp(2).toInstant()), fixtureGenerations);
+            Instant firstStageAt = staged.isEmpty() ? null : staged.getFirst().getValue();
+            Integer firstStageFixture = staged.isEmpty() ? null : staged.getFirst().getKey();
+            int admissions = durableAdmissionCount();
+            Integer admissionsAtFirstStage = firstStageAt == null ? null : jdbc.queryForObject(
+                    "SELECT count(*) FROM " + TABLES.requestAttempt() + " WHERE admitted_at<=?",
+                    Integer.class, Timestamp.from(firstStageAt));
+            Map<Long, FixtureManifestCheck> manifestChecks = fixtureManifestChecks();
+            Set<Integer> manifestedPlayers = new HashSet<>();
+            int manifests = 0;
+            int validManifests = 0;
+            int manifestEntries = 0;
+            int minimumManifestPlayers = Integer.MAX_VALUE;
+            int maximumManifestPlayers = 0;
+            int manifestMismatches = 0;
+            for (SeededFixture fixture : seededFixtureRuns) {
+                FixtureManifestCheck check = manifestChecks.get(fixture.generation());
+                if (check == null || check.manifestPlayers() == null) continue;
+                manifests++;
+                Set<Integer> manifestPlayers = check.manifestPlayers();
+                manifestEntries += manifestPlayers.size();
+                manifestedPlayers.addAll(manifestPlayers);
+                minimumManifestPlayers = Math.min(minimumManifestPlayers, manifestPlayers.size());
+                maximumManifestPlayers = Math.max(maximumManifestPlayers, manifestPlayers.size());
+                boolean expected = requiredHistoryPlayersByFixture.get(fixture.fixtureId()).equals(manifestPlayers);
+                boolean realistic = manifestPlayers.size() >= 50 && manifestPlayers.size() <= 86;
+                if (!check.checked() || !expected || !realistic) manifestMismatches++;
+                else validManifests++;
+            }
+            if (manifests == 0) minimumManifestPlayers = 0;
+            int sourceFloorMismatches = jdbc.queryForObject("SELECT count(*) FROM "
+                            + TABLES.fixtureDependencyManifest() + " m JOIN " + TABLES.run()
+                            + " r ON r.generation=m.run_generation WHERE m.run_generation IN ("
+                            + fixturePlaceholders + ") AND m.source_floor IS DISTINCT FROM r.requested_source_after",
+                    Integer.class, fixtureGenerations);
+            int epochMismatches = jdbc.queryForObject("SELECT count(*) FROM "
+                            + TABLES.fixtureDependencyManifest() + " m JOIN " + TABLES.run()
+                            + " r ON r.generation=m.run_generation WHERE m.run_generation IN ("
+                            + fixturePlaceholders + ") AND (r.runtime_mode<>? OR r.runtime_epoch<>?)",
+                    Integer.class, java.util.stream.Stream.concat(java.util.Arrays.stream(fixtureGenerations),
+                            java.util.stream.Stream.of(fence.mode().name(), fence.epoch())).toArray());
+            int historyRunsCompleted = jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
+                    + " WHERE season=? AND kind='PLAYER_HISTORY' AND state='COMPLETED'",
+                    Integer.class, SEASON.code());
+            int historyRunsPending = jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
+                    + " WHERE season=? AND kind='PLAYER_HISTORY' AND state='PENDING'",
+                    Integer.class, SEASON.code());
+            int historyJobsNotYetClaimed = jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
+                    + " WHERE season=? AND kind='PLAYER_HISTORY' AND state='PENDING' AND attempt_count=0",
+                    Integer.class, SEASON.code());
+            int historyRequestsAdvancedPastPreAnchor = jdbc.queryForObject("SELECT count(DISTINCT publication_key) "
+                            + "FROM " + TABLES.run() + " WHERE season=? AND kind='PLAYER_HISTORY' "
+                            + "AND requested_source_after>?",
+                    Integer.class, SEASON.code(), Timestamp.from(START));
+            int preAnchorHistories = jdbc.queryForObject("SELECT count(DISTINCT p.player_id) FROM "
+                            + TABLES.payload() + " p JOIN " + TABLES.run()
+                            + " r ON r.generation=p.run_generation WHERE r.season=?"
+                            + " AND r.kind='PLAYER_HISTORY' AND p.endpoint_kind='ELEMENT_SUMMARY'"
+                            + " AND p.validation_state='VALID' AND p.read_started_at<=?",
+                    Integer.class, SEASON.code(), Timestamp.from(START));
+            int fixturesCompleted = jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
+                    + " WHERE season=? AND kind='FIXTURE_VERIFICATION' AND state='COMPLETED'",
+                    Integer.class, SEASON.code());
+            int untouchedFixtures = jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
+                    + " WHERE season=? AND kind='FIXTURE_VERIFICATION' AND attempt_count=0",
+                    Integer.class, SEASON.code());
+            int failedRuns = jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
+                    + " WHERE season=? AND state='FAILED'", Integer.class, SEASON.code());
+            int invalidPayloads = jdbc.queryForObject("SELECT count(*) FROM " + TABLES.payload()
+                    + " p JOIN " + TABLES.run() + " r ON r.generation=p.run_generation"
+                    + " WHERE r.season=? AND p.validation_state='INVALID'", Integer.class, SEASON.code());
+            int uncertainAttempts = jdbc.queryForObject("SELECT count(*) FROM " + TABLES.requestAttempt()
+                    + " WHERE hold_until_expiry", Integer.class);
+            int unresolvedAttempts = jdbc.queryForObject("SELECT count(*) FROM " + TABLES.requestAttempt()
+                    + " WHERE completed_at IS NULL", Integer.class);
+            Map<Integer, Integer> historyGets = server.historyGetsByPlayer();
+            return new RosterBaselineMetrics(driver.stopReason, firstStageAt, firstStageFixture,
+                    admissionsAtFirstStage, admissions, driver.dispatches, driver.completions.size(),
+                    server.getsByEndpoint(), server.returnedGets(), server.returnedRawBytes(), payloadReads.snapshot(),
+                    preAnchorHistories, historyRunsCompleted, historyRunsPending, historyJobsNotYetClaimed,
+                    historyRequestsAdvancedPastPreAnchor,
+                    historyGets.values().stream().mapToInt(count -> Math.max(0, count - 1)).sum(),
+                    (int) historyGets.values().stream().filter(count -> count > 1).count(), fixturesCompleted,
+                    untouchedFixtures, store.readyFixtureGenerations(SEASON.code(), FIXTURE_RUNS).size(),
+                    manifests, validManifests, minimumManifestPlayers, maximumManifestPlayers,
+                    manifestEntries - manifestedPlayers.size(), manifestedPlayers.size(),
+                    Math.max(0, source.playerIds().size() - manifestedPlayers.size()), manifestMismatches,
+                    sourceFloorMismatches, epochMismatches, failedRuns, invalidPayloads, uncertainAttempts,
+                    unresolvedAttempts, Duration.between(START, clock.instant()).toNanos() / 1e9,
+                    driver.workWallSeconds());
         }
 
         private Metrics metrics(ManualDriver driver) {
@@ -1060,7 +6285,7 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                            (r.season = ? AND r.runtime_mode = ? AND r.runtime_epoch = ?
                             AND m.run_generation IS NOT NULL
                             AND fpl_sync_required_ids_valid(m.required_player_ids)
-                            AND m.source_floor IS NOT NULL
+                            AND m.source_floor = r.requested_source_after
                             AND b.id IS NOT NULL AND f.id IS NOT NULL AND l.id IS NOT NULL
                             AND b.read_started_at >= r.requested_source_after
                             AND f.read_started_at >= r.requested_source_after
@@ -1259,6 +6484,26 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                     newOutstandingPartialPairs(), driver.peakNewPartialPairs);
         }
 
+        boolean hasDueActiveRuns() {
+            Instant now = clock.instant();
+            return jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM " + TABLES.run()
+                    + " WHERE season=? AND runtime_mode=? AND runtime_epoch=?"
+                    + " AND due_at<=? AND requested_source_after<=?"
+                    + " AND (state='PENDING' OR (state='LEASED' AND lease_expires_at<=?)))",
+                    Boolean.class, SEASON.code(), fence.mode().name(), fence.epoch(),
+                    Timestamp.from(now), Timestamp.from(now), Timestamp.from(now));
+        }
+
+        Instant earliestActiveRunDue() {
+            Timestamp due = jdbc.queryForObject("SELECT min(CASE WHEN state='LEASED'"
+                    + " THEN GREATEST(due_at,requested_source_after,lease_expires_at)"
+                    + " ELSE GREATEST(due_at,requested_source_after) END) FROM " + TABLES.run()
+                    + " WHERE season=? AND runtime_mode=? AND runtime_epoch=?"
+                    + " AND state IN ('PENDING','LEASED')", Timestamp.class,
+                    SEASON.code(), fence.mode().name(), fence.epoch());
+            return due == null ? null : due.toInstant();
+        }
+
         int durableAdmissionCount() {
             return jdbc.queryForObject("SELECT count(*) FROM " + TABLES.requestAttempt(), Integer.class);
         }
@@ -1276,6 +6521,8 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
         }
 
         int dispatchOneWithControlledResponse(String workerId) throws Exception {
+            controlledDispatchCalls++;
+            Map<Long, Integer> attemptsBefore = runAttemptCounts();
             BlockingQueue<WaitObservation> waitObservations = new LinkedBlockingQueue<>();
             http.setWaitObserverForTests(waitObservations::add);
             Future<Boolean> future = dispatchWorkers.submit(() -> coordinator.dispatchOne(workerId));
@@ -1285,6 +6532,7 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
             while (!future.isDone()) {
                 RequestArrival arrival;
                 while ((arrival = server.pollArrival(0, TimeUnit.MILLISECONDS)) != null) {
+                    recordSingleDispatchAdmission(arrival, workerId);
                     responses.add(new ScheduledResponse(arrival, arrival.at().plus(RESPONSE_TIME)));
                 }
                 WaitObservation observation;
@@ -1328,6 +6576,7 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                 RequestArrival observed = server.pollArrival(
                         Math.min(TimeUnit.MILLISECONDS.toNanos(5), remainingWallNanos()), TimeUnit.NANOSECONDS);
                 if (observed != null) {
+                    recordSingleDispatchAdmission(observed, workerId);
                     responses.add(new ScheduledResponse(observed, observed.at().plus(RESPONSE_TIME)));
                 }
             }
@@ -1347,14 +6596,46 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
             if (!parked.isEmpty() || !responses.isEmpty()) {
                 throw new AssertionError("single dispatch ended with an unacknowledged wait or response");
             }
-            return future.get(remainingWallNanos(), TimeUnit.NANOSECONDS) ? 1 : 0;
+            boolean claimed = future.get(remainingWallNanos(), TimeUnit.NANOSECONDS);
+            Map.Entry<Long, Integer> claimedRun = runAttemptCounts().entrySet().stream()
+                    .filter(entry -> entry.getValue() > attemptsBefore.getOrDefault(entry.getKey(), 0))
+                    .max(Map.Entry.comparingByKey()).orElse(null);
+            long generation = claimedRun == null ? 0 : claimedRun.getKey();
+            SyncKind kind = generation == 0 ? null : SyncKind.valueOf(jdbc.queryForObject(
+                    "SELECT kind FROM " + TABLES.run() + " WHERE generation=?", String.class, generation));
+            controlledDispatchTrace.add(new ControlledDispatchTrace(controlledDispatchCalls,
+                    claimed, generation, kind, clock.instant()));
+            return claimed ? 1 : 0;
+        }
+
+        private Map<Long, Integer> runAttemptCounts() {
+            Map<Long, Integer> result = new HashMap<>();
+            jdbc.query("SELECT generation,attempt_count FROM " + TABLES.run()
+                            + " WHERE season=? AND runtime_mode=? AND runtime_epoch=?",
+                    (rs, row) -> result.put(rs.getLong(1), rs.getInt(2)),
+                    SEASON.code(), fence.mode().name(), fence.epoch());
+            return result;
+        }
+
+        private void recordSingleDispatchAdmission(RequestArrival arrival, String workerId) {
+            String owner = "admission-repro:" + workerId;
+            Map<String, Object> leased = jdbc.queryForMap("SELECT generation,kind,publication_key,"
+                    + "attempt_count,last_attempt_at FROM " + TABLES.run()
+                    + " WHERE state='LEASED' AND lease_owner=?", owner);
+            singleDispatchAdmissions.add(new AdmissionTrace(++singleAdmissionOrdinal,
+                    ((Number) leased.get("generation")).longValue(), workerId,
+                    arrival.kind(), arrival.path(), arrival.at(),
+                    ((Timestamp) leased.get("last_attempt_at")).toInstant(),
+                    ((Number) leased.get("attempt_count")).intValue(),
+                    (String) leased.get("kind"), (String) leased.get("publication_key")));
         }
 
         private void advanceControlledTime(Instant instant) {
             Instant current = clock.instant();
             if (instant.isAfter(current)) {
-                turnNanoTime.addAndGet(Duration.between(current, instant).toNanos());
-                clock.set(instant);
+                Duration elapsed = Duration.between(current, instant);
+                turnNanoTime.addAndGet(elapsed.toNanos());
+                clock.advance(elapsed);
             }
             http.clockAdvancedForTests();
         }
@@ -1444,7 +6725,7 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                     }
                     activation.deactivate(fence);
                 } finally {
-                    if (workerClean && dbWorkerClean && watchdogClean) clearOwnedRows();
+                    if (workerClean && dbWorkerClean && watchdogClean && cleanOnClose) clearOwnedRows();
                 }
                 assertThat(!watchdogFired.get() || (finiteDrain && "WALL_LIMIT".equals(finiteStopReason)))
                         .as("watchdog may fire only when the finite drain stops at WALL_LIMIT").isTrue();
@@ -1454,11 +6735,20 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
 
     private static final class ManualDriver {
         private static final long POLL_NANOS = TimeUnit.MILLISECONDS.toNanos(5);
+        private static final Duration PLANNER_FIXED_DELAY = Duration.ofMinutes(1);
 
         private final Harness harness;
         private final long readyGeneration;
         private final long untouchedGeneration;
         private final boolean finiteDrain;
+        private final boolean firstStageBaseline;
+        private final Duration virtualLimit;
+        private final int admissionLimit;
+        private final int admissionCountAtStart;
+        private final int dispatchStartLimit;
+        private final int claimLimit;
+        private final DriverGoal goal;
+        private int maxActiveWorkers = 2;
         private final int readySeedAttemptCount;
         private final int untouchedSeedAttemptCount;
         private ClaimEvidence readyFirstClaim;
@@ -1466,12 +6756,24 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
         private final Instant startAt;
         private final Instant stopAt;
         private final Instant[] nextAt;
+        private Instant plannerNextDue;
+        private Instant nextPlannerTickAt;
+        private PlannerInputRepository.PlannerSnapshot plannerSnapshotAtFirstFixedTick;
         private final Map<Integer, DispatchState> active = new LinkedHashMap<>();
         private final List<DispatchCompletion> completions = new ArrayList<>();
         private final List<AdmissionTrace> admissions = new ArrayList<>();
+        private final Map<Integer, FirstPendingObservation> firstPendingObservations = new TreeMap<>();
+        private Set<Integer> additionalFirstPendingFixtureIds = Set.of();
+        private final Map<Integer, List<String>> targetTransitions = new TreeMap<>();
         private final Map<Thread, DispatchState> dispatchByThread = new ConcurrentHashMap<>();
+        private Set<Long> lastReadyTargetGenerations = Set.of();
+        private String lastNextWake = "none";
+        private int advancesWithReadyTargets;
         private final List<ControlledResponse> responses = new ArrayList<>();
+        private final List<PlannerTickTrace> plannerTicks = new ArrayList<>();
         private final List<RequestArrival> unassignedArrivals = new ArrayList<>();
+        private final Duration delayedFirstResponse;
+        private boolean delayedFirstResponseUsed;
         private final AtomicReference<String> observerFailure = new AtomicReference<>();
         private final AtomicInteger predecessorWaits = new AtomicInteger();
         private final AtomicInteger predecessorResumes = new AtomicInteger();
@@ -1484,6 +6786,11 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
         private int deferrals;
         private int firstAdmissionWorker;
         private int peakNewPartialPairs;
+        private int preferentialHistoryClaims;
+        private int fifoHistoryClaims;
+        private boolean sawReadyFixture;
+        private boolean sawBlockedFixture;
+        private boolean sawUntouchedFixture;
         private int nextProgressDispatchCount = 100;
         private String stopReason;
         private long workStoppedAtNanos = -1;
@@ -1500,14 +6807,77 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
             this(harness, 0, 0, finiteDrain);
         }
 
+        ManualDriver(Harness harness, Duration virtualLimit, int admissionLimit, int dispatchStartLimit) {
+            this(harness, 0, 0, true, true, virtualLimit, admissionLimit,
+                    dispatchStartLimit, null, Integer.MAX_VALUE);
+        }
+
+        ManualDriver(Harness harness, DriverGoal goal, Duration virtualLimit,
+                     int admissionLimit, int dispatchStartLimit) {
+            this(harness, 0, 0, true, false, virtualLimit, admissionLimit,
+                    dispatchStartLimit, goal, Integer.MAX_VALUE);
+        }
+
+        ManualDriver(Harness harness, DriverGoal goal, Duration virtualLimit,
+                     int claimLimit, int admissionLimit, int dispatchStartLimit) {
+            this(harness, goal, virtualLimit, claimLimit, admissionLimit, dispatchStartLimit, RESPONSE_TIME);
+        }
+
+        ManualDriver(Harness harness, DriverGoal goal, Duration virtualLimit,
+                     int claimLimit, int admissionLimit, int dispatchStartLimit,
+                     Duration delayedFirstResponse) {
+            this(harness, 0, 0, true, false, virtualLimit, admissionLimit,
+                    dispatchStartLimit, goal, claimLimit, delayedFirstResponse);
+        }
+
         private ManualDriver(Harness harness, long readyGeneration, long untouchedGeneration,
                              boolean finiteDrain) {
+            this(harness, readyGeneration, untouchedGeneration, finiteDrain, false,
+                    finiteDrain ? DRAIN_VIRTUAL_LIMIT : VIRTUAL_LIMIT,
+                    DRAIN_ADMISSION_LIMIT, DRAIN_DISPATCH_LIMIT, null, Integer.MAX_VALUE);
+        }
+
+        private ManualDriver(Harness harness, long readyGeneration, long untouchedGeneration,
+                             boolean finiteDrain, boolean firstStageBaseline, Duration virtualLimit,
+                             int admissionLimit, int dispatchStartLimit) {
+            this(harness, readyGeneration, untouchedGeneration, finiteDrain, firstStageBaseline,
+                    virtualLimit, admissionLimit, dispatchStartLimit, null, Integer.MAX_VALUE);
+        }
+
+        private ManualDriver(Harness harness, long readyGeneration, long untouchedGeneration,
+                             boolean finiteDrain, boolean firstStageBaseline, Duration virtualLimit,
+                             int admissionLimit, int dispatchStartLimit, DriverGoal goal,
+                             int claimLimit) {
+            this(harness, readyGeneration, untouchedGeneration, finiteDrain, firstStageBaseline,
+                    virtualLimit, admissionLimit, dispatchStartLimit, goal, claimLimit, RESPONSE_TIME);
+        }
+
+        private ManualDriver(Harness harness, long readyGeneration, long untouchedGeneration,
+                             boolean finiteDrain, boolean firstStageBaseline, Duration virtualLimit,
+                             int admissionLimit, int dispatchStartLimit, DriverGoal goal,
+                             int claimLimit, Duration delayedFirstResponse) {
             this.harness = harness;
             this.readyGeneration = readyGeneration;
             this.untouchedGeneration = untouchedGeneration;
             this.finiteDrain = finiteDrain;
+            this.firstStageBaseline = firstStageBaseline;
+            this.virtualLimit = virtualLimit;
+            this.admissionLimit = admissionLimit;
+            this.admissionCountAtStart = harness.durableAdmissionCount();
+            this.dispatchStartLimit = dispatchStartLimit;
+            this.claimLimit = claimLimit;
+            this.goal = goal;
+            this.delayedFirstResponse = delayedFirstResponse;
             this.startAt = harness.clock.instant();
-            this.stopAt = startAt.plus(finiteDrain ? DRAIN_VIRTUAL_LIMIT : VIRTUAL_LIMIT);
+            this.stopAt = startAt.plus(virtualLimit);
+            this.plannerNextDue = null;
+            if (goal != null) {
+                OwnedMatchdayCoordinator.TickResult initialTick = harness.coordinator.tick();
+                plannerNextDue = initialTick.nextDueAt();
+                plannerTicks.add(new PlannerTickTrace(startAt, Set.of(), List.of(), Map.of(),
+                        Map.of(), Set.of(), initialTick.nextDueAt()));
+                nextPlannerTickAt = harness.clock.instant().plus(PLANNER_FIXED_DELAY);
+            }
             this.nextAt = new Instant[] { startAt, startAt };
             this.readySeedAttemptCount = readyGeneration > 0
                     ? harness.progress(readyGeneration).attemptCount() : 0;
@@ -1518,9 +6888,18 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
 
         void run() throws Exception {
             setToScheduledStart(harness.firstWorker);
+            if (!canStartDispatch()) {
+                stopReason = limitReason();
+                if (stopReason == null) stopReason = softWallCutoffReached() ? "WALL_LIMIT" : "DISPATCH_LIMIT";
+                recordWorkStop();
+                harness.recordFiniteStopReason(stopReason);
+                harness.cancelWorkWatchdog();
+                return;
+            }
+            sampleAcceptanceQueueClasses();
             DispatchState first = start(harness.firstWorker);
             RequestArrival firstArrival = awaitFirstArrival(first);
-            if (firstArrival == null) {
+            if (firstArrival == null && !first.future.isDone()) {
                 stopReason = "WALL_LIMIT";
                 recordWorkStop();
                 harness.recordFiniteStopReason(stopReason);
@@ -1528,15 +6907,20 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                 harness.cancelWorkWatchdog();
                 return;
             }
-            unassignedArrivals.add(firstArrival);
+            if (firstArrival != null) unassignedArrivals.add(firstArrival);
+            else collectCompleted();
+            assignPendingResponses();
+            captureFirstPendingObservations();
 
             int secondWorker = 3 - harness.firstWorker;
-            if (canStartDispatch() && !nextAt[secondWorker - 1].isAfter(harness.clock.instant())) {
+            if (maxActiveWorkers > active.size() && canStartDispatch() && mayStartAlongsideActive()
+                    && !nextAt[secondWorker - 1].isAfter(harness.clock.instant())) {
                 start(secondWorker);
                 nextTieWorker = harness.firstWorker;
             }
 
             while (true) {
+                if (softWallCutoffReached()) stopReason = "WALL_LIMIT";
                 String entryLimit = finiteDrain ? limitReason() : null;
                 if (entryLimit != null) {
                     stopReason = entryLimit;
@@ -1560,11 +6944,14 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                 }
                 releaseDueResponses();
                 collectCompleted();
+                captureFirstPendingObservations();
                 assignPendingResponses();
                 sampleFirstClaimsAtAcknowledgedBoundary();
                 samplePartialPairs();
+                sampleAcceptanceQueueClasses();
                 harness.captureDeferrals(this);
                 maybePrintFiniteProgress();
+                if (softWallCutoffReached()) stopReason = "WALL_LIMIT";
 
                 String limit = finiteDrain ? limitReason() : null;
                 if (limit != null) {
@@ -1574,9 +6961,14 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                     break;
                 }
 
-                if (harness.clock.instant().isBefore(stopAt) && !focusSatisfied()) startReadyWorkers();
+                runPeriodicPlannerTickIfDue();
+                if (harness.clock.instant().isBefore(stopAt) && !focusSatisfied()
+                        && !softWallCutoffReached()) startReadyWorkers();
 
-                if (active.isEmpty() && (focusSatisfied() || !hasActiveRuns() || !canStartDispatch())) break;
+                if (active.isEmpty() && focusSatisfied()) break;
+                if (active.isEmpty() && !hasActiveRuns() && plannerNextDue == null
+                        && nextPlannerTickAt == null) break;
+                if (active.isEmpty() && !canStartDispatch()) break;
                 if (!harness.clock.instant().isBefore(stopAt)) {
                     if (finiteDrain) {
                         stopReason = "VIRTUAL_LIMIT";
@@ -1597,7 +6989,7 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                 }
                 if (next.at().isAfter(stopAt)) {
                     if (active.isEmpty()) {
-                        advanceTo(stopAt);
+                        advanceTo(stopAt, "virtual-limit");
                         continue;
                     }
                     if (finiteDrain) {
@@ -1607,7 +6999,11 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                     quiesceAtCutoff();
                     break;
                 }
-                if (next.at().isAfter(harness.clock.instant())) advanceTo(next.at());
+                if (next.at().isAfter(harness.clock.instant())
+                        && !advanceToIfAcknowledged(next.at(), next.kind().name())) {
+                    // A worker may leave its observed wait while the next event is selected.
+                    waitForEvent();
+                }
             }
             if (!active.isEmpty()) {
                 throw new IllegalStateException("driver cannot yet verify FIFO: workers remain active at snapshot");
@@ -1616,7 +7012,8 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                     || (stopReason == null && System.nanoTime() >= harness.wallDeadline))) {
                 stopReason = "WALL_LIMIT";
             }
-            if (stopReason == null) stopReason = "DRAINED";
+            if (firstStageBaseline && focusSatisfied()) stopReason = "STAGED";
+            else if (stopReason == null) stopReason = "DRAINED";
             recordWorkStop();
             harness.recordFiniteStopReason(stopReason);
             if (finiteDrain) harness.cancelWorkWatchdog();
@@ -1626,7 +7023,8 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
 
         private void recordWorkStop() {
             if (finiteDrain && "WALL_LIMIT".equals(stopReason)) {
-                workStoppedAtNanos = harness.wallDeadline;
+                workStoppedAtNanos = firstStageBaseline && !harness.watchdogFired.get()
+                        ? System.nanoTime() : harness.wallDeadline;
             } else if (workStoppedAtNanos < 0) {
                 workStoppedAtNanos = System.nanoTime();
             }
@@ -1634,6 +7032,11 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
 
         private boolean wallCutoffReached() {
             return finiteDrain && (harness.watchdogFired.get() || System.nanoTime() >= harness.wallDeadline);
+        }
+
+        private boolean softWallCutoffReached() {
+            return firstStageBaseline && System.nanoTime() >= harness.wallDeadline
+                    - ROSTER_BASELINE_DRAIN_RESERVE_NANOS;
         }
 
         private double workWallSeconds() {
@@ -1644,26 +7047,31 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
         private String limitReason() {
             if (!finiteDrain) return null;
             if (wallCutoffReached()) return "WALL_LIMIT";
+            if (goal != null && active.isEmpty() && focusSatisfied()) return null;
+            if (softWallCutoffReached()) return null;
             if (!harness.clock.instant().isBefore(stopAt)) return "VIRTUAL_LIMIT";
-            int admissions = harness.durableAdmissionCount();
+            int admissions = harness.durableAdmissionCount() - admissionCountAtStart;
             if (wallCutoffReached()) return "WALL_LIMIT";
-            if (admissions >= DRAIN_ADMISSION_LIMIT) return "ADMISSION_LIMIT";
-            if (completions.size() >= DRAIN_DISPATCH_LIMIT) return "DISPATCH_LIMIT";
+            if (claims >= claimLimit) return "CLAIM_LIMIT";
+            if (admissions >= admissionLimit) return "ADMISSION_LIMIT";
+            if (dispatches >= dispatchStartLimit) return "DISPATCH_LIMIT";
             return null;
         }
 
         private boolean canStartDispatch() {
             if (!finiteDrain) return dispatches < DISPATCH_LIMIT;
-            if (wallCutoffReached()) return false;
-            int admissions = harness.durableAdmissionCount();
+            if (wallCutoffReached() || softWallCutoffReached()
+                    || (firstStageBaseline && focusSatisfied())) return false;
+            int admissions = harness.durableAdmissionCount() - admissionCountAtStart;
             return !wallCutoffReached()
-                    && dispatches < DRAIN_DISPATCH_LIMIT
-                    && admissions < DRAIN_ADMISSION_LIMIT
+                    && claims < claimLimit
+                    && dispatches < dispatchStartLimit
+                    && admissions < admissionLimit
                     && harness.clock.instant().isBefore(stopAt);
         }
 
         private void maybePrintFiniteProgress() {
-            if (!finiteDrain || completions.size() < nextProgressDispatchCount) return;
+            if (!finiteDrain || firstStageBaseline || completions.size() < nextProgressDispatchCount) return;
             harness.printFiniteProgress(this);
             nextProgressDispatchCount += 100;
         }
@@ -1671,11 +7079,17 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
         private RequestArrival awaitFirstArrival(DispatchState dispatch) throws Exception {
             while (true) {
                 if (wallCutoffReached()) return null;
+                WaitState wait = dispatch.acknowledgedWait;
+                if (wait != null && wait.kind == WaitKind.SPACING) {
+                    if (wait.nextDue.isAfter(stopAt)) return null;
+                    if (wait.nextDue.isAfter(harness.clock.instant())) advanceTo(wait.nextDue, "spacing-" + wait.kind);
+                    else harness.http.clockAdvancedForTests();
+                }
                 RequestArrival arrival = harness.server.pollArrival(pollTimeoutNanos(), TimeUnit.NANOSECONDS);
                 if (arrival != null) return arrival;
                 if (dispatch.future.isDone()) {
                     dispatch.future.get();
-                    throw new AssertionError("first worker completed without a server-observed GET");
+                    return null;
                 }
             }
         }
@@ -1709,14 +7123,40 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                         .filter(dispatch -> !dispatch.future.isDone())
                         .filter(dispatch -> dispatch.acknowledgedWait == null && dispatch.pendingResponse == null)
                         .toList();
-                if (candidates.size() != 1) continue;
+                if (candidates.size() != 1) {
+                    throw new IllegalStateException("source callback does not have exactly one active owner: path="
+                            + arrival.path() + " at=" + arrival.at() + " candidates="
+                            + candidates.stream().map(dispatch -> Integer.toString(dispatch.worker)).toList());
+                }
                 DispatchState owner = candidates.getFirst();
+                long generation = focusedGeneration(owner);
+                if (generation == 0) {
+                    throw new IllegalStateException("source callback has no live leased generation: worker="
+                            + owner.worker + " owner=" + harness.instanceId + ":" + owner.worker
+                            + " path=" + arrival.path() + " at=" + arrival.at());
+                }
+                Duration responseDelay = delayedFirstResponseUsed ? RESPONSE_TIME : delayedFirstResponse;
+                delayedFirstResponseUsed = true;
                 ControlledResponse response = new ControlledResponse(owner, arrival,
-                        arrival.at().plus(RESPONSE_TIME));
+                        arrival.at().plus(responseDelay), generation);
                 owner.pendingResponse = response;
                 responses.add(response);
-                admissions.add(new AdmissionTrace(++admissionOrdinal, focusedGeneration(owner), owner.worker,
-                        arrival.kind(), arrival.path(), arrival.at()));
+                Map<String, Object> run = jdbc.queryForMap("SELECT kind,publication_key,attempt_count,last_attempt_at "
+                        + "FROM " + TABLES.run() + " WHERE generation=? AND state='LEASED' AND lease_owner=? "
+                        + "AND season=? AND runtime_mode=? AND runtime_epoch=?", generation,
+                        harness.instanceId + ":" + owner.worker, SEASON.code(),
+                        harness.fence.mode().name(), harness.fence.epoch());
+                admissions.add(new AdmissionTrace(++admissionOrdinal, generation,
+                        Integer.toString(owner.worker), arrival.kind(), arrival.path(), arrival.at(),
+                        ((Timestamp) run.get("last_attempt_at")).toInstant(),
+                        ((Number) run.get("attempt_count")).intValue(),
+                        (String) run.get("kind"), (String) run.get("publication_key")));
+                if (goal != null && "FIXTURE_VERIFICATION".equals(run.get("kind"))
+                        && goal.fixtureIds().contains(fixtureId((String) run.get("publication_key")))) {
+                    owner.targetGenerations.add(generation);
+                    owner.targetRoles.add(arrival.kind() + ":" + arrival.path() + "@" + arrival.at());
+                }
+                recordHistoryLane(generation, arrival.kind());
                 unassignedArrivals.remove(arrival);
                 if (firstAdmissionWorker == 0) firstAdmissionWorker = owner.worker;
             }
@@ -1726,6 +7166,13 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
             Instant now = harness.clock.instant();
             for (ControlledResponse response : List.copyOf(responses)) {
                 if (!response.releaseAt.isAfter(now)) {
+                    if (response.released) {
+                        throw new IllegalStateException("controlled source response was released twice");
+                    }
+                    if (response.owner.pendingResponse != response) {
+                        throw new IllegalStateException("controlled response is no longer bound to its worker");
+                    }
+                    response.released = true;
                     response.owner.pendingResponse = null;
                     response.arrival.release().countDown();
                     responses.remove(response);
@@ -1736,27 +7183,44 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
         private void collectCompleted() throws Exception {
             for (DispatchState dispatch : List.copyOf(active.values())) {
                 if (!dispatch.future.isDone()) continue;
+                if (dispatch.pendingResponse != null && !dispatch.pendingResponse.released) {
+                    throw new IllegalStateException("dispatch completed before its controlled response release: worker="
+                            + dispatch.worker + " generation=" + dispatch.generation + " endpoint="
+                            + dispatch.pendingResponse.arrival.kind() + " releaseAt="
+                            + dispatch.pendingResponse.releaseAt + " now=" + harness.clock.instant());
+                }
                 DispatchCompletion result = dispatch.future.get();
                 if (dispatch.pendingResponse != null) {
-                    throw new IllegalStateException("dispatch completed before its controlled response release: worker="
-                            + dispatch.worker + " endpoint=" + dispatch.pendingResponse.arrival.kind()
-                            + " releaseAt=" + dispatch.pendingResponse.releaseAt
-                            + " now=" + harness.clock.instant());
+                    throw new IllegalStateException("released response remained bound to completed dispatch: worker="
+                            + dispatch.worker + " generation=" + dispatch.generation);
                 }
                 if (result.claimed()) claims++;
+                if (goal != null) {
+                    for (long generation : dispatch.targetGenerations) {
+                        recordTargetTransition(dispatch, generation, result);
+                    }
+                }
                 completions.add(result);
                 nextAt[result.worker() - 1] = result.completedAt().plus(WORKER_DELAY);
+                dispatch.releaseGenerationMapping();
                 active.remove(result.worker());
             }
         }
 
         private void startReadyWorkers() {
-            while (canStartDispatch() && hasActiveRuns()) {
+            while (active.size() < maxActiveWorkers && canStartDispatch()
+                    && hasDueActiveRuns() && mayStartAlongsideActive()) {
+                sampleAcceptanceQueueClasses();
                 int worker = readyWorker();
                 if (worker == 0) return;
                 start(worker);
                 nextTieWorker = 3 - worker;
             }
+        }
+
+        private boolean mayStartAlongsideActive() {
+            return active.values().stream().allMatch(dispatch ->
+                    dispatch.future.isDone() || dispatch.pendingResponse != null);
         }
 
         private int readyWorker() {
@@ -1772,22 +7236,68 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
         }
 
         private long focusedGeneration(DispatchState dispatch) {
-            String owner = "admission-repro:" + dispatch.worker;
-            for (long generation : List.of(readyGeneration, untouchedGeneration)) {
-                if (generation > 0 && jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM " + TABLES.run()
-                        + " WHERE generation=? AND state='LEASED' AND lease_owner=?)", Boolean.class,
-                        generation, owner)) return generation;
+            if (dispatch.generation != null) return dispatch.generation;
+            String owner = harness.instanceId + ":" + dispatch.worker;
+            List<Long> leased = jdbc.queryForList("SELECT generation FROM " + TABLES.run()
+                    + " WHERE state='LEASED' AND lease_owner=? AND season=? AND runtime_mode=? AND runtime_epoch=?",
+                    Long.class, owner, SEASON.code(), harness.fence.mode().name(), harness.fence.epoch());
+            if (leased.size() > 1) {
+                throw new IllegalStateException("dispatch owner has multiple live generation mappings: worker="
+                        + dispatch.worker + " owner=" + owner + " generations=" + leased);
             }
-            return 0;
+            if (leased.size() == 1) dispatch.generation = leased.getFirst();
+            return dispatch.generation == null ? 0 : dispatch.generation;
         }
 
         private boolean focusSatisfied() {
+            if (goal != null) {
+                if (goal.kind() == DriverGoalKind.FIRST_PENDING_OBSERVATION
+                        && plannerTicks.stream().noneMatch(tick -> tick.at().equals(
+                                startAt.plus(PLANNER_FIXED_DELAY)))) return false;
+                return goalSatisfied();
+            }
+            if (firstStageBaseline) {
+                return jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM " + TABLES.run()
+                        + " WHERE season=? AND kind='FIXTURE_VERIFICATION' AND state='COMPLETED')",
+                        Boolean.class, SEASON.code());
+            }
             if (readyGeneration <= 0 || untouchedGeneration <= 0) return false;
             boolean readyStaged = jdbc.queryForObject("SELECT state='COMPLETED' FROM " + TABLES.run()
                     + " WHERE generation=?", Boolean.class, readyGeneration);
             int untouchedAttempts = jdbc.queryForObject("SELECT attempt_count FROM " + TABLES.run()
                     + " WHERE generation=?", Integer.class, untouchedGeneration);
             return readyStaged && untouchedAttempts > 0;
+        }
+
+        private void captureFirstPendingObservations() {
+            Set<Integer> observedFixtureIds = new java.util.TreeSet<>(additionalFirstPendingFixtureIds);
+            if (goal != null) observedFixtureIds.addAll(goal.fixtureIds());
+            if (observedFixtureIds.isEmpty()) return;
+            String keys = observedFixtureIds.stream().sorted().map(String::valueOf)
+                    .collect(java.util.stream.Collectors.joining(","));
+            jdbc.query("SELECT fs.fixture_id,fs.season_id,fs.season_code,fs.current_verified_generation,"
+                            + "fs.observation_generation,fs.source_read_started_at,fs.source_read_finished_at,"
+                            + "fs.validation_failures::text validation_failures,fs.observation::text observation,"
+                            + "fs.expected_participants,fs.received_participants,"
+                            + "cardinality(fs.missing_player_ids) missing_participants FROM "
+                            + TABLES.fixtureSync() + " fs JOIN "
+                            + TABLES.run() + " r ON r.generation=fs.observation_generation"
+                            + " WHERE fs.season_id=? AND fs.fixture_id IN (" + keys + ")"
+                            + " AND fs.current_verified_generation IS NULL"
+                            + " AND fs.validation_failures @> ARRAY['NEEDS_SECOND_OBSERVATION']::text[]"
+                            + " AND fs.observation->>'coherent'='true' AND r.kind='FIXTURE_VERIFICATION'"
+                            + " AND r.state='COMPLETED' AND r.runtime_mode=? AND r.runtime_epoch=?",
+                    (rs, row) -> firstPendingObservations.putIfAbsent(rs.getInt("fixture_id"),
+                            new FirstPendingObservation(rs.getLong("observation_generation"),
+                                    rs.getInt("season_id"), rs.getString("season_code"),
+                                    nullableLong(rs.getObject("current_verified_generation")),
+                                    new SourceRead(rs.getTimestamp("source_read_started_at").toInstant(),
+                                            rs.getTimestamp("source_read_finished_at").toInstant()),
+                                    rs.getString("validation_failures"),
+                                    FixtureObservationCodec.decode(rs.getString("observation")),
+                                    rs.getInt("expected_participants"), rs.getInt("received_participants"),
+                                    rs.getInt("missing_participants"))),
+                    SEASON.id(), harness.fence.mode().name(), harness.fence.epoch());
         }
 
         private void sampleFirstClaimsAtAcknowledgedBoundary() {
@@ -1843,11 +7353,20 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                     next = earlier(next, new Event(wait.nextDue, EventKind.SPACING));
                 }
             }
-            if (!focusSatisfied() && canStartDispatch() && hasActiveRuns()) {
+            if (!focusSatisfied() && nextPlannerTickAt != null && nextPlannerTickAt.isAfter(now)) {
+                next = earlier(next, new Event(nextPlannerTickAt, EventKind.PLANNER_TICK));
+            }
+            if (!focusSatisfied() && active.size() < maxActiveWorkers && mayStartAlongsideActive()
+                    && canStartDispatch() && hasDueActiveRuns()) {
                 for (int worker : List.of(1, 2)) {
                     if (!active.containsKey(worker)) {
                         next = earlier(next, new Event(nextAt[worker - 1], EventKind.WORKER_START));
                     }
+                }
+            } else if (!focusSatisfied() && active.isEmpty()) {
+                Instant runDue = earliestActiveRunDue();
+                if (runDue != null && runDue.isAfter(now)) {
+                    next = earlier(next, new Event(runDue, EventKind.RUN_DUE));
                 }
             }
             return next;
@@ -1869,6 +7388,10 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
 
         private void quiesceAtCutoff() throws InterruptedException {
             harness.stopDispatchWorkers();
+            if (!dispatchByThread.isEmpty()) {
+                throw new IllegalStateException("dispatch threads remain linked after worker shutdown");
+            }
+            active.values().forEach(DispatchState::releaseGenerationMapping);
             active.clear();
             responses.clear();
             unassignedArrivals.clear();
@@ -1878,33 +7401,234 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
             peakNewPartialPairs = Math.max(peakNewPartialPairs, harness.newOutstandingPartialPairs());
         }
 
+        private boolean goalSatisfied() {
+            if (goal.kind() == DriverGoalKind.PENDING_FIXTURE_RUNS) {
+                if (harness.clock.instant().isBefore(LEGACY_DAILY_DUE) || hasDueCanonicalRuns()
+                        || !harness.store.currentCanonicalParentEvidence(SEASON.code(),
+                        goal.fixtureIds().iterator().next(), harness.clock.instant()).currentPublished()) return false;
+                return pendingFixtureRuns(harness.fence.epoch(), goal.fixtureIds()) == goal.fixtureIds().size();
+            }
+            if (goal.kind() == DriverGoalKind.FIRST_PENDING_OBSERVATION) {
+                return goal.fixtureIds().stream().anyMatch(firstPendingObservations::containsKey);
+            }
+            String keys = goal.fixtureIds().stream().sorted().map(id -> "'fixture:" + id + "'")
+                    .collect(java.util.stream.Collectors.joining(","));
+            return jdbc.queryForObject("SELECT count(DISTINCT r.publication_key) FROM " + TABLES.run()
+                    + " r JOIN " + TABLES.fixtureSync() + " fs ON fs.season_id=?"
+                    + " AND r.publication_key='fixture:' || fs.fixture_id::text"
+                    + " JOIN " + TABLES.receipt() + " p ON p.season=? AND p.publication_key=r.publication_key"
+                    + " AND p.latest_generation=r.generation AND fs.current_verified_generation=r.generation"
+                    + " WHERE r.season=? AND r.runtime_mode=? AND r.runtime_epoch=?"
+                    + " AND r.kind='FIXTURE_VERIFICATION' AND r.state='COMPLETED'"
+                    + " AND fs.state='VERIFIED' AND r.publication_key IN (" + keys + ")",
+                    Integer.class, SEASON.id(), SEASON.code(), SEASON.code(),
+                    harness.fence.mode().name(), harness.fence.epoch()) == goal.fixtureIds().size();
+        }
+
+        private void sampleAcceptanceQueueClasses() {
+            if (goal == null || goal.fixtureIds().isEmpty()) {
+                lastReadyTargetGenerations = Set.of();
+                return;
+            }
+            Set<Long> ready = harness.store.readyFixtureGenerations(SEASON.code(), FIXTURE_RUNS).stream()
+                    .filter(run -> goal.fixtureIds().contains(fixtureId(run.publicationKey())))
+                    .map(OwnedSyncStore.Run::generation).collect(java.util.stream.Collectors.toSet());
+            lastReadyTargetGenerations = Set.copyOf(ready);
+            String keys = goal.fixtureIds().stream().sorted().map(id -> "'fixture:" + id + "'")
+                    .collect(java.util.stream.Collectors.joining(","));
+            jdbc.query("SELECT r.generation,r.attempt_count,"
+                            + "EXISTS(SELECT 1 FROM " + TABLES.fixtureDependencyManifest()
+                            + " m WHERE m.run_generation=r.generation) AS has_manifest,"
+                            + "EXISTS(SELECT 1 FROM " + TABLES.payload()
+                            + " p WHERE p.run_generation=r.generation) AS has_payload FROM " + TABLES.run()
+                            + " r WHERE r.season=? AND r.runtime_mode=? AND r.runtime_epoch=?"
+                            + " AND r.kind='FIXTURE_VERIFICATION' AND r.state='PENDING'"
+                            + " AND r.publication_key IN (" + keys + ")",
+                    (rs, row) -> {
+                        long generation = rs.getLong("generation");
+                        int attempts = rs.getInt("attempt_count");
+                        boolean manifest = rs.getBoolean("has_manifest");
+                        boolean payload = rs.getBoolean("has_payload");
+                        if (ready.contains(generation)) sawReadyFixture = true;
+                        if (attempts == 0 && !manifest && !payload) sawUntouchedFixture = true;
+                        if (attempts > 0 && manifest && !ready.contains(generation)) sawBlockedFixture = true;
+                        return null;
+                    }, SEASON.code(), harness.fence.mode().name(), harness.fence.epoch());
+        }
+
+        private void recordTargetTransition(DispatchState dispatch, long generation,
+                                            DispatchCompletion completion) {
+            Map<String, Object> row = jdbc.queryForMap("SELECT r.generation,r.publication_key,r.state run_state,"
+                    + "r.attempt_count,r.due_at,r.requested_source_after,r.last_attempt_at,r.last_error,"
+                    + "fs.state fixture_state,fs.observation_generation,fs.current_verified_generation,"
+                    + "fs.validation_failures::text validation_failures,fs.next_due_at,"
+                    + "fs.source_read_started_at,fs.source_read_finished_at,m.source_floor,"
+                    + "cardinality(m.required_player_ids) required_players FROM " + TABLES.run() + " r"
+                    + " LEFT JOIN " + TABLES.fixtureSync() + " fs ON fs.season_id=?"
+                    + " AND fs.fixture_id=substring(r.publication_key FROM 9)::integer"
+                    + " LEFT JOIN " + TABLES.fixtureDependencyManifest()
+                    + " m ON m.run_generation=r.generation WHERE r.generation=?",
+                    SEASON.id(), generation);
+            int fixtureId = fixtureId((String) row.get("publication_key"));
+            List<String> transitions = targetTransitions.computeIfAbsent(fixtureId, ignored -> new ArrayList<>());
+            if (transitions.size() >= 10) return;
+            transitions.add("at=" + completion.completedAt() + ",worker=" + dispatch.worker
+                    + ",gen=" + generation + ",attempt=" + row.get("attempt_count")
+                    + ",dispatchStart=" + dispatch.startedAt + ",roles=" + dispatch.targetRoles
+                    + ",run=" + row.get("run_state")
+                    + ",fixture=" + row.get("fixture_state") + ",observation=" + row.get("observation_generation")
+                    + ",verified=" + row.get("current_verified_generation")
+                    + ",validation=" + row.get("validation_failures") + ",lastError=" + row.get("last_error")
+                    + ",wanted=" + row.get("requested_source_after") + ",manifestFloor=" + row.get("source_floor")
+                    + ",read=" + row.get("source_read_started_at") + ".." + row.get("source_read_finished_at")
+                    + ",due=" + row.get("due_at") + ",nextDue=" + row.get("next_due_at")
+                    + ",requiredPlayers=" + row.get("required_players"));
+            dispatch.targetRoles.clear();
+        }
+
+        private void recordHistoryLane(long generation, EndpointKind endpoint) {
+            if (endpoint != EndpointKind.ELEMENT_SUMMARY || generation <= 0) return;
+            String kind = jdbc.queryForObject("SELECT kind FROM " + TABLES.run()
+                    + " WHERE generation=?", String.class, generation);
+            if (!"PLAYER_HISTORY".equals(kind)) return;
+            int olderPending = jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
+                    + " WHERE season=? AND runtime_mode=? AND runtime_epoch=? AND kind='PLAYER_HISTORY'"
+                    + " AND state='PENDING' AND due_at<=? AND requested_source_after<=? AND generation<?",
+                    Integer.class, SEASON.code(), harness.fence.mode().name(), harness.fence.epoch(),
+                    Timestamp.from(harness.clock.instant()), Timestamp.from(harness.clock.instant()), generation);
+            if (olderPending > 0) preferentialHistoryClaims++;
+            else fifoHistoryClaims++;
+        }
+
         private boolean hasActiveRuns() {
             return jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
-                    + " WHERE season=? AND state IN ('PENDING','LEASED')", Integer.class, SEASON.code()) > 0;
+                    + " WHERE season=? AND runtime_mode=? AND runtime_epoch=?"
+                    + " AND state IN ('PENDING','LEASED')", Integer.class, SEASON.code(),
+                    harness.fence.mode().name(), harness.fence.epoch()) > 0;
+        }
+
+        private boolean hasDueCanonicalRuns() {
+            Instant now = harness.clock.instant();
+            return jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM " + TABLES.run()
+                    + " WHERE season=? AND runtime_mode=? AND runtime_epoch=? AND kind='CATALOGUE_SCHEDULE'"
+                    + " AND ((coalescing_key=? AND publication_key=?) OR (coalescing_key=? AND publication_key=?))"
+                    + " AND due_at<=? AND requested_source_after<=?"
+                    + " AND (state='PENDING' OR (state='LEASED' AND lease_expires_at<=?)))",
+                    Boolean.class, SEASON.code(), harness.fence.mode().name(), harness.fence.epoch(),
+                    CatalogueScheduleDispatcher.CATALOGUE_PRICE_COALESCING_KEY,
+                    CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY,
+                    CatalogueScheduleDispatcher.SCHEDULE_COALESCING_KEY,
+                    CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY,
+                    Timestamp.from(now), Timestamp.from(now), Timestamp.from(now));
+        }
+
+        private boolean hasDueActiveRuns() {
+            Instant now = harness.clock.instant();
+            return jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run()
+                    + " WHERE season=? AND runtime_mode=? AND runtime_epoch=?"
+                    + " AND due_at<=? AND requested_source_after<=?"
+                    + " AND (state='PENDING' OR (state='LEASED' AND lease_expires_at<=?))",
+                    Integer.class, SEASON.code(), harness.fence.mode().name(), harness.fence.epoch(),
+                    Timestamp.from(now), Timestamp.from(now), Timestamp.from(now)) > 0;
+        }
+
+        private Instant earliestActiveRunDue() {
+            Timestamp due = jdbc.queryForObject("SELECT min(CASE WHEN state='LEASED'"
+                    + " THEN GREATEST(due_at,requested_source_after,lease_expires_at)"
+                    + " ELSE GREATEST(due_at,requested_source_after) END) FROM " + TABLES.run()
+                    + " WHERE season=? AND runtime_mode=? AND runtime_epoch=?"
+                    + " AND state IN ('PENDING','LEASED')", Timestamp.class, SEASON.code(),
+                    harness.fence.mode().name(), harness.fence.epoch());
+            return due == null ? null : due.toInstant();
+        }
+
+        private void runPeriodicPlannerTickIfDue() {
+            if (goal == null || focusSatisfied() || nextPlannerTickAt == null
+                    || nextPlannerTickAt.isAfter(harness.clock.instant()) || !activeStatesAcknowledged()) return;
+            Instant tickAt = harness.clock.instant();
+            Set<Integer> activeWorkers = Set.copyOf(active.keySet());
+            List<Instant> pendingResponseReleases = active.values().stream()
+                    .filter(dispatch -> dispatch.pendingResponse != null)
+                    .map(dispatch -> dispatch.pendingResponse.releaseAt).toList();
+            Map<Integer, String> acknowledgedWorkerStates = activeWorkerStates();
+            Map<Integer, Long> workerGenerations = new TreeMap<>();
+            Set<Integer> completedWorkers = new HashSet<>();
+            active.forEach((worker, dispatch) -> {
+                if (dispatch.generation != null) workerGenerations.put(worker, dispatch.generation);
+                if (dispatch.future.isDone()) completedWorkers.add(worker);
+            });
+            OwnedMatchdayCoordinator.TickResult tick = harness.coordinator.tick();
+            plannerNextDue = tick.nextDueAt();
+            plannerTicks.add(new PlannerTickTrace(tickAt, activeWorkers, pendingResponseReleases,
+                    acknowledgedWorkerStates, workerGenerations, completedWorkers, tick.nextDueAt()));
+            if (tickAt.equals(startAt.plus(PLANNER_FIXED_DELAY))) {
+                plannerSnapshotAtFirstFixedTick = new PlannerInputRepository(jdbc, harness.store,
+                        TABLES, CAPTURED, harness.clock).load(SEASON);
+            }
+            nextPlannerTickAt = harness.clock.instant().plus(PLANNER_FIXED_DELAY);
+        }
+
+        private Map<Integer, String> activeWorkerStates() {
+            Map<Integer, String> states = new TreeMap<>();
+            active.forEach((worker, dispatch) -> {
+                String state;
+                if (dispatch.pendingResponse != null) {
+                    state = "PENDING_RESPONSE " + dispatch.pendingResponse.arrival.kind()
+                            + " generation=" + dispatch.pendingResponse.generation
+                            + " releaseAt=" + dispatch.pendingResponse.releaseAt;
+                } else if (dispatch.acknowledgedWait != null) {
+                    state = "ACKNOWLEDGED_WAIT " + dispatch.acknowledgedWait.kind
+                            + " nextDue=" + dispatch.acknowledgedWait.nextDue;
+                } else if (dispatch.future.isDone()) {
+                    state = "COMPLETED";
+                } else {
+                    state = "UNACKNOWLEDGED";
+                }
+                states.put(worker, state);
+            });
+            return Map.copyOf(states);
         }
 
         private void setToScheduledStart(int worker) {
             Instant due = nextAt[worker - 1];
-            if (due.isAfter(harness.clock.instant())) advanceTo(due);
+            if (due.isAfter(harness.clock.instant())) advanceTo(due, "worker-start");
         }
 
-        private void advanceTo(Instant instant) {
-            Instant current = harness.clock.instant();
-            if (!instant.isAfter(current)) return;
-            if (!activeStatesAcknowledged()) {
+        private void advanceTo(Instant instant, String reason) {
+            if (!advanceToIfAcknowledged(instant, reason)) {
                 throw new IllegalStateException("driver cannot advance without an acknowledged wait, "
                         + "controlled response release or completed dispatch for every active worker");
             }
+        }
+
+        private boolean advanceToIfAcknowledged(Instant instant, String reason) {
+            Instant current = harness.clock.instant();
+            if (!instant.isAfter(current)) return true;
+            if (!activeStatesAcknowledged()) return false;
+            if (!unassignedArrivals.isEmpty()) {
+                throw new IllegalStateException("driver cannot advance with an unassigned source callback");
+            }
+            if (responses.stream().anyMatch(response -> response.releaseAt.isBefore(instant))) {
+                throw new IllegalStateException("virtual time cannot advance past an unreleased source callback");
+            }
             if (instant.isAfter(stopAt)) throw new IllegalStateException("virtual time ceiling exceeded");
-            harness.clock.set(instant);
+            if (!lastReadyTargetGenerations.isEmpty()) advancesWithReadyTargets++;
+            Instant nextRunDue = earliestActiveRunDue();
+            lastNextWake = "reason=" + reason + ",from=" + current + ",to=" + instant
+                    + ",plannerNextDue=" + plannerNextDue + ",earliestRunDue=" + nextRunDue
+                    + ",readyTargetGenerations=" + lastReadyTargetGenerations
+                    + ",activeWorkers=" + active.keySet();
+            harness.clock.advance(Duration.between(current, instant));
             harness.turnNanoTime.addAndGet(Duration.between(current, instant).toNanos());
             harness.http.clockAdvancedForTests();
+            return true;
         }
 
         private DispatchState start(int worker) {
             if (!canStartDispatch()) throw new IllegalStateException("dispatch ceiling exceeded");
             if (active.containsKey(worker)) throw new IllegalStateException("worker already has an active dispatch");
             DispatchState dispatch = new DispatchState(worker);
+            dispatch.startedAt = harness.clock.instant();
             active.put(worker, dispatch);
             dispatches++;
             FutureTask<DispatchCompletion> task = new FutureTask<>(() -> {
@@ -1917,7 +7641,9 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                     boolean claimed = harness.coordinator.dispatchOne(Integer.toString(worker));
                     return new DispatchCompletion(worker, claimed, harness.clock.instant());
                 } finally {
-                    dispatchByThread.remove(current, dispatch);
+                    if (!dispatchByThread.remove(current, dispatch)) {
+                        throw new IllegalStateException("dispatch thread lost its owner mapping before completion");
+                    }
                 }
             });
             dispatch.future = task;
@@ -1934,9 +7660,23 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
             assertThat(dispatchByThread).as("completed dispatch threads must be unlinked").isEmpty();
         }
 
-        private enum EventKind { RESPONSE, SPACING, WORKER_START }
+        private enum EventKind { RESPONSE, SPACING, WORKER_START, RUN_DUE, PLANNER_TICK }
 
         private record Event(Instant at, EventKind kind) { }
+
+        private record PlannerTickTrace(Instant at, Set<Integer> activeWorkers,
+                                        List<Instant> pendingResponseReleases,
+                                        Map<Integer, String> acknowledgedWorkerStates,
+                                        Map<Integer, Long> workerGenerations,
+                                        Set<Integer> completedWorkers, Instant nextDueAt) {
+            PlannerTickTrace {
+                activeWorkers = Set.copyOf(activeWorkers);
+                pendingResponseReleases = List.copyOf(pendingResponseReleases);
+                acknowledgedWorkerStates = Map.copyOf(acknowledgedWorkerStates);
+                workerGenerations = Map.copyOf(workerGenerations);
+                completedWorkers = Set.copyOf(completedWorkers);
+            }
+        }
 
         private record WaitState(WaitKind kind, Instant nextDue, long token) { }
 
@@ -1944,22 +7684,38 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
             private final DispatchState owner;
             private final RequestArrival arrival;
             private final Instant releaseAt;
-            ControlledResponse(DispatchState owner, RequestArrival arrival, Instant releaseAt) {
+            private final long generation;
+            private boolean released;
+            ControlledResponse(DispatchState owner, RequestArrival arrival, Instant releaseAt, long generation) {
                 this.owner = owner;
                 this.arrival = arrival;
                 this.releaseAt = releaseAt;
+                this.generation = generation;
             }
         }
 
         private static final class DispatchState {
             private final int worker;
+            private final Set<Long> targetGenerations = new java.util.LinkedHashSet<>();
+            private final List<String> targetRoles = new ArrayList<>();
+            private Instant startedAt;
             private volatile Thread thread;
             private volatile Future<DispatchCompletion> future;
             private volatile WaitState acknowledgedWait;
             private ControlledResponse pendingResponse;
+            private Long generation;
+            private boolean generationMappingReleased;
 
             DispatchState(int worker) {
                 this.worker = worker;
+            }
+
+            void releaseGenerationMapping() {
+                if (generationMappingReleased) {
+                    throw new IllegalStateException("dispatch generation mapping released more than once: "
+                            + "worker=" + worker + " generation=" + generation);
+                }
+                generationMappingReleased = true;
             }
 
             synchronized void observe(WaitObservation observation, AtomicReference<String> failure) {
@@ -2099,21 +7855,38 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
 
     private static final class SourceData {
         private final byte[] bootstrap;
-        private final byte[] fixtures;
+        private byte[] fixtures;
         private final List<Integer> playerIds;
         private final Map<Integer, byte[]> liveByEvent;
         private final Map<Integer, byte[]> histories;
+        private final boolean fullRoster;
+        private final int optionalOmittedPlayerId;
 
         private SourceData(byte[] bootstrap, byte[] fixtures, List<Integer> playerIds,
-                           Map<Integer, byte[]> liveByEvent, Map<Integer, byte[]> histories) {
+                           Map<Integer, byte[]> liveByEvent, Map<Integer, byte[]> histories,
+                           boolean fullRoster, int optionalOmittedPlayerId) {
             this.bootstrap = bootstrap;
             this.fixtures = fixtures;
             this.playerIds = playerIds;
             this.liveByEvent = liveByEvent;
             this.histories = histories;
+            this.fullRoster = fullRoster;
+            this.optionalOmittedPlayerId = optionalOmittedPlayerId;
         }
 
         static SourceData load() throws Exception {
+            return load(false);
+        }
+
+        static SourceData loadFullRoster() throws Exception {
+            return load(true);
+        }
+
+        static SourceData loadActiveAcceptanceRoster() throws Exception {
+            return load(true);
+        }
+
+        private static SourceData load(boolean fullRoster) throws Exception {
             ObjectNode bootstrap = (ObjectNode) JSON.readTree(resource("bootstrap-static.json"));
             ArrayNode fixtureRows = (ArrayNode) JSON.readTree(resource("fixtures.json"));
             Map<Integer, List<JsonNode>> sourcePlayersByTeam = new TreeMap<>();
@@ -2124,7 +7897,7 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
             Map<Integer, Integer> playerTeams = new HashMap<>();
             List<Integer> playerIds = new ArrayList<>();
             for (Map.Entry<Integer, List<JsonNode>> entry : sourcePlayersByTeam.entrySet()) {
-                int count = entry.getKey() <= 8 ? 4 : 3;
+                int count = fullRoster ? entry.getValue().size() : entry.getKey() <= 8 ? 4 : 3;
                 List<Integer> ids = entry.getValue().stream().limit(count)
                         .map(player -> player.get("id").intValue()).sorted().toList();
                 playersByTeam.put(entry.getKey(), ids);
@@ -2157,12 +7930,15 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                 addParticipants(minutes.putArray("h"), playersByTeam.get(home));
                 addParticipants(minutes.putArray("a"), playersByTeam.get(away));
             }
+            if (fullRoster) playerIds.sort(Integer::compareTo);
+            int optionalOmittedPlayerId = omittedDefconPlayer(fixtureRows, playerIds, playerTeams);
             byte[] bootstrapBytes = JSON.writeValueAsBytes(bootstrap);
             byte[] fixtureBytes = JSON.writeValueAsBytes(fixtureRows);
             Map<Integer, byte[]> lives = createLiveManifests(fixtureRows, playersByTeam);
-            Map<Integer, byte[]> histories = createHistories(fixtureRows, playerIds, playerTeams, playersByTeam);
+            Map<Integer, byte[]> histories = createHistories(fixtureRows, playerIds, playerTeams,
+                    playersByTeam, optionalOmittedPlayerId);
             return new SourceData(bootstrapBytes, fixtureBytes, List.copyOf(playerIds),
-                    Map.copyOf(lives), Map.copyOf(histories));
+                    Map.copyOf(lives), Map.copyOf(histories), fullRoster, optionalOmittedPlayerId);
         }
 
         Map<Integer, Set<Integer>> requiredHistoryPlayersByFixture(int fixtureCount) {
@@ -2201,6 +7977,28 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
             return body;
         }
         List<Integer> playerIds() { return playerIds; }
+        boolean fullRoster() { return fullRoster; }
+        int optionalOmittedPlayerId() { return optionalOmittedPlayerId; }
+        int teamCount() throws IOException {
+            return JSON.readTree(bootstrap).withArray("teams").size();
+        }
+        int finishedFixtureCount() throws IOException {
+            int count = 0;
+            for (JsonNode fixture : JSON.readTree(fixtures)) {
+                if (fixture.path("finished").asBoolean()) count++;
+            }
+            return count;
+        }
+
+        void correctFixtureScores(Set<Integer> fixtureIds) throws IOException {
+            ArrayNode corrected = (ArrayNode) JSON.readTree(fixtures);
+            corrected.forEach(fixture -> {
+                if (fixtureIds.contains(fixture.path("id").asInt())) {
+                    ((ObjectNode) fixture).put("team_h_score", 1);
+                }
+            });
+            fixtures = JSON.writeValueAsBytes(corrected);
+        }
 
         Body response(String path) {
             if (path.equals("/api/bootstrap-static/")) return new Body(EndpointKind.BOOTSTRAP_STATIC, bootstrap);
@@ -2221,6 +8019,33 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
 
         private static void addParticipants(ArrayNode rows, List<Integer> ids) {
             ids.stream().limit(2).forEach(id -> rows.addObject().put("element", id).put("value", 90));
+        }
+
+        private static int omittedDefconPlayer(ArrayNode fixtures, List<Integer> players,
+                                                Map<Integer, Integer> playerTeams) {
+            JsonNode target = null;
+            for (JsonNode fixture : fixtures) {
+                if (fixture.path("id").asInt() == 45) {
+                    target = fixture;
+                    break;
+                }
+            }
+            if (target == null) throw new IllegalArgumentException("Acceptance source lacks fixture 45");
+            int home = target.path("team_h").asInt();
+            int away = target.path("team_a").asInt();
+            return players.stream().filter(player -> playerTeams.get(player) == home
+                            || playerTeams.get(player) == away)
+                    .findFirst().orElseThrow(() -> new IllegalArgumentException(
+                            "Acceptance fixture 45 has no full-roster player"));
+        }
+
+        private static byte[] padHistory(byte[] source) {
+            int targetSize = 8 * 1024;
+            if (source.length >= targetSize) return source;
+            byte[] padded = new byte[targetSize];
+            System.arraycopy(source, 0, padded, 0, source.length);
+            for (int index = source.length; index < padded.length; index++) padded[index] = ' ';
+            return padded;
         }
 
         private static Map<Integer, byte[]> createLiveManifests(ArrayNode fixtures,
@@ -2257,8 +8082,8 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
 
         private static Map<Integer, byte[]> createHistories(ArrayNode fixtures, List<Integer> players,
                                                               Map<Integer, Integer> playerTeams,
-                                                              Map<Integer, List<Integer>> playersByTeam)
-                throws IOException {
+                                                              Map<Integer, List<Integer>> playersByTeam,
+                                                              int optionalOmittedPlayerId) throws IOException {
             Map<Integer, byte[]> result = new TreeMap<>();
             for (int player : players) {
                 int team = playerTeams.get(player);
@@ -2286,9 +8111,13 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
                             .put("expected_goal_involvements", "0.00").put("expected_goals_conceded", "0.00")
                             .put("influence", "0.0").put("creativity", "0.0").put("threat", "0.0")
                             .put("ict_index", "0.0").put("clearances_blocks_interceptions", 0)
-                            .put("recoveries", 0).put("tackles", 0).put("defensive_contribution", 0);
+                            .put("recoveries", 0).put("tackles", 0);
+                    if (player != optionalOmittedPlayerId || fixture.get("id").intValue() != 45) {
+                        row.put("defensive_contribution", 0);
+                    }
                 }
-                result.put(player, JSON.writeValueAsBytes(root));
+                byte[] encoded = JSON.writeValueAsBytes(root);
+                result.put(player, padHistory(encoded));
             }
             return result;
         }
@@ -2317,7 +8146,6 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
         private final AtomicReference<Instant> current;
 
         MutableClock(Instant initial) { current = new AtomicReference<>(initial); }
-        void set(Instant value) { current.set(value); }
         void advance(Duration duration) { current.updateAndGet(value -> value.plus(duration)); }
         @Override public ZoneId getZone() { return ZoneOffset.UTC; }
         @Override public Clock withZone(ZoneId zone) { return this; }

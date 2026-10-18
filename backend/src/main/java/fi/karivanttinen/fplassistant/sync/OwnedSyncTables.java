@@ -71,6 +71,18 @@ public record OwnedSyncTables(String run, String payload, String receipt,
         return valid(run + "_history_fingerprint");
     }
 
+    public String playerFixtureCurrent() {
+        if (run.equals("fpl_sync_run")) return "fpl_player_fixture_current";
+        if (run.equals("fpl_sync_run_test")) return "fpl_player_fixture_current_test";
+        return valid(run + "_pfs_current");
+    }
+
+    public String gameweekStatSync() {
+        if (run.equals("fpl_sync_run")) return "fpl_gameweek_stat_sync";
+        if (run.equals("fpl_sync_run_test")) return "fpl_gameweek_stat_sync_test";
+        return valid(run + "_gameweek_stat_sync");
+    }
+
     public String alert() {
         if (run.equals("fpl_sync_run")) return "fpl_sync_alert";
         if (run.equals("fpl_sync_run_test")) return "fpl_sync_alert_test";

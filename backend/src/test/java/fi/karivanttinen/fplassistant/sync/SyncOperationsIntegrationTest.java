@@ -163,6 +163,28 @@ class SyncOperationsIntegrationTest {
     }
 
     @Test
+    void importerHealthRequiresItsOwnHeartbeatRatherThanARecentLegacyPlanner() {
+        SyncOperations importer = new SyncOperations(jdbc, tx, Clock.fixed(NOW, ZoneOffset.UTC),
+                TABLES, OwnedSyncMode.ACTIVE, false, false, true, true);
+        SyncOperations legacy = new SyncOperations(jdbc, tx, Clock.fixed(NOW, ZoneOffset.UTC),
+                TABLES, OwnedSyncMode.ACTIVE, false, false, true);
+        jdbc.update("INSERT INTO " + TABLES.plannerRuntime()
+                        + "(instance_id,started_at,heartbeat_at) VALUES (?,?,?),(?,?,?)",
+                "legacy-planner", Timestamp.from(NOW), Timestamp.from(NOW),
+                "watchdog:2026-27", Timestamp.from(NOW), Timestamp.from(NOW));
+        assertThat(legacy.healthy()).isTrue();
+        assertThat(importer.healthy()).isFalse();
+        jdbc.update("INSERT INTO " + TABLES.plannerRuntime()
+                        + "(instance_id,started_at,heartbeat_at) VALUES (?,?,?)",
+                "importer:current", Timestamp.from(NOW), Timestamp.from(NOW));
+        assertThat(importer.healthy()).isTrue();
+        jdbc.update("UPDATE " + TABLES.plannerRuntime() + " SET heartbeat_at=?"
+                + " WHERE instance_id='legacy-planner'", Timestamp.from(NOW.minusSeconds(601)));
+        assertThat(legacy.healthy()).isFalse();
+        assertThat(importer.healthy()).isTrue();
+    }
+
+    @Test
     void externalMonitorHealthTracksIncidentsAndTheirExactRecoveryWithoutClaimingDelivery() {
         SyncOperations external = new SyncOperations(jdbc, tx, Clock.fixed(NOW, ZoneOffset.UTC),
                 TABLES, OwnedSyncMode.STAGING, true, false, true);

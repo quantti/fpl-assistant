@@ -35,6 +35,1065 @@ behavior, strategy/ingestion and prompt contracts. No local full suite, live-mod
 production DB operation, corpus ingestion, deployment or activation was performed. KAR-76
 remains In Progress pending final PR review and CI; production rollout is a separate approval.
 
+## Production importer — verified ACTIVE111 (2026-10-18)
+
+Owner-approved handoff OFF110→ACTIVE111 succeeded at 11:20 UTC on reviewed image
+`1d105c0` (PR #168; PR/master CI and both independent reviews passed). Run342125
+completed at 11:43:16: 667/667 pages newly checked, 677 request admissions, no run error.
+All GW1–6 certificates are FINALIZED; GW7 correctly remains OPEN. The actual assistant
+reader accepts all 120 GW1–6 fixture sides, and the merged Tapas projection accepts
+proved rows. These are proof checks, not assertions from physical row counts alone.
+
+At 11:46 the watchdog recovered the remaining incidents; importer health returned 200/UP.
+Plex Kuma20 recorded DOWN→UP at 11:46:28 and another UP at 11:47:29; public monitor19
+stayed UP. Both remain active on existing SMTP notification1. One 1024 MiB Fly machine
+remains. Daily price/schedule jobs are enabled; handoff, legacy DefCon and startup-price
+are disabled. The rolling 6,000-request ledger was retained, never reset. Legacy fixture
+WAITING_STATS counters are not the new finality authority; do not restart the old verifier.
+
+[Cutover evidence](IMPORTER-CUTOVER-2026-10-17.md) separates the failed attempts, corrections
+and successful attended cycle. Future hourly/no-op/night-capture runs, sustained load and
+SMTP inbox receipt are not yet verified. Kuma monitoring continues independently.
+
+## Importer appearance proof correction (2026-10-18; implementation record)
+
+PR #167's reviewed deployment completed run342123: 667/667 player pages, 4,550 VALID PFS
+pointers and GW5 FINALIZED. GW1–4/GW6 still refused finality because fixture-stats is not
+an appearance roster: played players can have BPS<=0 or be omitted entirely. The owner
+chose a safe pause for this follow-up. Authenticated retirement left OFF110, no active work
+or unresolved permits, public health UP; existing page/row/GW5 proof remains intact.
+Independent daily price/schedule jobs remain enabled; legacy writers remain disabled.
+
+The [bounded plan](superpowers/plans/2026-10-18-importer-appearance-proof.md) keeps LIVE
+positive-minute membership and explicit coverage of fixture-stat identities/contributors,
+without demanding a positive stat value for every played player. Only missing sides may
+use a prior incremental history proof: one fenced bulk read reuses `IncrementalPfsEvidenceSql`
+and matches season, fixture, gameweek, kickoff and both clubs. Direct fixture-stat sides
+are never overwritten. Missing, withdrawn, tampered or mismatched proof remains unknown;
+a contradictory fresh history page still prevents finality. Current bootstrap club is never
+a historical-side substitute. A genuinely cold omitted player may need its first page and
+a later cycle; no new receipt protocol, schema, request, cadence or timeout is introduced.
+
+Both BPS0/-1 regressions failed against the old code; an omitted-player integration case
+also stayed RETRY_SCHEDULED instead of finalizing on its second cycle. After correction,
+89 focused tests pass (64 collector integration, 25 fixture verification), including strict
+side-proof negatives, cold pending→finalized, actual reader-side coverage and failure cleanup.
+Both independent reviews and PR/master CI passed; the guarded production result is recorded above.
+
+## Importer cold-start receipt batching (2026-10-17; implementation record)
+
+The first authorised handoff reached ACTIVE epoch 107, but run 342122 failed before its
+first player page/PFS pointer. It had recorded 2,003 live-player receipts and 2,007 participant
+receipts; the population transaction then timed out. The importer was retired to OFF epoch 108,
+with no active jobs/unresolved permits; legacy was not restarted. Nine request admissions,
+not the 6,000-attempt cap, separated this attempt from its preflight. Health remained DOWN at that rollback.
+
+`recordIncrementalPopulation` repeated participant upserts individually while holding the runtime
+fence lock. Live-event participant/appearance writes had the same per-row pattern. Fast local SQL
+hid the cost of thousands of remote JDBC executions; the heartbeat also logged a runtime-row lock
+wait, although the exact blocking database session was not captured. The fix uses the existing
+500-row JDBC batch bound for those receipts and population markers. Original transaction,
+generation, source-time, fingerprint, invalidation and rollback conditions remain unchanged;
+there is no timeout increase, schema change, ledger reset or activation in this correction.
+
+A 65-fixture regression (2,015 participants, 4,030 discovery candidates, 667 distinct players)
+injects 4 ms per receipt write execution: the old implementation failed with the same
+`TransactionTimedOutException`; the fix completes in about 0.54 s with at most 20 receipt write
+executions. A ten-fixture/800-participant live-event case also stays within 20 writes. Tests retain
+newer receipt generations/read intervals and unchanged fingerprints, and verify rollback after a
+failure in the second 500-row batch. The collector integration class passed, followed by all four
+final regressions. Independent review/full PR CI and a fresh guarded cutover with actual player
+page/PFS publication evidence remain required; these local checks are not a successful import.
+
+## Importer operator-route security correction (2026-10-17)
+
+PR #165's master tests/deploy passed (`39057123698`), but the live handoff returned 401
+and, with a real user JWT, 403: the two importer operator routes were missing from
+SecurityConfig's exact permit list and hit denyAll before their own token authentication.
+Runtime remained OFF epoch 106; the handoff flag was disabled again. This correction
+adds only handoff/retire to that list, retaining controller-token and mode/epoch guards.
+The real filter-chain regression first failed 200 vs 401; 11 focused security/controller/
+configuration tests now pass. Default-disabled, blank/wrong/monitor tokens, user JWT
+alone, unknown routes and stale epoch remain rejected. No bypass SQL or importer
+activation occurred. Owner explicitly authorised this follow-up PR, two-reviewer gate,
+green-CI squash merge and subsequent cutover without another command.
+
+## Incremental cutover request budget (2026-10-17; not activated)
+
+The owner authorised replacing legacy sync with the incremental importer. Legacy is now OFF
+(epoch 106 at 13:53 UTC), with no active owned jobs/unsettled permits and public health UP.
+Its 5,000-attempt rolling-day ledger was full; GW6's 10 VERIFIED fixtures/667 PFS rows came
+from legacy, not the importer. This branch adds a bounded importer-only 1..6,000 override
+(default still 5,000), shared with its watchdog; admission history and other safety limits remain.
+[Cutover plan](superpowers/plans/2026-10-17-importer-cutover-budget.md) estimates roughly 680
+requests for the initial 667-player pass plus source/event reads, not a guaranteed full-run cost.
+Focused unit/config checks passed; full PR CI, owner merge, operator handoff and first-cycle
+publication/monitor evidence remain required. No importer activation or ledger reset occurred.
+
+## Project-local software factory (2026-10-16)
+
+`.agents/skills/software-factory/` copies the complete vanilla bundle from `quantti/pi-config`
+`75cc2a5`, preserving its six generic files and specializing only `domain.md`. Explicit invocation
+keeps it separate from ordinary tasks; no global installation, auto-dispatch or permissions change.
+The FPL supplement maps governing sources, provenance/identity, ranking, shared-schema ownership,
+legacy/incremental proof, account isolation and safe test/publication boundaries. Historical runtime
+observations remain historical. [Adoption plan](superpowers/plans/2026-10-16-fpl-software-factory.md)
+records 12 passing offline tests, bundle/source-path checks and author-performed source review.
+These do not prove independent review, Pi runtime discovery, model compliance or effectiveness;
+no product suite, external service or production action ran locally for this change.
+[PR #161](https://github.com/quantti/fpl-assistant/pull/161) was directly reviewed at `0ceb7ff`;
+PR CI and owner merge remain pending.
+## Player facts — verify current clubs and disputed claims
+
+The system prompt requires fresh, unambiguous current-club evidence from the same turn.
+Successful pick lists, `buildSquad` and `getMyTeam` already supply it, so no per-player rechecks
+are needed just to restate their clubs. Without that evidence, call `getPlayerStats`; disputed
+facts require a new lookup even in apologies and follow-up challenges, rather than agreement
+with the user or model memory. Price and availability disputes retain their dedicated tools.
+Current-club evidence comes from the daily capture or the squad's own FPL source, not a historical
+season's club; each source keeps its own age. Stale, missing, ambiguous or contradictory evidence
+cannot support a confident correction. The original regression and the review-fix regressions
+failed before their respective prompt changes. All ten tests in the player-name, availability,
+DefCon and bench-order prompt contract classes passed after integration with master `1689597`.
+This is a prompt requirement, not server-enforced tool use; no live-model evaluation or production
+read was performed. Review narrowed the initial unconditional `getPlayerStats` rule to avoid
+redundant lookups for already verified squad/pick results. Full PR CI remains the publication gate.
+
+## KAR-19 — opt-in daily-price email reminders (2026-10-13)
+
+The existing 06:00/12:00/18:00 UK freshness check can send plain-text reminders through
+Resend to `kvanttinen@gmail.com` when captures are stale or absent. Mail is disabled by
+default and requires a separate sending key; Supabase Auth/SMTP is unchanged. One attempt
+per unhealthy check, no immediate retry, recovery email or durable delivery guarantee.
+Future dates and DB failures retain their existing log-only paths; application health and
+ranking freshness predicates are unchanged. Provider failures are contained and logged
+without response bodies or credentials. API acceptance does not establish inbox delivery.
+
+[Plan and review](superpowers/plans/2026-10-13-kar-19-freshness-email.md) records the scope
+and tests. Twenty-one focused tests pass using mocked JDBC, isolated Spring configuration
+and loopback HTTP only; ten expected assertion failures were observed against no-op scaffolding.
+Direct commit review added a failing malformed-credential regression, then contained that
+failure without logging the credential. [PR #160](https://github.com/quantti/fpl-assistant/pull/160)
+was directly reviewed; all 21 focused tests passed again after integration with `05d7a7f`.
+Full PR CI and owner merge remain gates. No production DB query, Resend request, secret change,
+activation or deployment was performed. Configuration and the separate owner-operated delivery
+gate are in `DEVELOPMENT.md`.
+
+## Incremental importer cutover corrections (2026-10-12; PR review, NO-GO)
+
+The [cutover plan](superpowers/plans/2026-10-12-incremental-importer-cutover-review.md) remains NO-GO for production. Assistant [PR #159](https://github.com/quantti/fpl-assistant/pull/159) adds an explicit fenced OFF→ACTIVE importer handoff/rollback (both default OFF), importer-specific heartbeat/gameweek overdue alerts and recovery only after the current checked source/PFS proof passes `GameweekFinalityReader`. Tapas [PR #3](https://github.com/quantti/tapas-fpl-app/pull/3) adds per-row pointer/page/physical PFS proof, optional masking, checked-GW Points Against withholding and reviewed SELECT grant templates; post-push review also fixed a player-page receipt masking earlier genuine legacy and VERIFIED fixtures. Source and PFS publication invalidate gameweek finality in their own transactions. Focused disposable-Postgres tests passed in both repos; PR CI is pending, no role or production setting was changed, and 13 October is a review date rather than activation approval. Green full CI, role grants, drained old writers, current SELECT preflight and measured HTTP/load/alert readiness remain separate gates.
+
+## PR #157 post-merge CI gate (2026-10-12; local)
+
+PR #157 was merged as `26b72a0` while its PR CI was still running. PR run 38185165929 failed 1/1639 in the unchanged `OwnedSyncHttpClientIntegrationTest.expiredQueuedFollowerDoesNotPromoteOrFetch`: a 200 ms test-only DB-operation deadline produced `SETTLEMENT_UNCERTAIN` instead of the expected successful owner response. The master run 38185208949 failed 1/1639 in the unchanged active-recovery driver when an observed wait ended between event selection and its guarded clock advance. Master deployment was skipped; neither red run proves an importer-runtime failure.
+
+A focused test-only follow-up gives the expired-follower oracle a 2-second DB-operation deadline without changing the production deadline or follower expiry, and makes the driver reobserve a worker whose wait ended before advancing virtual time. The two exact failing methods passed separately against disposable loopback Postgres (1/1 each); no local full suite or production action occurred. A new PR/full CI is still required before this master commit can pass its deployment gate.
+
+## PR #157 review follow-up — independent finality and importer health (2026-10-12; local)
+
+A failed/deferred player page or missing live source in another event no longer holds a fully evidenced, nonempty checked gameweek pending. The collector closes that completed final-sweep producer and queues a new generation at the retry due time for unresolved work; a blank checked game does not split a busy producer. A real GW3/GW4 page-failure regression failed before the fix (`FINAL_PENDING`) and passes with GW3 `FINALIZED`, an archived completed run and a pending GW4 retry. A separate malformed GW4 live-source regression verifies the same isolation. Existing partial-generation and source-supersession controls still pass.
+
+The opt-in importer now emits a fenced minute heartbeat and runs importer-specific five-minute watchdog checks and 30-second alert delivery separately from hourly collection. External health requires the importer heartbeat rather than borrowing a recent legacy planner heartbeat. The legacy runtime, monitoring policy and OFF default are unchanged. Focused context and health tests pass on disposable Postgres; the full PR CI and external Tapas-reader audit/cutover remain gates. No production/monitor activation or live API request occurred.
+
+## PR #157 CI regression — exact watchdog delivery assertion (2026-10-12; local)
+
+CI run 38173045513 at `8f65f1a` completed 1,635 tests with one failure in the unchanged legacy `OwnedMatchdayEndToEndIntegrationTest.fakeMultiMatchdaySurvivesPartialHistoryRestartAndCorrectionWithoutFalseCoverage`. The artifact's first delivery batch contained `RUNTIME_STALLED` (`lastSuccessfulHeartbeat=never`) and overdue fixture alerts for IDs 1, 4, 3, 5, 6, 2, 7, 8 and 9, but not fixture 29. This is the legacy watchdog's real batch boundary (`MAX_DELIVERIES_PER_DRAIN=10`), not a completeness/verification failure.
+
+Source tracing ruled out capture-table contamination: `OwnedSyncWatchdog.inspectFixtures` reads the shared Tapas `fixture` table joined to `season`, not `fpl_fixture_test`; the listed August 2026 fixtures are in this test's own full-season `owned-sync-source-fixtures/fixtures.json` feed. The generic-capture writer regression left `fpl_fixture_test` empty after cleanup, and the new collector regression uses private owned tables and clears its Tapas rows. The test's original single `deliver()` call wrongly assumed fixture 29 would be within the first ten, despite the intentionally full historical schedule and an unordered fixture query.
+
+The end-to-end test now reads the persisted fixture-29 alert and verifies its exact row/key/category. The actual persisted incident is `fixture-overdue:2026-27:29` (`FIXTURE_VERIFICATION_OVERDUE`). One parsed-JSON predicate is used for both bounded-loop termination and the mandatory post-loop assertion; it requires `event=incident`, the configured season, exact numeric or canonical-string fixture ID 29 in both root/details, the category-derived exact incident key, and `details.status=verification overdue`. The exact persisted alert row must also be `DELIVERED`. Its focused oracle rejects 990029, a 2026-09-29 date-only match, a wrong key/category/season, and a recovery event; the persisted source payload is accepted. No watchdog limit/order, legacy two-observation rule, production code, or expected coverage changed.
+
+The guarded `OwnedMatchdayEndToEndIntegrationTest` run passed **6/6, 0 failures, 0 skipped** (the five legacy cases plus the matcher oracle) against disposable `localhost:55432`, with a 1200 MiB cgroup cap, swap disabled, 200% CPU quota and a 30-minute wall timeout. The CI batch-order failure itself remains unreproduced locally; this is focused evidence, not a full-suite result, and fresh PR CI remains required. No production/live API/Fly/monitor action, commit or push occurred.
+
+## Incremental sync — checked finality invalidation and superseded donors (2026-10-12; local)
+
+A genuine live-appearance fingerprint change now atomically advances the checked gameweek's invalidation floor/revision, making its prior checkpoint incompatible, and clears its finality receipt under the observed source signature. First appearance evidence establishes the source floor without inventing a revision, except when an existing finalized receipt must be invalidated. Checkpoint creation, finalization and the read-only finality reader validate the persisted appearance identity, producer interval and floor; unchanged partial retries retain eligible pages, while changed evidence supersedes the producer and requires fresh post-floor pages. Mixed GW3 fixtures 29/36 cover unchanged A/C page reuse, a fixture-36 appearance revision, rejection before reproof and fresh pages for the whole checkpoint.
+
+Superseded producer evidence now uses a dedicated `supersede_reason` field, not `last_error` text. Its owned-run CHECK permits only the two canonical enum values on `SUPERSEDED` rows (or NULL for old/unrecognized rows), and read-only importer preflight requires both the column and validated constraint. Migration maps only exact legacy markers; readers reject NULL/unknown reasons. `GameweekFinalityReader` checks schema support before membership or donor queries, so an OFF reader on an older schema returns `FINAL_PENDING` without referencing the absent column.
+
+Appearance evidence endpoints and accumulated final-sweep intervals are normalized with `OwnedSyncStore.postgresTimestampPrecision` before persisted-time comparisons. Different overlapping intervals remain stale rather than being accepted as equivalent. The real collector regression uses nanosecond source reads: GW3 A commits while B fails, an unrelated unchecked GW4 appearance revision supersedes the producer, the next generation reuses A's original typed superseded donor and fetches B plus the independently stale GW4 page, then finalizes GW3. Both fixture sides, the next no-op and the OFF archive are checked.
+
+The guarded final focused run passed **16/16, 0 failures, 0 skipped** against disposable `localhost:55432`: 4 selected collector regressions, all 8 `HistoryEvidenceSchemaIntegrationTest` cases and all 4 `OwnedSyncImporterContextIntegrationTest` cases. It used a 1200 MiB cgroup, no swap and 200% CPU quota; the 768 MiB host-available stop threshold was not reached. This is not a full-suite result. No production/live API/Fly/monitor action, production activation, commit or push occurred; writers remain inert and fresh PR CI remains required.
+
+## Incremental sync — post-finish live-source freshness regression (2026-10-12; local)
+
+The two remaining collector failures shared a source-floor bug: a validated `EVENT_LIVE` receipt advances the fixture appearance invalidation floor to that read's `finished_at`, but the collector tested the receipt with player-page freshness (`started_at >= floor`). The capture therefore marked itself stale on the next hourly cycle. Event-source freshness now compares the receipt's `finished_at` to the floor. Live refresh selection also distinguishes unresolved fixture-stat/durable participants from catalogue-only and known-PFS retry candidates: a missing page for a real participant can recheck appearance minutes, but an unresolved known zero-minute player alone resumes from the cached valid event source. Source discovery changes, stale source floors, active fixtures and final-pending sweeps retain their refresh paths; invalid/malformed/failed live reads still do not create success receipts.
+
+The unchecked sparse-capture regression proves one valid incomplete empty-positive-roster snapshot (`complete=false`, zero positive players) leaves the gameweek `OPEN`, completes its catalogue page, and then idles without `EVENT_LIVE`, history, PFS-population or staged-body reads. The known-zero retry regression now also asserts zero live refetch while keeping that unresolved player selected. Finalized unchanged-source OFF→ACTIVE proof retention and the stale-watermark/deleted-current-pointer negatives remain intact. The full guarded `CoalescedPlayerHistoryCollectorIntegrationTest` run passed **50/50, 0 skipped** (this is one class, not the full suite); seven focused live-source/partial-retry/finality-control methods also passed. Runs used `.env.test` verified at `localhost:55432`, a 1200 MiB cgroup, `MemorySwapMax=0`, 200% CPU and a 768 MiB host-memory stop guard. No full suite, production/live API/Fly/monitor action, activation, commit or push occurred; fresh PR CI and the external Tapas-reader audit/cutover remain blockers, and owned writers remain inert.
+
+## Incremental sync — FIX6 payload-proof retention review fix (2026-10-12; local)
+
+The opt-in hourly importer still runs 24-hour producer-scoped maintenance before collection and after every cycle, including failure. Cleanup now empties eligible old terminal `INCREMENTAL_CORE` payload bodies and marks `body_pruned_at`; it retains the payload row and its ID, generation, endpoint, read span, `source_payload_sha256`, validation and `source_published` metadata. The insert guard captures SHA-256; the update guard permits only a one-way empty-body prune whose prior body matches that hash, preserves all proof fields, freezes pruned rows, and cannot backfill missing hashes. Invalid bodies whose digest no longer matches are not pruned. Existing pre-migration rows are not hydrated/backfilled and cannot certify new-path finality without a fresh validated capture. Legacy cleanup remains row-deleting and producer-isolated.
+
+`GameweekFinalityReader` now requires both exact source payload rows/generations, endpoint identities, read spans, valid/published states, and capture hashes matching the compatibility receipt. It recomputes SHA-256 for present bodies; an empty body counts only with its prune marker and matching compact proof. Missing, wrong-generation, mutated or invalid payloads stay `FINAL_PENDING`, including invalid proof after body pruning. Tests also verify pruned row counts versus zero raw bytes, active retry/parent retention, and a real finalized collector no-op after prune.
+
+Guarded sequential tests against disposable `localhost:55432` passed **78/78, 0 failures, 0 skipped** (collector retention/finality 4, schema/preflight 7, store 67), followed by runtime maintenance/failure configuration **9/9, 0 failures, 0 skipped**. The finality collector regression was rerun **1/1** after the last reader-predicate adjustment. All runs used a 1200 MiB cgroup, no swap and 200% CPU quota. `git diff --check` passed. No full suite, production/live API/Fly/monitor action, activation, commit or push occurred. This retains one compact row per payload and releases only raw body bytes; it is **not** a payload-row, FPL request, provider-egress, database-storage or billing cap. Independent review and PR CI remain pending.
+
+## Incremental sync — FIX5 source-backed catalogue membership (2026-10-12; local)
+
+The owned compatibility receipt now stores a compact season-scoped player-id/club catalogue and its membership hash, bound to the exact bootstrap/fixtures payload IDs, immutable pair fingerprint, coalesced producer generation and source interval. `OwnedSyncStore.publishIncrementalCompatibility` derives it by re-parsing the locked, validated payload bodies inside the current-season ACTIVE publication transaction; callers cannot provide arbitrary membership. Compatibility-receipt generation locking preserves source order. `GameweekFinalityReader` loads and validates that latest proof once per read batch, then fingerprints only source members of the checked fixtures rather than every retained `player` FK parent. It validates the archived ACTIVE producer/payload proof without a current-mode gate, and never hydrates source bodies or issues per-player catalogue queries. The explicit population flag defaults false for legacy constructors/manifests; the compatibility-backed collector sets it true, for which missing or mismatched membership means `FINAL_PENDING`, never the retained-inventory fallback.
+
+For source-backed sweeps, prior catalogue-only IDs are no longer unioned back into the required catalogue population. The collector keeps durable participant receipts, removable catalogue discovery candidates, and actual known PFS/current-pointer identities in separate categories. It hydrates PFS/current-pointer identities only when a fixture's source fingerprint changes, stores those identities under `incremental-known:fixture:*`, and reuses that unresolved-known ledger across unchanged failures; source/live participants remain participants rather than being promoted to known rows. A successful page that withdraws a known fixture row resolves its known receipt, so an unchanged idle cycle makes no history call. A later source revision can rehydrate retained PFS keys, preserving FIX2 correction behavior. Compatibility upserts still retain old player parents and all physical PFS history.
+
+A black-box `runCycle()` regression uses the real compatibility writer and reader: a checked fixture first finalizes with same-club catalogue-only D=2; D is then omitted from the validated bootstrap while its Tapas parent and a GW2 PFS row remain, and positive P=1 is also absent from the new bootstrap but remains in fixture/live evidence. The old finality reopens, D leaves the required catalogue and receives no new GW3 row/page, while P and participant 28 remain required across a failed page and retry. The full sweep finalizes, the next real no-op stays finalized, and the archived proof remains readable after OFF. Missing or generation-detached membership returns `FINAL_PENDING`; a repeatable-read query assertion observes one receipt proof and no retained-player inventory query. Separate compatibility-writer checks cover malformed and older source pairs leaving the published membership unchanged, and the price-only supersession/no-op control remains finalized.
+
+The owned-schema initializer adds `source_catalogue JSONB` and archives/retires old FINALIZED manifests lacking the new proof marker to `FINAL_PENDING`; the read-only `IncrementalImporterSchemaPreflight` now requires the column. This migration is **not** applied to production: a future opt-in preflight must install it and obtain a fresh validated source capture before incremental finality can be relied on. No Tapas schema change, production/live API/Fly/monitor action, activation, full suite, commit or push occurred; writers remain inert.
+
+The original FIX5 guarded run passed **24/24, 0 failures, 0 skipped** on disposable `localhost:55432` under a 1200 MiB cgroup cap, swap disabled and 200% CPU quota: compatibility writer 6, collector 3, schema/preflight 1, and finality 14. The rereview then passed **6/6, 0 failures** on the same guarded DB/scope: catalogue-only removal with retained FK parent, unchanged known-zero retry, known-zero successful current-row publication without participant promotion, discovery receipt batching, checked final sweep/no-op, and price-only supersession/no-op. The generation-detachment negative now restores serialized valid proof before each independent mutation and also exercises source season-code and producer provenance. `git diff --check` passed. No full suite was run.
+
+## Incremental sync — FIX4 fresh identical-page physical PFS repair (2026-10-12; local)
+
+A newer ordered, fully validated page no longer treats the source fingerprint alone as an unchanged-page proof. Inside the fenced publication transaction, the repository checks the current pointer's evidence generation/interval/component mask and recomputes the normalized physical PFS fingerprint. It repairs tampered named values or reinserts a missing physical row from the incoming full page; an unchanged, proven row still leaves PFS, evidence and pointer untouched. Missing optional components remain masked and do not cause speculative coercion/writes. Missing physical rows on a valid pointer no longer abort reconciliation: repair uses the incoming row's gameweek, while a withdrawn absent row contributes no invented gameweek. A prior physical gameweek is used only when its range and pointer/evidence/fingerprint proof are valid; otherwise a repair invalidates the validated incoming gameweek and never infers an old assignment from the hash. Repair, evidence, current pointer, fixture verification revocation and checked-gameweek invalidation remain atomic and lease-fenced.
+
+Guarded sequential tests against disposable `localhost:55432` passed **21/21, 0 failures, 0 skipped** for `IncrementalPlayerFixturePublisherIntegrationTest` under a 1200 MiB cgroup cap, swap disabled and 200% CPU quota. Six regressions cover exact-watermark core/nonzero-optional repair with reader and checked-gameweek recovery; core-leased restoration after gameweek 0/39 corruption, GW1-only invalidation and a zero-write next page; missing-row reinsertion/no-op/withdrawal; absent-optional tamper masking without writes; stale/equal-generation refusal; and lease-expiry rollback after PFS/evidence insertion. The valid reassignment test continues to assert both gameweek keys. No full suite, production/live API/Fly/monitor action, activation, commit or push occurred; writers remain inert.
+
+## Incremental sync — FIX3 changed-appearance retry follow-up (2026-10-12; local)
+
+Fixture-local appearance state now persists the full fixture-source/positive-roster fingerprint and the actual live-read invalidation floor in the owned receipt table. The collector reloads this state before planning live reads and player pages; an unchanged capture preserves the floor, while a changed B minutes capture advances it. That stored floor gates both HTTP source reads and `PfsReadSource` side proof. If A/C pages from the current immutable producer are now pre-floor, the collector supersedes that producer and queues a new generation before attempting any page overwrite. New-generation A/C pages with unchanged values only advance their latest page watermarks, preserving their PFS/evidence/pointer clocks; B's changed minutes update its physical row.
+
+A real collector regression covers A/C committing while B fails, B's live minutes changing with an unchanged fixture header, generation restart without stale page requests, incomplete pre-change proof, fresh A/B/C pages after the persisted floor, complete xG 1.00 (scored 1) team output while the gameweek remains unchecked, and a stable no-op. The unchanged-live B-only retry and multi-fixture compatible-proof controls remain passing. Guarded sequential `backend/.env.test` (`localhost:55432`) tests passed **25/25, 0 failures, 0 skipped** under a 1200 MiB cgroup cap with swap disabled: collector regressions 3, future-floor HTTP client cases 2 and `PfsReadSourceIntegrationTest` 20. Future floors still settle/refuse without submitting HTTP. No full suite, production access, live API, activation, commit or push occurred; writers remain inert.
+
+## Incremental sync — FIX3 durable-appearance test-fixture follow-up (2026-10-12; local)
+
+`ExpectedStatsToolsIntegrationTest` and `RankingMetricsIntegrationTest` now seed the required `appearanceStateKey` receipt with the full source-plus-positive-roster fingerprint and the live-read interval, preserving its completion floor when the appearance fingerprint is unchanged. Guarded sequential focused runs on `backend/.env.test` (`localhost:55432`) passed **48/48, 0 failures, 0 skipped** under a 1200 MiB cgroup cap, swap disabled and a 768 MiB host-memory stop threshold: ExpectedStats 20, RankingMetrics 25 and the three actual collector partial-retry regressions 3. No source guard was weakened; no full suite, production access, live API, activation, commit or push occurred.
+
+## Incremental sync — FIX3 source/read/coverage follow-up (2026-10-12; local)
+
+Live appearance snapshots carry the exact fixture-source revision and their actual live-event read interval; snapshot and positive-player receipt keys are immutable per read. `PfsReadSource` groups compatible captures only while the exact fixture revision/header and positive participant/minutes fingerprint stay unchanged. An unchanged later live read compares against that proof instead of invalidating every row; a changed header/revision or roster/minutes starts a new capture-based floor. A positive PFS row must match the current live minutes/side/opponent and have an ordered current page watermark at or after that floor. The watermark, not immutable row-pointer timestamps, proves a page was re-read; unchanged row/evidence timestamps remain untouched. `FixtureVerification` reconciles positive fixture-stat contributors and positive live appearances both ways, and requires explicit zero-minute live explanations for zero-only fixture-stat identities. Legacy fixture verification remains unchanged.
+
+A checked-in source-fixture JSON/parser regression covers an omitted positive contributor, matched positive contributors, known zero-minute explanations and missing zero explanations. Reader tests cover source-revision correction invalidation, legacy VERIFIED rows without an incremental page (still visible to history but unable to certify current roster coverage), and existing optional/zero behavior. Expected team output labels unfinished live fixtures and withholds completed-stat totals. The normal collector/publisher retry regression runs two fixtures in one event: F1 publishes xG 1.00 and remains complete with its receipt unchanged while F2's pages fail; the same-generation retry fetches only F2 and preserves F1. Its F2 pages exercise xG 0.10 + 0.90 after retry.
+
+A guarded sequential focused rerun against `backend/.env.test` (`localhost:55432`) passed **24/24, 0 failures, 0 skipped** under a 1200 MiB cgroup cap with swap disabled: `PfsReadSourceIntegrationTest` 20, the incremental team-total `ExpectedStatsToolsIntegrationTest` case 1, the incomplete-side `RankingMetricsIntegrationTest` case 1, and two collector retry cases 2. The real same-fixture regression uses the collector/parser/publisher: home A and B plus away C; A/C commit while B fails, the home team is n/a, and the live-refresh retry fetches B only while preserving A's PFS row, current pointer, evidence generation and timestamps. The completed provisional output is xG 1.00 (scored 1), before any checked-gameweek finality. A further changed-minutes live capture forces all three pages and makes A eligible from the ordered watermark without rewriting its row; the reader correction regression rejects pre-correction watermarks until a page read at/after the new capture floor. The earlier 87/87 focused run and `PlannerRuntimeRepositoryIntegrationTest.offThenActiveRequiresFreshSameEpochSourceEvidence` pass remain recorded below this follow-up. The separate `offThenActiveRevalidatesFinalizedPageWatermarks` failure remains the previously reproduced, unchanged failure at unmodified HEAD `9eeef58`; it was not run or weakened here. No full suite, production access, live API, activation, commit or push occurred; owned writers remain inert.
+
+## Incremental sync — FIX3 positive-appearance side coverage (2026-10-12; local)
+
+A validated live-event read now leaves generation-scoped source, fixture-roster and positive-player receipts in the existing owned receipt table. `PfsReadSource.fixtureSidePopulation` verifies them set-wise against the source fixture identity and the same CTE-backed PFS snapshot; every positive appearance needs a matching readable row/minutes/side/opponent, and every positive row must belong to that receipt. Missing/invalid source rosters and unmatched positive rows remain incomplete; zero-minute players are not mandatory. A later event refresh no longer invalidates other fixture snapshots merely because the event-wide latest receipt advanced.
+
+Expected team stats keep schedule fixtures with absent rows visible as unknown, refuse partial owned team xG/xA/xGI/xGA totals, and label the exact season/fixture/team evidence gap. Once all positive rows arrive, the same provisional source is usable without a checked-GW/finality barrier; optional NULLs remain unavailable while known zeroes stay numeric. Ranking reads the roster proof in its existing repeatable-read transaction and drops incomplete sides from comparison coverage, ClubRates and the league baseline. Legacy PFS-only groups retain their former fallback behavior.
+
+One focused guarded disposable-DB run passed **62 tests, 0 failures, 0 skipped**: `PfsReadSourceIntegrationTest` (17), `ExpectedStatsToolsIntegrationTest` (19), `RankingMetricsIntegrationTest` (25), and collector-writer receipt regression `unchangedDiscoveryRetryKeepsKnownZeroMinutePlayerOutstanding` (1). Report: `backend/build/reports/tests/test/index.html`. Coverage includes unknown source rosters, zero-minute nonparticipants, optional masks/known zero, the A-only `xG 0.10/goals 0` refusal, A+B `xG 1.00/goals 1` provisional totals, ClubRates exclusion and repeatable-read atomicity. The targeted existing `offThenActiveRevalidatesFinalizedPageWatermarks` failure was reproduced at unmodified HEAD `9eeef58` (no pages fetched where the test expects `[1,28]`), so it is recorded as pre-existing, not FIX3. The full suite was not run. Actual Tapas-reader audit and reviewed cutover remain blockers; no live API, production/Fly/monitor action, activation, commit or push occurred.
+
+## Incremental sync — PR #157 review issue 2 (2026-10-12; local)
+
+The collector now persists the full fixture-scoped candidate page set in separate `incremental-discovery:fixture:*` receipt keys, tied to the existing source fingerprint. These remain separate from positive participant/appearance evidence. Existing compact receipt IDs are loaded in one batched query, and only missing candidate IDs are written in `JdbcTemplate` batches capped at 500; a 657-ID regression observed two initial batch statements and zero on repeat. The zero-minute known-player retry confirms unchanged retries and idle cycles issue no candidate batch writes, while leaving legitimate metadata/heartbeat writes alone. A corrected SQL oracle observes exactly one `knownPlayerIds` query on source correction and none on the following no-op. The supplied reproduction still verifies B remains outstanding across repeated failures/new collector instances, a successful empty B page withdraws its row without rewriting numeric PFS, and the next unchanged cycle fetches no history. Latest guarded `backend/.env.test` (`localhost:55432`) focused run passed **3/3, zero skipped**: zero-minute retry/source correction, 657-ID batching, and omitted-page population/lease restart. Four related live-only/finality/population regressions passed in the earlier 7/7 focused run. Importer remains disabled and writers inert. No full suite, live API, production DB/Fly/monitor action, activation, commit or push occurred.
+
+## Incremental sync — bounded finality proof review fixes (2026-10-12; local)
+
+`GameweekFinalityReader` now requires every original page donor's aggregate `source_read_finished_at` to be at or before the reader clock, independently of nullable terminal timestamps on `PENDING`/`LEASED` runs. Existing terminal-state restrictions remain intact. The finality reader also keeps the terminal run's aggregate interval separate from its request floor: the floor must precede the terminal validation read, not an older checkpoint start, while the authoritative terminal producer must still be `COMPLETED`. Page publication evidence retains its donor's ACTIVE epoch, source floor and read interval across retries, failure, supersession and OFF/reactivation; current row fingerprints and ordered watermarks remain required. Checkpoint reuse no longer ties a valid older page's epoch to the currently active epoch.
+
+The finality regression now rejects a future-ended original `PENDING` donor even when the original page read predates finalization and its receipt watermark has since advanced. A separate black-box collector regression uses `runCycle()` and `CompatibilityCatalogueWriter`: after player A commits and B's transport fails, a price-only bootstrap change with stable fixture/source identities supersedes the partial run; the next generation fetches B only, completes and is independently read as `FINALIZED`. A subsequent real collector no-op remains finalized and preserves A's PFS row, current pointer, evidence archive/counts and timestamps. It also checks the published payload bodies and PostgreSQL-microsecond source intervals, plus participant receipts against the live-source read. Three focused collector methods passed **3/3, zero skipped** on guarded `localhost:55432`, under a 1200 MiB cgroup cap, swap disabled and a 768 MiB host-memory stop threshold. No full suite, live API, production DB/Fly/monitor action, commit or push occurred; writers remain inert.
+
+## Incremental sync — guarded teardown and bounded Unit 6 evidence (2026-10-12; local)
+
+`TapasSeed.requireDisposableTestDatabase()` now rejects any target except the local disposable database or the exact GitHub Actions test job before the touched fixtures construct a datasource. The importer-context, publisher, collector and compatibility-writer fixtures gate cleanup/restoration on successful preflight and baseline capture; season restoration runs transactionally and only after a flag change. A fake-JDBC lifecycle regression invokes their actual initializers and teardowns: rejected URLs never call the datasource supplier, and teardowns after either denied preflight or baseline-capture failure issue no JDBC operations. Database-target safety and the existing reader/schema/runtime checks are included below.
+
+An earlier grouped guarded run on `backend/.env.test` (`localhost:55432`) passed **136/136, zero skipped**: collector 36, compatibility writer 5, incremental publisher 15, importer context 3, teardown safety 1, `TapasSeedSafetyTest` 2, runtime configuration 7, and owned-store integration 67. The earlier 6/6 synthetic acceptance run is superseded: it seeded the ten-fixture catalogue before installing write counters and expected `FINAL_PENDING` after corrected reproof. The corrected focused run passed **3/3, zero skipped** for the ten-fixture acceptance, overlapping double-fixture case and optional-metric correction case. The review-critical single-fixture correction follow-up now runs one real collector no-op and verifies the reader remains FINALIZED with PFS/evidence/current-pointer/checkpoint snapshots unchanged; its guarded focused rerun passed **1/1, zero skipped** (`CoalescedPlayerHistoryCollectorIntegrationTest.finalMetricCorrectionChangesOnlyItsRowAndRequiresFreshGameweekReproof`). The acceptance run used a 1200 MiB cgroup cap, swap disabled and a 768 MiB host-memory stop threshold. No live API, production DB/Fly/monitor action, Tapas activation, full suite, commit or push occurred.
+
+Recorded/stubbed cycle measurements (one local disposable-DB run; body bytes are returned fixture/stub bodies; approximate JDBC bytes are logical values read through JDBC getters, not wire bytes; row-write counts come from test triggers and elapsed time includes local instrumentation):
+
+- Normal league selection: 20 clubs, 657 catalogue players, 380 fixtures; 660 unique history pages selected. GETs: bootstrap 1, fixtures 1, event-live 4, history 660; 3,851,486 body bytes; JDBC 9,928 statements / 5,397 queries / 4,530 updates / 3,410 returned rows / about 144,952 logical bytes; 29.9 s observed wall time. The recorded pages are intentionally sparse (only two non-empty rows / PFS inserts), so this measures broad selection and empty-page overhead, not a complete league-history payload.
+- Partial compatibility cycle: GETs 1/1/1/2 (bootstrap/fixtures/live/history; one page succeeds and player 28 fails), 258,589 body bytes; JDBC 598 statements / 519 queries / 71 updates / 471 returned rows / about 495,505 logical bytes; 1.2 s. Triggers counted 20 team, 1 player, 38 gameweek and 380 fixture inserts, plus 1 PFS/evidence/current pointer and the owned receipt/checkpoint writes. Same-source resume read one bootstrap, one fixtures response and only the failed player's page; no new pair or earlier page was published.
+- Checked final sweep: recorded fixture 29 with controlled source-derived participants `[1,28]`; GETs 2/2/1/2, 515,584 body bytes; JDBC 343 statements / 254 queries / 88 updates / 206 returned rows / about 20,111 logical bytes; 1.21 s. Physical inserts were 2 PFS/evidence/current pointers, 38 gameweek checkpoints and 8 receipts, plus 11 checkpoint and 3 receipt updates.
+- Unchanged next cycle: GETs 1/1/0/0; 244,567 body bytes; 83 statements / 75 queries / 7 updates / 78 returned rows / about 10,309 logical bytes; 0.26 s. No additional PFS, evidence, pointer or gameweek writes; one `incremental-core-import` receipt changed. PFS `updated_at` and evidence count remained unchanged.
+
+A three-cycle checked-gameweek regression then changed one player's points: exactly one PFS row was written, only the changed metric and its write timestamp differed, the unaffected player's physical row/current generation/evidence count and another game's checkpoint stayed unchanged, and the checked gameweek required fresh pages plus a fresh terminal source pair before finality returned. The optional-metric oracle verifies nonzero values on one player and present zeros on another; when expected assists is omitted on reproof, its physical value remains stored while `PfsReadSource` masks it as NULL. OFF-reader regressions cover previously VERIFIED and new-only fixtures, presence-only updates and withdrawals without deleting/rolling back the physical rows. Equal catalogue and identical-page cases remain zero-write.
+
+A bounded **synthetic** checked-gameweek acceptance covers ten fixtures across 20 clubs, the recorded 657-player bootstrap catalogue and 40 controlled fixture participants. Starting from empty compatibility rows, the collector's real compatibility writer inserts exactly 20 teams, 657 players, 38 gameweeks and 380 fixtures on the first partial cycle, with no catalogue updates; matching-source resume/no-op cycles add no catalogue writes. Correcting one fixture updates exactly that fixture and one PFS row. `GameweekFinalityReader` reports `FINALIZED` after correction and after the following real collector no-op, with no PFS/evidence/current-pointer/checkpoint churn on that no-op. A separate two-fixture synthetic case reuses players 1 and 4 across fixture IDs 29 and 36: six unique participants each receive one history request, while the two repeated players retain two fixture-keyed rows apiece with distinct BPS, opponent, venue and kickoff metadata. The single-fixture correction proof also checks varied nonzero xG/xA/xGC, DefCon and action counts, an all-zero-but-present player, and an omitted expected-assists component masked as NULL rather than zero. The fixtures are deliberately selected/reassigned and history pages are controlled test bodies; this is not evidence of an actual FPL double gameweek or whole-gameweek source completeness. The lifecycle regression calls the real test initializers and teardown methods, proving rejected URLs never construct their datasource and denied-preflight/baseline-failure teardown performs no JDBC writes. Finality tests use `GameweekFinality.catalogueFingerprint(...)`, not an ad-hoc raw bootstrap hash.
+
+This is bounded Unit 6 evidence, **not full acceptance or production source proof**. Normal histories are mostly empty stubs and the multi-fixture history bodies are synthetic; per-cycle memory, actual API/network variance, complete league-history bodies, monthly egress and the actual Tapas-reader audit remain outstanding. Same-batch daily-price/schedule capture alignment and reviewed single-writer cutover remain pending. Writers remain inert by default.
+
+## Incremental sync — compatibility retry and inert hourly wiring (2026-10-11; local)
+
+`OwnedSyncStore` now compares the publication interval and both canonical source intervals at PostgreSQL's microsecond precision, including the compatibility publisher path. A partial same-generation retry reuses the receipt's exact published bootstrap/fixture payload IDs, hashes and source span when they remain valid and cover the run's source floor. It does not stage a replacement pair or advance freshness from a repeated same-body read. A changed, validated source pair supersedes that partial run; the next explicit generation may publish a new receipt while retaining the old payload proof. The regression resumes only the failed player page, preserves the pair IDs and verifies the run span from the original source read through the new page; a later correction updates the receipt under a newer generation.
+
+`OWNED_SYNC_IMPORTER_ENABLED` remains false by default. When explicitly true, startup requires `OWNED_SYNC_MODE=ACTIVE`, an explicit `OWNED_SYNC_PLAYING_SEASON`, `OWNED_SYNC_CUTOVER_CONFIRMED=true`, a matching database current season, and an already-ACTIVE persisted runtime epoch. It does not initialize the schema, activate/deactivate the runtime, or change its epoch. The old `OwnedMatchdayRuntime` planner/workers are excluded in this mode; the collector and compatibility writer run on an immediate first trigger followed by a one-hour fixed delay under the existing durable lease and HTTP request budget. Daily-price and schedule capture schedulers remain enabled in this mode and continue their existing independent jobs. With the importer flag absent, the old runtime routing is unchanged.
+
+The new collector writes compatibility `team`, `player`, `gameweek`, `fixture` and PFS rows, but does not publish `fpl_daily_price`, `fpl_gameweek` or `fpl_fixture` from its validated source pair. Those captures continue through the existing 02:00/02:10 jobs; the same-batch capture handoff remains a cutover gap. The Tapas metric-reader audit, source/egress evidence and approved single-writer handover remain blockers.
+
+The focused disposable-DB run on `localhost:55432` passed **113/113, zero skipped**: `CoalescedPlayerHistoryCollectorIntegrationTest` 34, `CompatibilityCatalogueWriterIntegrationTest` 5, `OwnedSyncRuntimeConfigurationTest` 7 and `OwnedSyncStoreIntegrationTest` 67. This is not a full-suite result. The earlier 59/59 inert-foundation run is superseded by this rerun. No live API, production DB/Fly/monitoring, production activation or schedule, full suite, commit or push occurred.
+
+## Incremental sync — Unit 4, Unit 5a and Unit 5b local outcomes (2026-10-10; partial)
+
+`CoalescedPlayerHistoryCollector.runCycle()` remains explicitly callable, disabled by default and unscheduled. Its checked-gameweek final sweep begins/resumes fixture-scoped checkpoints, prioritizes outstanding pages, records successful pages immediately, and validates a fresh terminal bootstrap/fixtures pair before finalizing. Terminal source changes or reassignment cannot finalize an earlier snapshot, and an unchanged finalized sweep is not rewritten. This **new path only** uses source-complete final evidence without the legacy two-observation delay: every positive fixture-specific live appearance must have a current PFS history row with the same minutes and authoritative fixture-stat side, and every current positive PFS history row must match a positive live appearance on that exact fixture. Any mismatch or incomplete evidence abstains; zero-minute rows/explanations are not appearance proof and do not require a live explanation or catalogue registration.
+
+The legacy `FixtureVerification.verify` / `FixtureSyncPublisher` path is unchanged from `HEAD 784c66f`: its first coherent observation remains `NEEDS_SECOND_OBSERVATION`, later reads must be ordered, fingerprint-identical and at least ten minutes apart, and a recheck pending only on `STABILITY_WINDOW` preserves an existing verification. Legacy coverage/participant selection is also preserved, including zero-minute live-explanation identities used by `HistoryFixtureDispatcher`. The one-observation finality contract is confined to the separate new gameweek final-sweep path and does not activate or replace legacy behavior before cutover.
+
+The inert `GameweekFinalityRepository` remains the fenced persistence boundary. Its fixture-scoped manifest unions source candidates, participant receipts and known rows across omissions only while fixture identity matches. A successful withdrawal stays bounded evidence until it is newer than both participant evidence and the current invalidation/checkpoint floor; it does not manufacture repeated population revisions. Population hashes encode category, fixture and player boundaries unambiguously. Reuse of a finalized gameweek validates the targeted physical PFS rows through the same proof used by `PfsReadSource`—including row fingerprint, evidence, page receipt/watermark and checkpoint—without scanning the entire PFS population. Positive-row reconciliation is bidirectional; zero-minute current rows are not treated as positive appearances. Startup archives unsupported legacy proof before tightening constraints, clears it to `FINAL_PENDING`/`OPEN` without changing historical timestamps, and requires a fresh source attempt. Initial source, page and terminal intervals persist separately; the final receipt and owned run cover the real first-to-terminal span.
+
+A recorded complete source capture for fixture 29 has a fixture-stats participant union matching its 31 positive live appearances. That is evidence about that one captured fixture only, not a completeness guarantee for the FPL API or every fixture. The path abstains when a fixture's positive source/history evidence does not reconcile; no API-wide completeness claim is made. Sequential guarded tests on `localhost:55432` passed the legacy verifier, publisher, end-to-end and schedule-invalidation classes; the zero-minute departed-player dispatcher test; two selected admission tests including the original two-batch correction test; and three new collector finality tests. The full suite and large active-recovery acceptance remain for CI. Output formats use a separate read-only `GameweekFinalityReader` returning finality state, `firstCheckedAt`, `finalizedAt`, finalized source interval and optional coverage by `(seasonId, gameweek)`; do not use the writer-fenced `load(lease, …)` from chat/output code. The 2026-10-11 guarded focused rerun passed **7/7**: the finality crash/resume regression and all six `HistoryEvidenceSchemaIntegrationTest` cases. It covers archived finality through OFF/reactivation, later ordered pages, persisted run/floor/interval checks, watermark tampering and checkpoint/population mismatch. The previous 103/103 Unit 3 run was not rerun after these review fixes; this is not a full-suite result. The actual Tapas-reader audit remains blocked. No live API, production DB/Fly/monitoring, scheduler, activation, full suite, commit or push occurred; writers remain inert.
+
+## Incremental sync — units 1–3 bounded reader slice (2026-10-10; local, partial)
+
+[Plan](superpowers/plans/2026-10-10-incremental-fpl-sync.md) unit 1 pins provisional-row and checked-gameweek contracts and adds inert current-row/finality metadata; no values are duplicated or backfilled. Its focused schema/parser tests passed 28/28. The `STRICT` optional-coverage validator is explicitly required to return `IS TRUE`, and reinitialization replaces the earlier NULL-permitting CHECK; its migration regression passed 5/5.
+
+Unit 2 adds the explicit `IncrementalPlayerFixturePublisher` / `IncrementalPfsRepository` page boundary. It requires the current ACTIVE runtime fence and matches the configured playing season against the locked database `is_current` row in the page transaction. Successful pages—including empty pages—use the distinct `incremental-page:player:<id>` receipt key in the existing receipt table; the legacy `player-history:<id>` watermark is neither locked nor overwritten. Page writes atomically update named PFS columns, immutable component evidence and valid/withdrawn pointers; changed-only writes preserve missing optional values as unknown. Each page revokes obsolete fixture-wide verification while retaining historical receipts. The legacy OFF reader masks old VERIFIED and new-only fixtures, including presence-only changes and withdrawals, using current-row/page markers. Reassigned fixtures return prior and new GW keys.
+
+The bounded Unit 3 slice adds valid-pointer/evidence/watermark reads and component masking in `PfsReadSource`, population/usable-row coverage in `RankingMetrics`, and provisional/incomplete wording in one shared comparison formatter. Provisional finished-match rows remain usable without a FINALIZED-gameweek requirement; elapsed unfinished rows do not count in completed ranking windows. The initial bounded Task 3 run passed **91/91, zero skipped** across PFS reader, incremental publisher, ranking metrics, comparison formatter, pick and squad integration tests. A later output-format run and the focused finality follow-up are recorded below; neither is a full-suite result. Checked-final manifest/output wiring is locally implemented. Remaining Unit 3 work is `DataAge` source-age wording, `SeasonResolver` review, history-only correction while flags stay true, and the actual Tapas-reader audit. No writer activation, API endpoint, monitor, production data/schema, full suite, commit or push; ACTIVE92 remains untouched.
+
+## Unit 3 read-only finality review follow-up (local, 2026-10-11)
+
+Finalized output no longer depends on the planner's current runtime mode/epoch. `GameweekFinalityReader` validates the persisted terminal run's producer, mode, epoch, completed status, source interval and requested-source floor. At finalization, per-player page generations and original read intervals are stored separately from the mutable latest page receipt; later ordered pages may advance that watermark without replacing the historical proof or invalidating unchanged PFS rows. The reader verifies those original page runs and their intervals, then independently checks the latest watermark ordering. Missing, malformed, stale or future evidence stays `FINAL_PENDING`.
+
+Checkpoint required/completed IDs must exactly equal the persisted population's required IDs, with no outstanding IDs. The population is checked against the current catalogue fingerprint and fixture players, durable participant receipts, positive source appearance evidence and current PFS rows; an empty-history catalogue player remains required. The new JSONB evidence is on this project's owned finality table and is cleared with invalidation; no Tapas-owned schema or runtime activation was changed.
+
+The guarded disposable-DB rerun passed **7/7, zero skipped**: `CoalescedPlayerHistoryCollectorIntegrationTest.finalityCheckpointResumesFreshPageAfterCrashAndFinalizesOnlyAfterEndRead` 1/1 and `HistoryEvidenceSchemaIntegrationTest` 6/6, on `localhost:55432`. It ran in a verified 1200 MiB cgroup with swap disabled and a 768 MiB host-availability stop threshold. The previous 103/103 output-format run was not rerun after these four finality corrections; no full suite or actual Tapas-reader audit is claimed. No live API, production DB/Fly/monitoring, scheduler, activation, commit or push occurred; writers remain inert.
+
+### Unit 2/3 review-critical follow-up (2026-10-10; local)
+
+Fixed four bounded findings: unchanged later pages now advance only the ordered page watermark while preserving row revision/source interval and avoiding PFS/evidence/pointer churn; reader visibility accepts that newer watermark while fencing withdrawals and stale pages. Incremental pointers now carry a separate built-in PostgreSQL SHA-256 fingerprint of normalized physical PFS core values and present optional values; absent optionals are excluded, and tampering makes rows unreadable without fallback. A first empty page reconciles legacy owned PFS rows into current-batch withdrawals, returns their actual GW keys, revokes current verification while preserving older evidence/receipt, and does not sweep unowned rows/seasons. Complete legacy `player-history:<id>` receipt timestamps no longer risk being treated as an incremental page receipt; original values remain visible in ACTIVE and OFF.
+
+The latest guarded disposable-DB run on `localhost:55432` passed **57/57, zero skipped**: `IncrementalPlayerFixturePublisherIntegrationTest` 15, `HistoryEvidenceSchemaIntegrationTest` 5, `PfsReadSourceIntegrationTest` 14, and `RankingMetricsIntegrationTest` 23. This was not the full suite. No collector/unit 4, final sweep, production/API/monitor work, production DB, commit or push was run; writers remain inert and ACTIVE92 is untouched.
+## Incremental sync simplification proposal (2026-10-10; historical proposal)
+
+[New plan](superpowers/plans/2026-10-10-incremental-fpl-sync.md): publish valid provisional
+player-fixture rows as they arrive, update only changed values, and complete a fresh final sweep
+when FPL reports the event finished/data-checked. The owner now accepts later corrections; the
+old two-observation stability gate is a design choice being proposed for retirement, not an FPL
+requirement. The original missing-Arsenal/whole-club comparison incident remains a required
+regression: provisional availability must not turn missing coverage or optional defaults into facts.
+
+The proposal separates row publication, comparison coverage and gameweek finality, includes reader
+migration and single-writer rollback, and explicitly limits what can be known about corrections
+after FPL's checked signal. At this proposal checkpoint, seven bounded implementation units were proposed and none was implemented.
+No production mode, runtime, DB or monitor was changed by the proposal. The owner's 2026-10-09 continuous ACTIVE92
+and observation-only monitoring authorisation stands; older OFF83 notes below are historical.
+The earlier GW5 recovery reached 10 VERIFIED fixtures/667 physical rows; that outcome is not a
+claim that the separate full source-body audit or a real checked-GW final-sweep test was completed.
+
+## Task 153 review-2 P1 oracle repair (local pass, 2026-10-08)
+
+The earlier P1/P2 follow-up was incomplete: target acceptance selected the latest two completed runs
+without tying the first to the captured first-pending generation, correction proof equated its capture
+to `min(generation)`, and compact negatives exercised only `receiptIntervalProof`, not jointly
+shortened persisted run/receipt fields. The runtime, policy and acceptance bounds were not the issue.
+
+A shared full-source batch proof now validates the exact captured first-pending generation and current
+receipt generation as two completed ACTIVE epoch-3 runs. Both batches require exact source season/key,
+manifest and anchor generations, BOOTSTRAP/fixtures/live identities and `VALID` bodies, source-body
+hashes, complete candidate roster/participants, histories and the effective requested floor. The first
+batch requires captured `current_verified_generation IS NULL` and does not require a publication receipt;
+the second must be the current receipt with a strictly newer generation. Targets 41–50 and corrections
+1–5 use this same proof. Pairing no longer selects an arbitrary/latest two runs or assumes the capture is
+the earliest completed generation. Negative checks prove invalid generation, season, epoch, anchor/body,
+roster/history and floor evidence still fails when both run intervals satisfy the gap.
+
+The compact disposable-DB test also jointly shortened the actual canonical publisher run/receipt start
+to the later fixtures-body start: the local receipt predicate remained true while the full source-body
+min/max predicate rejected it. It restored the timestamps and preserved both body hashes and the pair
+fingerprint. A second joint run/receipt finish shortening before the latest history read likewise kept
+the local receipt predicate true and failed full source-interval proof. Compact regression passed **1/1,
+zero skipped** (46 s Gradle).
+
+One exact bounded ACTIVE acceptance then passed **1/1, zero skipped** (741.897 s JUnit; 12m48s Gradle),
+with the original 48 h / 6,000 claims / 6,000 dispatches / 1,500 s wall bounds: **10/10 targets** and
+**5/5 corrected fixtures** passed full source proof. Targets 41–50 map first-pending → current receipt as
+`41 431855→436389; 42 431856→436390; 43 431857→436516; 44 431858→436597; 45 431859→436667;`
+`46 431860→436732; 47 431861→436733; 48 431862→436734; 49 431863→436735; 50 431864→436736`.
+Their minimum first-finish-to-second-start gap was **10m51.3s**. Corrected fixtures map
+`1 431169→433775; 2 431168→434277; 3 431167→434557; 4 431166→435133; 5 431165→435134`;
+the minimum gap was **1h00m49s**. The acceptance drained at 2,576 claims, 2,577 dispatches and
+2,056.7 virtual seconds (738.037/1,500 wall seconds), with zero skips, bad manifests/batches, missing
+history, failed runs or correction replays. Source changes were prepared before the acceptance driver;
+no source mutation occurred during it. No full suite, production query/activation, commit or push was run;
+independent review and CI remain pending, and production remains OFF83.
+
+## Task 153 — correction-baseline semantics and bounded acceptance (local, pass, 2026-10-08)
+
+The earlier 35/40 mismatch was caused by the five intentional source corrections replacing their
+baseline receipt generations, not by lost or replayed unchanged fixtures. The acceptance now classifies
+each changed fixture as either safely pending with last-good proof retained or republished from fresh
+source; it no longer requires every old receipt generation to remain current.
+
+The actual-writer/coordinator fixture-3 regression passed **1/1, zero skipped** (39.702 s JUnit;
+1m21s Gradle). Fixture 3 changed `team_h_score` 0→1: baseline receipt 368524 was invalidated while
+its last-good header/stat fingerprints remained recorded, then a coherent fresh pending observation
+368528 kept the current generation null and the OFF read masked. Its two complete observation spans
+were `12:11:11.423–12:12:19.723Z` and `12:53:14.923–12:54:23.223Z` (40m55.2s apart, over the
+10-minute minimum); current-source publication was receipt 368591. The source header fingerprint
+changed to `8a2e439b…e3ec52a`, while the statistics fingerprint stayed
+`a00594cd…208cc522`. All 61 physical PFS rows matched source history metrics, the score-only
+correction changed no PFS metric values (ignoring the write timestamp), and 61 fresh per-player
+evidence rows were appended to the retained 61. A negative unrelated schedule publication changed
+the receipt/pair identity but preserved both payload hashes and fixture-3's source header; receipt
+368524 remained current and no fixture verification was replayed by that publication.
+
+A separate diff preflight passed **1/1, zero skipped** (8.833 s JUnit; 49 s Gradle). Core headers,
+captured headers and authoritative source fingerprints changed for exactly fixtures **1–5**, with
+only `team_h_score` changing; fixtures 6–40 and all metric fingerprints were unchanged. The fixture
+payload hash changed while the bootstrap hash did not.
+
+The exact bounded ACTIVE acceptance then passed **1/1, zero skipped** (749.233 s JUnit; 12m56s
+Gradle). Original 48-hour / 6,000-claim / 6,000-dispatch / 1,500-second work-wall limits were
+unchanged. Targets 41–50 all had receipt-backed fresh proof (generations
+`{41=367486, 42=367487, 43=367613, 44=367694, 45=367762, 46=367826, 47=367827, 48=367828,
+49=367829, 50=367830}`); the run used 2,576 claims, 2,577 dispatches and 1,996.7 virtual seconds.
+All five changed fixtures were genuinely republished in ACTIVE epoch 3 from corrected source:
+`1: 361553→364872`, `2: 361554→365374`, `3: 361555→365654`, `4: 361556→366230`,
+`5: 361557→366231`. Fixtures 6–40 retained their baseline receipt, PFS and evidence components
+exactly, with **zero correction replay runs**. Thus the observed 35 old receipts were the 35
+unchanged fixtures, not a blanket-accepted shortfall; the five changed receipts each have current
+source/header, participant, batch, metric and evidence proof. All target/source assertions, all
+ready/blocked/untouched and FIFO/preferential lane checks passed. Blocked-retry worker body reads
+remained zero; complete-publication logical JDBC bytes were anchors 50,757,432, histories 13,524,992,
+canonical pairs zero. The latest compact-regression XML is
+`backend/build/test-results/test/TEST-fi.karivanttinen.fplassistant.sync.OwnedMatchdayAdmissionProgressIntegrationTest.xml`;
+the combined acceptance metrics and outcome are recorded above.
+
+This is a local bounded acceptance pass, not a full-suite or CI result. Fresh branch CI and independent
+review remain pending. No commit, push, production query, activation or full suite was run;
+production remains OFF83 and the approved 60-minute/500-MB run remains unused.
+
+**Task 153 P1/P2 oracle follow-up (2026-10-08; earlier local pass; first-pending pairing/compact-negative coverage superseded below):** The corrected-fixture
+oracle now requires all five fixtures 1–5 to be republished, not merely scheduled. For each it identifies
+the first coherent post-invalidation generation as the earliest completed fixture run after the old
+receipt, rejects the incoherent pre-correction observation as a batch, and proves both that run and the
+current receipt generation against the corrected source. Each batch checks the effective source floor,
+exact run/manifest/season/key/epoch, complete source participant IDs, all three exact anchor payload IDs
+and bodies, and every required player's exact history payload/read interval. The first pending batch is
+proved from its staged raw history payloads (the committed per-player evidence table is only required on
+the final published receipt); the final batch additionally requires complete committed evidence and an
+exact current receipt interval through completion/publication. The two receipt-backed source intervals
+must start after the correction floor and be at least ten minutes apart. Negative checks accept the exact
+ten-minute boundary and reject pre-floor, sub-ten-minute and reversed intervals, alongside NULL/mismatched
+receipt and future-publication cases. These checks ran before the correction source mutation. Intermediate
+bounded runs exposed only oracle gaps: first-pending observations have raw history payloads but no committed
+per-player evidence yet, retries can leave extra anchor payload attempts in one run, and fixture receipts do
+not carry canonical-parent payload IDs. The proof now uses each run's manifest-selected anchors, raw history
+payloads and exact fixture receipt fields; no runtime code changed.
+
+The independent ACTIVE parent SQL oracle now orders eligible pairs by
+`GREATEST(bootstrap.read_finished_at, fixtures.read_finished_at) DESC`, then publication time and
+publication generation; its crossed-price regression proves the fresher schedule read wins even though
+its price receipt was published earlier. On guarded `backend/.env.test` (`localhost:55432`), the compact
+oracle tests passed before the bounded acceptance; the exact combined ACTIVE method passed **1/1, zero
+skipped** (Gradle 12m50s) with the original bounds unchanged. Then five standalone methods passed
+sequentially, **1/1, zero skipped each**: compact ACTIVE baseline/oracle, fixture-3 real-writer correction,
+`twoWorkerFixtureFanoutDoesNotStarveDueHistories`,
+`finiteDrainStagesAllPinnedFixturesAndHistoryDependencies`, and
+`fullRosterTwoWorkersStageSourceCompleteFixtureWithinBudget`. The parent-selection class passed **13/13**
+after the explicit crossed-price assertion was added. No full suite ran; CI and independent review remain
+pending. Production remains OFF83, the approved 60-minute/500-MB envelope remains unused, and no commit,
+push or production action occurred.
+
+## Task 153 — initial exact combined ACTIVE acceptance failure (superseded, 2026-10-08)
+
+### Initial failure details
+
+One exact filtered run of `combinedActiveRecoveryPublishesAllTenNeverPublishedFixturesAfterRestart`
+used the guarded `backend/.env.test` URL (`localhost:55432/postgres`): **1 test, 0 skipped, 1
+failure**. JUnit test time was 744.997 s; Gradle wall was 12m50s. The seeded preflight assertions
+passed for 657 unique players, 20 clubs and 50 finished fixtures. The original 48 h / 6,000 claim /
+6,000 dispatch / 1,500 s work-wall bounds were unchanged. The driver drained at
+`2026-10-01T02:34:16.700Z` after 34m16.7s virtual time, 2,576 claims, 2,577 dispatches and 2,580
+admissions; work wall was 743.967/1,500 s. It did not hit `WALL_LIMIT`. The resumed mock server
+recorded 2,578 GETs: 2,418 element summaries, 65 fixtures, 30 event-live and 65 bootstrap requests;
+the combined trace does not emit a planner-tick count. Preparation receipts were price generation
+354330 (02:00 UK capture) and schedule generation 354331 (02:10 UK capture); the schedule receipt
+published at 03:00 UK. First target claim was fixture 41, generation 355680, attempt
+1, worker `active-fixture-manifest-0`, at
+`2026-10-01T02:00:01.200Z`. All ten first observations (generations 355680–355689) were coherent
+`NEEDS_SECOND_OBSERVATION`; the minimum later-batch start after the first read finished was 651.3 s.
+The last target's source reads were bootstrap `05:27:06.6–05:27:06.7`, fixtures
+`05:27:08.8–05:27:08.9`, live `05:27:11.0–05:27:11.1` and history
+`05:32:00.3–05:33:07.5` in the trace's host-local timestamp format; its receipt completed and
+published at `2026-10-01T02:34:16.700Z`, the driver end. The exact `last_verified_at` value was not
+printed separately.
+
+The physical fixture rows **and** exact-source acceptance metric reported fixtures 41–50 VERIFIED,
+with current-epoch-3 receipts `{41=360214, 42=360215, 43=360341, 44=360422, 45=360492,
+46=360557, 47=360558, 48=360559, 49=360560, 50=360561}`. All ten source proof entries had valid
+anchor roles, source floors/intervals, current published parent and finished-fixture evidence,
+matching finish-marker proof, participant/manifests and batch proof; no missing history, bad
+manifest/batch, failed run or skipped target was reported. The selected canonical parent recorded
+in the trace was the current schedule pair: source/publication generation 356347, payload ids
+69405/69406, fingerprint `a540da4f933ac04860204c521317e6d73d2037a6d6805b3acc49931c74c629b7`,
+with current-epoch/current-publication/immutable/hash checks true. The trace records marker-match
+booleans, not raw `finished_parent_*` values or the full rejected-candidate set. It also does not
+list the exact five receipt keys behind the 35/40 aggregate.
+
+The **first failure** was `OwnedMatchdayAdmissionProgressIntegrationTest.java:1060`:
+`servedCorrectionReceipts` expected 40 but was **35**. This counts exact current `latest_generation`
+equality against the 40 saved baseline correction generations after the target recovery. The run
+logs only the count, not which five fixture keys differed; test cleanup then removed the seeded rows,
+so their identities and source-work/queue transitions cannot be recovered from this run. The five
+intentional source changes were `team_h_score` 0→1; initial invalidation enqueued their correction
+work, and the OFF→ACTIVE pre-recovery check retained all 40 expected receipt generations. The
+recovery driver and 10/10 target proofs passed, but the remaining 40-receipt, changed-correction
+queue/epoch and post-recovery immutable-35/changed-5 assertions were not reached. The earlier
+`OWNED_TASK4_POST_RECOVERY_COMPONENT_DIFF {}` was emitted before the target recovery and is not
+post-recovery evidence. The OFF-mode PFS mask assertion passed before reactivation; the later ACTIVE
+mask and optional-component assertions were not reached. At that checkpoint, the 35/40 aggregate
+could not be attributed to an oracle defect or confirmed runtime mutation without per-fixture evidence;
+the follow-up above supplies that attribution.
+
+Blocked-retry worker body reads were zero in every family. Complete-publication worker JDBC reads
+(attempts/rows/values/raw bytes) were anchors `79/79/79/50,757,432`, histories
+`25/1,651/1,651/13,524,992`, canonical pairs and other families zero. The separate canonical-parent
+diagnostic was one query / 1,875,506 raw body bytes and is not worker I/O; mock HTTP response bytes
+are not used as a substitute. Full captured log, complete XML and the raw acceptance trace are
+`/tmp/owned-sync-task153-combined-20261008T100629Z.log`,
+`/tmp/owned-sync-task153-combined-20261008T100629Z.xml` and
+`/tmp/owned-sync-task153-combined-20261008T100629Z-trace.txt`. At that checkpoint no second combined
+run or fixture follow-up had run because the exact combined gate was red; the bounded follow-up and
+resolution are recorded above. No runtime-source edit or bounds change,
+production query/activation, full suite, commit or push occurred at that checkpoint; fresh branch CI
+and independent review remain pending, and production remains OFF.
+
+## PR #155 CI test-fixture repair (local, 2026-10-08)
+
+CI run [37749672492](https://github.com/quantti/fpl-assistant/actions/runs/37749672492) completed 1,485 tests with two failures, both new `HistoryFixtureDispatcherIntegrationTest` blocked-manifest regressions. Their `fpl_fixture_sync_test` rows referenced season id 27 (`2026-27`) without a matching `season` row; the class had only seeded Tapas' general test seasons, while an earlier focused run inherited id 27 from another test. This is a test-fixture defect, not a runtime failure.
+
+The class now calls `TapasSeed.ensureOwnedSyncCaptureSeason`, loads the exact id/code/date row into the `Season` passed to planner/dispatcher callers, and asserts that identity against the 2026 source fixture calendar. Both regressions assert the exact season/fixture row's `first_finished_observed_at` and source/publication generations before and after native dispatcher admission, plus the persisted recovery start time; a missing row can no longer pass as an admitted wait. The two methods ran first in a filtered invocation on the guarded `127.0.0.1:55432` disposable database with id 27 present and id 1 absent: **2/2 passed**. No shared fixture rows or season 27 were deleted or altered.
+
+Fresh-head CI remains pending. This is test-fixture repair only and is not Task 4's 10/10 acceptance; no full suite, production query/activation, Fly action, commit or push was performed.
+
+## ACTIVE published-parent ordering follow-up (local, 2026-10-08)
+
+The post-push P1 exposed two eligible current-ACTIVE parents whose order disagreed: a newer source
+pair attached to the price-lane publication published first, and an older source pair attached to the
+schedule-lane publication published later.
+The selector used maximum payload-read completion, while metadata used publication time. Source run
+generation identifies the donor; publication run generation identifies the receipt owner. The shared
+winner key is now `GREATEST(bootstrap.read_finished_at, fixtures.read_finished_at) DESC`, then
+`published_at DESC`, then publication generation DESC across candidate selection, exact publication
+proof and metadata finish evidence; compatibility/write timestamps do not participate. Ordinary
+newest-VALID planner discovery is unchanged.
+
+The private-table selection class now verifies both eligible crossed-order pairs, exact source and
+publication generations in the planner marker, metadata/selector agreement, the newer-unfinished vs
+older-finished marker-clear case, and generation tie-breaking when source and publication times are
+equal. A blocked-manifest regression proves the fresher FINISHED winner admits without a canonical
+re-enqueue or body reads, including a valid PENDING donor. Equal read/publication times exercise the
+publication-generation tie-break with source-generation order reversed. Focused tests passed on guarded
+`localhost:55432`: `OwnedPublishedParentSelectionIntegrationTest` **13/13** and five
+`HistoryFixtureDispatcherIntegrationTest.blockedManifest*` methods **5/5** (**18 total**). No full
+suite, Task 4 10/10 acceptance rerun, production query/activation, Fly action, commit or push; Task 4
+acceptance and independent review/branch CI remain pending.
+
+## ACTIVE planner-parent ManualDriver follow-up (local, 2026-10-08; no acceptance)
+
+The unstable fixed-delay diagnostic was test-driver-only: `nextEvent()` scheduled an idle second
+worker at the current virtual instant even when `maxActiveWorkers=1`, so the driver spun at T while
+the real HTTP request timeout expired. Worker-start event eligibility now uses the same concurrency
+and acknowledged-state gate as `startReadyWorkers()`. The test installs its wait observer before
+starting dispatch. Response assignment requires exactly one active owner and a live leased
+season/epoch-matched generation; missing or ambiguous ownership fails immediately. Thread-to-worker
+mappings are asserted present at dispatch start and removed exactly once on completion, while the
+worker-to-generation mapping remains available through response-release/completion checks.
+
+The same two targeted methods passed **2/2, zero skipped on each of two executed runs** against the
+guarded disposable `localhost:55432` database. Gradle wall times were **59 s** and **130 s** (the
+second used `--rerun-tasks`; JUnit reported 20.496 s). The unpublished-pair case selected newer
+valid-but-unpublished B (source generation 353886, read finished `12:00:01.201Z`) as the newest
+valid candidate while retaining published A (source generation 353884, publication generation
+353885, fixtures read finished `12:00:01.200Z`) as the current parent; `PlannerInputRepository.load()`
+classified the target FINISHED and the exact marker remained on A. A temporary direct
+`coordinator.tick()` in that B case returned UNKNOWN and was reverted; B is tested at repository
+selection, while the independent minute case below exercises an actual coordinator tick. That
+interaction remains unverified. In the minute-tick case, at `2026-10-01T02:01:00Z`
+worker 1 held an `ELEMENT_SUMMARY` callback until `02:01:00.100Z`; generation 353934 remained
+mapped to that worker, no worker was completed, and the tick's planner snapshot retained published
+schedule source/publication generation 353891 (payloads 68348/68349) with the finish marker set.
+
+The separate bounded driver stopped at `VIRTUAL_LIMIT` after 14 claims/15 dispatches and 15 virtual
+minutes; fixtures 41–50 had zero attempts and no coherent first-pending observation was reached.
+This verifies neither target recovery nor Task 4 acceptance. No bounds were raised and no production
+or runtime code, full suite, commit or push was touched. The original 48-hour/6,000-claim/6,000-
+dispatch/1,500-second acceptance and fresh branch CI remain separate gates.
+
+## ACTIVE canonical-source demand-floor P1 follow-up (local, 2026-10-08)
+
+The source chooser, exact `currentPublishedCanonicalPair` proof and metadata-only
+`currentCanonicalParentEvidence` now share one demanded-floor predicate. Both source and publisher
+lanes compare both payload reads with the maximum `requested_source_after` across matching current
+ACTIVE-epoch runs. This rejects an attached pending donor whose demand advanced after its reads and
+an unchanged completed receipt superseded by a newer pending generation. It does not erase the
+published receipt or alter fixture verification/correction receipts; it only limits reuse as current
+source evidence. Planner finish markers and blocked-manifest admission therefore use the same
+eligible pair, without body hydration on the blocked path.
+
+Five new private-table integration methods cover valid pending-donor reuse, donor advancement through
+the real enqueue API, later completed-donor and publisher demands, and epoch/future-publication
+negatives without inferring finish from `first_finished_observed_at`. The 12 invalid-publication
+variants now keep the fallback pair inside the current demanded floors. The blocked-manifest
+regression advances the pending donor floor, publishes a fresh eligible fallback A, then proves the
+metadata marker binds its exact source/publication generations and native admission neither
+requeues canonical roots nor reads bodies/HTTP. Focused passes on guarded `localhost:55432`:
+`OwnedPublishedParentSelectionIntegrationTest` **10/10**,
+`HistoryFixtureDispatcherIntegrationTest` **30/30**,
+`FixtureRecoveryAdmissionIntegrationTest` **29/29**,
+`PlannerInputRepositoryIntegrationTest` **4/4**, and
+`CatalogueScheduleDispatcherIntegrationTest` **54/54** (**127 total**). This is not the Task 4
+10/10 acceptance and must not be represented as such. No full suite, production query/activation,
+Fly action, commit or push; branch CI and independent review remain pending. `backend/.env.test`
+was absent, so each test command explicitly guarded `DATABASE_URL` to the disposable localhost port.
+
+## ACTIVE published-parent selection follow-up (local, 2026-10-08)
+
+The bounded ACTIVE recovery lookup now filters the current publication receipt, owner/donor keys and epochs, source IDs/intervals, payload validity, source floors, hashes and non-future completion before hydrating a candidate. It then rechecks the exact pair through the existing proof/cache path. `PlannerInputRepository` still discovers ordinary planning inputs from the newest VALID pair; only recovery status/finish markers use the eligible published parent. `HistoryFixtureDispatcher` retains ordinary VALID-pair history discovery and uses the new published-pair traversal only for ACTIVE parent admission.
+
+This is the pre-P1 checkpoint. Its **5/5** result records the earlier receipt-only behavior; the claim that A remains reusable behind any newer unpublished valid pair is superseded by the demand-floor follow-up above. Do not count this checkpoint as Task 4 acceptance: its 10/10 run was not repeated, and remains not accepted. The test used only its owned/capture tables and preserved the shared season seed. No production query/activation, Fly action, commit or push occurred; independent review and branch CI remain pending. Whether this failure shape persists in production after the source-span repair is unknown; no production evidence was collected.
+
+## ACTIVE planner-parent diagnostic (local, 2026-10-07; no acceptance)
+
+The test-driver-only fixed-delay diagnostic passed **2/2, 0 skipped** on guarded `localhost:55432`
+(56.472 s JUnit; 1m31s Gradle). At `2026-10-01T02:01:00Z`, the modeled one-minute tick ran with
+worker 2 active and its `ELEMENT_SUMMARY` response pending until `02:01:00.100Z`; the clock did not
+advance past that callback. The tick's `PlannerInputRepository` snapshot selected the same published
+schedule source/publication generation 349543, payloads 68034/68035 (bootstrap read
+01:10:00–01:10:00.100Z; fixtures 01:10:01.100Z–01:10:01.200Z), and the raw target marker became
+complete. Before the tick all `finished_parent_*` fields were NULL and
+`finished_parent_finished=false`; after it, source generation/publication generation were both
+349543, payload ids were 68034/68035, source fingerprint was
+`325c1a29bb7e0a743e6e0105278788840ee839d849f61105fee8bd7757ab6f9e`, fixture fingerprint was
+`edbcf8476c577898a6e5fddabd5be018bdb00079a98bdd99966bd72c0ac4de07`, and
+`finished_parent_finished=true`. The prior `first_finished_observed_at` stayed unchanged. Both
+canonical root receipt rows/keys were unchanged, with zero canonical attempts after the minute tick.
+
+The diagnostic's separate 15-minute/200-claim FIFO run stopped at `VIRTUAL_LIMIT` after 160 claims
+and 162 dispatches: **no target reached a coherent first-pending observation** and fixtures 41–50 had
+zero attempts. This does not verify first-pending target work and is not acceptance. The original
+48-hour/6,000-claim/6,000-dispatch/1,500-second acceptance bounds were not changed or run. Two
+separate focused blocked-manifest tests passed **2/2**; both assert zero body queries/values and no
+HTTP fetch on the blocked retry path. The 2/2 diagnostic pass has not been stable on rerun: one
+repeat failed in `ManualDriver.collectCompleted` because worker 2 completed before its controlled
+response release (virtual time was still 02:00), and another failed in `assignPendingResponses`
+when its selected generation had no matching run row. A short 5-second-response/start-time variant
+hit the missing-row failure and was reverted. These are test-driver failures; first-pending work
+remains unverified, and the successful diagnostic is not acceptance evidence.
+
+A separate seeded test confirms the suspected `PlannerInputRepository.latestOwnedSnapshot` defect. A
+newer valid-but-unpublished source pair (generation 349538, payloads 68026/68027, both read at
+`2026-09-26T12:00:01.200Z`) was selected ahead of the still-current published pair (source
+349536/publication 349537, payloads 68024/68025; bootstrap `12:00:00Z–12:00:00.100Z`, fixtures
+`12:00:01.100Z–12:00:01.200Z`). `PlannerInputRepository.load()` therefore classified fixture 41 as
+`UNKNOWN` and cleared the exact finish marker despite the older finished publication remaining
+available. **Source proposal only; no production code changed:** filter ACTIVE recovery-parent
+candidates by their exact current publication before returning the newest candidate, or separate
+ordinary source discovery from published-parent selection. This reproduction is concrete but does
+not alone prove the cause of the earlier combined 0/10 run. Production remains OFF; one production
+approval remains unspent. No full suite, production action, commit or push occurred. The checkpoint
+now lives in `docs/superpowers/plans/2026-10-04-owned-sync-recovery-fixes.md`; the
+2026-09-13 plan retains its historical Tasks 1–10 progress line.
+
+## Task 153 — acceptance fixture isolation (local, 2026-10-07)
+
+A preceding zero-skipped focused-class run failed during setup: `cleanActiveAcceptanceSeason` deleted shared `season.id=27`, which was still referenced by `fpl_fixture_sync_test` from another owned-sync test class. This was a test-isolation setup failure, not source acceptance. The helper now validates and retains the shared `2026-27`/`2026-08-21` season row, clears only this class's `fpl_acc_*` queue/evidence and capture rows plus its core test data, and uses `TapasSeed` to preserve the intended current-season test flag. A regression seeded a foreign `fpl_fixture_sync_test` row for season 27 and proved setup and cleanup preserve both it and the season; it deletes only that dummy row.
+
+The focused regression plus `compactActiveBaselineAndOracleRetainRealReceiptsAcrossReactivation` passed **2/2, 0 skipped** (JUnit 10.152 s; Gradle 35 s) on guarded `localhost:55432`.
+
+The single requested combined acceptance rerun used the unchanged 48-hour / 6,000-claim / 6,000-dispatch / 1,500-second bounds. It failed **1 test, 0 skipped** after 1,502.051 s: the harness stopped at `WALL_LIMIT`, reached 24h19m33.7s virtual time, and verified **0/10** target fixtures (0 target receipts). The last assertion failed at `OwnedMatchdayAdmissionProgressIntegrationTest.java:872`: actual verified IDs `[]`, expected 41–50. The combined source/receipt assertions after this point were not reached; no 10/10 source-proof acceptance is claimed. The original first-finished/daily-due values, 48-hour requirement, and source/body/receipt assertions were not changed or weakened. No second combined run or full suite was started.
+
+The prior CI run [37666002969](https://github.com/quantti/fpl-assistant/actions/runs/37666002969) was red before the canonical source-span repair: physical rows showed six VERIFIED/four unverified while its exact-source oracle rejected all ten because a price publication's run/receipt interval ended before the fixture payload read. That source defect was fixed in `4f7e830` and merged to `master`; the existing focused source-gate regressions cover combined price-read span, bootstrap-only daily capture time, UNKNOWN missing-finish-marker wake, and valid-FINISHED no-requeue. Fresh full CI is pending. Production remains OFF (last known epoch 83); no production query, activation, Fly action, full suite, commit or push occurred.
+
+## PR #153 prior CI evidence — canonical pair source-span repair (historical, 2026-10-07)
+
+CI run [37666002969](https://github.com/quantti/fpl-assistant/actions/runs/37666002969) ran 1,472 tests and failed the combined ACTIVE acceptance. The physical fixture rows showed **six VERIFIED and four still unverified**, but the exact-source oracle rejected the canonical parent evidence for all ten: a price-lane publication attached a bootstrap/fixtures pair while its run and receipt ended at bootstrap completion, before the fixture read ended. This was a publication-evidence defect, not a reason to relax queue bounds or fairness; the 10/10 criterion was unmet and was not claimed.
+
+The repair, now merged to `master` as `4f7e830`, makes a price publication's run/receipt interval span both canonical reads when it attaches that pair, while `source:bootstrap-static` and daily-price `captured_at` remain tied to bootstrap alone. Store publication rejects a source span that fails to cover either exact payload interval; both ACTIVE proof paths require ordered, known, non-future payload reads, exact current-epoch publication/receipt/source identities, valid source hashes and a recomputed source-pair fingerprint; parent lookup skips an ineligible newest candidate to find an older still-valid one. A blocked UNKNOWN fixture with a current publication but no exact finish marker wakes the existing coalesced canonical queue while preserving source floors and avoiding HTTP/body hydration; a valid FINISHED marker still avoids redundant parent work.
+
+Ten focused test methods passed individually on guarded `localhost:55432`: 2 catalogue-dispatch, 5 fixture-recovery, and 3 history/fixture cases, including actual pending-donor price publication, bootstrap-only daily capture time, interval rejection/fallback, missing-marker wake, and valid-finished no-requeue. The later combined attempt and its non-acceptance are recorded above; fresh full CI remains pending.
+
+The two review-warning follow-ups passed exactly **3 method-filtered tests** on the disposable `localhost:55432` DB: 2 history/fixture wake variants and 1 fixture-recovery proof. The existing-job variant proves due time advances from future to now while preserving the future `requested_source_after`; the absent-job variant proves both current ACTIVE-epoch canonical jobs are created, with no body reads or HTTP and the transport retry deadline intact. These assertions distinguish the prior `parentRefreshRequired && !parent.currentPublished()` guard: the seeded parent is published but lacks its exact finish marker, so without wake the existing jobs stay future and absent jobs stay absent.
+
+The interval-only proof restores the exact stored publication fingerprint after separately proving that a corrupted fingerprint skips the newer source-pair frame. With valid hashes, payload roles and source identity retained, shortening only the run/receipt interval excludes that publication through both `currentPublishedCanonicalPair` and `currentCanonicalParentEvidence`, falling back to the older valid parent without body reads. This source-gate follow-up is not Task 4 acceptance.
+
+## Owned sync — PR #153 review-3 acceptance-oracle P1 repairs (local, 2026-10-06; CI/review pending)
+
+The three review-3 gaps are fixed in the acceptance test only: changed corrections now require exact fixture-keyed pending work or a fixture-only future recovery decision; target receipt intervals are checked against the current exact receipt and completed ACTIVE run; and worker body counters are snapshotted before oracle reads. No planner/runtime, weights, bounds, production state, or Tapas schema changed.
+
+After `compileTestJava` passed, the final focused regressions passed **3/3, 0 skipped** (JUnit 21.052 s; Gradle 46 s): `unrelatedDailyDeadlineDoesNotProveFixtureSpecificRecoveryWork`, the compact ACTIVE receipt/diagnostic regression, and the fixture-3 real-writer correction regression. The negative schedule case retains an unrelated daily deadline/slot but has `WAIT_FOR_PARENT` and no fixture-specific future candidate; the oracle rejects it. In the real correction case, no fixture run or durable fixture slot existed, but the fixture's stored `next_due_at`, its fixture-only recovery decision and the real coordinator wake agreed. A pending observation and global `Plan.nextDueAt` alone do not pass.
+
+The one exact combined method then passed on guarded `backend/.env.test` (`localhost:55432`): **1 test, 0 skipped, 0 failures**; JUnit 631.849 s, suite XML 634.001 s, Gradle 11m02s. The original bounds remained 48 h / 6,000 claims / 6,000 dispatches / 1,500 s; the run drained in `PT30M31.3S`, with 2,403 claims, 2,414 dispatches and 630.197/1,500 s work wall. All ten target receipts passed source-role, exact-current-receipt interval, completion/publication, timestamp-precision, participant, manifest and batch proofs. The minimum independent-batch separation was 609.9 s. For all ten, the receipt's source-read start/end matched the run interval and the combined minimum/maximum of bootstrap, fixtures, live and history reads; the minimum source-finish→run-completion interval was 18.8 s and completion→publication was 0 s. The compact regression also rejected a real receipt with NULL start, a 1 µs start mismatch and future publication time. Existing source-floor checks were unchanged.
+
+Final current-epoch receipt generations were `{41=336916, 42=336978, 43=337049, 44=337111, 45=337182, 46=337248, 47=337321, 48=337322, 49=337465, 50=337531}` (10/10). The five intentionally changed corrections remained unverified with empty `completedCorrections`; each had a fixture-specific future `WAIT` decision and a real coordinator wake no later than that deadline. The daily-only negative case proves the global wake is not itself the candidate.
+
+Worker logical JDBC body reads (attempts/rows/values/raw bytes) were `OWN_ANCHORS=81/81/81/52,632,938`, `CROSS_RUN_HISTORIES=25/1,651/1,651/13,524,992`, `CANONICAL_PAIRS=0/0/0/0`, and zero for other families. The blocked retry remained zero in every worker family. The canonical-parent diagnostic was separately reported as **1 oracle query / 1,875,506 raw body bytes**. The earlier `CANONICAL_PAIRS=1/1/2/1,875,506` “worker” positive was contaminated by that oracle query through `PayloadReadProbe`; it was diagnostic I/O, not worker I/O. The regression now snapshots the probe before oracle work and checks that the metadata/JDBC diagnostic leaves the snapshot unchanged.
+
+At this 2026-10-06 checkpoint, Task 4 was **not fully accepted**: the then-current focused and combined verification was green, but fresh branch CI and independent review remained pending. The later 2026-10-07 combined rerun hit `WALL_LIMIT`; see the current checkpoint at the top of this file. Production remains OFF; no full suite, activation, production query, commit or push occurred. Raw evidence for the earlier green run: `backend/build/test-results/test/TEST-fi.karivanttinen.fplassistant.sync.OwnedMatchdayAdmissionProgressIntegrationTest.xml`.
+
+## PR #152 CI season-collision repair (local, 2026-10-06)
+
+CI run [37414896787](https://github.com/quantti/fpl-assistant/actions/runs/37414896787) completed 1,466 tests with one failure: `ScheduleOwnershipInvalidationIntegrationTest` tried to insert id 29027 with code `2026-27`, already seeded as id 27 by `TapasSeed.ensureOwnedSyncCaptureSeason`. The test now keeps that shared seed, uses its own season id 29196/code `2196-97`, and localizes only this class's in-memory bootstrap deadlines and fixture kickoffs to 2196/2197. Its frozen clock, recovery day and persisted capture source frame use the same future season. Teardown asserts the owned season is removed and id 27 remains. The focused class passes **1/1** on the disposable `localhost:55432` database. This is test isolation only: no runtime source, shared fixture resource or Tapas schema changed. The absent private-PFS cleanup error in the CI log was secondary to setup aborting; no generic cleanup guard was needed. No full-suite run or CI rerun; the repaired changes remain local and fresh head CI is pending. No production query/activation, commit or push.
+
+## Owned sync — prior apparent Task 4 acceptance (superseded by the review-3 oracle rerun above)
+
+The exact filtered method `combinedActiveRecoveryPublishesAllTenNeverPublishedFixturesAfterRestart`
+passed on guarded `backend/.env.test` (`localhost:55432`): **1 test, 0 skipped, 0 failures**; JUnit
+593.845 s, suite XML 596.206 s, Gradle 10m20s. The seeded source preflight passed with 657 players,
+20 clubs and 50 finished fixtures. First new claim: fixture 41, generation 319566, attempt 1, worker 1,
+`2026-10-01T02:00:00Z`. First-pending generations 319566–319575 all recorded coherent
+`NEEDS_SECOND_OBSERVATION`; their reads started `02:00:01.100Z`–`02:01:44.500Z` and finished
+`02:03:07.100Z`–`02:13:00Z`. All ten independent second batches began at least 10 minutes after the
+first batch completed (minimum exactly 600 s); source, parent, participant, manifest and receipt proofs
+passed for every target.
+
+The final ACTIVE epoch-3 receipts were `{41=322484, 42=322546, 43=322617, 44=322679, 45=322750,
+46=322815, 47=322888, 48=322889, 49=323032, 50=323098}`: **10/10**, IDs 41–50, no missing receipts,
+history or participants, bad manifests/batches, skipped targets or failed runs. The driver drained at
+`2026-10-01T03:00:13.400Z`; first verification was `02:16:20.800Z`, last `03:00:12.300Z`. It used
+`PT1H13.4S/48H`, 2,406/6,000 claims, 2,412/6,000 dispatches, 2,411 admissions and 592.2/1,500 s
+work wall. The due legacy path published its distinct schedule receipt at its asserted 03:00 UK
+boundary; ready/blocked/untouched coverage, FIFO/preferential history lanes, canonical preemption and
+all acceptance goals passed.
+
+The decomposed component oracle passed. All 40 same-fingerprint baseline correction receipts survived
+reactivation with zero replay: the 35 unchanged fixtures (6–40) remained served and retained validity,
+receipt identity/generation, source header, physical PFS/evidence and run history exactly; the five
+changed corrections (1–5) retained receipt identity/generation and physical PFS/evidence while becoming
+invalid/unverified, retaining last-verified ownership. Their only source-header change was
+`team_h_score` **0→1**. Post-recovery observations for
+those five legitimately advanced to coherent `NEEDS_SECOND_OBSERVATION` generations; no test requires
+the invalidated incoherent observation to persist after a newer observation. Each had
+`completedCorrections=[]`; fixture 4 also had an active pending run, while the others had a real pending
+observation. For all five the actual coordinator next wake equalled the future planner deadline
+`2026-10-01T03:00:15.500Z` (driver clock `03:00:13.400Z`); a planner-ledger row alone was not accepted
+as queue or publication proof. OFF/ACTIVE PFS masking, optional-component masking and the canonical
+parent recheck also passed.
+
+The blocked retry read zero logical JDBC body values/bytes in every family. Complete-publication
+logical JDBC reads (attempts/rows/values/raw bytes) were `OWN_ANCHORS=79/79/79/50,757,432`,
+`CROSS_RUN_HISTORIES=25/1,651/1,651/13,524,992`, `CANONICAL_PAIRS=1/1/2/1,875,506`, and zero for
+published-source-digests/other. These are logical result-set body bytes, not heap, wire or billed
+traffic; the separately measured mock HTTP response bytes are not used as a substitute.
+
+After the combined pass, five named standalone methods passed **5/5, 0 skipped** (suite 156.689 s;
+Gradle 3m01s): the compact ACTIVE baseline/oracle, fixture-3 real-writer correction, and the three
+bounded original STAGING driver regressions (`twoWorkerFixtureFanoutDoesNotStarveDueHistories`,
+`finiteDrainStagesAllPinnedFixturesAndHistoryDependencies`,
+`fullRosterTwoWorkersStageSourceCompleteFixtureWithinBudget`). No whole test class or full suite ran.
+The full harness limits stayed 48 h / 6,000 claims / 6,000 dispatches / 1,500 s. This is seeded local
+verification only: production remains OFF and no production gain is claimed. Branch CI and independent
+review remain pending; no runtime change, production action, full suite, commit or push occurred.
+Raw evidence: `/tmp/owned-sync-task4-decomposed-combined-final.log`,
+`/tmp/owned-sync-task4-decomposed-combined-final.xml`,
+`/tmp/owned-sync-task4-decomposed-standalone-staging-final.log`, and
+`/tmp/owned-sync-task4-decomposed-standalone-staging-final.xml`.
+
+## Owned sync — Task 4 prior aggregate-checksum failure (historical; superseded)
+
+Before the decomposed-oracle rerun above, the exact method
+`combinedActiveRecoveryPublishesAllTenNeverPublishedFixturesAfterRestart` ran once against guarded
+`backend/.env.test` (`localhost:55432`): **1 test, 0 skipped, 1 failure**. JUnit method time was
+639.693 s, suite XML 642.009 s, Gradle 11m06s; harness work wall was 638.272/1,500 s. The corrected
+fixture-3 immediate transition passed: verified generation 310324 retained its observation/fingerprint
+and last-verified marker while coherence became false and current verification cleared. All assertions before that aggregate checksum passed, including the complete ownership, read-source,
+optional-PFS masking and canonical-parent checks described below; the checksum itself failed.
+
+The 02:00 UK price and 02:10 UK schedule captures were both read from the expected roots; the separate
+schedule receipt (generation 310372) published at 03:00 UK, with the required schedule capture source
+interval. The current immutable canonical schedule parent was generation 312517 (payloads 55626/55627),
+and the old daily-only target gates were not admitted before their 03:00 UK due. Recovery first claimed
+fixture 41, generation 311850, attempt 1, worker 1, at `2026-10-01T02:00:00Z`. First-pending generations
+were 41–50 → 311850–311859, all coherent `NEEDS_SECOND_OBSERVATION`; reads started
+`02:00:01.100Z`–`02:01:44.500Z` and finished `02:03:07.100Z`–`02:13:00Z`. Final receipt generations
+were `{41=314768, 42=314830, 43=314901, 44=314963, 45=315034, 46=315100, 47=315173, 48=315174,
+49=315317, 50=315383}`. All ten source proofs were `verified`, in ACTIVE epoch 3, with current/latest
+receipt/manifest generations matching, exact participant membership and source intervals, current
+immutable parent, and independent batches separated by 10m09.9s–11m59.9s. Manifest participant counts
+were `60,65,61,67,63,72,67,75,65,62` (657 total); each fixture's 4/4 fixture participants had zero
+missing. Receipt completion times span `02:16:20.800Z`–`02:30:31.300Z`.
+
+The driver drained at `2026-10-01T02:30:31.300Z` (`PT30M31.3S` from due), with 2,403 claims,
+2,408 admissions, 2,414 dispatches and zero target work pending, all within 48h/6,000/6,000/1,500s.
+Proof counters were `verified=10/10`, `missingReceipts=0`, `badManifests=0`, `badBatches=0`,
+`missingHistory=0`, `failedRuns=0`, `zeroSkipped=0`, `targetRows=10/10`; all ready/blocked/untouched,
+preferential/FIFO, canonical-preemption and source assertions passed. All 40 baseline correction receipts
+remained served, correction replays were zero, and changed-source corrections 1–5 remained unverified.
+The blocked retry had zero logical reads/bytes in every family. Complete-publication logical JDBC
+body reads (attempts/rows/values/raw bytes) were `OWN_ANCHORS=81/81/81/52,632,938`,
+`CROSS_RUN_HISTORIES=25/1,651/1,651/13,524,992`, `CANONICAL_PAIRS=1/1/2/1,875,506`, and zero for
+published-source-digests/other. These are logical result-set bytes, not wire/billed bytes or heap.
+
+The sole failure was `baselinePublicationChecksum` at test line 835: expected
+`8b84655fe3c8e30e1f6e4317300a07e6278728cc445d928a0e800c3a42f0e09f`, actual
+`bf33d6542e6e891df54de1eadb39ed65a5d14e4aa9c81e9e9ae49287fd4f6f02`. That 40-fixture digest matched
+immediately after OFF→ACTIVE, then differed after recovery. Its input includes receipt/core/evidence
+state **and** `fixture_sync.observation->>'fingerprint'` for changed fixtures 1–5, so it can treat a
+legitimate new pending observation as baseline corruption even when those fixtures remain unverified.
+The test emitted only aggregate hashes, not a component diff, and its `finally` cleanup removed the
+seeded rows; this run therefore cannot distinguish that over-broad oracle input from a real receipt/core/
+evidence mutation. Do not weaken the assertion or claim either cause without component-level evidence.
+The subsequent history-fingerprint checksum was not reached. Separately, the combined method's
+`assertScheduleCorrectionsArePending` checks only revoked/current and retained/last-verified generations;
+its final `unservedChangedCorrections` metric proves fixtures 1–5 are unverified, not that a correction
+run remains queued after recovery. The separate schedule-writer regression proves enqueue at invalidation,
+but this combined run did not reassert post-recovery queue retention. No representative STAGING subset
+was run because the combined method was red. Task 4 remains incomplete; branch CI and independent review
+remain pending, production remains OFF with no restore, and no full suite, production action, commit or
+push ran.
+Raw evidence: `/tmp/owned-sync-task4-combined-active-final.log` and
+`backend/build/test-results/test/TEST-fi.karivanttinen.fplassistant.sync.OwnedMatchdayAdmissionProgressIntegrationTest.xml`.
+
+## Owned sync — Task 4 previous ACTIVE acceptance (local, 2026-10-06; 10/10 proofs, still not accepted)
+
+The one authorized exact-method run used guarded `backend/.env.test` (`localhost:55432`) from
+`2026-10-06T17:07:01Z` to `17:17:55Z`: 1 test, 0 skipped, 1 failure; 624.908 s JUnit test time,
+626.665 s suite XML and 654.140 s Gradle wall. The driver completed **10/10** current-epoch ACTIVE
+(epoch 3) receipt-backed targets `{41..50}` with generations `{41=308966, 42=309028, 43=309099,
+44=309161, 45=309232, 46=309297, 47=309370, 48=309371, 49=309514, 50=309580}`. The source
+oracle passed using the production-selected newest eligible canonical price-or-schedule receipt,
+with exact source/root identity, epoch and immutable-payload checks. Every
+receipt/source/epoch/manifest/participant/batch proof passed: `missingReceipts=0`, `badManifests=0`,
+`badBatches=0`, `missingHistory=0`, `failedRuns=0`, `zeroSkipped=0`, `targetRows=10/10`. All ten
+first observations were coherent `NEEDS_SECOND_OBSERVATION`; their reads began from
+`02:00:01.100Z` to `02:01:44.500Z` and finished from `02:03:07.100Z` to `02:13:00Z`. The driver
+started fixture 41, generation 306048, attempt 1, worker 1 at `02:00:00Z`; it drained at
+`2026-10-01T03:00:13.400Z` (`PT1H13.4S` virtual), with 2,406/6,000 claims, 2,412/6,000
+dispatches, 2,411 admissions and 623.995/1,500 measured wall seconds. No bound was raised or hit.
+
+The failed assertion was a **second, stale-time ownership oracle**, not loss of the schedule
+invalidation marker. The real schedule publication immediately followed fixture 3's VERIFIED
+baseline at generation 304522: the before row was coherent/current/last-verified at 304522, and the
+invalidation snapshot retained that exact observation/generation and last-verified marker, set
+`coherent=false`, and cleared only current verification. Later, ACTIVE work recorded a new coherent
+first observation at generation 305231; current verification remained null and last-verified remained
+304522. The final assertion incorrectly required the earlier invalidation snapshot's generation and
+`coherent=false` to survive that legitimate newer pending observation. It failed before the later
+ACTIVE PFS/optional-component/canonical-parent and post-recovery baseline/fingerprint assertions, so
+this is **not a green Task 4 acceptance** and none of those unreached assertions are claimed.
+
+A compact regression on the same guarded DB exercises fixture 3's VERIFIED → real schedule writer
+correction → fresh pending observation path. Its latest run passed 1/1 (11.826 s test time, 0 skipped;
+13.944 s suite XML): before `{state=VERIFIED, observation_generation=310228, current=310228,
+last=310228, coherent=true, fingerprint=62baed3c…}`; immediately after schedule invalidation the
+same fingerprint/generation/last marker remained, coherence became false and current became null;
+after a fresh pending observation `{state=VERIFYING, observation_generation=310232, current=NULL,
+last=310228, coherent=true, fingerprint=4fdbdb76…}`. Physical PFS remained stored and was masked
+through OFF and ACTIVE `PfsReadSource`. The post-run full-test oracle now checks
+the exact conditional before/after marker at the schedule publication, then checks only the stable
+end-state requirements (not VERIFIED, current NULL, original last-verified generation) after later
+observations. This semantic correction was **not** followed by another full acceptance run.
+First-pending retained-pair assertions remain unchanged.
+
+Other assertions reached before the stale final check passed: all 40 correction receipts served,
+zero correction replay, changed corrections `{1,2,3,4,5}` remained unverified, ready/blocked/untouched
+and preferential/FIFO lanes progressed, source floors and 10-minute batch checks held. Logical JDBC
+body reads (attempts/rows/values/raw bytes) were `OWN_ANCHORS=79/79/79/50,757,432`,
+`CROSS_RUN_HISTORIES=25/1,651/1,651/13,524,992`, `CANONICAL_PAIRS=1/1/2/1,875,506`, and zero for
+published-source-digest/other families; these totals exactly match the preceding 10/10 run.
+Blocked-retry reads were zero in every family. Logical body bytes are not network/billed bytes or
+heap. No full suite, STAGING subset driver, production work, commit or push was run; Task 4 remains
+incomplete pending an authorized full green acceptance. The subset driver is a separate later unit.
+
+## Owned sync — earlier Task 4 combined ACTIVE acceptance (local, 2026-10-06; 10/10 proofs, method fails afterward)
+
+After correcting the test oracle to use production's newest eligible canonical-price **or** schedule receipt, exact source identity/current epoch and immutability, the exact filtered method `combinedActiveRecoveryPublishesAllTenNeverPublishedFixturesAfterRestart` ran once on guarded `backend/.env.test` (`localhost:55432`): 1 test, 0 skipped, 1 failure. The prior 5/10 result is superseded as source-proof evidence: this run produced 10/10 receipt-backed proofs, with `missingReceipts=0`, `badManifests=0`, `badBatches=0`, `missingHistory=0`, `failedRuns=0`, `zeroSkipped=0` and `targetRows=10/10`.
+
+Target receipt generations were `{41=303170, 42=303232, 43=303303, 44=303365, 45=303436, 46=303501, 47=303574, 48=303575, 49=303718, 50=303784}`; each matched its target's current verified generation, ACTIVE epoch 3, manifest/run generation and latest fixture receipt. All ten source-parent proofs selected the canonical `schedule` lane: source/publication generation 300919, immutable current-published pair payloads 50748/50749. For every target, the selected parent matched production's actual price-or-schedule selection and root marker (`actualRuleCurrentPublished`, `parentProofMatchesProduction`, `parentRootMarkerMatches`, `parentImmutable`, source/epoch/key gates and `publishedManifestProof` all true). First coherent observation generations were 300252–300261, all `NEEDS_SECOND_OBSERVATION`. Each target had two completed independent source batches; the later source read began 10m09.9s–11m59.9s after the first batch ended. First-observation reads started between `02:00:01.1Z` and `02:01:44.5Z`, finishing between `02:03:07.1Z` and `02:13:00Z`; the latest receipt reads followed by `02:14Z`–`02:24Z`.
+
+The test did **not** pass as a whole. After the 10/10, receipt, source, batch, fairness and read assertions passed, it failed at `OwnedMatchdayAdmissionProgressIntegrationTest.java:762` on the fixture-3 schedule-invalidation predicate requiring `coherent=false` and a non-null `observation_generation`. That run did not snapshot the real row immediately before and after the schedule publication, so it could not distinguish a missing pre-change pair from a later observation replacing the invalidation snapshot. The subsequent run at the top of STATUS resolves the ambiguity: the immediate invalidation retained fixture 3's real pair; the final row was a newer coherent pending observation. The failure was a time-scoped test-oracle defect, not evidence of runtime ownership loss. No runtime code was changed.
+
+The acceptance stayed inside every declared bound: 616.340 s JUnit test time (618.249 s suite XML; 615.438 s measured work wall / 1,500 s), 1h13m24s virtual / 48h, 2,406/6,000 claims and 2,412/6,000 dispatches. It stopped `DRAINED` at `2026-10-01T03:00:13.400Z`; no bound was reached. First-pending target transitions were logged individually. The driver recorded 53 advances while target generations were ready, but all ten targets completed; the final wake was a 0.1-second response wait with no ready target and worker 1 active, so this is not evidence of an overclaimable-work skip or a need for a timing/fairness change.
+
+Logical JDBC body-read totals (attempts/result rows/body values/raw bytes) were `OWN_ANCHORS=79/79/79/50,757,432`, `CROSS_RUN_HISTORIES=25/1,651/1,651/13,524,992`, and `CANONICAL_PAIRS=1/1/2/1,875,506`; published-source-digest and other families were zero. Blocked-retry reads were `0/0/0/0` in every family. These are logical result-set body bytes, not network/billed bytes or heap use. No full suite, commit or push was run.
+
+## Owned sync — Task 4 harness repair checkpoint (local, 2026-10-06; before the combined rerun)
+
+The dirty acceptance harness now gives the legacy observation an honest 16-hour lead over its preserved 03:00 UK due boundary, exercises the old unknown-parent refusal before a current schedule receipt, and checks the real planner's due-time recovery slot separately from a first coherent `NEEDS_SECOND_OBSERVATION` decision. The ACTIVE baseline now reconciles source history fingerprints through the publisher callback, publishes complete current-club candidate histories (including known zero-minute rows) through the real fixture publisher, and checks receipt/source/core/evidence plus fingerprint checksums across reactivation and the qualifying source transition. All 40 baseline checks passed complete candidate/evidence coverage, independent-batch timing, and the 48-hour/data-checked source floors; restart receipt/core/evidence/fingerprint checksum assertions passed. A compact real-ACTIVE regression exercises that baseline and verifies source-derived header/stat/observation fingerprints against stored values. The full acceptance oracle derives candidate sets and role-specific combined/observation source intervals from pinned source documents; it records the first pending generation and requires the final receipt to be newer rather than equating it with the first claim generation.
+
+Bounded verification passed on guarded `localhost:55432`: the due-schedule, compact ACTIVE baseline/oracle, and real-planner/first-pending regressions **3/3** (15.9 seconds test time; 43 seconds build); the explicit `compileTestJava` check passed. The 48-hour virtual, 6,000-claim, 6,000-dispatch and 1,500-second wall limits are unchanged. At this checkpoint, the `ManualDriver` first-pending capture/assertions remained compile-only and the prior long acceptance result was 0/10 below; the subsequent exact filtered rerun is recorded above. No full suite, production work, commit or push.
+
+## Owned sync — Task 4 preceding ACTIVE acceptance (local, 2026-10-06; failed 0/10)
+
+The exact filtered method `combinedActiveRecoveryPublishesAllTenNeverPublishedFixturesAfterRestart`
+ran against guarded `localhost:55432`: 1 test, 0 skipped, 1 failed, 1,501.354 s test time.
+The price root began at 02:00 UK and the distinct schedule root began at
+`2026-10-01T01:10:01.700Z` (02:10:01.700 UK); it finished at 02:10:04 UK and published at
+03:00 UK. The preparation driver stopped `DRAINED` only after that canonical run was no longer
+claimable, with all ten target runs still pending. The source-freshness and pending-goal assertions
+passed. No schedule-root aliasing or early-goal failure remains in this run.
+
+The full recovery driver stopped at its unchanged 1,500 s wall ceiling (`WALL_LIMIT`) at
+`2026-10-02T01:08:36Z`, 23 h 08 m 36 s after the due boundary and about 51 minutes before the
+next daily recovery boundary. It recorded 5,442 claim attempts, 5,451 dispatch starts and an
+`admitted` counter of 2,953; the declared 48 h virtual, 6,000-claim and 6,000-dispatch limits were
+not increased or reached. The exact expected receipt set `{41..50}` was empty: 0/10 current-epoch
+ACTIVE receipts, no first/last verified time, and no two-batch receipt proof. All ten target fixture
+runs had completed, but their current verified generations remained null. Their manifests showed
+fresh history coverage equal to each required-player count (60/60, 67/67, 65/65, 67/67, 72/72,
+62/62, 61/61, 65/65, 63/63, 75/75); this is not a substitute for the missing fixture receipts.
+
+The first target claim was fixture 41, generation 221235, attempt 5, at
+`2026-10-01T02:00:02.300Z`; its first verification time is absent. The fixture-48 run's last
+recorded attempt was `2026-10-01T02:15:51.800Z`; the last listed global driver claim was fixture 10
+at `2026-10-02T01:06:36.100Z`. Neither is a verification time. The trace also reported 0/40 served unchanged-correction receipts and 107 correction replay runs. Canonical preemption at the 03:00 boundary
+passed; FIFO/preferential and ready/blocked/untouched assertions were not reached after the earlier
+0/10 assertion. The blocked-manifest retry asserted zero logical JDBC body values/bytes, but the
+final logical body-read summary was after the failing assertion and was not emitted; HTTP returned
+bytes are not being treated as logical JDBC reads. No production runtime, weights, queue policy,
+pinning, activation, commit or push changed. No full suite, production run or billing forecast.
+
+## Owned sync — Task 4 initial ACTIVE acceptance (local, 2026-10-06)
+
+The exact combined acceptance method ran twice with zero skips against guarded `localhost:55432`;
+`compileTestJava` passed. Both runs failed before the main 10/10 receipt-proof driver. The latest
+schedule receipt still began at `2026-09-30T18:00:00Z`, so no `2026-10-01 02:10 UK` schedule
+capture is evidenced. In the second trace, the virtual clock reached `2026-10-01T02:00:00Z`
+(03:00 UK) with ten target runs pending and zero verified receipts; ACTIVE totals were 3,248 claim
+attempts, 3,203 durable admissions and 3,250 dispatch starts. That test took 899.639 seconds,
+inside the unchanged 1,500-second wall ceiling. The first attempt stopped at its exact preparation
+virtual boundary; the second reached the boundary but still had no fresh schedule receipt. The
+48-hour, 6,000-claim and 6,000-dispatch criteria were not raised, and Task 4 is **not passed**.
+
+No production code, activation, commit or push occurred. The Task 4 plan records the owner proposal:
+inspect planner-slot materialization, fair-queue claim and publication/receipt state for the due
+02:10 UK schedule capture under the full backlog, without changing canonical preemption or bounds.
+At that checkpoint, Task 4 remained at **0/10**; this was a pre-proof driver stop, not acceptance evidence. The subsequent 5/10 result is recorded at the top of STATUS.
+
+**Bounded receipt-path diagnosis (2026-10-06; no full acceptance rerun):** A focused ACTIVE test
+replayed the old-root/current-epoch schedule path through the real coordinator, slot ledger, queue,
+lease, dispatcher and writer. At 02:09:59 UK the planner returns the Sep 30 schedule slot and
+`nextDueAt=02:10`; at 02:10 it materializes the distinct Oct 1 `DAILY_SCHEDULE` slot. The active
+`schedule` run coalesces under its existing canonical key, advances `requested_source_after` to the
+capture instant, and keeps its generation. The actual HTTP `SourceRead` uses `MutableClock`; its
+staged bootstrap begins exactly `2026-10-01T01:10:00Z` (02:10 UK). The schedule writer correctly
+leaves the schedule receipt at the old Sep 30 root until its 03:00 UK publication cutoff. At that
+instant the retained run is due with the fresh source pair, but the preparation driver's pending-only
+goal sees the current price publication plus ten pending target runs and returns before starting a
+worker: `run()` tests `focusSatisfied()` before `startReadyWorkers()`. The distinct `schedule` receipt
+is not advanced by the successful `catalogue-price` root. This isolates the first lost transition to
+the test driver's early-exit predicate—not planner materialization, source timestamps, queue fairness,
+receipt aliasing or a runtime freshness-floor bug.
+
+A test-only goal guard now waits while a current-epoch canonical run is claimable; no runtime code,
+weights, queue policy, source floor or acceptance bound changed. The focused regression passed **1/1**
+on guarded `localhost:55432` in 12.2 seconds (under 300 claims / 5 minutes); it proves the staged
+02:10 source becomes the schedule receipt after dispatch at 03:00 UK and that the pending-only goal
+then becomes true. At that point the 10/10 acceptance had not been rerun; the later full run is recorded above, and
+At that checkpoint Task 4 remained **0/10 and incomplete**; the subsequent 5/10 result is recorded at the top of STATUS.
+Owner proposal: review this test-only correction; keep the exact source-frame and receipt assertions,
+and require a separately authorized full acceptance run under the existing limits before claiming
+Task 4.
+
+## Owned sync — schedule correction ownership repair (local)
+
+Schedule invalidation now preserves the observation/generation pair as its ownership marker and sets
+`observation.coherent=false`, matching history-correction invalidation. It revokes only the current
+verification, leaves `last_verified_generation` as actual-only evidence, and retains consumed recovery
+and typed dependency/transport deadlines. The real `CatalogueScheduleWriter` now queues affected
+fixture verification at the combined schedule source floor inside its fenced publication callback;
+source receipts, core/captured nodes, invalidation and queue insertion roll back together.
+
+The regression uses class-private `fpl_schown_*` owned and capture tables. It covers a first-pending
+observation over retained legacy PFS, an unchanged schedule publication as a no-op, a two-club/team/
+kickoff/header change, failed callback rollback, OFF masking without a prior verified generation, two
+fresh complete observations before a new receipt, optional-component masking, and source-header removal
+leaving no current verification or ACTIVE rows. Focused classes passed
+individually on guarded `localhost:55432`: `ScheduleOwnershipInvalidationIntegrationTest` **1/1**,
+`FixtureSyncPublisherIntegrationTest` **17/17**, `CatalogueScheduleWriterIntegrationTest` **13/13**,
+and `OwnedMatchdayEndToEndIntegrationTest` **5/5** (**36 total**). No full suite, production query,
+production activation, Fly action, commit or push. Separate review and branch CI for this follow-up
+remain pending; PR #151 is the baseline only (post-push review clear, CI pending). This is not Task 4 acceptance: at this checkpoint the separate ACTIVE 10/10 driver remained a
+later bounded unit. Its subsequent PR #153 CI attempt and canonical-pair repair are recorded
+at the top of this status. Recovery Tasks 2c/3 remain locally implemented and pending their
+acceptance CI.
+
+## Authorised recovery PR merges (2026-10-05)
+
+The owner authorised merging the three open PRs: #146 → `bc2b284`, #147 → `f9afbef`, #148 → `ff6b8df`. Squash-history documentation conflicts were resolved in isolated worktrees; the new #147/#148 heads retained identical whole trees to their previously reviewed heads, passed independent post-push review and fresh PR CI. All three master deployment workflows passed, most recently [37318935908](https://github.com/quantti/fpl-assistant/actions/runs/37318935908). The read-only postflight at 14:45:46 UTC confirmed persisted and configured OFF83, health UP, zero active runs/unresolved exchanges and database size 169,258,131 bytes. No ACTIVE run, writer reactivation or manual deploy was performed. Task 2b was excluded from these merges and remains a separate feature change.
+
+## Owned sync — recovery Task 2c planner/coalescing integration (local)
+
+Planner input now projects retry/episode metadata and the exact last-verified ACTIVE publication in one bounded fixture query; it adds no player/body reads. Overdue planning calls the same pure recovery policy as admission, but emits only stable due slots—the actual dispatcher still reserves under `withinRunLease`. A recovery source is FINISHED for overdue planning only when the strict parser's pair is also the exact completed current-epoch ACTIVE canonical publication; that discovery proof does not stand in for fixture publication completion. Legacy future due dates, typed dependency/transport gates, and cooldown remain floors, while typed calendar-only POLICY may be bypassed. Unknown/unfinished overdue sources do not get catch-up slots. Existing preserving-demand coalescing and the slot ledger remain in use.
+
+Earlier focused passes against guarded `localhost:55432` were `AdaptiveMatchdayPlannerTest` **15/15** and `PlannerInputRepositoryIntegrationTest` **4/4**; after the isolation fix, `FixtureRecoveryAdmissionIntegrationTest` passed **23/23** and `CatalogueScheduleWriterIntegrationTest` **13/13**, each run individually. A review P1 was fixed in test isolation: recovery now uses class-private `fpl_recov_adm_*` capture tables with production-shaped columns/primary keys and cleans only those rows; its repository/coordinator reads use the same private table set, so it no longer creates the writer test's shared `fpl_*_test` captures. Post-test schema inspection confirmed the private primary keys (`season,price_date,element_id` and `season,id`), zero private capture rows, and the writer capture's `now_cost` column/primary key. No shared production table was dropped or changed. The earlier 2c regressions cover stable legacy due-to-episode planning through the real coordinator/store/dispatcher, concurrent planner ticks yielding one slot/run, current-parent refusal before HTTP, retained publication closure after invalidation, typed gate composition, the +10-minute follow-up, and bounded metadata projection. No full suite, production query, Fly action, activation, commit or push occurred. Independent review and branch CI remain pending; Task 2 remains incomplete pending its acceptance gate. Task 3's local follow-up is recorded below; Task 4 remains untouched.
+
+## Owned sync — recovery Task 3 metadata retry gate (local)
+
+A reusable fixture manifest gates retries before anchor/history hydration, whether incomplete or complete. Its metadata-only gate remains fenced to the exact run/season/epoch/fixture/event and demand, using the same strict anchor/history eligibility and effective-floor predicates as readiness. UNKNOWN parents do not turn future calendar-only `POLICY` dates into dependency retries; legacy-untyped dates, dependency/transport retry dates and global cooldown remain real gates. The legacy dependency-wait write, early coalesced claim, and POLICY/transport/dependency/cooldown composition remain covered.
+
+The source-generation and publication-generation proof is now explicit: `finished_parent_generation` names the source payload run, while `finished_parent_publication_generation` names the exact current ACTIVE receipt generation. PostgreSQL microsecond rounding is applied consistently; publication fingerprints are recomputed from locked persisted source metadata and database body hashes before receipt writes. A local HTTP regression serves seeded FPL payloads with nanosecond read instants including `.499` / `.500` rollover, then publishes, reloads and proves current-published/finished-parent evidence. The price A → schedule B reused-A case retains valid finish evidence; its 71-missing-history blocked retries perform no canonical refresh and no body reads. Changed, invalidated, deleted, or future-dated publication evidence is refused, and a newer unfinished observation clears the finish-proof fields. A manifest flag or legacy `first_finished_observed_at` alone is not finish proof. If the current parent is absent, preserving-demand enqueue coalesces one job per canonical lane; a valid current parent with 71 missing histories produces no redundant parent enqueue and leaves history/FIFO work claimable. A held source-row lock advances the test clock past lease expiry; the final fresh-clock check rolls back core mutation, source publication flags, receipt and completion while preserving runtime and lease owner/token/fence/expiry. The new fields are project-owned; no Tapas schema changed.
+
+Hydration maps bounded all-or-none JDBC rows directly into the final `Map<Integer, SourceDocument>` with a forward-only/read-only, fetch-size-8 statement that requires an active transaction. The 72-player test measures **4,718,592 logical JDBC body bytes (72 × 64 KiB)** in one history query; this is not heap retention, network or billed traffic. Post-fan-out recheck, anchor/history identity checks and two-batch timing remain unchanged.
+
+The latest Task 3 review fixes remove only source-donor run-state gates: publication/read proofs still require the exact same-season ACTIVE-epoch VALID/published pair, source identity/fingerprint, freshness and current demand floors; the publishing run's own lease and completed receipt remain authoritative. An actual-dispatch regression stages schedule A at 02:30 UK, defers it PENDING until 03:00, then proves price B's lease reuses/publishes A's pair and planner finish evidence remains valid without extra jobs. Blocked-manifest retries now keep the run due at the later of admission and dependency callback deadlines; dependency storage still records its own two-minute wait, not the admission cooldown/calendar gate.
+
+Guarded `localhost:55432` focused classes passed individually: `OwnedSyncStoreIntegrationTest` **66**, `CatalogueScheduleDispatcherIntegrationTest` **54**, `HistoryFixtureDispatcherIntegrationTest` **27**, `FixtureRecoveryAdmissionIntegrationTest` **27**, `PlannerInputRepositoryIntegrationTest` **4**, and `OwnedMatchdayEndToEndIntegrationTest` **5** (**183 total**). Independent review and branch CI remain pending; Task 2 acceptance remains incomplete and Task 4 remains untouched. No full suite, production query, Fly action, activation, commit or push occurred.
+
+## Owned sync — recovery Task 2b merged baseline (2026-10-05)
+
+Task 2b admission/dispatcher wiring and its lease-fence review fix are in PR #149 at `fa8d821`; PR CI run [37331544738](https://github.com/quantti/fpl-assistant/actions/runs/37331544738) and master deployment [37361290425](https://github.com/quantti/fpl-assistant/actions/runs/37361290425) passed. This is the baseline for Task 2c, not evidence of a fresh production query or activation. The recovery policy still requires exact canonical coalescing/publication identity, current ACTIVE epoch, completed receipt, non-future source interval and current-parent FINISHED validation; recovery episodes remain fixed at twelve hours and do not grant HTTP permits.
+
+Admission runs inside `OwnedSyncStore.withinRunLease`: runtime and run lease are validated before the fixture mutation, expiry is rechecked after the callback, and expiry rolls the reservation/retry changes back. Typed dependency and transport deadlines compose; UNKNOWN/UNFINISHED source evidence cannot reserve recovery. PR #149's green CI/deployment is baseline evidence only; Task 2c/planner integration was not included in that PR.
+
+## Owned sync — recovery Task 2a policy/schema infrastructure (2026-10-05)
+
+Task 1 is CI-verified in [PR #147 run 37281203028](https://github.com/quantti/fpl-assistant/actions/runs/37281203028); this infrastructure branch is based on `116024b`. Task 2a remains inert: review fixes now bound recovery episodes to at most the existing 12 elapsed hours in Java and SQL, compose retry gates with the next eligible recovery boundary, and document that NORMAL null metadata preserves existing rules and stored markers. The two focused Task 2a classes passed against guarded localhost:55432: 17 policy tests and three schema tests, including exact-12-hour and +1-microsecond cases across UK DST. POLICY is explicitly calendar-only; independent-batch/source-time follow-ups use DEPENDENCY and cannot be bypassed before an episode. Focused tests and independent static review passed; full CI remains a separate gate. The policy remains unwired into admission, dispatch or planning. Task 2 is incomplete; 2b/2c and Tasks 3–4 remain untouched. No production action.
+
+## PR #147 post-push P1 — history ownership marker (2026-10-05)
+
+History-correction invalidation now retains the paired observation/generation as the ownership marker and sets the stored observation `coherent=false`; current verification is revoked without inventing a last-verified generation. Three focused tests passed individually against guarded localhost:55432, covering first-pending changed/removed history, OFF masking of retained PFS, rejection of the old comparison baseline, two fresh observations, rollback/no-op preservation, and unchanged schedule invalidation. The analogous pre-existing schedule path (`invalidateCorrections`) still clears the pair for pending observations; it remains out of scope and needs a separate fix. No production action.
+
+## PR #147 — bounded CI test isolation (2026-10-05)
+
+The first full CI run, [37276350222](https://github.com/quantti/fpl-assistant/actions/runs/37276350222), completed 1,401 tests with 18 failures: all 12 `PlannerRuntimeRepositoryIntegrationTest` and six `SyncOperationsIntegrationTest` resets failed deleting `fpl_sync_run_test` because `fpl_fixture_sync_test.current_verified_generation` still referenced generation 16670. `PlannerInputRepositoryIntegrationTest` used the shared `OwnedSyncTables.tests()` names while leaving receipt-backed fixtures behind; this was cross-test contamination, not a production FK/cascade defect. That class now uses its own `fpl_plan_*` owned-sync tables (derived identifiers ≤38 characters) and clears only those rows before resetting its season and captures. No other test cleanup or production schema changed.
+
+On the guarded `localhost:55432` disposable DB, the focused planner-input class passed **3/3**; then the planner-runtime and sync-operations classes ran together and passed **18/18**. Their XML reports show 12/12 and 6/6 respectively. Local test residue was removed using only the new test tables, their capture tables and this class's season 97. No local full suite was run and no CI rerun/status query was made, so the pipeline for `75e620e` and full CI remain unverified. No production action.
+
+## Owned sync — recovery fixes Task 1 outcome (2026-10-05)
+
+The owner's requested [repair plan](superpowers/plans/2026-10-04-owned-sync-recovery-fixes.md) covers publication-backed correction completion across restart, bounded overdue recovery episodes, and a fenced metadata-only retry gate before anchor hydration. Proposed admission change is one fixed existing-twelve-hour episode per 03:00-UK recovery day, not permission for a twelve-hour production run. Unknown legacy future due times are preserved once, rather than guessed to be policy-only; at the due time recovery must not be deferred to another tomorrow. Completion uses valid current receipt/source intervals, including still-valid prior-epoch publications, never STAGING or mere enqueue state.
+
+The four-unit acceptance still ends in **10/10 receipt-backed ACTIVE verifications of seeded unpublished fixtures**; Task 2 has only reached the inert Task 2a pure-policy/schema stage, while 2b/2c and Tasks 3–4 are untouched. Task 1 derives completion from the current same-season fixture receipt and matching completed ACTIVE run, with coherent combined source timing and no schema change. A post-implementation P1 found that history-only changes could advance fingerprints and enqueue work while leaving the current verification valid; fixed locally by atomically invalidating the observed fixture and enqueueing correction work with fingerprint reconciliation. The ACTIVE→OFF→ACTIVE regression proves rollback, retained-but-reader-masked PFS/evidence, unchanged-history no-op, planner requeue after restart and fresh verification; a separate assertion covers removed history. Focused E2E, planner-repository and history-dispatch tests pass on guarded localhost55432. Independent static re-review passed; PR #147's full CI run 37281203028 passed. No production action. Last verified production state remains OFF83.
+
+## Owned sync — offline diagnosis separates admission from queue/transfer work (2026-10-04)
+
+Saved evidence explains why another evening cap increase would not restore GW5: ACTIVE80 moved all ten fixtures to **5 October02:00 UTC** through the twelve-hour daily-only admission policy, and ACTIVE82 inherited that blocker before fetching anchors. Separately, activation clears the planner-slot ledger while planner inputs always report no completed corrections, replaying overdue work for already-VERIFIED fixtures; fixture14's unchanged-fingerprint repeat is a concrete example. Dependency-wait retries also hydrate three anchor bodies before discovering missing histories. These are separate mechanisms, not a proven byte allocation or justification to relax source floors.
+
+Three focused characterization tests passed on guarded localhost55432 (daily admission, missed correction scheduling and three blocked-anchor reads). No production queries/activation were made for this investigation; last verified production state remains OFF83. Task 1 now implements publication-backed correction completion. Next: Task 2 catch-up admission, Task 3 metadata-only retry gating, then Task 4 combined ACTIVE acceptance. [Evidence, code paths and limitations](OWNED-SYNC-EGRESS-REPORT.md). Do not treat STAGING progress tests as proof of ACTIVE recovery.
+
+## Owned sync — second bounded ACTIVE still does not restore GW5 (2026-10-04 evening)
+
+With the owner's fresh dashboard (**0.849 GB egress / 0.165 GB DB**) and explicit approval of another single attended 60-minute / 500 MB DB-RX / 650 MB machine-RX run, a fresh harness checked OFF81, source/writer gates and the unchanged deployed image. Guard/controller/meter tests, nine literal PostgreSQL audit cases on guarded localhost55432 and offline review passed. Remote email delivery remained unverified. Epoch 82 ran from **20:25:33 UTC** until the DB trigger around **20:57:10**, about 32 minutes: 500,758,775 observed DB / 526,145,016 machine RX bytes. These are not billing or hard caps.
+
+It republished **fixtures 14/15/16/23/17 in GW2–3**, rewriting **322 existing PFS rows**. Fixture 14 had already been refreshed in ACTIVE80; four others were additional refreshes, yielding **nine distinct fixtures across the two ACTIVE runs**, not ten new VERIFIED fixtures. Total VERIFIED remains 40; **GW5 still has zero physical rows / ten VERIFYING**. Matching independent baselines were ACT80 for fixture14 and 18–19 September for the other four. Minimum sampled memory was **203,344 KiB (~199 MiB)**, only ~6.6 MiB above the stop.
+
+**OFF83**, zero active/unresolved work, publication/source/writer fences, unchanged archived-season hashes and health UP were verified and reconfirmed at **21:01 UTC**. DB ended at 168,864,915 bytes; receipts 710, evidence 7,172. Both one-time approvals are spent; no repeat or continuous ACTIVE is approved. Before another activation, investigate transfer cost, repeated refreshes and lack of GW5 progress offline without weakening source floors or pinning a fixture. [Detailed observation](OWNED-SYNC-EGRESS-REPORT.md).
+
+## Owned sync — bounded ACTIVE republishes five fixtures, GW5 still empty (2026-10-04)
+
+The owner separately approved one attended **60-minute / 500 MB observed DB-RX / 650 MB machine-RX ACTIVE** run, retaining the 192 MiB memory / 400 MB physical DB stops and accepting the Fly-API-dependent rollback risk. Latest provided dashboard usage was 0.338 GB egress / 0.151 GB DB. Fresh SELECT-only preflight verified OFF79, playing season 2/2026-27, cutover confirmation, denied Tapas core table/column writes and no active/unresolved work. The deployed image was unchanged. Guard/meter tests and offline review passed after correcting the observer's handling of reserved canonical source receipts; remote email delivery was not verified.
+
+Epoch 80 ran from the 16:33:22 UTC request to the **500 MB DB-RX trigger at 17:01:45**, about 28 minutes: **504,556,009 observed DB bytes / 530,211,670 machine bytes**, not provider billing. It completed 584 VALID history runs (562 distinct keys), 718 admissions and **five VERIFIED fixture republications**, IDs 12/13/14/26/28 in GW2–3. All five were already VERIFIED; the total stayed 40, not 45. **327 existing PFS rows were rewritten** with 327 new evidence rows. Each fresh coherent observation matched its preserved 18–19 September baseline and started well beyond the required ten-minute separation; this was not two newly collected batches per fixture within this run.
+
+Durable **OFF epoch 81**, zero active/unresolved work and health UP were verified and reconfirmed at 17:29 UTC. Archived-season core/evidence/receipt fingerprints and playing-season/Tapas privilege gates stayed unchanged. Current-season publication changed as authorized: 707 published receipts, 6,850 evidence rows; core row counts stayed unchanged. **GW5 remains zero physical PFS rows / ten VERIFYING fixtures**, so the backlog was not restored. Fixtures 10/11 recorded source-demand-floor refusals and next-day retry dates; those fences were not bypassed. Publication is demonstrated, but sustained budget, full-backlog drain and continuous operation remain unproven/unapproved. [Exact evidence and limits](OWNED-SYNC-EGRESS-REPORT.md); [remaining readiness work](superpowers/plans/2026-10-03-owned-sync-production-readiness.md).
+
+## Owned sync — priority-enabled STAGING reaches two source-complete fixtures (2026-10-04)
+
+The owner merged PRs #144/#145; master `94eb28a` passed [CI/deploy/smoke 37137462755](https://github.com/quantti/fpl-assistant/actions/runs/37137462755) while OFF. With latest dashboard usage 0.172 GB egress / 0.14 GB DB, the owner separately approved one attended **30-minute / 200 MB observed DB-RX / 260 MB machine-RX** full-queue run, retaining memory/storage/source/ownership gates and accepting the known Fly-API rollback risk. Fresh guard/failure-path checks, offline review and actual-image meter validation passed.
+
+Epoch 78 staged fixtures 10/11 at 11:27:32/11:28:10 UTC; independent metadata-only checks found **68/68 and 71/71** VALID same-season/epoch histories after each effective source floor and completed before its fixture. It had 313 admissions and 196 VALID history completions (181 distinct keys). The first-fixture + two-minute deadline stopped the run; last shutdown samples showed **165.12 MB DB RX / 180.27 MB machine RX**, not billed usage. Minimum controller-sampled memory was 208,968 KiB; physical DB size ended at 136,326,291 bytes.
+
+Durable **OFF epoch 79**, zero active/unresolved work and health UP were verified and reconfirmed by SELECT-only follow-up at 11:43 UTC. The publication fingerprint/706 receipts, 6,523 evidence rows, 40 VERIFIED fixtures, core counts and GW5's zero physical PFS rows/ten VERIFYING receipts stayed unchanged. This passes the bounded fixture-progress gate, **not VERIFIED publication, sustained egress or GW5 restoration**. No ACTIVE, repeat run or Tapas writer change is approved. [Readiness-plan Task 3 of 4](superpowers/plans/2026-10-03-owned-sync-production-readiness.md) is complete; the publication decision and durable-budget/API-independent-containment requirements remain. [Report and measurement limits](OWNED-SYNC-EGRESS-REPORT.md).
+
+## Owned sync — bounded priority for missing fixture histories (2026-10-03)
+
+The owner approved improving internal queue order without pinning one fixture. Two of four history slots now prefer missing post-floor history for the oldest source-coherent active fixture manifests; ordinary history FIFO, canonical preemption and ready/blocked/untouched fixture turns remain. Coverage, season/epoch/source fences, two-batch verification and HTTP limits are unchanged. The [readiness plan](superpowers/plans/2026-10-03-owned-sync-production-readiness.md) records the implementation and its operational boundary.
+
+A new 657-player / 50-fixture two-worker test with stale pre-anchor histories fails without preference at 350 admissions, zero STAGED fixtures. With it, the first source-complete fixture stages at 298.2 virtual seconds / 272 admissions (273 by driver stop), with 53.45 MB returned raw DB body values versus 68.27 MB at the unsuccessful disabled stop. Those unequal-outcome synthetic counts are neither billed/wire egress nor production latency. The source-completeness oracle and sustained overlapping-manifest/competing-store fairness cases pass; 108 focused store, admission, dispatcher and verification tests passed on disposable loopback Postgres. No full local suite, production query, mode change or limit increase occurred; the latest previously verified production containment is OFF epoch 77 in [PR #144](https://github.com/quantti/fpl-assistant/pull/144). Implementation/review are in [PR #145](https://github.com/quantti/fpl-assistant/pull/145), pending owner merge. Fresh provider headroom and a separately approved useful observation budget are still needed before STAGING/ACTIVE.
+
+## Owned sync — second bounded STAGING run, still no staged fixture (2026-10-03)
+
+After the earlier epoch-74 run, the owner approved one further attended test with unchanged full-queue scheduling: 20 minutes / 50 MB observed DB-RX / 65 MB machine-RX stop triggers. The owner provided fresh Supabase usage (0.115 GB egress / 0.136 GB DB) and explicitly accepted the Fly-API dependency of both the guard and Fly-console rollback. The DB trigger fired about six minutes after the request at **53.19 MB observed DB RX** (59.94 MB machine RX); lowest sampled available memory was 232,612 KiB. Epoch 76 completed **84 histories but zero fixtures STAGED**; fifteen fixture manifests remained incomplete, best 37/71 post-floor histories. Rollback and a subsequent SELECT-only check confirmed **OFF epoch 77**, zero active runs/unresolved attempts, public health UP and unchanged publication fingerprint (706 receipts), 6,523 evidence rows, 40 VERIFIED fixtures and core/GW5 counts. The [egress report](OWNED-SYNC-EGRESS-REPORT.md) has the UTC timeline, stop-sampling caveats and separate first-run evidence. This is not billed egress, a sustainable-rate result or permission for another run or ACTIVE.
+
+## Owned sync — bounded STAGING retest stopped before fixture progress (2026-10-03)
+
+The [owner-authorized runbook](superpowers/plans/2026-10-03-owned-sync-bounded-staging-retest.md)
+ran one attended STAGING epoch 74 on the already-deployed KAR-72/73/75 fixes. At about
+248 seconds from the mode request it hit the 20 MB observed DB-RX stop (20.62 MB, with
+25.04 MB whole-machine RX); memory stayed above 192 MiB. **48 histories completed,
+zero fixtures STAGED.** Durable OFF epoch 75, zero active runs/unresolved HTTP attempts,
+public health UP and unchanged publication fingerprint (706 receipts, 6,523 evidence
+rows, 40 VERIFIED fixtures) were confirmed. GW5 still has no physical PFS rows.
+The [egress report](OWNED-SYNC-EGRESS-REPORT.md) records measurements and caveats:
+these socket counters are not billed Supabase egress or a monthly forecast. A newly
+recovered 28 September local run had already completed 43 histories under a smaller
+traffic cap, also with zero fixtures STAGED; older OFF epoch 67 notes below are
+historical. No ACTIVE mode, core publication, Tapas writer change or app deployment
+occurred. The progress gate failed; do not enlarge limits or reactivate without a
+separate review of fixture progress and egress.
+
 ## Owned sync — KAR-75 post-merge review fixes (2026-09-28)
 
 The [KAR-75 follow-up plan](superpowers/plans/2026-09-28-kar-75-owned-sync-review-followup.md)

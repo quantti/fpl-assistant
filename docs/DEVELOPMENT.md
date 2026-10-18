@@ -80,6 +80,28 @@ characters that the latter mangles:
 set -a; source .env.test; set +a
 ```
 
+## Project-local software factory
+
+The portable workflow lives at `.agents/skills/software-factory/`; its `domain.md` maps FPL
+invariants, source documents, code boundaries and safe checks. Read current `AGENTS.md` and
+`STATUS.md` too: the supplement's pinned baseline is not current production state.
+
+In Pi, reload after adding the skill, then explicitly invoke
+`/skill:software-factory <task or selected stage>`. Automatic model invocation is disabled.
+Check the discovered path if a user-level skill has the same name; do not silently run another
+project's domain. The skill is guidance, not a dispatcher or permission to activate sync,
+contact production, spend provider credit, publish or merge. No global install is needed.
+
+Optional offline checks, from `.agents/skills/software-factory/`:
+
+```bash
+python3 -B scripts/check_bundle.py
+python3 -B -m unittest discover -s tests -p 'test_bundle.py' -v
+```
+
+These check bundle structure and portability, not agent behavior or FPL correctness. Adoption
+sources and limits: [factory plan](superpowers/plans/2026-10-16-fpl-software-factory.md).
+
 ## Commands
 
 Run from `backend/`:
@@ -97,6 +119,37 @@ set -a; source .env.test; set +a
 ./gradlew bootRun --args="--sync-prices"          # capture today's FPL prices, then exit
 ./gradlew bootRun --args="--sync-schedule"        # capture FPL gameweeks and fixtures, then exit
 ```
+
+### Daily-price email reminders (KAR-19)
+
+The existing freshness check runs at 06:00, 12:00 and 18:00 Europe/London. It logs stale
+captures as before; opt-in mail also covers an empty capture table. Fresh/future captures
+and database read failures do not send mail. Each unhealthy check attempts one email, with
+no immediate retry; later checks remind again until recovery. This is not a durable outbox
+or a cross-instance deduplication guarantee. An app/scheduler outage cannot alert itself.
+
+| Environment variable | Default | Purpose |
+|---|---|---|
+| `DAILY_PRICE_ALERT_EMAIL_ENABLED` | `false` | Explicit opt-in to external mail |
+| `DAILY_PRICE_ALERT_RESEND_API_KEY` | empty | Separate Resend sending-only key scoped to the verified domain |
+| `DAILY_PRICE_ALERT_EMAIL_FROM` | `FPL Sidekick <noreply@fpl-sidekick.com>` | Existing verified sender domain |
+| `DAILY_PRICE_ALERT_EMAIL_TO` | `kvanttinen@gmail.com` | Owner's chosen destination |
+
+The app calls Resend's HTTPS Emails API, independently of Supabase Auth/SMTP. An incomplete
+enabled configuration logs ERROR and makes no request; provider errors/timeouts do not
+escape the freshness check. Connect/read timeouts are five seconds, redirects are refused,
+and logs contain neither the key nor provider response bodies. A success log means **API
+acceptance, not inbox delivery**. `/actuator/health` is unchanged. Disabling
+`fpl.daily-price.scheduled` also disables the check and its emails.
+
+Activation is an owner-operated step after the reviewed PR is merged: provision a separate
+sending-only key in Resend and install it as a Fly secret along with the enable flag. Do not
+reuse or change Supabase's SMTP configuration. Verify delivery to the owner inbox (including
+spam checks), record the date/result, and disable mail with the enable flag if delivery fails.
+For an attended smoke test, use an isolated staging instance and disposable capture table;
+do not delete/backdate production rows or force a production sync to manufacture an alert.
+Keep mail disabled in ordinary tests and development. Production activation and delivery
+have **not** been verified by the local loopback tests.
 
 ### Owned-sync implementation (not activated)
 
@@ -602,7 +655,7 @@ currently set to `anthropic` in `.env.test`; production currently uses `google-g
 billed, API-key Gemini Developer API, not Vertex AI. `application.yml` maps the setting to
 `spring.ai.model.chat`, which activates only that provider's autoconfiguration — without it, the
 unused provider's blank API key fails context startup. `google-genai` uses `GEMINI_API_KEY`;
-thinking depth is `GEMINI_THINKING_LEVEL` (`LOW` default). Current provider privacy controls,
+thinking depth is `GEMINI_THINKING_LEVEL` (`MEDIUM` default). Current provider privacy controls,
 retention decisions and unresolved contract evidence are recorded in
 [`PRIVACY-OPERATIONS.md`](PRIVACY-OPERATIONS.md); do not infer them from local environment defaults.
 
