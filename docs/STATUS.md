@@ -41,6 +41,24 @@ unexecuted and no remote write occurred. Code/test content is frozen at that rev
 revision; the subsequent closeout is documentation only. Publication needs separate approval
 and a check that older unpatched master/deploy runs have drained.
 
+## Price forecasts — importer coexistence and activation (2026-10-18)
+
+PR #170 merged at `757bd13`; master test/deploy run `39153387820` passed. The
+owner-approved RAG replacement loaded 23 documents / 205 chunks, with exact content and
+metadata verification plus actual StrategyTools retrieval and independent evidence review.
+The old corpus was replaced, health remained UP, and no forecast collection was activated.
+
+The owner then approved forecast activation and a compatibility correction: the legacy
+owned-sync runtime is retired, while the incremental importer reuses its ACTIVE configuration
+namespace. The original OFF-only forecast gate therefore blocks the actual production setup.
+The bounded correction admits ACTIVE only with importer enabled, confirmed cutover and
+matching explicit playing seasons; legacy ACTIVE, STAGING and incomplete settings stay
+closed. Importer mode, epoch, budget, core writers and existing capture paths are unchanged.
+Three new regressions failed before the correction. All 292 focused cases across 24 classes
+then passed, including importer activation/request-limit and forecast lifecycle regressions.
+Independent review, correction PR/full CI and deliberate production arming remain pending.
+Forecasts remain OFF.
+
 ## Price strategy — KAR-76 implementation (2026-10-18)
 
 The [price-prediction plan](superpowers/plans/2026-10-18-kar-76-price-predictions.md)
