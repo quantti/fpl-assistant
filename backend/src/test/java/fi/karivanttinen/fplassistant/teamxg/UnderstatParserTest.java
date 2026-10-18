@@ -29,6 +29,25 @@ class UnderstatParserTest {
     }
 
     @Test
+    void numericJsonXgRetainsItsDecimalValueWithoutDoubleRounding() {
+        String decimal = "2.082201000000000000000001";
+        var match = UnderstatParser.parse(2026,
+                "{\"dates\":[" + MATCH.replace("\"2.082201\"", decimal) + "]}", NOW).getFirst();
+        assertThat(match.homeXg()).isEqualByComparingTo(new BigDecimal(decimal));
+    }
+
+    @Test
+    void numericJsonMustNotRoundInvalidBoundsOrFractionalIntegersIntoValidValues() {
+        for (String match : new String[]{MATCH.replace("\"2.082201\"", "100.00000000000000001"),
+                MATCH.replace("\"2.082201\"", "-1e-999"),
+                MATCH.replace("\"2\"", "2.00000000000000001"),
+                MATCH.replace("\"12\"", "12.00000000000000001")}) {
+            assertThatThrownBy(() -> UnderstatParser.parse(2026, "{\"dates\":[" + match + "]}", NOW))
+                    .isInstanceOf(IllegalArgumentException.class);
+        }
+    }
+
+    @Test
     void unplayedMatchesAreNotObservedZeroes() {
         assertThat(UnderstatParser.parse(2026, "{\"dates\":[" + MATCH.replace("true", "false") + "]}", NOW)).isEmpty();
     }

@@ -1,5 +1,16 @@
 # Status — Phase 1
 
+## PR #162 full-review/CI corrections
+
+The full PR panel at `013b8b1` confirmed one numeric-JSON precision defect (2/3); two new parser
+regressions failed on rounding and passed after enabling BigDecimal float decoding. All ten
+parser tests pass; test-source compilation also passes after restoring the Mockito import
+needed by master's new importer test. CI run `39141310755` had stopped at that missing import,
+not passed the backend suite. The new head still requires fresh CI and correction re-review.
+The single-reviewer HTTP total-duration advisory is recorded, not silently promoted or fixed:
+socket read timeout is not an absolute response deadline. Resolve before enabling collection;
+Understat remains OFF and no shared cache is populated by this publication.
+
 ## PR #162 publication — authorised, gates pending
 
 Owner authorised PR publication and squash merge. Base `4c1fa71` is integrated without rewriting
