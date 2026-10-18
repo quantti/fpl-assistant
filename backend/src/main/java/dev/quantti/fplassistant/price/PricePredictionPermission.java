@@ -12,8 +12,15 @@ public final class PricePredictionPermission {
     }
 
     public static boolean configured(Environment environment) {
-        return "true".equalsIgnoreCase(environment.getProperty("fpl.price-prediction.enabled", "false"))
-                && "OFF".equalsIgnoreCase(environment.getProperty("fpl.owned-sync.mode", "OFF").trim());
+        if (!"true".equalsIgnoreCase(environment.getProperty("fpl.price-prediction.enabled", "false"))) return false;
+        String mode = environment.getProperty("fpl.owned-sync.mode", "OFF").trim();
+        if ("OFF".equalsIgnoreCase(mode)) return true;
+        String season = environment.getProperty("fpl.price-prediction.playing-season", "").trim();
+        return "ACTIVE".equalsIgnoreCase(mode)
+                && "true".equalsIgnoreCase(environment.getProperty("fpl.owned-sync.importer.enabled", "false"))
+                && "true".equalsIgnoreCase(environment.getProperty("fpl.owned-sync.cutover-confirmed", "false"))
+                && !season.isEmpty()
+                && season.equals(environment.getProperty("fpl.owned-sync.playing-season", "").trim());
     }
 
     public boolean permitted() {
