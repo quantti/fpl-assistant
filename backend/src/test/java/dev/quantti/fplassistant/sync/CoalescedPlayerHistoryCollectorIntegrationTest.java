@@ -3756,6 +3756,129 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
     }
 
     @Test
+    void omittedFixtureStatPlayerFinalizesOnlyAfterProvedHistorySuppliesItsSide() throws Exception {
+        CheckedFixtureSetup setup = omittedFixtureStatPlayerSetup();
+        SqlRecordingDataSource recording = new SqlRecordingDataSource(dataSource);
+        JdbcTemplate recordedJdbc = new JdbcTemplate(recording);
+        TransactionTemplate recordedTx = new TransactionTemplate(new DataSourceTransactionManager(recording));
+        var collector = compatibilityCollector(true, recordedJdbc, recordedTx);
+
+        CycleResult first = collector.runCycle();
+
+        assertThat(first.state()).as("last error: %s", latestRunError()).isEqualTo(State.RETRY_SCHEDULED);
+        assertThat(first.committedPlayerIds()).containsExactlyInAnyOrder(1, 3, 28);
+        assertThat(collectorPfsReadSource().fixtureSidePopulation(SEASON_ID, season.code(), "fixture", "season_id",
+                SEASON_ID, Set.of(setup.fixtureId()), clock.instant())).hasSize(2)
+                .allSatisfy((side, population) -> assertThat(population.complete()).isFalse());
+        assertThat(new GameweekFinalityReader(jdbc, clock, TABLES)
+                .read(SEASON_ID, season.code(), Set.of(3)).get(3).state())
+                .isEqualTo(GameweekFinality.State.FINAL_PENDING);
+        clock.set(clock.instant().plus(Duration.ofHours(1)).plusSeconds(1));
+        recording.clear();
+
+        CycleResult second = collector.runCycle();
+
+        assertThat(second.state()).as("last error: %s", latestRunError()).isEqualTo(State.COMPLETED);
+        assertThat(new GameweekFinalityReader(jdbc, clock, TABLES)
+                .read(SEASON_ID, season.code(), Set.of(3)).get(3).state())
+                .isEqualTo(GameweekFinality.State.FINALIZED);
+        assertThat(recording.statements().stream()
+                .filter(sql -> sql.contains("/* incremental history side proof */"))).hasSize(1);
+        assertThat(collectorPfsReadSource().fixtureSidePopulation(SEASON_ID, season.code(), "fixture", "season_id",
+                SEASON_ID, Set.of(setup.fixtureId()), clock.instant())).hasSize(2)
+                .allSatisfy((side, population) -> assertThat(population.complete()).isTrue());
+    }
+
+    @Test
+    void historySideHintsRejectUnprovedRowsAndChangedFixtureIdentity() throws Exception {
+        CheckedFixtureSetup setup = omittedFixtureStatPlayerSetup();
+        assertThat(compatibilityCollector(true).runCycle().state()).isEqualTo(State.RETRY_SCHEDULED);
+        clock.set(clock.instant().plus(Duration.ofHours(1)).plusSeconds(1));
+        Lease lease = nextCoreLease();
+        var snapshot = CatalogueScheduleParser.parse(season, document(setup.bootstrapSource(), nextRead()),
+                document(setup.fixtureSource(), nextRead()));
+        var fixture = snapshot.fixtures().stream().filter(row -> row.id() == setup.fixtureId()).findFirst().orElseThrow();
+        assertThat(store.incrementalHistorySides(lease, SEASON_ID, List.of(fixture)).get(setup.fixtureId()))
+                .containsEntry(1, FixtureVerification.Side.HOME)
+                .containsEntry(3, FixtureVerification.Side.HOME)
+                .containsEntry(28, FixtureVerification.Side.AWAY);
+        List<Runnable> corruptions = List.of(
+                () -> jdbc.update("UPDATE player_fixture_stats SET minutes=minutes+1"
+                        + " WHERE season_id=? AND fixture_id=? AND player_id=1", SEASON_ID, setup.fixtureId()),
+                () -> jdbc.update("UPDATE " + TABLES.playerFixtureCurrent() + " SET physical_fingerprint=NULL"
+                        + " WHERE season_id=? AND fixture_id=? AND player_id=1", SEASON_ID, setup.fixtureId()),
+                () -> jdbc.update("DELETE FROM " + TABLES.playerFixtureCurrent()
+                        + " WHERE season_id=? AND fixture_id=? AND player_id=1", SEASON_ID, setup.fixtureId()),
+                () -> jdbc.update("UPDATE " + TABLES.playerFixtureCurrent()
+                        + " SET row_state='WITHDRAWN',evidence_generation=NULL,row_fingerprint=NULL,physical_fingerprint=NULL"
+                        + " WHERE season_id=? AND fixture_id=? AND player_id=1", SEASON_ID, setup.fixtureId()),
+                () -> jdbc.update("DELETE FROM " + TABLES.receipt() + " WHERE season=? AND publication_key=?",
+                        season.code(), IncrementalPlayerFixturePublisher.pageReceiptKey(1)),
+                () -> jdbc.update("UPDATE " + TABLES.receipt()
+                        + " SET source_read_started_at=? WHERE season=? AND publication_key=?",
+                        java.sql.Timestamp.from(START), season.code(), IncrementalPlayerFixturePublisher.pageReceiptKey(1)));
+        for (Runnable corruption : corruptions) {
+            tx.executeWithoutResult(status -> {
+                corruption.run();
+                assertThat(store.incrementalHistorySides(lease, SEASON_ID, List.of(fixture))
+                        .getOrDefault(setup.fixtureId(), Map.of())).doesNotContainKey(1);
+                status.setRollbackOnly();
+            });
+        }
+        int otherClub = snapshot.teams().stream().mapToInt(team -> team.id())
+                .filter(id -> id != fixture.homeTeamId() && id != fixture.awayTeamId()).findFirst().orElseThrow();
+        for (String change : List.of("club", "gameweek", "kickoff")) {
+            var changed = new CatalogueScheduleParser.FixtureRow(fixture.seasonId(), fixture.seasonCode(),
+                    fixture.id(), fixture.code(), change.equals("gameweek") ? fixture.gameweek() + 1 : fixture.gameweek(),
+                    change.equals("club") ? otherClub : fixture.homeTeamId(), fixture.awayTeamId(),
+                    fixture.homeTeamName(), fixture.homeTeamShort(), fixture.awayTeamName(), fixture.awayTeamShort(),
+                    fixture.homeScore(), fixture.awayScore(), fixture.homeDifficulty(), fixture.awayDifficulty(),
+                    change.equals("kickoff") ? fixture.kickoff().plusSeconds(60) : fixture.kickoff(),
+                    fixture.started(), fixture.finished(), fixture.fields());
+            assertThat(store.incrementalHistorySides(lease, SEASON_ID, List.of(changed)))
+                    .as("changed fixture %s", change).isEmpty();
+        }
+        assertThatThrownBy(() -> store.incrementalHistorySides(lease, SEASON_ID + 1, List.of(fixture)))
+                .isInstanceOf(IllegalArgumentException.class);
+        new PlannerRuntimeRepository(jdbc, tx, clock, TABLES).deactivate(runtimeFence);
+        assertThatThrownBy(() -> store.incrementalHistorySides(lease, SEASON_ID, List.of(fixture)))
+                .isInstanceOf(OwnedSyncStore.RuntimeFenceLostException.class);
+    }
+
+    @Test
+    void freshHistoryContradictingAnOmittedPlayersPriorSideCannotFinalize() throws Exception {
+        CheckedFixtureSetup setup = omittedFixtureStatPlayerSetup();
+        assertThat(compatibilityCollector(true).runCycle().state()).isEqualTo(State.RETRY_SCHEDULED);
+        fetch.setPlayerPage(1, relabelHistoryPlayer(historyForAwayPlayer28(setup.fixtureId()), 1));
+        clock.set(clock.instant().plus(Duration.ofHours(1)).plusSeconds(1));
+
+        compatibilityCollector(true).runCycle();
+
+        assertThat(jdbc.queryForObject("SELECT was_home FROM player_fixture_stats"
+                + " WHERE season_id=? AND fixture_id=? AND player_id=1", Boolean.class,
+                SEASON_ID, setup.fixtureId())).isFalse();
+        assertThat(new GameweekFinalityReader(jdbc, clock, TABLES)
+                .read(SEASON_ID, season.code(), Set.of(3)).get(3).state())
+                .isNotEqualTo(GameweekFinality.State.FINALIZED);
+    }
+
+    @Test
+    void historySideReadFailureClosesTheRunWithoutFetchingPlayerPages() throws Exception {
+        checkedSingleFixtureSetup();
+        store = Mockito.spy(store);
+        Mockito.doThrow(new org.springframework.dao.DataAccessResourceFailureException("history side read unavailable"))
+                .when(store).incrementalHistorySides(Mockito.any(), Mockito.eq(SEASON_ID), Mockito.anyList());
+
+        CycleResult result = collector(true).runCycle();
+
+        assertThat(result.state()).isEqualTo(State.FAILED);
+        assertThat(latestRunError()).contains("history side read unavailable");
+        assertThat(fetch.count(EndpointKind.ELEMENT_SUMMARY)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run() + " WHERE state='LEASED'",
+                Integer.class)).isZero();
+    }
+
+    @Test
     void oneSidedLiveEvidenceLeavesFinalityPendingButCommitsIndependentPages() throws Exception {
         CheckedFixtureSetup setup = checkedSingleFixtureSetup();
         byte[] oneSidedLive = liveForFixturePlayers(eventThreeLive, setup.fixtureId(), Set.of(1));
@@ -4956,6 +5079,28 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
                 + "AS source_generation,source_catalogue->>'membershipFingerprint' AS membership_fingerprint "
                 + "FROM " + TABLES.receipt() + " WHERE season=? AND publication_key=?",
                 season.code(), OwnedSyncStore.INCREMENTAL_COMPATIBILITY_PUBLICATION_KEY);
+    }
+
+    private CheckedFixtureSetup omittedFixtureStatPlayerSetup() throws Exception {
+        CheckedFixtureSetup setup = checkedSingleFixtureSetup();
+        JsonNode sourceRoot = JSON.readTree(setup.fixtureSource());
+        for (JsonNode fixture : sourceRoot) {
+            if (fixture.path("id").asInt() != setup.fixtureId()) continue;
+            for (JsonNode stat : fixture.path("stats")) {
+                for (JsonNode player : stat.path("h")) {
+                    if (player.path("element").asInt() == 1) ((ObjectNode) player).put("element", 3);
+                }
+            }
+        }
+        byte[] source = JSON.writeValueAsBytes(sourceRoot);
+        ObjectNode live = (ObjectNode) JSON.readTree(setup.liveSource());
+        addLivePlayer((ArrayNode) live.get("elements"), 3, setup.fixtureId(), 90);
+        byte[] liveSource = JSON.writeValueAsBytes(live);
+        fetch.setSources(setup.bootstrapSource(), source, liveSource, eventFourLive);
+        fetch.setPlayerPage(3, onlyHistoryForFixture(
+                relabelHistoryPlayer(resource("element-summary-1.json"), 3), setup.fixtureId(), 3));
+        return new CheckedFixtureSetup(setup.fixtureId(), setup.cataloguePlayer(), source,
+                setup.bootstrapSource(), liveSource);
     }
 
     private CheckedFixtureSetup checkedSingleFixtureSetup() throws Exception {
