@@ -1,5 +1,40 @@
 # Status — Phase 1
 
+## Price strategy — KAR-76 implementation (2026-10-18)
+
+The [price-prediction plan](superpowers/plans/2026-10-18-kar-76-price-predictions.md)
+has Task 6/7 complete locally: the price/value reference and five related strategy documents
+now explain the official 2026/27 predictor, dated forecasts versus daily observations,
+market versus personal selling value, affordability and team-news trade-offs, and chip
+price effects. The old claim of demand-driven price changes before the season starts is
+corrected. The reference does not claim that live forecast tools already exist.
+
+The [source inspection](PRICE-PREDICTION-SOURCE-EVIDENCE.md) verified official labels,
+the first projection's explicit target, predictor refresh timestamp, season evidence and
+the public recent-price-event endpoint. Implemented the isolated parser, immutable snapshots,
+four new bounded `fpl_` storage tables, DB-time lease/fenced atomic publication and independent
+recent-event capture. Canonical daily prices, rankings and my-team caches remain unchanged.
+
+The dedicated worker uses the owner's 30-minute cadence, ten minutes from 15:00 UTC until
+forecast-cycle rollover or the proposed 02:00 UK fallback. Rollover is not proof of completed
+price processing. Source age, successful check age and exact target expiry remain distinct.
+The feature is disabled by default, allowed only under owned-sync OFF, and also requires
+explicit durable arming. STAGING/ACTIVE create no forecast runtime. The
+[operations runbook](PRICE-PREDICTION-OPERATIONS.md) records rollout/disable/rearm boundaries.
+
+Gated chat tools provide a player's forecast/current market price, directional candidates
+and recent actual events. Name matching and immutable source reads share one repeatable-read
+transaction; history preserves its own identity. Prompt routing distinguishes those sources
+from dated daily observations and unknown personal selling proceeds.
+
+Each implementation unit received independent read-only review. A scheduler lifecycle
+finding was reproduced by three regression cases, fixed and confirmed resolved on re-review;
+storage and tools reviews found no blockers. The final local focused run passed 265 cases
+across 21 classes, including disposable-loopback DB integration, old daily-history/schedule
+behavior, strategy/ingestion and prompt contracts. No local full suite, live-model evaluation,
+production DB operation, corpus ingestion, deployment or activation was performed. KAR-76
+remains In Progress pending final PR review and CI; production rollout is a separate approval.
+
 ## Owned sync — KAR-75 post-merge review fixes (2026-09-28)
 
 The [KAR-75 follow-up plan](superpowers/plans/2026-09-28-kar-75-owned-sync-review-followup.md)
