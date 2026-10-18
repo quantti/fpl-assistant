@@ -198,8 +198,8 @@ public class ScheduleSyncService {
             for (int c : jdbc.batchUpdate("""
                     INSERT INTO %s (season, id, gameweek, team_h, team_a, team_h_name, team_h_short,
                                     team_a_name, team_a_short, team_h_difficulty, team_a_difficulty,
-                                    kickoff_time, started, finished, team_h_score, team_a_score)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                    kickoff_time, started, finished, team_h_score, team_a_score, finished_provisional)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT (season, id) DO UPDATE SET
                         gameweek = EXCLUDED.gameweek, team_h = EXCLUDED.team_h, team_a = EXCLUDED.team_a,
                         team_h_name = EXCLUDED.team_h_name, team_h_short = EXCLUDED.team_h_short,
@@ -207,7 +207,7 @@ public class ScheduleSyncService {
                         team_h_difficulty = EXCLUDED.team_h_difficulty, team_a_difficulty = EXCLUDED.team_a_difficulty,
                         kickoff_time = EXCLUDED.kickoff_time, started = EXCLUDED.started, finished = EXCLUDED.finished,
                         team_h_score = EXCLUDED.team_h_score, team_a_score = EXCLUDED.team_a_score,
-                        captured_at = NOW()
+                        finished_provisional = EXCLUDED.finished_provisional, captured_at = NOW()
                     """.formatted(fixtureTable), fixtures)) {
                 written += Math.max(c, 0);
             }
@@ -289,7 +289,8 @@ public class ScheduleSyncService {
                     asInt(f.get("team_h_difficulty")), asInt(f.get("team_a_difficulty")),
                     asTime(f.get("kickoff_time")),
                     Boolean.TRUE.equals(f.get("started")), Boolean.TRUE.equals(f.get("finished")),
-                    asInt(f.get("team_h_score")), asInt(f.get("team_a_score"))
+                    asInt(f.get("team_h_score")), asInt(f.get("team_a_score")),
+                    f.get("finished_provisional") instanceof Boolean value ? value : null
             });
         }
         return rows;

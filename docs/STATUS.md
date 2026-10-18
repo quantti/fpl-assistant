@@ -59,6 +59,23 @@ then passed, including importer activation/request-limit and forecast lifecycle 
 Independent review, correction PR/full CI and deliberate production arming remain pending.
 Forecasts remain OFF.
 
+## Match status and ranking data (2026-10-18)
+
+The owner approved treating match state as information, not a player-data eligibility gate.
+The incremental compatibility publication now refreshes `fpl_gameweek` and `fpl_fixture`
+from its already-validated source pair inside the existing fenced transaction. Both halves
+carry the same source-read completion time; no additional HTTP request or scheduler is added.
+The independent daily schedule writer stays disabled under ACTIVE to avoid competing writes.
+The owned fixture capture now preserves nullable `finished_provisional`, and `ScheduleSource`
+distinguishes finished, provisionally finished, in-progress and not-started matches.
+
+A new schedule-publication regression failed first (0 captured events, expected 38).
+37 focused schedule/schema/source/compatibility/writer tests and two collector retry/no-op
+regressions pass on disposable loopback PostgreSQL with the checked-in memory limits.
+Atomic capture failure rolls back the core publication too. The ranking-state gate correction
+is still pending; this first slice alone does not restore player comparison. No production
+write, activation or deployment was performed.
+
 ## Price strategy — KAR-76 implementation (2026-10-18)
 
 The [price-prediction plan](superpowers/plans/2026-10-18-kar-76-price-predictions.md)

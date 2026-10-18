@@ -86,6 +86,8 @@ class CompatibilityCatalogueWriterIntegrationTest {
         tx = new TransactionTemplate(new DataSourceTransactionManager(jdbc.getDataSource()));
         new OwnedSyncSchema(jdbc, TABLES).initialize();
         createCapturedTables();
+        new fi.karivanttinen.fplassistant.schedule.ScheduleSchema(jdbc,
+                CAPTURED.gameweek(), CAPTURED.fixture()).ensureSchema();
         bootstrap = resource("bootstrap-static.json");
         fixtures = resource("fixtures.json");
         cleanupAuthorized = true;
@@ -100,7 +102,7 @@ class CompatibilityCatalogueWriterIntegrationTest {
         runtimeFence = new PlannerRuntimeRepository(jdbc, tx, clock, TABLES)
                 .activate(SEASON.code(), OwnedSyncMode.ACTIVE);
         store = new OwnedSyncStore(jdbc, tx, clock, TABLES, runtimeFence);
-        writer = new CompatibilityCatalogueWriter(jdbc, clock, store, TABLES);
+        writer = new CompatibilityCatalogueWriter(jdbc, clock, store, TABLES, CAPTURED);
         seedArchiveTeamSentinel();
         seedCaptureSentinels();
     }
@@ -179,6 +181,60 @@ class CompatibilityCatalogueWriterIntegrationTest {
                 .isEqualTo(archiveTeamTimestamp);
         assertCaptureSentinels();
         assertPublishedSourcePairIsNotAnOldCanonicalParent(secondLease, equalValues);
+    }
+
+    @Test
+    void refreshesRankingScheduleFromTheSameValidatedSourcePair() throws Exception {
+        ArrayNode sourceFixtures = (ArrayNode) JSON.readTree(fixtures);
+        ObjectNode played = (ObjectNode) sourceFixtures.get(0);
+        played.put("started", true).put("finished", false).put("finished_provisional", true);
+        Documents docs = documents(bootstrap, JSON.writeValueAsBytes(sourceFixtures), BASE.plusSeconds(1));
+        Lease current = newLease(BASE.plusMillis(900));
+        stage(current, docs);
+
+        writer.publish(current, SEASON, docs.bootstrap(), docs.fixtures());
+
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + CAPTURED.gameweek()
+                + " WHERE season=?", Integer.class, SEASON.code())).isEqualTo(38);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + CAPTURED.fixture()
+                + " WHERE season=?", Integer.class, SEASON.code())).isEqualTo(380);
+        Instant sourceTime = docs.fixtures().readInterval().completedAt();
+        assertThat(jdbc.queryForList("SELECT DISTINCT captured_at FROM " + CAPTURED.fixture()
+                + " WHERE season=?", java.sql.Timestamp.class, SEASON.code()))
+                .containsExactly(java.sql.Timestamp.from(sourceTime));
+        assertThat(jdbc.queryForList("SELECT DISTINCT captured_at FROM " + CAPTURED.gameweek()
+                + " WHERE season=?", java.sql.Timestamp.class, SEASON.code()))
+                .containsExactly(java.sql.Timestamp.from(sourceTime));
+        var view = new fi.karivanttinen.fplassistant.schedule.ScheduleSource(jdbc,
+                CAPTURED.gameweek(), CAPTURED.fixture()).readView();
+        assertThat(view.completeness().complete()).isTrue();
+        var stored = view.fixtures().stream().filter(row -> row.id() == played.path("id").intValue())
+                .findFirst().orElseThrow();
+        assertThat(stored.finished()).isFalse();
+        assertThat(stored.finishedProvisional()).isTrue();
+        assertThat(stored.status()).isEqualTo("Finished (provisional stats)");
+        assertCaptureSentinels();
+    }
+
+    @Test
+    void scheduleWriteFailureRollsBackCoreRowsAndTheWholeCapture() throws Exception {
+        Documents docs = documents(bootstrap, fixtures, BASE.plusSeconds(1));
+        Lease current = newLease(BASE.plusMillis(900));
+        stage(current, docs);
+        jdbc.execute("ALTER TABLE " + CAPTURED.fixture()
+                + " ADD CONSTRAINT reject_current_capture CHECK (season <> '2026-27')");
+        try {
+            assertThatThrownBy(() -> writer.publish(current, SEASON, docs.bootstrap(), docs.fixtures()))
+                    .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+            assertCoreRowsEmpty();
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM " + CAPTURED.gameweek()
+                    + " WHERE season=?", Integer.class, SEASON.code())).isZero();
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM " + CAPTURED.fixture()
+                    + " WHERE season=?", Integer.class, SEASON.code())).isZero();
+            assertCaptureSentinels();
+        } finally {
+            jdbc.execute("ALTER TABLE " + CAPTURED.fixture() + " DROP CONSTRAINT reject_current_capture");
+        }
     }
 
     @Test
@@ -541,8 +597,10 @@ class CompatibilityCatalogueWriterIntegrationTest {
 
     private static void assertCaptureSentinels() {
         assertThat(jdbc.queryForObject("SELECT count(*) FROM " + CAPTURED.dailyPrice(), Integer.class)).isOne();
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + CAPTURED.gameweek(), Integer.class)).isOne();
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + CAPTURED.fixture(), Integer.class)).isOne();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + CAPTURED.gameweek()
+                + " WHERE season='guard'", Integer.class)).isOne();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + CAPTURED.fixture()
+                + " WHERE season='guard'", Integer.class)).isOne();
         assertThat(jdbc.queryForObject("SELECT count(*) FROM " + CAPTURED.dailyPrice()
                 + " WHERE season='guard' AND element_id=1", Integer.class)).isOne();
         assertThat(jdbc.queryForObject("SELECT captured_at FROM " + CAPTURED.dailyPrice()

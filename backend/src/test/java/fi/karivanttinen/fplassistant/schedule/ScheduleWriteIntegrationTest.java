@@ -45,7 +45,7 @@ class ScheduleWriteIntegrationTest {
 
     private static Object[] fixture(int id, int gameweek) {
         return new Object[] {SEASON, id, gameweek, 9001, 9002, "Ashfield", "ASH", "Northmoor", "NMC",
-                2, 3, OffsetDateTime.parse("2097-08-15T14:00:00Z"), false, false, null, null};
+                2, 3, OffsetDateTime.parse("2097-08-15T14:00:00Z"), false, false, null, null, null};
     }
 
     @Test
