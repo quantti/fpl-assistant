@@ -1,6 +1,7 @@
 package dev.quantti.fplassistant.sync;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.io.IOException;
@@ -2128,6 +2129,137 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
     }
 
     @Test
+    void coldLeaguePopulationFitsBoundedTransactionWithDatabaseRoundTripLatency() {
+        Map<Integer, Set<Integer>> participants = new LinkedHashMap<>();
+        Map<Integer, Set<Integer>> candidates = new LinkedHashMap<>();
+        Map<Integer, String> fingerprints = new LinkedHashMap<>();
+        for (int fixtureId = 1; fixtureId <= 65; fixtureId++) {
+            Set<Integer> fixturePlayers = new LinkedHashSet<>();
+            for (int offset = 0; offset < 62; offset++) {
+                fixturePlayers.add(((fixtureId - 1) * 31 + offset) % 667 + 1);
+            }
+            candidates.put(fixtureId, Set.copyOf(fixturePlayers));
+            participants.put(fixtureId, fixturePlayers.stream().limit(31)
+                    .collect(java.util.stream.Collectors.toSet()));
+            fingerprints.put(fixtureId, "a".repeat(64));
+        }
+        Lease lease = nextCoreLease();
+        SqlRecordingDataSource recording = new SqlRecordingDataSource(dataSource);
+        recording.receiptWriteDelayNanos = Duration.ofMillis(4).toNanos();
+        TransactionTemplate boundedTx = new TransactionTemplate(new DataSourceTransactionManager(recording));
+        boundedTx.setTimeout(4);
+        store = new OwnedSyncStore(new JdbcTemplate(recording), boundedTx, clock, TABLES, runtimeFence);
+
+        assertThatCode(() -> store.recordIncrementalPopulation(lease, participants, candidates,
+                Map.of(), fingerprints, nextRead())).doesNotThrowAnyException();
+
+        long receiptWrites = recording.statements().stream()
+                .filter(sql -> sql.contains("INSERT INTO " + TABLES.receipt())).count();
+        assertThat(receiptWrites).as("database write round trips, not receipt rows").isLessThanOrEqualTo(20);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.receipt()
+                + " WHERE publication_key LIKE 'incremental-participant:%'", Integer.class)).isEqualTo(2_015);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.receipt()
+                + " WHERE publication_key LIKE 'incremental-discovery:%'", Integer.class)).isEqualTo(4_030);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.receipt()
+                + " WHERE publication_key LIKE 'incremental-population:%'", Integer.class)).isEqualTo(65);
+    }
+
+    @Test
+    void liveEventParticipantsAndAppearanceReceiptsUseBoundedBatches() {
+        Lease lease = nextCoreLease();
+        SourceRead bootstrapRead = nextRead();
+        SourceRead fixturesRead = nextRead();
+        var snapshot = CatalogueScheduleParser.parse(season, document(bootstrap, bootstrapRead),
+                document(fixtures, fixturesRead));
+        store.observeIncrementalSnapshot(lease, snapshot);
+        store.recordIncrementalFixtureSourceRevisions(lease, snapshot.fixtures(), fixturesRead);
+        var eventFixtures = snapshot.fixtures().stream().filter(fixture -> Integer.valueOf(3)
+                .equals(fixture.gameweek())).toList();
+        assertThat(eventFixtures).hasSize(10);
+        SourceRead liveRead = nextRead();
+        var evidence = FixtureVerification.fixtureEvidenceByFixture(eventFixtures, document(eventThreeLive, liveRead));
+        Map<Integer, Set<Integer>> participants = new LinkedHashMap<>();
+        for (var fixture : eventFixtures) {
+            Set<Integer> players = new LinkedHashSet<>(FixtureVerification.fixtureStatParticipantIds(fixture));
+            players.addAll(evidence.get(fixture.id()).positivePlayerIds());
+            for (int playerId = 7_000; players.size() < 80; playerId++) players.add(playerId);
+            participants.put(fixture.id(), Set.copyOf(players));
+        }
+        SqlRecordingDataSource recording = new SqlRecordingDataSource(dataSource);
+        recording.receiptWriteDelayNanos = Duration.ofMillis(4).toNanos();
+        TransactionTemplate boundedTx = new TransactionTemplate(new DataSourceTransactionManager(recording));
+        boundedTx.setTimeout(4);
+        store = new OwnedSyncStore(new JdbcTemplate(recording), boundedTx, clock, TABLES, runtimeFence);
+
+        store.recordIncrementalLiveEvent(lease, 3, GameweekFinality.SourceSnapshot.from(snapshot, 3).signature(),
+                participants, eventFixtures, evidence, liveRead);
+
+        assertThat(recording.receiptWriteExecutions).isLessThanOrEqualTo(20);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.receipt()
+                + " WHERE publication_key LIKE 'incremental-participant:%'", Integer.class)).isEqualTo(800);
+        Map<String, String> receipts = unit6ReceiptSnapshot();
+        assertThat(receipts.keySet().stream().filter(key -> key.startsWith(IncrementalAppearanceReceipt.SNAPSHOT_PREFIX)))
+                .hasSize(10);
+        assertThat(receipts.keySet().stream().filter(key -> key.startsWith(IncrementalAppearanceReceipt.PLAYER_PREFIX)))
+                .hasSize(evidence.values().stream().mapToInt(fixture -> fixture.appearances().size()).sum());
+    }
+
+    @Test
+    void populationBatchesPreserveReceiptOrderingAndUnchangedFingerprint() {
+        Lease lease = nextCoreLease();
+        Map<Integer, Set<Integer>> players = Map.of(29, Set.of(1, 28));
+        Map<Integer, String> fingerprints = Map.of(29, "a".repeat(64));
+        SourceRead firstRead = nextRead();
+        store.recordIncrementalPopulation(lease, players, players, Map.of(), fingerprints, firstRead);
+        String participantKey = OwnedSyncStore.INCREMENTAL_PARTICIPANT_RECEIPT_PREFIX + "29:player:1";
+        String populationKey = OwnedSyncStore.INCREMENTAL_POPULATION_RECEIPT_PREFIX + 29;
+        jdbc.update("UPDATE " + TABLES.receipt() + " SET source_pair_fingerprint=? WHERE publication_key=?",
+                "b".repeat(64), participantKey);
+        String firstPopulation = unit6ReceiptSnapshot().get(populationKey);
+        SourceRead newerRead = nextRead();
+
+        store.recordIncrementalPopulation(lease, players, players, players, fingerprints, newerRead);
+
+        assertThat(unit6ReceiptSnapshot().get(populationKey)).isEqualTo(firstPopulation);
+        assertThat(jdbc.queryForObject("SELECT source_read_finished_at FROM " + TABLES.receipt()
+                + " WHERE publication_key=?", java.sql.Timestamp.class, participantKey))
+                .isEqualTo(java.sql.Timestamp.from(newerRead.finishedAt()));
+        assertThat(jdbc.queryForObject("SELECT source_pair_fingerprint FROM " + TABLES.receipt()
+                + " WHERE publication_key=?", String.class, participantKey)).isEqualTo("b".repeat(64));
+        Map<String, String> newer = unit6ReceiptSnapshot();
+
+        store.recordIncrementalPopulation(lease, players, players, players, fingerprints, firstRead);
+
+        assertThat(unit6ReceiptSnapshot()).isEqualTo(newer);
+        jdbc.update("UPDATE " + TABLES.receipt() + " SET latest_generation=? WHERE publication_key=?",
+                lease.generation() + 1, participantKey);
+        Map<String, String> higherGeneration = unit6ReceiptSnapshot();
+
+        store.recordIncrementalPopulation(lease, players, players, players, fingerprints, nextRead());
+
+        assertThat(unit6ReceiptSnapshot().get(participantKey)).isEqualTo(higherGeneration.get(participantKey));
+    }
+
+    @Test
+    void populationBatchFailureRollsBackEarlierBatches() {
+        Lease lease = nextCoreLease();
+        Set<Integer> players = java.util.stream.IntStream.rangeClosed(1, 501).boxed()
+                .collect(java.util.stream.Collectors.toSet());
+        SqlRecordingDataSource recording = new SqlRecordingDataSource(dataSource);
+        recording.failReceiptWriteAt = 2;
+        TransactionTemplate recordedTx = new TransactionTemplate(new DataSourceTransactionManager(recording));
+        store = new OwnedSyncStore(new JdbcTemplate(recording), recordedTx, clock, TABLES, runtimeFence);
+        Map<String, String> before = unit6ReceiptSnapshot();
+
+        assertThatThrownBy(() -> store.recordIncrementalPopulation(lease, Map.of(29, players),
+                Map.of(29, players), Map.of(), Map.of(29, "a".repeat(64)), nextRead()))
+                .isInstanceOf(org.springframework.dao.DataAccessException.class);
+
+        assertThat(recording.receiptWriteExecutions).isEqualTo(2);
+        assertThat(unit6ReceiptSnapshot()).isEqualTo(before);
+    }
+
+    @Test
     void discoveryCandidateReceiptsUseBoundedBatchesAndSkipExistingIds() {
         int fixtureId = 29;
         Set<Integer> candidates = new LinkedHashSet<>();
@@ -3604,6 +3736,129 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
     }
 
     @Test
+    void omittedFixtureStatPlayerFinalizesOnlyAfterProvedHistorySuppliesItsSide() throws Exception {
+        CheckedFixtureSetup setup = omittedFixtureStatPlayerSetup();
+        SqlRecordingDataSource recording = new SqlRecordingDataSource(dataSource);
+        JdbcTemplate recordedJdbc = new JdbcTemplate(recording);
+        TransactionTemplate recordedTx = new TransactionTemplate(new DataSourceTransactionManager(recording));
+        var collector = compatibilityCollector(true, recordedJdbc, recordedTx);
+
+        CycleResult first = collector.runCycle();
+
+        assertThat(first.state()).as("last error: %s", latestRunError()).isEqualTo(State.RETRY_SCHEDULED);
+        assertThat(first.committedPlayerIds()).containsExactlyInAnyOrder(1, 3, 28);
+        assertThat(collectorPfsReadSource().fixtureSidePopulation(SEASON_ID, season.code(), "fixture", "season_id",
+                SEASON_ID, Set.of(setup.fixtureId()), clock.instant())).hasSize(2)
+                .allSatisfy((side, population) -> assertThat(population.complete()).isFalse());
+        assertThat(new GameweekFinalityReader(jdbc, clock, TABLES)
+                .read(SEASON_ID, season.code(), Set.of(3)).get(3).state())
+                .isEqualTo(GameweekFinality.State.FINAL_PENDING);
+        clock.set(clock.instant().plus(Duration.ofHours(1)).plusSeconds(1));
+        recording.clear();
+
+        CycleResult second = collector.runCycle();
+
+        assertThat(second.state()).as("last error: %s", latestRunError()).isEqualTo(State.COMPLETED);
+        assertThat(new GameweekFinalityReader(jdbc, clock, TABLES)
+                .read(SEASON_ID, season.code(), Set.of(3)).get(3).state())
+                .isEqualTo(GameweekFinality.State.FINALIZED);
+        assertThat(recording.statements().stream()
+                .filter(sql -> sql.contains("/* incremental history side proof */"))).hasSize(1);
+        assertThat(collectorPfsReadSource().fixtureSidePopulation(SEASON_ID, season.code(), "fixture", "season_id",
+                SEASON_ID, Set.of(setup.fixtureId()), clock.instant())).hasSize(2)
+                .allSatisfy((side, population) -> assertThat(population.complete()).isTrue());
+    }
+
+    @Test
+    void historySideHintsRejectUnprovedRowsAndChangedFixtureIdentity() throws Exception {
+        CheckedFixtureSetup setup = omittedFixtureStatPlayerSetup();
+        assertThat(compatibilityCollector(true).runCycle().state()).isEqualTo(State.RETRY_SCHEDULED);
+        clock.set(clock.instant().plus(Duration.ofHours(1)).plusSeconds(1));
+        Lease lease = nextCoreLease();
+        var snapshot = CatalogueScheduleParser.parse(season, document(setup.bootstrapSource(), nextRead()),
+                document(setup.fixtureSource(), nextRead()));
+        var fixture = snapshot.fixtures().stream().filter(row -> row.id() == setup.fixtureId()).findFirst().orElseThrow();
+        assertThat(store.incrementalHistorySides(lease, SEASON_ID, List.of(fixture)).get(setup.fixtureId()))
+                .containsEntry(1, FixtureVerification.Side.HOME)
+                .containsEntry(3, FixtureVerification.Side.HOME)
+                .containsEntry(28, FixtureVerification.Side.AWAY);
+        List<Runnable> corruptions = List.of(
+                () -> jdbc.update("UPDATE player_fixture_stats SET minutes=minutes+1"
+                        + " WHERE season_id=? AND fixture_id=? AND player_id=1", SEASON_ID, setup.fixtureId()),
+                () -> jdbc.update("UPDATE " + TABLES.playerFixtureCurrent() + " SET physical_fingerprint=NULL"
+                        + " WHERE season_id=? AND fixture_id=? AND player_id=1", SEASON_ID, setup.fixtureId()),
+                () -> jdbc.update("DELETE FROM " + TABLES.playerFixtureCurrent()
+                        + " WHERE season_id=? AND fixture_id=? AND player_id=1", SEASON_ID, setup.fixtureId()),
+                () -> jdbc.update("UPDATE " + TABLES.playerFixtureCurrent()
+                        + " SET row_state='WITHDRAWN',evidence_generation=NULL,row_fingerprint=NULL,physical_fingerprint=NULL"
+                        + " WHERE season_id=? AND fixture_id=? AND player_id=1", SEASON_ID, setup.fixtureId()),
+                () -> jdbc.update("DELETE FROM " + TABLES.receipt() + " WHERE season=? AND publication_key=?",
+                        season.code(), IncrementalPlayerFixturePublisher.pageReceiptKey(1)),
+                () -> jdbc.update("UPDATE " + TABLES.receipt()
+                        + " SET source_read_started_at=? WHERE season=? AND publication_key=?",
+                        java.sql.Timestamp.from(START), season.code(), IncrementalPlayerFixturePublisher.pageReceiptKey(1)));
+        for (Runnable corruption : corruptions) {
+            tx.executeWithoutResult(status -> {
+                corruption.run();
+                assertThat(store.incrementalHistorySides(lease, SEASON_ID, List.of(fixture))
+                        .getOrDefault(setup.fixtureId(), Map.of())).doesNotContainKey(1);
+                status.setRollbackOnly();
+            });
+        }
+        int otherClub = snapshot.teams().stream().mapToInt(team -> team.id())
+                .filter(id -> id != fixture.homeTeamId() && id != fixture.awayTeamId()).findFirst().orElseThrow();
+        for (String change : List.of("club", "gameweek", "kickoff")) {
+            var changed = new CatalogueScheduleParser.FixtureRow(fixture.seasonId(), fixture.seasonCode(),
+                    fixture.id(), fixture.code(), change.equals("gameweek") ? fixture.gameweek() + 1 : fixture.gameweek(),
+                    change.equals("club") ? otherClub : fixture.homeTeamId(), fixture.awayTeamId(),
+                    fixture.homeTeamName(), fixture.homeTeamShort(), fixture.awayTeamName(), fixture.awayTeamShort(),
+                    fixture.homeScore(), fixture.awayScore(), fixture.homeDifficulty(), fixture.awayDifficulty(),
+                    change.equals("kickoff") ? fixture.kickoff().plusSeconds(60) : fixture.kickoff(),
+                    fixture.started(), fixture.finished(), fixture.fields());
+            assertThat(store.incrementalHistorySides(lease, SEASON_ID, List.of(changed)))
+                    .as("changed fixture %s", change).isEmpty();
+        }
+        assertThatThrownBy(() -> store.incrementalHistorySides(lease, SEASON_ID + 1, List.of(fixture)))
+                .isInstanceOf(IllegalArgumentException.class);
+        new PlannerRuntimeRepository(jdbc, tx, clock, TABLES).deactivate(runtimeFence);
+        assertThatThrownBy(() -> store.incrementalHistorySides(lease, SEASON_ID, List.of(fixture)))
+                .isInstanceOf(OwnedSyncStore.RuntimeFenceLostException.class);
+    }
+
+    @Test
+    void freshHistoryContradictingAnOmittedPlayersPriorSideCannotFinalize() throws Exception {
+        CheckedFixtureSetup setup = omittedFixtureStatPlayerSetup();
+        assertThat(compatibilityCollector(true).runCycle().state()).isEqualTo(State.RETRY_SCHEDULED);
+        fetch.setPlayerPage(1, relabelHistoryPlayer(historyForAwayPlayer28(setup.fixtureId()), 1));
+        clock.set(clock.instant().plus(Duration.ofHours(1)).plusSeconds(1));
+
+        compatibilityCollector(true).runCycle();
+
+        assertThat(jdbc.queryForObject("SELECT was_home FROM player_fixture_stats"
+                + " WHERE season_id=? AND fixture_id=? AND player_id=1", Boolean.class,
+                SEASON_ID, setup.fixtureId())).isFalse();
+        assertThat(new GameweekFinalityReader(jdbc, clock, TABLES)
+                .read(SEASON_ID, season.code(), Set.of(3)).get(3).state())
+                .isNotEqualTo(GameweekFinality.State.FINALIZED);
+    }
+
+    @Test
+    void historySideReadFailureClosesTheRunWithoutFetchingPlayerPages() throws Exception {
+        checkedSingleFixtureSetup();
+        store = Mockito.spy(store);
+        Mockito.doThrow(new org.springframework.dao.DataAccessResourceFailureException("history side read unavailable"))
+                .when(store).incrementalHistorySides(Mockito.any(), Mockito.eq(SEASON_ID), Mockito.anyList());
+
+        CycleResult result = collector(true).runCycle();
+
+        assertThat(result.state()).isEqualTo(State.FAILED);
+        assertThat(latestRunError()).contains("history side read unavailable");
+        assertThat(fetch.count(EndpointKind.ELEMENT_SUMMARY)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run() + " WHERE state='LEASED'",
+                Integer.class)).isZero();
+    }
+
+    @Test
     void oneSidedLiveEvidenceLeavesFinalityPendingButCommitsIndependentPages() throws Exception {
         CheckedFixtureSetup setup = checkedSingleFixtureSetup();
         byte[] oneSidedLive = liveForFixturePlayers(eventThreeLive, setup.fixtureId(), Set.of(1));
@@ -4806,6 +5061,28 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
                 season.code(), OwnedSyncStore.INCREMENTAL_COMPATIBILITY_PUBLICATION_KEY);
     }
 
+    private CheckedFixtureSetup omittedFixtureStatPlayerSetup() throws Exception {
+        CheckedFixtureSetup setup = checkedSingleFixtureSetup();
+        JsonNode sourceRoot = JSON.readTree(setup.fixtureSource());
+        for (JsonNode fixture : sourceRoot) {
+            if (fixture.path("id").asInt() != setup.fixtureId()) continue;
+            for (JsonNode stat : fixture.path("stats")) {
+                for (JsonNode player : stat.path("h")) {
+                    if (player.path("element").asInt() == 1) ((ObjectNode) player).put("element", 3);
+                }
+            }
+        }
+        byte[] source = JSON.writeValueAsBytes(sourceRoot);
+        ObjectNode live = (ObjectNode) JSON.readTree(setup.liveSource());
+        addLivePlayer((ArrayNode) live.get("elements"), 3, setup.fixtureId(), 90);
+        byte[] liveSource = JSON.writeValueAsBytes(live);
+        fetch.setSources(setup.bootstrapSource(), source, liveSource, eventFourLive);
+        fetch.setPlayerPage(3, onlyHistoryForFixture(
+                relabelHistoryPlayer(resource("element-summary-1.json"), 3), setup.fixtureId(), 3));
+        return new CheckedFixtureSetup(setup.fixtureId(), setup.cataloguePlayer(), source,
+                setup.bootstrapSource(), liveSource);
+    }
+
     private CheckedFixtureSetup checkedSingleFixtureSetup() throws Exception {
         int fixtureId = 29;
         byte[] source = onlyCollectorFixtureFinished(fixtures, fixtureId);
@@ -6006,6 +6283,9 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         private long updateRowsAffected;
         private long returnedRows;
         private long approximateLogicalReturnedBytes;
+        private long receiptWriteDelayNanos;
+        private int receiptWriteExecutions;
+        private int failReceiptWriteAt = -1;
 
         private SqlRecordingDataSource(DataSource delegate) { this.delegate = delegate; }
 
@@ -6058,6 +6338,17 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
                         }
                         if ((name.equals("executeQuery") || name.equals("execute")) && isReadSql(sql)) {
                             queryExecutions++;
+                        }
+                        if (sql != null && sql.contains("INSERT INTO " + TABLES.receipt())
+                                && (name.equals("executeUpdate") || name.equals("executeLargeUpdate")
+                                    || name.equals("executeBatch") || name.equals("executeLargeBatch"))) {
+                            receiptWriteExecutions++;
+                            if (receiptWriteExecutions == failReceiptWriteAt) {
+                                throw new SQLException("Injected receipt batch failure", "57014");
+                            }
+                            if (receiptWriteDelayNanos > 0) {
+                                java.util.concurrent.locks.LockSupport.parkNanos(receiptWriteDelayNanos);
+                            }
                         }
                         Object result = invoke(target, method, args);
                         if (name.equals("executeUpdate") || name.equals("executeLargeUpdate")) {
@@ -6120,6 +6411,7 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
             updateRowsAffected = 0;
             returnedRows = 0;
             approximateLogicalReturnedBytes = 0;
+            receiptWriteExecutions = 0;
         }
     }
 
