@@ -20,7 +20,7 @@ public @interface PricePredictionEnabled {
             if (!allowed && "true".equalsIgnoreCase(context.getEnvironment()
                     .getProperty("fpl.price-prediction.enabled", "false"))) {
                 org.slf4j.LoggerFactory.getLogger(PricePredictionEnabled.class)
-                        .warn("Price prediction is disabled: owned-sync mode must be OFF");
+                        .warn("Price prediction requires OFF mode or a confirmed ACTIVE importer on the same playing season");
             }
             return allowed;
         }

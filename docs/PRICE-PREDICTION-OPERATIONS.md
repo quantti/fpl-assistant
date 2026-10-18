@@ -1,16 +1,20 @@
 # Price prediction capture operations (KAR-76)
 
-This implementation is disabled. Deployment, durable arming and source polling require later
-explicit owner approval. Gated forecast tools are implemented; this does not alter daily price captures,
+This implementation defaults disabled. The owner approved activation and incremental-importer
+coexistence on 18 October 2026; that approval is not proof of completed rollout. Gated forecast tools are implemented; this does not alter daily price captures,
 invalidate bootstrap caches, modify ranking sources or change owned-sync configuration.
 
 ## Configuration and durable control
 
 `PRICE_PREDICTION_ENABLED` maps to `fpl.price-prediction.enabled` and defaults to false.
-Only an explicit true together with `fpl.owned-sync.mode=OFF` creates the configuration,
-schema, store, HTTP client and worker. STAGING and ACTIVE create none of them, even with
-the flag true. Never change owned-sync mode merely to enable this feature. Invalid modes
-also deny the gate. The required `PRICE_PREDICTION_PLAYING_SEASON` /
+An explicit true creates the configuration, schema, store, HTTP client and worker only
+in one of two admitted configurations: `fpl.owned-sync.mode=OFF`, or `ACTIVE` with
+`fpl.owned-sync.importer.enabled=true`, `fpl.owned-sync.cutover-confirmed=true` and identical
+explicit forecast/importer playing seasons. The latter is the new incremental importer,
+not the retired legacy runtime, despite reusing its configuration namespace. STAGING,
+legacy ACTIVE, incomplete importer configuration, mismatched seasons and invalid modes
+deny the gate. Never change importer mode, epoch or budget merely to enable this feature.
+The required `PRICE_PREDICTION_PLAYING_SEASON` /
 `fpl.price-prediction.playing-season` is a consecutive `YYYY-YY` season. Every bootstrap
 must independently match its official season marker and event calendar. SeasonResolver
 is not involved.

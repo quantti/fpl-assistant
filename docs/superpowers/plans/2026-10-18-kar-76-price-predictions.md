@@ -1,6 +1,6 @@
 # KAR-76 — price strategy and official price forecasts
 
-**PROGRESS:** Task 6/7 done; implementation and routing correction independently reviewed, PR #170 open. Latest master integration passed 269 focused tests; integration review and latest-head full CI remain. No deployment, corpus ingestion, runtime activation or production writes performed.
+**PROGRESS:** Original delivery merged as PR #170, full CI/deploy and reviewed production RAG ingestion complete. Owner-approved importer coexistence correction passes 292 focused tests; independent review, correction PR/CI and forecast activation remain. Forecasts remain disabled.
 
 ## Scope and decisions
 
@@ -64,7 +64,7 @@ One bounded database-backed lease on the control record prevents overlapping for
 
 A successful publication replaces the player set and metadata atomically in one short transaction. A reader loads one immutable view in a read-only repeatable-read transaction, never metadata from one generation and players from another. An identical validated fingerprint updates only the permitted metadata, not the full player set. Validation, write or connection failure leaves the prior published view intact; uncertain commits must be reconciled before claiming a successful refresh.
 
-Proposed first-delivery mode matrix:
+Original first-delivery mode matrix (ACTIVE coexistence is superseded by the activation amendment):
 
 - Feature flag off, any owned-sync mode: no forecast HTTP requests/publication/tool registration.
 - Explicit feature flag on, owned-sync OFF: forecast-only capture and tools permitted; existing daily paths unchanged.
@@ -244,3 +244,41 @@ entries, the forecast-first correction and both disabled-by-default collector co
 All 269 focused tests across 22 classes passed on this integrated tree with zero failures
 or skips, including the new upstream team-xG prompt contract. Integration review and full
 CI on the new PR head remain required; the old head's green CI is not reused as that proof.
+
+### Activation amendment — incremental importer coexistence (18 October 2026)
+
+PR #170 merged at `757bd13`; master test/deploy run `39153387820` passed. Owner-approved
+production RAG replacement and actual StrategyTools retrieval were independently reviewed:
+23 documents / 205 chunks, source hashes verified, health UP, no forecast activation.
+
+The owner explicitly approved activation and the required compatibility correction, clarifying
+that the old owned-sync runtime is retired and a different importer is in use. Production
+still uses `fpl.owned-sync.mode=ACTIVE` plus `importer.enabled=true` to configure that new
+importer; the namespace does not imply the retired runtime is running. This supersedes the
+original OFF-only forecast restriction below, not importer ownership or publication fences.
+
+Permit the existing OFF path or ACTIVE with importer enabled, cutover confirmed and identical
+explicit forecast/importer playing seasons. Keep STAGING, legacy ACTIVE, invalid mode,
+incomplete importer settings and mismatched seasons closed. Observed permission loss must
+still latch stopped, durably revoke and require a fresh lifecycle and deliberate rearm.
+Never change importer mode, epoch, budget or data to activate forecasts. The new collector
+retains its isolated tables, bounded HTTP, cadence, evidence policy and durable arm gate.
+
+Delivery: reproduce the production compatibility failure with configuration/tool/worker
+regressions; implement the bounded gate correction and operations wording; run focused tests;
+independently review; publish a correction PR and require full CI before merge/deploy.
+Then verify deployment/runtime configuration, install only forecast storage via reviewed
+application wiring, set the explicit season/flag and deliberately arm publication after
+old workers drain. Verify the first stored forecast/history capture and actual tool outputs;
+if evidence is unavailable, report it honestly. Activation authority does not permit weakening
+source validation or freshness. The owner-approved overnight fallback remains 02:00 UK for
+this rollout; cycle rollover is not proof of completed overnight price processing.
+
+The configuration, tool-registration and in-flight permission-loss regressions failed before
+the correction (3 failures / 42 cases). After the gate change, all 292 focused cases across
+24 classes passed, including the existing source/evidence/storage/HTTP/cadence/strategy/
+prompt/daily-price checks and importer runtime/request-limit tests. No local full suite.
+The collector retains its existing bounded two-request-per-slot transport and separate
+forecast lease/publication fences; it does not acquire core write ownership or alter the
+incremental importer's admission ledger. Inspect aggregate traffic/headroom before arming;
+the original legacy-runtime integration proposal is not silently applied to the new importer.
