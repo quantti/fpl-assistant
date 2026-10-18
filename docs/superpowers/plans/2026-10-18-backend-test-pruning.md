@@ -1,6 +1,6 @@
 # Backend test audit and bounded pruning plan
 
-**PROGRESS:** Task 1/5 done — lightweight PR/full-master routing implemented; the four large workloads will be deleted entirely, not made manual.
+**PROGRESS:** Task 2/5 done — CI routing and deletion of all four workloads complete; 35 retained scoped cases pass; small pruning/speedups/final review pending.
 
 ## Owner decision and scope
 

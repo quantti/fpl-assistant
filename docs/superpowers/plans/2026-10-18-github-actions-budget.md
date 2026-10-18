@@ -1,6 +1,6 @@
 # GitHub Actions budget: measured use and reduction plan
 
-**PROGRESS:** Task 1/5 done — lightweight PR/full-master routing implemented and locally verified; test pruning and final review pending.
+**PROGRESS:** Task 2/5 done — CI routing and complete removal of the four workloads verified; small pruning, retained-test speedups and final review pending.
 
 ## Goal and scope
 
@@ -338,6 +338,16 @@ change-range subcases, plus all 17 existing pre-push shell cases. No GitHub run 
 PRs now have no Gradle/Postgres job; code-bearing master and manual master verification remain
 full, unknown ranges fail closed, docs-only master does not deploy, and non-master refs cannot
 deploy. Master tests have no shared concurrency group. Actual hosted-run timing is unverified.
+
+Task 2: deleted the four named workloads, the warm-start-only class/diagnostic launcher and
+newly unreferenced private support members (about 2,840 Java lines removed). All twelve other
+admission/progress cases remain. Scoped local compilation and 35 retained admission, fixture
+publication and end-to-end cases pass (0 failed/skipped), under a 1536 MiB cgroup with no swap
+and a 768 MiB host-available stop guard. The shared disposable loopback DB was reused without
+reset. Default Docker Desktop was unavailable; the existing `fpl-test-db` was independently
+identified on the local daemon at 127.0.0.1:55432. The old `.env.test` port 15432 was refused;
+tests used explicit documented disposable credentials and loopback-pinned dummy AI keys.
+No workload was moved to a manual/tagged task; former combined scale bounds are dropped.
 
 Reproduction sources: GitHub REST run/job/commit/compare/PR-file/artifact/cache metadata, the
 three linked/specified JUnit artifacts, and the checked-in workflows/tests. Raw research JSON,

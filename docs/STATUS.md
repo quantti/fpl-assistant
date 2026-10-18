@@ -13,6 +13,11 @@ large-diff subcases) and 17 shell regressions pass; no hosted CI or deployment w
 The [budget plan](superpowers/plans/2026-10-18-github-actions-budget.md) and
 [test audit](superpowers/plans/2026-10-18-backend-test-pruning.md) record the evidence and the
 owner's subsequent instruction to delete four named large workloads, not create manual tests.
+Those four cases, the warm-start-only class/launcher and newly orphaned helpers are now removed;
+all twelve other admission/progress cases remain. Local compilation and 35 retained progress,
+publication and end-to-end cases pass against disposable 127.0.0.1:55432 under a 1536 MiB
+no-swap scope and host-memory stop guard. Full combined-scale resource bounds are deliberately
+no longer checked; the old memory report is marked historical. No manual/tagged workload was added.
 
 ## Price strategy — KAR-76 implementation (2026-10-18)
 
