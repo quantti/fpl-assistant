@@ -1,4 +1,4 @@
-# Tests on every pull request, tests then deploy on every push to master.
+# Lightweight PR checks; full application tests gate code-bearing master deployments.
 #
 # The test database is a container GitHub Actions creates empty at job start and destroys at job
 # end: nothing persists between runs, which is the whole point (see
@@ -14,14 +14,53 @@ on:
   workflow_dispatch:
 
 jobs:
-  test:
+  pr-checks:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-
-    # Stacked pushes need only the newest test run. The deploy job below deliberately does NOT
-    # cancel in progress.
     concurrency:
-      group: test-${{ github.ref }}
+      group: pr-${{ github.event.pull_request.number }}
       cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Classify changes
+        id: scope
+        env:
+          CI_EVENT: ${{ github.event_name }}
+          CI_REF: ${{ github.ref }}
+          CI_BASE: ${{ github.event.pull_request.base.sha }}
+          CI_HEAD: ${{ github.sha }}
+        run: python3 scripts/ci-scope.py "$CI_EVENT" "$CI_REF" "$CI_BASE" "$CI_HEAD" >> "$GITHUB_OUTPUT"
+      - name: Check CI routing and pre-push regressions
+        run: |
+          python3 scripts/tests/ci-workflow-test.py
+          bash scripts/tests/pre-push-test.sh
+      - uses: actions/setup-node@v7
+        if: steps.scope.outputs.frontend_changed == 'true'
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Check the frontend when affected
+        if: steps.scope.outputs.frontend_changed == 'true'
+        working-directory: frontend
+        env:
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+        run: |
+          npm ci
+          npm run build
+          npm run lint
+          npm run format:check
+
+  test:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    outputs:
+      docs_only: ${{ steps.scope.outputs.docs_only }}
+
+    # No shared master test concurrency group: even cancel-in-progress:false replaces pending
+    # runs. A later docs-only push must not displace code-bearing verification.
 
     services:
       postgres:
@@ -59,11 +98,24 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Classify changes
+        id: scope
+        env:
+          CI_EVENT: ${{ github.event_name }}
+          CI_REF: ${{ github.ref }}
+          CI_BASE: ${{ github.event.before }}
+          CI_HEAD: ${{ github.sha }}
+        run: python3 scripts/ci-scope.py "$CI_EVENT" "$CI_REF" "$CI_BASE" "$CI_HEAD" >> "$GITHUB_OUTPUT"
 
-      - name: Run pre-push shell regressions
-        run: bash scripts/tests/pre-push-test.sh
+      - name: Run CI routing and pre-push shell regressions
+        run: |
+          python3 scripts/tests/ci-workflow-test.py
+          bash scripts/tests/pre-push-test.sh
 
       - name: Create the vector extension and load the tapas schema
+        if: steps.scope.outputs.docs_only != 'true'
         # Spring AI's PgVectorStore creates the extension itself at context start, so the first
         # statement is belt-and-braces. The dump is the six tables this project reads but does
         # not own; regenerate it with scripts/dump-test-schema.sh after any tapas migration.
@@ -76,13 +128,16 @@ jobs:
             -f backend/src/test/resources/db/tapas-schema.sql
 
       - uses: actions/setup-java@v5
+        if: steps.scope.outputs.docs_only != 'true'
         with:
           distribution: temurin
           java-version: '25'
 
       - uses: gradle/actions/setup-gradle@v6
+        if: steps.scope.outputs.docs_only != 'true'
 
       - uses: actions/setup-node@v7
+        if: steps.scope.outputs.docs_only != 'true'
         with:
           node-version: '24'
           cache: npm
@@ -91,6 +146,7 @@ jobs:
       # There are no frontend unit tests; this build (check-contrast + tsc + vite) is the
       # frontend gate, and it fails fast before the slower backend suite.
       - name: Build the frontend
+        if: steps.scope.outputs.docs_only != 'true'
         working-directory: frontend
         env:
           # Not committed (see frontend/src/auth/supabaseClient.ts). The build refuses to run
@@ -103,12 +159,14 @@ jobs:
       # The enforcement for KAR-60. The pre-push hook runs the same two checks, but only on a
       # host that has Node, so a push from the VPS reaches this step unchecked.
       - name: Lint and format-check the frontend
+        if: steps.scope.outputs.docs_only != 'true'
         working-directory: frontend
         run: |
           npm run lint
           npm run format:check
 
       - name: Run the backend suite
+        if: steps.scope.outputs.docs_only != 'true'
         working-directory: backend
         run: ./gradlew test
 
@@ -117,7 +175,7 @@ jobs:
       # touching the job's pass/fail status: a missing-report warning must never be mistaken for
       # the original test failure.
       - name: Upload backend test results
-        if: always()
+        if: always() && steps.scope.outputs.docs_only != 'true'
         uses: actions/upload-artifact@v7
         with:
           name: backend-test-results
@@ -130,7 +188,7 @@ jobs:
 
   deploy:
     needs: test
-    if: github.event_name != 'pull_request'
+    if: github.ref == 'refs/heads/master' && needs.test.result == 'success' && needs.test.outputs.docs_only == 'false'
     runs-on: ubuntu-latest
 
     # NOT cancel-in-progress: a flyctl deploy killed mid-run can leave a half-finished release.
@@ -140,13 +198,22 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Reject superseded application revisions inside the deployment slot
+        id: current
+        run: |
+          git fetch --no-tags origin master
+          python3 scripts/ci-scope.py deployment "$GITHUB_REF" "$GITHUB_SHA" "$(git rev-parse FETCH_HEAD)" >> "$GITHUB_OUTPUT"
 
       - uses: superfly/flyctl-actions/setup-flyctl@master
+        if: steps.current.outputs.deploy_allowed == 'true'
 
       # Deploying restarts the single always-on machine. A deploy landing near 02:00 UK can make
       # that day's price capture miss its window; DailyPriceFreshnessCheck logs an ERROR the next
       # morning when it does.
       - name: Deploy to Fly.io
+        if: steps.current.outputs.deploy_allowed == 'true'
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
         run: |
@@ -161,6 +228,7 @@ jobs:
       # every user's point of view. This check is also what would catch a DNS or certificate
       # regression on the domain, which nothing else in the pipeline looks at.
       - name: Smoke test the deployed health endpoint
+        if: steps.current.outputs.deploy_allowed == 'true'
         run: |
           curl --fail --silent --show-error \
                --retry 10 --retry-delay 15 --retry-all-errors \

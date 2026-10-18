@@ -2299,6 +2299,8 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         assertThat(setup.fixtureIds()).hasSize(10);
         assertThat(setup.participantIds()).hasSize(40);
         assertThat(setup.participantsByFixture()).allSatisfy((fixtureId, ids) -> assertThat(ids).hasSize(4));
+        int catalogueSize = setup.participantIds().size() + 1;
+        assertThat(JSON.readTree(setup.bootstrapSource()).path("elements").size()).isEqualTo(catalogueSize);
 
         for (String table : List.of("team", "player", "gameweek", "fixture")) {
             assertThat(jdbc.queryForObject("SELECT count(*) FROM " + table + " WHERE season_id=?",
@@ -2312,20 +2314,20 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
 
             assertThat(partial.state()).isEqualTo(State.RETRY_SCHEDULED);
             assertThat(partial.finalPendingGameweeks()).containsExactly(3);
-            assertThat(partial.selectedPlayerIds()).hasSize(657);
+            assertThat(partial.selectedPlayerIds()).hasSize(catalogueSize).containsAll(setup.participantIds());
             assertThat(partial.failedPlayerIds()).containsExactly(failedPlayer);
-            assertThat(partial.committedPlayerIds()).hasSize(656);
+            assertThat(partial.committedPlayerIds()).hasSize(catalogueSize - 1);
             assertThat(fetch.count(EndpointKind.BOOTSTRAP_STATIC)).isOne();
             assertThat(fetch.count(EndpointKind.FIXTURES)).isOne();
             assertThat(fetch.count(EndpointKind.EVENT_LIVE)).as("live events %s", fetch.calls().stream()
                     .filter(endpoint -> endpoint.kind() == EndpointKind.EVENT_LIVE)
                     .map(Endpoint::eventId).toList()).isOne();
-            assertThat(fetch.count(EndpointKind.ELEMENT_SUMMARY)).isEqualTo(657);
+            assertThat(fetch.count(EndpointKind.ELEMENT_SUMMARY)).isEqualTo(catalogueSize);
             int initialHistoryGets = fetch.count(EndpointKind.ELEMENT_SUMMARY);
             assertThat(jdbc.queryForObject("SELECT count(*) FROM team WHERE season_id=?", Integer.class,
                     SEASON_ID)).isEqualTo(20);
             assertThat(jdbc.queryForObject("SELECT count(*) FROM player WHERE season_id=?", Integer.class,
-                    SEASON_ID)).isEqualTo(657);
+                    SEASON_ID)).isEqualTo(catalogueSize);
             assertThat(jdbc.queryForObject("SELECT count(*) FROM gameweek WHERE season_id=?", Integer.class,
                     SEASON_ID)).isEqualTo(38);
             assertThat(jdbc.queryForObject("SELECT count(*) FROM fixture WHERE season_id=?", Integer.class,
@@ -2333,12 +2335,12 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
             Map<String, Long> catalogueWritesAfterFirstCycle = compatibilityCatalogueWriteCounts();
             assertThat(catalogueWritesAfterFirstCycle).containsExactlyInAnyOrderEntriesOf(Map.of(
                     "team/INSERT", 20L, "team/UPDATE", 0L,
-                    "player/INSERT", 657L, "player/UPDATE", 0L,
+                    "player/INSERT", (long) catalogueSize, "player/UPDATE", 0L,
                     "gameweek/INSERT", 38L, "gameweek/UPDATE", 0L,
                     "fixture/INSERT", 380L, "fixture/UPDATE", 0L));
             assertThat(jdbc.queryForObject("SELECT cardinality(final_attempt_required_player_ids) FROM "
                     + TABLES.gameweekStatSync() + " WHERE season_id=? AND gameweek=3", Integer.class,
-                    SEASON_ID)).isEqualTo(657);
+                    SEASON_ID)).isEqualTo(catalogueSize);
             assertThat(jdbc.queryForObject("SELECT cardinality(final_attempt_outstanding_player_ids) FROM "
                     + TABLES.gameweekStatSync() + " WHERE season_id=? AND gameweek=3", Integer.class,
                     SEASON_ID)).isOne();
@@ -2537,11 +2539,11 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
             }
             assertThat(compatibilityCatalogueWriteCounts()).isEqualTo(catalogueWritesAfterCorrection);
 
-            System.out.printf("UNIT6_MULTI_FIXTURE_SYNTHETIC gameweek=3 fixtures=%d clubs=20 cataloguePlayers=657 "
+            System.out.printf("UNIT6_MULTI_FIXTURE_SYNTHETIC gameweek=3 fixtures=%d clubs=20 cataloguePlayers=%d "
                             + "sourceParticipants=%d initialHistoryGets=%d resumeHistoryGets=%d "
                             + "sourceOnlyRetries=%d noopHistoryGets=%d correctionPfsUpdates=%d "
                             + "catalogueWritesFirst=%s catalogueWritesCorrection=%s readerFinalizedAfterCorrectionAndNoop=%s%n",
-                    setup.fixtureIds().size(), setup.participantIds().size(), initialHistoryGets,
+                    setup.fixtureIds().size(), catalogueSize, setup.participantIds().size(), initialHistoryGets,
                     resumeHistoryGets, sourceOnlyRetries, noOpHistoryGets,
                     writesAfterCorrection.getOrDefault("player_fixture_stats/UPDATE", 0L)
                             - writesBeforeCorrection.getOrDefault("player_fixture_stats/UPDATE", 0L),
@@ -4756,7 +4758,12 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
             throw new IllegalStateException("Expected a controlled ten-fixture GW3 source population");
         }
         byte[] fixtureSource = JSON.writeValueAsBytes(schedule);
-        byte[] checkedBootstrap = markGameweekChecked(markAllGameweeksUnchecked(bootstrap), 3);
+        Set<Integer> catalogueIds = new java.util.TreeSet<>(participantIds);
+        for (JsonNode player : JSON.readTree(bootstrap).path("elements")) {
+            if (catalogueIds.add(player.path("id").asInt())) break;
+        }
+        byte[] checkedBootstrap = markGameweekChecked(
+                markAllGameweeksUnchecked(bootstrapPlayers(bootstrap, catalogueIds)), 3);
         byte[] live = liveForGameweekParticipants(eventThreeLive, participantsByFixture);
         fetch.setSources(checkedBootstrap, fixtureSource, live, eventFourLive);
         historyPages.forEach(fetch::setPlayerPage);

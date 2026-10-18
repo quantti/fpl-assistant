@@ -1,5 +1,10 @@
 # Owned-sync memory incident — 2026-09-15
 
+Historical evidence only: on 2026-10-18 the owner removed the warm-start pressure test and its
+`docs/diagnostics/owned-runtime-budget.gradle` launcher, with no manual replacement. The old
+measurements/reproduction below remain a record of the stated revision, not a current release
+gate or runnable command. Full-size warm-start memory/throughput is no longer checked by CI.
+
 ## Epoch 42 after PR #103: initial work drained, verification not reached
 
 The owner attended the epoch-42 run from 15:36 to 16:20 UTC; epoch 40 had stopped after three

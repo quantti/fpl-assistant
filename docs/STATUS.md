@@ -1,5 +1,46 @@
 # Status — Phase 1
 
+## Actions budget — lightweight PR verification (2026-10-18; local)
+
+Owner-selected policy removes full backend CI from PRs: targeted local tests before push,
+cheap PR routing/shell checks and affected frontend checks, full retained master verification
+before deploy. Local evidence is self-reported, not a claim made by green PR CI. A narrow
+root-docs allowlist makes docs-only master pushes a no-op without deploy; runtime strategy
+Markdown remains code-bearing. Manual master redeploy always runs full verification; other
+refs cannot deploy. Master test runs no longer share a concurrency group, so docs-only runs
+cannot replace pending code verification. Two offline routing methods (including range/rename/
+large-diff subcases) and 17 shell regressions pass; no hosted CI or deployment was started.
+The [budget plan](superpowers/plans/2026-10-18-github-actions-budget.md) and
+[test audit](superpowers/plans/2026-10-18-backend-test-pruning.md) record the evidence and the
+owner's subsequent instruction to delete four named large workloads, not create manual tests.
+Those four cases, the warm-start-only class/launcher and newly orphaned helpers are now removed;
+all twelve other admission/progress cases remain. Local compilation and 35 retained progress,
+publication and end-to-end cases pass against disposable 127.0.0.1:55432 under a 1536 MiB
+no-swap scope and host-memory stop guard. Full combined-scale resource bounds are deliberately
+no longer checked; the old memory report is marked historical. No manual/tagged workload was added.
+Seven low-value cases and orphaned test-only plumbing are removed; schedule table guards now
+protect setup and cleanup, and notification JSON identity/status remains explicitly checked.
+Three fixed solver seeds replace twenty random repetitions. The 67 affected/retained cases
+pass locally with dummy AI keys and the same guarded disposable DB; no full suite was run.
+Runtime scheduling is now tested through existing Mockito executor interception, without real
+minute waits or production changes; actual cadence and callbacks remain asserted. The collector
+correction case keeps its ten fixtures but selects forty participants plus one unrelated player,
+not 657 catalogue pages; full-roster smoke coverage remains independently. All 70 runtime/collector
+cases and an 8-case targeted repeat pass. Local runtime class time was 1.251s and the compact
+collector case 7.260s; old CI timings are not a controlled same-host comparison.
+Integrated review found an out-of-order master deployment risk (3/3). A fresh master ancestry/
+content guard now runs inside the deployment slot, rejecting superseded application revisions
+but allowing only later allowlisted docs. Offline reversed-completion/docs/invalid-ref guards,
+17 shell cases and YAML parsing pass. The initial rollout must drain older workflow runs;
+GitHub pending-job replacement may still require a manual master redispatch for an undelivered
+latest release. No automatic retry/deployment service was introduced.
+The source range through `0e21b98` passed Sol/Astra/Luna re-review (3/3 CLEAN, no remaining
+findings/advisories). The integrated 12-class local run passes 166/166 with no failures/errors/
+skips; routing/shell checks and YAML parsing also pass. Full-suite/hosted verification remains
+unexecuted and no remote write occurred. Code/test content is frozen at that reviewed/tested
+revision; the subsequent closeout is documentation only. Publication needs separate approval
+and a check that older unpatched master/deploy runs have drained.
+
 ## Price forecasts — importer coexistence and activation (2026-10-18)
 
 PR #170 merged at `757bd13`; master test/deploy run `39153387820` passed. The

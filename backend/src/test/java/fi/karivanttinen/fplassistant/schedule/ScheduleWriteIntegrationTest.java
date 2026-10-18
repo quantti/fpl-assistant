@@ -4,6 +4,7 @@ import java.time.OffsetDateTime;
 import java.util.List;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -24,8 +25,15 @@ class ScheduleWriteIntegrationTest {
     @Value("${fpl.schedule.gameweek-table-name}") String gameweekTable;
     @Value("${fpl.schedule.fixture-table-name}") String fixtureTable;
 
+    @BeforeEach
+    void requireIsolatedTables() {
+        assertThat(gameweekTable).endsWith("_test");
+        assertThat(fixtureTable).endsWith("_test");
+    }
+
     @AfterEach
     void cleanUp() {
+        requireIsolatedTables();
         jdbc.update("DELETE FROM " + gameweekTable + " WHERE season = ?", SEASON);
         jdbc.update("DELETE FROM " + fixtureTable + " WHERE season = ?", SEASON);
     }
