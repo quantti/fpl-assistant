@@ -1,6 +1,6 @@
 # Backend test audit and bounded pruning plan
 
-**PROGRESS:** Task 4/5 done — CI routing, four workload deletions, small pruning and test-only speedups verified; integrated final review pending.
+**PROGRESS:** Task 5/5 done — source gate CLEAN (Sol/Astra/Luna 3/3), integrated focused run 166/166 passed; no remote publication/CI yet.
 
 ## Owner decision and scope
 
@@ -234,4 +234,8 @@ measurement was run; this report does not authorize deleting unnamed tests.
 Evidence: JUnit artifacts for runs `39023107516`, `39024163381`, `39136986856`; source files named
 above; indexed inventory and scripts in `/tmp/fpl-actions-usage-20261018/` (temporary local
 research, not durable publication). The earlier Actions budget plan contains billing caveats and
-source links. No tests were deleted, skipped, run, committed, pushed or merged by this audit.
+source links. The initial audit did not modify tests or run CI. Implementation outcomes are recorded in the
+Actions budget plan: four workloads and seven small cases deleted, solver repetitions fixed,
+wall-clock waits/collector roster reduced, all committed locally. The exact source range through
+`0e21b98` passed three-reviewer re-review and 166 integrated focused cases. No test was moved to
+manual acceptance and no full suite, remote CI, push or merge was performed.

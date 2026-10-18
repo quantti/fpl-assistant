@@ -1,6 +1,6 @@
 # GitHub Actions budget: measured use and reduction plan
 
-**PROGRESS:** Task 4/5 done — CI routing and scoped test pruning/speedups verified; integrated final review pending.
+**PROGRESS:** Task 5/5 done — implementation locally committed, three-reviewer code gate clean and 166 integrated focused cases passed; remote publication/CI not performed.
 
 ## Goal and scope
 
@@ -381,7 +381,17 @@ The singleton Postgres-for-docs advisory is intentionally deferred: the first-ve
 already accepts that small setup cost, with no extra classifier job/framework. GitHub's pending
 job replacement still means a latest desired release may need manual master redispatch rather
 than an automatic retry service. Drain old workflow versions before first rollout; they do not
-gain this guard retroactively. Integrated re-review and final focused verification remain pending.
+gain this guard retroactively.
+
+Task 5: the complete source range `757bd13..0e21b98` passed the Sol/Astra/Luna code re-review
+(3/3, CLEAN, no confirmed findings/advisories, exit 0). At that exact source revision the combined
+12-class focused backend run passed **166/166, 0 failed/errors/skipped** in 4m10s; routing tests,
+all 17 shell cases, YAML parsing and diff checks also pass. The full backend suite, frontend
+build/install and actual GitHub routing/deploy were not run locally. No production Java changed,
+no remote writes/CI runs were made, no Docker context was globally changed and the existing
+local test container was not reset. This final closeout changes documentation only; code/test
+content remains the reviewed and tested `0e21b98` state. Push/PR/merge/deploy require separate
+publication authorization and the old-workflow drain preflight.
 
 Reproduction sources: GitHub REST run/job/commit/compare/PR-file/artifact/cache metadata, the
 three linked/specified JUnit artifacts, and the checked-in workflows/tests. Raw research JSON,

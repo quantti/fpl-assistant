@@ -34,6 +34,12 @@ but allowing only later allowlisted docs. Offline reversed-completion/docs/inval
 17 shell cases and YAML parsing pass. The initial rollout must drain older workflow runs;
 GitHub pending-job replacement may still require a manual master redispatch for an undelivered
 latest release. No automatic retry/deployment service was introduced.
+The source range through `0e21b98` passed Sol/Astra/Luna re-review (3/3 CLEAN, no remaining
+findings/advisories). The integrated 12-class local run passes 166/166 with no failures/errors/
+skips; routing/shell checks and YAML parsing also pass. Full-suite/hosted verification remains
+unexecuted and no remote write occurred. Code/test content is frozen at that reviewed/tested
+revision; the subsequent closeout is documentation only. Publication needs separate approval
+and a check that older unpatched master/deploy runs have drained.
 
 ## Price strategy — KAR-76 implementation (2026-10-18)
 
