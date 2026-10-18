@@ -1,6 +1,6 @@
 # Behavior-first test audit: research and proposed next pass
 
-**PROGRESS:** First audit and approved A1/A2/S1 cleanup complete (15/15 targeted cases); next bounded audit authorized.
+**PROGRESS:** Two bounded audits and approved A1/A2/S1 cleanup complete (15/15 changed-class cases); further candidates await approval.
 
 ## First-pass outcome
 
@@ -10,8 +10,10 @@ prompt-contract classes and the single importer-startup path below. No unconditi
 removal was justified. The owner subsequently approved trimming the five prompt expectations
 and removing only the disconnected mock, keeping the real startup refusal. Commit `83e2413`
 implements that cleanup; all 15 cases in the three changed classes pass locally. The default-OFF
-consolidation remains conditional. The owner approved continuing to one further bounded audit;
-additional deletions and remote publication remain separate decisions.
+consolidation remains conditional. The authorized follow-on audited only five receipt-batching
+cases: retain the real-incident regression, with proposals to reduce one discovery fixture from
+657 to 501 and replace a prepared-statement count with the existing execution counter. Those
+proposals are not implemented; additional changes and remote publication remain separate decisions.
 
 ## Scope and constraints
 

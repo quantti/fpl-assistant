@@ -7,7 +7,9 @@ The [source-backed plan](superpowers/plans/2026-10-18-behavior-first-test-audit.
 Owner-approved cleanup removes five duplicated prompt expectations and a disconnected JDBC mock,
 not the invalid-opt-in startup-refusal test. All 15 cases in the three changed classes pass locally;
 no full suite or hosted CI was run. Code commit `83e2413` remains local, with no push or PR.
-Further audit is authorized; further test deletion is not assumed.
+The follow-on read-only pass covered five receipt-batching cases, retaining the real cold-start
+incident regression. A 657→501 discovery fixture reduction and correcting a preparation-vs-execution
+counter are proposals only; no further test deletion or remote publication is assumed.
 
 ## Actions budget — lightweight PR verification (2026-10-18; local)
 

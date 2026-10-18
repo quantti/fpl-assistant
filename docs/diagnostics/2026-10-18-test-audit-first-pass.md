@@ -1,6 +1,6 @@
 # First bounded test-audit pass
 
-**PROGRESS:** First bounded audit and owner-approved A1/A2/S1 cleanup complete; 15/15 targeted cases passed.
+**PROGRESS:** Two bounded audits and approved A1/A2/S1 cleanup complete; 15/15 changed-class cases passed; further candidates remain proposals.
 
 Source revision: `96caea7c123ed64c66a6845b45e2e31234f8345f` (PR #173).
 [Audit plan](../superpowers/plans/2026-10-18-behavior-first-test-audit.md).
@@ -215,3 +215,50 @@ No failed test run is omitted. The committed code was compared against the teste
 parent-reviewed for the approved scope. Test-first red was inapplicable to removing redundant
 checks without changing production behavior. No full suite, hosted CI, live API/DB access, new
 independent panel, push or PR was performed.
+
+## Follow-on bounded audit: receipt batching
+
+Source identity: `e1ff25dd688d7aa00b15e1b0092ec453ad29b978`; collector/store code is unchanged from
+`96caea7`. Scope is exactly the five adjacent cases at
+`CoalescedPlayerHistoryCollectorIntegrationTest.java:2133–2294`, their datasource recorder and
+lease/setup helpers, and the store's population/live receipt batching methods and callers.
+Other collector/finality scenarios were not audited. No further tests or builds were run here.
+
+The [cold-start implementation record](../STATUS.md#importer-cold-start-receipt-batching-2026-10-17-implementation-record)
+identifies a real production population-transaction timeout. Its 65-fixture shape and 4 ms/write
+latency made the old implementation fail; the recorded fixed run took about 0.54 s. This is
+historical evidence, not a new timing or evidence that the current full collector class is fast.
+It explains why a scale-shaped case here is not automatically a disposable benchmark.
+
+| Method | Unique defect/contract | Decision |
+| --- | --- | --- |
+| `coldLeaguePopulationFitsBoundedTransactionWithDatabaseRoundTripLatency` | Per-row population writes held the runtime fence until timeout. Covers 65 fixture markers, 2,015 participants and 4,030 discovery receipts under a bounded transaction. | Keep the real-incident shape and latency; do not shrink it under a claim of equivalent coverage. Improve its measurement below. |
+| `liveEventParticipantsAndAppearanceReceiptsUseBoundedBatches` | Live-event writes use a different path with participant and appearance evidence. Fixing population batching alone does not fix it. | Keep: real execution counter, 800 participants across ten fixtures and typed appearance receipt counts. |
+| `populationBatchesPreserveReceiptOrderingAndUnchangedFingerprint` | A batching rewrite can overwrite a newer source/generation or unnecessarily rewrite an unchanged population marker. | Keep: those SQL conflict predicates are not checked by row totals or query counts. |
+| `populationBatchFailureRollsBackEarlierBatches` | A failure on write execution two must roll back the successful first chunk, not leave partial receipts. | Keep: real wrapped datasource/transaction and before/after receipt snapshot. 501 crosses the current 500-row boundary minimally. |
+| `discoveryCandidateReceiptsUseBoundedBatchesAndSkipExistingIds` | Candidate discovery must not promote participants or rewrite existing IDs on retry. | Keep the method; its 657-row fixture has a smaller equivalent boundary candidate below. |
+
+**B1 — optional fixture reduction, high static confidence:** the last method can use **501 rather
+than 657 IDs**, updating its two count expectations. `OwnedSyncStore.java:63,1355–1359` fixes the
+batch size at 500: both inputs exercise exactly two discovery batches and the retry/skip path,
+while participants remain empty. No domain-specific 657-player requirement was found in that
+method or its referenced membership plan. This removes 156 receipt rows, not a test or a database
+round trip. No material CI saving is claimed, and it has not been edited or verified.
+
+**B2 — correct the cold-test metric, high static confidence:** its `receiptWrites` variable counts
+`recording.statements()`, which logs SQL at `prepareStatement`/`prepareCall`, but labels that count
+“database write round trips”. Reusing a prepared statement for multiple executions can invalidate
+that equivalence. The recorder already counts actual receipt executions in
+`receiptWriteExecutions`, which the adjacent live-event test uses. Prefer that existing counter
+for the same <=20 bound; preserve latency, transaction timeout and all row assertions. This is an
+oracle correction, not a reason to delete the incident regression, and is not implemented yet.
+
+The recorder is genuinely in this store's datasource/transaction path, unlike S1's disconnected
+JDBC mock. Its `discoveryCandidateBatchCount` helper nevertheless identifies SQL by a comment
+marker: changing that comment alone can fail tests without changing behavior. That is a bounded
+maintainability follow-up, not proof of no value or authority for a class-wide helper rewrite.
+
+**Stop:** five cases read, zero whole-test deletions justified; B1/B2 are proposals only.
+The injected delays are 4 ms per intercepted receipt execution, not a hidden multi-minute wait.
+Other finality/collector families, production handback policy and the rest of the 206-file test
+tree remain unaudited. Further deletions or scope expansion require the next owner decision.
