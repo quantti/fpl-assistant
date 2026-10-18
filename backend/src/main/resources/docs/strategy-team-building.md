@@ -1,7 +1,7 @@
 ---
 title: FPL Team Building
 kind: reference
-valid_from: 2026-08-21
+valid_from: 2026-10-18
 ---
 
 # FPL Team Building
@@ -39,6 +39,14 @@ Price points change each season; the method is to classify each price band and t
 - **Midfielders**: 4.5 = fodder; 5.0–6.5 = value enablers; 7.5–9.0 = the sweet spot (most proven assets live here); 10+ = premium tier.
 - **Forwards**: historically the weakest value position (points-per-million); cheap forwards underperform cheap mids/defs because mids add clean-sheet and assist value. 7.0–8.5 mid-price forwards are the target band; 10+ for the elite talisman. Forwards are explosive but inconsistent — expect 2–5 point games with haul upside.
 - **Core principle**: midfielders generally outscore forwards per million because of clean-sheet and assist scoring; spend where the rules reward points, not on position labels.
+
+## Transfer flexibility and price headroom
+
+Build routes between price points, not just an attractive starting fifteen. The money available for one replacement is the outgoing player's personal selling price plus the bank, not their public market price or the squad's headline value. If the personal selling price is unknown, a future transfer route is conditional, not a verified budget calculation.
+
+A deliberate bank buffer can keep an intended move affordable after a £0.1m rise or a sale-price fall; choose its size against likely routes and the points forgone by leaving it unspent, not a mandatory fixed amount. When a move is close to the limit, check dated official Price Changes evidence and weigh earlier action against waiting for team news. A historical rise alone is not a forecast, and a useful player should not be sold only to protect the displayed squad value.
+
+See FPL Price Changes and Team Value for profit rounding and realisable funds. Higher market value can improve flexibility, but not all of a gain is spendable or accessible without selling players worth keeping.
 
 ## Budget players and enablers
 
