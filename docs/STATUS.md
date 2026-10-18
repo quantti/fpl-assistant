@@ -91,7 +91,12 @@ ranking, pick/squad consumers, prompts, PFS correction guards, horizon and bound
 recovery. An expanded run exposed a custom test fixture missing the new capture column; custom
 writer fixtures now run the same schema initializer and the rerun passed. No local full suite,
 live-model evaluation, production write, activation or deployment was performed. Publication
-and full PR CI remain separate gates.
+and hosted verification remain separate gates. After the owner's requested rebase onto master `96caea7`,
+the same focused selection passed **309/309 across 35 classes, 0 failed/skipped** at `83bf85d`;
+the lower count follows master's deliberate test pruning. Runtime code was unchanged by rebase;
+the prompt-test conflict retained master's deletion and this change's new contract assertion.
+Current master policy runs lightweight PR checks and the full retained suite before deployment.
+The owner explicitly authorised PR publication and squash merge after the rebase and green checks.
 
 ## Price strategy — KAR-76 implementation (2026-10-18)
 
