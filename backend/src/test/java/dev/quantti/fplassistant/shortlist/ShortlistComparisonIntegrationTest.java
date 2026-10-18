@@ -270,12 +270,13 @@ class ShortlistComparisonIntegrationTest {
         assertThat(archived.reason()).contains("Historical");
     }
 
-    @Test void unfinishedMatchDoesNotSuppressTheCompletedMatchModel() {
+    @Test void unfinishedMatchDoesNotBlockPlayerDataOrTheIndependentTeamModel() {
         int fixture = comparison.read(OWNER).rows().getFirst().history().getFirst().id();
         jdbc.update("UPDATE " + fixtures + " SET started=true,finished=false WHERE season=? AND id=?", SEASON, fixture);
         var standardRanking = ranking.load(prices.latestCapture().orElseThrow(),
                 seasons.metricSeasons(seasons.resolve()));
-        assertThat(standardRanking.comparisonCoverage().complete()).isFalse();
+        assertThat(standardRanking.comparisonCoverage().complete()).isTrue();
+        assertThat(standardRanking.metricEvidence()).contains("In progress: 1");
         assertThat(comparison.read(OWNER).rows().getFirst().forecast().expectedCleanSheets()).isPositive();
     }
 
