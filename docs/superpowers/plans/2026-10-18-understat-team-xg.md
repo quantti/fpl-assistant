@@ -1,6 +1,6 @@
 # Use Understat for all team xG/xGA
 
-**PROGRESS:** Task 2/3 done — direct team consumers and per-season failure isolation pass focused backend/frontend gates; final App-shell validation/audit closeout remains.
+**PROGRESS:** Task 3/3 done locally — consumers `4f2633a`, focused verification and collection audit complete; publication/live capture/activation remain separately authorised.
 
 ## Contract
 
@@ -85,3 +85,32 @@ Code acceptance requires truthful one-provider team metrics, actual parser/store
 consumer tests, no lost player validation, no new dependencies or schema changes to Tapas tables,
 and committed verified slices. Live acceptance separately needs approved initial capture and
 staging inspection. Missing capture is explicit, not a reason to silently retain the old model.
+
+## Local outcome
+
+Consumer `4f2633a` removes the team-only player aggregation/helpers and xA/xGI output, preserves
+player proof and the existing ClubRates mathematics, and propagates Understat sample/capture
+metadata and n/a reasons. Parent reviewed both committed slices and the integrated source/diff;
+no blocking finding remains in that bounded review, not an independent approval.
+
+Focused green receipts: 101 source/player/shortlist tests together; 73 pick/squad/model tests;
+22 tests covering PFS proof and two touched collector methods; prompt/DataAge checks; 61 frontend
+tests, lint, format and TypeScript/Vite. Eight synthetic real-App Chromium cases cover
+3840/1920/1440/390 × light/dark: 48px rows, full width, 8 sortable headers, inline TGW,
+accessible ellipsis/n/a, two-sentence source summary and 44px touch controls. Details alone grow.
+No live account/backend browser claim, local full suite or fresh CI claim.
+
+| Collection | Decision |
+| --- | --- |
+| FPL core/player histories | Keep player ability, minutes, DefCon and publication evidence; remove only the team SUM/MAX reader dependency. |
+| Daily price/availability/playing chance | Keep current identity, cost and flags. |
+| Schedule/deadlines | Keep editable horizons, blanks/doubles and fixture identity. |
+| Understat league results | Two new requests; atomic per season, failed season retained without blocking the other. Scheduler OFF. |
+| football-data/vaastav history | Keep existing historical consumers; score consolidation needs a separate change. |
+
+The 600-player/3000-PFS probe uses 17 queryForList calls for both 1 and 20 saved players
+(279/240ms in this run). Full-pool player evidence is still read: narrowing shortlist reads is a
+possible follow-up, not a claimed collection saving. No net FPL HTTP reduction or collector
+shutdown is claimed. Provider-use permission/reliability, approved initial cache plus fresh
+FPL price/schedule captures, exact-head CI/review and publication remain outside local acceptance.
+See [STATUS](../../STATUS.md) for the receipt context; browser artifacts `/tmp/understat-app-shell/`.

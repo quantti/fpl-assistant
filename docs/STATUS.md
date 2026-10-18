@@ -1,6 +1,6 @@
 # Status — Phase 1
 
-## Understat consumers — locally verified, final shell check pending
+## Understat consumers — locally verified at `4f2633a`, not published
 
 The consumer migration replaces the RankingMetrics club SUM/MAX/finality bridge
 with one Understat aggregation inside the existing read snapshot. Player publication/evidence
@@ -13,7 +13,12 @@ Owner released the test database/backend slot before validation resumed. Guarded
 focused runs now pass: 101 core/source/player/shortlist tests together (0 failed/skipped),
 73 pick/squad/ClubRates/HorizonScorer tests, 22 tests covering PFS proof and two touched collector methods,
 and the connected prompt/DataAge checks. Frontend: 61 tests, lint, format and TypeScript/Vite pass.
-The full-App shell browser check remains pending. No local full suite was run. Initial connected
+The real App/ChatView/sidebar/provider shell also passes 8 Chromium cases: 3840/1920/1440/390,
+light and dark; touch emulated at 390. Headers/player rows stay 48px before/after expansion,
+8 sortable headers, single-line names/TGW and 44px touch controls hold. Desktop content widths
+are 3548/1628/1148px, mobile 358px. The n/a reason is accessible; source summary remains two
+sentences with distinct FPL and Understat sample/capture dates. Synthetic auth/API only, no live
+account or backend claim; screenshots/receipts `/tmp/understat-app-shell/`. No local full suite was run. Initial connected
 failures exposed a test fixture leaving UX-2026 captures behind; explicit cleanup fixed isolation.
 Pick fixtures now supply unavailable daily identities for all opponents instead of assuming their
 FPL ids can be guessed from Understat. No production fallback was added to satisfy synthetic tests.
@@ -30,6 +35,10 @@ legacy DefCon suppression in ACTIVE mode and historical archives remain. Possibl
 remove unnecessary full player reads from shortlist, consolidate current-season historical scores
 from Understat instead of football-data, and address any separate player proof compatibility gap.
 No unrelated collector was disabled, no production capture or remote publication was performed.
+Understat scheduling remains OFF. Provider-use terms/SLA, approved initial capture plus fresh
+FPL price/schedule evidence, and exact-head CI/review remain publication/rollout gates. Staging
+still runs `9edb0c3`; these local checks do not describe its current team model. Shared test
+container was left running; browser/Vite fixtures were stopped and the heavy-work slot released.
 
 ## Understat team metrics — storage slice (local)
 
