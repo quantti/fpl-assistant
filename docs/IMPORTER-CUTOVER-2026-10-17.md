@@ -113,11 +113,11 @@ Its 89 focused tests and both independent gpt-6.1-sol reviews passed. PR CI39116
 passed. On explicit merge/deploy approval it was squash-merged as `1d105c0` at 10:09:36;
 master CI/deploy39118150432 passed. At 10:33:51 the single 1024 MiB machine's image named
 that exact GH_SHA, public health was UP and persisted/configured mode remained OFF110.
-The latest request did not perform another activation. Owned health correctly remains
-503/DOWN; the correction still needs an attended guarded reactivation and actual finality/
-monitor-recovery evidence before the full cutover can be called complete.
+At that 10:33 checkpoint only merge/deploy had been authorised, so mode stayed OFF110
+and owned health remained 503/DOWN. The later separately authorised activation and
+finality/monitor-recovery evidence are recorded above.
 
-## Release and handoff
+## 17 October — release and handoff
 
 - Budget PR #165 merged becef01; master CI/deploy 39057123698 passed.
 - Handoff first hit SecurityConfig denyAll: 401 with operator token, 403 even with real user
@@ -133,7 +133,7 @@ monitor-recovery evidence before the full cutover can be called complete.
   independent daily price/schedule captures; legacy DefCon/startup-price remained disabled.
   Handoff flag was disabled after use.
 
-## Actual first-cycle result
+## 17 October — actual first-cycle result
 
 - Importer-specific heartbeat appeared; producer INCREMENTAL_CORE run generation 342122.
 - Initial source span began 22:40:01; compatibility catalogue receipt published 22:40:23.
@@ -152,7 +152,7 @@ monitor-recovery evidence before the full cutover can be called complete.
   lock contention under cold full-league data. Exact blocking SQL/transaction cause has not
   been proven; do not simply increase timeouts or rerun an unbounded production cycle.
 
-## Rollback verified
+## 17 October — rollback verified
 
 As the first cycle failed its acceptance gate, the approved rollback was executed:
 stop importer via OFF/disabled config, restore the inert operator surface, POST retire for
@@ -166,7 +166,7 @@ manual recovery, receipt deletion or role-grant change. Reader visibility after 
 incremental discovery is not asserted merely from retained physical row counts; a subsequent
 repair must inspect it through the real proof boundary.
 
-## Kuma replacement requested by owner
+## 17 October — Kuma replacement requested by owner
 
 The old paused owned-sync monitor ID18 had briefly been renamed while preparing the new
 configuration. The owner explicitly asked to delete the old Kuma monitor, not source code.
@@ -182,5 +182,6 @@ An independent monitor was created first, then ID18 was deleted through Kuma's U
 - Kuma itself is on the existing Plex server; no VPS/new server/subscription was added.
   End-to-end email inbox reception remains owner-unconfirmed; earlier SMTP test was accepted.
 
-No new importer repair/production retry is performed as part of deleting the old monitor.
-The activation task is blocked on the first-cycle transaction timeout, not completed.
+No importer repair/retry was performed as part of that monitor deletion. At this
+17 October checkpoint activation was still blocked by the first-cycle timeout; the later
+reviewed corrections and successful activation are recorded above.
