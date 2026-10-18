@@ -34,6 +34,11 @@ spring:
 # to run at 02:00 UK would otherwise call FPL's API for real. All three classes are covered by
 # tests that construct them directly.
 fpl:
+  understat:
+    capture-table-name: fpl_understat_capture_test
+    match-table-name: fpl_understat_match_test
+    base-url: http://127.0.0.1:1
+    scheduled: false
   owned-sync:
     mode: "OFF"
     fixture-table-name: fpl_fixture_sync_test

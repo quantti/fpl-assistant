@@ -29,8 +29,8 @@ public final class DataAge {
             + "is unavailable; row writes can update defensive contribution alone. "
             + "Fixture dates describe the sample, not its refresh.";
 
-    public static final String RANKING_METRIC_REFRESH = "Metric refresh: refresh times for this ranking "
-            + "sample are unavailable; season-wide receipts do not establish its refresh.";
+    public static final String RANKING_METRIC_REFRESH = "Metric refresh: FPL player refresh times for this ranking "
+            + "sample are unavailable; season-wide receipts do not establish them.";
 
     /**
      * Actual owned-source and verified-publication times. The counts are explicit so legacy rows
