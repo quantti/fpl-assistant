@@ -96,6 +96,9 @@ supabase:
   service-role-key: ${SUPABASE_SERVICE_ROLE_KEY:}
 
 fpl:
+  price-prediction:
+    enabled: ${PRICE_PREDICTION_ENABLED:false}
+    playing-season: ${PRICE_PREDICTION_PLAYING_SEASON:}
   owned-sync:
     # Ownership never activates implicitly. STAGING may fetch and validate into owned staging
     # tables; only guarded ACTIVE can publish core/capture/PFS rows.

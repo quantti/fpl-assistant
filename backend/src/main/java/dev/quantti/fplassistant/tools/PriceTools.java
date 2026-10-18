@@ -48,9 +48,12 @@ public class PriceTools implements FplTool {
             own counters for the change this gameweek and since the season started. The name
             may be a surname, a full name, or a name followed by the club as FPL writes it —
             short name or three-letter code ("Hall Newcastle", "Fernandes Man Utd",
-            "Fernandes MUN"); accents are optional. The first row is today's price (or the latest captured) —
-            use this for "what does X cost now" as well as for buy/sell timing and team-value
-            questions. The trend is descriptive, not a prediction of future movement. FPL
+            "Fernandes MUN"); accents are optional. The first row is the latest dated daily observation.
+            Use getPlayerPriceForecast for current market price/upcoming forecast and getRecentPriceChanges
+            for recent actual events, if those tools are available. If absent or unavailable, this tool
+            supplies only a dated observation, not proof of current price or an upcoming rise.
+            Never infer exact overnight events across missing days. The trend is descriptive,
+            not a prediction of future movement. FPL
             changes prices once a day at 00:00 UK; the reply states which day's capture it
             comes from, and if that is not today, say so.
             """)

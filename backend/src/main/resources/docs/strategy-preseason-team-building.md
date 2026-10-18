@@ -1,7 +1,7 @@
 ---
 title: FPL Pre-Season Team Building
 kind: reference
-valid_from: 2026-08-21
+valid_from: 2026-10-18
 ---
 
 # FPL Pre-Season Team Building
@@ -20,14 +20,14 @@ Reference document on building an FPL squad from scratch before Gameweek 1: what
 - Friendlies run through July and August. The most useful games are in the final two weeks before the deadline, when first-choice line-ups appear and minutes totals become meaningful.
 - The Community Shield (typically mid-August, about a week before GW1) is the first competitive line-up signal for the two finalists.
 - The GW1 deadline is usually a Friday evening in late August, roughly half an hour before the opening fixture kicks off. All team news, injuries and last-minute moves must be finalised by then.
-- Prices and ownership move daily from reveal to deadline. Anything read more than a few days before the deadline is a snapshot, not a guarantee.
+- Player prices do not change before the season starts in response to transfer demand. Ownership, team news and draft preferences can change before GW1; do not mistake those changes for overnight price rises or falls. Check official launch prices and any newly added players rather than inferring a price move from popularity.
 
 ## Structure before names
 
 - Decide the framework first: formation (3-4-3 and 3-5-2 are the defaults), how many premiums, how much money goes to each line, and what the bench looks like.
 - Structure determines flexibility: which price points allow a single-transfer move, how quickly the squad can reach a player the meta moves towards, and how much a bad GW1 costs.
 - A common opening structure: a cheap but starting goalkeeper pair, four or five defenders who all start (at least two at £4.5m or below), a mid-priced midfield spine with one or two premium midfielders, and a forward line of one premium plus one or two value forwards.
-- Leave money in the bank if unsure: £0.5–2.0m of headroom absorbs the first price rise, a pre-season injury, or a structure change without taking a hit.
+- Leave a deliberate bank buffer when it preserves useful early-season transfer routes. Weigh that flexibility against the points sacrificed by not spending it; there is no mandatory buffer size. Preseason demand does not change launch prices, but a cushion can matter once the season's price changes begin.
 
 ## Template as the baseline
 
@@ -42,6 +42,12 @@ Reference document on building an FPL squad from scratch before Gameweek 1: what
 - Know the price points that open one-transfer moves: for example a £4.5m defender to £5.0–5.5m, a £6.0m midfielder to £7.5m, a £7.5m forward to £8.0m. Draft with those gaps in mind.
 - Bench policy: two philosophies — fodder bench (cheap, funds the XI) versus playing bench (rotation and injury cover, Bench Boost readiness). Most seasons start with a cheap bench and upgrade it for the Bench Boost window.
 - Avoid more than the minimum number of dead slots. Every non-playing bench player is a wasted slot across 38 gameweeks, even if a £4.0m defender saves money now.
+
+## Planning for prices after GW1
+
+The official Price Changes page introduced for 2026/27 becomes relevant once the season starts; it is not evidence of transfer-driven price moves before GW1. Plan which players could replace an initial pick and whether the bank could absorb a £0.1m rise without an unwanted second transfer. After buying, check personal selling prices rather than assuming that a player's current market price is the money you would receive.
+
+Once there is dated official price evidence, use it to time an otherwise justified move, not to chase ownership alone. Preserve the option to wait for team news when the plan remains affordable. See FPL Price Changes and Team Value for official forecast interpretation, selling-price rounding and the difference between market squad value and spendable funds.
 
 ## What pre-season information to trust
 
@@ -69,6 +75,6 @@ Reference document on building an FPL squad from scratch before Gameweek 1: what
 - Check the last round of friendlies for injuries and first-choice line-ups (minutes tracker, club sites, injury aggregators).
 - Check set-piece and penalty duties where uncertain — pre-season spot-kick misses rarely change the taker.
 - Check Community Shield line-ups and any cup or European commitments affecting GW1 minutes.
-- Re-check prices and ownership if the draft is more than a few days old.
+- Re-check official launch prices, newly added players, ownership and team news if the draft is more than a few days old; demand-driven nightly price changes have not started before GW1.
 - Set the bench order — auto-subs only replace starters who record zero minutes, and a one-minute cameo blocks the bench.
 - Decide the captain and vice-captain with the opening fixtures in mind.
