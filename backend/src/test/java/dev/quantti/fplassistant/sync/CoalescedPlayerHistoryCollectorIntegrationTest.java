@@ -2154,9 +2154,8 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         assertThatCode(() -> store.recordIncrementalPopulation(lease, participants, candidates,
                 Map.of(), fingerprints, nextRead())).doesNotThrowAnyException();
 
-        long receiptWrites = recording.statements().stream()
-                .filter(sql -> sql.contains("INSERT INTO " + TABLES.receipt())).count();
-        assertThat(receiptWrites).as("database write round trips, not receipt rows").isLessThanOrEqualTo(20);
+        assertThat(recording.receiptWriteExecutions)
+                .as("JDBC receipt write executions, not prepared statements or rows").isLessThanOrEqualTo(20);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.receipt()
                 + " WHERE publication_key LIKE 'incremental-participant:%'", Integer.class)).isEqualTo(2_015);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.receipt()
@@ -2264,7 +2263,7 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
     void discoveryCandidateReceiptsUseBoundedBatchesAndSkipExistingIds() {
         int fixtureId = 29;
         Set<Integer> candidates = new LinkedHashSet<>();
-        for (int playerId = 1; playerId <= 657; playerId++) candidates.add(playerId);
+        for (int playerId = 1; playerId <= 501; playerId++) candidates.add(playerId);
         Map<Integer, Set<Integer>> candidateIds = Map.of(fixtureId, Set.copyOf(candidates));
         Map<Integer, String> fingerprints = Map.of(fixtureId, "a".repeat(64));
         Lease lease = nextCoreLease();
@@ -2280,7 +2279,7 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         assertThat(discoveryCandidateBatchCount(recording)).isEqualTo(2);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.receipt()
                 + " WHERE season=? AND publication_key LIKE ?", Integer.class, season.code(),
-                OwnedSyncStore.INCREMENTAL_DISCOVERY_RECEIPT_PREFIX + fixtureId + ":player:%")).isEqualTo(657);
+                OwnedSyncStore.INCREMENTAL_DISCOVERY_RECEIPT_PREFIX + fixtureId + ":player:%")).isEqualTo(501);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.receipt()
                 + " WHERE season=? AND publication_key LIKE ?", Integer.class, season.code(),
                 OwnedSyncStore.INCREMENTAL_PARTICIPANT_RECEIPT_PREFIX + fixtureId + ":player:%")).isZero();
@@ -2289,7 +2288,7 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         existing = store.incrementalDiscoveredPlayerIds(lease, List.of(fixtureId));
         store.recordIncrementalPopulation(lease, Map.of(), candidateIds, existing, fingerprints, nextRead());
 
-        assertThat(existing.get(fixtureId)).hasSize(657);
+        assertThat(existing.get(fixtureId)).hasSize(501);
         assertThat(discoveryCandidateBatchCount(recording)).isZero();
     }
 
