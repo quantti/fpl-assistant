@@ -420,9 +420,17 @@ agent, a script, CI — it is refused outright. master deploys, so a push there 
 **It does not run the suite.** Until 2026-09-19 it reset the test container and ran
 `cleanTest test` on every push; six minutes and 1.2 GiB per push was too heavy for the cloud
 host. The division of labour now: run the tests you wrote or touched while developing
-(`./gradlew test --tests '…'`), and GitHub runs the whole suite on every pull request and again
-on the merge to `master`, where `needs: test` blocks a red deploy. A full local suite is still
-available by hand — see the memory-scoped command above — but nothing requires it.
+(`./gradlew test --tests '…'`) locally before pushing, recording the command and tested revision
+in the PR. Since the owner's 2026-10-18 budget decision, PR CI runs cheap routing/shell checks
+and frontend checks when affected, without PostgreSQL or Gradle. This does not establish that
+backend tests passed locally; that evidence is self-reported, not enforced by the push hook.
+Master runs the full retained default backend suite before deployment. A failed master test job
+blocks deploy. Docs-only master changes are a green no-op with no deployment; manual redeploy
+on master always runs the full gate, even after docs-only changes. Other refs cannot deploy.
+Master test runs do not share a concurrency group: a docs-only push must not cancel or replace
+pending code verification. Production deploys remain separately serialized.
+A full local suite is still available by hand — see the memory-scoped command above — but
+nothing requires it.
 `scripts/tests/pre-push-test.sh` keeps the stub-only contracts for the master guard and for
 `scripts/test-db.sh reset`; CI runs it.
 
@@ -430,7 +438,15 @@ available by hand — see the memory-scoped command above — but nothing requir
 `npm run format:check`, a few seconds — when the push changes something under `frontend/` and
 `npm` plus `frontend/node_modules` exist. A red check refuses the push. On a host without Node
 (the VPS) it prints one notice and lets the push through; the pull request's GitHub run executes
-the same two commands, so CI is the enforcement and the hook is the early warning.
+the same two commands when frontend/shared inputs changed, so CI is the enforcement and the
+hook is the early warning.
+
+CI scope classification is a narrow docs allowlist (`docs/**`, root `README.md`, `AGENTS.md`,
+`CLAUDE.md`), never runtime strategy Markdown under `backend/src/main/resources/docs/`.
+Unknown/missing change ranges select full master verification and frontend PR checks. The
+first version still starts master's disposable Postgres service for a docs no-op; it skips the
+application/toolchain steps instead of adding an always-running classifier job.
+Run the offline routing regressions with `python3 scripts/tests/ci-workflow-test.py`.
 
 `git push --no-verify` skips the hook entirely. That is git's escape hatch for a human who knows
 what they are skipping; treat it as bypassing branch protection, because that is what it is.

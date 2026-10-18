@@ -312,8 +312,13 @@ cgroup-v2 scope and host-memory stop threshold in `docs/DEVELOPMENT.md`; do not 
 supports hard memory limits. Stop only this project's idle daemons or test scopes, never another
 project's processes. Verify memory headroom before a full suite. **Nothing local runs the full
 suite for you** (owner decision 2026-09-19, too heavy for the cloud host): run the tests you
-wrote or touched while developing, and let GitHub run the whole suite on the pull request and
-again on the merge. A red PR run is a blocker, exactly as a refused push used to be.
+wrote or touched locally before pushing, and record the command and tested revision in the PR.
+Since the owner's 2026-10-18 budget decision, PR checks are lightweight: no backend suite or
+Postgres. A green PR does not prove local backend verification; that remains a contributor
+requirement. Master runs the full retained default backend suite before deployment. Docs-only
+master changes run a deliberate no-op and do not deploy; manual master redeploy always runs
+full verification. A red master test run blocks deployment, and red PR lightweight checks still
+block merging.
 
 ### Owned publication evidence (not activated)
 
@@ -369,13 +374,14 @@ serving API + frontend. Frontend built in a Docker multi-stage build, copied int
 >
 > `master` deploys. A push there runs `.github/workflows/deploy.yml` and a green run ships
 > straight to production — no review, no second pair of eyes. **Agents push a branch and open a
-> pull request. Always.** The same tests run on the PR; the owner merges.
+> pull request. Always.** PR checks are lightweight; master gates deployment with the full
+> retained suite. The owner merges.
 >
 > There is no branch protection to catch a mistake: GitHub refuses it for private repositories on
 > the Free plan (verified 2026-08-19 — the protection and rulesets APIs both answer 403 "Upgrade
 > to GitHub Pro"). The substitute is the `scripts/hooks/pre-push` hook, which refuses a master
 > push that has no terminal to confirm at — which is exactly the case for an agent. It no longer
-> runs the suite (2026-09-19); the pull request's GitHub run is the test gate. **Do not work
+> runs the suite (2026-09-19); local targeted tests precede push and master CI is the backend release gate. **Do not work
 > around it: never `git push --no-verify`, never re-point `core.hooksPath`,
 > never push to master "because the tests passed anyway".** If a push is refused, that is the
 > intended outcome, not an obstacle to route around.
@@ -383,13 +389,14 @@ serving API + frontend. Frontend built in a Docker multi-stage build, copied int
 **Deploying is `.github/workflows/deploy.yml`, not a manual command.** A push to `master` runs
 the suite against an ephemeral Postgres container and, if it passes, runs
 `flyctl deploy --ha=false --remote-only` and smoke-tests `/actuator/health` from outside. Pull
-requests run the tests only. `workflow_dispatch` re-deploys without a push. A manual
+requests run lightweight checks only. `workflow_dispatch` on master runs full verification and
+re-deploys without a push; other refs cannot deploy. Documentation-only pushes do not deploy. A manual
 `fly deploy` is for emergencies, and is the one path that can ship a red suite.
 
 Install the pre-push hook once per clone, on every host: `git config core.hooksPath scripts/hooks`.
 It needs only bash and git, so the VPS gets the master guard too. When a push touches `frontend/`
 and Node is installed it also runs `npm run lint` (ESLint) and `npm run format:check` (Biome);
-CI runs both on every pull request regardless. Existing violations are baselined in
+PR CI runs both when frontend/shared inputs changed; master application verification runs both. Existing violations are baselined in
 `frontend/eslint-suppressions.json` — fix new ones, never add to the baseline, and never run a
 blanket `eslint --fix` (it broke the build once; see `docs/DEVELOPMENT.md`).
 

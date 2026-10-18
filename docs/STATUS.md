@@ -1,5 +1,19 @@
 # Status — Phase 1
 
+## Actions budget — lightweight PR verification (2026-10-18; local)
+
+Owner-selected policy removes full backend CI from PRs: targeted local tests before push,
+cheap PR routing/shell checks and affected frontend checks, full retained master verification
+before deploy. Local evidence is self-reported, not a claim made by green PR CI. A narrow
+root-docs allowlist makes docs-only master pushes a no-op without deploy; runtime strategy
+Markdown remains code-bearing. Manual master redeploy always runs full verification; other
+refs cannot deploy. Master test runs no longer share a concurrency group, so docs-only runs
+cannot replace pending code verification. Two offline routing methods (including range/rename/
+large-diff subcases) and 17 shell regressions pass; no hosted CI or deployment was started.
+The [budget plan](superpowers/plans/2026-10-18-github-actions-budget.md) and
+[test audit](superpowers/plans/2026-10-18-backend-test-pruning.md) record the evidence and the
+owner's subsequent instruction to delete four named large workloads, not create manual tests.
+
 ## Price strategy — KAR-76 implementation (2026-10-18)
 
 The [price-prediction plan](superpowers/plans/2026-10-18-kar-76-price-predictions.md)
