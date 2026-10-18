@@ -1,5 +1,30 @@
 # Status — Phase 1
 
+## Importer appearance proof correction (2026-10-18; not deployed)
+
+PR #167's reviewed deployment completed run342123: 667/667 player pages, 4,550 VALID PFS
+pointers and GW5 FINALIZED. GW1–4/GW6 still refused finality because fixture-stats is not
+an appearance roster: played players can have BPS<=0 or be omitted entirely. The owner
+chose a safe pause for this follow-up. Authenticated retirement left OFF110, no active work
+or unresolved permits, public health UP; existing page/row/GW5 proof remains intact.
+Independent daily price/schedule jobs remain enabled; legacy writers remain disabled.
+
+The [bounded plan](superpowers/plans/2026-10-18-importer-appearance-proof.md) keeps LIVE
+positive-minute membership and explicit coverage of fixture-stat identities/contributors,
+without demanding a positive stat value for every played player. Only missing sides may
+use a prior incremental history proof: one fenced bulk read reuses `IncrementalPfsEvidenceSql`
+and matches season, fixture, gameweek, kickoff and both clubs. Direct fixture-stat sides
+are never overwritten. Missing, withdrawn, tampered or mismatched proof remains unknown;
+a contradictory fresh history page still prevents finality. Current bootstrap club is never
+a historical-side substitute. A genuinely cold omitted player may need its first page and
+a later cycle; no new receipt protocol, schema, request, cadence or timeout is introduced.
+
+Both BPS0/-1 regressions failed against the old code; an omitted-player integration case
+also stayed RETRY_SCHEDULED instead of finalizing on its second cycle. After correction,
+89 focused tests pass (64 collector integration, 25 fixture verification), including strict
+side-proof negatives, cold pending→finalized, actual reader-side coverage and failure cleanup.
+Independent review, full PR/master CI and a fresh guarded activation remain required.
+
 ## Importer cold-start receipt batching (2026-10-17; rollout pending)
 
 The first authorised handoff reached ACTIVE epoch 107, but run 342122 failed before its
