@@ -234,7 +234,7 @@ public final class PricePredictionWorker implements AutoCloseable {
 
     private void revoke() {
         permission.stop();
-        if (!revoked) {
+        if (!revoked && permission.revocationRequired()) {
             store.revokeAndDisable();
             revoked = true;
         }
@@ -244,14 +244,8 @@ public final class PricePredictionWorker implements AutoCloseable {
     public void close() {
         permission.stop();
         scheduler.shutdown();
-        boolean durableRevoked = false;
-        try {
-            store.revokeAndDisable();
-            durableRevoked = true;
-        } finally {
-            synchronized (this) {
-                revoked |= durableRevoked;
-            }
+        synchronized (this) {
+            revoke();
         }
     }
 }

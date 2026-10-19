@@ -1,6 +1,6 @@
 # KAR-76 — price strategy and official price forecasts
 
-**PROGRESS:** Original delivery merged as PR #170, full CI/deploy and reviewed production RAG ingestion complete. Owner-approved importer coexistence correction passes 292 focused tests; independent review, correction PR/CI and forecast activation remain. Forecasts remain disabled.
+**PROGRESS:** Original delivery/RAG complete; importer correction merged as PR #172 and activated on 18 October with first forecast/history captures verified. Owner-approved restart-continuity correction passes 85 focused cases locally; publication, review and initial migration rearm remain. Overnight/live-chat verification is still separate.
 
 ## Scope and decisions
 
@@ -282,3 +282,20 @@ The collector retains its existing bounded two-request-per-slot transport and se
 forecast lease/publication fences; it does not acquire core write ownership or alter the
 incremental importer's admission ledger. Inspect aggregate traffic/headroom before arming;
 the original legacy-runtime integration proposal is not silently applied to the new importer.
+
+### Restart-continuity amendment — 19 October 2026
+
+The owner rejected manual rearming on every routine deploy (up to ten a day). Normal shutdown
+must stop/drain only the departing process while preserving the operator's durable enabled
+choice. A fresh worker resumes at the next eligible slot, never replaying a missed slot or
+turning an explicitly disabled capture back on. Explicit durable disable and observed invalid
+configuration still revoke/fence publication and require deliberate rearming. This supersedes
+the original shutdown-revokes/rearm-every-deploy rule above, not the initial disabled default.
+
+The permission object now distinguishes a local lifecycle stop from latched configuration
+denial. Shutdown stops permission before draining the tick and revokes only for the latter;
+late HTTP results/publication callbacks are refused and lease release remains token-scoped.
+Two regressions failed before the change. Five focused classes pass 85/85 with no failures,
+errors or skips, including real-store restart after both enabled and explicit-disabled states.
+No full local suite or production change. Deploying from an old binary requires one final
+rearm after old workers drain; normal subsequent restarts preserve that choice.

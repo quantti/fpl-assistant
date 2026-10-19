@@ -1,5 +1,22 @@
 # Status — Phase 1
 
+## Price forecasts — restart continuity (2026-10-19; local)
+
+Normal worker shutdown now stops/drains only that process and preserves the durable publishing
+choice, so routine restarts/deploys resume automatically. Explicit durable disable and observed
+configuration denial still fence publication and require deliberate rearming; a shutdown retries
+a previously failed configuration revocation. No schema, polling, importer budget or production
+configuration change is included.
+
+Two new worker regressions failed against the old shutdown behavior. The focused worker,
+configuration, tool-gate, store and tool-integration run passes **85/85, 0 failed/errors/skipped**
+against disposable `127.0.0.1:55432`, with dummy provider keys, the 1536 MiB/no-swap scope and
+host-memory stop guard. Real-store restart cases cover both enabled and explicitly disabled
+storage; in-flight shutdown still rejects late HTTP results and drains before returning.
+No local full suite or production operation was performed for this correction. Initial rollout
+must drain the old binaries and rearm once because their old shutdown still disables storage;
+subsequent normal deploys need no manual rearm. See `docs/PRICE-PREDICTION-OPERATIONS.md`.
+
 ## Match-status CI follow-up (2026-10-18)
 
 PR #174 merged as `d4ae08e`, but master run `39166550753` failed 3 of 1,950 tests and
