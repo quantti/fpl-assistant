@@ -661,7 +661,7 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
     @Test
     @Timeout(value = 300, unit = TimeUnit.SECONDS)
     void scheduleCorrectionCanRepublishOnlyAfterTwoFreshCoordinatorBatches() throws Exception {
-        SourceData scheduleSource = SourceData.loadActiveAcceptanceRoster();
+        SourceData scheduleSource = SourceData.load();
         prepareActiveAcceptanceSeason();
         MutableClock clock = new MutableClock(BASELINE_SOURCE_START);
         long wallStartedAt = System.nanoTime();

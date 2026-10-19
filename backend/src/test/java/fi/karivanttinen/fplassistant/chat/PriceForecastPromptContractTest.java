@@ -16,8 +16,7 @@ class PriceForecastPromptContractTest {
 
     @Test
     void routesDistinctSourcesWithAbsentToolFallbackAndNoHardcodedState() throws Exception {
-        assertThat(prompt()).contains("getPlayerPriceForecast if that tool is available",
-                "If the tool is absent or unavailable", "only the latest dated daily observation",
+        assertThat(prompt()).contains("If the tool is absent or unavailable",
                 "getRecentPriceChanges", "longer daily observations", "not a hardcoded forecast state",
                 "do not infer an upcoming rise from daily trends or RAG strategy text",
                 "A forecast is not an", "observed event", "Missing entries or an empty feed do not prove no change",

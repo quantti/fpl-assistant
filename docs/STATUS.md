@@ -1,5 +1,29 @@
 # Status — Phase 1
 
+## Test audit — research, bounded changes and publication (2026-10-19)
+
+The [research/method](superpowers/plans/2026-10-18-behavior-first-test-audit.md) and
+[delivery report](diagnostics/2026-10-18-test-audit-first-pass.md) consolidate sources, five bounded
+audits, retained/rejected/conditional decisions, approvals, file/commit map and all check receipts.
+This branch changes seven test files and removes zero whole test methods/classes; prior merged
+PR #173's deletions and CI policy are separate work, not counted again here.
+
+Delivered: five duplicate prompt expectations and an unused JDBC mock removed (startup refusal
+kept); a 657→501 discovery boundary fixture; actual receipt-execution counting; two case-local
+connection pools; and a 657→68 schedule-correction source. The last change explicitly drops this
+case's full-roster/backlog scale, not its freshness/zero-minute/ownership/masking assertions.
+One local pair each: demand 29.212s→4.388s, starvation 19.313s→4.297s, correction 16.945s→5.796s.
+These are not controlled whole-suite or hosted billing savings.
+
+Master `eee6223` is integrated at `53e5743`, preserving both sides of the STATUS-only conflict.
+All **20 selected cases pass, 0 failures/errors/skips**, against the guarded disposable DB with
+dummy keys and unchanged resource limits. Only documentation changes follow that tested code.
+The owner authorized feature-branch PR publication, a continuation issue and post-PR review,
+then explicitly requested an immediate squash merge. No direct master push, local full suite,
+production probe or manual deploy is part of this work; the normal master release workflow applies.
+Continuation [KAR-79](https://linear.app/quantti/issue/KAR-79/continue-the-backend-test-audit-in-bounded-batches)
+remains open and carries the actual PR/review handoff; it is not closed by publishing these changes.
+
 ## Price forecasts — restart continuity verified in production (2026-10-19)
 
 Normal worker shutdown now stops/drains only that process and preserves the durable publishing
