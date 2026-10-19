@@ -37,6 +37,21 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
 - Source DB schema (tapas): `~/dev/tapas-fpl-app/backend/DB.md`
 - FPL game rules: `~/dev/tapas-fpl-app/backend/FPL_RULES.md`
 
+## Linear access
+
+- This repository (`quantti/fpl-assistant`) tracks work in Linear workspace `quantti`, team
+  **Kari**, issue prefix **KAR**. Do not create GitHub Issues for project work.
+- The existing personal API key is stored locally in the main checkout's `.auth.env`, variable
+  **`LINEAR_API`** (not `LINEAR_API_KEY`). From another worktree, its location is
+  `~/dev/fpl-assistant/.auth.env`. It need not be exported into the session environment.
+- Use an available authenticated Linear tool, or call `https://api.linear.app/graphql` with
+  that key in the `Authorization` header. Load only the required variable into process memory;
+  never print the file/key, put it in command-line arguments, copy it into docs, or stage it.
+- Linear's MCP application has approved Read/Write access, but that does not guarantee the
+  current Pi session exposes its tools. Missing MCP tools or an unset environment variable do
+  **not** establish that Linear access is unavailable: check the credential location above.
+- API access was verified by creating **KAR-77**, the Understat production-rollout follow-up.
+
 ## Conventions
 
 - All DB queries filter by a season resolved through `SeasonResolver`, not by `is_current` directly. A season row is created weeks before its data is synced, so `WHERE season_id = (SELECT id FROM season WHERE is_current = true)` returns nothing across the changeover. The resolver prefers the current season once it holds data and otherwise falls back to the most recent season that does. **The one deliberate exception among the tools is `HistoricalTools` (`getTeamForm`, `getHeadToHead`), which must NOT filter through `SeasonResolver`** — spanning seasons is the point, and `pl_match_result` carries `season` on every row. Do not bolt season filtering onto those tools. **On the write side, `FootballDataSyncService` is the same kind of exception:** it stamps each row with the season derived from the payload (`season.startDate` on the match itself), compared against the season the database flags `is_current`, never with the season `SeasonResolver` resolves. The resolver falls back to a completed season for as long as tapas has not synced the new one, so keying the write guard on it left the current season's results unwritten for weeks after kickoff. Do not "fix" that back onto `SeasonResolver`.
@@ -295,10 +310,10 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
 
 ### Resource safety
 
-Two hosts: a **WSL2 machine** with the full toolchain, and a **Hetzner VPS** with Ubuntu
-OpenJDK 25 and Docker for focused backend feature/bug tests. The VPS has no frontend toolchain;
-never run the full suite there — GitHub Actions remains its full-suite verification gate. Neither
-host's setup notes may be deleted in favour of the other's; see `docs/DEVELOPMENT.md`.
+The development host is the **WSL2 machine** with the full toolchain. The **Hetzner VPS
+is no longer in use** (owner confirmed 2026-10-17): do not assume it is available for tests,
+monitoring, log collection or other workloads. GitHub Actions remains the full-suite
+verification gate. Historical VPS setup notes in `docs/DEVELOPMENT.md` are not current capacity.
 
 **Choose concurrency by task, not by agent count alone.** Up to five independent, lightweight
 read-only agents (for example scouts reading files) may run concurrently. Reading agents must not
@@ -313,7 +328,7 @@ Keep the checked-in Gradle heap/worker/context-cache limits. On memory-constrain
 cgroup-v2 scope and host-memory stop threshold in `docs/DEVELOPMENT.md`; do not assume this Docker
 supports hard memory limits. Stop only this project's idle daemons or test scopes, never another
 project's processes. Verify memory headroom before a full suite. **Nothing local runs the full
-suite for you** (owner decision 2026-09-19, too heavy for the cloud host): run the tests you
+suite for you** (owner decision 2026-09-19): run the tests you
 wrote or touched locally before pushing, and record the command and tested revision in the PR.
 Since the owner's 2026-10-18 budget decision, PR checks are lightweight: no backend suite or
 Postgres. A green PR does not prove local backend verification; that remains a contributor
@@ -396,7 +411,7 @@ re-deploys without a push; other refs cannot deploy. Documentation-only pushes d
 `fly deploy` is for emergencies, and is the one path that can ship a red suite.
 
 Install the pre-push hook once per clone, on every host: `git config core.hooksPath scripts/hooks`.
-It needs only bash and git, so the VPS gets the master guard too. When a push touches `frontend/`
+It needs only bash and git. When a push touches `frontend/`
 and Node is installed it also runs `npm run lint` (ESLint) and `npm run format:check` (Biome);
 PR CI runs both when frontend/shared inputs changed; master application verification runs both. Existing violations are baselined in
 `frontend/eslint-suppressions.json` — fix new ones, never add to the baseline, and never run a
