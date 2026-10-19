@@ -181,6 +181,19 @@ remains In Review with PR #170 open; the latest master integration review and fu
 remain pending. Production rollout
 is a separate approval.
 
+## Understat activation — authorised after absolute-deadline fix
+
+PR #162 merged as `a949a20`; PR CI `39142063312` and merge/deploy `39144081936` passed,
+and production health is UP. Owner confirmed permission for the intended data use and
+requested initial capture plus daily activation, choosing to fix the HTTP deadline first.
+The client now uses JDK 25's bounded body handler and awaits the complete response for at most
+30 seconds, cancelling it on timeout or interruption; gzip expansion retains its own 5 MB cap.
+A continuously streaming local response reproduced the old missing-deadline failure. The new
+regression verifies timeout and server-observed disconnect before server shutdown. Raw-size,
+gzip, parser, sync and job checks pass: 22 tests, 0 failed/skipped, no database access.
+Deployment of this fix, isolated initial cache fill and activation remain pending; no flags
+or production cache rows have been changed by this follow-up yet.
+
 ## PR #162 full-review/CI corrections
 
 The full PR panel at `013b8b1` confirmed one numeric-JSON precision defect (2/3); two new parser
