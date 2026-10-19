@@ -37,8 +37,10 @@ The initial research/planning pass was source-only: no test/build/coverage/mutat
 production queries, code changes, commits or publication. Subsequent owner decisions authorized
 each delivered slice and targeted local verification, including E1's explicit scale loss.
 The later request authorizes publishing this feature branch as a PR, a Linear continuation issue,
-full documentation and post-PR review. It does not authorize master pushes, merge/deploy, a local
-full suite, additional test deletion or another audit family. A separate worktree preserves
+full documentation and post-PR review. A subsequent owner instruction explicitly authorizes
+immediate squash merge through that PR, with the normal master release workflow. Direct master
+pushes, manual deploy, a local full suite, extra test deletion or another audit family are not
+part of that authorization. A separate worktree preserves
 unrelated changes in other checkouts.
 
 The owner-selected policy remains targeted local backend verification before a code push,

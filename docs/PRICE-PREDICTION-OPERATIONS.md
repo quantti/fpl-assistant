@@ -1,8 +1,29 @@
 # Price prediction capture operations (KAR-76)
 
-This implementation defaults disabled. The owner approved activation and incremental-importer
-coexistence on 18 October 2026; that approval is not proof of completed rollout. Gated forecast tools are implemented; this does not alter daily price captures,
-invalidate bootstrap caches, modify ranking sources or change owned-sync configuration.
+This implementation defaults disabled. Production activation was verified on 18 October 2026;
+the restart-continuity rollout was verified on 19 October as recorded below. Gated forecast
+tools do not alter daily price captures, invalidate bootstrap caches, modify ranking sources
+or change owned-sync configuration.
+
+## Verified restart rollout — 19 October 2026
+
+PR #176 (`f2c455e`) preserves the durable operator choice across routine shutdowns. Full
+CI/deploy [39201872228](https://github.com/quantti/fpl-assistant/actions/runs/39201872228)
+installed `eaaad3e`; after all old workers drained, the one-time migration rearm was completed.
+The next normal 05:30 UTC slot published both forecast and history captures.
+
+A subsequent full CI/deploy
+[39203830215](https://github.com/quantti/fpl-assistant/actions/runs/39203830215) installed
+`eee6223`. The enabled flag survived without intervention, and its next normal slot published
+forecast generation 4 at `2026-10-19T06:00:01.087299Z`: 668 players, 646 READY, source timestamp
+`05:50:12.660826Z`, target `2026-10-19T23:00:00Z`. Recent history rechecked 124 unchanged events
+at `06:00:01.870517Z`, retaining original payload read time `05:30:02.641041Z`. Public health
+was UP; importer mode, season and request budget were unchanged. This proves continuation
+through a real deploy, not uninterrupted overnight collection or live LLM routing.
+
+**No routine rearm is needed from this version onward.** Initial storage still starts disabled,
+and explicit disable/configuration denial still requires deliberate rearming. Rolling back to
+an older binary restores its shutdown-revokes behavior.
 
 ## Configuration and durable control
 

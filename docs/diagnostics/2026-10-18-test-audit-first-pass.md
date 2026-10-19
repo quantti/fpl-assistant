@@ -609,6 +609,12 @@ advisory was emitted; the command exited zero and no limit was increased. Local 
 The durable table/command/revision here is the shareable summary; private `/tmp` paths are not
 GitHub artifact links or a promise of permanent raw-log retention.
 
+Before the final PR review, master advanced again to `cfd479f` through two documentation-only
+commits. A second merge preserved the audit entry and the updated production-operation notes;
+application/test/build inputs still match the 20-case-tested `53e5743` code. The owner's later
+instruction explicitly authorizes squash merge through the PR, not direct master push or manual
+deploy; the normal master verification/deploy workflow remains in force.
+
 Subsequent publication-documentation commits do not change the tested code. Earlier timings and
 smaller runs remain separate receipts, not a claim that every check ran again at every commit.
 No local full suite, real-data test, production request or manual deploy was run. Lightweight PR

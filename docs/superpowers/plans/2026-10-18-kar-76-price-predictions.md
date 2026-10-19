@@ -1,6 +1,6 @@
 # KAR-76 — price strategy and official price forecasts
 
-**PROGRESS:** Original delivery/RAG complete; importer correction merged as PR #172 and activated on 18 October with first forecast/history captures verified. Owner-approved restart-continuity correction passes 85 focused cases locally; publication, review and initial migration rearm remain. Overnight/live-chat verification is still separate.
+**PROGRESS:** Original delivery/RAG and activation complete. Restart correction merged as PR #176; full master CI/deploy, one-time migration rearm and automatic capture after a subsequent real deploy verified on 19 October at 06:00 UTC. Uninterrupted overnight collection and live LLM routing remain unverified.
 
 ## Scope and decisions
 
@@ -299,3 +299,21 @@ Two regressions failed before the change. Five focused classes pass 85/85 with n
 errors or skips, including real-store restart after both enabled and explicit-disabled states.
 No full local suite or production change. Deploying from an old binary requires one final
 rearm after old workers drain; normal subsequent restarts preserve that choice.
+
+### Restart-continuity rollout evidence — 19 October 2026
+
+[PR #176](https://github.com/quantti/fpl-assistant/pull/176) merged as `f2c455e`.
+Full master verification/deployment passed in runs
+[39201492110](https://github.com/quantti/fpl-assistant/actions/runs/39201492110) and
+[39201872228](https://github.com/quantti/fpl-assistant/actions/runs/39201872228); the latter
+installed `eaaad3e`. After confirming the single old worker had drained, the owner-authorized
+one-time rearm changed only the guarded forecast control row. Automatic 05:30 UTC captures
+published 668 forecast players / 646 READY and 124 recent price-change events.
+
+Run [39203830215](https://github.com/quantti/fpl-assistant/actions/runs/39203830215) then
+successfully deployed `eee6223`. The enabled flag stayed true without rearming; the next
+scheduled slot published forecast generation 4 at `06:00:01.087299Z` (09:00 Helsinki), with
+source timestamp `05:50:12.660826Z` and target `2026-10-19T23:00:00Z`. Recent history advanced
+its check time to `06:00:01.870517Z` while retaining the unchanged payload's 05:30 read time.
+Public health was UP. Importer settings/budget were untouched. Routine deployment continuity
+is verified in production; live LLM routing and uninterrupted overnight collection are not.

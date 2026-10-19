@@ -18,12 +18,13 @@ These are not controlled whole-suite or hosted billing savings.
 Master `eee6223` is integrated at `53e5743`, preserving both sides of the STATUS-only conflict.
 All **20 selected cases pass, 0 failures/errors/skips**, against the guarded disposable DB with
 dummy keys and unchanged resource limits. Only documentation changes follow that tested code.
-The owner authorized feature-branch PR publication, a continuation issue and post-PR review;
-no local full suite, production access, master push, merge or deploy is authorized by that request.
+The owner authorized feature-branch PR publication, a continuation issue and post-PR review,
+then explicitly requested an immediate squash merge. No direct master push, local full suite,
+production probe or manual deploy is part of this work; the normal master release workflow applies.
 Continuation [KAR-79](https://linear.app/quantti/issue/KAR-79/continue-the-backend-test-audit-in-bounded-batches)
 remains open and carries the actual PR/review handoff; it is not closed by publishing these changes.
 
-## Price forecasts — restart continuity (2026-10-19; local)
+## Price forecasts — restart continuity verified in production (2026-10-19)
 
 Normal worker shutdown now stops/drains only that process and preserves the durable publishing
 choice, so routine restarts/deploys resume automatically. Explicit durable disable and observed
@@ -36,9 +37,32 @@ configuration, tool-gate, store and tool-integration run passes **85/85, 0 faile
 against disposable `127.0.0.1:55432`, with dummy provider keys, the 1536 MiB/no-swap scope and
 host-memory stop guard. Real-store restart cases cover both enabled and explicitly disabled
 storage; in-flight shutdown still rejects late HTTP results and drains before returning.
-No local full suite or production operation was performed for this correction. Initial rollout
-must drain the old binaries and rearm once because their old shutdown still disables storage;
-subsequent normal deploys need no manual rearm. See `docs/PRICE-PREDICTION-OPERATIONS.md`.
+No local full suite was run. [PR #176](https://github.com/quantti/fpl-assistant/pull/176)
+merged as `f2c455e`. Master runs [39201492110](https://github.com/quantti/fpl-assistant/actions/runs/39201492110)
+and [39201872228](https://github.com/quantti/fpl-assistant/actions/runs/39201872228) passed full
+verification/deployment; the latter deployed `eaaad3e`. After the single old worker drained,
+the owner-approved one-time durable rearm succeeded. The 05:30 UTC slot published a fresh
+668-player forecast (646 READY) and a 124-event recent-change capture.
+
+The subsequent [39203830215](https://github.com/quantti/fpl-assistant/actions/runs/39203830215)
+run deployed `eee6223` successfully. Publishing permission survived that real deploy without
+rearming, and automatic capture at **06:00 UTC / 09:00 Europe/Helsinki** published forecast
+generation 4. History successfully rechecked the unchanged 124-event payload, advancing only
+its check time. Public health was UP. Subsequent normal deploys need no manual rearm; explicit
+disable/configuration denial still do. Importer settings and budget were unchanged. See
+`docs/PRICE-PREDICTION-OPERATIONS.md`. Live LLM routing and uninterrupted overnight collection
+were not verified.
+
+## Importer monitoring — daily repeat notifications (2026-10-19)
+
+On `plex` Kuma 1.23.17, current monitor **20**, `FPL Assistant - incremental importer`, now
+repeats a continuing DOWN alert every 1,440 failed checks at its unchanged 60-second interval
+(approximately 24 hours), instead of 30 checks. The owner accepted the fixed daily interval
+rather than a custom 30/60-minute escalation. DOWN/recovery transitions still notify, so
+flapping can produce extra mail. Authenticated API readback and a separate database read
+confirmed the change; all other monitor settings were unchanged. Public-health monitor 19
+was untouched. The former owned-runtime monitor 18 is absent. No delivery test or 24-hour
+wait was performed; this verifies configuration, not inbox delivery.
 
 ## Remove unused Actions heartbeat (2026-10-19)
 
