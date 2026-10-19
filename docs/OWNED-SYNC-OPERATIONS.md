@@ -84,6 +84,18 @@ uses Uptime Kuma on `plex`, with its existing `Home network alert` SMTP notifica
 
 ### Uptime Kuma (selected)
 
+Current monitoring, verified 2026-10-19: Kuma **1.23.17** on `plex` uses active monitor **20**,
+`FPL Assistant - incremental importer`. Continuing DOWN notifications repeat every **1,440
+failed checks** at the unchanged **60-second check interval**, approximately **24 hours**
+(previously 30 checks / 30 minutes). The resend setting counts checks, not minutes or seconds.
+Retry interval remains 20 seconds with one retry; new DOWN and recovery transitions still
+notify, so flapping is not capped at one email per day. API readback and database verification
+confirmed only `resendInterval` changed; delivery and a full 24-hour repeat were not tested.
+The owner chose this built-in fixed interval rather than a custom escalation scheduler.
+Public-health monitor **19** was untouched; the old monitor **18** is absent.
+
+The configuration below describes the retired owned-runtime monitor, not current monitor 20.
+
 Set `OWNED_SYNC_ALERTS_VIA_MONITOR=true`, `OWNED_SYNC_ALERT_WEBHOOK_ENABLED=false`,
 `OWNED_SYNC_EXTERNAL_HEALTH_ENABLED=true` and a strong `OWNED_SYNC_MONITOR_TOKEN`. Enable operator
 status separately with `OWNED_SYNC_OPS_ENABLED=true` and a different `OWNED_SYNC_OPERATOR_TOKEN`.
@@ -100,10 +112,11 @@ application refuses webhook retries. Switching back to webhook additively redriv
 An enabled authenticated health endpoint is required; selecting both notification routes fails
 startup. A STAGING instance can intentionally be DOWN because it has not published/verified data.
 
-Kuma monitor **18**, `FPL Assistant - owned sync`, was created paused on 2026-09-14 through its
-authenticated API. Its SMTP transport test was accepted; inbox receipt is not independently proven.
-Unpause it for the monitored rollout, not while the application is OFF. Kuma is independent of Fly,
-not of its own home-server/network outage; no off-site availability SLA is claimed.
+Historical Kuma monitor **18**, `FPL Assistant - owned sync`, was created paused on 2026-09-14
+through its authenticated API; it has since been removed. Its SMTP transport test was accepted;
+inbox receipt was not independently proven at that checkpoint. Do not recreate/unpause that
+retired monitor as part of current importer operations. Kuma is independent of Fly, not of its
+own home-server/network outage; no off-site availability SLA is claimed.
 
 ### Application webhook (alternative)
 
