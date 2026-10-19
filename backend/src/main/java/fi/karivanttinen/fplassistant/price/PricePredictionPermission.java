@@ -6,6 +6,7 @@ import org.springframework.core.env.Environment;
 public final class PricePredictionPermission {
     private final Environment environment;
     private final AtomicBoolean stopped = new AtomicBoolean();
+    private final AtomicBoolean configurationDenied = new AtomicBoolean();
 
     public PricePredictionPermission(Environment environment) {
         this.environment = environment;
@@ -24,8 +25,12 @@ public final class PricePredictionPermission {
     }
 
     public boolean permitted() {
-        if (!configured(environment)) stopped.set(true);
-        return !stopped.get();
+        if (!configured(environment)) configurationDenied.set(true);
+        return !stopped.get() && !configurationDenied.get();
+    }
+
+    boolean revocationRequired() {
+        return configurationDenied.get();
     }
 
     public void stop() {

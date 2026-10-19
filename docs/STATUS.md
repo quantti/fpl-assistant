@@ -23,6 +23,49 @@ schedule-correction coverage already pooled. Its approved one-line 657→68 fixt
 all unchanged protocol checks (16.945s → 5.796s, one local pair), explicitly dropping only that
 case's former full-roster/backlog scale. No broader suite or remote verification is claimed.
 
+## Price forecasts — restart continuity (2026-10-19; local)
+
+Normal worker shutdown now stops/drains only that process and preserves the durable publishing
+choice, so routine restarts/deploys resume automatically. Explicit durable disable and observed
+configuration denial still fence publication and require deliberate rearming; a shutdown retries
+a previously failed configuration revocation. No schema, polling, importer budget or production
+configuration change is included.
+
+Two new worker regressions failed against the old shutdown behavior. The focused worker,
+configuration, tool-gate, store and tool-integration run passes **85/85, 0 failed/errors/skipped**
+against disposable `127.0.0.1:55432`, with dummy provider keys, the 1536 MiB/no-swap scope and
+host-memory stop guard. Real-store restart cases cover both enabled and explicitly disabled
+storage; in-flight shutdown still rejects late HTTP results and drains before returning.
+No local full suite or production operation was performed for this correction. Initial rollout
+must drain the old binaries and rearm once because their old shutdown still disables storage;
+subsequent normal deploys need no manual rearm. See `docs/PRICE-PREDICTION-OPERATIONS.md`.
+
+## Remove unused Actions heartbeat (2026-10-19)
+
+Removed the unconfigured `owned-sync-heartbeat.yml` schedule and its GitHub-only setup
+instructions. The ten latest runs were skipped; the repository enable variable and monitor
+secrets were absent. Uptime Kuma remains the selected independent monitor. Application
+heartbeats, watchdogs, `/ops/sync/health`, monitor credentials and webhook support are unchanged.
+Historical investigation reports remain intact. Offline CI routing checks passed 2/2 and shell
+regressions 17/17; explicit removal/preservation assertions and `git diff --check` passed.
+No backend build, live Kuma probe, GitHub settings change or production operation was performed.
+
+## Match-status CI follow-up (2026-10-18)
+
+PR #174 merged as `d4ae08e`, but master run `39166550753` failed 3 of 1,950 tests and
+correctly skipped deployment. All three failures reproduced locally before this follow-up.
+The isolated importer context omitted the three capture-table properties newly consumed by
+its real collector factory; it now supplies explicit test-only names. The shortlist comparison
+test still expected unfinished fixtures to block normal player ranking; it now asserts usable
+player coverage and the visible in-progress match state while retaining the independent team
+forecast assertion. No runtime code or production data was changed.
+
+Both affected classes passed 23/23 locally. The connected local command
+`./gradlew test --tests '*ShortlistComparisonIntegrationTest' --tests '*OwnedSyncImporterContextIntegrationTest' --tests '*RankingMetricsIntegrationTest' --tests '*CompatibilityCatalogueWriterIntegrationTest'`
+passed **56/56, 0 failed/skipped**, against disposable `localhost:55432` with dummy AI keys and
+the 1536 MiB/no-swap scope plus host-memory guard. Local verification preceded publication;
+the full retained suite remains the master release gate, not a local full-suite claim.
+
 ## Actions budget — lightweight PR verification (2026-10-18; local)
 
 Owner-selected policy removes full backend CI from PRs: targeted local tests before push,
@@ -82,6 +125,45 @@ then passed, including importer activation/request-limit and forecast lifecycle 
 Independent review, correction PR/full CI and deliberate production arming remain pending.
 Forecasts remain OFF.
 
+## Match status and ranking data (2026-10-18)
+
+The owner approved treating match state as information, not a player-data eligibility gate.
+The incremental compatibility publication now refreshes `fpl_gameweek` and `fpl_fixture`
+from its already-validated source pair inside the existing fenced transaction. Both halves
+carry the same source-read completion time; no additional HTTP request or scheduler is added.
+The independent daily schedule writer stays disabled under ACTIVE to avoid competing writes.
+The owned fixture capture now preserves nullable `finished_provisional`, and `ScheduleSource`
+distinguishes finished, provisionally finished, in-progress and not-started matches.
+
+A new schedule-publication regression failed first (0 captured events, expected 38).
+The first slice passed 37 focused schedule/schema/source/compatibility/writer tests and two
+collector retry/no-op regressions. Atomic capture failure rolls back the core publication too.
+
+Ranking now uses up to ten available current-club player observations, including live and
+provisionally finished matches, rather than requiring every club fixture/player page. Missing
+rows remain unknown, not invented zero-minute appearances; recorded zeroes stay in the sample.
+No usable player rows means unknown individual evidence. A teammate's missing page no longer
+marks the entire comparison incomplete or refuses a squad. Individual `PfsReadSource` receipt,
+physical fingerprint, source-watermark and correction checks remain unchanged, as do availability,
+identity, invalid-minute and horizon checks. The output dates captured match-state counts, warns
+that live/provisional figures can change, and does not claim full league coverage. Prompt/tool
+contracts explicitly forbid turning missing comparison data into an unsupported hold/sell call.
+
+Three new regressions failed first on live rows, provisional full time and missing teammate rows.
+The integrated focused run passed **312 tests across 36 classes, 0 failed/skipped**, using disposable
+`localhost:55432` PostgreSQL, dummy provider keys and a 1536 MiB cgroup/no-swap limit with the host
+memory stop guard. Coverage includes schedule migration/publication/rollback, importer retries,
+ranking, pick/squad consumers, prompts, PFS correction guards, horizon and bounded legacy-writer
+recovery. An expanded run exposed a custom test fixture missing the new capture column; custom
+writer fixtures now run the same schema initializer and the rerun passed. No local full suite,
+live-model evaluation, production write, activation or deployment was performed. Publication
+and hosted verification remain separate gates. After the owner's requested rebase onto master `96caea7`,
+the same focused selection passed **309/309 across 35 classes, 0 failed/skipped** at `83bf85d`;
+the lower count follows master's deliberate test pruning. Runtime code was unchanged by rebase;
+the prompt-test conflict retained master's deletion and this change's new contract assertion.
+Current master policy runs lightweight PR checks and the full retained suite before deployment.
+The owner explicitly authorised PR publication and squash merge after the rebase and green checks.
+
 ## Price strategy — KAR-76 implementation (2026-10-18)
 
 The [price-prediction plan](superpowers/plans/2026-10-18-kar-76-price-predictions.md)
@@ -121,6 +203,19 @@ production DB operation, corpus ingestion, deployment or activation was performe
 remains In Review with PR #170 open; the latest master integration review and full CI
 remain pending. Production rollout
 is a separate approval.
+
+## Understat activation — authorised after absolute-deadline fix
+
+PR #162 merged as `a949a20`; PR CI `39142063312` and merge/deploy `39144081936` passed,
+and production health is UP. Owner confirmed permission for the intended data use and
+requested initial capture plus daily activation, choosing to fix the HTTP deadline first.
+The client now uses JDK 25's bounded body handler and awaits the complete response for at most
+30 seconds, cancelling it on timeout or interruption; gzip expansion retains its own 5 MB cap.
+A continuously streaming local response reproduced the old missing-deadline failure. The new
+regression verifies timeout and server-observed disconnect before server shutdown. Raw-size,
+gzip, parser, sync and job checks pass: 22 tests, 0 failed/skipped, no database access.
+Deployment of this fix, isolated initial cache fill and activation remain pending; no flags
+or production cache rows have been changed by this follow-up yet.
 
 ## PR #162 full-review/CI corrections
 

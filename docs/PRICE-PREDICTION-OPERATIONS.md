@@ -26,20 +26,30 @@ arms storage. This second gate is deliberate: a restarted process cannot undo a 
 revoke. There is no new admin HTTP endpoint. Before arming, inspect actual mode, source
 configuration, the four table names and the deployment's active instances.
 
-For a live disable, call `PricePredictionWorker.close()` on the running worker: it stops
-local permission first, shuts down scheduling, durably revokes the token and drains the
-in-flight tick. A database failure during revocation is a failed disable operation; keep
-local workers stopped, retry durable revocation and verify the control row before declaring
-the fleet disabled. `PricePredictionStore.revokeAndDisable()` fences other instances too.
-Then set the feature flag false on every instance. A deployment that starts disabled does
-not touch storage or revoke another enabled instance. Shutdown of an enabled worker revokes
-the shared control row, so a rolling restart requires deliberate rearming after all old
-workers have drained. No automatic rearm is provided.
+Normal shutdown (`PricePredictionWorker.close()`) stops local permission first, shuts down
+scheduling and drains the in-flight tick. Requests and publication callbacks reject that
+worker's late results, and token-scoped lease release cannot revoke a successor's lease.
+Shutdown does not change the durable enabled flag: a new process resumes on its next eligible
+slot without manual rearming. It never enables storage that was explicitly disabled.
+
+For a deliberate fleet-wide disable, call `PricePredictionStore.revokeAndDisable()` (or its
+approved equivalent control-row update): it disables publication, increments the fence and
+clears the lease. Then close local workers and set the feature flag false on every instance.
+A database failure during revocation is a failed disable operation; keep local workers stopped,
+retry durable revocation and verify the control row before declaring the fleet disabled.
+A deployment that starts disabled does not touch storage or revoke another enabled instance.
+Re-enabling after an explicit disable still requires deliberate durable arming.
+
+When first deploying this shutdown correction, old binaries still revoke on exit. Drain all
+old workers and rearm once after verifying the new fleet; later normal deploys need no rearm.
+Rolling back to an old binary restores its shutdown revocation behavior.
 
 A runtime permission change is detected on the next one-second tick and before each request
-and publication. Such a worker latches stopped and requires a fresh lifecycle; flipping the
-flag back does not resume it. Durable lease checks before/after HTTP and token checks at
-publication prevent revoked, expired or superseded holders from publishing.
+and publication. Unlike normal shutdown, an observed configuration denial latches stopped
+and durably revokes publication; shutdown retries any previously failed revocation. Flipping
+the flag back does not resume it: a fresh lifecycle and deliberate rearm are required.
+Durable lease checks before/after HTTP and token checks at publication prevent revoked,
+expired or superseded holders from publishing.
 
 ## Cadence, limits and evidence
 

@@ -921,6 +921,8 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
     private static void prepareActiveAcceptanceSeason() {
         TapasSeed.ensureOwnedSyncCaptureSeason(jdbc);
         createActiveCapturedTables();
+        new fi.karivanttinen.fplassistant.schedule.ScheduleSchema(jdbc,
+                CAPTURED.gameweek(), CAPTURED.fixture()).ensureSchema();
         new DefensiveStatsSchema(jdbc).ensureColumns();
         cleanActiveAcceptanceSeason();
         TapasSeed.setCurrentSeason(jdbc, SEASON.id());
