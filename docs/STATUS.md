@@ -11,7 +11,11 @@ The follow-on read-only pass covered five receipt-batching cases, retaining the 
 incident regression. The owner then approved the 657→501 discovery fixture and execution-counter
 correction. After the other worktree's Gradle run ended, both changed collector methods passed
 locally (2 tests, no failures/errors/skips) on the guarded disposable DB. The earlier 15/15 is a
-separate receipt. No full suite, concurrent run, further test deletion or remote publication occurred.
+separate receipt. The third audit retains the ten-matchday/92-persisted-slot regression. The owner
+approved its test-local, automatically closed connection pool; workload, assertions and per-slot
+transactions are unchanged. The same method passed before/after (29.212s → 4.388s), a single local
+comparison, not a hosted savings claim. No full suite, concurrent run, further test deletion or
+remote publication occurred.
 
 ## Actions budget — lightweight PR verification (2026-10-18; local)
 

@@ -1,6 +1,6 @@
 # First bounded test-audit pass
 
-**PROGRESS:** Approved A1/A2/S1 cleanup passed 15/15; approved B1/B2 changes passed their two focused tests; no further audit scope opened.
+**PROGRESS:** Three audits and approved cleanups complete; prior runs passed 15/15 and 2/2, and the unchanged-demand pool scenario passed before and after.
 
 Source revision: `96caea7c123ed64c66a6845b45e2e31234f8345f` (PR #173).
 [Audit plan](../superpowers/plans/2026-10-18-behavior-first-test-audit.md).
@@ -288,3 +288,93 @@ SHA-256: `6bcc0dcf60d4b863d03faffaae79d674b83f03b065a1c4b44488881aec9d623c`.
 `git diff --check` and parent scope review passed. The earlier 15/15 receipt remains separate;
 no full collector class, full suite, hosted CI, production service, independent panel or remote
 publication was run for B1/B2.
+
+## Third bounded audit: ten-matchday demand and closed admission
+
+Source: `f8a22bc834802d714928b743abf9f671fada6a91`. One candidate:
+`OwnedMatchdayEndToEndIntegrationTest.fullTenMatchdayDemandIsMaterializedAndBudgetExhaustionCannotCompleteWork`
+(lines 579–638), plus the immediate production path and named smaller-boundary comparisons below.
+The local historical `master169` report recorded 16.542s for this method. Its body is unchanged
+from the previous audit's `4c1fa71` source, but this is **not a current timing** or billing estimate.
+The old 38.386s collector correction case is already shrunk; it is not counted again as an
+untouched optimization candidate. No new test, benchmark or hosted run was started this pass.
+
+**Do not delete as an exact duplicate.** The pure
+`AdaptiveMatchdayPlannerTest.tenMatchRollingCadenceStaysUnderCoordinatorDailyBudget` uses 36
+players per fixture and checks <=5,000 requests plus 92 distinct source slots. This integration
+case uses 60 players per fixture and checks >5,000 requests plus **92 persisted SQL slots**.
+`OwnedMatchdayCoordinatorIntegrationTest.stableDailySlotsEnqueueCorrectClassesOnceWithoutDemandBumps`
+and `matchdayPlayerRefreshIsBoundedLikeTheDailySweep` check smaller wiring/idempotence/chunking
+boundaries, not the complete day's persisted ledger. They are not exact retained replacements.
+
+**C1 — narrow the completion claim, not an automatic deletion.** `tick()` only plans/enqueues;
+it never calls `dispatchOne`. After five admissions the test calls `store.enqueue` directly,
+then checks the new row is PENDING with no completion timestamp. This is a valid narrow initial-
+state check after closed admission, not proof that a worker cannot falsely complete denied work.
+Keep that distinction and do not erase its initial-state assertions under a tautology label.
+`OwnedSyncRequestBudgetIntegrationTest.rollingAttemptLimitExpiresAtExactWindowWithoutRestartReset`
+checks the cap/restart/expiry separately. The real HTTP/dispatcher deferral cases inspect actual
+requests and retry state but exercise minimum spacing, not this exact ATTEMPT_LIMIT combination;
+the dispatcher uses one common `DeferredResult` branch. No stronger joined proof is claimed.
+
+**C2 — recommended next implementation: reuse connections only inside this serial scenario.**
+The fixture creates `DriverManagerDataSource`, which opens a connection for each acquisition.
+Every `enqueueOnce` starts a transaction, even when `ON CONFLICT` finds the slot already present.
+The 600-player daily sweep is expanded to 19 chunks on each of 144 ticks, giving a static lower
+bound of **2,736 transaction/connection acquisitions for that sweep alone**, before source/history
+slots and heartbeats. This is a source-derived count, not a measured connection trace or timing.
+
+A case-local, automatically closed pool using the installed JDBC/Hikari facilities can serve the
+case's JdbcTemplate and transaction manager without changing production code, any other test's
+datasource, transaction boundaries, ten fixtures/600 players, 144 ticks, 92 persisted source slots,
+>5,000 demand assertion or budget/new-row checks. Do not globally replace datasources in tests
+that exercise concurrent actors, lock waits, restarts or pool acquisition. Preserve target guards.
+This is fixture overhead reduction, not a dropped scale guarantee or fewer test cases.
+
+Before accepting an implementation, run only this unchanged method once as the same-host baseline,
+then the modified method, with the existing disposable-DB/resource guards. Compare the unchanged
+oracles and record actual elapsed times; do not promise a percentage from the old report. No new
+benchmark harness, library, permanent job or wider suite is needed. C2 was not implemented during
+this read-only audit; its subsequent approval and checks follow. Further audit paths remain separate.
+
+## Approved C2 implementation and same-host comparison
+
+The owner approved implementation. Only this serial demand scenario creates a try-with-resources
+`HikariDataSource`, backed by the existing datasource, with maximum pool size one and minimum idle
+zero. Its local JdbcTemplate and transaction manager share that pool. It closes before the method
+returns, including on assertion failure. Class-wide fixtures, production code, dependencies and
+Gradle limits are unchanged. Connections are reused; transactions and durable writes are not merged.
+
+All previous assertions and inputs remain: ten fixtures, 600 players, 144 ticks, 92 persisted source
+slots, demand >5,000, five real budget admissions followed by refusal, and the new run's pending/null-
+completion state. Diff review ignoring indentation shows only the import and scoped pool setup.
+There is still no worker-dispatch proof hidden in the initial-state check.
+
+Both runs used this exact single-method selector, offline and sequentially:
+
+```bash
+./gradlew --offline --console=plain test \
+  --tests fi.karivanttinen.fplassistant.sync.OwnedMatchdayEndToEndIntegrationTest.fullTenMatchdayDemandIsMaterializedAndBudgetExhaustionCannotCompleteWork
+```
+
+| Observed check | Before, source f8a22bc | After, scoped pool |
+| --- | ---: | ---: |
+| JUnit method time | 29.212s | 4.388s |
+| JUnit class time, including fixture lifecycle | 31.628s | 6.630s |
+| Gradle build time | 40s | 18s |
+| Tests / failures / errors / skips | 1 / 0 / 0 / 0 | 1 / 0 / 0 / 0 |
+
+This is **one local before/after pair**, not a repeat-sampled benchmark or hosted billing result.
+The after build also compiled the changed test; the before build reused compiled classes. The
+method-level reduction is observed for this pair, not promised across CI or the whole suite.
+
+Both used cleared/whitelisted environments with dummy provider keys and the guarded disposable
+`127.0.0.1:55432/postgres`, 1536 MiB/no-swap user scopes, CPU quota 200%, a 360s timeout and host-
+memory guard. No other Gradle/test JVM was active at admission. Preserved receipts:
+`/tmp/fpl-ten-matchday-before.haRO6H/{test.log,result.xml}` and
+`/tmp/fpl-ten-matchday-after.mUgB6T/{test.log,result.xml}`. The after source file SHA-256 is
+`5ed052a0f13c2f717f37a3178520b09f36f6d2e32e552611e397bb4617dd6d4b`.
+
+Parent scope review and `git diff --check` pass. No test-first red was manufactured for a fixture-
+overhead optimization whose original behavioral assertions already pass. No full class/suite,
+independent panel, hosted CI, production API/DB, push or PR was performed for C2.

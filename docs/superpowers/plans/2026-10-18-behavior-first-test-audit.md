@@ -1,6 +1,6 @@
 # Behavior-first test audit: research and proposed next pass
 
-**PROGRESS:** Two bounded audits and approved cleanups complete locally; prior A1/A2/S1 passed 15/15 and B1/B2 passed 2/2 focused cases.
+**PROGRESS:** Three bounded audits and approved cleanups complete locally; 15/15, 2/2 and the single demand scenario before/after all pass.
 
 ## First-pass outcome
 
@@ -15,7 +15,12 @@ cases: retain the real-incident regression, with proposals to reduce one discove
 657 to 501 and replace a prepared-statement count with the existing execution counter. Those
 proposals were subsequently approved and implemented. After the other worktree's Gradle run
 ended, both changed methods passed locally (2 tests, no failures/errors/skips). Additional
-changes and remote publication remain separate decisions.
+changes and remote publication remain separate decisions. The third audit retains the full-day
+92-slot SQL guarantee and proposes case-local connection reuse instead of deleting its scenario;
+the source-derived minimum is 2,736 connection acquisitions for repeated daily chunks alone.
+The owner approved and implemented a test-local pool, keeping every workload and assertion.
+The same method passed before and after: 29.212s → 4.388s in one local comparison pair, not a
+hosted CI or whole-suite savings claim.
 
 ## Scope and constraints
 
