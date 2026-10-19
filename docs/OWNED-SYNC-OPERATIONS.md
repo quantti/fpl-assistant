@@ -90,7 +90,7 @@ status separately with `OWNED_SYNC_OPS_ENABLED=true` and a different `OWNED_SYNC
 The monitor polls `https://fpl-assistant.fly.dev/ops/sync/health` using header
 `X-FPL-Monitor-Token`, requires HTTP 200 and body `"status":"UP"`, checks TLS, and follows no
 redirects. Poll every 60 seconds with two retries; enable DOWN and recovery mail through the
-existing notification channel. Do not enable the GitHub heartbeat workflow as a second route.
+existing notification channel. GitHub Actions is not used for monitoring.
 
 In this explicitly delegated mode, health is DOWN while any incident lacks its own matching
 occurrence's recovery, or a planner/watchdog heartbeat is missing/stale, or the database is
@@ -105,7 +105,7 @@ authenticated API. Its SMTP transport test was accepted; inbox receipt is not in
 Unpause it for the monitored rollout, not while the application is OFF. Kuma is independent of Fly,
 not of its own home-server/network outage; no off-site availability SLA is claimed.
 
-### Webhook and optional GitHub heartbeat (alternative)
+### Application webhook (alternative)
 
 For this alternative, leave `OWNED_SYNC_ALERTS_VIA_MONITOR=false` and configure:
 
@@ -113,18 +113,11 @@ For this alternative, leave `OWNED_SYNC_ALERTS_VIA_MONITOR=false` and configure:
 - `OWNED_SYNC_ALERT_WEBHOOK_ENABLED=true` and secret `OWNED_SYNC_ALERT_WEBHOOK_URL`;
 - `OWNED_SYNC_OPS_ENABLED=true` and a high-entropy `OWNED_SYNC_OPERATOR_TOKEN`;
 - `OWNED_SYNC_EXTERNAL_HEALTH_ENABLED=true` and a different high-entropy
-  `OWNED_SYNC_MONITOR_TOKEN`;
-- repository variable `FPL_SYNC_MONITOR_ENABLED=true`, plus GitHub secrets
-  `FPL_SYNC_MONITOR_URL` (the `/ops/sync/health` URL), `FPL_SYNC_MONITOR_TOKEN`, and
-  `FPL_SYNC_MONITOR_FAILURE_WEBHOOK`.
+  `OWNED_SYNC_MONITOR_TOKEN`.
 
 Keep all values in environment/repository secrets. Do not put them in source, command arguments,
 URLs printed to logs, tickets, or screenshots. The application webhook accepts HTTPS only; HTTP
 loopback exists only as a package-private test seam. No real webhook is called by the test suite.
-
-The GitHub schedule runs every ten minutes only when the repository variable is exactly `true`.
-GitHub scheduled workflows are best-effort and can be delayed or skipped; they are an independent
-way to detect a stopped machine/dead in-process scheduler, not an availability SLA.
 
 ## Overnight OOM containment (2026-09-15)
 
