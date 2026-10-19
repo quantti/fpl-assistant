@@ -1,6 +1,6 @@
 # Behavior-first test audit: research and proposed next pass
 
-**PROGRESS:** Three bounded audits and approved cleanups complete locally; 15/15, 2/2 and the single demand scenario before/after all pass.
+**PROGRESS:** Four bounded audits and approved cleanups complete locally; both scoped-pool scenarios pass before/after with unchanged workloads and assertions.
 
 ## First-pass outcome
 
@@ -20,7 +20,9 @@ changes and remote publication remain separate decisions. The third audit retain
 the source-derived minimum is 2,736 connection acquisitions for repeated daily chunks alone.
 The owner approved and implemented a test-local pool, keeping every workload and assertion.
 The same method passed before and after: 29.212s → 4.388s in one local comparison pair, not a
-hosted CI or whole-suite savings claim.
+hosted CI or whole-suite savings claim. The fourth audit preserves the 39-fixture/600-history
+starvation regression and applies the same approved case-local pool: 19.313s → 4.297s for the
+same method in one local pair. Concurrency tests and class-wide fixtures remain unchanged.
 
 ## Scope and constraints
 

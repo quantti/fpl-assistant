@@ -15,7 +15,10 @@ separate receipt. The third audit retains the ten-matchday/92-persisted-slot reg
 approved its test-local, automatically closed connection pool; workload, assertions and per-slot
 transactions are unchanged. The same method passed before/after (29.212s → 4.388s), a single local
 comparison, not a hosted savings claim. No full suite, concurrent run, further test deletion or
-remote publication occurred.
+remote publication occurred. The fourth audit retains the real-incident 39-fixture/600-history
+starvation case. Its owner-approved test-local pool also passes before/after (19.313s → 4.297s)
+with all original checks; class-wide fixtures and concurrent-worker tests are unchanged. These
+are single local comparison pairs, not hosted CI/billing measurements.
 
 ## Actions budget — lightweight PR verification (2026-10-18; local)
 

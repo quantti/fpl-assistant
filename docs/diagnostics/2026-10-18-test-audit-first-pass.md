@@ -1,6 +1,6 @@
 # First bounded test-audit pass
 
-**PROGRESS:** Three audits and approved cleanups complete; prior runs passed 15/15 and 2/2, and the unchanged-demand pool scenario passed before and after.
+**PROGRESS:** Four bounded audits and approved cleanups complete locally; both scoped-pool scenarios pass their recorded before/after checks.
 
 Source revision: `96caea7c123ed64c66a6845b45e2e31234f8345f` (PR #173).
 [Audit plan](../superpowers/plans/2026-10-18-behavior-first-test-audit.md).
@@ -378,3 +378,73 @@ memory guard. No other Gradle/test JVM was active at admission. Preserved receip
 Parent scope review and `git diff --check` pass. No test-first red was manufactured for a fixture-
 overhead optimization whose original behavioral assertions already pass. No full class/suite,
 independent panel, hosted CI, production API/DB, push or PR was performed for C2.
+
+## Fourth bounded audit: waiting-fixture fanout and dependency priority
+
+Source `817ccb43581596a5968b46d1a945976dc77df82c`; one candidate:
+`OwnedSyncStoreIntegrationTest.prerequisitesAndDependenciesCannotBeStarvedByWaitingFixtureFanout`
+(lines 1237–1284). Its test class and `OwnedSyncStore` are byte-identical to the old `4c1fa71`
+audit source; the local `master169` report recorded 10.880s for the case. That is historical,
+not a fresh local measurement. No new test/build/benchmark was run during this audit.
+
+Retain its actual oracles: two canonical jobs precede 600 histories; dependency-waiting fixtures
+follow them; dependency retry preserves its source floor; a released lease cannot retry again;
+and an ordinary retry restores fixture priority ahead of the newly added history job.
+`acquire` orders the real durable queue by priority/due/generation; `finishAttempt` demotes only
+dependency retries and restores the original kind's priority for ordinary retries.
+
+The [September 14 incident record](../STATUS.md#owned-sync--second-staging-exposed-dependency-starvation)
+and original fix `bda8010` explain the 39-fixture/600-history shape: production had 39 waiting
+fixtures repeatedly selected while 659 histories and two canonical jobs never got a turn.
+Shrinking to two rows might check priority ordering, but would no longer replay that fanout.
+Do not call the current case pointless or silently discard the scale evidence.
+
+**D1 — next recommended implementation:** apply the same case-local connection-pool pattern as
+C2, preserving all counts, ordering, source-floor, stale-lease and priority-restoration checks.
+The 600-history section alone performs 600 enqueues, 600 acquisitions and 600 failures, each
+through a transaction on `DriverManagerDataSource`: 1,800 acquisitions before fixture setup and
+other checks. Reuse connections, not transaction boundaries. This case is serial; the adjacent
+`twoWorkersClaimDifferentRunsInDeterministicPriorityOrder` is not. Do not replace the class-wide
+datasource or serialize its genuine multi-worker tests with a one-connection shared pool.
+
+Only one unchanged-method baseline and the same method after the scoped edit are needed if D1
+is approved, with the existing disposable DB and resource guards. No gain was measured during
+this read-only pass. The later approved implementation and observations follow; no whole-test
+deletion or further test-family expansion follows from this pass.
+
+## Approved D1 implementation and comparison
+
+The owner approved the same case-local pooling pattern. Only this serial starvation scenario
+creates a try-with-resources Hikari pool (maximum one connection, minimum idle zero), backed by
+the existing guarded datasource. Local JdbcTemplate, transaction manager and store use it;
+class-wide JDBC/store fields and the adjacent multi-worker tests remain unchanged. Every original
+loop, transaction boundary and assertion remains, including 39 waiting fixtures, 600 histories,
+two canonical jobs, source-floor preservation, stale-lease refusal and ordinary-retry promotion
+ahead of history 601. There is no production or dependency change.
+
+One unchanged baseline and one modified run both selected only:
+
+```bash
+./gradlew --offline --console=plain test \
+  --tests fi.karivanttinen.fplassistant.sync.OwnedSyncStoreIntegrationTest.prerequisitesAndDependenciesCannotBeStarvedByWaitingFixtureFanout
+```
+
+| Observed check | Before, source 817ccb4 | After, scoped pool |
+| --- | ---: | ---: |
+| JUnit method time | 19.313s | 4.297s |
+| JUnit class time | 21.335s | 6.311s |
+| Gradle build time | 30s | 18s |
+| Tests / failures / errors / skips | 1 / 0 / 0 / 0 | 1 / 0 / 0 / 0 |
+
+This is one local comparison pair, not a repeat-sampled result or hosted savings claim. The after
+build compiled the changed test; before compilation was up-to-date. Both used the same cleared/
+whitelisted dummy-key environment, guarded disposable `127.0.0.1:55432/postgres`, 1536 MiB/no-swap
+scope, CPU quota 200%, 360s timeout and host-memory guard. No other Gradle/test JVM was active at
+admission. Receipts: `/tmp/fpl-starvation-before.AvX1SA/{test.log,result.xml}` and
+`/tmp/fpl-starvation-after.KmfBEL/{test.log,result.xml}`. Tested after-source SHA-256:
+`f0449244b7e7012411e8f715b7d3adf5ce6c40848b5c4012b033762f00c9c82e`.
+
+Parent scope review and `git diff --check` pass; the indentation-insensitive diff contains only
+the import and scoped pool/JDBC/transaction/store setup. No fake red was generated for this
+fixture-only optimization. No full class/suite, multi-worker rerun, independent panel, CI,
+production access or remote publication was performed for D1.
