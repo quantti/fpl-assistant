@@ -18,7 +18,10 @@ comparison, not a hosted savings claim. No full suite, concurrent run, further t
 remote publication occurred. The fourth audit retains the real-incident 39-fixture/600-history
 starvation case. Its owner-approved test-local pool also passes before/after (19.313s → 4.297s)
 with all original checks; class-wide fixtures and concurrent-worker tests are unchanged. These
-are single local comparison pairs, not hosted CI/billing measurements.
+are single local comparison pairs, not hosted CI/billing measurements. The fifth audit found
+schedule-correction coverage already pooled. Its approved one-line 657→68 fixture switch passes
+all unchanged protocol checks (16.945s → 5.796s, one local pair), explicitly dropping only that
+case's former full-roster/backlog scale. No broader suite or remote verification is claimed.
 
 ## Actions budget — lightweight PR verification (2026-10-18; local)
 

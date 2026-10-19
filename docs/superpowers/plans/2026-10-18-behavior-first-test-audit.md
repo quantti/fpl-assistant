@@ -1,6 +1,6 @@
 # Behavior-first test audit: research and proposed next pass
 
-**PROGRESS:** Four bounded audits and approved cleanups complete locally; both scoped-pool scenarios pass before/after with unchanged workloads and assertions.
+**PROGRESS:** Five bounded audits and approved cleanups complete locally; the 657→68 correction fixture passes unchanged checks, with its former scale coverage explicitly dropped.
 
 ## First-pass outcome
 
@@ -23,6 +23,9 @@ The same method passed before and after: 29.212s → 4.388s in one local compari
 hosted CI or whole-suite savings claim. The fourth audit preserves the 39-fixture/600-history
 starvation regression and applies the same approved case-local pool: 19.313s → 4.297s for the
 same method in one local pair. Concurrency tests and class-wide fixtures remain unchanged.
+The fifth audit's compact correction source was also approved, including its explicit full-roster
+scale loss: one-line 657→68 selection, unchanged protocol assertions, before/after passes at
+16.945s → 5.796s for the same method. No hosted or whole-suite savings are inferred.
 
 ## Scope and constraints
 

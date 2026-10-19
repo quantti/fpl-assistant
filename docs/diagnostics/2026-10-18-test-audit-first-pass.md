@@ -1,6 +1,6 @@
 # First bounded test-audit pass
 
-**PROGRESS:** Four bounded audits and approved cleanups complete locally; both scoped-pool scenarios pass their recorded before/after checks.
+**PROGRESS:** Five bounded audits and approved changes complete locally; the compact correction fixture passes all original checks in its recorded before/after pair.
 
 Source revision: `96caea7c123ed64c66a6845b45e2e31234f8345f` (PR #173).
 [Audit plan](../superpowers/plans/2026-10-18-behavior-first-test-audit.md).
@@ -448,3 +448,73 @@ Parent scope review and `git diff --check` pass; the indentation-insensitive dif
 the import and scoped pool/JDBC/transaction/store setup. No fake red was generated for this
 fixture-only optimization. No full class/suite, multi-worker rerun, independent panel, CI,
 production access or remote publication was performed for D1.
+
+## Fifth bounded audit: two fresh batches after a schedule correction
+
+Source `84257518c43b77c652a6f469b09f7e5d16f22a0c`; one candidate:
+`OwnedMatchdayAdmissionProgressIntegrationTest.scheduleCorrectionCanRepublishOnlyAfterTwoFreshCoordinatorBatches`
+(lines 663–834), its SourceData/Harness and direct-observation helpers. Historical `master169`
+time is 10.588s, not a new timing. No tests/builds/benchmarks ran in this audit.
+
+**Reject another pooling change:** this class already owns a closed-after-class Hikari pool with
+maximum three connections. Its harness uses actual loopback HTTP and asynchronous DB supervision;
+a new one-connection wrapper or global pool reduction would not repeat C2/D1 safely.
+
+**E1 — proposed one-line fixture reduction:** only this method can select the existing
+`SourceData.load()` (68 players) rather than `loadActiveAcceptanceRoster()` (657). Both paths keep
+20 clubs, the full fixture list, the first 50 finished synthetic fixtures, validated source pairs
+and coherent per-club live/history documents. In both, only the first two players per club have
+90 minutes; the remaining selected players have real zero-minute rows. Thus the compact source
+still reaches the direct helper's positive `knownZeroMinuteRows` assertion, rather than removing
+that evidence. No new generator, resource or library is needed.
+
+Keep every correction oracle: real initial pending→verified publication, score/header change
+with unchanged metrics, retention of physical ownership/last-good receipt/evidence, OFF/ACTIVE
+reader masking, unrelated canonical publication not resetting fixture proof, one new batch still
+pending, and a second independent batch starting >=10 minutes after the first finishes before
+republishing. Keep the harness, controlled clock, real SQL/HTTP and cleanup unchanged.
+
+**Explicit limit:** this drops the 657-player catalogue/full-club-roster and large-backlog shape
+from this particular correction regression. It does not prove equivalent full-size progress or
+performance. Full-roster generators/callers remain for their separate purposes; another test's
+full-roster check is not automatically equivalent to this old publisher path.
+
+The proposed verification was one unchanged-method run, then the same method with compact source
+and every original assertion; failures must not justify loosening the checks. E1 was not edited
+or measured during this read-only pass. Subsequent approval and verification follow.
+
+## Approved E1 fixture reduction and verification
+
+The owner accepted the explicitly stated full-roster/backlog-scale loss in this one correction
+regression. The only test-code change is its source selection: `loadActiveAcceptanceRoster()` →
+`load()`. The existing compact generator supplies 68 players instead of 657; all source/harness
+helpers, timing, transaction boundaries, loopback HTTP and assertion code are unchanged. Other
+full-roster source callers remain untouched. Both before and after passed the real zero-minute,
+fresh-two-batch/10-minute, ownership, retained evidence/metrics and reader-masking checks.
+
+Both guarded runs selected only:
+
+```bash
+./gradlew --offline --console=plain test \
+  --tests fi.karivanttinen.fplassistant.sync.OwnedMatchdayAdmissionProgressIntegrationTest.scheduleCorrectionCanRepublishOnlyAfterTwoFreshCoordinatorBatches
+```
+
+| Observed check | Before, source 8425751 | After, compact source |
+| --- | ---: | ---: |
+| JUnit method time | 16.945s | 5.796s |
+| JUnit class time | 17.930s | 6.663s |
+| Gradle build time | 28s | 20s |
+| Tests / failures / errors / skips | 1 / 0 / 0 / 0 | 1 / 0 / 0 / 0 |
+
+This is one local comparison pair, not repeated sampling or hosted billing evidence. The after
+build compiled the changed test; before compilation was up-to-date. The same cleared/whitelisted
+dummy-key environment, guarded disposable `127.0.0.1:55432/postgres`, 1536 MiB/no-swap scope,
+CPU quota 200%, 360s timeout and host-memory guard were used, with no other Gradle/test JVM active
+at admission. Receipts: `/tmp/fpl-correction-before.UK5h7a/{test.log,result.xml}` and
+`/tmp/fpl-correction-after.Aonc6x/{test.log,result.xml}`. Tested after-source SHA-256:
+`8b1e821d19eb4f3d7228c76a957a1bf04a06ab235534ae3b5e10df4de235f4d0`.
+
+Parent review confirms a one-line source-selection diff and `git diff --check` passes. No fake
+red was manufactured for reducing a fixture while keeping its existing protocol assertions.
+No full class/suite, independent panel, CI, production access or remote publication was performed.
+The compact pass is not a replacement claim for this test's former 657-player scale coverage.
