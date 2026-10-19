@@ -37,10 +37,10 @@ import org.springframework.stereotype.Component;
  * claimed a club constraint it had not met, and produced a total that did not match its own
  * table. None of those are prompt failures; they are the wrong tool for the job.
  *
- * <p><b>Provenance is three lines.</b> Prices, clubs, ownership and availability come from the
- * daily capture; metrics come from {@code player_fixture_stats}, which may be a season behind;
+ * <p><b>Provenance separates four sources.</b> Prices, clubs, ownership and availability come from the
+ * daily capture; player metrics come from {@code player_fixture_stats}, which may be a season behind;
  * the fixtures every projection is summed over come from the FPL schedule capture. One banner
- * cannot describe three sources, and a price or a fixture attributed to the wrong season is the
+ * cannot describe those sources or Understat's separate team xG/xGA capture. A price or fixture attributed to the wrong season is the
  * error the provenance convention exists to prevent. The schedule line is a <em>source</em> line,
  * not a second season banner: historical metrics stay labelled historical even when prices and
  * future fixtures are the season being played. This is a documented exception, like
@@ -70,19 +70,17 @@ public class SquadTools implements FplTool {
             comma-separated. budget is millions, default 100.0; for a wildcard use squad value
             plus bank from getMyTeam. nextN defaults to 5. formation may force "3-4-3".
             Every XI player needs a fresh available ('a') daily capture with valid position/club,
-            coherent same-season identity and a complete current-club evidence window. Minutes do
-            not affect a player's score or XI eligibility; an under-60 appearance in the latest
-            five complete observations is a factual pick-list note only. Only a verified
-            different-club observation fences the spell; otherwise expected fixtures start at
-            season start. Doubtful, stale, missing, pending or inconsistent data causes abstention,
-            and last-season history cannot certify the current role. Every starter must also play
+            coherent same-season identity and usable current-club player observations. Live and
+            provisionally finished match rows are usable; missing rows are unknown, not zero.
+            Minutes do not affect a player's score or XI eligibility; an under-60 appearance in
+            the latest five recorded observations is a factual pick-list note only. Doubtful
+            availability or incoherent player evidence causes abstention, and last-season history
+            cannot certify the current role. Every starter must also play
             for a club with at least one fixture in the editable window of the next nextN calendar
             gameweeks, counted from the next deadline in the captured schedule. A club blanked
             across that window, or one whose schedule is unresolved, can be bought for the bench
-            only; its rows print a real zero and an n/a respectively, never each other. A general
-            squad is refused as COMPARISON_DATA_INCOMPLETE when a relevant elapsed unfinished
-            fixture or a completed club side without usable verified core rows removes a whole
-            club from comparison. Filters, pins and constraints cannot hide or waive that refusal.
+            only; its rows print a real zero and an n/a respectively, never each other.
+            An unfinished match or another player's missing data never excludes a whole club.
             An ineligible mustInclude may be bought only on the bench. This history is not a
             future-start guarantee, and a pin, budget or relaxed template/premium default cannot
             waive it. Ranking uses full-fixture expected points: xG/xA ability, fixture-specific
@@ -91,10 +89,9 @@ public class SquadTools implements FplTool {
             a blank removes one. It does not use realised points, observed minutes, 60+ rates or
             expected minutes. A fixture with no published FDR is scored at a neutral 3 and labelled.
             Unknown projections have zero optimiser weight but are printed n/a/unscored, never as
-            a zero forecast. NOT ranked on form. The reply attributes three sources — the daily
-            price capture, the metric season and the FPL schedule capture — and adds the factual
-            evidence note where applicable; the metric season line covers the metrics only, while
-            price and fixtures come from the other two. Relay a refusal as written.
+            a zero forecast. NOT ranked on form. The reply attributes daily prices, the FPL player
+            metric season, FPL schedule and Understat team xG/xGA with separate capture/sample dates.
+            The metric season line covers FPL player metrics only. Relay a refusal as written.
             """)
     public String buildSquad(String mustInclude, String mustExclude, String clubQuota,
                              double budget, int nextN, String formation) {
@@ -136,14 +133,8 @@ public class SquadTools implements FplTool {
             String scheduleProvenance = scheduleProvenance(loaded.snapshot(), capture, season);
             String scheduleNote = scheduleEvidence(loaded.snapshot(), horizon);
             String evidenceHeader = priceProvenance + "\n" + metricProvenance
-                    + "\n" + scheduleProvenance + "\n" + loaded.snapshot().metricRefresh()
+                    + "\n" + scheduleProvenance + "\n" + loaded.snapshot().metricEvidence()
                     + "\n" + scheduleNote;
-            if (horizon.status() == HorizonFixtures.Status.KNOWN
-                    && loaded.snapshot().comparisonCoverage().assessed()
-                    && !loaded.snapshot().comparisonCoverage().complete()) {
-                return evidenceHeader + "\n" + ComparisonCoverageFormatter.refusal(
-                        loaded.snapshot().comparisonCoverage(), loaded.snapshot().asOf());
-            }
             if (candidates.isEmpty()) {
                 return evidenceHeader + "\nNo players are available to pick from today's capture.";
             }
@@ -232,17 +223,14 @@ public class SquadTools implements FplTool {
             blendNote += " Clean sheets are projected per fixture from club expected-goal rates:"
                     + " the club's expected concession times the opponent's expected scoring"
                     + " rate over the league mean, adjusted for venue."
-                    + (metric.blending()
-                            ? " Club rates blend " + metric.played().code() + " with "
-                                    + metric.previousCode() + " on the same ramp keyed on the"
-                                    + " club's completed fixtures."
-                            : "")
+                    + " Club rates use the separately attributed Understat seasons, with the same"
+                    + " ramp keyed on each club's own completed Understat fixtures."
                     + " FDR scales the attacking term only; a fixture with no club projection"
                     + " contributes no clean sheet and its row is partial.";
 
             return SquadFormatter.format(solved.get(), constraints,
                     priceProvenance, metricProvenance, scheduleProvenance,
-                    loaded.snapshot().metricRefresh(), excludedForNoRecord, pinned, excludedPlayers, projections,
+                    loaded.snapshot().metricEvidence(), excludedForNoRecord, pinned, excludedPlayers, projections,
                     !anyCandidateWasScoreable, blendNote, horizon);
         } catch (DataAccessException e) {
             log.error("buildSquad failed", e);

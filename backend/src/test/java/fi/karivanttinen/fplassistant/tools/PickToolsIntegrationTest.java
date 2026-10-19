@@ -81,6 +81,7 @@ class PickToolsIntegrationTest {
 
     @Autowired
     PickTools tools;
+    @Autowired fi.karivanttinen.fplassistant.teamxg.UnderstatStore understat;
 
     @Autowired
     ScheduleSource scheduleSource;
@@ -117,6 +118,14 @@ class PickToolsIntegrationTest {
                         + " WHERE season_id = ? AND player_id = ? AND fixture_id = ?",
                 SEASON_ID, MIXED_MID, mixedFixture);
         seedAverageLeague(1.20, 1.20);
+        RankingSeed.seedTeamXg(understat, 2026, CAPTURED_AT, FIRST_DEADLINE);
+        // Fresh club identities are needed to bridge opponents, even when no player is selectable.
+        for (int club = 11; club <= 20; club++) {
+            jdbc.update("INSERT INTO " + dailyTable + " (season,price_date,element_id,web_name,team_id,team_short,element_type,now_cost,status,captured_at)"
+                            + " VALUES (?,?,?,?,?,?,4,45,'u',?)", SEASON, CAPTURE_DATE,
+                    GHOST_FIRST + club - 1, "Identity " + club, RankingSeed.team(club),
+                    "K%02d".formatted(club), Timestamp.from(CAPTURED_AT));
+        }
     }
 
     /** One ghost row per club side for gameweeks 1-3: an average league every club belongs to. */
@@ -231,7 +240,7 @@ class PickToolsIntegrationTest {
     }
 
     @Test
-    void bothPickListsLabelRestrictedComparisonBeforeRowsAndKeepSourceLines() {
+    void bothPickListsUseAvailableRowsWithoutWaitingForAnUnfinishedMatch() {
         ScheduleSource.FixtureRow incident = RankingSeed.fixtures(CAPTURED_AT, FIRST_DEADLINE)
                 .stream().filter(row -> row.gameweek() == 4
                         && row.homeTeamId() <= RankingSeed.team(9)
@@ -245,11 +254,11 @@ class PickToolsIntegrationTest {
                 tools.getCaptainCandidates(5))) {
             assertThat(result).contains("Data source: FPL live prices", "Data source: season " + SEASON,
                             "Data source: FPL's own gameweek and fixture list")
-                    .contains("RESTRICTED COMPARISON POPULATION")
-                    .contains("fixture " + incident.id() + " (GW4)")
-                    .contains("not a league-wide best list")
-                    .contains("Player comparison receipt:");
-            int coverage = result.indexOf("RESTRICTED COMPARISON POPULATION");
+                    .contains("Comparison coverage: available recorded player rows")
+                    .contains("missing rows are unknown, not zero")
+                    .contains("Player comparison population:")
+                    .doesNotContain("RESTRICTED COMPARISON POPULATION");
+            int coverage = result.indexOf("Comparison coverage:");
             int firstRow = result.indexOf("  ", result.indexOf("Differential picks"));
             if (firstRow < 0) {
                 firstRow = result.indexOf("  ", result.indexOf("Captain candidates"));
@@ -260,11 +269,12 @@ class PickToolsIntegrationTest {
         jdbc.update("UPDATE " + scheduleSource.fixtureTable()
                 + " SET finished=true WHERE season=? AND id=?", SEASON, incident.id());
         assertThat(tools.getDifferentialPicks("any", 100, 5))
-                .contains("completed side missing usable core rows");
+                .contains("Comparison coverage: available recorded player rows")
+                .doesNotContain("completed side missing usable core rows");
         seedGhostSide(incident, incident.homeTeamId(), 1.2, 1.2);
         seedGhostSide(incident, incident.awayTeamId(), 1.2, 1.2);
         assertThat(tools.getDifferentialPicks("any", 100, 5))
-                .contains("Comparison coverage: all clubs")
+                .contains("Comparison coverage: available recorded player rows")
                 .doesNotContain("RESTRICTED COMPARISON POPULATION");
     }
 
@@ -376,7 +386,7 @@ class PickToolsIntegrationTest {
         assertThat(result).contains("Striker", "Reliable")
                 .doesNotContain(" Defender (").doesNotContain(" Keeper (")
                 .doesNotContain(" Doubtful (")
-                .contains("availability risk 2")
+                .contains("availability risk 12")
                 .doesNotContainIgnoringCase("guaranteed starter");
     }
 
@@ -393,8 +403,7 @@ class PickToolsIntegrationTest {
     void eachPickListsItsCleanSheetChancePerFixtureWithOpponentAndVenue() {
         String defender = lineFor(tools.getDifferentialPicks("DEF", 10, 2), "Defender");
 
-        // Clubs 10-20 have no captured player here, so an opponent may print as "team <id>";
-        // in production every club has one and prints its short name.
+        // Opponent identities come from the full daily capture, not from selectable players.
         assertThat(defender).contains("CS ").contains(" over 2 fixtures (vs ")
                 .containsPattern("vs (K\\d\\d|team \\d+) [ha] \\d+% at xGA \\d+\\.\\d\\d")
                 .doesNotContain("season-average").doesNotContain("at xGC");
@@ -443,7 +452,7 @@ class PickToolsIntegrationTest {
     }
 
     @Test
-    void aStrongerOpponentLowersTheCleanSheetTermForThatFixtureOnly() {
+    void aStrongerUnderstatOpponentLowersTheCleanSheetTotal() {
         int club = RankingSeed.team(3);                                      // the Defender's club
         int firstFixture = fixtureFor(club, 4);                   // GW4, the first editable round
         int opponent = jdbc.queryForObject("SELECT CASE WHEN team_h = ? THEN team_a ELSE team_h END"
@@ -451,10 +460,10 @@ class PickToolsIntegrationTest {
                 Integer.class, club, SEASON, firstFixture);
         String before = lineFor(tools.getDifferentialPicks("DEF", 10, 2), "Defender");
 
-        // Triple the opponent's attack in every side it has played.
-        jdbc.update("UPDATE player_fixture_stats SET expected_goals = expected_goals * 3"
-                + " WHERE season_id = ? AND player_id = ?", SEASON_ID,
-                GHOST_FIRST + (opponent - RankingSeed.team(1)));
+        // Team attack changes in Understat, not by rewriting an FPL player's xG.
+        String opponentName = "K%02d".formatted(opponent - RankingSeed.team(1) + 1);
+        jdbc.update("UPDATE fpl_understat_match_test SET home_xg=home_xg*3 WHERE season='2026-27' AND home_team=?", opponentName);
+        jdbc.update("UPDATE fpl_understat_match_test SET away_xg=away_xg*3 WHERE season='2026-27' AND away_team=?", opponentName);
         String after = lineFor(tools.getDifferentialPicks("DEF", 10, 2), "Defender");
 
         assertThat(horizonScore(after)).isLessThan(horizonScore(before));
@@ -490,7 +499,7 @@ class PickToolsIntegrationTest {
     void exclusionCountsDistinguishAvailabilityAndUnknownEvidence() {
         String result = tools.getDifferentialPicks("any", 100, 5);
 
-        assertThat(result).contains("availability risk 2")
+        assertThat(result).contains("availability risk 12")
                 .contains("unknown current evidence 2")
                 .doesNotContain("consistently under-60");
     }

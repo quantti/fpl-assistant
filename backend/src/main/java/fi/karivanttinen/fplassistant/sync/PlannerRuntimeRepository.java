@@ -110,14 +110,99 @@ public final class PlannerRuntimeRepository {
                     INSERT INTO %s(instance_id, started_at, heartbeat_at, runtime_mode, runtime_epoch)
                     VALUES (?, ?, ?, 'OFF', 0) ON CONFLICT (instance_id) DO NOTHING
                     """.formatted(tables.plannerRuntime()), key, Timestamp.from(now), Timestamp.from(now));
-            Long previous = jdbc.queryForObject("SELECT runtime_epoch FROM %s WHERE instance_id=? FOR UPDATE"
-                    .formatted(tables.plannerRuntime()), Long.class, key);
-            long epoch = Math.addExact(previous == null ? 0 : previous, 1);
+            List<ActivationState> prior = jdbc.query("SELECT runtime_epoch,runtime_mode FROM %s "
+                    .formatted(tables.plannerRuntime()) + "WHERE instance_id=? FOR UPDATE",
+                    (rs, row) -> new ActivationState(rs.getLong(1), rs.getString(2)), key);
+            if (prior.size() != 1) throw new IllegalStateException("Owned-sync mode row is missing");
+            List<Long> handoff = jdbc.query("SELECT latest_generation FROM " + tables.receipt()
+                            + " WHERE season=? AND publication_key='importer-handoff' FOR UPDATE",
+                    (rs, row) -> rs.getObject(1, Long.class), season);
+            if ("ACTIVE".equals(prior.getFirst().mode()) && handoff.size() == 1
+                    && Objects.equals(handoff.getFirst(), prior.getFirst().epoch())) {
+                throw new IllegalStateException("Importer owns the ACTIVE epoch; retire it before legacy startup");
+            }
+            long epoch = Math.addExact(prior.getFirst().epoch(), 1);
             fenceRuns(season, now, "Run fenced at owned-sync activation " + mode + " epoch " + epoch);
             jdbc.update("DELETE FROM %s WHERE season=?".formatted(tables.plannerSlot()), season);
             jdbc.update("UPDATE %s SET runtime_mode=?, runtime_epoch=?, activation_boundary=?, heartbeat_at=? WHERE instance_id=?"
                     .formatted(tables.plannerRuntime()), mode.name(), epoch, Timestamp.from(now), Timestamp.from(now), key);
             return new OwnedSyncStore.RuntimeFence(season, mode, epoch, now);
+        });
+    }
+
+    /**
+     * Explicitly hands a drained OFF legacy epoch to the importer. Never called by startup.
+     * The old runtime's epoch is fenced before OFF; this new epoch cannot be reused by it.
+     */
+    public OwnedSyncStore.RuntimeFence handoffImporterFromOff(String season, long expectedOffEpoch) {
+        requireText(season, 10, "season");
+        if (expectedOffEpoch <= 0) throw new IllegalArgumentException("invalid OFF epoch");
+        return tx.execute(status -> {
+            Integer playing = jdbc.queryForObject("SELECT count(*) FROM season WHERE is_current=true "
+                    + "AND code=?", Integer.class, season);
+            if (playing == null || playing != 1) {
+                throw new IllegalStateException("Importer handoff requires the configured playing season");
+            }
+            String key = "mode:" + season;
+            List<OffState> off = jdbc.query("SELECT runtime_epoch,activation_boundary FROM "
+                            + tables.plannerRuntime() + " WHERE instance_id=? AND runtime_mode='OFF' FOR UPDATE",
+                    (rs, row) -> new OffState(rs.getLong(1), rs.getTimestamp(2)), key);
+            if (off.size() != 1 || off.getFirst().epoch() != expectedOffEpoch
+                    || off.getFirst().activationBoundary() == null) {
+                throw new OwnedSyncStore.RuntimeFenceLostException("Expected drained OFF epoch is stale");
+            }
+            Instant now = clock.instant();
+            Long recentWorkers = jdbc.queryForObject("SELECT count(*) FROM " + tables.plannerRuntime()
+                    + " WHERE instance_id NOT LIKE 'mode:%' AND instance_id NOT LIKE 'watchdog:%' "
+                    + "AND instance_id NOT LIKE 'delivery%' AND heartbeat_at>=?", Long.class,
+                    Timestamp.from(now.minus(java.time.Duration.ofMinutes(10))));
+            Long unfinished = jdbc.queryForObject("SELECT count(*) FROM " + tables.run()
+                    + " WHERE season=? AND state IN ('PENDING','LEASED')", Long.class, season);
+            if (recentWorkers == null || recentWorkers != 0 || unfinished == null || unfinished != 0) {
+                throw new OwnedSyncStore.RuntimeFenceLostException("Old worker or permit has not drained");
+            }
+            long epoch = Math.addExact(expectedOffEpoch, 1);
+            jdbc.update("DELETE FROM " + tables.plannerSlot() + " WHERE season=?", season);
+            int changed = jdbc.update("UPDATE " + tables.plannerRuntime()
+                    + " SET runtime_mode='ACTIVE', runtime_epoch=?, activation_boundary=?, heartbeat_at=? "
+                    + "WHERE instance_id=? AND runtime_mode='OFF' AND runtime_epoch=?", epoch,
+                    Timestamp.from(now), Timestamp.from(now), key, expectedOffEpoch);
+            if (changed != 1) throw new OwnedSyncStore.RuntimeFenceLostException("OFF epoch changed");
+            jdbc.update("INSERT INTO " + tables.receipt()
+                    + "(season,publication_key,latest_generation,published_at) VALUES "
+                    + "(?,'importer-handoff',?,?) ON CONFLICT (season,publication_key) DO UPDATE "
+                    + "SET latest_generation=EXCLUDED.latest_generation,published_at=EXCLUDED.published_at",
+                    season, epoch, Timestamp.from(now));
+            return new OwnedSyncStore.RuntimeFence(season, OwnedSyncMode.ACTIVE, epoch, now);
+        });
+    }
+
+    /** Explicit rollback fence for an epoch created by handoffImporterFromOff, not a legacy ACTIVE writer. */
+    public long retireImporterToOff(String season, long expectedImporterEpoch) {
+        requireText(season, 10, "season");
+        if (expectedImporterEpoch <= 0) throw new IllegalArgumentException("invalid importer epoch");
+        return tx.execute(status -> {
+            String key = "mode:" + season;
+            List<Long> active = jdbc.query("SELECT runtime_epoch FROM " + tables.plannerRuntime()
+                            + " WHERE instance_id=? AND runtime_mode='ACTIVE' FOR UPDATE",
+                    (rs, row) -> rs.getLong(1), key);
+            List<Long> handoff = jdbc.query("SELECT latest_generation FROM " + tables.receipt()
+                            + " WHERE season=? AND publication_key='importer-handoff' FOR UPDATE",
+                    (rs, row) -> rs.getObject(1, Long.class), season);
+            if (active.size() != 1 || active.getFirst() != expectedImporterEpoch
+                    || handoff.size() != 1 || !Objects.equals(handoff.getFirst(), expectedImporterEpoch)) {
+                throw new OwnedSyncStore.RuntimeFenceLostException("Importer epoch is stale or not handoff-owned");
+            }
+            Instant now = clock.instant();
+            long offEpoch = Math.addExact(expectedImporterEpoch, 1);
+            fenceRuns(season, now, "Run fenced at importer rollback to OFF");
+            jdbc.update("DELETE FROM " + tables.plannerSlot() + " WHERE season=?", season);
+            int changed = jdbc.update("UPDATE " + tables.plannerRuntime()
+                    + " SET runtime_mode='OFF', runtime_epoch=?, heartbeat_at=? "
+                    + "WHERE instance_id=? AND runtime_mode='ACTIVE' AND runtime_epoch=?", offEpoch,
+                    Timestamp.from(now), key, expectedImporterEpoch);
+            if (changed != 1) throw new OwnedSyncStore.RuntimeFenceLostException("Importer epoch changed");
+            return offEpoch;
         });
     }
 
@@ -247,4 +332,6 @@ public final class PlannerRuntimeRepository {
 
     public record RuntimeState(String instanceId, Instant startedAt, Instant heartbeatAt,
                                String lastError, Instant lastErrorAt) { }
+    private record ActivationState(long epoch, String mode) { }
+    private record OffState(long epoch, Timestamp activationBoundary) { }
 }

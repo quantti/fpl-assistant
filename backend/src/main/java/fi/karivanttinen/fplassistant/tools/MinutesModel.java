@@ -1,10 +1,10 @@
 package fi.karivanttinen.fplassistant.tools;
 
-/** Shared availability and complete-current-evidence rule for picks and squad XIs. */
+/** Shared availability and usable-player-evidence rule for picks and squad XIs. */
 public final class MinutesModel {
 
     public enum Eligibility {
-        ELIGIBLE("fresh availability and complete current evidence"),
+        ELIGIBLE("fresh availability and usable current player evidence"),
         AVAILABILITY_RISK("the fresh FPL capture does not mark the player available"),
         UNKNOWN_CURRENT_EVIDENCE("current-season evidence is missing, stale or incoherent");
 

@@ -13,13 +13,16 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Optional;
 import java.util.Set;
 
 import fi.karivanttinen.fplassistant.price.DailyPriceFreshnessCheck;
 import fi.karivanttinen.fplassistant.schedule.ScheduleFreshnessCheck;
 import fi.karivanttinen.fplassistant.schedule.ScheduleSource;
+import fi.karivanttinen.fplassistant.sync.GameweekFinality;
+import fi.karivanttinen.fplassistant.sync.GameweekFinalityReader;
+import fi.karivanttinen.fplassistant.teamxg.UnderstatStore;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
@@ -50,7 +53,6 @@ public class RankingMetrics {
         UNMAPPABLE_HISTORY,
         CONTRADICTORY_OPPONENT,
         LATEST_CLUB_MISMATCH,
-        RESULT_PENDING,
         FINISHED_WITHOUT_CHRONOLOGY,
         MULTIPLE_CLUBS,
         NO_VERIFIED_CLUB,
@@ -106,19 +108,54 @@ public class RankingMetrics {
     public record Snapshot(Instant asOf, DailyPriceSource.Capture capture,
                            MetricSeasons metricSeasons, ScheduleSource.View schedule,
                            List<Candidate> candidates, ClubRates.Rates clubRates,
-                           String metricRefresh, ComparisonCoverage comparisonCoverage) {
+                           String metricRefresh, ComparisonCoverage comparisonCoverage,
+                           String gameweekFinality, Map<String, Instant> clubSampleThrough,
+                           Map<String, Instant> clubCapturedAt) {
         public Snapshot {
             candidates = List.copyOf(candidates);
             clubRates = Objects.requireNonNull(clubRates);
             metricRefresh = Objects.requireNonNull(metricRefresh);
             comparisonCoverage = Objects.requireNonNull(comparisonCoverage);
+            gameweekFinality = Objects.requireNonNull(gameweekFinality);
+            clubSampleThrough = Map.copyOf(clubSampleThrough);
+            clubCapturedAt = Map.copyOf(clubCapturedAt);
+        }
+
+        public Snapshot(Instant asOf, DailyPriceSource.Capture capture,
+                        MetricSeasons metricSeasons, ScheduleSource.View schedule,
+                        List<Candidate> candidates, ClubRates.Rates clubRates,
+                        String metricRefresh, ComparisonCoverage comparisonCoverage,
+                        String gameweekFinality, Map<String, Instant> clubSampleThrough) {
+            this(asOf, capture, metricSeasons, schedule, candidates, clubRates, metricRefresh,
+                    comparisonCoverage, gameweekFinality, clubSampleThrough, Map.of());
+        }
+
+        public String teamEvidence() {
+            return UnderstatStore.provenance(clubCapturedAt, clubSampleThrough);
+        }
+
+        public Snapshot(Instant asOf, DailyPriceSource.Capture capture,
+                        MetricSeasons metricSeasons, ScheduleSource.View schedule,
+                        List<Candidate> candidates, ClubRates.Rates clubRates,
+                        String metricRefresh, ComparisonCoverage comparisonCoverage,
+                        String gameweekFinality) {
+            this(asOf, capture, metricSeasons, schedule, candidates, clubRates, metricRefresh,
+                    comparisonCoverage, gameweekFinality, Map.of());
+        }
+
+        public Snapshot(Instant asOf, DailyPriceSource.Capture capture,
+                        MetricSeasons metricSeasons, ScheduleSource.View schedule,
+                        List<Candidate> candidates, ClubRates.Rates clubRates,
+                        String metricRefresh, ComparisonCoverage comparisonCoverage) {
+            this(asOf, capture, metricSeasons, schedule, candidates, clubRates, metricRefresh,
+                    comparisonCoverage, "");
         }
 
         public Snapshot(Instant asOf, DailyPriceSource.Capture capture,
                         MetricSeasons metricSeasons, ScheduleSource.View schedule,
                         List<Candidate> candidates, ClubRates.Rates clubRates) {
             this(asOf, capture, metricSeasons, schedule, candidates, clubRates,
-                    DataAge.METRIC_REFRESH, ComparisonCoverage.assemble(candidates, List.of()));
+                    DataAge.METRIC_REFRESH, ComparisonCoverage.assemble(candidates, List.of()), "");
         }
 
         public Snapshot(Instant asOf, DailyPriceSource.Capture capture,
@@ -126,7 +163,12 @@ public class RankingMetrics {
                         List<Candidate> candidates, ClubRates.Rates clubRates,
                         String metricRefresh) {
             this(asOf, capture, metricSeasons, schedule, candidates, clubRates, metricRefresh,
-                    ComparisonCoverage.assemble(candidates, List.of()));
+                    ComparisonCoverage.assemble(candidates, List.of()), "");
+        }
+
+        public String metricEvidence() {
+            return (gameweekFinality.isBlank() ? metricRefresh : metricRefresh + "\n" + gameweekFinality)
+                    + "\n" + teamEvidence();
         }
     }
 
@@ -180,6 +222,7 @@ public class RankingMetrics {
         int contradictions;
         final Aggregate ability = new Aggregate();
         final List<ClubObservation> clubs = new ArrayList<>();
+        final Set<Integer> fixtureIds = new HashSet<>();
 
         ClubObservation latestClub() {
             return clubs.stream().max(CHRONOLOGY).orElse(null);
@@ -194,12 +237,10 @@ public class RankingMetrics {
     private record Target(int playerId, CanonicalFixture fixture) {
     }
 
-    private record SideTarget(int clubId, CanonicalFixture fixture) {
-    }
-
     private record CurrentBuild(Map<Integer, SeasonMetrics> metrics,
                                 List<ComparisonCoverage.ClubGap> gaps,
-                                boolean comparisonAssessed) {
+                                boolean comparisonAssessed, boolean provisionalEvidence,
+                                boolean checkedFinalEvidence, String gameweekFinality) {
     }
 
     private static final Comparator<ClubObservation> CHRONOLOGY = Comparator
@@ -214,18 +255,23 @@ public class RankingMetrics {
     private final String dailyTable;
     private final Clock clock;
     private final PfsReadSource pfs;
+    private final GameweekFinalityReader finalityReader;
+    private final UnderstatStore understat;
     private final TransactionTemplate readTransaction;
 
+    @Autowired
     public RankingMetrics(JdbcTemplate jdbc, ScheduleSource schedules,
                           PlatformTransactionManager transactionManager,
                           ObjectProvider<Clock> clock,
                           @Value("${fpl.daily-price.table-name}") String dailyTable,
-                          PfsReadSource pfs) {
+                          PfsReadSource pfs, GameweekFinalityReader finalityReader, UnderstatStore understat) {
         this.jdbc = jdbc;
         this.schedules = schedules;
         this.dailyTable = dailyTable;
         this.clock = clock.getIfAvailable(Clock::systemUTC);
         this.pfs = pfs;
+        this.finalityReader = finalityReader;
+        this.understat = understat;
         this.readTransaction = new TransactionTemplate(transactionManager);
         this.readTransaction.setReadOnly(true);
         this.readTransaction.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);
@@ -273,12 +319,18 @@ public class RankingMetrics {
         Map<Integer, SeasonMetrics> currentMetrics;
         List<ComparisonCoverage.ClubGap> coverageGaps = List.of();
         boolean comparisonAssessed = false;
+        boolean provisionalEvidence = false;
+        boolean checkedFinalEvidence = false;
+        String gameweekFinality = "";
         if (metric.played().currentSeason()) {
             CurrentBuild currentBuild = buildCurrentMetrics(capture, metric.played(), schedule,
                     capturePlayers, currentIds, currentPositions, asOf);
             currentMetrics = currentBuild.metrics();
             coverageGaps = currentBuild.gaps();
             comparisonAssessed = currentBuild.comparisonAssessed();
+            provisionalEvidence = currentBuild.provisionalEvidence();
+            checkedFinalEvidence = currentBuild.checkedFinalEvidence();
+            gameweekFinality = currentBuild.gameweekFinality();
         } else {
             CanonicalSource source = new CanonicalSource("fixture", "season_id",
                     metric.played().seasonId());
@@ -292,39 +344,22 @@ public class RankingMetrics {
         if (metric.previous().isPresent()) {
             SeasonContext previous = metric.previous().orElseThrow();
             CanonicalSource source = new CanonicalSource("fixture", "season_id", previous.seasonId());
-            previousMetrics = buildHistoricalMetrics(previous, source, loadCanonicalFixtures(source),
+            List<CanonicalFixture> previousFixtures = loadCanonicalFixtures(source);
+            previousMetrics = buildHistoricalMetrics(previous, source, previousFixtures,
                     new HashSet<>(previousIds.values()), currentPositionsByPlayer(
                             capturePlayers, previousIds, previousPositions));
         }
 
-        // Club sides for the same seasons the player metrics came from, keyed by capture team id.
-        Map<Integer, ClubRates.SeasonSide> rawCurrentSides;
-        Map<Integer, ClubRates.SeasonSide> currentSides;
-        if (metric.played().currentSeason()) {
-            rawCurrentSides = currentSourceFailure(capture, metric.played(), schedule, asOf) != null
-                    ? Map.of()
-                    : loadClubSides(new CanonicalSource(schedules.fixtureTable(), "season",
-                            schedule.snapshot().orElseThrow().season()),
-                            metric.played().seasonId(), asOf);
-            currentSides = rawCurrentSides;
-        } else {
-            rawCurrentSides = loadClubSides(new CanonicalSource("fixture", "season_id",
-                    metric.played().seasonId()), metric.played().seasonId(), null);
-            currentSides = bridgeClubs(rawCurrentSides, metric.played().seasonId(), capturePlayers);
-        }
-        Map<Integer, ClubRates.SeasonSide> rawPreviousSides = Map.of();
-        Map<Integer, ClubRates.SeasonSide> previousSides = Map.of();
-        if (metric.previous().isPresent()) {
-            SeasonContext previous = metric.previous().orElseThrow();
-            rawPreviousSides = loadClubSides(new CanonicalSource("fixture", "season_id",
-                    previous.seasonId()), previous.seasonId(), null);
-            previousSides = bridgeClubs(rawPreviousSides, previous.seasonId(), capturePlayers);
-        }
-        // The league constants pool every club of each season, from the raw sides rather than the
-        // bridged ones: the mean is not a club's property, so a relegated club that bridges to no
-        // capture team still shapes it, and the shipped read matches the offline measurement.
-        Optional<ClubRates.League> league = ClubRates.league(rawCurrentSides, rawPreviousSides);
-        ClubRates.Rates clubRates = ClubRates.blend(currentSides, previousSides, league);
+        Map<Integer, String> captureClubs = new HashMap<>();
+        Set<Integer> ambiguousClubs = new HashSet<>();
+        capturePlayers.forEach(p -> {
+            if (p.teamId() == null || p.teamShort() == null || p.teamShort().isBlank()) return;
+            String prior = captureClubs.putIfAbsent(p.teamId(), p.teamShort());
+            if (prior != null && !prior.equals(p.teamShort())) ambiguousClubs.add(p.teamId());
+        });
+        ambiguousClubs.forEach(captureClubs::remove);
+        // Team evidence has its own source/playing season; it does not inherit FPL player gaps.
+        var teamModel = understat.loadModel(metric.played().currentSeasonStart().getYear(), captureClubs, asOf);
 
         List<Candidate> candidates = new ArrayList<>(capturePlayers.size());
         for (CapturePlayer player : capturePlayers) {
@@ -347,9 +382,10 @@ public class RankingMetrics {
                             metric.played().currentSeason())));
         }
         ComparisonCoverage comparisonCoverage = ComparisonCoverage.assemble(
-                candidates, coverageGaps, comparisonAssessed);
-        return new Snapshot(asOf, capture, metric, schedule, candidates, clubRates,
-                DataAge.RANKING_METRIC_REFRESH, comparisonCoverage);
+                candidates, coverageGaps, comparisonAssessed, provisionalEvidence, checkedFinalEvidence);
+        return new Snapshot(asOf, capture, metric, schedule, candidates, teamModel.rates(),
+                DataAge.RANKING_METRIC_REFRESH, comparisonCoverage, gameweekFinality,
+                teamModel.through(), teamModel.capturedAt());
     }
 
     private List<CapturePlayer> loadCapture(DailyPriceSource.Capture capture) {
@@ -407,7 +443,7 @@ public class RankingMetrics {
                             Map.of(), emptyWindow(sourceFailure, player.teamId())));
                 }
             }
-            return new CurrentBuild(unavailable, List.of(), false);
+            return new CurrentBuild(unavailable, List.of(), false, false, false, "");
         }
 
         ScheduleSource.Snapshot selected = schedule.snapshot().orElseThrow();
@@ -431,7 +467,6 @@ public class RankingMetrics {
         Map<Integer, List<CanonicalFixture>> expected = new HashMap<>();
         Map<Integer, WindowReason> baseReasons = new HashMap<>();
         Map<Integer, Integer> clubs = new HashMap<>();
-        List<ComparisonCoverage.ClubGap> coverageGaps = new ArrayList<>();
         for (CapturePlayer player : players) {
             Integer playerId = ids.get(player.elementId());
             if (playerId == null) {
@@ -460,40 +495,17 @@ public class RankingMetrics {
             }
             Instant fence = later(record.latestDifferentClub(club),
                     latestDifferentDaily(dailyMembership.get(playerId), club, scheduleClubs));
-            List<CanonicalFixture> clubFixtures = fixtures.stream()
+            List<CanonicalFixture> observations = fixtures.stream()
                     .filter(fixture -> fixture.involves(club))
-                    .toList();
-            if (clubFixtures.stream().anyMatch(fixture -> fixture.finished()
-                    && fixture.kickoff() == null)) {
-                baseReasons.putIfAbsent(playerId, WindowReason.FINISHED_WITHOUT_CHRONOLOGY);
-            }
-            List<CanonicalFixture> completed = clubFixtures.stream()
-                    .filter(CanonicalFixture::finished)
+                    .filter(fixture -> record.fixtureIds.contains(fixture.id()))
                     .filter(fixture -> fixture.kickoff() != null)
                     .filter(fixture -> !fixture.kickoff().isAfter(asOf))
                     .filter(fixture -> fence == null || fixture.kickoff().isAfter(fence))
                     .sorted(NEWEST_FIXTURE)
                     .limit(ExpectedPoints.WINDOW_MATCHES)
                     .toList();
-            expected.put(playerId, completed);
-
-            Instant oldest = completed.isEmpty() ? null : completed.getLast().kickoff();
-            List<CanonicalFixture> pending = clubFixtures.stream()
-                    .filter(fixture -> !fixture.finished() && fixture.kickoff() != null)
-                    .filter(fixture -> !fixture.kickoff().isAfter(asOf))
-                    .filter(fixture -> fence == null || fixture.kickoff().isAfter(fence))
-                    .filter(fixture -> completed.size() < ExpectedPoints.WINDOW_MATCHES
-                            || !fixture.kickoff().isBefore(oldest))
-                    .toList();
-            if (!pending.isEmpty()) {
-                baseReasons.putIfAbsent(playerId, WindowReason.RESULT_PENDING);
-                pending.forEach(fixture -> coverageGaps.add(new ComparisonCoverage.ClubGap(
-                        club, fixture.id(), fixture.gameweek(), ComparisonCoverage.GapReason
-                                .RELEVANT_ELAPSED_UNFINISHED_FIXTURE)));
-            }
+            expected.put(playerId, observations);
         }
-
-        coverageGaps.addAll(loadCompletedSideCoverage(season, source, expected, clubs));
         Map<Integer, Aggregate> aggregates = loadTargetAggregates(season.seasonId(), expected);
         Map<Integer, List<FixtureOutcome>> outcomes = loadRecentOutcomes(season.seasonId(), expected);
         Map<Integer, SeasonMetrics> result = new HashMap<>();
@@ -503,80 +515,52 @@ public class RankingMetrics {
                 continue;
             }
             Aggregate aggregate = aggregates.getOrDefault(playerId, new Aggregate());
-            History record = history.getOrDefault(playerId, new History());
             Map<String, Object> ability = ability(aggregate);
             MinutesWindow window = window(clubs.get(playerId), expected.getOrDefault(playerId, List.of()),
                     aggregate, outcomes.getOrDefault(playerId, List.of()), baseReasons.get(playerId));
             result.put(playerId, new SeasonMetrics(season, playerId,
                     positions.get(player.elementId()), ability, window));
         }
-        return new CurrentBuild(result, List.copyOf(coverageGaps), true);
+        List<Target> expectedTargets = flatten(expected, false);
+        Set<Integer> expectedFixtureIds = expectedTargets.stream()
+                .map(target -> target.fixture().id()).collect(java.util.stream.Collectors.toSet());
+        Map<Integer, Set<Integer>> fixtureIdsByGameweek = new HashMap<>();
+        for (Target target : expectedTargets) {
+            Integer gameweek = target.fixture().gameweek();
+            if (gameweek != null) {
+                fixtureIdsByGameweek.computeIfAbsent(gameweek, ignored -> new HashSet<>())
+                        .add(target.fixture().id());
+            }
+        }
+        Map<Integer, PfsReadSource.IncrementalRows> rowsByGameweek =
+                pfs.incrementalRowsByGameweek(season.seasonId(), expectedFixtureIds);
+        Set<Integer> incrementalGameweeks = rowsByGameweek.entrySet().stream()
+                .filter(entry -> entry.getValue().incrementalRows() > 0)
+                .map(Map.Entry::getKey).collect(java.util.stream.Collectors.toSet());
+        Map<Integer, GameweekFinalityReader.Result> finality =
+                finalityReader.read(season.seasonId(), season.code(), incrementalGameweeks);
+        boolean checkedFinalEvidence = !incrementalGameweeks.isEmpty()
+                && incrementalGameweeks.stream().allMatch(gameweek -> finality.get(gameweek) != null
+                        && finality.get(gameweek).state() == GameweekFinality.State.FINALIZED);
+        boolean provisionalEvidence = !incrementalGameweeks.isEmpty() && !checkedFinalEvidence;
+        String finalitySummary = GameweekFinalityFormatter.summary(season.code(), rowsByGameweek,
+                finality, fixtureIdsByGameweek);
+        finalitySummary = matchStatusSummary(schedule, expectedFixtureIds)
+                + (finalitySummary.isBlank() ? "" : "\n" + finalitySummary);
+        return new CurrentBuild(result, List.of(), true,
+                provisionalEvidence, checkedFinalEvidence, finalitySummary);
     }
 
-    /** One set-based side-population read over the same expected windows as MinutesModel. */
-    private List<ComparisonCoverage.ClubGap> loadCompletedSideCoverage(
-            SeasonContext season, CanonicalSource source,
-            Map<Integer, List<CanonicalFixture>> expectedByPlayer,
-            Map<Integer, Integer> clubsByPlayer) {
-        Map<String, SideTarget> unique = new LinkedHashMap<>();
-        expectedByPlayer.forEach((playerId, fixtures) -> {
-            Integer club = clubsByPlayer.get(playerId);
-            if (club != null) {
-                fixtures.forEach(fixture -> unique.putIfAbsent(club + ":" + fixture.id(),
-                        new SideTarget(club, fixture)));
-            }
-        });
-        if (unique.isEmpty()) {
-            return List.of();
-        }
-        List<SideTarget> targets = new ArrayList<>(unique.values());
-        Set<Integer> fixtureIds = new HashSet<>();
-        targets.forEach(target -> fixtureIds.add(target.fixture().id()));
-        Map<Integer, PfsReadSource.FixtureReceipt> receipts = pfs.fixtureReceipts(
-                season.seasonId(), season.code(), fixtureIds);
-
-        List<Object> args = new ArrayList<>();
-        List<String> values = new ArrayList<>();
-        for (SideTarget target : targets) {
-            values.add("(?, ?)");
-            args.add(target.clubId());
-            args.add(target.fixture().id());
-        }
-        args.add(source.seasonValue());
-        args.add(season.seasonId());
-        Map<String, Integer> playedRows = new HashMap<>();
-        for (Map<String, Object> row : jdbc.queryForList("""
-                WITH %s, expected_side(club_id, fixture_id) AS (VALUES %s)
-                SELECT e.club_id, e.fixture_id,
-                       count(p.player_id) FILTER (WHERE p.minutes BETWEEN 1 AND 90
-                           AND p.total_points IS NOT NULL
-                           AND p.opponent_team_id = CASE WHEN p.was_home THEN f.team_a ELSE f.team_h END)
-                           AS played_rows
-                FROM expected_side e
-                JOIN %s f ON f.id=e.fixture_id AND f.%s=?
-                LEFT JOIN pfs_read p ON p.season_id=? AND p.fixture_id=e.fixture_id
-                    AND p.was_home=(e.club_id=f.team_h)
-                GROUP BY e.club_id, e.fixture_id
-                """.formatted(pfs.cte(), String.join(",", values), source.table(),
-                source.seasonColumn()), args.toArray())) {
-            playedRows.put(integer(row.get("club_id")) + ":" + integer(row.get("fixture_id")),
-                    integer(row.get("played_rows")));
-        }
-        List<ComparisonCoverage.ClubGap> gaps = new ArrayList<>();
-        for (SideTarget target : targets) {
-            PfsReadSource.FixtureReceipt receipt = receipts.getOrDefault(target.fixture().id(),
-                    PfsReadSource.FixtureReceipt.LEGACY);
-            ComparisonCoverage.GapReason reason = receipt == PfsReadSource.FixtureReceipt.UNVERIFIED_OWNED
-                    ? ComparisonCoverage.GapReason.UNVERIFIED_OWNED_RECEIPT
-                    : playedRows.getOrDefault(target.clubId() + ":" + target.fixture().id(), 0) == 0
-                            ? ComparisonCoverage.GapReason.COMPLETED_SIDE_MISSING_USABLE_CORE_ROWS
-                            : null;
-            if (reason != null) {
-                gaps.add(new ComparisonCoverage.ClubGap(target.clubId(), target.fixture().id(),
-                        target.fixture().gameweek(), reason));
-            }
-        }
-        return gaps;
+    private static String matchStatusSummary(ScheduleSource.View schedule, Set<Integer> fixtureIds) {
+        Map<String, Long> counts = schedule.fixtures().stream()
+                .filter(fixture -> fixtureIds.contains(fixture.id()))
+                .collect(java.util.stream.Collectors.groupingBy(ScheduleSource.FixtureRow::status,
+                        java.util.TreeMap::new, java.util.stream.Collectors.counting()));
+        String states = counts.entrySet().stream().map(entry -> entry.getKey() + ": " + entry.getValue())
+                .collect(java.util.stream.Collectors.joining(", "));
+        return "Recorded player observations; missing rows are unknown, not zero. Match status at schedule capture "
+                + schedule.snapshot().orElseThrow().capturedAt() + ": " + (states.isEmpty() ? "no rows" : states)
+                + ". In-progress and provisional statistics may change; match status does not exclude a player.";
     }
 
     private WindowReason currentSourceFailure(DailyPriceSource.Capture capture,
@@ -655,92 +639,6 @@ public class RankingMetrics {
         return result;
     }
 
-    /**
-     * One row per club: its completed fixture-sides in this season with the team's expected goals
-     * (summed over its players) and expected goals conceded (the team figure, read once with
-     * MAX). Sides are attributed by the canonical fixture, never {@code player_team_id}, and a
-     * side whose concession was never written is left out rather than read as a shut-out.
-     */
-    private Map<Integer, ClubRates.SeasonSide> loadClubSides(CanonicalSource source, int seasonId,
-                                                              Instant asOf) {
-        String cutoff = asOf == null ? "" : " AND f.kickoff_time <= ?";
-        String sql = """
-                WITH %s, sides AS (
-                    SELECT f.id AS fixture_id, p.was_home,
-                           CASE WHEN p.was_home THEN f.team_h ELSE f.team_a END AS club,
-                           CASE WHEN count(*) FILTER (WHERE p.owned_evidence
-                                                   AND p.expected_goals IS NULL)=0
-                                THEN SUM(p.expected_goals) END AS xg_for,
-                           CASE WHEN count(p.expected_goals_conceded)>0
-                                THEN MAX(p.expected_goals_conceded) END AS xg_against
-                    FROM pfs_read p
-                    JOIN %s f ON f.id = p.fixture_id AND f.%s = ?
-                    WHERE p.season_id = ?
-                      AND COALESCE(f.finished, false) AND f.kickoff_time IS NOT NULL%s
-                      AND p.opponent_team_id = CASE WHEN p.was_home THEN f.team_a ELSE f.team_h END
-                      AND p.minutes BETWEEN 0 AND 90
-                    GROUP BY f.id, p.was_home, CASE WHEN p.was_home THEN f.team_h ELSE f.team_a END
-                )
-                SELECT club, count(*) AS fixtures, SUM(xg_for) AS xg_for,
-                       SUM(xg_against) AS xg_against,
-                       count(*) FILTER (WHERE was_home) AS home_fixtures,
-                       COALESCE(SUM(xg_for) FILTER (WHERE was_home), 0) AS home_xg_for
-                FROM sides WHERE xg_against > 0 AND xg_for IS NOT NULL GROUP BY club
-                """.formatted(pfs.cte(), source.table(), source.seasonColumn(), cutoff);
-        List<Object> args = new ArrayList<>();
-        args.add(source.seasonValue());
-        args.add(seasonId);
-        if (asOf != null) {
-            args.add(Timestamp.from(asOf));
-        }
-        Map<Integer, ClubRates.SeasonSide> sides = new HashMap<>();
-        for (Map<String, Object> row : jdbc.queryForList(sql, args.toArray())) {
-            sides.put(integer(row.get("club")), new ClubRates.SeasonSide(
-                    integer(row.get("fixtures")), number(row.get("xg_for")),
-                    number(row.get("xg_against")), integer(row.get("home_fixtures")),
-                    number(row.get("home_xg_for"))));
-        }
-        return sides;
-    }
-
-    /**
-     * Re-keys a season's club sides by the capture's team id through a unique, case-insensitive
-     * short-name match — the club counterpart of {@link #uniqueBridge}. FPL renumbers clubs every
-     * season, so an id is not an identity across seasons; a short name that is not unique on
-     * either side attaches nothing rather than guessing.
-     */
-    private Map<Integer, ClubRates.SeasonSide> bridgeClubs(Map<Integer, ClubRates.SeasonSide> bySeasonId,
-                                                            int seasonId,
-                                                            List<CapturePlayer> capturePlayers) {
-        if (bySeasonId.isEmpty()) {
-            return Map.of();
-        }
-        Map<String, List<Integer>> seasonByName = new HashMap<>();
-        for (Map<String, Object> row : jdbc.queryForList(
-                "SELECT id, short_name FROM team WHERE season_id = ?", seasonId)) {
-            seasonByName.computeIfAbsent(key(String.valueOf(row.get("short_name"))),
-                    ignored -> new ArrayList<>()).add(integer(row.get("id")));
-        }
-        Map<String, Set<Integer>> captureByName = new HashMap<>();
-        for (CapturePlayer player : capturePlayers) {
-            if (player.teamId() != null && player.teamShort() != null) {
-                captureByName.computeIfAbsent(key(player.teamShort()), ignored -> new HashSet<>())
-                        .add(player.teamId());
-            }
-        }
-        Map<Integer, ClubRates.SeasonSide> bridged = new HashMap<>();
-        captureByName.forEach((name, captureIds) -> {
-            List<Integer> seasonIds = seasonByName.getOrDefault(name, List.of());
-            if (captureIds.size() == 1 && seasonIds.size() == 1) {
-                ClubRates.SeasonSide side = bySeasonId.get(seasonIds.getFirst());
-                if (side != null) {
-                    bridged.put(captureIds.iterator().next(), side);
-                }
-            }
-        });
-        return bridged;
-    }
-
     private Map<Integer, History> loadHistory(CanonicalSource source, int seasonId,
                                               Set<Integer> playerIds, Instant asOf) {
         if (playerIds.isEmpty()) {
@@ -753,65 +651,48 @@ public class RankingMetrics {
                     SELECT p.player_id, p.fixture_id, p.minutes,
                            p.expected_goals, p.expected_assists, p.owned_evidence,
                            p.defensive_contribution, p.opponent_team_id, p.was_home,
-                           f.id AS canonical_id, f.team_h, f.team_a, f.kickoff_time, f.finished,
+                           f.id AS canonical_id, f.team_h, f.team_a, f.kickoff_time,
+                           (? OR COALESCE(f.finished, false)) AS included_observation,
                            CASE WHEN p.was_home THEN f.team_h ELSE f.team_a END AS actual_club,
                            CASE WHEN p.was_home THEN f.team_a ELSE f.team_h END AS actual_opponent
                     FROM pfs_read p
                     LEFT JOIN %s f ON f.id = p.fixture_id AND f.%s = ?
                     WHERE p.season_id = ? AND p.player_id IN (%s)%s
+                ), identified AS (
+                    SELECT *, canonical_id IS NOT NULL AND included_observation
+                        AND kickoff_time IS NOT NULL AND opponent_team_id=actual_opponent AS usable_identity
+                    FROM mapped
                 ), grouped AS (
-                    SELECT player_id, actual_club,
+                    SELECT player_id, actual_club, string_agg(fixture_id::text, ',') AS fixture_ids,
                            count(*) FILTER (WHERE canonical_id IS NULL
-                               OR (COALESCE(finished, false) AND kickoff_time IS NULL)) AS invalid_mapping,
+                               OR (included_observation AND kickoff_time IS NULL)) AS invalid_mapping,
                            count(*) FILTER (WHERE canonical_id IS NOT NULL
-                               AND COALESCE(finished, false) AND kickoff_time IS NOT NULL
+                               AND included_observation AND kickoff_time IS NOT NULL
                                AND opponent_team_id <> actual_opponent) AS contradictions,
-                           count(*) FILTER (WHERE canonical_id IS NOT NULL
-                               AND COALESCE(finished, false) AND kickoff_time IS NOT NULL
-                               AND opponent_team_id = actual_opponent) AS valid_rows,
-                           max(kickoff_time) FILTER (WHERE canonical_id IS NOT NULL
-                               AND COALESCE(finished, false) AND kickoff_time IS NOT NULL
-                               AND opponent_team_id = actual_opponent) AS latest_kickoff,
+                           count(*) FILTER (WHERE usable_identity) AS valid_rows,
+                           max(kickoff_time) FILTER (WHERE usable_identity) AS latest_kickoff,
                            (array_agg(fixture_id ORDER BY kickoff_time DESC, fixture_id DESC)
-                               FILTER (WHERE canonical_id IS NOT NULL AND COALESCE(finished, false)
-                                   AND kickoff_time IS NOT NULL
-                                   AND opponent_team_id = actual_opponent))[1] AS latest_fixture_id,
-                           count(*) FILTER (WHERE canonical_id IS NOT NULL
-                               AND COALESCE(finished, false) AND kickoff_time IS NOT NULL
-                               AND opponent_team_id = actual_opponent
-                               AND minutes BETWEEN 0 AND 90) AS usable_rows,
-                           COALESCE(sum(minutes) FILTER (WHERE canonical_id IS NOT NULL
-                               AND COALESCE(finished, false) AND kickoff_time IS NOT NULL
-                               AND opponent_team_id = actual_opponent
+                               FILTER (WHERE usable_identity))[1] AS latest_fixture_id,
+                           count(*) FILTER (WHERE usable_identity AND minutes BETWEEN 0 AND 90) AS usable_rows,
+                           COALESCE(sum(minutes) FILTER (WHERE usable_identity
                                AND minutes BETWEEN 0 AND 90), 0) AS mins,
-                           COALESCE(sum(expected_goals) FILTER (WHERE canonical_id IS NOT NULL
-                               AND COALESCE(finished, false) AND kickoff_time IS NOT NULL
-                               AND opponent_team_id = actual_opponent
+                           COALESCE(sum(expected_goals) FILTER (WHERE usable_identity
                                AND minutes BETWEEN 0 AND 90), 0) AS xg,
-                           count(*) FILTER (WHERE canonical_id IS NOT NULL
-                               AND COALESCE(finished, false) AND kickoff_time IS NOT NULL
-                               AND opponent_team_id = actual_opponent AND minutes BETWEEN 0 AND 90
+                           count(*) FILTER (WHERE usable_identity AND minutes BETWEEN 0 AND 90
                                AND (expected_goals IS NOT NULL OR NOT owned_evidence)) AS xg_count,
-                           COALESCE(sum(expected_assists) FILTER (WHERE canonical_id IS NOT NULL
-                               AND COALESCE(finished, false) AND kickoff_time IS NOT NULL
-                               AND opponent_team_id = actual_opponent
+                           COALESCE(sum(expected_assists) FILTER (WHERE usable_identity
                                AND minutes BETWEEN 0 AND 90), 0) AS xa,
-                           count(*) FILTER (WHERE canonical_id IS NOT NULL
-                               AND COALESCE(finished, false) AND kickoff_time IS NOT NULL
-                               AND opponent_team_id = actual_opponent AND minutes BETWEEN 0 AND 90
+                           count(*) FILTER (WHERE usable_identity AND minutes BETWEEN 0 AND 90
                                AND (expected_assists IS NOT NULL OR NOT owned_evidence)) AS xa_count,
-                           COALESCE(sum(defensive_contribution) FILTER (WHERE canonical_id IS NOT NULL
-                               AND COALESCE(finished, false) AND kickoff_time IS NOT NULL
-                               AND opponent_team_id = actual_opponent AND minutes BETWEEN 0 AND 90
-                               AND defensive_contribution IS NOT NULL), 0) AS defcon,
-                           count(*) FILTER (WHERE canonical_id IS NOT NULL
-                               AND COALESCE(finished, false) AND kickoff_time IS NOT NULL
-                               AND opponent_team_id = actual_opponent AND minutes BETWEEN 0 AND 90
+                           COALESCE(sum(defensive_contribution) FILTER (WHERE usable_identity
+                               AND minutes BETWEEN 0 AND 90 AND defensive_contribution IS NOT NULL), 0) AS defcon,
+                           count(*) FILTER (WHERE usable_identity AND minutes BETWEEN 0 AND 90
                                AND defensive_contribution IS NOT NULL) AS defcon_count
-                    FROM mapped GROUP BY player_id, actual_club
+                    FROM identified GROUP BY player_id, actual_club
                 ) SELECT * FROM grouped
                 """.formatted(pfs.cte(), source.table(), source.seasonColumn(), ids, cutoff);
         List<Object> args = new ArrayList<>();
+        args.add(asOf != null);
         args.add(source.seasonValue());
         args.add(seasonId);
         args.addAll(playerIds);
@@ -822,6 +703,9 @@ public class RankingMetrics {
         for (Map<String, Object> row : jdbc.queryForList(sql, args.toArray())) {
             int playerId = integer(row.get("player_id"));
             History history = histories.computeIfAbsent(playerId, ignored -> new History());
+            for (String fixtureId : row.get("fixture_ids").toString().split(",")) {
+                history.fixtureIds.add(Integer.parseInt(fixtureId));
+            }
             history.invalidMappings += integer(row.get("invalid_mapping"));
             history.contradictions += integer(row.get("contradictions"));
             int validRows = integer(row.get("valid_rows"));
@@ -996,7 +880,7 @@ public class RankingMetrics {
         if (reason == null && aggregate.invalidMinutes > 0) {
             reason = WindowReason.INVALID_MINUTES;
         }
-        if (reason == null && aggregate.observed != expected.size()) {
+        if (reason == null && (expected.isEmpty() || aggregate.observed != expected.size())) {
             reason = WindowReason.MISSING_OBSERVATION;
         }
         if (reason == null) {

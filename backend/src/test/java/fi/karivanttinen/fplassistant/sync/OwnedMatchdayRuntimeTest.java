@@ -4,12 +4,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.after;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.timeout;
+import static org.mockito.Mockito.mockStatic;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -17,6 +18,8 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -24,11 +27,12 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.mockito.ArgumentCaptor;
 
 class OwnedMatchdayRuntimeTest {
 
     @Test
-    void plannerStartsImmediatelyThenWaitsOneMinuteWhileWorkersContinue() {
+    void schedulesProductionCadencesWithoutWaitingForTheWallClock() {
         OwnedMatchdayCoordinator coordinator = mock(OwnedMatchdayCoordinator.class);
         PlannerRuntimeRepository repository = mock(PlannerRuntimeRepository.class);
         OwnedSyncHttpClient http = idleHttp();
@@ -37,34 +41,41 @@ class OwnedMatchdayRuntimeTest {
                 "2026-27", OwnedSyncMode.STAGING, 7, Instant.EPOCH);
         OwnedMatchdayRuntime runtime = new OwnedMatchdayRuntime(coordinator, repository, http,
                 "test", fence, watchdog, "2026-27");
-        try {
-            runtime.start();
-            verify(coordinator, timeout(1_000)).tick();
-            verify(coordinator, after(5_500).times(1)).tick();
-            verify(coordinator, timeout(1_000).atLeast(2)).dispatchOne("1");
-            verify(coordinator, timeout(1_000).atLeast(2)).dispatchOne("2");
-            verify(coordinator, timeout(60_000).times(2)).tick();
-        } finally {
-            runtime.stop();
+        var planner = mock(ScheduledExecutorService.class);
+        var workers = mock(ScheduledExecutorService.class);
+        var checks = mock(ScheduledExecutorService.class);
+        var delivery = mock(ScheduledExecutorService.class);
+        for (var executor : new ScheduledExecutorService[] {planner, workers, checks, delivery}) {
+            when(executor.isTerminated()).thenReturn(true);
         }
-    }
-
-    @Test
-    void prunesStagedPayloadsOnStartAndThenHourly() {
-        OwnedMatchdayCoordinator coordinator = mock(OwnedMatchdayCoordinator.class);
-        PlannerRuntimeRepository repository = mock(PlannerRuntimeRepository.class);
-        OwnedSyncHttpClient http = idleHttp();
-        OwnedSyncWatchdog watchdog = mock(OwnedSyncWatchdog.class);
-        var fence = new OwnedSyncStore.RuntimeFence(
-                "2026-27", OwnedSyncMode.STAGING, 7, Instant.EPOCH);
-        OwnedMatchdayRuntime runtime = new OwnedMatchdayRuntime(coordinator, repository, http,
-                "test", fence, watchdog, "2026-27");
-        try {
-            runtime.start();
-            verify(coordinator, timeout(1_000)).pruneStagedPayloads();
-            verify(coordinator, after(1_500).times(1)).pruneStagedPayloads();
-        } finally {
-            runtime.stop();
+        try (var factories = mockStatic(Executors.class)) {
+            factories.when(() -> Executors.newSingleThreadScheduledExecutor(any()))
+                    .thenReturn(planner, checks, delivery);
+            factories.when(() -> Executors.newScheduledThreadPool(eq(2), any())).thenReturn(workers);
+            try {
+                runtime.start();
+                var tick = ArgumentCaptor.forClass(Runnable.class);
+                verify(planner).scheduleWithFixedDelay(tick.capture(), eq(0L), eq(1L), eq(TimeUnit.MINUTES));
+                var workerTasks = ArgumentCaptor.forClass(Runnable.class);
+                verify(workers, times(2)).scheduleWithFixedDelay(
+                        workerTasks.capture(), eq(0L), eq(1L), eq(TimeUnit.SECONDS));
+                tick.getValue().run();
+                workerTasks.getAllValues().forEach(Runnable::run);
+                workerTasks.getAllValues().forEach(Runnable::run);
+                verify(coordinator, times(1)).tick();
+                verify(coordinator, times(2)).dispatchOne("1");
+                verify(coordinator, times(2)).dispatchOne("2");
+                tick.getValue().run();
+                verify(coordinator, times(2)).tick();
+                verify(checks).scheduleWithFixedDelay(any(Runnable.class), eq(5L), eq(5L), eq(TimeUnit.MINUTES));
+                var retention = ArgumentCaptor.forClass(Runnable.class);
+                verify(checks).scheduleWithFixedDelay(retention.capture(), eq(0L), eq(1L), eq(TimeUnit.HOURS));
+                retention.getValue().run();
+                verify(coordinator).pruneStagedPayloads();
+                verify(delivery).scheduleWithFixedDelay(any(Runnable.class), eq(0L), eq(30L), eq(TimeUnit.SECONDS));
+            } finally {
+                runtime.stop();
+            }
         }
     }
 

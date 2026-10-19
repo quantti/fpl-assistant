@@ -1,6 +1,12 @@
 # Fly-katko 16.10.2026: selvitys ja kustannusneutraali suunnitelma
 
-**PROGRESS:** Selvitys valmis; omistaja valitsi yhden koneen 17.10.2026. Toteutusta tai tuotantomuutoksia ei tehty.
+**PROGRESS:** Selvitys valmis; omistaja valitsi yhden koneen 17.10.2026. Tässä selvityksessä ei tehty toteutusta tai tuotantomuutoksia.
+
+> Historiallinen 17.10.2026 tilannekuva, ei nykytilan operointiohje. Sittemmin valvonta
+> on järjestetty Uptime Kumalla, vanha owned-sync-runtime on korvattu incremental importerilla
+> ja käyttämätön Actions-heartbeat on poistettu. Ajantasainen tila: `docs/STATUS.md`;
+> importer-menettely: `docs/IMPORTER-CUTOVER-2026-10-17.md`. Alla olevat koneiden tilat,
+> hälytyspuutteet ja toteutusehdotukset kuvaavat selvityshetkeä, eivät tuoretta tarkistusta.
 
 ## Omistajan tarkennukset 17.10.2026 — ohittavat alkuperäisen ehdotuksen
 

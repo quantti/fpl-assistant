@@ -15,7 +15,8 @@ Auth (Supabase JWT) + Stripe billing are deferred to the last phase. Build the c
 - **DB:** Supabase PostgreSQL — shared with the `tapas-fpl-app` project (`~/dev/tapas-fpl-app`). FPL stats (players, fixtures, gw stats, ownership, xG/xA) already live there. New tables added by this project, all `fpl_`-prefixed or otherwise unambiguous because the
 schema is shared: `fpl_embeddings`, `pl_match_result`, `fpl_player_price`, `fpl_daily_price`,
 `fpl_user_profile`, `fpl_conversation`, `fpl_message`, `fpl_usage_event`,
-`fpl_invite_redemption`, `fpl_gameweek`, `fpl_fixture`. Never take a generic
+`fpl_invite_redemption`, `fpl_gameweek`, `fpl_fixture`, `fpl_understat_capture`,
+`fpl_understat_match`. Never take a generic
 name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own it first.
 - **LLM provider:** swappable via `SPRING_AI_PROVIDER` env var (`anthropic` application default, `openai` or `google-genai`); production currently uses the billed, API-key Gemini Developer API (`google-genai`), while OpenAI is used only for RAG embeddings. `OPENAI_API_KEY` is therefore required regardless of the chat setting from Phase 2 onward, and its embedding autoconfiguration activates independently of the chat provider. Current privacy/account evidence lives in `docs/PRIVACY-OPERATIONS.md`; do not infer it from provider defaults.
 - **Chat transport:** `POST /api/chat` returns `text/event-stream` (SSE). Frontend reads via `fetch` + `ReadableStream`.
@@ -60,7 +61,7 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
     per player and carry one *season* banner only:** the previous season is named on every pick
     and in the footer, not on a second season `Data source:` line, because a second season banner
     would claim every number below it is last season's and under blending none purely is. That
-    banner sits between two other **source** lines, three in all since KAR-35: above it the daily
+    banner sits between two other **source** lines, three FPL source lines since KAR-35: above it the daily
     capture's `DailyPriceSource.provenance()` for the pool — identity, club, price, ownership,
     availability, `fpl_daily_price` since KAR-32 — and below it the schedule capture's
     `ScheduleSource.provenance()` for the fixture population every horizon expected-points total
@@ -72,7 +73,8 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
     separate `Schedule evidence:` sentence carries the exact capture instant, the `asOf` instant
     it was judged at, the editable gameweek range with any end-of-season truncation, and the
     players the schedule alone removed. Do not fold the schedule line into the banner, and do not
-    turn it into a second season banner. `ExpectedStatsTools` is the
+    turn it into a second season banner. Team xG/xGA additionally carries its own Understat
+    capture/sample line, separate from those FPL sources. `getPlayerExpectedStats` is the
     opposite case and does get a second line — it shows fixtures as rows, fills a short
     current-season window from last season, labels each row with its own season, and the second
     banner therefore describes a labelled block rather than the whole reply.
@@ -142,7 +144,7 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
   setting is genuinely needed, use the direct host or the session pooler, never 6543.
 - Player prices stored as integers ×10 (`now_cost=75` = £7.5m). `element_type`: 1=GK, 2=DEF, 3=MID, 4=FWD.
 - External APIs (vaastav CSVs, football-data.org, FPL `bootstrap-static`) are hit only at sync time, never at chat time — everything queries Supabase.
-- **Today's price and today's injury flags come from `fpl_daily_price`, not from the tapas `player` table.** That table is synced weekly by `tapas-fpl-app` and was measured 85 days stale; `fpl_daily_price` is captured daily at 02:00 UK from FPL's own API (prices change at 00:00 UK) and owes tapas nothing, so it also survives the season changeover. It carries `status`/`news` — the availability picture — and `penalties_order`/`direct_fk_order`/`corners_order` — the set-piece picture — alongside `now_cost`. Set-piece duty lives here rather than in the strategy corpus because a written list of takers is written before anyone has taken one, and the first weeks of a season revise it. Dated rows, so it answers *when* a flag appeared; it cannot be backfilled, since FPL publishes only today's state. **The daily-capture tools (`getPriceHistory`, `getPlayerAvailability`, `getFlaggedPlayers`, `getSetPieceTakers`) are a documented exception like `HistoricalTools`: they use `DailyPriceSource.provenance()` (season + capture date) instead of `SeasonContext.provenance()`, because the resolver would attribute changeover-window data to the wrong season. Do not "fix" them back onto `SeasonContext.provenance()`.** **`GameweekTools` and `FixtureTools` are the same kind of exception when a schedule capture exists: they read `fpl_gameweek`/`fpl_fixture` (FPL's own `events` and `/api/fixtures/`, captured daily at 02:10 UK) under `ScheduleSource.provenance()`, and fall back to the tapas tables under `SeasonContext.provenance()` only before the first capture. Gameweek status on the capture path is derived from `deadline_time` against the clock, never from the captured `is_current` flag.** `PickTools` (`getDifferentialPicks`, `getCaptainCandidates`) reads its candidate pool from this table too, beside `SquadTools.buildSquad`: metrics attach by element id while the capture and the resolved season are the same season, and by unique `web_name` when they are not. Note that `element_id` in this table is season-scoped (FPL renumbers every season) — every query keyed on it must also filter on `season`.
+- **Today's price and today's injury flags come from `fpl_daily_price`, not from the tapas `player` table.** That table is synced weekly by `tapas-fpl-app` and was measured 85 days stale; `fpl_daily_price` is captured daily at 02:00 UK from FPL's own API (prices change at 00:00 UK) and owes tapas nothing, so it also survives the season changeover. It carries `status`/`news` — the availability picture — and `penalties_order`/`direct_fk_order`/`corners_order` — the set-piece picture — alongside `now_cost`. Set-piece duty lives here rather than in the strategy corpus because a written list of takers is written before anyone has taken one, and the first weeks of a season revise it. Dated rows, so it answers *when* a flag appeared; it cannot be backfilled, since FPL publishes only today's state. **The daily-capture tools (`getPriceHistory`, `getPlayerAvailability`, `getFlaggedPlayers`, `getSetPieceTakers`) are a documented exception like `HistoricalTools`: they use `DailyPriceSource.provenance()` (season + capture date) instead of `SeasonContext.provenance()`, because the resolver would attribute changeover-window data to the wrong season. Do not "fix" them back onto `SeasonContext.provenance()`.** **`GameweekTools` and `FixtureTools` are the same kind of exception when a schedule capture exists: they read `fpl_gameweek`/`fpl_fixture` (FPL's own `events` and `/api/fixtures/`, captured daily at 02:10 UK outside ACTIVE, or from the existing hourly importer's validated source pair under ACTIVE) under `ScheduleSource.provenance()`, and fall back to the tapas tables under `SeasonContext.provenance()` only before the first capture. Gameweek status on the capture path is derived from `deadline_time` against the clock, never from the captured `is_current` flag.** `PickTools` (`getDifferentialPicks`, `getCaptainCandidates`) reads its candidate pool from this table too, beside `SquadTools.buildSquad`: metrics attach by element id while the capture and the resolved season are the same season, and by unique `web_name` when they are not. Note that `element_id` in this table is season-scoped (FPL renumbers every season) — every query keyed on it must also filter on `season`.
 - **Ranking reads are one coherent snapshot, `RankingMetrics`.** `PickTools` and `CandidatePool`
   load the whole selected daily capture, its current/previous metric evidence and one immutable
   `ScheduleSource.View` inside a read-only `REPEATABLE_READ` transaction; do not reintroduce
@@ -171,18 +173,29 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
   a labelled neutral 3. `PickTools` clamps its request to 1–5 gameweeks, `buildSquad` takes its
   own and both truncate at the season's end and disclose it. There is no bypass, for a pin, a
   budget or a relaxation.
-- **Primary selection uses availability and complete current evidence, `MinutesModel`.** The
-  selected daily capture must be fresh and say `status = 'a'`, with a valid position and club;
-  identity/current club must be coherent across the same-season sources. The latest up-to-ten
-  completed fixtures for that current-club spell must be complete; known zero-minute rows stay in
-  the denominator. Missing/stale/pending/invalid data means abstention. Only a verified
-  different-club observation fences a new spell. Without one, enumerate from season start: a first
-  PFS/daily appearance is not a registration date, and a newcomer may need ten complete fixtures.
+- **Primary selection uses availability and usable player rows, `MinutesModel` (owner correction
+  2026-10-18).** The selected daily capture must be fresh and say `status = 'a'`, with a valid
+  position and club; identity/current club must be coherent across the same-season sources.
+  Use the latest up-to-ten recorded current-club observations, including live and provisionally
+  finished matches. Match status is information, never an admission gate. Missing rows are unknown,
+  not zero; another player's missing data never excludes a whole club. Known zero-minute rows
+  remain in the sample. A verified different-club observation fences the spell. Keep individual
+  source receipts, correction fences and invalid identity/minutes checks; no usable player rows
+  means unknown evidence, not a zero projection.
   **Minutes never exclude a player, alter eligibility, break a tie or alter a recommendation
   score**, including for GKs and DEFs. If any of the last five complete observations is below 60,
   `PickTools` may print a neutral fact with the opponent and minutes; it is not a risk label or
   forecast. This evidence is not a calibrated probability or a future-start guarantee; no pin,
   budget or relaxation bypasses the non-minute evidence requirements.
+- **Team xG/xGA uses Understat (owner decision 2026-10-18).** `fpl_understat_capture` and
+  `fpl_understat_match` hold atomic playing/previous-season captures. Reads stay in Supabase;
+  collection is sync-time only and defaults OFF. Resolve the playing year from `SeasonResolver`'s
+  playing-season identity, not its fallback player-metric season. `getTeamExpectedGoals` reports
+  direct xG/xGA and scores, not player-summed xA/xGI; its capture/season provenance replaces the
+  FPL season banner and DataAge notices. Pick/squad/shortlist club projections use this same
+  source with a separate Understat source line. Player FPL xG/xA/xGI, DefCon and publication
+  guards remain unchanged. No silent FPL fallback, no importer activation and no shared-data
+  capture without operational authority. Provider terms/reliability remain rollout checks.
 - **Expected ranking points are full-fixture expected FPL points.**
   `ExpectedPoints.expectedPerFixture` uses a fixed two appearance points, xG/xA ability,
   fixture-specific clean-sheet probability and DefCon action-rate evidence. It does **not** use
@@ -190,12 +203,12 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
   `exp(-xGA)` on the concession `ClubRates.projectedGoalsAgainst` projects for that club against
   that opponent at that venue (KAR-30), `null` and labelled partial when no club projection
   exists, never the player's season-average xGC. `SeasonBlend` blends ability on the player's own
-  completed current-season fixture count (1:10%, 2:30%, 3:60%, 4:80%, 5–7:90%, 8+:100%), never on
-  minutes. Club rates are read inside the same `RankingMetrics` snapshot: team xG is `SUM` over
-  the club's players per side, team xGC is `MAX` (FPL stamps the team figure on every player), an
-  unpopulated side (`xGC = 0`) is excluded, clubs bridge across seasons by unique `short_name` the
-  way players bridge by `web_name`, and the league mean and home/away factors pool both seasons
-  without a ramp. Known zero DefCon is evidence; unavailable components print partial/n/a rather
+  recorded current-season fixture count (1:10%, 2:30%, 3:60%, 4:80%, 5–7:90%, 8+:100%), never on
+  minutes. Club rates are read inside the same `RankingMetrics` snapshot from direct Understat
+  completed-match xG/xGA, not FPL player SUM/MAX. The opponent's xG is that side's xGA; observed
+  zero is valid. Explicit canonical club identities bridge to the daily pool, and league constants
+  include all captured clubs of both seasons without a ramp. FPL player publication/roster gaps
+  do not invalidate independently captured Understat team evidence. Known zero DefCon is evidence; unavailable components print partial/n/a rather
   than zero. Pick lists and `HorizonScorer` total the same expected per-fixture value over the
   club's fixtures in the horizon. Average FDR is a tie-break for picks and scales only the squad's
   attacking term; the clean sheet already carries the opponent, so an FDR multiplier on it would
@@ -272,7 +285,7 @@ name — `CREATE TABLE IF NOT EXISTS` binds silently to tapas' table if they own
   must display `n/a`/unscored, and infeasibility must name the current-evidence rule plus the
   interacting constraints, never imply that budget alone fixes it.
 - **Cross-season weighting is one ramp in one place, `SeasonBlend`.** Ability rates blend the
-  season being played with the previous one on a weight driven by the player's own completed
+  season being played with the previous one on a weight driven by the player's own recorded
   current-season fixtures: 1 → 10%, 2 → 30%, 3 → 60%, 4 → 80%, 5-7 → 90%, 8+ → 100%.
   Evidence counts used by ability/DefCon floors may add, but raw current-evidence eligibility
   above never does. A player with no previous-season record is ranked on this season alone when it
@@ -302,19 +315,27 @@ is no longer in use** (owner confirmed 2026-10-17): do not assume it is availabl
 monitoring, log collection or other workloads. GitHub Actions remains the full-suite
 verification gate. Historical VPS setup notes in `docs/DEVELOPMENT.md` are not current capacity.
 
-**Up to three independent read-only subagents may run concurrently on the current host.**
-The owner has approved this capacity; run the Sol, Astra and Luna review panel concurrently
-without asking for a resource-limit exception. Reading agents must not start builds, tests or
-package installs. Keep dependent work and writers sharing a working tree sequential; no nested
-delegation. Run only one build/test/install unit at a time across agents and worktrees;
-lightweight reading may overlap that unit when memory headroom permits.
+**Choose concurrency by task, not by agent count alone.** Up to five independent, lightweight
+read-only agents (for example scouts reading files) may run concurrently. Reading agents must not
+start builds, tests or other resource-heavy commands; those need a separate bounded assignment.
+Run only one Gradle/build/test unit at a time across the parent, all agents and all worktrees —
+never two Gradle invocations concurrently. Lightweight reading may overlap that unit when memory
+headroom permits. Keep dependent tasks sequential and writers sharing a working tree sequential;
+independent writers need separate worktrees and an explicit resource assessment before overlap.
+Worktrees isolate files, not memory, processes, Docker or the test database. No nested delegation:
+the parent owns scheduling and must wait for heavy work to finish before admitting another unit.
 Keep the checked-in Gradle heap/worker/context-cache limits. On memory-constrained WSL, use the
 cgroup-v2 scope and host-memory stop threshold in `docs/DEVELOPMENT.md`; do not assume this Docker
 supports hard memory limits. Stop only this project's idle daemons or test scopes, never another
 project's processes. Verify memory headroom before a full suite. **Nothing local runs the full
 suite for you** (owner decision 2026-09-19): run the tests you
-wrote or touched while developing, and let GitHub run the whole suite on the pull request and
-again on the merge. A red PR run is a blocker, exactly as a refused push used to be.
+wrote or touched locally before pushing, and record the command and tested revision in the PR.
+Since the owner's 2026-10-18 budget decision, PR checks are lightweight: no backend suite or
+Postgres. A green PR does not prove local backend verification; that remains a contributor
+requirement. Master runs the full retained default backend suite before deployment. Docs-only
+master changes run a deliberate no-op and do not deploy; manual master redeploy always runs
+full verification. A red master test run blocks deployment, and red PR lightweight checks still
+block merging.
 
 ### Owned publication evidence (not activated)
 
@@ -370,13 +391,14 @@ serving API + frontend. Frontend built in a Docker multi-stage build, copied int
 >
 > `master` deploys. A push there runs `.github/workflows/deploy.yml` and a green run ships
 > straight to production — no review, no second pair of eyes. **Agents push a branch and open a
-> pull request. Always.** The same tests run on the PR; the owner merges.
+> pull request. Always.** PR checks are lightweight; master gates deployment with the full
+> retained suite. The owner merges.
 >
 > There is no branch protection to catch a mistake: GitHub refuses it for private repositories on
 > the Free plan (verified 2026-08-19 — the protection and rulesets APIs both answer 403 "Upgrade
 > to GitHub Pro"). The substitute is the `scripts/hooks/pre-push` hook, which refuses a master
 > push that has no terminal to confirm at — which is exactly the case for an agent. It no longer
-> runs the suite (2026-09-19); the pull request's GitHub run is the test gate. **Do not work
+> runs the suite (2026-09-19); local targeted tests precede push and master CI is the backend release gate. **Do not work
 > around it: never `git push --no-verify`, never re-point `core.hooksPath`,
 > never push to master "because the tests passed anyway".** If a push is refused, that is the
 > intended outcome, not an obstacle to route around.
@@ -384,13 +406,14 @@ serving API + frontend. Frontend built in a Docker multi-stage build, copied int
 **Deploying is `.github/workflows/deploy.yml`, not a manual command.** A push to `master` runs
 the suite against an ephemeral Postgres container and, if it passes, runs
 `flyctl deploy --ha=false --remote-only` and smoke-tests `/actuator/health` from outside. Pull
-requests run the tests only. `workflow_dispatch` re-deploys without a push. A manual
+requests run lightweight checks only. `workflow_dispatch` on master runs full verification and
+re-deploys without a push; other refs cannot deploy. Documentation-only pushes do not deploy. A manual
 `fly deploy` is for emergencies, and is the one path that can ship a red suite.
 
 Install the pre-push hook once per clone, on every host: `git config core.hooksPath scripts/hooks`.
 It needs only bash and git. When a push touches `frontend/`
 and Node is installed it also runs `npm run lint` (ESLint) and `npm run format:check` (Biome);
-CI runs both on every pull request regardless. Existing violations are baselined in
+PR CI runs both when frontend/shared inputs changed; master application verification runs both. Existing violations are baselined in
 `frontend/eslint-suppressions.json` — fix new ones, never add to the baseline, and never run a
 blanket `eslint --fix` (it broke the build once; see `docs/DEVELOPMENT.md`).
 

@@ -84,7 +84,8 @@ public class SecurityConfig {
                         // in SyncOperationsController, not with chat-user Supabase JWTs. The
                         // controller is absent by default and fails closed on blank tokens.
                         .requestMatchers("/ops/sync/status", "/ops/sync/retry",
-                                "/ops/sync/alerts/retry", "/ops/sync/health").permitAll()
+                                "/ops/sync/alerts/retry", "/ops/sync/health",
+                                "/ops/sync/importer/handoff", "/ops/sync/importer/retire").permitAll()
                         // The built frontend is served from static/ by this same application; it
                         // must load before the user has signed in.
                         .requestMatchers(HttpMethod.GET, "/", "/index.html", "/favicon.ico",

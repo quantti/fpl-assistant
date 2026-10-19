@@ -72,6 +72,8 @@ class CatalogueScheduleDispatcherIntegrationTest {
         tx = new TransactionTemplate(new DataSourceTransactionManager(dataSource));
         new OwnedSyncSchema(jdbc, OWNED).initialize();
         createCapturedTables();
+        new fi.karivanttinen.fplassistant.schedule.ScheduleSchema(jdbc,
+                CAPTURED.gameweek(), CAPTURED.fixture()).ensureSchema();
         bootstrap = resource("bootstrap-static.json");
         fixtures = resource("fixtures.json");
     }
@@ -141,6 +143,51 @@ class CatalogueScheduleDispatcherIntegrationTest {
         assertThat(fetch.calls).isEqualTo(4);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM " + CAPTURED.dailyPrice()
                 + " WHERE season='2026-27'", Integer.class)).isEqualTo(657);
+    }
+
+    @Test
+    void activeHttpPublicationReloadsFingerprintAcrossPostgresMicrosecondRounding() throws Exception {
+        Instant httpStart = clock.instant().minusSeconds(2).with(java.time.temporal.ChronoField.NANO_OF_SECOND,
+                999_999_499);
+        clock.set(httpStart);
+        activateStore(OwnedSyncMode.ACTIVE);
+        enqueueSchedule();
+        Lease lease = acquireOne(Duration.ofMinutes(5));
+        Instant httpFinished = httpStart.plusNanos(1);
+
+        try (Loopback loopback = loopbackWithFplBodies(() -> clock.set(httpFinished))) {
+            dispatcher = dispatcher(fencedHttpFetch(loopback, request -> {
+                if (request.endpoint().equals(Endpoint.fixtures())) clock.set(httpFinished.plusSeconds(2));
+            }));
+            Outcome outcome = dispatcher.process(lease, SEASON);
+            assertThat(outcome).withFailMessage("runs=%s", jdbc.queryForList("SELECT state,last_error FROM "
+                    + OWNED.run() + " WHERE generation=?", lease.generation())).isEqualTo(Outcome.PUBLISHED);
+            assertThat(loopback.requests).hasValue(2);
+        }
+
+        var source = store.findInLatestValidPublicPayloadPairs(SEASON.code(), 20,
+                pair -> java.util.Optional.of(pair)).orElseThrow();
+        var sourcePair = OwnedSyncStore.CanonicalSourcePair.from(source.bootstrap(), source.fixtures());
+        Instant roundedStart = OwnedSyncStore.postgresTimestampPrecision(httpStart);
+        Instant roundedFinish = OwnedSyncStore.postgresTimestampPrecision(httpFinished);
+        assertThat(roundedStart).isBefore(roundedFinish);
+        assertThat(jdbc.queryForObject("SELECT source_bootstrap_read_started_at FROM " + OWNED.receipt()
+                + " WHERE season=? AND publication_key=?", java.sql.Timestamp.class,
+                SEASON.code(), CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY).toInstant())
+                .isEqualTo(roundedStart);
+        assertThat(jdbc.queryForObject("SELECT source_bootstrap_read_finished_at FROM " + OWNED.receipt()
+                + " WHERE season=? AND publication_key=?", java.sql.Timestamp.class,
+                SEASON.code(), CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY).toInstant())
+                .isEqualTo(roundedFinish);
+        assertThat(jdbc.queryForObject("SELECT source_pair_fingerprint FROM " + OWNED.receipt()
+                + " WHERE season=? AND publication_key=?", String.class,
+                SEASON.code(), CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY)).isEqualTo(sourcePair.fingerprint());
+        assertThat(store.isCurrentPublishedCanonicalPair(SEASON.code(), source.runGeneration(),
+                sourcePair, clock.instant())).isTrue();
+
+        new PlannerInputRepository(jdbc, store, OWNED, CAPTURED, clock).load(SEASON);
+        assertThat(store.currentCanonicalParentEvidence(SEASON.code(), 21, clock.instant()))
+                .isEqualTo(new OwnedSyncStore.CanonicalParentEvidence(true, true));
     }
 
     @Test
@@ -289,6 +336,82 @@ class CatalogueScheduleDispatcherIntegrationTest {
         dispatcher = dispatcher(CAPTURED); // process restart, same durable store/evidence
         assertThat(dispatcher.process(acquireOne(Duration.ofMinutes(5)), SEASON)).isEqualTo(Outcome.PUBLISHED);
         assertThat(fetch.calls).isEqualTo(2);
+    }
+
+    @Test
+    void pendingScheduleSourceCanBePublishedByPriceLeaseAfterScheduleCutover() {
+        PayloadReadProbe probe = new PayloadReadProbe(jdbc.getDataSource());
+        activateStore(OwnedSyncMode.ACTIVE, probe);
+        Instant priceDemandAt = Instant.parse("2026-09-13T01:00:00Z"); // 02:00 BST
+        clock.set(priceDemandAt);
+        var cycle = dispatcher.enqueueCycle(SEASON, priceDemandAt);
+        clock.set(Instant.parse("2026-09-13T01:30:00Z")); // 02:30 BST
+        Lease[] leases = acquireBoth();
+        Lease schedule = forGeneration(leases, cycle.schedule().generation());
+        Lease price = forGeneration(leases, cycle.cataloguePrice().generation());
+        SourceRead bootstrapRead = new SourceRead(Instant.parse("2026-09-13T01:30:00.100Z"),
+                Instant.parse("2026-09-13T01:30:00.200Z"));
+        SourceRead fixturesRead = new SourceRead(Instant.parse("2026-09-13T01:30:02.200Z"),
+                Instant.parse("2026-09-13T01:30:02.300Z"));
+        fetch.results.add(new Response(200, bootstrap, null, bootstrapRead));
+        fetch.results.add(new Response(200, fixtures, null, fixturesRead));
+        clock.set(fixturesRead.finishedAt().plusMillis(1));
+
+        assertThat(dispatcher.process(schedule, SEASON)).isEqualTo(Outcome.RETRY_SCHEDULED);
+        assertThat(jdbc.queryForObject("SELECT state FROM " + OWNED.run()
+                + " WHERE generation=?", String.class, schedule.generation())).isEqualTo("PENDING");
+        assertThat(jdbc.queryForObject("SELECT due_at FROM " + OWNED.run()
+                + " WHERE generation=?", java.sql.Timestamp.class, schedule.generation()).toInstant())
+                .isEqualTo(Instant.parse("2026-09-13T02:00:00Z")); // 03:00 BST
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + OWNED.payload()
+                + " WHERE run_generation=? AND validation_state='VALID'", Integer.class,
+                schedule.generation())).isEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + OWNED.payload()
+                + " WHERE run_generation=? AND source_published", Integer.class, schedule.generation())).isZero();
+
+        assertThat(dispatcher.process(price, SEASON)).isEqualTo(Outcome.PUBLISHED);
+        assertThat(fetch.calls).isEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT state FROM " + OWNED.run()
+                + " WHERE generation=?", String.class, schedule.generation())).isEqualTo("PENDING");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + OWNED.payload()
+                + " WHERE run_generation=? AND source_published", Integer.class, schedule.generation())).isEqualTo(2);
+
+        var source = store.findInLatestValidPublicPayloadPairs(SEASON.code(), 20,
+                pair -> java.util.Optional.of(pair)).orElseThrow();
+        var sourcePair = OwnedSyncStore.CanonicalSourcePair.from(source.bootstrap(), source.fixtures());
+        assertThat(store.currentPublishedCanonicalPair(SEASON.code(), sourcePair, clock.instant()))
+                .contains(new OwnedSyncStore.CanonicalPublication(schedule.generation(),
+                        cycle.cataloguePrice().generation(), sourcePair.fingerprint()));
+        SourceRead publicationRead = new SourceRead(bootstrapRead.startedAt(), fixturesRead.finishedAt());
+        assertThat(jdbc.queryForObject("SELECT source_read_started_at FROM " + OWNED.run()
+                + " WHERE generation=?", java.sql.Timestamp.class, cycle.cataloguePrice().generation()).toInstant())
+                .isEqualTo(publicationRead.startedAt());
+        assertThat(jdbc.queryForObject("SELECT source_read_finished_at FROM " + OWNED.run()
+                + " WHERE generation=?", java.sql.Timestamp.class, cycle.cataloguePrice().generation()).toInstant())
+                .isEqualTo(publicationRead.finishedAt());
+        assertThat(jdbc.queryForObject("SELECT source_read_started_at FROM " + OWNED.receipt()
+                + " WHERE season=? AND publication_key=?", java.sql.Timestamp.class,
+                SEASON.code(), CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY).toInstant())
+                .isEqualTo(publicationRead.startedAt());
+        assertThat(jdbc.queryForObject("SELECT source_read_finished_at FROM " + OWNED.receipt()
+                + " WHERE season=? AND publication_key=?", java.sql.Timestamp.class,
+                SEASON.code(), CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY).toInstant())
+                .isEqualTo(publicationRead.finishedAt());
+        assertThat(store.sourceReceipt(SEASON.code(), CatalogueScheduleWriter.SHARED_TEAM_SOURCE_RECEIPT_KEY))
+                .contains(bootstrapRead);
+        assertThat(jdbc.queryForObject("SELECT MIN(captured_at) FROM " + CAPTURED.dailyPrice()
+                + " WHERE season=?", java.sql.Timestamp.class, SEASON.code()).toInstant())
+                .isEqualTo(bootstrapRead.finishedAt());
+        var planned = new PlannerInputRepository(jdbc, store, OWNED, CAPTURED, clock).load(SEASON);
+        var finishedFixture = planned.fixtures().stream().filter(fixture -> fixture.id() == 21)
+                .findFirst().orElseThrow();
+        assertThat(finishedFixture.recoverySourceStatus())
+                .isEqualTo(SharedFixtureRecoveryPolicy.SourceStatus.FINISHED);
+        assertThat(store.currentCanonicalParentEvidence(SEASON.code(), 21, clock.instant()))
+                .isEqualTo(new OwnedSyncStore.CanonicalParentEvidence(true, true));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + OWNED.run(), Integer.class)).isEqualTo(2);
+        assertThat(probe.snapshot().family(PayloadReadProbe.Family.CANONICAL_PAIR))
+                .isEqualTo(new PayloadReadProbe.FamilyMetrics(1, 1, 2, bootstrap.length + (long) fixtures.length));
     }
 
     @Test
@@ -1038,6 +1161,11 @@ class CatalogueScheduleDispatcherIntegrationTest {
         assertThat(publicationCounts()).isNotEqualTo(writesBefore);
         assertThat(probe.snapshot().family(PayloadReadProbe.Family.CANONICAL_PAIR))
                 .isEqualTo(new PayloadReadProbe.FamilyMetrics(1, 1, 2, bootstrap.length + fixtures.length));
+        assertThat(probe.snapshot().family(PayloadReadProbe.Family.PUBLISHED_SOURCE_DIGEST))
+                .isEqualTo(new PayloadReadProbe.FamilyMetrics(2, 2, 2, bootstrap.length + fixtures.length));
+        assertThat(probe.snapshot().maxBodyBytesInSingleQuery(
+                PayloadReadProbe.BodyFamily.PUBLISHED_SOURCE_DIGESTS))
+                .isEqualTo(Math.max(bootstrap.length, fixtures.length));
     }
 
     @Test
@@ -1113,14 +1241,34 @@ class CatalogueScheduleDispatcherIntegrationTest {
     }
 
     private Loopback loopback() throws Exception {
+        return createLoopback(null, null, null);
+    }
+
+    private Loopback loopbackWithFplBodies(Runnable afterBootstrapRequest) throws Exception {
+        return createLoopback(bootstrap, fixtures, afterBootstrapRequest);
+    }
+
+    private Loopback createLoopback(byte[] bootstrapBody, byte[] fixturesBody,
+                                    Runnable afterBootstrapRequest) throws Exception {
         jdbc.update("DELETE FROM " + OWNED.requestAttempt());
         jdbc.update("UPDATE " + OWNED.requestState() + " SET last_admitted_at=NULL, cooldown_until=NULL");
         AtomicInteger requests = new AtomicInteger();
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/", exchange -> {
             requests.incrementAndGet();
-            exchange.sendResponseHeaders(200, -1);
-            exchange.close();
+            if (bootstrapBody == null) {
+                exchange.sendResponseHeaders(200, -1);
+                exchange.close();
+                return;
+            }
+            String path = exchange.getRequestURI().getPath();
+            boolean isBootstrap = path.contains("bootstrap-static");
+            byte[] body = isBootstrap ? bootstrapBody : fixturesBody;
+            if (isBootstrap && afterBootstrapRequest != null) afterBootstrapRequest.run();
+            exchange.sendResponseHeaders(200, body.length);
+            try (var output = exchange.getResponseBody()) {
+                output.write(body);
+            }
         });
         server.start();
         OwnedSyncRequestBudget budget = new OwnedSyncRequestBudget(jdbc, tx, clock, OWNED);
@@ -1356,6 +1504,8 @@ class CatalogueScheduleDispatcherIntegrationTest {
                 .isEqualTo(new PayloadReadProbe.FamilyMetrics(0, 0, 0, 0));
         assertThat(probe.snapshot().family(PayloadReadProbe.Family.CANONICAL_PAIR))
                 .isEqualTo(new PayloadReadProbe.FamilyMetrics(0, 0, 0, 0));
+        assertThat(probe.snapshot().family(PayloadReadProbe.Family.PUBLISHED_SOURCE_DIGEST))
+                .isEqualTo(new PayloadReadProbe.FamilyMetrics(2, 2, 2, bootstrap.length + fixtures.length));
     }
 
     private List<Integer> publicationCounts() {
@@ -1381,11 +1531,25 @@ class CatalogueScheduleDispatcherIntegrationTest {
     }
 
     private void assertNoBodyReads(PayloadReadProbe probe) {
+        PayloadReadProbe.Snapshot snapshot = probe.snapshot();
         PayloadReadProbe.FamilyMetrics none = new PayloadReadProbe.FamilyMetrics(0, 0, 0, 0);
+        boolean published = Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS (SELECT 1 FROM "
+                + OWNED.receipt() + " WHERE latest_generation IS NOT NULL"
+                + " AND source_bootstrap_sha256 IS NOT NULL AND source_fixtures_sha256 IS NOT NULL)",
+                Boolean.class));
         for (PayloadReadProbe.Family family : PayloadReadProbe.Family.values()) {
-            assertThat(probe.snapshot().family(family)).as("unexpected %s body read", family).isEqualTo(none);
+            if (family == PayloadReadProbe.Family.PUBLISHED_SOURCE_DIGEST) continue;
+            assertThat(snapshot.family(family)).as("unexpected %s body read", family).isEqualTo(none);
         }
-        assertThat(probe.snapshot().attempts()).isZero();
+        PayloadReadProbe.FamilyMetrics expectedSourceDigest = published
+                ? new PayloadReadProbe.FamilyMetrics(2, 2, 2, (long) bootstrap.length + fixtures.length)
+                : none;
+        assertThat(snapshot.family(PayloadReadProbe.Family.PUBLISHED_SOURCE_DIGEST)).isEqualTo(expectedSourceDigest);
+        assertThat(snapshot.bodyFamily(PayloadReadProbe.BodyFamily.PUBLISHED_SOURCE_DIGESTS))
+                .isEqualTo(expectedSourceDigest);
+        assertThat(snapshot.maxBodyBytesInSingleQuery(PayloadReadProbe.BodyFamily.PUBLISHED_SOURCE_DIGESTS))
+                .isEqualTo(published ? Math.max(bootstrap.length, fixtures.length) : 0);
+        assertThat(snapshot.attempts()).isEqualTo(published ? 2 : 0);
     }
 
     private void assertIneligibleOwnBootstrap(Validation validation, SourceRead sourceRead,
@@ -1477,6 +1641,12 @@ class CatalogueScheduleDispatcherIntegrationTest {
                 CatalogueScheduleWriter.CATALOGUE_PRICE_PUBLICATION_KEY, clock.instant());
     }
 
+    private void enqueueSchedule() {
+        store.enqueue(SyncKind.CATALOGUE_SCHEDULE, SEASON.code(),
+                CatalogueScheduleDispatcher.SCHEDULE_COALESCING_KEY,
+                CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY, clock.instant());
+    }
+
     private Lease acquireOne(Duration duration) {
         return store.acquire("worker", duration).orElseThrow();
     }
@@ -1512,6 +1682,9 @@ class CatalogueScheduleDispatcherIntegrationTest {
     }
 
     private static void cleanRunsAndCore() {
+        jdbc.update("DELETE FROM " + OWNED.playerFixtureEvidence());
+        jdbc.update("DELETE FROM " + OWNED.fixtureSync());
+        jdbc.update("DELETE FROM " + OWNED.historyFingerprint());
         jdbc.update("DELETE FROM " + OWNED.payload());
         jdbc.update("DELETE FROM " + OWNED.run());
         jdbc.update("DELETE FROM " + OWNED.receipt());

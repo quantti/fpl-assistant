@@ -208,6 +208,87 @@ public final class FixtureVerification {
         }
     }
 
+    /** Player ids explicitly present in this fixture's own source stats. */
+    public static Set<Integer> fixtureStatParticipantIds(FixtureRow fixture) {
+        Objects.requireNonNull(fixture);
+        return Set.copyOf(parseFixtureManifest(fixture).participantSides().keySet());
+    }
+
+    /**
+     * Builds fixture-local live-minute and fixture-stat side evidence. Complete requires LIVE to
+     * cover every stats identity and positive-stat contributor, with mapped positive-minute players
+     * on both clubs and nonempty fixture stats. It does not certify API-wide or league-wide completeness.
+     */
+    public static Map<Integer, FixtureEvidence> fixtureEvidenceByFixture(
+            Collection<FixtureRow> fixtures, SourceDocument liveDocument) {
+        return fixtureEvidenceByFixture(fixtures, liveDocument, Map.of());
+    }
+
+    /** History sides must be independently proved for this exact fixture, not today's club. */
+    public static Map<Integer, FixtureEvidence> fixtureEvidenceByFixture(
+            Collection<FixtureRow> fixtures, SourceDocument liveDocument,
+            Map<Integer, Map<Integer, Side>> provedHistorySides) {
+        Objects.requireNonNull(fixtures);
+        Objects.requireNonNull(liveDocument);
+        Objects.requireNonNull(provedHistorySides);
+        LiveManifest live = parseLive(liveDocument);
+        Map<Integer, FixtureEvidence> result = new HashMap<>();
+        for (FixtureRow fixture : fixtures) {
+            Objects.requireNonNull(fixture);
+            FixtureManifest stats = parseFixtureManifest(fixture);
+            Map<Integer, Appearance> appearances = new HashMap<>();
+            Map<Integer, LivePlayer> livePlayers = live.forFixture(fixture.id());
+            Set<Integer> positivePlayers = new HashSet<>();
+            Set<Integer> positiveStatsPlayers = new HashSet<>();
+            for (FixtureStat stat : stats.stats()) {
+                if (stat.value() > 0) positiveStatsPlayers.add(stat.playerId());
+            }
+            for (LivePlayer player : livePlayers.values()) {
+                if (!player.appeared()) continue;
+                positivePlayers.add(player.playerId());
+                Side side = stats.participantSides().get(player.playerId());
+                if (side == null) {
+                    side = provedHistorySides.getOrDefault(fixture.id(), Map.of()).get(player.playerId());
+                }
+                if (side != null) appearances.put(player.playerId(), new Appearance(side, player.minutes()));
+            }
+            boolean sourceSides = stats.participantSides().containsValue(Side.HOME)
+                    && stats.participantSides().containsValue(Side.AWAY);
+            boolean bothLiveSides = appearances.values().stream().anyMatch(row -> row.side() == Side.HOME)
+                    && appearances.values().stream().anyMatch(row -> row.side() == Side.AWAY);
+            boolean statsCovered = stats.participantSides().keySet().stream().allMatch(livePlayers::containsKey);
+            // Fixture stats describe actions, not a roster: played players can have BPS <= 0.
+            boolean complete = !stats.stats().isEmpty() && sourceSides && bothLiveSides && statsCovered
+                    && appearances.keySet().equals(positivePlayers)
+                    && positivePlayers.containsAll(positiveStatsPlayers);
+            FixtureEvidence evidence = new FixtureEvidence(complete, positivePlayers, appearances,
+                    liveDocument.readInterval());
+            if (result.putIfAbsent(fixture.id(), evidence) != null) {
+                throw invalid("duplicate fixture " + fixture.id() + " in event participant selection");
+            }
+        }
+        return Map.copyOf(result);
+    }
+
+    /** Player ids from fixture stats and positive fixture-specific live explanations. */
+    public static Map<Integer, Set<Integer>> participantIdsByFixture(
+            Collection<FixtureRow> fixtures, SourceDocument liveDocument) {
+        Objects.requireNonNull(fixtures);
+        Objects.requireNonNull(liveDocument);
+        LiveManifest live = parseLive(liveDocument);
+        Map<Integer, Set<Integer>> result = new HashMap<>();
+        for (FixtureRow fixture : fixtures) {
+            Objects.requireNonNull(fixture);
+            Set<Integer> ids = new HashSet<>(parseFixtureManifest(fixture).participantSides().keySet());
+            live.forFixture(fixture.id()).values().stream().filter(LivePlayer::appeared)
+                    .map(LivePlayer::playerId).forEach(ids::add);
+            if (result.putIfAbsent(fixture.id(), Set.copyOf(ids)) != null) {
+                throw invalid("duplicate fixture " + fixture.id() + " in event participant selection");
+            }
+        }
+        return Map.copyOf(result);
+    }
+
     /** Player ids explicitly present for this fixture in live explanations or fixture stats. */
     public static Set<Integer> participantIds(FixtureRow fixture, SourceDocument liveDocument) {
         Objects.requireNonNull(fixture);
@@ -511,7 +592,29 @@ public final class FixtureVerification {
         }
     }
 
-    private enum Side { HOME, AWAY }
+    public enum Side { HOME, AWAY }
+
+    public record Appearance(Side side, int minutes) {
+        public Appearance {
+            Objects.requireNonNull(side);
+            if (minutes <= 0 || minutes > 130) throw new IllegalArgumentException("Invalid appeared minutes");
+        }
+    }
+
+    public record FixtureEvidence(boolean complete, Set<Integer> positivePlayerIds,
+                                  Map<Integer, Appearance> appearances, ReadInterval liveRead) {
+        public FixtureEvidence {
+            positivePlayerIds = Set.copyOf(positivePlayerIds);
+            appearances = Map.copyOf(appearances);
+            Objects.requireNonNull(liveRead);
+            if (positivePlayerIds.stream().anyMatch(id -> id == null || id <= 0)
+                    || !positivePlayerIds.containsAll(appearances.keySet())
+                    || complete && !appearances.keySet().equals(positivePlayerIds)) {
+                throw new IllegalArgumentException("Invalid fixture appearance evidence");
+            }
+        }
+    }
+
     private record FixtureStat(String identifier, Side side, int playerId, int value) { }
     private record FixtureManifest(Map<Integer, Side> participantSides, List<FixtureStat> stats) { }
     private record LiveManifest(Map<Integer, Map<Integer, LivePlayer>> fixtures) {

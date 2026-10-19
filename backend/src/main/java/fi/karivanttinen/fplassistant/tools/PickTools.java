@@ -35,10 +35,10 @@ import org.springframework.stereotype.Component;
  * window — or a known window with nothing in it — is excluded and counted rather than ranked on
  * an invented zero.
  *
- * <p><b>Three sources, three provenance lines</b> — the shape {@code SquadTools} and the my-team
- * tools already use. The candidate pool (identity, club, price, ownership, availability, news)
+ * <p><b>Separate FPL and team-model provenance</b> — the FPL source lines retain the shape
+ * {@code SquadTools} and the my-team tools use. The candidate pool (identity, club, price, ownership, availability, news)
  * comes from {@code fpl_daily_price} at its latest capture and carries
- * {@link DailyPriceSource#provenance}; the metrics come from {@code player_fixture_stats} and
+ * {@link DailyPriceSource#provenance}; the player metrics come from {@code player_fixture_stats} and
  * carry {@link SeasonContext#provenance()}; the fixture population every Score is totalled over
  * comes from the FPL schedule capture and carries
  * {@link fi.karivanttinen.fplassistant.schedule.ScheduleSource#provenance}. The third line is a
@@ -53,7 +53,9 @@ import org.springframework.stereotype.Component;
  * fall back to the weekly table — a pool built from stale prices is the bug, not a degraded
  * answer.
  *
- * <p>Under the three source lines every reply that read the metrics carries
+ * <p>Understat direct match totals supply the club clean-sheet model and have their own
+ * source/capture/sample line. They do not inherit FPL player coverage or refresh claims.
+ * Under the FPL source lines every reply that read the player metrics carries
  * {@link DataAge#METRIC_REFRESH} (KAR-9): the core-stat sync time of {@code player_fixture_stats}
  * is unknowable, and a factual recent-minutes note dates an observation rather than a metric
  * refresh. It is fixed text — no query, no clock read and no row-write timestamp stands in for
@@ -89,8 +91,8 @@ import org.springframework.stereotype.Component;
  * that is not unique in either season loses the previous-season side rather than being guessed —
  * a wrong metric attached to a recommendation is the failure this class exists to prevent.
  *
- * <p>Primary lists require today's {@code a} flag and a complete same-season current-club window.
- * A recent under-60 appearance is a factual note from the latest five complete observations only:
+ * <p>Primary lists require today's {@code a} flag and usable same-season current-club observations.
+ * A recent under-60 appearance is a factual note from the latest five recorded observations only:
  * it neither excludes a player nor changes expected points. Doubtful, stale, partial and
  * inconsistent evidence is excluded rather than weakened into a probability claim. Passing this
  * historical check never guarantees the next lineup.
@@ -131,12 +133,12 @@ public class PickTools implements FplTool {
             Suggest differential FPL picks at or below maxOwnership, optionally filtered by
             position (1=GK, 2=DEF, 3=MID, 4=FWD, or "any"). Returns up to 10 eligible players.
             Eligibility requires a fresh available ('a') daily capture with valid position/club,
-            plus coherent same-season identity and a complete current-club evidence window. The
-            window includes every expected completed fixture, latest ten at most; known zeros
-            count. Only a verified different-club observation fences the spell; otherwise expected
-            fixtures start at season start. Doubtful, stale, missing, pending or inconsistent data
-            causes abstention, and last-season history cannot certify a current role. An under-60
-            appearance in the latest five complete observations is shown as a factual note only;
+            plus coherent same-season identity and usable current-club player rows, latest ten
+            observations at most. Known zero-minute rows count; missing rows are unknown, not zero.
+            Live and provisionally finished match rows are usable and may change. A missing teammate
+            or an unfinished match never excludes a club. Doubtful availability or incoherent
+            player evidence causes abstention; last-season history cannot certify a current role.
+            An under-60 appearance in the latest five recorded observations is a factual note only;
             it neither excludes a player nor changes the score. This history does not guarantee
             the next start.
             Ranking totals full-fixture expected FPL points over every fixture the club plays in
@@ -149,10 +151,10 @@ public class PickTools implements FplTool {
             Ties break on the average FDR of those same fixtures, then ownership. Ability rates
             can blend seasons on the shared ramp; current-role eligibility never does. NOT ranked
             by form. The reply
-            attributes three sources — the daily price capture, the metric season and the FPL
-            schedule capture — and shows the editable gameweek range, any truncation at the end of
-            the season, window evidence, exclusions and partial components. The metric season line
-            covers the metrics only; price and fixtures come from the other two. Use for
+            attributes the daily price capture, FPL player metric season, FPL schedule and
+            Understat team xG/xGA source. It shows the editable gameweek range, season-end
+            truncation, exclusions and partial components. The metric season line covers FPL
+            player metrics only; Understat carries its own seasons and capture/sample dates. Use for
             pick/differential questions with strategy guidance; do not fill an empty list with
             ineligible names. If whole-club comparison evidence is unavailable, the eligible-only
             rows are labelled RESTRICTED COMPARISON POPULATION before the rows; they are not a
@@ -181,7 +183,7 @@ public class PickTools implements FplTool {
             HorizonFixtures.Result horizon = horizon(snapshot, capture, gameweekLimit);
             String provenance = provenanceFor(capture, season,
                     LocalDate.ofInstant(snapshot.asOf(), UkTime.zone()), scheduleSource(snapshot))
-                    + "\n" + snapshot.metricRefresh();
+                    + "\n" + snapshot.metricEvidence();
             Selection selection = candidates(snapshot, horizon, elementType, maxOwnership);
             if (selection.rows().isEmpty()) {
                 return provenance + "\n" + scheduleEvidence(snapshot, horizon, selection) + "\n"
@@ -202,12 +204,12 @@ public class PickTools implements FplTool {
     @Tool(description = """
             Suggest up to 10 FPL captain candidates from midfielders and forwards. Candidates need
             a fresh available ('a') daily capture with valid position/club, plus coherent
-            same-season identity and a complete current-club evidence window. The window includes
-            every expected completed fixture, latest ten at most; known zeros count. Only a verified
-            different-club observation fences the spell; otherwise expected fixtures start at season
-            start. Doubtful, stale, missing, pending or inconsistent data causes abstention, and
-            last-season evidence cannot certify today's role. An under-60 appearance in the latest
-            five complete observations is shown as a factual note only; it neither excludes a
+            same-season identity and usable current-club player rows, latest ten observations at
+            most. Known zero-minute rows count; missing rows are unknown, not zero. Live and
+            provisionally finished match rows are usable and may change. A missing teammate or
+            an unfinished match never excludes a club. Doubtful availability or incoherent player
+            evidence causes abstention; last-season evidence cannot certify today's role.
+            An under-60 appearance in the latest five recorded observations is a factual note only; it neither excludes a
             player nor changes the score. This history does not guarantee the next start.
             Ranking totals full-fixture expected FPL points over every fixture the club plays in
             the next nextN calendar gameweeks (clamped to 1-5, counted from the next editable
@@ -242,7 +244,7 @@ public class PickTools implements FplTool {
             HorizonFixtures.Result horizon = horizon(snapshot, capture, gameweekLimit);
             String provenance = provenanceFor(capture, season,
                     LocalDate.ofInstant(snapshot.asOf(), UkTime.zone()), scheduleSource(snapshot))
-                    + "\n" + snapshot.metricRefresh();
+                    + "\n" + snapshot.metricEvidence();
             Selection selection = candidates(snapshot, horizon, ATTACKERS, 100.0);
             if (selection.rows().isEmpty()) {
                 return provenance + "\n" + scheduleEvidence(snapshot, horizon, selection) + "\n"
@@ -708,14 +710,15 @@ public class PickTools implements FplTool {
                 + " probability and DefCon. Observed minutes, 60+ history and realised points"
                 + " do not alter the ranking. A recent under-60 appearance is a factual note on"
                 + " that player's row only. A fixture with no club projection is n/a and its row"
-                + " is partial.\n");
+                + " is partial. Club rates use Understat and the shared ramp keyed on each club's"
+                + " own completed Understat matches, independently of player evidence.\n");
         if (metric.blending()) {
-            out.append("Ability rates follow the one player-specific ramp: 1 complete current"
+            out.append("Ability rates follow the one player-specific ramp: 1 recorded current"
                     + " fixture 10%, 2: 30%, 3: 60%, 4: 80%, 5-7: 90%, 8+: 100%.\n");
         }
-        out.append("Only fresh available players with a complete current-club window qualify."
-                + " Missing/stale rows abstain rather than borrowing last season as current"
-                + " evidence. A pick also needs a known horizon holding at least one fixture: a"
+        out.append("Only fresh available players with usable current-club observations qualify."
+                + " Missing rows are unknown, not zero; live/provisional rows may change."
+                + " Last season does not certify current evidence. A pick also needs a known horizon holding at least one fixture: a"
                 + " club blanked across the whole window, or one whose schedule is unresolved,"
                 + " is counted in the exclusions below rather than ranked at zero.\n")
                 .append("Save and penalty-save points remain omitted, so goalkeepers are"

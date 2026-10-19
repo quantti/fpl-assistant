@@ -64,6 +64,28 @@ characters that the latter mangles:
 set -a; source .env.test; set +a
 ```
 
+## Project-local software factory
+
+The portable workflow lives at `.agents/skills/software-factory/`; its `domain.md` maps FPL
+invariants, source documents, code boundaries and safe checks. Read current `AGENTS.md` and
+`STATUS.md` too: the supplement's pinned baseline is not current production state.
+
+In Pi, reload after adding the skill, then explicitly invoke
+`/skill:software-factory <task or selected stage>`. Automatic model invocation is disabled.
+Check the discovered path if a user-level skill has the same name; do not silently run another
+project's domain. The skill is guidance, not a dispatcher or permission to activate sync,
+contact production, spend provider credit, publish or merge. No global install is needed.
+
+Optional offline checks, from `.agents/skills/software-factory/`:
+
+```bash
+python3 -B scripts/check_bundle.py
+python3 -B -m unittest discover -s tests -p 'test_bundle.py' -v
+```
+
+These check bundle structure and portability, not agent behavior or FPL correctness. Adoption
+sources and limits: [factory plan](superpowers/plans/2026-10-16-fpl-software-factory.md).
+
 ## Commands
 
 Run from `backend/`:
@@ -81,6 +103,37 @@ set -a; source .env.test; set +a
 ./gradlew bootRun --args="--sync-prices"          # capture today's FPL prices, then exit
 ./gradlew bootRun --args="--sync-schedule"        # capture FPL gameweeks and fixtures, then exit
 ```
+
+### Daily-price email reminders (KAR-19)
+
+The existing freshness check runs at 06:00, 12:00 and 18:00 Europe/London. It logs stale
+captures as before; opt-in mail also covers an empty capture table. Fresh/future captures
+and database read failures do not send mail. Each unhealthy check attempts one email, with
+no immediate retry; later checks remind again until recovery. This is not a durable outbox
+or a cross-instance deduplication guarantee. An app/scheduler outage cannot alert itself.
+
+| Environment variable | Default | Purpose |
+|---|---|---|
+| `DAILY_PRICE_ALERT_EMAIL_ENABLED` | `false` | Explicit opt-in to external mail |
+| `DAILY_PRICE_ALERT_RESEND_API_KEY` | empty | Separate Resend sending-only key scoped to the verified domain |
+| `DAILY_PRICE_ALERT_EMAIL_FROM` | `FPL Sidekick <noreply@fpl-sidekick.com>` | Existing verified sender domain |
+| `DAILY_PRICE_ALERT_EMAIL_TO` | `kvanttinen@gmail.com` | Owner's chosen destination |
+
+The app calls Resend's HTTPS Emails API, independently of Supabase Auth/SMTP. An incomplete
+enabled configuration logs ERROR and makes no request; provider errors/timeouts do not
+escape the freshness check. Connect/read timeouts are five seconds, redirects are refused,
+and logs contain neither the key nor provider response bodies. A success log means **API
+acceptance, not inbox delivery**. `/actuator/health` is unchanged. Disabling
+`fpl.daily-price.scheduled` also disables the check and its emails.
+
+Activation is an owner-operated step after the reviewed PR is merged: provision a separate
+sending-only key in Resend and install it as a Fly secret along with the enable flag. Do not
+reuse or change Supabase's SMTP configuration. Verify delivery to the owner inbox (including
+spam checks), record the date/result, and disable mail with the enable flag if delivery fails.
+For an attended smoke test, use an isolated staging instance and disposable capture table;
+do not delete/backdate production rows or force a production sync to manufacture an alert.
+Keep mail disabled in ordinary tests and development. Production activation and delivery
+have **not** been verified by the local loopback tests.
 
 ### Owned-sync implementation (not activated)
 
@@ -351,9 +404,24 @@ agent, a script, CI — it is refused outright. master deploys, so a push there 
 **It does not run the suite.** Until 2026-09-19 it reset the test container and ran
 `cleanTest test` on every push; six minutes and 1.2 GiB per push was too heavy for the cloud
 host. The division of labour now: run the tests you wrote or touched while developing
-(`./gradlew test --tests '…'`), and GitHub runs the whole suite on every pull request and again
-on the merge to `master`, where `needs: test` blocks a red deploy. A full local suite is still
-available by hand — see the memory-scoped command above — but nothing requires it.
+(`./gradlew test --tests '…'`) locally before pushing, recording the command and tested revision
+in the PR. Since the owner's 2026-10-18 budget decision, PR CI runs cheap routing/shell checks
+and frontend checks when affected, without PostgreSQL or Gradle. This does not establish that
+backend tests passed locally; that evidence is self-reported, not enforced by the push hook.
+Master runs the full retained default backend suite before deployment. A failed master test job
+blocks deploy. Docs-only master changes are a green no-op with no deployment; manual redeploy
+on master always runs the full gate, even after docs-only changes. Other refs cannot deploy.
+Master test runs do not share a concurrency group: a docs-only push must not cancel or replace
+pending code verification. Production deploys remain separately serialized. Inside that slot,
+the job fetches master again and deploys its tested checkout only if it is still current or all
+subsequent changes are allowlisted docs. A later application change blocks the older deploy,
+so out-of-order test completion cannot roll production back. GitHub concurrency does not
+promise FIFO and can replace pending jobs; if the desired latest release has no deployment
+left queued, request a new master `workflow_dispatch` (which reruns full verification).
+Before first rollout of this workflow change, drain older master/deploy runs: an already-started
+old workflow does not acquire the new guard retroactively.
+A full local suite is still available by hand — see the memory-scoped command above — but
+nothing requires it.
 `scripts/tests/pre-push-test.sh` keeps the stub-only contracts for the master guard and for
 `scripts/test-db.sh reset`; CI runs it.
 
@@ -361,7 +429,15 @@ available by hand — see the memory-scoped command above — but nothing requir
 `npm run format:check`, a few seconds — when the push changes something under `frontend/` and
 `npm` plus `frontend/node_modules` exist. A red check refuses the push. On a host without Node
 (the VPS) it prints one notice and lets the push through; the pull request's GitHub run executes
-the same two commands, so CI is the enforcement and the hook is the early warning.
+the same two commands when frontend/shared inputs changed, so CI is the enforcement and the
+hook is the early warning.
+
+CI scope classification is a narrow docs allowlist (`docs/**`, root `README.md`, `AGENTS.md`,
+`CLAUDE.md`), never runtime strategy Markdown under `backend/src/main/resources/docs/`.
+Unknown/missing change ranges select full master verification and frontend PR checks. The
+first version still starts master's disposable Postgres service for a docs no-op; it skips the
+application/toolchain steps instead of adding an always-running classifier job.
+Run the offline routing regressions with `python3 scripts/tests/ci-workflow-test.py`.
 
 `git push --no-verify` skips the hook entirely. That is git's escape hatch for a human who knows
 what they are skipping; treat it as bypassing branch protection, because that is what it is.
@@ -469,6 +545,46 @@ startup). `FootballDataTeamAliases` (football-data's team names → FPL codes) a
 parser were verified against a real captured response on 2026-08-15 — the check-in fixture
 lives in `backend/src/test/resources/football-data-fixtures/` and is proven by
 `FootballDataCapturedResponseTest`.
+
+## Understat team xG/xGA (local migration)
+
+Team models and `getTeamExpectedGoals` use direct Understat match totals; FPL player
+xG/xA/xGI and DefCon remain separate. Understat's home/away xG supplies both teams' xG/xGA.
+The team tool no longer reports summed player xA/xGI. There is no FPL aggregate fallback.
+
+`fpl_understat_capture` and `fpl_understat_match` are owned, RLS-enabled caches. One sync fetches
+`getLeagueData/EPL/{year}` for the playing and preceding seasons: two requests, not one per player.
+Each season is replaced atomically, including withdrawn matches and valid empty captures.
+A season's failed fetch/parse retains that season's previous observations but does not block a
+valid update to the other season; the job still reports the operational failure.
+Capture and latest included match dates are disclosed separately. No external calls at chat time.
+Each HTTP response has a 30-second absolute deadline covering headers and the complete body;
+timeout cancels the request. Raw and gzip-decoded bodies are each limited to 5 MB.
+
+`UNDERSTAT_SCHEDULED` defaults to `false`; the optional schedule is 02:20 Europe/London.
+After explicit operational approval, `--sync-understat` performs one capture and exits. It uses
+the database's playing-season identity, not its fallback FPL metric season. Do not run that flag
+against shared Supabase merely to test this feature, or turn on staging's collectors. Initial live
+capture/deployment, permitted provider use and sustained endpoint reliability are rollout checks;
+a successful public HTTP read is not that approval. The owner has now confirmed permission for
+the intended use and authorised initial capture/activation after the deadline fix is deployed.
+Do not start a second full Spring application just to run the capture alongside production's
+ACTIVE importer: isolate the Understat client/store invocation so no core scheduler starts.
+
+Collection simplification: team xG/xGA no longer depends on player-roster completeness, optional
+player xGC masks or incremental finality. Those proofs remain for player data. This adds two
+Understat league requests, not a claimed net reduction in FPL requests: player histories are still
+needed. Shortlist still shares the full ranking reader; separating its identity/team-only reads
+is a possible follow-up SQL/read-volume simplification, not a collector deletion. Daily FPL prices/availability, FPL deadlines/FDR/schedules, player ability and
+DefCon still have distinct purposes and are not removed. The legacy/incremental proof
+compatibility issue can still affect player eligibility; switching the team provider is not a
+claim that the separate player publication path is repaired. The legacy DefCon scheduler already
+stays off in ACTIVE mode, so do not add a second suppression mechanism. Understat also supplies
+scores, making the current-season football-data result collector a possible separate
+consolidation; keep its existing job and vaastav archives unchanged in this migration.
+
+The implementation and its new consumer regressions require focused verification; test database
+and build/test admission must be coordinated with the owner's other session before running.
 
 ## Price history and enrichment tools (Phase 4)
 
@@ -586,7 +702,7 @@ currently set to `anthropic` in `.env.test`; production currently uses `google-g
 billed, API-key Gemini Developer API, not Vertex AI. `application.yml` maps the setting to
 `spring.ai.model.chat`, which activates only that provider's autoconfiguration — without it, the
 unused provider's blank API key fails context startup. `google-genai` uses `GEMINI_API_KEY`;
-thinking depth is `GEMINI_THINKING_LEVEL` (`LOW` default). Current provider privacy controls,
+thinking depth is `GEMINI_THINKING_LEVEL` (`MEDIUM` default). Current provider privacy controls,
 retention decisions and unresolved contract evidence are recorded in
 [`PRIVACY-OPERATIONS.md`](PRIVACY-OPERATIONS.md); do not infer them from local environment defaults.
 

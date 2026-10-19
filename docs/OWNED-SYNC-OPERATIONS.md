@@ -4,7 +4,54 @@ Production cut over to the assistant-owned writer on 2026-09-16. Tapas runs thro
 `tapas_runtime` login with `FPL_CORE_WRITES_ENABLED=false`; do not restore a second writer without
 the documented rollback fence. Deploy through the reviewed GitHub workflow, not manual Fly deploy.
 
-Latest containment (2026-09-27): the owner-authorized STAGING epoch 66 retested deployed
+Latest containment (2026-10-04 evening): a second separately approved attended ACTIVE run
+stopped at the same 500 MB DB-RX trigger after about 32 minutes and verified **OFF83**,
+zero active/unresolved work and health UP; SELECT-only scope/gate/physical-row and health
+checks passed again at 21:01 UTC. Five existing GW2–3 fixtures were republished (322 rows),
+but one repeated ACTIVE80's fixture14: nine distinct refreshes across both runs, still only
+40 VERIFIED and **zero GW5 physical rows**. Last observed ACTIVE shutdown traffic was
+500.78 MB DB / 526.15 MB machine RX; minimum sampled memory was ~198.6 MiB. Archived-season
+hashes/writer gates stayed unchanged. Both one-time approvals are spent; no continuous or
+further repeat is approved. Remote email delivery remains unverified. Investigate transfer
+cost and backlog behavior offline before another activation; preserve source floors and
+full-queue fairness. [Exact evidence](OWNED-SYNC-EGRESS-REPORT.md).
+
+Earlier containment (2026-10-04 afternoon): the separately approved **60-minute / 500 MB observed
+DB-RX / 650 MB machine-RX ACTIVE** run republished five already-VERIFIED fixtures in GW2–3,
+rewriting 327 existing PFS rows with matched independent source observations. The old coherent
+baselines were from 18–19 September; this was not two fresh batches per fixture within the run.
+It stopped at the DB trigger after about 28 minutes (504.56 MB DB / 530.21 MB machine RX),
+then verified **OFF epoch 81**, zero active/unresolved work and health UP. SELECT-only checks at
+17:29 UTC reconfirmed the scope/fences and unchanged archived-season data. Current receipts/evidence
+changed as authorized, but the VERIFIED count stayed 40 and **GW5 still has zero physical rows**.
+The accepted Fly-API residual risk applied only to this attended run; remote email delivery/Kuma
+state was not verified. No continuous operation, repeat, image deployment or Tapas change was
+approved. [Exact publication/traffic/rollback evidence](OWNED-SYNC-EGRESS-REPORT.md).
+
+Earlier containment (2026-10-04 morning): the separately approved priority-enabled full-queue observation
+on deployed `94eb28a` reached **two STAGED fixtures**, with independent metadata coverage checks
+of 68/68 and 71/71 exact-season/epoch, post-floor histories. Its 30-minute / 200 MB DB-RX /
+260 MB machine-RX envelope stopped at the first-fixture + two-minute deadline; last STAGING
+shutdown samples were 165.12 MB observed DB RX / 180.27 MB machine RX. **OFF epoch 79**,
+zero active runs/unresolved attempts, public health UP and unchanged publication/evidence/core/GW5
+counts were reconfirmed by SELECT-only checks at 11:43 UTC. GW5 still has zero physical PFS rows.
+STAGED is not VERIFIED or a sustained-egress result. No ACTIVE, repeat run, Tapas writer change
+or application deployment was authorized during the observation. Exact measurements and the
+accepted Fly-API-dependent rollback limitation are in [the egress report](OWNED-SYNC-EGRESS-REPORT.md).
+
+Earlier containment (2026-10-03): a second separately [owner-authorized bounded retest](OWNED-SYNC-EGRESS-REPORT.md)
+ran STAGING epoch 76 under the existing full-queue scheduling. It stopped after about 363 seconds
+at the 50 MB observed DB-RX trigger (53.19 MB DB / 59.94 MB whole-machine RX), with 84 completed
+histories and **zero fixtures STAGED**. The independent guard confirmed **OFF epoch 77**, zero active
+runs/unresolved requests and public health UP; postflight and a later SELECT-only check confirmed
+unchanged 706 published receipts, 6,523 evidence rows, 40 VERIFIED fixtures and core/GW5 counts.
+The owner accepted the known Fly-API dependency of both the guard and console fallback; these are
+observed triggers, not hard caps or billed egress. No ACTIVE, core publication, Tapas writer change
+or application deployment occurred. The earlier epoch-74 run stopped at 20.62 MB observed DB RX,
+completed 48 histories, staged no fixtures and returned to OFF epoch 75. The locally recovered
+28 September epoch-72 attempt had 43 histories and zero fixtures; older OFF epochs below are historical.
+
+Earlier containment (2026-09-27): the owner-authorized STAGING epoch 66 retested deployed
 `80dba18`, including KAR-71's metadata-first payload hydration. An attended ten-minute guard
 stopped it at 15.21 MB observed DB TCP RX, about 66 seconds after the mode request, with 17.19 MB
 whole-machine RX. These are not a Supabase billing total. Two catalogue/schedule jobs completed;
@@ -14,12 +61,15 @@ GW5 still has zero physical PFS rows and ten `VERIFYING` fixture receipts. Tapas
 Kuma were not changed. The earlier 26 September run on `bc5ced7` stopped at 20.81 MB machine RX,
 with 15.16 MB observed DB RX, and returned to OFF epoch 65; that is historical evidence.
 
-Do not restore sustained STAGING or ACTIVE yet: still-eligible checkpoint/pair body reads and
-actual budgeted history/verification progress remain unresolved. Neither short cold-start stop
-establishes a monthly rate. Tapas core writes remain disabled under the existing cutover; the
-retest enabled no core writer. See `docs/OWNED-SYNC-EGRESS-REPORT.md` for evidence and measurement
-limits. The 20 September ACTIVE test and its OFF epoch 63 are historical, not the current mode.
-Reducing future traffic does not undo the previous period's overage.
+Do not restore sustained STAGING or ACTIVE yet: the bounded fixture-progress gate now passed,
+and five existing fixtures have now passed independent-batch republication, but sustainable
+egress, full-backlog drain and GW5 readiness remain unproven. The
+[readiness plan](superpowers/plans/2026-10-03-owned-sync-production-readiness.md) still requires
+reviewed durable budgeting/API-independent containment and a separately approved publication decision.
+Tapas core writes remain disabled under the existing cutover. See
+`docs/OWNED-SYNC-EGRESS-REPORT.md` for evidence and measurement limits. The 20 September ACTIVE
+test and its OFF epoch 63 are historical, not the current mode. Reducing future traffic does not
+undo the previous period's overage.
 
 Before containment the current-season backlog held 40 `VERIFIED` fixtures. Resolve the Java PID by
 identity and give each new activation its own bounded startup-heartbeat grace period.
@@ -34,13 +84,25 @@ uses Uptime Kuma on `plex`, with its existing `Home network alert` SMTP notifica
 
 ### Uptime Kuma (selected)
 
+Current monitoring, verified 2026-10-19: Kuma **1.23.17** on `plex` uses active monitor **20**,
+`FPL Assistant - incremental importer`. Continuing DOWN notifications repeat every **1,440
+failed checks** at the unchanged **60-second check interval**, approximately **24 hours**
+(previously 30 checks / 30 minutes). The resend setting counts checks, not minutes or seconds.
+Retry interval remains 20 seconds with one retry; new DOWN and recovery transitions still
+notify, so flapping is not capped at one email per day. API readback and database verification
+confirmed only `resendInterval` changed; delivery and a full 24-hour repeat were not tested.
+The owner chose this built-in fixed interval rather than a custom escalation scheduler.
+Public-health monitor **19** was untouched; the old monitor **18** is absent.
+
+The configuration below describes the retired owned-runtime monitor, not current monitor 20.
+
 Set `OWNED_SYNC_ALERTS_VIA_MONITOR=true`, `OWNED_SYNC_ALERT_WEBHOOK_ENABLED=false`,
 `OWNED_SYNC_EXTERNAL_HEALTH_ENABLED=true` and a strong `OWNED_SYNC_MONITOR_TOKEN`. Enable operator
 status separately with `OWNED_SYNC_OPS_ENABLED=true` and a different `OWNED_SYNC_OPERATOR_TOKEN`.
 The monitor polls `https://fpl-assistant.fly.dev/ops/sync/health` using header
 `X-FPL-Monitor-Token`, requires HTTP 200 and body `"status":"UP"`, checks TLS, and follows no
 redirects. Poll every 60 seconds with two retries; enable DOWN and recovery mail through the
-existing notification channel. Do not enable the GitHub heartbeat workflow as a second route.
+existing notification channel. GitHub Actions is not used for monitoring.
 
 In this explicitly delegated mode, health is DOWN while any incident lacks its own matching
 occurrence's recovery, or a planner/watchdog heartbeat is missing/stale, or the database is
@@ -50,12 +112,13 @@ application refuses webhook retries. Switching back to webhook additively redriv
 An enabled authenticated health endpoint is required; selecting both notification routes fails
 startup. A STAGING instance can intentionally be DOWN because it has not published/verified data.
 
-Kuma monitor **18**, `FPL Assistant - owned sync`, was created paused on 2026-09-14 through its
-authenticated API. Its SMTP transport test was accepted; inbox receipt is not independently proven.
-Unpause it for the monitored rollout, not while the application is OFF. Kuma is independent of Fly,
-not of its own home-server/network outage; no off-site availability SLA is claimed.
+Historical Kuma monitor **18**, `FPL Assistant - owned sync`, was created paused on 2026-09-14
+through its authenticated API; it has since been removed. Its SMTP transport test was accepted;
+inbox receipt was not independently proven at that checkpoint. Do not recreate/unpause that
+retired monitor as part of current importer operations. Kuma is independent of Fly, not of its
+own home-server/network outage; no off-site availability SLA is claimed.
 
-### Webhook and optional GitHub heartbeat (alternative)
+### Application webhook (alternative)
 
 For this alternative, leave `OWNED_SYNC_ALERTS_VIA_MONITOR=false` and configure:
 
@@ -63,18 +126,11 @@ For this alternative, leave `OWNED_SYNC_ALERTS_VIA_MONITOR=false` and configure:
 - `OWNED_SYNC_ALERT_WEBHOOK_ENABLED=true` and secret `OWNED_SYNC_ALERT_WEBHOOK_URL`;
 - `OWNED_SYNC_OPS_ENABLED=true` and a high-entropy `OWNED_SYNC_OPERATOR_TOKEN`;
 - `OWNED_SYNC_EXTERNAL_HEALTH_ENABLED=true` and a different high-entropy
-  `OWNED_SYNC_MONITOR_TOKEN`;
-- repository variable `FPL_SYNC_MONITOR_ENABLED=true`, plus GitHub secrets
-  `FPL_SYNC_MONITOR_URL` (the `/ops/sync/health` URL), `FPL_SYNC_MONITOR_TOKEN`, and
-  `FPL_SYNC_MONITOR_FAILURE_WEBHOOK`.
+  `OWNED_SYNC_MONITOR_TOKEN`.
 
 Keep all values in environment/repository secrets. Do not put them in source, command arguments,
 URLs printed to logs, tickets, or screenshots. The application webhook accepts HTTPS only; HTTP
 loopback exists only as a package-private test seam. No real webhook is called by the test suite.
-
-The GitHub schedule runs every ten minutes only when the repository variable is exactly `true`.
-GitHub scheduled workflows are best-effort and can be delayed or skipped; they are an independent
-way to detect a stopped machine/dead in-process scheduler, not an availability SLA.
 
 ## Overnight OOM containment (2026-09-15)
 
@@ -187,6 +243,91 @@ verification in a separately reviewed maintenance operation while retaining obse
 verified generations and receipts; otherwise overwritten physical rows would inherit old source
 proof. Keep readers fail-closed until reviewed migration/re-verification. Never delete evidence to
 force a legacy-looking successful answer.
+
+## Incremental importer (implemented; not cut over)
+
+`OWNED_SYNC_IMPORTER_ENABLED` defaults to `false`; absent/false preserves the existing legacy
+runtime routing. **Setting it true is an activation-capable configuration, not a harmless probe.**
+With valid prerequisites it suppresses the legacy planner/workers, registers the importer and runs
+one collection immediately, then at a one-hour fixed delay. The durable producer lease prevents
+cross-process overlap. Valid provisional pages publish without a fixture-wide stability wait;
+checked gameweeks receive a fresh, resumable final sweep.
+
+Opt-in requires `OWNED_SYNC_MODE=ACTIVE`, explicit `OWNED_SYNC_PLAYING_SEASON`,
+`OWNED_SYNC_CUTOVER_CONFIRMED=true`, the matching database playing season and an already-existing
+ACTIVE runtime epoch. Read-only schema preflight must find the required incremental tables/columns.
+Invalid prerequisites fail startup before collection. Importer startup neither initializes schema
+nor changes modes/epochs, but **successful startup can fetch and publish immediately**.
+
+The compatibility writer now conditionally upserts named `team`, `player`, `gameweek` and `fixture`
+columns alongside independently valid PFS page publication. The same guarded transaction now
+refreshes `fpl_gameweek` and `fpl_fixture` from that validated pair, with a shared source-read time
+and `finished_provisional` preserved. No extra source requests are needed. ACTIVE disables the
+independent daily schedule writer. `fpl_daily_price` stays on its existing daily price/availability
+path. My-team and unrelated jobs remain separate. Ranking uses available individual player rows,
+including live/provisionally finished matches; match state and other players' missing rows do not
+block comparison. Source receipts, correction fences and invalid-row checks remain in force. The importer
+records a fenced heartbeat each minute and runs the existing watchdog's importer-specific checks
+every five minutes on separate executors; alert delivery retains its 30-second executor. Importer
+checks omit legacy fixture/capture signals, while existing legacy watchdog behavior is unchanged
+when the flag is false. The importer check requires its **own** heartbeat and opens a bounded
+checked/terminal-gameweek overdue incident when a gameweek has not reached finality. Old fixture
+incidents remain open after the legacy verifier stops; they and new gameweek incidents recover
+only when `GameweekFinalityReader` revalidates the current source population and row/page proof.
+External health requires a fresh importer heartbeat and watchdog heartbeat, not a leftover legacy
+planner heartbeat. Neither watchdog changes runtime mode automatically.
+
+While opted in, the same serialized hourly runner performs a startup retention pass before its first
+collection and runs maintenance after every collection, including a failed one. For `INCREMENTAL_CORE`
+payload rows older than 24 hours on `COMPLETED`, `FAILED` or `SUPERSEDED` runs, it replaces eligible
+raw `BYTEA` bodies with empty bytes and records `body_pruned_at`; it does not delete the payload rows.
+It prunes only when the immutable `source_payload_sha256` still matches the body. Active `PENDING`/
+`LEASED` bodies and a published compatibility pair referenced by a newer active import are retained.
+The row keeps its ID, generation, endpoint, read interval, captured hash, validation state and
+`source_published` flag. Invalid validation remains invalid; a changed body whose digest no longer
+matches is not pruned. `GameweekFinalityReader` requires both exact payload rows and checks their
+captured hashes against the compatibility receipt; for a pruned row it accepts only the empty body,
+prune marker, matching hash and valid published state. Existing rows are not hydrated or hash-backfilled:
+legacy rows without this compact proof cannot certify new-path finality until a fresh validated capture.
+The importer preflight requires the new columns and enabled payload guard before it can run.
+
+Cleanup errors are logged without changing runtime mode or replacing the import result; there is no
+extra scheduler, FPL request or per-second queue. The legacy runtime keeps its existing row-deletion
+retention policy. This releases retained raw body bytes, not payload rows or their compact metadata,
+and is **not** a request-spend, provider-egress, database-storage or billing cap.
+
+**Do not enable it in production without the separately approved single-writer cutover.** Drain and
+fence old core writers first, install/verify the compatible schema and readers, and complete the
+external Tapas metric-reader audit; confirmation is not evidence that those steps happened. Real
+matchday latency, resource use and API variation remain operational acceptance work. Never use
+physical Tapas values as fallback or infer reader compatibility from the local synthetic tests.
+
+The cutover handoff is **not automatic**. After retiring/draining the old process, its normal
+shutdown must leave a recorded `OFF` epoch. Deploy the reviewed new binary with
+`OWNED_SYNC_MODE=OFF`, `OWNED_SYNC_IMPORTER_ENABLED=false`, operations and the dedicated operator
+token enabled. Only after the old process has stopped, the role/reader gates are accepted, and
+`OWNED_SYNC_CUTOVER_CONFIRMED=true`, opt in to `OWNED_SYNC_HANDOFF_ENABLED=true` on that OFF
+binary. Read `/ops/sync/status` with the operator token and separately confirm the playing season,
+the expected OFF epoch and no old process. POST `/ops/sync/importer/handoff` with JSON
+`{"playingSeason":"2026-27","expectedOffEpoch":<observed OFF epoch>}` and the operator token. The
+transaction refuses a stale/non-OFF epoch, a missing current season, unfinished old permits or an
+old worker/importer heartbeat in the last ten minutes; it advances to a new ACTIVE epoch and records
+an `importer-handoff` receipt. Only then deploy `OWNED_SYNC_MODE=ACTIVE` with importer enabled.
+Importer startup still refuses any other epoch. The new binary's legacy activation refuses an
+importer-owned ACTIVE epoch; **never redeploy an older binary that lacks this guard** while importer
+ownership is active. An ops endpoint is an execution mechanism, not approval to run it.
+
+Rollback starts by stopping the importer process and deploying an OFF/no-importer binary, then
+POST `/ops/sync/importer/retire` with
+`{"playingSeason":"2026-27","expectedImporterEpoch":<observed importer epoch>}` and the same
+token. It fences outstanding runs into a new OFF epoch and refuses to retire an unrelated legacy
+ACTIVE epoch. Observe the OFF epoch and drain before any old writer returns. Retain compatible
+readers and ownership evidence. Do not simply unset the flag while ACTIVE: that would select the
+old core loop. Restoring old writers requires a separately reviewed re-verification plan; old
+fixture receipts must not certify new or withdrawn physical values.
+No production importer activation, DB/Fly operation or rollback was performed for this implementation.
+A failed page outside a complete checked game's manifest does not delay that game's final receipt:
+the completed producer is closed before a new pending generation retains the unresolved work.
 
 The 5000-attempt rolling-day ceiling can defer desired polling on a busy full-league day. Local
 600-player/ten-fixture demand intentionally exercises that case; it is not a guarantee of all
