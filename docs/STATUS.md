@@ -17,6 +17,16 @@ No local full suite or production operation was performed for this correction. I
 must drain the old binaries and rearm once because their old shutdown still disables storage;
 subsequent normal deploys need no manual rearm. See `docs/PRICE-PREDICTION-OPERATIONS.md`.
 
+## Remove unused Actions heartbeat (2026-10-19)
+
+Removed the unconfigured `owned-sync-heartbeat.yml` schedule and its GitHub-only setup
+instructions. The ten latest runs were skipped; the repository enable variable and monitor
+secrets were absent. Uptime Kuma remains the selected independent monitor. Application
+heartbeats, watchdogs, `/ops/sync/health`, monitor credentials and webhook support are unchanged.
+Historical investigation reports remain intact. Offline CI routing checks passed 2/2 and shell
+regressions 17/17; explicit removal/preservation assertions and `git diff --check` passed.
+No backend build, live Kuma probe, GitHub settings change or production operation was performed.
+
 ## Match-status CI follow-up (2026-10-18)
 
 PR #174 merged as `d4ae08e`, but master run `39166550753` failed 3 of 1,950 tests and
