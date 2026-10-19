@@ -243,41 +243,70 @@ class PricePredictionWorkerTest {
         assertThat(PricePredictionWorker.retryDelay("bad", READ)).isEqualTo(Duration.ofMinutes(10));
     }
 
-    @org.junit.jupiter.params.ParameterizedTest
-    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
-    void shutdownDrainsInflightRequestEvenWhenDurableRevokeFails(boolean revocationFails) throws Exception {
+    @Test
+    void shutdownDrainsInflightRequestWithoutDisablingPublishing() throws Exception {
         var entered = new java.util.concurrent.CountDownLatch(1);
         var release = new java.util.concurrent.CountDownLatch(1);
-        var revoked = new java.util.concurrent.CountDownLatch(1);
+        var stopped = new java.util.concurrent.CountDownLatch(1);
+        var permission = spy(new PricePredictionPermission(environment));
         doAnswer(invocation -> {
-            revoked.countDown();
-            if (revocationFails) throw new IllegalStateException("unavailable");
+            invocation.callRealMethod();
+            stopped.countDown();
             return null;
-        }).when(store).revokeAndDisable();
+        }).when(permission).stop();
         fetcher = uri -> {
             calls.incrementAndGet();
             entered.countDown();
             if (!release.await(3, java.util.concurrent.TimeUnit.SECONDS)) throw new IllegalStateException("test timeout");
             return new PricePredictionHttp.Response(200, null, bytes(bootstrap()));
         };
-        var worker = worker();
+        var worker = new PricePredictionWorker(store, permission, fetcher, clock, SEASON,
+                URI.create("http://localhost/bootstrap/"), URI.create("http://localhost/history/"));
         clock.now = READ;
         var tick = java.util.concurrent.CompletableFuture.runAsync(worker::tick, task -> Thread.ofPlatform().start(task));
         assertThat(entered.await(3, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
         var close = java.util.concurrent.CompletableFuture.runAsync(worker::close, task -> Thread.ofPlatform().start(task));
         try {
-            assertThat(revoked.await(3, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            assertThat(stopped.await(3, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
             assertThat(close.isDone()).isFalse();
         } finally {
             release.countDown();
         }
         tick.get(3, java.util.concurrent.TimeUnit.SECONDS);
-        if (revocationFails) {
-            assertThatThrownBy(() -> close.get(3, java.util.concurrent.TimeUnit.SECONDS))
-                    .hasCauseInstanceOf(IllegalStateException.class);
-        } else close.get(3, java.util.concurrent.TimeUnit.SECONDS);
+        close.get(3, java.util.concurrent.TimeUnit.SECONDS);
+        verify(store, never()).revokeAndDisable();
         verify(store, never()).publishForecast(any(), anyString(), any(), any());
+        verify(store).release(lease);
+        clock.now = READ.plusSeconds(600);
+        worker.tick();
+        verify(store, never()).revokeAndDisable();
         assertThat(calls).hasValue(1);
+    }
+
+    @Test
+    void ordinaryShutdownDoesNotNeedDatabaseOrRearm() {
+        doThrow(new IllegalStateException("unavailable")).when(store).revokeAndDisable();
+        var worker = worker();
+        assertThatCode(worker::close).doesNotThrowAnyException();
+        worker.close();
+        verifyNoInteractions(store);
+        try (var restarted = worker()) {
+            clock.now = READ;
+            restarted.tick();
+            assertThat(calls).hasValue(2);
+            verify(store, never()).enablePublishing();
+        }
+    }
+
+    @Test
+    void shutdownRetriesPreviouslyFailedConfigurationRevocation() {
+        doThrow(new IllegalStateException("unavailable")).doNothing().when(store).revokeAndDisable();
+        var worker = worker();
+        environment.setProperty("fpl.owned-sync.mode", "STAGING");
+        assertThatThrownBy(worker::tick).isInstanceOf(IllegalStateException.class);
+        environment.setProperty("fpl.owned-sync.mode", "OFF");
+        worker.close();
+        verify(store, times(2)).revokeAndDisable();
     }
 
     @Test
