@@ -921,6 +921,8 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
     private static void prepareActiveAcceptanceSeason() {
         SharedStatsSeed.ensureOwnedSyncCaptureSeason(jdbc);
         createActiveCapturedTables();
+        new dev.quantti.fplassistant.schedule.ScheduleSchema(jdbc,
+                CAPTURED.gameweek(), CAPTURED.fixture()).ensureSchema();
         new DefensiveStatsSchema(jdbc).ensureColumns();
         cleanActiveAcceptanceSeason();
         SharedStatsSeed.setCurrentSeason(jdbc, SEASON.id());

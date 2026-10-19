@@ -39,7 +39,7 @@ public class ScheduleSchema {
     }
 
     @PostConstruct
-    void ensureSchema() {
+    public void ensureSchema() {
         jdbc.execute("""
                 CREATE TABLE IF NOT EXISTS %s (
                     season VARCHAR(10) NOT NULL,
@@ -80,6 +80,8 @@ public class ScheduleSchema {
                     PRIMARY KEY (season, id)
                 )
                 """.formatted(fixtureTable));
+        jdbc.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS finished_provisional BOOLEAN"
+                .formatted(fixtureTable));
         // Every fixture read is "this team's fixtures from this gameweek on".
         jdbc.execute(("CREATE INDEX IF NOT EXISTS idx_%s_season_gw ON %s(season, gameweek)")
                 .formatted(fixtureTable, fixtureTable));

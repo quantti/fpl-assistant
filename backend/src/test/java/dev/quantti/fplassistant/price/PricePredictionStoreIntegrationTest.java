@@ -124,6 +124,40 @@ class PricePredictionStoreIntegrationTest {
         assertThat(restarted.acquireLease(Duration.ofMinutes(1)).orElseThrow().token()).isGreaterThan(old.token());
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void workerRestartPreservesDurableOperatorChoice(boolean disabled) {
+        var clock = org.mockito.Mockito.mock(java.time.Clock.class);
+        org.mockito.Mockito.when(clock.instant()).thenReturn(READ.minusSeconds(1));
+        var environment = new org.springframework.mock.env.MockEnvironment()
+                .withProperty("fpl.price-prediction.enabled", "true");
+        var requests = new AtomicInteger();
+        PricePredictionHttp.Fetcher http = uri -> {
+            requests.incrementAndGet();
+            return new PricePredictionHttp.Response(200, null,
+                    bytes(uri.getPath().contains("bootstrap") ? bootstrap() : history()));
+        };
+        store.enablePublishing();
+        try (var first = new PricePredictionWorker(store, new PricePredictionPermission(environment), http,
+                clock, SEASON, java.net.URI.create("http://localhost/bootstrap/"),
+                java.net.URI.create("http://localhost/history/"))) {
+            org.mockito.Mockito.when(clock.instant()).thenReturn(READ);
+            first.tick();
+            assertThat(requests).hasValue(2);
+            if (disabled) store.revokeAndDisable();
+        }
+        assertThat(store.publishingEnabled()).isEqualTo(!disabled);
+        var restartedStore = new PricePredictionStore(jdbc, new DataSourceTransactionManager(dataSource), TABLES);
+        try (var restarted = new PricePredictionWorker(restartedStore, new PricePredictionPermission(environment), http,
+                clock, SEASON, java.net.URI.create("http://localhost/bootstrap/"),
+                java.net.URI.create("http://localhost/history/"))) {
+            org.mockito.Mockito.when(clock.instant()).thenReturn(READ.plusSeconds(600));
+            restarted.tick();
+            assertThat(requests).hasValue(disabled ? 2 : 4);
+            assertThat(restartedStore.publishingEnabled()).isEqualTo(!disabled);
+        }
+    }
+
     @Test
     void publicationPermissionIsCheckedBeforeAndAfterWrites() {
         Lease lease = lease();

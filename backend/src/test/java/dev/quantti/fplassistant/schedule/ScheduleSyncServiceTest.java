@@ -69,6 +69,20 @@ class ScheduleSyncServiceTest {
     }
 
     @Test
+    void preservesProvisionalFullTimeWithoutInventingStatisticalFinality() throws Exception {
+        List<Map<String, Object>> source = fixtures();
+        source.getFirst().put("finished", false);
+        source.getFirst().put("finished_provisional", true);
+        Object[] played = ScheduleSyncService.toFixtureRows(source,
+                ScheduleSyncService.teamsOf(bootstrap()), "2026-27").getFirst();
+
+        assertThat(played[13]).isEqualTo(false);
+        assertThat(played[16]).isEqualTo(true);
+        source.getFirst().remove("finished_provisional");
+        assertThat(ScheduleSyncService.toFixtureRows(source, Map.of(), "2026-27").getFirst()[16]).isNull();
+    }
+
+    @Test
     void aPostponedFixtureKeepsNullGameweekAndKickoff() throws Exception {
         List<Object[]> rows = ScheduleSyncService.toFixtureRows(fixtures(),
                 ScheduleSyncService.teamsOf(bootstrap()), "2026-27");

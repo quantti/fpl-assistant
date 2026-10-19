@@ -29,7 +29,7 @@ public final class ExpectedPoints {
     public static final double APPEARANCE_POINTS = 2;
 
     /**
-     * Latest completed current-club fixtures read per player when metrics come from the season
+     * Latest recorded current-club observations read per player when metrics come from the season
      * being played. This is a bounded evidence window, not FPL's points-based "form".
      *
      * <p>A finished season is read whole instead ({@link #WHOLE_SEASON}). Taking its last ten
