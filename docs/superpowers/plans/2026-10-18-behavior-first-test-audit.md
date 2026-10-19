@@ -1,8 +1,8 @@
-# Behavior-first test audit: research and proposed next pass
+# Behavior-first test audit: research, method and delivery
 
-**PROGRESS:** Five bounded audits and approved cleanups complete locally; the 657→68 correction fixture passes unchanged checks, with its former scale coverage explicitly dropped.
+**PROGRESS:** Five bounded audits and approved changes complete; integrated 20/20 passes; publication/review handoff and remaining scope are tracked in KAR-79.
 
-## First-pass outcome
+## Approved outcomes
 
 The owner approved executing the read-only audit after correcting its sync scope limit.
 [First-pass decisions](../../diagnostics/2026-10-18-test-audit-first-pass.md) cover the seven
@@ -31,22 +31,32 @@ scale loss: one-line 657→68 selection, unchanged protocol assertions, before/a
 
 Research cutoff: 18 October 2026. Source baseline: merged PR #173, master
 `96caea7c123ed64c66a6845b45e2e31234f8345f`.
-This is a proposal, not authorization to delete tests or change CI.
+This began as a proposal, not blanket authorization to delete tests or change CI.
 
-The immediate work is source reading and planning only: no test/build/coverage/mutation runs,
-new CI runs, production queries, code changes, commits or remote publication. The document is
-in a separate local worktree so unrelated working-tree changes remain untouched.
+The initial research/planning pass was source-only: no test/build/coverage/mutation runs, CI,
+production queries, code changes, commits or publication. Subsequent owner decisions authorized
+each delivered slice and targeted local verification, including E1's explicit scale loss.
+The later request authorizes publishing this feature branch as a PR, a Linear continuation issue,
+full documentation and post-PR review. It does not authorize master pushes, merge/deploy, a local
+full suite, additional test deletion or another audit family. A separate worktree preserves
+unrelated changes in other checkouts.
 
 The owner-selected policy remains targeted local backend verification before a code push,
 lightweight PR checks, and the retained full backend suite on master before deployment.
 Do not add another periodic job, parallel suite, manual heavy-test bucket or reporting framework.
-The initial pass required separate implementation/verification approval. That approval was later
-given for A1/A2/S1 only, with targeted local runs permitted; it did not authorize a full suite,
-additional deletion candidates, CI changes or remote publication.
+Approvals were staged, not inherited by every new candidate: A1/A2/S1, then B1/B2, then the
+individual C2/D1 pools and E1 compact fixture. Publication approval came separately. Research,
+implementation receipts and the integrated 20-case verification at `53e5743` are consolidated in
+the [delivery report](../../diagnostics/2026-10-18-test-audit-first-pass.md). The published PR and
+continuation issue carry the final remote/review state; they do not turn local subset evidence
+into a full-suite claim.
 
 **Question:** Which retained tests add distinct, credible defect detection, and which merely
 repeat another test, the implementation, or their own mocks?
 The goal is less execution/maintenance cost for useful confidence, not a target test count.
+Remaining work is tracked in [KAR-79](https://linear.app/quantti/issue/KAR-79/continue-the-backend-test-audit-in-bounded-batches),
+which stays open after this publication. It names one next unit and links the actual PR/review
+handoff; neither this source inventory nor the PR completes the rest of the audit.
 
 ## Recent discussion and evidence
 

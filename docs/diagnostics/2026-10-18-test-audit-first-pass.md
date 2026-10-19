@@ -1,11 +1,58 @@
-# First bounded test-audit pass
+# Backend test audit: research, decisions, changes and verification
 
-**PROGRESS:** Five bounded audits and approved changes complete locally; the compact correction fixture passes all original checks in its recorded before/after pair.
+**PROGRESS:** Five bounded audits and approved changes complete; integrated verification passes 20/20; remaining work and publication/review handoff are tracked in KAR-79.
 
-Source revision: `96caea7c123ed64c66a6845b45e2e31234f8345f` (PR #173).
-[Audit plan](../superpowers/plans/2026-10-18-behavior-first-test-audit.md).
-Owner approved correcting the plan and executing the read-only audit, not deleting tests.
-No tests, builds, coverage/mutation runs, CI runs or production accesses are part of this pass.
+Initial source: `96caea7c123ed64c66a6845b45e2e31234f8345f` (merged PR #173).
+[Research and audit method](../superpowers/plans/2026-10-18-behavior-first-test-audit.md).
+The initial research/audit was read-only. Subsequent, separately approved code changes, targeted
+runs and publication are distinguished below; the initial restriction is not a claim that later
+implementation was untested. Phase-specific source revisions and receipts remain in this journal.
+
+## Delivery summary and boundaries
+
+This branch changes seven test files, not production code, dependencies, Gradle limits or CI.
+It removes **zero whole test methods/classes**: one method is renamed to match its narrower proof.
+Earlier PR #173 removed four named large scenarios and seven low-value cases, trimmed other
+workloads and changed CI routing. That already-merged work is context, **not counted in this PR**;
+see the [earlier pruning plan](../superpowers/plans/2026-10-18-backend-test-pruning.md).
+
+| Decision | Delivered change | Retained guarantee / explicit limit | Implementation commit |
+| --- | --- | --- | --- |
+| A1/A2 | Remove five duplicated prompt-string expectations across player-name/price tests. | Exact stronger correction-section assertions remain; no claim of real LLM obedience. | `83e2413` |
+| S1 | Remove the disconnected JDBC mock/bean/never-check and orphan imports; rename the invalid-opt-in case. | Real Spring startup refusal and exact activation root cause remain. The old mock never proved absence of actual work-pool DB access. | `83e2413` |
+| B1 | Discovery fixture 657→501; update its two counts. | Still crosses the existing 500-row boundary, writes two discovery batches, avoids participant promotion and skips existing IDs on retry. | `f8a22bc` |
+| B2 | Count actual JDBC receipt write executions instead of prepared SQL statements. | Keep <=20 bound, transaction timeout, simulated per-execution latency and all row counts. Not a wire-packet counter. | `f8a22bc` |
+| C2 | Add an automatically closed, case-local pool to the serial ten-matchday scenario. | All ten fixtures/600 players/144 ticks/92 SQL source slots, >5,000 demand and initial-state checks stay; per-slot transactions remain separate. | `817ccb4` |
+| D1 | Add the same case-local pooling to the serial starvation regression. | All 39 fixtures/600 histories, canonical-first order, stale-lease/source-floor and retry-priority checks stay; class-wide and concurrent-worker fixtures stay unchanged. | `8425751` |
+| E1 | Select existing compact 68-player source instead of 657 only in the schedule-correction case. | All zero-minute, two independent fresh batches/10-minute, ownership/metric retention and masking assertions stay. **This case's full-roster/backlog-scale coverage is deliberately dropped with owner approval.** | `5778e54` |
+
+One local before/after pair per changed scenario, not repeat-sampled benchmarks:
+
+| Scenario | Before method time | After method time |
+| --- | ---: | ---: |
+| Ten-matchday demand | 29.212s | 4.388s |
+| Dependency starvation | 19.313s | 4.297s |
+| Schedule correction | 16.945s | 5.796s |
+
+Do not sum these into an invoice saving, a controlled whole-suite improvement or a hosted runner
+claim. Each detailed section records compilation differences, actual counts and local receipts.
+No full suite or mutation analysis was run locally; no production DB/API or manual deploy was used.
+
+## Audit coverage and decisions not silently implemented
+
+Five bounded passes cover prompt/activation boundaries, five receipt-batching cases, and the three
+named demand/starvation/correction scenarios, with immediate callers/helpers and smaller-oracle
+comparisons. The initial file inventory is not proof that all 206 files or every case was audited.
+Keep separate: source reading, prior CI timing, actual executed checks and owner-accepted scope loss.
+
+S2 (merging lean/full default-OFF contexts) remains conditional: first preserve its three extra
+absence assertions and decide whether lean startup without datasource properties is a separate
+contract. SQL-comment-based discovery batch counting is still a maintainability follow-up, not a
+reason to delete its behavioral case or perform an unreviewed class-wide helper rewrite.
+Auth/account isolation, quota, provenance, unknown-vs-zero, transaction/lease/ownership, genuine
+multi-worker/timeout and production-target test guards were not blanket-pruned. No test-count,
+coverage or mutation-score quota, new framework, nightly/manual replacement workload or live-LLM
+suite was added. The research source list, evidence quality and contrary findings are in the plan.
 
 ## Baseline, not execution measurements
 
@@ -518,3 +565,70 @@ Parent review confirms a one-line source-selection diff and `git diff --check` p
 red was manufactured for reducing a fixture while keeping its existing protocol assertions.
 No full class/suite, independent panel, CI, production access or remote publication was performed.
 The compact pass is not a replacement claim for this test's former 657-player scale coverage.
+
+## Publication integration and current verification
+
+On the owner's publication request, master had advanced five commits from the original source.
+Merge commit `53e5743af8b13ff5894dad6064862d2edc349276` incorporates master
+`eee62232508c48f9740ab43706150e73e23175b1` without rebasing the reviewed development history.
+Three test files merged automatically; the only conflict was the STATUS introduction. Both the
+master updates and this audit's entry were preserved. The PR diff against that master still
+contains only seven test files and this documentation, not the incoming application changes.
+
+A fresh integrated run at `53e5743` passed **20 tests, 0 failures/errors/skips**, covering every
+changed test method and the full three small changed test classes:
+
+```bash
+./gradlew --offline --console=plain test \
+  --tests fi.karivanttinen.fplassistant.chat.PlayerNamePromptContractTest \
+  --tests fi.karivanttinen.fplassistant.chat.PriceForecastPromptContractTest \
+  --tests fi.karivanttinen.fplassistant.sync.OwnedSyncRuntimeConfigurationTest \
+  --tests fi.karivanttinen.fplassistant.sync.CoalescedPlayerHistoryCollectorIntegrationTest.coldLeaguePopulationFitsBoundedTransactionWithDatabaseRoundTripLatency \
+  --tests fi.karivanttinen.fplassistant.sync.CoalescedPlayerHistoryCollectorIntegrationTest.discoveryCandidateReceiptsUseBoundedBatchesAndSkipExistingIds \
+  --tests fi.karivanttinen.fplassistant.sync.OwnedMatchdayEndToEndIntegrationTest.fullTenMatchdayDemandIsMaterializedAndBudgetExhaustionCannotCompleteWork \
+  --tests fi.karivanttinen.fplassistant.sync.OwnedSyncStoreIntegrationTest.prerequisitesAndDependenciesCannotBeStarvedByWaitingFixtureFanout \
+  --tests fi.karivanttinen.fplassistant.sync.OwnedMatchdayAdmissionProgressIntegrationTest.scheduleCorrectionCanRepublishOnlyAfterTwoFreshCoordinatorBatches
+```
+
+| Selected class | Cases passed |
+| --- | ---: |
+| PlayerNamePromptContractTest | 3 |
+| PriceForecastPromptContractTest | 3 |
+| OwnedSyncRuntimeConfigurationTest | 9 |
+| CoalescedPlayerHistoryCollectorIntegrationTest | 2 selected methods |
+| OwnedMatchdayEndToEndIntegrationTest | 1 selected method |
+| OwnedSyncStoreIntegrationTest | 1 selected method |
+| OwnedMatchdayAdmissionProgressIntegrationTest | 1 selected method |
+| Total | 20 |
+
+Build elapsed 1m1s, including recompilation after integrating master. The checked-in heap/worker/
+context-cache settings stayed unchanged; the run used the same offline, dummy-key, guarded-local-
+DB environment and 1536 MiB/no-swap/200%-CPU/host-memory limits documented above. A Gradle heap
+advisory was emitted; the command exited zero and no limit was increased. Local receipt:
+`/tmp/fpl-audit-integrated.v9B9cx/test.log` and seven preserved `TEST-*.xml` files in that directory.
+The durable table/command/revision here is the shareable summary; private `/tmp` paths are not
+GitHub artifact links or a promise of permanent raw-log retention.
+
+Subsequent publication-documentation commits do not change the tested code. Earlier timings and
+smaller runs remain separate receipts, not a claim that every check ran again at every commit.
+No local full suite, real-data test, production request or manual deploy was run. Lightweight PR
+checks cannot be called a full backend pass; retained master verification remains the release gate.
+
+### Review and follow-up records
+
+The earlier plan-only Sol/Astra/Luna panel was CLEAN under quorum with one non-blocking
+boundedness advisory (only Luna marked it actionable). The host fixed the scope to one named
+sync path and mandatory handback before expansion. That panel did not review later code.
+Implementation slices received parent source/diff review and the executed checks above.
+The published PR receives a separate fixed Sol/Astra/Luna read-only panel; its exact head,
+verdict, advisories and provider-reported metrics belong in the PR's review receipt. No deployment
+or independent code-review claim is inferred from the original plan panel.
+
+Continuation [KAR-79](https://linear.app/quantti/issue/KAR-79/continue-the-backend-test-audit-in-bounded-batches)
+is in Backlog and remains open after this PR. Its publication record is the place for the actual
+PR URL, exact-head panel receipt and current handoff state, rather than another source commit
+that would move the reviewed head just to record its own review. It scopes one next collector
+smoke-test unit, not the entire remaining audit to one worker, and records S2, comment-coupled
+instrumentation and unaudited families as later work. Frontend tests were not covered by the
+initial backend Java inventory. Existing test-profile pool-limit KAR-51 remains separate and is
+not silently closed or duplicated. No extra audit work is authorized by merely creating the issue.
