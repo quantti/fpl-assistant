@@ -42,6 +42,7 @@ import java.util.function.Supplier;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
+import com.zaxxer.hikari.HikariDataSource;
 
 import javax.sql.DataSource;
 
@@ -401,62 +402,74 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         fetch.setPlayerPage(1, onlyHistoryForFixture(resource("element-summary-1.json"), 29, 1));
         fetch.setPlayerPage(28, historyForAwayPlayer28(29));
 
-        SqlRecordingDataSource recording = useRecordingJdbc();
-        installUnit6WriteCounters();
-        AtomicReference<CycleResult> nested = new AtomicReference<>();
-        AtomicReference<CoalescedPlayerHistoryCollector> collectorRef = new AtomicReference<>();
-        fetch.onFirstRequest(() -> nested.set(collectorRef.get().runCycle()));
-        CoalescedPlayerHistoryCollector collector = collector(true);
-        collectorRef.set(collector);
-        CycleResult first;
-        long cycleMillis;
-        Map<String, Long> physicalWrites;
-        try {
-            long cycleStarted = System.nanoTime();
-            first = collector.runCycle();
-            cycleMillis = Duration.ofNanos(System.nanoTime() - cycleStarted).toMillis();
-            physicalWrites = unit6WriteCounts();
-        } finally {
-            removeUnit6WriteCounters();
+        // Reuse connections only for this serial full-roster smoke test.
+        try (HikariDataSource pool = new HikariDataSource()) {
+            pool.setDataSource(dataSource);
+            pool.setMaximumPoolSize(1);
+            pool.setMinimumIdle(0);
+            SqlRecordingDataSource recording = new SqlRecordingDataSource(pool);
+            JdbcTemplate pooledJdbc = new JdbcTemplate(recording);
+            TransactionTemplate pooledTx = new TransactionTemplate(new DataSourceTransactionManager(recording));
+            OwnedSyncStore pooledStore = new OwnedSyncStore(pooledJdbc, pooledTx, clock, TABLES, runtimeFence);
+            IncrementalPlayerFixturePublisher pooledPublisher = new IncrementalPlayerFixturePublisher(
+                    new IncrementalPfsRepository(pooledJdbc, clock, pooledStore, TABLES));
+            installUnit6WriteCounters();
+            AtomicReference<CycleResult> nested = new AtomicReference<>();
+            AtomicReference<CoalescedPlayerHistoryCollector> collectorRef = new AtomicReference<>();
+            fetch.onFirstRequest(() -> nested.set(collectorRef.get().runCycle()));
+            CoalescedPlayerHistoryCollector collector = new CoalescedPlayerHistoryCollector(
+                    season, true, pooledStore, pooledPublisher, fetch, clock, "collector-test");
+            collectorRef.set(collector);
+            CycleResult first;
+            long cycleMillis;
+            Map<String, Long> physicalWrites;
+            try {
+                long cycleStarted = System.nanoTime();
+                first = collector.runCycle();
+                cycleMillis = Duration.ofNanos(System.nanoTime() - cycleStarted).toMillis();
+                physicalWrites = unit6WriteCounts();
+            } finally {
+                removeUnit6WriteCounters();
+            }
+
+            assertThat(first.state()).isEqualTo(State.COMPLETED);
+            assertThat(nested.get().state()).isEqualTo(State.BUSY);
+            assertThat(first.finalPendingGameweeks()).isEmpty();
+            assertThat(first.selectedPlayerIds()).hasSize(660).contains(KNOWN_PLAYER, FINAL_PENDING_PLAYER,
+                    ACTIVE_PLAYER + 1).doesNotContain(658);
+            assertThat(new HashSet<>(first.selectedPlayerIds())).hasSize(first.selectedPlayerIds().size());
+            assertThat(first.selectedPlayerIds().indexOf(FINAL_PENDING_PLAYER))
+                    .isLessThan(first.selectedPlayerIds().indexOf(ACTIVE_PLAYER + 1));
+            assertThat(first.committedPlayerIds()).hasSize(660);
+            assertThat(fetch.count(EndpointKind.BOOTSTRAP_STATIC)).isEqualTo(1);
+            assertThat(fetch.count(EndpointKind.FIXTURES)).isEqualTo(1);
+            assertThat(fetch.count(EndpointKind.EVENT_LIVE)).isEqualTo(4);
+            assertThat(physicalWrites.getOrDefault("player_fixture_stats/INSERT", 0L)).isEqualTo(2L);
+            assertThat(fetch.playerIds()).hasSize(660);
+            assertThat(new HashSet<>(fetch.playerIds())).hasSize(660);
+            assertThat(JSON.readTree(bootstrap).path("teams").size()).isEqualTo(20);
+            assertThat(JSON.readTree(bootstrap).path("elements").size()).isEqualTo(657);
+            System.out.printf("UNIT6_RECORDED_NORMAL league={clubs:20,cataloguePlayers:657,fixtures:380} "
+                            + "selected=%d unique=%d gets={bootstrap:%d,fixtures:%d,event-live:%d,history:%d} "
+                            + "bodyBytes=%d jdbc={statements:%d,queries:%d,updates:%d,rows:%d,logicalBytes~%d} "
+                            + "physicalWrites=%s cycleWallMs=%d%n",
+                    first.selectedPlayerIds().size(), new HashSet<>(first.selectedPlayerIds()).size(),
+                    fetch.count(EndpointKind.BOOTSTRAP_STATIC), fetch.count(EndpointKind.FIXTURES),
+                    fetch.count(EndpointKind.EVENT_LIVE), fetch.count(EndpointKind.ELEMENT_SUMMARY),
+                    fetch.returnedBodyBytes(), recording.statements().size(), recording.queryExecutions(),
+                    recording.updateExecutions(), recording.returnedRows(),
+                    recording.approximateLogicalReturnedBytes(), physicalWrites, cycleMillis);
+
+            fetch.clearCalls();
+            CycleResult idle = collector.runCycle();
+
+            assertThat(idle.state()).isEqualTo(State.COMPLETED);
+            assertThat(idle.selectedPlayerIds()).isEmpty();
+            assertThat(fetch.count(EndpointKind.BOOTSTRAP_STATIC)).isEqualTo(1);
+            assertThat(fetch.count(EndpointKind.FIXTURES)).isEqualTo(1);
+            assertThat(fetch.count(EndpointKind.EVENT_LIVE)).isZero();
+            assertThat(fetch.count(EndpointKind.ELEMENT_SUMMARY)).isZero();
         }
-
-        assertThat(first.state()).isEqualTo(State.COMPLETED);
-        assertThat(nested.get().state()).isEqualTo(State.BUSY);
-        assertThat(first.finalPendingGameweeks()).isEmpty();
-        assertThat(first.selectedPlayerIds()).hasSize(660).contains(KNOWN_PLAYER, FINAL_PENDING_PLAYER,
-                ACTIVE_PLAYER + 1).doesNotContain(658);
-        assertThat(new HashSet<>(first.selectedPlayerIds())).hasSize(first.selectedPlayerIds().size());
-        assertThat(first.selectedPlayerIds().indexOf(FINAL_PENDING_PLAYER))
-                .isLessThan(first.selectedPlayerIds().indexOf(ACTIVE_PLAYER + 1));
-        assertThat(first.committedPlayerIds()).hasSize(660);
-        assertThat(fetch.count(EndpointKind.BOOTSTRAP_STATIC)).isEqualTo(1);
-        assertThat(fetch.count(EndpointKind.FIXTURES)).isEqualTo(1);
-        assertThat(fetch.count(EndpointKind.EVENT_LIVE)).isEqualTo(4);
-        assertThat(physicalWrites.getOrDefault("player_fixture_stats/INSERT", 0L)).isEqualTo(2L);
-        assertThat(fetch.playerIds()).hasSize(660);
-        assertThat(new HashSet<>(fetch.playerIds())).hasSize(660);
-        assertThat(JSON.readTree(bootstrap).path("teams").size()).isEqualTo(20);
-        assertThat(JSON.readTree(bootstrap).path("elements").size()).isEqualTo(657);
-        System.out.printf("UNIT6_RECORDED_NORMAL league={clubs:20,cataloguePlayers:657,fixtures:380} "
-                        + "selected=%d unique=%d gets={bootstrap:%d,fixtures:%d,event-live:%d,history:%d} "
-                        + "bodyBytes=%d jdbc={statements:%d,queries:%d,updates:%d,rows:%d,logicalBytes~%d} "
-                        + "physicalWrites=%s cycleWallMs=%d%n",
-                first.selectedPlayerIds().size(), new HashSet<>(first.selectedPlayerIds()).size(),
-                fetch.count(EndpointKind.BOOTSTRAP_STATIC), fetch.count(EndpointKind.FIXTURES),
-                fetch.count(EndpointKind.EVENT_LIVE), fetch.count(EndpointKind.ELEMENT_SUMMARY),
-                fetch.returnedBodyBytes(), recording.statements().size(), recording.queryExecutions(),
-                recording.updateExecutions(), recording.returnedRows(),
-                recording.approximateLogicalReturnedBytes(), physicalWrites, cycleMillis);
-
-        fetch.clearCalls();
-        CycleResult idle = collector.runCycle();
-
-        assertThat(idle.state()).isEqualTo(State.COMPLETED);
-        assertThat(idle.selectedPlayerIds()).isEmpty();
-        assertThat(fetch.count(EndpointKind.BOOTSTRAP_STATIC)).isEqualTo(1);
-        assertThat(fetch.count(EndpointKind.FIXTURES)).isEqualTo(1);
-        assertThat(fetch.count(EndpointKind.EVENT_LIVE)).isZero();
-        assertThat(fetch.count(EndpointKind.ELEMENT_SUMMARY)).isZero();
     }
 
     @Test

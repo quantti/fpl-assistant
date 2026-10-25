@@ -1,6 +1,6 @@
 # Behavior-first test audit: research, method and delivery
 
-**PROGRESS:** Five bounded audits and approved changes complete; integrated 20/20 passes; publication/review handoff and remaining scope are tracked in KAR-79.
+**PROGRESS:** Five approved changes published in PR #180 (20/20 local); KAR-79 collector-smoke audit and approved local pool complete, unchanged method passes before/after (15.415s → 8.074s).
 
 ## Approved outcomes
 
@@ -59,6 +59,17 @@ The goal is less execution/maintenance cost for useful confidence, not a target 
 Remaining work is tracked in [KAR-79](https://linear.app/quantti/issue/KAR-79/continue-the-backend-test-audit-in-bounded-batches),
 which stays open after this publication. It names one next unit and links the actual PR/review
 handoff; neither this source inventory nor the PR completes the rest of the audit.
+
+## Continuation: collector smoke (2026-10-25)
+
+The [next bounded audit](../../diagnostics/2026-10-25-kar79-collector-smoke-audit.md),
+against fetched master `f0a04c4`, retains the full-roster collector smoke and all its assertions.
+Eight candidate decisions recommended only method-local JDBC connection reuse: 660
+page-publication transactions used a non-pooled datasource. The owner approved this change.
+The same test passes before and after (1/1 each; 15.415s → 8.074s), retaining all 21 assertions,
+660 players, triggers, SQL instrumentation and the idle cycle. The pool closes automatically;
+no shared helper, runtime or class-wide fixture changed. This is one local comparison pair,
+not a whole-suite/hosted saving. No remote publication; the rest of KAR-79 stays outside this pass.
 
 ## Recent discussion and evidence
 

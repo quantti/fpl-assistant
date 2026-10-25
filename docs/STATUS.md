@@ -1,5 +1,18 @@
 # Status — Phase 1
 
+## KAR-79 — collector smoke audit resumed (2026-10-25; local)
+
+The next bounded [audit](diagnostics/2026-10-25-kar79-collector-smoke-audit.md) found no
+justified test deletion or roster reduction. The owner approved only method-local connection
+pooling for the full-roster smoke. All 660 players, 21 assertion statements, two cycles, triggers
+and SQL instrumentation remain; no runtime/shared-helper/class-wide fixture changed.
+The same method passes before/after, **1/1 each**, at **15.415s → 8.074s** in one local pair.
+SQL/request/physical-write counts match and the pool closes. Tests used native Ubuntu Docker,
+disposable loopback 55432, dummy provider keys, the 1536 MiB/no-swap scope and host-memory guard;
+Docker Desktop was not used. Exact command and source hashes are in the audit receipt.
+This is not a full-suite/hosted saving or real parallel-worker guarantee. No full suite,
+independent panel, remote publication or production operation occurred; KAR-79 remains open.
+
 ## Test audit — research, bounded changes and publication (2026-10-19)
 
 The [research/method](superpowers/plans/2026-10-18-behavior-first-test-audit.md) and
