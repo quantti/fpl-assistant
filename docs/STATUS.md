@@ -1,5 +1,19 @@
 # Status — Phase 1
 
+## KAR-79 — default-OFF startup follow-up (2026-10-25; local)
+
+The bounded [S2 audit](diagnostics/2026-10-25-kar79-default-off-audit.md) retains both OFF
+contexts: no-datasource module wiring and wider monitoring/controller wiring are different
+inputs. Seven candidate decisions justify no whole-test deletion. The lean JDBC mock is unused
+as an oracle, and the wider OFF `SAFE_CYCLES` check has no registered counter producer. Its SQL
+checks also inspect custom tables without binding those tables into that OFF context, limiting
+the independent no-write claim. Bean-absence checks remain useful; no production defect is
+inferred. The owner approved narrow cleanup: remove the unused mock and disconnected OFF
+counter assertion, retain both contexts/all absence checks and narrow method names. Both cases
+pass before/after (2/2 each) on disposable 127.0.0.1:55432 with dummy keys and the guarded
+1536 MiB/no-swap scope. The unchanged SQL snapshots now explicitly disclaim observing default
+writers. No runtime change or full suite; final PR publication/review remains separate.
+
 ## KAR-79 — collector smoke audit resumed (2026-10-25; local)
 
 The next bounded [audit](diagnostics/2026-10-25-kar79-collector-smoke-audit.md) found no

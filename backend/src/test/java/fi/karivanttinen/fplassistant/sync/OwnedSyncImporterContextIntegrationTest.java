@@ -105,7 +105,7 @@ class OwnedSyncImporterContextIntegrationTest {
     }
 
     @Test
-    void defaultOffCreatesNeitherImporterNorMonitoringRuntimeAndTouchesNoOwnedRows() {
+    void defaultOffCreatesNoImporterOrMonitoringBeans() {
         defaultOffRunner().run(context -> assertThat(context).hasNotFailed()
                 .doesNotHaveBean("ownedSyncWorkDatabase")
                 .doesNotHaveBean("ownedSyncMonitoringDatabase")
@@ -116,7 +116,7 @@ class OwnedSyncImporterContextIntegrationTest {
                 .doesNotHaveBean(SyncOperations.class)
                 .doesNotHaveBean(SyncOperationsController.class));
 
-        assertThat(SAFE_CYCLES).hasValue(0);
+        // Fixture snapshots supplement bean exclusions; they do not observe default-table writers.
         assertThat(jdbc.queryForObject("SELECT runtime_epoch FROM " + TABLES.plannerRuntime()
                 + " WHERE instance_id='mode:2026-27'", Long.class)).isEqualTo(7L);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run(), Integer.class)).isZero();

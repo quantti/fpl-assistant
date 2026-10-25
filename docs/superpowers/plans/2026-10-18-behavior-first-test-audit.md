@@ -1,6 +1,6 @@
 # Behavior-first test audit: research, method and delivery
 
-**PROGRESS:** Five approved changes published in PR #180 (20/20 local); KAR-79 collector-smoke audit and approved local pool complete, unchanged method passes before/after (15.415s → 8.074s).
+**PROGRESS:** Five changes published in PR #180; KAR-79 collector pool verified locally (15.415s → 8.074s); approved S2 cleanup complete, both OFF contexts pass before/after (2/2 each).
 
 ## Approved outcomes
 
@@ -70,6 +70,18 @@ The same test passes before and after (1/1 each; 15.415s → 8.074s), retaining 
 660 players, triggers, SQL instrumentation and the idle cycle. The pool closes automatically;
 no shared helper, runtime or class-wide fixture changed. This is one local comparison pair,
 not a whole-suite/hosted saving. No remote publication; the rest of KAR-79 stays outside this pass.
+
+## Continuation: default-OFF contexts / S2 (2026-10-25)
+
+The [bounded S2 follow-up](../../diagnostics/2026-10-25-kar79-default-off-audit.md), against
+`5491352`, retains both startup contexts: the lean no-datasource input and the wider monitoring/
+controller selection are not equivalent. Seven decisions find no justified whole-test deletion.
+The owner approved removing the unused lean JDBC mock and the wider OFF method's unconnected
+`SAFE_CYCLES` assertion. Both method names now describe their connected bean/startup claims;
+custom-table SQL snapshots remain explicitly limited, not routed proof of default-factory
+no-writes. The two methods pass before/after (2/2 each); all absence checks and the no-datasource
+input remain. Unrelated enabled/handoff/timer cases stay unchanged. Receipt and exact selectors
+are in the follow-up report; final PR review remains separate.
 
 ## Recent discussion and evidence
 
