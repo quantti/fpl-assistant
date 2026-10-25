@@ -8,8 +8,11 @@ prepared SQL comments, not executions. The recorder now counts discovery receipt
 from bound keys and actual JDBC execution; total counters/delay/failure injection stay intact.
 A new markerless self-check failed first (expected 2, got 0); all six focused tests then passed,
 including real rollback/latency and known-zero-minute retry evidence. No production code, SQL,
-fixture size or old assertion changed. Final integrated verification across recorder consumers,
-PR publication and strict review remain separate; KAR-79 is not complete as a whole.
+fixture size or old assertion changed. The integrated run at `b31d9db` passed **29/29**, no
+failures/errors/skips: all fourteen recorder consumers plus both touched startup classes.
+The [handoff](diagnostics/2026-10-25-kar79-handoff.md) records exact selectors/environment and
+remaining limits. PR publication and strict review remain separate; the owner merges and
+KAR-79 is not complete as a whole.
 
 ## KAR-79 — default-OFF startup follow-up (2026-10-25; local)
 

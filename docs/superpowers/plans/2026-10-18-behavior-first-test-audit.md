@@ -1,6 +1,6 @@
 # Behavior-first test audit: research, method and delivery
 
-**PROGRESS:** PR #180's five changes published; next three bounded KAR-79 slices complete locally (collector pool, S2 cleanup, discovery counter); integrated verification and PR review pending.
+**PROGRESS:** PR #180's five changes published; next three bounded KAR-79 slices locally complete and integrated 29/29 passes; PR publication/strict review pending, owner merges.
 
 ## Approved outcomes
 
@@ -91,7 +91,9 @@ attempts classified from bound publication keys. The 501-player boundary and rea
 assertions remain unchanged. A markerless real-JDBC self-check failed first (expected 2, got 0);
 all six focused counter/batch/rollback/incident cases then passed with dummy keys and guarded
 loopback DB. No runtime SQL, source fixtures or old assertions changed. All fourteen recorder
-consumers are included in the next integrated check; no later test family is silently included.
+consumers and both startup classes passed the integrated check (29/29, no failures/errors/skips)
+at `b31d9db`; see the [delivery handoff](../../diagnostics/2026-10-25-kar79-handoff.md).
+No later test family is silently included; PR publication/review and owner merge remain separate.
 
 ## Recent discussion and evidence
 
