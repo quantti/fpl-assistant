@@ -24,6 +24,23 @@ production probe or manual deploy is part of this work; the normal master releas
 Continuation [KAR-79](https://linear.app/quantti/issue/KAR-79/continue-the-backend-test-audit-in-bounded-batches)
 remains open and carries the actual PR/review handoff; it is not closed by publishing these changes.
 
+## Importer health — recover validated superseded runs (2026-10-25)
+
+Three open `DUE_WORK` incidents referenced incremental runs 342134, 342135 and 342147,
+all already `SUPERSEDED` with `VALIDATED_CANONICAL_SOURCE_PAIR`. Watchdog recovery did not
+recognise that terminal state, keeping external health DOWN despite successful imports.
+Recovery now accepts incremental producer runs with their expected identity, a recognised
+supersession reason, a completion timestamp and no failure/error. It retains the existing
+current-epoch failure and malformed-key guards; no production metadata is manually cleared.
+
+Both supersession reasons reproduced the missing recovery before the fix. Local disposable-DB
+verification: `./gradlew --offline --console=plain test --tests '*OwnedSyncWatchdogIntegrationTest'
+--tests '*SyncOperationsIntegrationTest'` passed **33/33, 0 failed/errors/skipped**, including
+exactly-once due-work/expired-lease recovery, restored external health and invalid-evidence
+refusals. The run used dummy provider keys, the 1536 MiB/no-swap scope and host-memory stop
+guard. No full suite or deployment was run. Public-health network interruptions are a separate
+owner-confirmed ISP issue; monitor settings and production data remain unchanged.
+
 ## Price forecasts — restart continuity verified in production (2026-10-19)
 
 Normal worker shutdown now stops/drains only that process and preserves the durable publishing
