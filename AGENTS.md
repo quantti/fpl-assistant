@@ -357,7 +357,13 @@ A ticket implementation is not complete while it exists only in the working tree
 implemented ticket in this order: commit the verified change, push its dedicated feature branch to
 GitHub, open a pull request targeting `master`, and then review the pull request. Apply review fixes
 as new commits on the same feature branch, push them, and re-review as needed. Never push the ticket
-directly to `master`; the owner merges the reviewed PR.
+directly to `master`; merge the reviewed PR only when the owner explicitly requests it.
+
+**Explicit owner authorization:** a direct instruction authorizes the specified operation,
+including pushing a feature branch, opening a PR or merging it. Do not ask for the same permission
+again or treat an owner-only default as a prohibition after the owner has expressly delegated
+that operation. Authorization remains scoped to the request and does not waive higher-priority
+instructions, required verification/review, secret protection or the ban on direct `master` pushes.
 
 Short. The narrative belongs in `docs/STATUS.md` and the plan's outcome blocks, not in git
 metadata — nobody reads a git log for a design discussion, and a long message hides the one line
@@ -372,7 +378,8 @@ that mattered.
 - **Describe the change, not the project.** Environment limits, plan status, background the
   reader already lives with ("branch protection is unavailable on this plan") belong in
   `docs/TODO.md` or `docs/STATUS.md`. A PR body that explains the repository is padding.
-- **Merge:** squash; the merge message is the PR title.
+- **Merge:** squash; the merge message is the PR title. With an explicit owner request, agents
+  perform the merge after required checks and review pass; otherwise leave it to the owner.
 - If a decision needs more room than that, it is a `docs/STATUS.md` entry — write it there and
   keep the commit pointing at it.
 
@@ -392,7 +399,8 @@ serving API + frontend. Frontend built in a Docker multi-stage build, copied int
 > `master` deploys. A push there runs `.github/workflows/deploy.yml` and a green run ships
 > straight to production — no review, no second pair of eyes. **Agents push a branch and open a
 > pull request. Always.** PR checks are lightweight; master gates deployment with the full
-> retained suite. The owner merges.
+> retained suite. The owner merges by default; agents may merge a reviewed PR when explicitly
+> instructed by the owner. Merging through the PR is not a direct `master` push.
 >
 > There is no branch protection to catch a mistake: GitHub refuses it for private repositories on
 > the Free plan (verified 2026-08-19 — the protection and rulesets APIs both answer 403 "Upgrade
