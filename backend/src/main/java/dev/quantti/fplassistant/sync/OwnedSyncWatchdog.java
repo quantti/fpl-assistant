@@ -367,10 +367,15 @@ public final class OwnedSyncWatchdog {
         // A run fenced FAILED when its activation ended is settled too: that epoch is over and the
         // work was planned again under the next one, so it can never complete and must not hold a
         // due-work incident (and external health) open for ever. A failure inside the live
-        // activation is different and stays open.
+        // activation is different and stays open. A validated superseded importer run is settled too.
         Set<Long> completedRuns = Set.copyOf(queryWithArray(
                 "SELECT r.generation FROM " + tables.run()
                         + " r WHERE r.season=? AND r.generation=ANY(?) AND (r.state='COMPLETED' OR "
+                        + "(r.state='SUPERSEDED' AND r.producer_key='INCREMENTAL_CORE' "
+                        + "AND r.kind='PLAYER_HISTORY' AND r.runtime_mode='ACTIVE' "
+                        + "AND r.coalescing_key='incremental-core-import' AND r.publication_key='incremental-core-import' "
+                        + "AND r.completed_at IS NOT NULL AND r.failed_at IS NULL AND r.last_error IS NULL "
+                        + "AND r.supersede_reason IN (" + OwnedSyncStore.IncrementalSupersedeReason.acceptedSqlValues() + ")) OR "
                         + "(r.state='FAILED' AND NOT EXISTS (SELECT 1 FROM " + tables.plannerRuntime()
                         + " m WHERE m.instance_id='mode:' || r.season AND m.runtime_mode=r.runtime_mode "
                         + "AND m.runtime_epoch=r.runtime_epoch)))",
