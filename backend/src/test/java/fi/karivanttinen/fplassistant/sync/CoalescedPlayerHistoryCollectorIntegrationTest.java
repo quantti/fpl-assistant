@@ -2279,6 +2279,41 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
     }
 
     @Test
+    void discoveryCounterCountsExecutionsWithoutDependingOnSqlComments() throws SQLException {
+        SqlRecordingDataSource recording = new SqlRecordingDataSource(dataSource);
+        try (Connection connection = recording.getConnection();
+             PreparedStatement statement = connection.prepareStatement("INSERT INTO " + TABLES.receipt()
+                     + "(season, publication_key) VALUES (?, ?) ON CONFLICT DO NOTHING")) {
+            statement.setString(1, season.code());
+            statement.setString(2, OwnedSyncStore.INCREMENTAL_DISCOVERY_RECEIPT_PREFIX + "29:player:1");
+            statement.addBatch();
+            assertThat(discoveryCandidateBatchCount(recording)).isZero();
+
+            statement.executeBatch();
+            statement.addBatch();
+            statement.executeBatch();
+            assertThat(discoveryCandidateBatchCount(recording)).isEqualTo(2);
+
+            statement.setString(2, OwnedSyncStore.INCREMENTAL_PARTICIPANT_RECEIPT_PREFIX + "29:player:1");
+            statement.addBatch();
+            statement.executeBatch();
+            assertThat(discoveryCandidateBatchCount(recording)).isEqualTo(2);
+
+            statement.setObject(2, OwnedSyncStore.INCREMENTAL_DISCOVERY_RECEIPT_PREFIX + "29:player:2");
+            statement.addBatch();
+            statement.clearBatch();
+            statement.executeBatch();
+            assertThat(discoveryCandidateBatchCount(recording)).isEqualTo(2);
+
+            statement.executeLargeUpdate();
+            assertThat(discoveryCandidateBatchCount(recording)).isEqualTo(3);
+
+            recording.clear();
+            assertThat(discoveryCandidateBatchCount(recording)).isZero();
+        }
+    }
+
+    @Test
     void discoveryCandidateReceiptsUseBoundedBatchesAndSkipExistingIds() {
         int fixtureId = 29;
         Set<Integer> candidates = new LinkedHashSet<>();
@@ -6296,10 +6331,7 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
     }
 
     private static int discoveryCandidateBatchCount(SqlRecordingDataSource recording) {
-        return (int) recording.statements().stream()
-                .map(sql -> sql.toLowerCase(java.util.Locale.ROOT))
-                .filter(sql -> sql.contains("/* incremental discovery candidate batch */"))
-                .count();
+        return recording.discoveryCandidateWriteExecutions;
     }
 
     private static final class SqlRecordingDataSource implements DataSource {
@@ -6312,6 +6344,7 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         private long approximateLogicalReturnedBytes;
         private long receiptWriteDelayNanos;
         private int receiptWriteExecutions;
+        private int discoveryCandidateWriteExecutions;
         private int failReceiptWriteAt = -1;
 
         private SqlRecordingDataSource(DataSource delegate) { this.delegate = delegate; }
@@ -6353,6 +6386,8 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
             Statement target = (Statement) value;
             Class<?> contract = target instanceof CallableStatement ? CallableStatement.class
                     : target instanceof PreparedStatement ? PreparedStatement.class : Statement.class;
+            String[] publicationKey = { null };
+            boolean[] discoveryBatch = { false };
             return (Statement) Proxy.newProxyInstance(contract.getClassLoader(), new Class<?>[] { contract },
                     (proxy, method, args) -> {
                         String name = method.getName();
@@ -6363,6 +6398,16 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
                             sql = query;
                             statements.add(query);
                         }
+                        if ((name.equals("setString") || name.equals("setObject"))
+                                && args != null && args.length > 1 && Integer.valueOf(2).equals(args[0])) {
+                            publicationKey[0] = args[1] instanceof String key ? key : null;
+                        } else if (name.equals("clearParameters")) {
+                            publicationKey[0] = null;
+                        }
+                        boolean discoveryKey = publicationKey[0] != null && publicationKey[0]
+                                .startsWith(OwnedSyncStore.INCREMENTAL_DISCOVERY_RECEIPT_PREFIX);
+                        if (name.equals("addBatch") && discoveryKey) discoveryBatch[0] = true;
+                        if (name.equals("clearBatch")) discoveryBatch[0] = false;
                         if ((name.equals("executeQuery") || name.equals("execute")) && isReadSql(sql)) {
                             queryExecutions++;
                         }
@@ -6370,6 +6415,9 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
                                 && (name.equals("executeUpdate") || name.equals("executeLargeUpdate")
                                     || name.equals("executeBatch") || name.equals("executeLargeBatch"))) {
                             receiptWriteExecutions++;
+                            boolean batch = name.equals("executeBatch") || name.equals("executeLargeBatch");
+                            if (batch ? discoveryBatch[0] : discoveryKey) discoveryCandidateWriteExecutions++;
+                            if (batch) discoveryBatch[0] = false;
                             if (receiptWriteExecutions == failReceiptWriteAt) {
                                 throw new SQLException("Injected receipt batch failure", "57014");
                             }
@@ -6439,6 +6487,7 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
             returnedRows = 0;
             approximateLogicalReturnedBytes = 0;
             receiptWriteExecutions = 0;
+            discoveryCandidateWriteExecutions = 0;
         }
     }
 

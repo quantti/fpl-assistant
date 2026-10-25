@@ -1,6 +1,6 @@
 # Behavior-first test audit: research, method and delivery
 
-**PROGRESS:** Five changes published in PR #180; KAR-79 collector pool verified locally (15.415s → 8.074s); approved S2 cleanup complete, both OFF contexts pass before/after (2/2 each).
+**PROGRESS:** PR #180's five changes published; next three bounded KAR-79 slices complete locally (collector pool, S2 cleanup, discovery counter); integrated verification and PR review pending.
 
 ## Approved outcomes
 
@@ -82,6 +82,16 @@ custom-table SQL snapshots remain explicitly limited, not routed proof of defaul
 no-writes. The two methods pass before/after (2/2 each); all absence checks and the no-datasource
 input remain. Unrelated enabled/handoff/timer cases stay unchanged. Receipt and exact selectors
 are in the follow-up report; final PR review remains separate.
+
+## Continuation: discovery execution counter (2026-10-25)
+
+The [next bounded audit/correction](../../diagnostics/2026-10-25-kar79-discovery-counter-audit.md),
+against `bb8c895`, replaces SQL-comment/preparation counting with actual discovery receipt write
+attempts classified from bound publication keys. The 501-player boundary and real-incident retry
+assertions remain unchanged. A markerless real-JDBC self-check failed first (expected 2, got 0);
+all six focused counter/batch/rollback/incident cases then passed with dummy keys and guarded
+loopback DB. No runtime SQL, source fixtures or old assertions changed. All fourteen recorder
+consumers are included in the next integrated check; no later test family is silently included.
 
 ## Recent discussion and evidence
 

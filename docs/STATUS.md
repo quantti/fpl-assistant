@@ -1,5 +1,16 @@
 # Status — Phase 1
 
+## KAR-79 — discovery counter correction (2026-10-25; local)
+
+The next bounded [audit and correction](diagnostics/2026-10-25-kar79-discovery-counter-audit.md)
+retains the 501-candidate batch boundary and incident retry tests. The old observer counted
+prepared SQL comments, not executions. The recorder now counts discovery receipt write attempts
+from bound keys and actual JDBC execution; total counters/delay/failure injection stay intact.
+A new markerless self-check failed first (expected 2, got 0); all six focused tests then passed,
+including real rollback/latency and known-zero-minute retry evidence. No production code, SQL,
+fixture size or old assertion changed. Final integrated verification across recorder consumers,
+PR publication and strict review remain separate; KAR-79 is not complete as a whole.
+
 ## KAR-79 — default-OFF startup follow-up (2026-10-25; local)
 
 The bounded [S2 audit](diagnostics/2026-10-25-kar79-default-off-audit.md) retains both OFF
