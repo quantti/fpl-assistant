@@ -28,11 +28,18 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     // one-hour token does not become a surprise sign-out mid-conversation.
     persistSession: true,
     autoRefreshToken: true,
-    // The confirmation link sends the browser back here with the tokens in the URL fragment, and
-    // this is what turns them into a session. It defaults to true, and is written out because the
-    // email-verification flow depends on it — a later tidy-up that "removes a default" would
-    // leave people who confirmed their address staring at the sign-in form.
-    detectSessionInUrl: true,
+    detectSessionInUrl: (url, params) => {
+      // The SDK already parsed params. Replace the token-bearing entry before its hash setter
+      // creates another history entry; the same params still reach its verification path.
+      // An empty fragment makes that setter a no-op rather than a new fragment navigation.
+      if (url.pathname === '/reset-password') {
+        globalThis.history.replaceState(globalThis.history.state, '', '/reset-password#');
+      }
+      // Preserve the SDK's implicit callback detection, including signup on the homepage.
+      return Boolean(
+        params.access_token || params.error || params.error_description || params.error_code,
+      );
+    },
   },
 });
 

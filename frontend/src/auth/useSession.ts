@@ -32,10 +32,6 @@ export function useSession() {
         setInitializationFailed(true);
         setSession(null);
       } finally {
-        // The SDK must consume the tokens before the callback URL is removed.
-        if (globalThis.location.pathname === '/reset-password') {
-          globalThis.history.replaceState(globalThis.history.state, '', '/reset-password');
-        }
         setLoading(false);
       }
     }
