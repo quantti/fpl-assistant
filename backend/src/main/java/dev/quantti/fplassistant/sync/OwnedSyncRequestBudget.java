@@ -54,6 +54,28 @@ public final class OwnedSyncRequestBudget {
         this.limits = Objects.requireNonNull(limits);
     }
 
+    enum Purpose { DISCOVERY, FINAL, POST_MATCH, LIVE }
+
+    record Demand(Purpose purpose, int players) {
+        static final Demand DISCOVERY = new Demand(Purpose.DISCOVERY, 0);
+
+        Demand {
+            Objects.requireNonNull(purpose);
+            if (players < 0 || players > GameweekFinality.MAX_CHECKPOINT_PLAYER_IDS) {
+                throw new IllegalArgumentException("Invalid budget population");
+            }
+        }
+
+        int ceiling(int maximum) {
+            return Math.max(0, maximum - switch (purpose) {
+                case DISCOVERY -> 0;
+                case FINAL -> 128;
+                case POST_MATCH -> 256 + players;
+                case LIVE -> 384 + 3 * players;
+            });
+        }
+    }
+
     /** Atomically admits and records an attempt, or identifies when and why it should be retried. */
     public Admission admit() {
         return admit(UUID.randomUUID());
@@ -64,7 +86,12 @@ public final class OwnedSyncRequestBudget {
      * timed-out caller can later reconcile the durable row without accepting a late result.
      */
     Admission admit(UUID preallocatedAttemptId) {
+        return admit(preallocatedAttemptId, Demand.DISCOVERY);
+    }
+
+    Admission admit(UUID preallocatedAttemptId, Demand demand) {
         Objects.requireNonNull(preallocatedAttemptId);
+        Objects.requireNonNull(demand);
         return tx.execute(status -> {
             State state = jdbc.queryForObject("SELECT last_admitted_at, cooldown_until FROM %s "
                     .formatted(tables.requestState()) + "WHERE singleton = TRUE FOR UPDATE", (rs, row) ->
@@ -113,10 +140,15 @@ public final class OwnedSyncRequestBudget {
             Instant windowStart = now.minus(limits.attemptWindow);
             Long attempts = jdbc.queryForObject("SELECT count(*) FROM %s WHERE admitted_at > ?"
                     .formatted(tables.requestAttempt()), Long.class, timestamp(windowStart));
-            if (attempts != null && attempts >= limits.maxAttempts) {
-                Instant oldest = jdbc.queryForObject("SELECT min(admitted_at) FROM %s WHERE admitted_at > ?"
-                        .formatted(tables.requestAttempt()), Timestamp.class, timestamp(windowStart)).toInstant();
-                deferral = later(deferral, oldest.plus(limits.attemptWindow), DeferredReason.ATTEMPT_LIMIT);
+            int ceiling = demand.ceiling(limits.maxAttempts);
+            if (ceiling == 0) {
+                deferral = later(deferral, now.plus(Duration.ofHours(1)), DeferredReason.CAPACITY_RESERVED);
+            } else if (attempts != null && attempts >= ceiling) {
+                Instant expiryBase = jdbc.queryForObject("SELECT admitted_at FROM %s WHERE admitted_at > ? "
+                        .formatted(tables.requestAttempt()) + "ORDER BY admitted_at OFFSET ? LIMIT 1",
+                        Timestamp.class, timestamp(windowStart), attempts - ceiling).toInstant();
+                deferral = later(deferral, expiryBase.plus(limits.attemptWindow),
+                        attempts >= limits.maxAttempts ? DeferredReason.ATTEMPT_LIMIT : DeferredReason.CAPACITY_RESERVED);
             }
 
             if (deferral != null) return new Deferred(deferral.nextDue, deferral.reason);
@@ -260,10 +292,29 @@ public final class OwnedSyncRequestBudget {
 
     /** UNSETTLED's nextDue is only a bounded recheck hint, not a promise of future eligibility. */
     public enum DeferredReason {
-        MINIMUM_SPACING, LIVE_PERMITS, ATTEMPT_LIMIT, COOLDOWN, UNSETTLED,
+        MINIMUM_SPACING, LIVE_PERMITS, ATTEMPT_LIMIT, CAPACITY_RESERVED, COOLDOWN, UNSETTLED,
         DB_OPERATIONS_SATURATED, DB_OPERATIONS_CLOSED, DB_DEADLINE_EXPIRED,
         DB_INTERRUPTED, DB_ADMISSION_UNCERTAIN, NO_FETCH_UNCERTAIN, HTTP_CLIENT_CLOSED, HTTP_NOT_SUBMITTED,
-        HTTP_WORKERS_SATURATED, HTTP_TURN_QUEUE_FULL, HTTP_EXCHANGE_UNCERTAIN, SETTLEMENT_UNCERTAIN
+        HTTP_WORKERS_SATURATED, HTTP_TURN_QUEUE_FULL, HTTP_EXCHANGE_UNCERTAIN, SETTLEMENT_UNCERTAIN;
+
+        String durableMessage() { return "HTTP budget deferred: " + name(); }
+
+        String durableMessage(Purpose purpose) {
+            return durableMessage() + (purpose == Purpose.FINAL ? "; purpose=FINAL" : "");
+        }
+
+        boolean expectedWait() {
+            return this == ATTEMPT_LIMIT || this == CAPACITY_RESERVED || this == COOLDOWN
+                    || this == MINIMUM_SPACING || this == LIVE_PERMITS;
+        }
+
+        static DeferredReason fromDurableMessage(String message) {
+            for (var reason : values()) {
+                if (reason.durableMessage().equals(message)
+                        || reason.durableMessage(Purpose.FINAL).equals(message)) return reason;
+            }
+            return null;
+        }
     }
 
     public record Permit(UUID id, Instant admittedAt, Instant expiresAt) {
