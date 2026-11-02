@@ -32,8 +32,6 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -70,8 +68,6 @@ class GeminiRoundTripUsageTest {
         assertThat(sdk.requests()).isEqualTo(3);
         assertThat(tools.firstCalls()).isOne();
         assertThat(tools.secondCalls()).isOne();
-        verify(sdk.models(), times(3)).generateContentStream(
-                anyString(), anyList(), any(GenerateContentConfig.class));
         assertThat(reported.getLast())
                 .as("rounds: 60/40/(5+3) + 80/0/(4+2); final round reports no usage")
                 .isEqualTo(new TokenUsage("fixture-model", 140, 40, null, 14));
@@ -222,10 +218,6 @@ class GeminiRoundTripUsageTest {
 
         private Client client() {
             return client;
-        }
-
-        private Models models() {
-            return models;
         }
 
         private int requests() {

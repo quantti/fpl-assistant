@@ -43,8 +43,6 @@ import java.util.stream.StreamSupport;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -80,7 +78,6 @@ class AnthropicRoundTripUsageTest {
 
         assertThat(sdk.requests()).isEqualTo(2);
         assertThat(tool.calls()).isOne();
-        verify(sdk.rawMessages(), times(2)).createStreaming(any(MessageCreateParams.class));
         assertThat(reported.getLast())
                 .as("rounds: 11/7/2/3 + 13/0/0/4; repeated final cumulative delta counts once")
                 .isEqualTo(new TokenUsage("fixture-model", 24, 7, 2, 7));
@@ -313,10 +310,6 @@ class AnthropicRoundTripUsageTest {
 
         private AnthropicClientAsync asyncClient() {
             return asyncClient;
-        }
-
-        private MessageServiceAsync.WithRawResponse rawMessages() {
-            return rawMessages;
         }
 
         private int requests() {
