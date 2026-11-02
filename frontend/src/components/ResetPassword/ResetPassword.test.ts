@@ -12,7 +12,10 @@ const auth = vi.hoisted(() => ({
   signOut: vi.fn(),
   resetPasswordForEmail: vi.fn(),
 }));
-vi.mock('../../auth/supabaseClient', () => ({ supabase: { auth } }));
+vi.mock('../../auth/supabaseClient', () => ({
+  supabase: { auth },
+  updateRecoveryPassword: auth.updateUser,
+}));
 let root: ReturnType<typeof createRoot>;
 let host: HTMLDivElement;
 const session = { user: { id: 'user-a' } } as Session;
@@ -78,15 +81,15 @@ async function submit() {
   });
 }
 
-it('updates the exact password, clears fields and signs out locally before offering login', async () => {
+it('updates the original session’s exact password without signing out the shared session', async () => {
   render();
   passwords();
   await submit();
-  expect(auth.updateUser).toHaveBeenCalledWith({ password: ' new secret password ' });
-  expect(auth.signOut).toHaveBeenCalledWith({ scope: 'local' });
+  expect(auth.updateUser).toHaveBeenCalledWith(session, ' new secret password ');
+  expect(auth.signOut).not.toHaveBeenCalled();
   expect(host.textContent).toContain('Your password has been updated');
   expect(host.querySelector('input')).toBeNull();
-  expect(host.querySelector('a[href="/login"]')).not.toBeNull();
+  expect(host.querySelector('a[href="/app"]')).not.toBeNull();
   props = { ...props, session: null };
   render();
   expect(host.textContent).toContain('Your password has been updated');
@@ -143,39 +146,17 @@ it('shows a retry after a thrown update failure', async () => {
   expect(button('Update password').disabled).toBe(false);
   expect(host.textContent).not.toContain('private detail');
 });
-it.each(['returned', 'thrown'])(
-  'does not report password failure when local sign-out fails (%s)',
-  async (kind) => {
-    if (kind === 'returned')
-      auth.signOut.mockResolvedValue({ error: { message: 'private detail' } });
-    else auth.signOut.mockRejectedValue(new Error('private detail'));
-    render();
-    passwords();
-    await submit();
-    expect(host.textContent).toContain('Your password has been updated');
-    expect(host.textContent).toContain('could not sign out');
-    expect(host.querySelector('input')).toBeNull();
-    auth.signOut.mockResolvedValue({ error: null });
-    await act(async () => {
-      button('Try signing out again').click();
-      await Promise.resolve();
-    });
-    expect(auth.updateUser).toHaveBeenCalledTimes(1);
-    expect(host.querySelector('a[href="/login"]')).not.toBeNull();
-  },
-);
-it('discards a previous account’s sign-out retry when another account arrives', async () => {
-  auth.signOut.mockResolvedValue({ error: { message: 'offline' } });
+it('discards a previous account’s success when another account arrives', async () => {
   render();
   passwords();
   await submit();
-  expect(button('Try signing out again')).toBeDefined();
+  expect(host.textContent).toContain('Your password has been updated');
   props = { ...props, session: { user: { id: 'user-b' } } as Session };
   render();
   expect(host.textContent).not.toContain('Try signing out again');
   expect(host.textContent).not.toContain('Your password has been updated');
   expect(host.querySelectorAll('input[autocomplete="new-password"]')).toHaveLength(2);
-  expect(auth.signOut).toHaveBeenCalledTimes(1);
+  expect(auth.signOut).not.toHaveBeenCalled();
 });
 
 it('clears password fields when the active account changes', () => {
