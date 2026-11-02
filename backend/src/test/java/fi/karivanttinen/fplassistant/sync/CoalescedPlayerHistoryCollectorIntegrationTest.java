@@ -664,6 +664,29 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
     }
 
     @Test
+    void realPageFailuresRemainVisibleWhenLaterPagesWaitForAdmission() throws Exception {
+        int fixtureId = fixtureExplainedFor(eventFourLive, 658);
+        byte[] source = emptyFixtureStats(onlyCollectorFixtureFinished(fixtures, fixtureId));
+        var players = sourceCandidates(source, fixtureId).stream().limit(2)
+                .collect(java.util.stream.Collectors.toSet());
+        fetch.setSources(bootstrapPlayers(bootstrap, players), source, eventThreeLive,
+                liveOnlyPlayer(eventFourLive, 658));
+        for (int cycle = 1; cycle <= 3; cycle++) {
+            fetch.clearCalls();
+            fetch.failPlayerCall(1);
+            fetch.deferOnPlayerCall(2, clock.instant().plus(Duration.ofHours(8)));
+            var result = collector(true).runCycle();
+            assertThat(result.state()).isEqualTo(State.RETRY_SCHEDULED);
+            assertThat(result.failedPlayerIds()).hasSize(1);
+            assertThat(jdbc.queryForObject("SELECT last_error FROM " + TABLES.run()
+                    + " ORDER BY generation DESC LIMIT 1", String.class)).contains("Unresolved player pages: 1");
+            assertThat(jdbc.queryForObject("SELECT consecutive_fetch_failures FROM " + TABLES.run()
+                    + " ORDER BY generation DESC LIMIT 1", Integer.class)).isEqualTo(cycle);
+            clock.set(result.nextDue());
+        }
+    }
+
+    @Test
     void refusedLiveEventDoesNotStarvePostMatchPagesFromAnotherEvent() throws Exception {
         ActiveFixture active = makeFixtureInProgress(markGameweekFinished(fixtures, 4), 4);
         int finishedFixture = fixture(active.body(), 3, true).id();

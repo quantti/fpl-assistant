@@ -123,6 +123,7 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
         List<Integer> finalPendingEvents = new ArrayList<>();
         Set<Integer> reopenedFinalizedEvents = new HashSet<>();
         List<Integer> missingLiveEvents = new ArrayList<>();
+        List<Integer> failedLiveEvents = new ArrayList<>();
         Instant deferredUntil = null;
         DeferredReason deferredReason = null;
 
@@ -450,6 +451,7 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
             }
             if (!liveResult.succeeded()) {
                 missingLiveEvents.add(eventId);
+                failedLiveEvents.add(eventId);
                 continue;
             }
             SourceDocument live = liveResult.document();
@@ -485,6 +487,7 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
                 refreshedLiveEvents.add(eventId);
             } catch (RuntimeException invalidLive) {
                 missingLiveEvents.add(eventId);
+                failedLiveEvents.add(eventId);
             }
         }
 
@@ -687,8 +690,12 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
                     || !entry.getValue().checkpoint().outstandingPlayerIds().isEmpty()
                     || entry.getValue().checkpoint().requiredPlayerIds().stream().anyMatch(unfinishedPages::contains));
             if (finalCheckpoints.isEmpty()) {
-                store.retry(lease, retryDue, deferredReason == null
-                        ? failureSummary(failedPlayers, missingLiveEvents) : deferredReason.durableMessage());
+                if (!failedPlayers.isEmpty() || !failedLiveEvents.isEmpty()) {
+                    store.retryFetchFailure(lease, retryDue, failureSummary(failedPlayers, failedLiveEvents));
+                } else {
+                    store.retry(lease, retryDue, deferredReason == null
+                            ? failureSummary(failedPlayers, missingLiveEvents) : deferredReason.durableMessage());
+                }
                 return result(State.RETRY_SCHEDULED, requestedPlayers, committedPlayers, failedPlayers,
                         finalPendingEvents, retryDue);
             }
@@ -943,8 +950,14 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
                              List<Integer> failed, List<Integer> finalPending) {
         Instant due = result.deferred() ? clock.instant().plus(CYCLE_INTERVAL)
                 : later(clock.instant().plus(CYCLE_INTERVAL), result.nextDue());
-        if (result.deferred()) store.retry(result.lease(), due, bounded(result.error()));
-        else store.retryFetchFailure(result.lease(), due, bounded(result.error()));
+        if (!failed.isEmpty()) {
+            store.retryFetchFailure(result.lease(), due,
+                    bounded(failureSummary(failed, List.of()) + "; " + result.error()));
+        } else if (result.deferred()) {
+            store.retry(result.lease(), due, bounded(result.error()));
+        } else {
+            store.retryFetchFailure(result.lease(), due, bounded(result.error()));
+        }
         return result(State.RETRY_SCHEDULED, requested, committed, failed, finalPending, due);
     }
 
