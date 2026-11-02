@@ -193,7 +193,7 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
         if (!loopbackTest) {
             throw new IllegalStateException("Production HTTP requests require a caller fence");
         }
-        return getInternal(endpoint, failureAttempt, null);
+        return getInternal(endpoint, failureAttempt, null, OwnedSyncRequestBudget.Demand.DISCOVERY);
     }
 
     /**
@@ -201,10 +201,17 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
      * The supplier must only inspect durable DB state; it must not initiate or schedule HTTP.
      */
     public Result get(Endpoint endpoint, int failureAttempt, Supplier<HttpFenceResult> fence) {
-        return getInternal(endpoint, failureAttempt, Objects.requireNonNull(fence));
+        return getInternal(endpoint, failureAttempt, Objects.requireNonNull(fence),
+                OwnedSyncRequestBudget.Demand.DISCOVERY);
     }
 
-    private Result getInternal(Endpoint endpoint, int failureAttempt, Supplier<HttpFenceResult> fence) {
+    Result get(Endpoint endpoint, int failureAttempt, Supplier<HttpFenceResult> fence,
+               OwnedSyncRequestBudget.Demand demand) {
+        return getInternal(endpoint, failureAttempt, Objects.requireNonNull(fence), Objects.requireNonNull(demand));
+    }
+
+    private Result getInternal(Endpoint endpoint, int failureAttempt, Supplier<HttpFenceResult> fence,
+                               OwnedSyncRequestBudget.Demand demand) {
         long methodEntryNanos = System.nanoTime();
         long turnEntryNanos = loopbackTest ? turnNanoTime.getAsLong() : methodEntryNanos;
         OwnedSyncDeadline methodDeadline = OwnedSyncDeadline.after(methodTimeout, methodEntryNanos);
@@ -229,7 +236,7 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
                 throw invalidRequest;
             }
             Result result = getWithTurnHeld(path, failureAttempt, fence, methodDeadline,
-                    preparationDeadline, graceDeadline);
+                    preparationDeadline, graceDeadline, demand);
             safeToHandover = safeForHandover(result);
             return result;
         } finally {
@@ -240,7 +247,8 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
 
     private Result getWithTurnHeld(String path, int failureAttempt,
                                    Supplier<HttpFenceResult> fence, OwnedSyncDeadline methodDeadline,
-                                   OwnedSyncDeadline preparationDeadline, OwnedSyncDeadline graceDeadline) {
+                                   OwnedSyncDeadline preparationDeadline, OwnedSyncDeadline graceDeadline,
+                                   OwnedSyncRequestBudget.Demand demand) {
         if (isClosing()) return locallyClosed();
 
         Admission admission = null;
@@ -256,7 +264,8 @@ public final class OwnedSyncHttpClient implements AutoCloseable {
             }
 
             Outcome<Admission> admissionOutcome = dbOperations.call(
-                    () -> budget.admit(UUID.randomUUID()), preparationDeadline);
+                    () -> demand.equals(OwnedSyncRequestBudget.Demand.DISCOVERY)
+                            ? budget.admit(UUID.randomUUID()) : budget.admit(UUID.randomUUID(), demand), preparationDeadline);
             if (admissionOutcome instanceof Rejected<?> rejected) {
                 return rejectedAdmission(rejected.reason());
             }

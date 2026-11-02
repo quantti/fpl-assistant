@@ -21,6 +21,9 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.PreparedStatementCreator;
 import org.springframework.jdbc.core.RowMapper;
@@ -372,6 +375,79 @@ class OwnedSyncWatchdogIntegrationTest {
         // A failure inside the live activation is not evidence that anything recovered.
         assertThat(eventCount("due-work:" + current, "RECOVERY")).isZero();
         assertThat(eventCount("due-work:not-a-generation", "RECOVERY")).isZero();
+    }
+
+    @ParameterizedTest
+    @EnumSource(OwnedSyncStore.IncrementalSupersedeReason.class)
+    void supersededImporterRunRecoversDueWorkAndExpiredLeaseAndRestoresHealth(
+            OwnedSyncStore.IncrementalSupersedeReason reason) {
+        jdbc.update("INSERT INTO " + TABLES.plannerRuntime()
+                        + "(instance_id,started_at,heartbeat_at) VALUES ('importer:ready',?,?),('watchdog:2024-25',?,?)",
+                ts(NOW), ts(NOW), ts(NOW), ts(NOW));
+        long generation = run("incremental-core-import", "incremental-core-import", "PENDING");
+        jdbc.update("UPDATE " + TABLES.run()
+                        + " SET kind='PLAYER_HISTORY',producer_key='INCREMENTAL_CORE',runtime_mode='ACTIVE',"
+                        + "runtime_epoch=9 WHERE generation=?", generation);
+        insertWatchdogAlert("due-work:" + generation, 1, "INCIDENT", "DUE_WORK");
+        insertWatchdogAlert("expired-lease:" + generation, 1, "INCIDENT", "EXPIRED_LEASE");
+        SyncOperations operations = new SyncOperations(jdbc, tx, Clock.fixed(NOW, ZoneOffset.UTC),
+                TABLES, OwnedSyncMode.ACTIVE, false, false, true, true);
+        assertThat(operations.healthy()).isFalse();
+
+        jdbc.update("UPDATE " + TABLES.run()
+                        + " SET state='SUPERSEDED',supersede_reason=?,completed_at=? WHERE generation=?",
+                reason.code(), ts(NOW), generation);
+        OwnedSyncWatchdog watchdog = watchdog(false, false, payload -> { });
+        watchdog.checkImporter("2024-25");
+
+        assertThat(eventCount("due-work:" + generation, "RECOVERY")).isOne();
+        assertThat(eventCount("expired-lease:" + generation, "RECOVERY")).isOne();
+        assertThat(operations.healthy()).isTrue();
+        watchdog.checkImporter("2024-25");
+        assertThat(eventCount("due-work:" + generation, "RECOVERY")).isOne();
+        assertThat(eventCount("expired-lease:" + generation, "RECOVERY")).isOne();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"supersede_reason=NULL", "completed_at=NULL", "producer_key='LEGACY'",
+            "last_error='unresolved'", "failed_at=completed_at", "kind='FIXTURE_VERIFICATION'",
+            "coalescing_key='other'", "runtime_mode='OFF'"})
+    void unprovedSupersessionDoesNotRecoverDueWork(String invalidEvidence) {
+        long generation = run("incremental-core-import", "incremental-core-import", "PENDING");
+        jdbc.update("UPDATE " + TABLES.run()
+                        + " SET kind='PLAYER_HISTORY',producer_key='INCREMENTAL_CORE',runtime_mode='ACTIVE',state='SUPERSEDED',"
+                        + "supersede_reason='VALIDATED_CANONICAL_SOURCE_PAIR',completed_at=? WHERE generation=?",
+                ts(NOW), generation);
+        jdbc.update("UPDATE " + TABLES.run() + " SET " + invalidEvidence + " WHERE generation=?", generation);
+        insertWatchdogAlert("due-work:" + generation, 1, "INCIDENT", "DUE_WORK");
+
+        watchdog(false, false, payload -> { }).checkImporter("2024-25");
+
+        assertThat(eventCount("due-work:" + generation, "RECOVERY")).isZero();
+    }
+
+    @Test
+    void importerCapacityWaitIsNotOverdueButUnsettledAdmissionStillAlerts() {
+        jdbc.update("INSERT INTO " + TABLES.plannerRuntime()
+                        + "(instance_id,started_at,heartbeat_at) VALUES (?,?,?)",
+                "importer:healthy", ts(NOW), ts(NOW));
+        long capacity = run("capacity", "capacity", "PENDING");
+        jdbc.update("UPDATE " + TABLES.run() + " SET last_error='HTTP budget deferred: CAPACITY_RESERVED',"
+                + "due_at=? WHERE generation=?", ts(NOW.minusSeconds(7200)), capacity);
+        var watchdog = watchdog(false, false, payload -> { });
+        watchdog.checkImporter("2024-25");
+        assertThat(categories()).doesNotContain("DUE_WORK", "REPEATED_FAILURE");
+        jdbc.update("UPDATE " + TABLES.run() + " SET updated_at=? WHERE generation=?",
+                ts(NOW.minusSeconds(10800)), capacity);
+        watchdog.checkImporter("2024-25");
+        assertThat(eventCount("due-work:" + capacity, "INCIDENT")).isOne();
+        jdbc.update("UPDATE " + TABLES.run() + " SET updated_at=? WHERE generation=?", ts(NOW), capacity);
+        watchdog.checkImporter("2024-25");
+        assertThat(eventCount("due-work:" + capacity, "RECOVERY")).isOne();
+        jdbc.update("UPDATE " + TABLES.run() + " SET last_error='HTTP budget deferred: UNSETTLED'"
+                + " WHERE generation=?", capacity);
+        watchdog.checkImporter("2024-25");
+        assertThat(categories()).contains("IMPORTER_ADMISSION_UNRESOLVED");
     }
 
     @Test

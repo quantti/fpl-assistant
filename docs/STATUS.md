@@ -41,6 +41,55 @@ Docker Desktop was not used. Exact command and source hashes are in the audit re
 This is not a full-suite/hosted saving or real parallel-worker guarantee. No full suite,
 independent panel, remote publication or production operation occurred; KAR-79 remains open.
 
+## Importer request budget and non-paging waits (2026-11-02; PR #184)
+
+Read-only Kuma/DB/Fly investigation traced hourly importer DOWN/UP mail to the 6,000-request
+rolling-day ceiling, not a network outage. Nine GW9 fixtures were provisionally finished but
+not `finished`; the collector repeatedly fetched 611 player pages. Public health stayed UP.
+
+Branch `fix/importer-budget-alerts` now gives provisionally finished fixtures a revision-scoped
+post-match sweep rather than hourly refetches. Atomic purpose-aware admission reserves capacity
+for source discovery and required post-match/final evidence without raising or resetting the cap.
+Normal capacity deferrals keep hourly discovery available, preserve valid receipts and do not
+become fetch failures. Optional event-live deferrals cannot stop another event's required pages.
+
+For the selected Kuma route, budget incidents alone no longer make importer health DOWN; old open
+budget occurrences are non-paging too. Operator-only status discloses usage/cap and pending retry
+reasons. Unresolved admission, stale heartbeats and a coordinator with no progress for over two
+hours still alert. Monitor 19, SMTP settings, raw FPL flags, finality and reader guards are unchanged.
+
+Genuine red/green regressions and the final connected **224/224 tests across 12 classes** pass at
+code/test revision `50d71e6`, using dummy AI keys and disposable `127.0.0.1:55432`, one Gradle unit
+under a 1536 MiB/no-swap scope and host-memory guard. A 48-hour admission trace corrected insufficient
+source overhead in the original reserve estimate. The owner-authorized merge of current master
+`0a37729` preserved its validated-supersession recovery fix. Review fixes retain real page/live
+failures beside capacity waits and atomically carry them into the next run when another GW finishes.
+
+The owner also explicitly approved non-paging budget-caused finality delay: a fresh current-epoch
+pending importer with no real fetch failures provides proof via its exact FINAL-capacity reason,
+or a fresh clean successor whose rolling ledger still exhausts final-purpose admission. Other
+reasons, stale progress/epochs and genuine faults remain paging-eligible; finality is never fabricated.
+
+[PR #184](https://github.com/quantti/fpl-assistant/pull/184) is published and mergeable. Its lightweight
+CI passed (backend CI and deployment deliberately skipped). A fresh owner-requested review then
+confirmed that source supersession, executing retries and discovery exhaustion could still restore
+capacity-only DOWN alerts. That finding is now fixed at code revision **`94b4927`**: an epoch-linked
+`incremental-capacity-wait` receipt records actual FINAL/discovery capacity refusal, survives leases
+and validated supersession, and is cleared by full completion or real/terminal failure. Partial
+completion carries only a genuine continuing wait. Freshness follows the later real wait/run
+transition; old-epoch, future or stalled evidence still refuses non-paging treatment.
+
+The new transition regression failed first; collector tests exercise real price-only supersession,
+completion, failure cleanup and discovery refusal. The connected **227/227 tests across 12 classes**
+pass at `94b4927` under the same isolated resource guards. Sol/Astra/Luna fix re-review is **CLEAN
+by quorum**, zero confirmed blockers, one singleton follow-up: an appearance-supersession branch
+can retain a capacity receipt alongside an already observed live-source failure. That separate
+mixed-failure corner is not claimed fixed. Earlier confirmed failure-loss findings are fixed and
+re-reviewed. No local full suite, production change or mail delivery test was performed. Owner
+merge/rollout and 24-hour observation remain pending; an already DOWN monitor may send one UP
+notification on deployment.
+[Plan, exact test command and limits](superpowers/plans/2026-11-02-importer-budget-and-alerts.md).
+
 ## Test audit — research, bounded changes and publication (2026-10-19)
 
 The [research/method](superpowers/plans/2026-10-18-behavior-first-test-audit.md) and
@@ -64,6 +113,23 @@ then explicitly requested an immediate squash merge. No direct master push, loca
 production probe or manual deploy is part of this work; the normal master release workflow applies.
 Continuation [KAR-79](https://linear.app/quantti/issue/KAR-79/continue-the-backend-test-audit-in-bounded-batches)
 remains open and carries the actual PR/review handoff; it is not closed by publishing these changes.
+
+## Importer health — recover validated superseded runs (2026-10-25)
+
+Three open `DUE_WORK` incidents referenced incremental runs 342134, 342135 and 342147,
+all already `SUPERSEDED` with `VALIDATED_CANONICAL_SOURCE_PAIR`. Watchdog recovery did not
+recognise that terminal state, keeping external health DOWN despite successful imports.
+Recovery now accepts incremental producer runs with their expected identity, a recognised
+supersession reason, a completion timestamp and no failure/error. It retains the existing
+current-epoch failure and malformed-key guards; no production metadata is manually cleared.
+
+Both supersession reasons reproduced the missing recovery before the fix. Local disposable-DB
+verification: `./gradlew --offline --console=plain test --tests '*OwnedSyncWatchdogIntegrationTest'
+--tests '*SyncOperationsIntegrationTest'` passed **33/33, 0 failed/errors/skipped**, including
+exactly-once due-work/expired-lease recovery, restored external health and invalid-evidence
+refusals. The run used dummy provider keys, the 1536 MiB/no-swap scope and host-memory stop
+guard. No full suite or deployment was run. Public-health network interruptions are a separate
+owner-confirmed ISP issue; monitor settings and production data remain unchanged.
 
 ## Price forecasts — restart continuity verified in production (2026-10-19)
 

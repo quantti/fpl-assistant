@@ -52,7 +52,9 @@ public final class OwnedSyncStore {
     static final String INCREMENTAL_CORE_PRODUCER = "INCREMENTAL_CORE";
     static final String INCREMENTAL_CORE_KEY = "incremental-core-import";
     static final String INCREMENTAL_COMPATIBILITY_PUBLICATION_KEY = "incremental-compatibility-catalogue";
+    static final String INCREMENTAL_CAPACITY_WAIT = "incremental-capacity-wait";
     static final String FINISHED_FIXTURE_RECEIPT_PREFIX = "incremental-finished-fixture:";
+    private static final String PROVISIONAL_FIXTURE_RECEIPT_PREFIX = "incremental-provisional-fixture:";
     static final String INCREMENTAL_LIVE_EVENT_RECEIPT_PREFIX = "incremental-live-event:";
     static final String INCREMENTAL_PARTICIPANT_RECEIPT_PREFIX = "incremental-participant:fixture:";
     static final String INCREMENTAL_DISCOVERY_RECEIPT_PREFIX = "incremental-discovery:fixture:";
@@ -184,6 +186,48 @@ public final class OwnedSyncStore {
                     timestamp(dueAt), timestamp(sourceFloor), runtimeEpoch(), timestamp(createdAt),
                     timestamp(createdAt));
         });
+    }
+
+    /** Ends a checked pass without losing failures in the remaining season work. */
+    void completeIncrementalPassAndRetry(Lease lease, CatalogueScheduleParser.Season season,
+                                        SourceRead interval, List<SourceRead> reads, Instant dueAt,
+                                        String error, boolean sourceFailure) {
+        tx.executeWithoutResult(status -> {
+            LockedRun run = lockAndValidate(lease);
+            requireIncrementalRun(run);
+            int failures = jdbc.queryForObject("SELECT consecutive_fetch_failures FROM " + tables.run()
+                    + " WHERE generation=?", Integer.class, lease.generation());
+            completeStaged(lease, interval, reads, true);
+            var reason = OwnedSyncRequestBudget.DeferredReason.fromDurableMessage(error);
+            if (sourceFailure || reason == null || !reason.expectedWait()) clearIncrementalCapacityWait(run);
+            Run next = enqueueIncrementalCoreImport(season, dueAt);
+            jdbc.update("UPDATE " + tables.run() + " SET last_error=?,consecutive_fetch_failures=?"
+                            + " WHERE generation=? AND state='PENDING'",
+                    boundedNullable(error, MAX_ERROR_CHARS), failures + (sourceFailure ? 1 : 0), next.generation());
+        });
+    }
+
+    /** Keeps a real capacity observation across lease changes and source-pair supersession. */
+    void recordIncrementalCapacityWait(Lease lease) {
+        tx.executeWithoutResult(status -> {
+            LockedRun run = lockAndValidate(lease);
+            requireIncrementalRun(run);
+            int failures = jdbc.queryForObject("SELECT consecutive_fetch_failures FROM " + tables.run()
+                    + " WHERE generation=?", Integer.class, run.generation());
+            if (failures != 0) return;
+            jdbc.update("INSERT INTO " + tables.receipt()
+                            + "(season,publication_key,latest_generation,published_at) VALUES (?,?,?,?) "
+                            + "ON CONFLICT (season,publication_key) DO UPDATE SET "
+                            + "latest_generation=EXCLUDED.latest_generation,published_at=EXCLUDED.published_at",
+                    run.season(), INCREMENTAL_CAPACITY_WAIT, run.generation(), timestamp(now()));
+        });
+    }
+
+    private void clearIncrementalCapacityWait(LockedRun run) {
+        if (INCREMENTAL_CORE_PRODUCER.equals(run.producerKey())) {
+            jdbc.update("DELETE FROM " + tables.receipt() + " WHERE season=? AND publication_key=?",
+                    run.season(), INCREMENTAL_CAPACITY_WAIT);
+        }
     }
 
     /** Claims only this collector's active-season run; legacy dispatchers cannot see it. */
@@ -931,10 +975,11 @@ public final class OwnedSyncStore {
             }
 
             List<CatalogueScheduleParser.FixtureRow> finished = snapshot.fixtures().stream()
-                    .filter(CatalogueScheduleParser.FixtureRow::finished).toList();
+                    .filter(fixture -> GameweekFinality.fixtureProgress(fixture)
+                            != GameweekFinality.FixtureProgress.OPEN).toList();
             Instant recordedAt = now();
             for (CatalogueScheduleParser.FixtureRow fixture : finished) {
-                String key = finishedFixtureReceiptKey(fixture.id());
+                String key = postMatchReceiptKey(fixture);
                 jdbc.update("""
                         INSERT INTO %s(season, publication_key, latest_generation,
                             source_read_started_at, source_read_finished_at, source_pair_fingerprint, published_at)
@@ -954,9 +999,13 @@ public final class OwnedSyncStore {
             }
             List<CatalogueScheduleParser.FixtureRow> notFinished = snapshot.fixtures().stream()
                     .filter(fixture -> !fixture.finished()).toList();
-            deleteFinishedMarkers(run.season, notFinished);
-            Map<Integer, Instant> finishedFloors = readFinishedMarkers(run.season, finished);
-            return new IncrementalDiscovery(events, finishedFloors);
+            deletePostMatchMarkers(run.season, notFinished, FINISHED_FIXTURE_RECEIPT_PREFIX);
+            deletePostMatchMarkers(run.season, snapshot.fixtures().stream()
+                    .filter(fixture -> GameweekFinality.fixtureProgress(fixture)
+                            != GameweekFinality.FixtureProgress.PROVISIONAL).toList(),
+                    PROVISIONAL_FIXTURE_RECEIPT_PREFIX);
+            Map<Integer, Instant> postMatchFloors = readPostMatchMarkers(run.season, finished);
+            return new IncrementalDiscovery(events, postMatchFloors);
         });
     }
 
@@ -1056,29 +1105,35 @@ public final class OwnedSyncStore {
         return sha256(FixtureVerification.verifiedHeader(fixture) + "|" + FixtureStatsFingerprint.of(fixture));
     }
 
-    private void deleteFinishedMarkers(String season, List<CatalogueScheduleParser.FixtureRow> fixtures) {
+    private void deletePostMatchMarkers(String season, List<CatalogueScheduleParser.FixtureRow> fixtures,
+                                        String prefix) {
         if (fixtures.isEmpty()) return;
         String placeholders = String.join(",", java.util.Collections.nCopies(fixtures.size(), "?"));
         List<Object> parameters = new ArrayList<>(fixtures.size() + 1);
         parameters.add(season);
-        fixtures.stream().map(fixture -> finishedFixtureReceiptKey(fixture.id())).forEach(parameters::add);
+        fixtures.stream().map(fixture -> prefix + fixture.id()).forEach(parameters::add);
         jdbc.update("DELETE FROM %s WHERE season=? AND publication_key IN (%s)"
                 .formatted(tables.receipt(), placeholders), parameters.toArray());
     }
 
-    private Map<Integer, Instant> readFinishedMarkers(String season,
+    private static String postMatchReceiptKey(CatalogueScheduleParser.FixtureRow fixture) {
+        return fixture.finished() ? finishedFixtureReceiptKey(fixture.id())
+                : PROVISIONAL_FIXTURE_RECEIPT_PREFIX + fixture.id();
+    }
+
+    private Map<Integer, Instant> readPostMatchMarkers(String season,
             List<CatalogueScheduleParser.FixtureRow> fixtures) {
         if (fixtures.isEmpty()) return Map.of();
         String placeholders = String.join(",", java.util.Collections.nCopies(fixtures.size(), "?"));
         List<Object> parameters = new ArrayList<>(fixtures.size() + 1);
         parameters.add(season);
-        fixtures.stream().map(fixture -> finishedFixtureReceiptKey(fixture.id())).forEach(parameters::add);
+        fixtures.stream().map(OwnedSyncStore::postMatchReceiptKey).forEach(parameters::add);
         Map<Integer, Instant> result = new LinkedHashMap<>();
         jdbc.query("SELECT publication_key, source_read_finished_at FROM %s WHERE season=? "
                 .formatted(tables.receipt()) + "AND publication_key IN (" + placeholders + ")",
                 rs -> {
-                    result.put(Integer.parseInt(rs.getString("publication_key")
-                            .substring(FINISHED_FIXTURE_RECEIPT_PREFIX.length())),
+                    String key = rs.getString("publication_key");
+                    result.put(Integer.parseInt(key.substring(key.lastIndexOf(':') + 1)),
                             instant(rs, "source_read_finished_at"));
                 }, parameters.toArray());
         return Map.copyOf(result);
@@ -3130,6 +3185,11 @@ public final class OwnedSyncStore {
 
     /** Completes validated staging without invoking a publisher or advancing a publication receipt. */
     public void completeStaged(Lease lease, SourceRead read, List<SourceRead> demandReads) {
+        completeStaged(lease, read, demandReads, false);
+    }
+
+    private void completeStaged(Lease lease, SourceRead read, List<SourceRead> demandReads,
+                                boolean preserveCapacityWait) {
         Objects.requireNonNull(read);
         Objects.requireNonNull(demandReads);
         if (demandReads.stream().anyMatch(Objects::isNull)) {
@@ -3146,6 +3206,7 @@ public final class OwnedSyncStore {
             Instant completedAt = now();
             requireNotExpired(run, completedAt);
             requireReadNotFuture(read, completedAt);
+            if (!preserveCapacityWait) clearIncrementalCapacityWait(run);
             jdbc.update("""
                     UPDATE %s SET state = 'COMPLETED', lease_owner = NULL, lease_token = NULL,
                         lease_expires_at = NULL, source_read_started_at = ?, source_read_finished_at = ?,
@@ -3534,6 +3595,8 @@ public final class OwnedSyncStore {
             Instant failedAt = now();
             requireNotExpired(run, failedAt);
             int priority = dependencyWaiting ? SyncKind.DEPENDENCY_WAITING_PRIORITY : run.kind.priority;
+            var reason = OwnedSyncRequestBudget.DeferredReason.fromDurableMessage(error);
+            if (terminal || fetchFailure || reason == null || !reason.expectedWait()) clearIncrementalCapacityWait(run);
             jdbc.update("""
                     UPDATE %s SET state = ?, priority = ?, due_at = COALESCE(?, due_at), last_error = ?,
                         failed_at = ?, consecutive_fetch_failures = consecutive_fetch_failures + ?,
@@ -4365,10 +4428,10 @@ public final class OwnedSyncStore {
     }
 
     record IncrementalDiscovery(Map<Integer, IncrementalEvent> events,
-                                Map<Integer, Instant> finishedObservationTimes) {
+                                Map<Integer, Instant> postMatchObservationTimes) {
         IncrementalDiscovery {
             events = Map.copyOf(events);
-            finishedObservationTimes = Map.copyOf(finishedObservationTimes);
+            postMatchObservationTimes = Map.copyOf(postMatchObservationTimes);
         }
     }
 
