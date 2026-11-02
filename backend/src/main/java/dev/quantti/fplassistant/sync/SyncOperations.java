@@ -151,7 +151,15 @@ public final class SyncOperations {
                 Long open = jdbc.queryForObject("SELECT count(*) FROM " + tables.alert() + " a "
                         + "WHERE a.event_type='INCIDENT' "
                         + (incrementalImporter ? "AND a.category<>'" + OwnedSyncWatchdog.BUDGET_CATEGORY + "' "
-                            + "AND NOT (a.category='INCREMENTAL_GAMEWEEK_OVERDUE' AND EXISTS (SELECT 1 FROM "
+                            + "AND NOT (a.category='INCREMENTAL_GAMEWEEK_OVERDUE' AND (EXISTS (SELECT 1 FROM "
+                            + tables.receipt() + " cw JOIN " + tables.run() + " wr ON wr.generation=cw.latest_generation "
+                            + "AND wr.season=cw.season JOIN " + tables.plannerRuntime()
+                            + " wm ON wm.instance_id='mode:' || wr.season AND wm.runtime_epoch=wr.runtime_epoch "
+                            + "AND wm.runtime_mode='ACTIVE' WHERE cw.season=a.season "
+                            + "AND cw.publication_key='" + OwnedSyncStore.INCREMENTAL_CAPACITY_WAIT + "' "
+                            + "AND cw.published_at>=? AND cw.published_at<=? AND wr.runtime_mode='ACTIVE' "
+                            + "AND wr.producer_key='INCREMENTAL_CORE' AND wr.kind='PLAYER_HISTORY' "
+                            + "AND wr.state<>'FAILED' AND wr.consecutive_fetch_failures=0) OR EXISTS (SELECT 1 FROM "
                             + tables.run() + " w JOIN " + tables.plannerRuntime()
                             + " m ON m.instance_id='mode:' || w.season AND m.runtime_epoch=w.runtime_epoch "
                             + "AND m.runtime_mode='ACTIVE' WHERE w.season=a.season AND w.runtime_mode='ACTIVE' "
@@ -159,11 +167,12 @@ public final class SyncOperations {
                             + "AND w.coalescing_key='incremental-core-import' AND w.publication_key='incremental-core-import' "
                             + "AND w.state='PENDING' AND w.consecutive_fetch_failures=0 "
                             + "AND (w.last_error IN (?,?) OR (w.last_error IS NULL AND (SELECT count(*) FROM "
-                            + tables.requestAttempt() + " WHERE admitted_at>?)>=?)) AND w.updated_at>=?)) " : "")
+                            + tables.requestAttempt() + " WHERE admitted_at>?)>=?)) AND w.updated_at>=?))) " : "")
                         + "AND NOT EXISTS (SELECT 1 FROM "
                         + tables.alert() + " r WHERE r.incident_key=a.incident_key "
                         + "AND r.occurrence=a.occurrence AND r.event_type='RECOVERY')", Long.class,
                         incrementalImporter ? new Object[] {
+                            Timestamp.from(clock.instant().minus(Duration.ofHours(2))), Timestamp.from(clock.instant()),
                             OwnedSyncRequestBudget.DeferredReason.ATTEMPT_LIMIT.durableMessage(OwnedSyncRequestBudget.Purpose.FINAL),
                             OwnedSyncRequestBudget.DeferredReason.CAPACITY_RESERVED.durableMessage(OwnedSyncRequestBudget.Purpose.FINAL),
                             Timestamp.from(clock.instant().minus(Duration.ofHours(24))),
