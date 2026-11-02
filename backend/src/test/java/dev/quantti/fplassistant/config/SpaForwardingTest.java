@@ -61,6 +61,9 @@ class SpaForwardingTest {
         mockMvc.perform(get("/register"))
                 .andExpect(status().isOk())
                 .andExpect(forwardedUrl("/index.html"));
+        mockMvc.perform(get("/reset-password"))
+                .andExpect(status().isOk())
+                .andExpect(forwardedUrl("/index.html"));
         mockMvc.perform(get("/privacy"))
                 .andExpect(status().isOk())
                 .andExpect(forwardedUrl("/index.html"));
