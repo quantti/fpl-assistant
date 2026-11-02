@@ -9,16 +9,37 @@ import { supabase } from './supabaseClient';
 export function useSession() {
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
+  const [initializationFailed, setInitializationFailed] = useState(() => {
+    if (globalThis.location.pathname !== '/reset-password') return false;
+    const query = new URLSearchParams(globalThis.location.search);
+    const fragment = new URLSearchParams(globalThis.location.hash.slice(1));
+    return ['error', 'error_code', 'error_description'].some(
+      (key) => query.has(key) || fragment.has(key),
+    );
+  });
 
   useEffect(() => {
-    supabase.auth
-      .getSession()
-      .then(({ data }) => setSession(data.session))
-      // Storage the browser refuses (Safari private browsing, blocked cookies, a partitioned
-      // context) makes this reject. Without the catch, `loading` stays true and the app renders
-      // the loader forever — no error, no recovery, and a reload that fails identically.
-      .catch(() => setSession(null))
-      .finally(() => setLoading(false));
+    async function restore() {
+      try {
+        const initialized = await supabase.auth.initialize();
+        // getSession alone can return an older session after a failed recovery callback.
+        if (initialized.error) setInitializationFailed(true);
+        const { data, error } = await supabase.auth.getSession();
+        if (error) setInitializationFailed(true);
+        setSession(data.session);
+      } catch {
+        // Blocked browser storage must not leave the page loading forever.
+        setInitializationFailed(true);
+        setSession(null);
+      } finally {
+        // The SDK must consume the tokens before the callback URL is removed.
+        if (globalThis.location.pathname === '/reset-password') {
+          globalThis.history.replaceState(globalThis.history.state, '', '/reset-password');
+        }
+        setLoading(false);
+      }
+    }
+    void restore();
 
     // Covers sign-in, sign-out, and the silent token refresh — the last of which is why this
     // subscription exists rather than a one-off read.
@@ -29,5 +50,5 @@ export function useSession() {
     return () => subscription.subscription.unsubscribe();
   }, []);
 
-  return { session, loading };
+  return { session, loading, initializationFailed };
 }

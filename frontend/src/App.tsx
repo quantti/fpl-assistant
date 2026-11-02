@@ -6,6 +6,7 @@ import LandingPage from './components/LandingPage/LandingPage';
 import PrivacyPage from './components/PrivacyPage/PrivacyPage';
 import SignIn, { type AuthMode } from './components/SignIn/SignIn';
 import StorageNotice from './components/StorageNotice/StorageNotice';
+import ResetPassword from './components/ResetPassword/ResetPassword';
 import { useSession } from './auth/useSession';
 import { useKeyboardAwareViewport } from './hooks/useKeyboardAwareViewport';
 import { navigate, type Route, useRoute } from './router';
@@ -16,7 +17,7 @@ export default function App() {
   // Above both ChatView and SignIn: the sign-in form has the same iOS keyboard over its
   // password field as the chat has over its composer.
   useKeyboardAwareViewport();
-  const { session, loading } = useSession();
+  const { session, loading, initializationFailed } = useSession();
   const route = useRoute();
 
   // /login and /register are entry points, not application pages. A completed sign-in (or an
@@ -31,7 +32,12 @@ export default function App() {
   return (
     <div className={classes.app}>
       <div className={classes.page}>
-        <CurrentPage route={route} session={session} loading={loading} />
+        <CurrentPage
+          route={route}
+          session={session}
+          loading={loading}
+          initializationFailed={initializationFailed}
+        />
       </div>
       <StorageNotice />
     </div>
@@ -42,9 +48,15 @@ interface CurrentPageProps {
   route: Route;
   session: Session | null;
   loading: boolean;
+  initializationFailed: boolean;
 }
 
-function CurrentPage({ route, session, loading }: Readonly<CurrentPageProps>) {
+function CurrentPage({
+  route,
+  session,
+  loading,
+  initializationFailed,
+}: Readonly<CurrentPageProps>) {
   // The homepage and privacy notice are public even while auth-js is reading storage. Keeping the
   // homepage visible also lets Supabase consume a verification callback there before showing the
   // signed-in app link.
@@ -74,6 +86,10 @@ function CurrentPage({ route, session, loading }: Readonly<CurrentPageProps>) {
         <Loader />
       </div>
     );
+  }
+
+  if (route === '/reset-password') {
+    return <ResetPassword session={session} initializationFailed={initializationFailed} />;
   }
 
   // A different account can arrive from another tab without an intervening sign-out. Reset

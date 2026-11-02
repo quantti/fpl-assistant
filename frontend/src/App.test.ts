@@ -38,6 +38,9 @@ vi.mock('./components/LandingPage/LandingPage', () => ({
 vi.mock('./components/PrivacyPage/PrivacyPage', () => ({
   default: () => React.createElement('span', { 'data-view': 'privacy' }),
 }));
+vi.mock('./components/ResetPassword/ResetPassword', () => ({
+  default: () => React.createElement('span', { 'data-view': 'reset-password' }),
+}));
 vi.mock('./components/StorageNotice/StorageNotice', () => ({
   default: () => React.createElement('span', { 'data-view': 'storage-notice' }),
 }));
@@ -65,7 +68,7 @@ beforeEach(() => {
   navigate.mockReset();
   appMounts = 0;
   appUnmounts = 0;
-  sessionMock.mockReturnValue({ session: null, loading: false });
+  sessionMock.mockReturnValue({ session: null, loading: false, initializationFailed: false });
 });
 
 afterEach(() => {
@@ -83,8 +86,26 @@ function renderApp(): HTMLElement {
 }
 
 describe('public and protected routing', () => {
+  it.each([null, session('user-a')])(
+    'keeps the reset route out of chat with session %s',
+    (auth) => {
+      route = '/reset-password';
+      sessionMock.mockReturnValue({ session: auth, loading: false, initializationFailed: false });
+      expect(renderApp().querySelector('[data-view="reset-password"]')).not.toBeNull();
+      expect(appMounts).toBe(0);
+      expect(navigate).not.toHaveBeenCalled();
+    },
+  );
+
+  it('waits for recovery initialization before showing the reset page', () => {
+    route = '/reset-password';
+    sessionMock.mockReturnValue({ session: null, loading: true, initializationFailed: false });
+    const host = renderApp();
+    expect(host.querySelector('[data-view="reset-password"]')).toBeNull();
+    expect(host.textContent).toContain('loading');
+  });
   it('shows the public homepage immediately while the session is loading', () => {
-    sessionMock.mockReturnValue({ session: null, loading: true });
+    sessionMock.mockReturnValue({ session: null, loading: true, initializationFailed: false });
 
     const landing = renderApp().querySelector('[data-view="landing"]');
 
@@ -92,7 +113,11 @@ describe('public and protected routing', () => {
   });
 
   it('keeps the homepage visible to a signed-in visitor', () => {
-    sessionMock.mockReturnValue({ session: session('user-a'), loading: false });
+    sessionMock.mockReturnValue({
+      session: session('user-a'),
+      loading: false,
+      initializationFailed: false,
+    });
 
     const landing = renderApp().querySelector('[data-view="landing"]');
 
@@ -102,7 +127,7 @@ describe('public and protected routing', () => {
 
   it('shows privacy without waiting for authentication', () => {
     route = '/privacy';
-    sessionMock.mockReturnValue({ session: null, loading: true });
+    sessionMock.mockReturnValue({ session: null, loading: true, initializationFailed: false });
 
     const host = renderApp();
 
@@ -126,7 +151,7 @@ describe('public and protected routing', () => {
     { path: '/app' as const, auth: session('user-a') },
   ])('shows the storage notice at $path', ({ path, auth }) => {
     route = path;
-    sessionMock.mockReturnValue({ session: auth, loading: false });
+    sessionMock.mockReturnValue({ session: auth, loading: false, initializationFailed: false });
 
     expect(renderApp().querySelector('[data-view="storage-notice"]')).not.toBeNull();
   });
@@ -145,7 +170,11 @@ describe('public and protected routing', () => {
     const host = renderApp();
     expect(host.querySelector('[data-view="auth"]')).not.toBeNull();
 
-    sessionMock.mockReturnValue({ session: session('user-a'), loading: false });
+    sessionMock.mockReturnValue({
+      session: session('user-a'),
+      loading: false,
+      initializationFailed: false,
+    });
     act(() => root!.render(React.createElement(App)));
 
     expect(host.querySelector('[data-view="app"]')?.textContent).toBe('/settings');
@@ -154,7 +183,11 @@ describe('public and protected routing', () => {
 
   it('sends a completed login to the canonical chat path', () => {
     route = '/login';
-    sessionMock.mockReturnValue({ session: session('user-a'), loading: false });
+    sessionMock.mockReturnValue({
+      session: session('user-a'),
+      loading: false,
+      initializationFailed: false,
+    });
 
     renderApp();
 
@@ -163,10 +196,18 @@ describe('public and protected routing', () => {
 
   it('replaces account-owned application state when the authenticated user changes', () => {
     route = '/app';
-    sessionMock.mockReturnValue({ session: session('user-a'), loading: false });
+    sessionMock.mockReturnValue({
+      session: session('user-a'),
+      loading: false,
+      initializationFailed: false,
+    });
     renderApp();
 
-    sessionMock.mockReturnValue({ session: session('user-b'), loading: false });
+    sessionMock.mockReturnValue({
+      session: session('user-b'),
+      loading: false,
+      initializationFailed: false,
+    });
     act(() => root!.render(React.createElement(App)));
 
     expect(appMounts).toBe(2);

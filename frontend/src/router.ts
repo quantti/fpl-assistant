@@ -13,6 +13,7 @@ export type Route =
   | '/'
   | '/login'
   | '/register'
+  | '/reset-password'
   | '/privacy'
   | '/app'
   | '/my-team'
@@ -44,6 +45,7 @@ export function useRoute(): Route {
 export function routeFromPath(path: string): Route {
   return path === '/login' ||
     path === '/register' ||
+    path === '/reset-password' ||
     path === '/privacy' ||
     path === '/app' ||
     path === '/my-team' ||
