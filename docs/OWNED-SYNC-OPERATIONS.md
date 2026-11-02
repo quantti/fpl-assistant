@@ -94,6 +94,30 @@ confirmed only `resendInterval` changed; delivery and a full 24-hour repeat were
 The owner chose this built-in fixed interval rather than a custom escalation scheduler.
 Public-health monitor **19** was untouched; the old monitor **18** is absent.
 
+### Importer capacity policy (implemented locally 2026-11-02; not deployed)
+
+The incremental collector treats provisional full time as a post-match collection state: one
+revision-scoped sweep, then only missing/stale pages or detected corrections, not hourly history
+fan-out. Raw FPL finish/check flags and finality are unchanged. Genuine live refresh yields first
+under the unchanged rolling HTTP cap. With `P` the larger of catalogue size and required-player
+union, request ceilings reserve source overhead and mandatory passes: discovery `B`, final
+`max(0,B-128)`, post-match `max(0,B-256-P)`, live `max(0,B-384-3P)`.
+These share the existing ledger; they are not extra quotas. Failed attempts still count.
+
+For the selected Kuma route, importer `/ops/sync/health` excludes the explicit
+`REQUEST_BUDGET_BLOCKED` category, including already-open occurrences. Capacity waiting alone
+therefore causes neither DOWN nor recovery mail on subsequent cycles. Authenticated operator
+status exposes actual usage/cap, next attempt expiry and pending run reason/next coordinator time;
+expiry or a coordinator tick is not a promise of HTTP admission. More than two hours without
+coordinator progress, unresolved admission/settlement, stale heartbeats, database failure and
+other genuine incidents remain faults. The retired runtime and alternate webhook delivery policy
+are unchanged. Monitor 19 and the shared SMTP notification are untouched. Deploying while monitor
+20 is already DOWN may produce one UP notification; there is no suppression of that transition.
+
+See [the plan and local evidence](superpowers/plans/2026-11-02-importer-budget-and-alerts.md).
+Do not reset budget rows, increase the cap or mark data final to obtain a green monitor. Live
+rollout/24-hour observation and inbox delivery are still unverified.
+
 The configuration below describes the retired owned-runtime monitor, not current monitor 20.
 
 Set `OWNED_SYNC_ALERTS_VIA_MONITOR=true`, `OWNED_SYNC_ALERT_WEBHOOK_ENABLED=false`,

@@ -1,6 +1,6 @@
 # Incremental importer: bounded collection and non-paging budget waits
 
-**PROGRESS:** Tasks 1–4/6 done locally: collection, priority admission and non-paging capacity waits verified. Integrated verification/review and rollout pending. No production or Kuma change made.
+**PROGRESS:** Tasks 1–5/6 done locally at tested code revision `f58d610`; publication/PR review and owner-authorized rollout remain pending. No production or Kuma change made.
 
 ## Goal and owner request
 
@@ -353,10 +353,41 @@ is unchanged; this non-paging contract is for the selected external Kuma route.
 `bash /tmp/fpl-focused-tests.sh --tests '*SyncOperations*Test'
 --tests '*OwnedSyncWatchdogIntegrationTest'` passes with the same guards.
 
+### Integrated acceptance (local)
+
+Code/test revision **`f58d610`**, branch `fix/importer-budget-alerts`, base `90e89b6`:
+**211/211 tests across 12 classes, zero failures/errors/skips**. Exact Gradle selection (cwd `backend`):
+
+```bash
+./gradlew --console=plain test \
+  --tests '*CoalescedPlayerHistoryCollectorIntegrationTest' \
+  --tests '*ImporterBudgetTimelineTest' --tests '*ImporterRequestLimitsTest' \
+  --tests '*OwnedSyncRequestBudgetIntegrationTest' --tests '*OwnedSyncHttpClientIntegrationTest' \
+  --tests '*OwnedSyncWatchdogIntegrationTest' --tests '*SyncOperations*Test' \
+  --tests '*OwnedSyncImporterContextIntegrationTest' --tests '*GameweekFinalityTest' \
+  --tests '*CompatibilityCatalogueWriterIntegrationTest'
+```
+
+Executed through the resource-guard wrapper described above, against disposable Postgres only.
+The first integrated run found a Mockito stub still expecting the former `min(admitted_at)` query;
+the stub now matches the ordered expiry query and asserts zero offset at the hard cap. The rerun
+passed. No production or provider credentials were used.
+
+Direct source/diff review found a cross-event priority inversion: an optional event-live deferral
+returned before another event's mandatory pages were processed. A focused regression first failed
+with zero committed required pages. The collector now orders events by priority and retains normal
+capacity waits without preventing other events' required pages; unresolved admission still stops
+immediately. The collector class rerun passed 67/67, then the integrated run above passed. Changes
+remain limited to collection, admission, operations diagnostics/health and their tests. No independent
+reviewer was delegated. Large full-league/DGW collector tests were not added; existing coalescing/DGW
+coverage, small collector regressions, real-DB admission seams and the lightweight 48-hour admission
+trace provide separate evidence rather than claiming a sustained full-league load test.
+
 ## Explicit limits
 
 No finite cap guarantees every live refresh and arbitrary source corrections complete immediately.
 This plan prioritizes post-match/final evidence and truthful delayed-data diagnostics over repeated
 live refreshes. It does not guarantee Supabase egress, memory usage, FPL availability or discovery of
 history-only corrections to players no longer fetched; existing manual reconciliation limits remain.
-No code, test execution, email delivery test or production modification is claimed by this document.
+No production modification, hosted CI result, independent panel review, email delivery test or
+24-hour production observation is claimed.

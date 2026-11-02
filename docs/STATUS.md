@@ -1,5 +1,31 @@
 # Status — Phase 1
 
+## Importer request budget and non-paging waits (2026-11-02; local)
+
+Read-only Kuma/DB/Fly investigation traced hourly importer DOWN/UP mail to the 6,000-request
+rolling-day ceiling, not a network outage. Nine GW9 fixtures were provisionally finished but
+not `finished`; the collector repeatedly fetched 611 player pages. Public health stayed UP.
+
+Branch `fix/importer-budget-alerts` now gives provisionally finished fixtures a revision-scoped
+post-match sweep rather than hourly refetches. Atomic purpose-aware admission reserves capacity
+for source discovery and required post-match/final evidence without raising or resetting the cap.
+Normal capacity deferrals keep hourly discovery available, preserve valid receipts and do not
+become fetch failures. Optional event-live deferrals cannot stop another event's required pages.
+
+For the selected Kuma route, budget incidents alone no longer make importer health DOWN; old open
+budget occurrences are non-paging too. Operator-only status discloses usage/cap and pending retry
+reasons. Unresolved admission, stale heartbeats and a coordinator with no progress for over two
+hours still alert. Monitor 19, SMTP settings, raw FPL flags, finality and reader guards are unchanged.
+
+Genuine red/green regressions and the connected **211/211 tests across 12 classes** pass at code/test
+revision `f58d610`, using dummy AI keys and disposable `127.0.0.1:55432`, one Gradle unit under a
+1536 MiB/no-swap scope and host-memory guard. A 48-hour admission trace corrected insufficient
+source overhead in the original reserve estimate. Direct review fixed cross-event priority
+inversion; the final integrated rerun is green. No local full suite, independent panel, hosted CI,
+production change or mail delivery test was performed. Publication/PR review and owner-authorized
+rollout remain pending; an already DOWN monitor may send one UP notification when deployed.
+[Plan, exact test command and limits](superpowers/plans/2026-11-02-importer-budget-and-alerts.md).
+
 ## Price forecasts — restart continuity verified in production (2026-10-19)
 
 Normal worker shutdown now stops/drains only that process and preserves the durable publishing
