@@ -1,10 +1,13 @@
 package dev.quantti.fplassistant.sync;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.IntSupplier;
@@ -28,7 +31,8 @@ public final class CoalescedPlayerHistoryImportRuntime implements SmartLifecycle
     private final AtomicBoolean running = new AtomicBoolean();
     private final AtomicBoolean cycleRunning = new AtomicBoolean();
     private final AtomicBoolean initialMaintenancePending = new AtomicBoolean(true);
-    private ScheduledExecutorService scheduler;
+    private volatile ScheduledExecutorService scheduler;
+    private volatile ScheduledFuture<?> nextCycle;
     private ScheduledExecutorService heartbeatScheduler;
     private ScheduledExecutorService watchdogScheduler;
     private ScheduledExecutorService deliveryScheduler;
@@ -53,7 +57,7 @@ public final class CoalescedPlayerHistoryImportRuntime implements SmartLifecycle
         if (!running.compareAndSet(false, true)) return;
         scheduler = Executors.newSingleThreadScheduledExecutor(
                 Thread.ofPlatform().name("owned-sync-importer-hourly").daemon(true).factory());
-        scheduler.scheduleWithFixedDelay(this::runScheduledCycle, 0, INTERVAL.toMillis(), TimeUnit.MILLISECONDS);
+        scheduleCycle(0);
         if (heartbeat != null) {
             heartbeatScheduler = Executors.newSingleThreadScheduledExecutor(
                     Thread.ofPlatform().name("owned-sync-importer-heartbeat").daemon(true).factory());
@@ -97,11 +101,31 @@ public final class CoalescedPlayerHistoryImportRuntime implements SmartLifecycle
         }
     }
 
+    private void scheduleCycle(long delayMillis) {
+        ScheduledExecutorService active = scheduler;
+        if (!running.get() || active == null) return;
+        try {
+            ScheduledFuture<?> scheduled = active.schedule(this::runScheduledCycle, delayMillis, TimeUnit.MILLISECONDS);
+            nextCycle = scheduled;
+            if (!running.get()) scheduled.cancel(false);
+        } catch (RejectedExecutionException stopped) {
+            if (running.get()) throw stopped;
+        }
+    }
+
     private void runScheduledCycle() {
-        if (!running.get() || !cycleRunning.compareAndSet(false, true)) return;
+        if (!running.get()) return;
+        if (!cycleRunning.compareAndSet(false, true)) {
+            scheduleCycle(INTERVAL.toMillis());
+            return;
+        }
+        long delayMillis = INTERVAL.toMillis();
         try {
             if (initialMaintenancePending.compareAndSet(true, false)) runPayloadMaintenance();
             CoalescedPlayerHistoryCollector.CycleResult result = runCycleWithMaintenance();
+            if (result.state() == CoalescedPlayerHistoryCollector.State.BUSY && result.nextDue() != null) {
+                delayMillis = Math.max(1_000, Duration.between(Instant.now(), result.nextDue()).toMillis());
+            }
             log.info("hourly incremental core import: {} ({} pages selected, {} committed, {} failed)",
                     result.state(), result.selectedPlayerIds().size(), result.committedPlayerIds().size(),
                     result.failedPlayerIds().size());
@@ -109,6 +133,7 @@ public final class CoalescedPlayerHistoryImportRuntime implements SmartLifecycle
             log.error("hourly incremental core import failed", failure);
         } finally {
             cycleRunning.set(false);
+            scheduleCycle(delayMillis);
         }
     }
 
@@ -135,6 +160,8 @@ public final class CoalescedPlayerHistoryImportRuntime implements SmartLifecycle
     public synchronized void stop() {
         if (!running.compareAndSet(true, false)) return;
         if (scheduler == null) return;
+        ScheduledFuture<?> pending = nextCycle;
+        if (pending != null) pending.cancel(false);
         scheduler.shutdown();
         if (heartbeatScheduler != null) heartbeatScheduler.shutdown();
         if (watchdogScheduler != null) watchdogScheduler.shutdown();
