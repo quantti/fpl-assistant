@@ -25,6 +25,46 @@ inversion; the final integrated rerun is green. No local full suite, independent
 production change or mail delivery test was performed. Publication/PR review and owner-authorized
 rollout remain pending; an already DOWN monitor may send one UP notification when deployed.
 [Plan, exact test command and limits](superpowers/plans/2026-11-02-importer-budget-and-alerts.md).
+## Test audit — research, bounded changes and publication (2026-10-19)
+
+The [research/method](superpowers/plans/2026-10-18-behavior-first-test-audit.md) and
+[delivery report](diagnostics/2026-10-18-test-audit-first-pass.md) consolidate sources, five bounded
+audits, retained/rejected/conditional decisions, approvals, file/commit map and all check receipts.
+This branch changes seven test files and removes zero whole test methods/classes; prior merged
+PR #173's deletions and CI policy are separate work, not counted again here.
+
+Delivered: five duplicate prompt expectations and an unused JDBC mock removed (startup refusal
+kept); a 657→501 discovery boundary fixture; actual receipt-execution counting; two case-local
+connection pools; and a 657→68 schedule-correction source. The last change explicitly drops this
+case's full-roster/backlog scale, not its freshness/zero-minute/ownership/masking assertions.
+One local pair each: demand 29.212s→4.388s, starvation 19.313s→4.297s, correction 16.945s→5.796s.
+These are not controlled whole-suite or hosted billing savings.
+
+Master `eee6223` is integrated at `53e5743`, preserving both sides of the STATUS-only conflict.
+All **20 selected cases pass, 0 failures/errors/skips**, against the guarded disposable DB with
+dummy keys and unchanged resource limits. Only documentation changes follow that tested code.
+The owner authorized feature-branch PR publication, a continuation issue and post-PR review,
+then explicitly requested an immediate squash merge. No direct master push, local full suite,
+production probe or manual deploy is part of this work; the normal master release workflow applies.
+Continuation [KAR-79](https://linear.app/quantti/issue/KAR-79/continue-the-backend-test-audit-in-bounded-batches)
+remains open and carries the actual PR/review handoff; it is not closed by publishing these changes.
+
+## Importer health — recover validated superseded runs (2026-10-25)
+
+Three open `DUE_WORK` incidents referenced incremental runs 342134, 342135 and 342147,
+all already `SUPERSEDED` with `VALIDATED_CANONICAL_SOURCE_PAIR`. Watchdog recovery did not
+recognise that terminal state, keeping external health DOWN despite successful imports.
+Recovery now accepts incremental producer runs with their expected identity, a recognised
+supersession reason, a completion timestamp and no failure/error. It retains the existing
+current-epoch failure and malformed-key guards; no production metadata is manually cleared.
+
+Both supersession reasons reproduced the missing recovery before the fix. Local disposable-DB
+verification: `./gradlew --offline --console=plain test --tests '*OwnedSyncWatchdogIntegrationTest'
+--tests '*SyncOperationsIntegrationTest'` passed **33/33, 0 failed/errors/skipped**, including
+exactly-once due-work/expired-lease recovery, restored external health and invalid-evidence
+refusals. The run used dummy provider keys, the 1536 MiB/no-swap scope and host-memory stop
+guard. No full suite or deployment was run. Public-health network interruptions are a separate
+owner-confirmed ISP issue; monitor settings and production data remain unchanged.
 
 ## Price forecasts — restart continuity verified in production (2026-10-19)
 
