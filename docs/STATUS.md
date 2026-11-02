@@ -1,5 +1,30 @@
 # Status — Phase 1
 
+## Importer startup — retry at the actual lease expiry (2026-11-02; local)
+
+After release 201, the old worker's lease lasted until 22:44:45 UTC. The new process returned BUSY
+at 22:40:32 and the fixed hourly trigger waited an hour; watchdog opened EXPIRED_LEASE at 22:45:27.
+This was not budget exhaustion (4,921/6,000, no unsettled attempts). Public-health DOWN/UP during
+the deployment and the later importer DOWN were separate monitor events.
+
+`a1fed01` returns the actual durable lease expiry on BUSY and schedules one next collection at
+that time, with a one-second minimum for an elapsed/racing hint. Ordinary results/failures retain
+the hourly delay; renewed leases are reassessed through the existing acquisition fence. Stop
+cancels the queued callback. No manual lease release, epoch change, request-limit bypass or alert
+suppression. The shutdown path's interrupted work may still leave a valid lease to expire normally.
+
+Two regressions failed first: stale run due-time instead of lease expiry, and a fixed one-hour
+schedule instead of an expiry retry. The connected collector, runtime/configuration, importer
+context, watchdog and operations tests pass **136/136 across seven classes** at `a1fed01`, using
+`./gradlew test --tests '*CoalescedPlayerHistoryCollectorIntegrationTest' --tests '*OwnedSyncRuntimeConfigurationTest' --tests '*OwnedSyncImporterContextIntegrationTest' --tests '*OwnedSyncWatchdogIntegrationTest' --tests '*SyncOperations*Test'`
+against disposable `127.0.0.1:55432`, dummy AI keys, one Gradle unit under the unchanged 1536 MiB/
+no-swap scope and host-memory guard. Tests prove no source HTTP before expiry, normal fenced
+takeover afterward, stale-owner refusal, hourly cadence after success and no callback after stop.
+Parent diff review found no blocker. The owner explicitly waived a new three-model panel for this
+small fix after the attempted panel was cancelled; no clean panel claim is made. No local full
+suite, production mutation or notification-setting change. PR checks and the owner-authorized
+squash merge follow; master CI gates deployment and live restart recovery remains to be observed.
+
 ## Importer appearance restart — retain live failures (2026-11-02; local)
 
 The owner requested fixing, pushing and merging the remaining mixed-failure advisory from PR #184.
