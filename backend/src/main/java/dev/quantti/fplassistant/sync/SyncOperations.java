@@ -158,13 +158,16 @@ public final class SyncOperations {
                             + "AND w.producer_key='INCREMENTAL_CORE' AND w.kind='PLAYER_HISTORY' "
                             + "AND w.coalescing_key='incremental-core-import' AND w.publication_key='incremental-core-import' "
                             + "AND w.state='PENDING' AND w.consecutive_fetch_failures=0 "
-                            + "AND w.last_error IN (?,?) AND w.updated_at>=?)) " : "")
+                            + "AND (w.last_error IN (?,?) OR (w.last_error IS NULL AND (SELECT count(*) FROM "
+                            + tables.requestAttempt() + " WHERE admitted_at>?)>=?)) AND w.updated_at>=?)) " : "")
                         + "AND NOT EXISTS (SELECT 1 FROM "
                         + tables.alert() + " r WHERE r.incident_key=a.incident_key "
                         + "AND r.occurrence=a.occurrence AND r.event_type='RECOVERY')", Long.class,
                         incrementalImporter ? new Object[] {
                             OwnedSyncRequestBudget.DeferredReason.ATTEMPT_LIMIT.durableMessage(OwnedSyncRequestBudget.Purpose.FINAL),
                             OwnedSyncRequestBudget.DeferredReason.CAPACITY_RESERVED.durableMessage(OwnedSyncRequestBudget.Purpose.FINAL),
+                            Timestamp.from(clock.instant().minus(Duration.ofHours(24))),
+                            new OwnedSyncRequestBudget.Demand(OwnedSyncRequestBudget.Purpose.FINAL, 0).ceiling(requestLimit),
                             Timestamp.from(clock.instant().minus(Duration.ofHours(2))) } : new Object[0]);
                 Instant cutoff = clock.instant().minus(HEALTH_LIMIT);
                 return localMode != OwnedSyncMode.OFF && fresh(planner, cutoff)
