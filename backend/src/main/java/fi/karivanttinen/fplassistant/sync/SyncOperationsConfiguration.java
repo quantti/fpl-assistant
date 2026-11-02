@@ -29,7 +29,8 @@ public class SyncOperationsConfiguration {
                 environment.getProperty("fpl.owned-sync.importer.enabled", Boolean.class, false),
                 environment.getProperty("fpl.owned-sync.playing-season", "").trim(),
                 environment.getProperty("fpl.owned-sync.handoff.enabled", Boolean.class, false)
-                        && environment.getProperty("fpl.owned-sync.cutover-confirmed", Boolean.class, false));
+                        && environment.getProperty("fpl.owned-sync.cutover-confirmed", Boolean.class, false),
+                CoalescedPlayerHistoryImportConfiguration.requestLimits(environment).maxAttempts());
     }
 
     static OwnedSyncWatchdog.Notification notification(Environment environment) {

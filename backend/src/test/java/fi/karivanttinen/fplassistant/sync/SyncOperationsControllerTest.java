@@ -23,7 +23,8 @@ class SyncOperationsControllerTest {
     void statusRequiresDedicatedOperatorToken() throws Exception {
         SyncOperations operations = mock(SyncOperations.class);
         when(operations.status()).thenReturn(new SyncOperations.Status(Instant.EPOCH,
-                List.of(), Map.of(), Map.of(), Map.of(), List.of(), List.of(), List.of()));
+                List.of(), Map.of(), Map.of(), Map.of(), List.of(), List.of(), List.of(),
+                new SyncOperations.BudgetStatus(6000, 6000, Instant.EPOCH), List.of()));
         MockMvc mvc = mvc(new SyncOperationsController(operations, true, "operator-secret",
                 true, "monitor-secret"));
 

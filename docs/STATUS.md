@@ -1,5 +1,53 @@
 # Status — Phase 1
 
+## Importer request budget and non-paging waits (2026-11-02; PR #184)
+
+Read-only Kuma/DB/Fly investigation traced hourly importer DOWN/UP mail to the 6,000-request
+rolling-day ceiling, not a network outage. Nine GW9 fixtures were provisionally finished but
+not `finished`; the collector repeatedly fetched 611 player pages. Public health stayed UP.
+
+Branch `fix/importer-budget-alerts` now gives provisionally finished fixtures a revision-scoped
+post-match sweep rather than hourly refetches. Atomic purpose-aware admission reserves capacity
+for source discovery and required post-match/final evidence without raising or resetting the cap.
+Normal capacity deferrals keep hourly discovery available, preserve valid receipts and do not
+become fetch failures. Optional event-live deferrals cannot stop another event's required pages.
+
+For the selected Kuma route, budget incidents alone no longer make importer health DOWN; old open
+budget occurrences are non-paging too. Operator-only status discloses usage/cap and pending retry
+reasons. Unresolved admission, stale heartbeats and a coordinator with no progress for over two
+hours still alert. Monitor 19, SMTP settings, raw FPL flags, finality and reader guards are unchanged.
+
+Genuine red/green regressions and the final connected **224/224 tests across 12 classes** pass at
+code/test revision `50d71e6`, using dummy AI keys and disposable `127.0.0.1:55432`, one Gradle unit
+under a 1536 MiB/no-swap scope and host-memory guard. A 48-hour admission trace corrected insufficient
+source overhead in the original reserve estimate. The owner-authorized merge of current master
+`0a37729` preserved its validated-supersession recovery fix. Review fixes retain real page/live
+failures beside capacity waits and atomically carry them into the next run when another GW finishes.
+
+The owner also explicitly approved non-paging budget-caused finality delay: a fresh current-epoch
+pending importer with no real fetch failures provides proof via its exact FINAL-capacity reason,
+or a fresh clean successor whose rolling ledger still exhausts final-purpose admission. Other
+reasons, stale progress/epochs and genuine faults remain paging-eligible; finality is never fabricated.
+
+[PR #184](https://github.com/quantti/fpl-assistant/pull/184) is published and mergeable. Its lightweight
+CI passed (backend CI and deployment deliberately skipped). A fresh owner-requested review then
+confirmed that source supersession, executing retries and discovery exhaustion could still restore
+capacity-only DOWN alerts. That finding is now fixed at code revision **`94b4927`**: an epoch-linked
+`incremental-capacity-wait` receipt records actual FINAL/discovery capacity refusal, survives leases
+and validated supersession, and is cleared by full completion or real/terminal failure. Partial
+completion carries only a genuine continuing wait. Freshness follows the later real wait/run
+transition; old-epoch, future or stalled evidence still refuses non-paging treatment.
+
+The new transition regression failed first; collector tests exercise real price-only supersession,
+completion, failure cleanup and discovery refusal. The connected **227/227 tests across 12 classes**
+pass at `94b4927` under the same isolated resource guards. Sol/Astra/Luna fix re-review is **CLEAN
+by quorum**, zero confirmed blockers, one singleton follow-up: an appearance-supersession branch
+can retain a capacity receipt alongside an already observed live-source failure. That separate
+mixed-failure corner is not claimed fixed. Earlier confirmed failure-loss findings are fixed and
+re-reviewed. No local full suite, production change or mail delivery test was performed. Owner
+merge/rollout and 24-hour observation remain pending; an already DOWN monitor may send one UP
+notification on deployment.
+[Plan, exact test command and limits](superpowers/plans/2026-11-02-importer-budget-and-alerts.md).
 ## Test audit — research, bounded changes and publication (2026-10-19)
 
 The [research/method](superpowers/plans/2026-10-18-behavior-first-test-audit.md) and

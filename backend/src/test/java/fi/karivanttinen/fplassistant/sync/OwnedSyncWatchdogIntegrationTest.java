@@ -427,6 +427,30 @@ class OwnedSyncWatchdogIntegrationTest {
     }
 
     @Test
+    void importerCapacityWaitIsNotOverdueButUnsettledAdmissionStillAlerts() {
+        jdbc.update("INSERT INTO " + TABLES.plannerRuntime()
+                        + "(instance_id,started_at,heartbeat_at) VALUES (?,?,?)",
+                "importer:healthy", ts(NOW), ts(NOW));
+        long capacity = run("capacity", "capacity", "PENDING");
+        jdbc.update("UPDATE " + TABLES.run() + " SET last_error='HTTP budget deferred: CAPACITY_RESERVED',"
+                + "due_at=? WHERE generation=?", ts(NOW.minusSeconds(7200)), capacity);
+        var watchdog = watchdog(false, false, payload -> { });
+        watchdog.checkImporter("2024-25");
+        assertThat(categories()).doesNotContain("DUE_WORK", "REPEATED_FAILURE");
+        jdbc.update("UPDATE " + TABLES.run() + " SET updated_at=? WHERE generation=?",
+                ts(NOW.minusSeconds(10800)), capacity);
+        watchdog.checkImporter("2024-25");
+        assertThat(eventCount("due-work:" + capacity, "INCIDENT")).isOne();
+        jdbc.update("UPDATE " + TABLES.run() + " SET updated_at=? WHERE generation=?", ts(NOW), capacity);
+        watchdog.checkImporter("2024-25");
+        assertThat(eventCount("due-work:" + capacity, "RECOVERY")).isOne();
+        jdbc.update("UPDATE " + TABLES.run() + " SET last_error='HTTP budget deferred: UNSETTLED'"
+                + " WHERE generation=?", capacity);
+        watchdog.checkImporter("2024-25");
+        assertThat(categories()).contains("IMPORTER_ADMISSION_UNRESOLVED");
+    }
+
+    @Test
     void pendingRunAlertsOnActualConsecutiveFetchFailuresButNotHealthyDeferrals() {
         jdbc.update("INSERT INTO " + TABLES.plannerRuntime()
                         + "(instance_id,started_at,heartbeat_at) VALUES (?,?,?)",
