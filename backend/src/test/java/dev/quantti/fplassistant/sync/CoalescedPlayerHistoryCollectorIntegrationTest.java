@@ -3027,6 +3027,58 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
     }
 
     @Test
+    void appearanceRestartKeepsOtherEventsLiveFailureAndClearsCapacitySilencing() throws Exception {
+        assertAppearanceRestartCapacityAndFailure(true);
+    }
+
+    @Test
+    void appearanceRestartWithoutSourceFailureKeepsCapacityWaitNonPaging() throws Exception {
+        assertAppearanceRestartCapacityAndFailure(false);
+    }
+
+    private void assertAppearanceRestartCapacityAndFailure(boolean liveFailure) throws Exception {
+        SingleFixtureCapture capture = sameFixtureCapture();
+        byte[] source = appendUncheckedFixtureParticipant(capture.fixtures(), fixtures, 38, 600);
+        fetch.setSources(capture.bootstrap(), source, capture.live(),
+                liveForFixturePlayers(eventFourLive, 38, Set.of(600)));
+        capture.historyPages().forEach(fetch::setPlayerPage);
+        var collector = compatibilityCollector(true);
+        fetch.blockedPurpose = OwnedSyncRequestBudget.Purpose.DISCOVERY;
+        var capacityWait = collector.runCycle();
+        assertThat(capacityWait.state()).isEqualTo(State.RETRY_SCHEDULED);
+        assertThat(capacityReceipts()).isOne();
+        clock.set(capacityWait.nextDue());
+        fetch.blockedPurpose = null;
+        fetch.deferOnPlayerCall(2, clock.instant().plus(Duration.ofHours(8)));
+        var partial = collector.runCycle();
+        assertThat(partial.state()).isEqualTo(State.RETRY_SCHEDULED);
+        assertThat(partial.committedPlayerIds()).containsExactly(82);
+        assertThat(partial.failedPlayerIds()).isEmpty();
+        assertThat(capacityReceipts()).isOne();
+        long previous = ((Number) pageWatermark(82).get("latest_generation")).longValue();
+
+        fetch.clearCalls();
+        fetch.clearPageOutcomes();
+        fetch.setSources(capture.bootstrap(), source, sameFixtureLive(80), liveFailure
+                ? "{invalid event-live".getBytes(java.nio.charset.StandardCharsets.UTF_8)
+                : liveForFixturePlayers(eventFourLive, 38, Set.of(600)));
+        clock.set(partial.nextDue().plusSeconds(1));
+        var restarted = collector.runCycle();
+        assertThat(restarted.state()).isEqualTo(State.RETRY_SCHEDULED);
+        assertThat(fetch.playerIds()).as("appearance correction still fences old pages").isEmpty();
+        assertThat(jdbc.queryForObject("SELECT state FROM " + TABLES.run()
+                + " WHERE generation=?", String.class, previous)).isEqualTo("SUPERSEDED");
+        String error = jdbc.queryForObject("SELECT last_error FROM " + TABLES.run()
+                + " WHERE state='PENDING' ORDER BY generation DESC LIMIT 1", String.class);
+        if (liveFailure) assertThat(error).contains("Unresolved event-live sources: 1");
+        else assertThat(error).isNull();
+        assertThat(jdbc.queryForObject("SELECT consecutive_fetch_failures FROM " + TABLES.run()
+                + " WHERE state='PENDING' ORDER BY generation DESC LIMIT 1", Integer.class))
+                .isEqualTo(liveFailure ? 1 : 0);
+        assertThat(capacityReceipts()).isEqualTo(liveFailure ? 0 : 1);
+    }
+
+    @Test
     void changedLiveMinutesOnPartialRetryRestartsAndRevalidatesEveryPage() throws Exception {
         SingleFixtureCapture capture = sameFixtureCapture();
         int fixtureId = capture.fixture().id();
