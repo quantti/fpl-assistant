@@ -113,9 +113,10 @@ it survives executing retries and validated source supersession, including the i
 new run exists. Full completion or genuine/terminal failure clears it, while pure continuing waits
 survive partial completion/requeue. Freshness follows the latest actual wait or linked run transition;
 old-epoch, future or stalled proof is rejected. The previous pending-run/ledger checks remain for
-already-running upgrade cases. A separate review follow-up remains for an appearance-supersession
-branch that can retain proof alongside an observed live-source failure; no blanket failure-masking
-or production-readiness claim is made.
+already-running upgrade cases. The appearance-supersession mixed-failure follow-up is corrected
+locally at `4f19d84`: an observed live failure is carried to the successor with its failure count,
+and capacity proof is cleared atomically. A pure appearance correction still preserves the wait.
+This does not itself claim production rollout or email-delivery verification.
 Authenticated operator
 status exposes actual usage/cap, next attempt expiry and pending run reason/next coordinator time;
 expiry or a coordinator tick is not a promise of HTTP admission. More than two hours without

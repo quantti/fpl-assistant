@@ -1,5 +1,28 @@
 # Status — Phase 1
 
+## Importer appearance restart — retain live failures (2026-11-02; local)
+
+The owner requested fixing, pushing and merging the remaining mixed-failure advisory from PR #184.
+A real event-live failure could be collected in memory, then lost when another fixture's appearance
+revision forced an early generation restart. The prior capacity receipt survived and could keep the
+real failure non-paging. A new regression reproduced the NULL successor error before the fix.
+
+`4f19d84` passes both appearance-restart callers' failed-live list into one atomic store operation:
+validated supersession and enqueue preserve the real failure summary and accumulated failure count
+on the successor, and clear the capacity receipt. Without a real source failure, ordinary restart
+still preserves capacity waiting. Source-floor/row invalidation, finality and existing validated
+supersession identity remain unchanged. No schema, scheduler or notification-setting change.
+
+The genuine mixed-failure regression and its no-failure counterpart pass. Connected collector,
+budget/HTTP, watchdog/operations, importer-context, finality and compatibility verification passes
+**230/230 across 12 classes**, zero failures/errors/skips, at `4f19d84`. Exact selection is the same
+12-class command in `docs/superpowers/plans/2026-11-02-importer-budget-and-alerts.md`, executed with
+`FPL_TEST_ROOT=/home/vanka/dev/fpl-assistant-supersession-failure bash /tmp/fpl-focused-tests.sh`.
+Disposable `127.0.0.1:55432`, dummy AI keys, single Gradle unit, unchanged 1536 MiB/no-swap cgroup and
+host-memory guard were used. No local full suite or production writes. Sol/Astra/Luna independently
+reviewed `fde5c5b..4f19d84`: **3/3 CLEAN**, zero confirmed findings or advisories. Publication/required
+checks and the owner-authorized squash merge follow; master CI remains the deployment gate.
+
 ## KAR-79 — PR #183 master integration (2026-11-02)
 
 The owner requests fixing/squash-merging PR #183 before continuing the audit. Integration

@@ -3547,6 +3547,25 @@ public final class OwnedSyncStore {
         finishAttempt(lease, null, error, true, false, false, null);
     }
 
+    /** Carries unrelated real failures into the fresh generation required by an appearance revision. */
+    void restartIncrementalAppearance(Lease lease, CatalogueScheduleParser.Season season,
+                                     Instant dueAt, String sourceFailure) {
+        tx.executeWithoutResult(status -> {
+            LockedRun run = lockAndValidate(lease);
+            requireIncrementalRun(run);
+            int failures = jdbc.queryForObject("SELECT consecutive_fetch_failures FROM " + tables.run()
+                    + " WHERE generation=?", Integer.class, run.generation());
+            supersedeIncrementalCoreImport(lease, IncrementalSupersedeReason.APPEARANCE_EVIDENCE_ADVANCED);
+            Run next = enqueueIncrementalCoreImport(season, dueAt);
+            if (sourceFailure != null) {
+                clearIncrementalCapacityWait(run);
+                jdbc.update("UPDATE " + tables.run() + " SET last_error=?,consecutive_fetch_failures=?"
+                                + " WHERE generation=? AND state='PENDING'",
+                        boundedNullable(sourceFailure, MAX_ERROR_CHARS), failures + 1, next.generation());
+            }
+        });
+    }
+
     /** Ends an incremental producer run after a validated source or appearance revision supersedes it. */
     void supersedeIncrementalCoreImport(Lease lease) {
         supersedeIncrementalCoreImport(lease, IncrementalSupersedeReason.VALIDATED_CANONICAL_SOURCE_PAIR);
