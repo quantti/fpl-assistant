@@ -1,5 +1,56 @@
 # Status — Phase 1
 
+## KAR-79 — PR #183 master integration (2026-11-02)
+
+The owner requests fixing/squash-merging PR #183 before continuing the audit. Integration
+`9774909` brings in master `baf513c`; the STATUS-only conflict preserves both histories.
+The three test-file changes remain scoped, including all seven new master collector regressions.
+Targeted disposable-DB verification passes **36/36**, zero failures/errors/skips, under unchanged
+1536 MiB/no-swap limits and the host-memory guard. No runtime edit, dropped guarantee or local
+full suite. [Exact selectors and receipt](diagnostics/2026-10-25-kar79-handoff.md#owner-authorized-integration-and-merge-2026-11-02).
+Fresh review/checks and the authorized PR merge follow; KAR-79 remains open for later batches.
+
+## KAR-79 — discovery counter correction (2026-10-25; local)
+
+The next bounded [audit and correction](diagnostics/2026-10-25-kar79-discovery-counter-audit.md)
+retains the 501-candidate batch boundary and incident retry tests. The old observer counted
+prepared SQL comments, not executions. The recorder now counts discovery receipt write attempts
+from bound keys and actual JDBC execution; total counters/delay/failure injection stay intact.
+A new markerless self-check failed first (expected 2, got 0); all six focused tests then passed,
+including real rollback/latency and known-zero-minute retry evidence. No production code, SQL,
+fixture size or old assertion changed. The integrated run at `b31d9db` passed **29/29**, no
+failures/errors/skips: all fourteen recorder consumers plus both touched startup classes.
+The [handoff](diagnostics/2026-10-25-kar79-handoff.md) records exact selectors/environment and
+remaining limits. PR publication and strict review remain separate; the owner merges and
+KAR-79 is not complete as a whole.
+
+## KAR-79 — default-OFF startup follow-up (2026-10-25; local)
+
+The bounded [S2 audit](diagnostics/2026-10-25-kar79-default-off-audit.md) retains both OFF
+contexts: no-datasource module wiring and wider monitoring/controller wiring are different
+inputs. Seven candidate decisions justify no whole-test deletion. The lean JDBC mock is unused
+as an oracle, and the wider OFF `SAFE_CYCLES` check has no registered counter producer. Its SQL
+checks also inspect custom tables without binding those tables into that OFF context, limiting
+the independent no-write claim. Bean-absence checks remain useful; no production defect is
+inferred. The owner approved narrow cleanup: remove the unused mock and disconnected OFF
+counter assertion, retain both contexts/all absence checks and narrow method names. Both cases
+pass before/after (2/2 each) on disposable 127.0.0.1:55432 with dummy keys and the guarded
+1536 MiB/no-swap scope. The unchanged SQL snapshots now explicitly disclaim observing default
+writers. No runtime change or full suite; final PR publication/review remains separate.
+
+## KAR-79 — collector smoke audit resumed (2026-10-25; local)
+
+The next bounded [audit](diagnostics/2026-10-25-kar79-collector-smoke-audit.md) found no
+justified test deletion or roster reduction. The owner approved only method-local connection
+pooling for the full-roster smoke. All 660 players, 21 assertion statements, two cycles, triggers
+and SQL instrumentation remain; no runtime/shared-helper/class-wide fixture changed.
+The same method passes before/after, **1/1 each**, at **15.415s → 8.074s** in one local pair.
+SQL/request/physical-write counts match and the pool closes. Tests used native Ubuntu Docker,
+disposable loopback 55432, dummy provider keys, the 1536 MiB/no-swap scope and host-memory guard;
+Docker Desktop was not used. Exact command and source hashes are in the audit receipt.
+This is not a full-suite/hosted saving or real parallel-worker guarantee. No full suite,
+independent panel, remote publication or production operation occurred; KAR-79 remains open.
+
 ## Importer request budget and non-paging waits (2026-11-02; PR #184)
 
 Read-only Kuma/DB/Fly investigation traced hourly importer DOWN/UP mail to the 6,000-request
@@ -48,6 +99,7 @@ re-reviewed. No local full suite, production change or mail delivery test was pe
 merge/rollout and 24-hour observation remain pending; an already DOWN monitor may send one UP
 notification on deployment.
 [Plan, exact test command and limits](superpowers/plans/2026-11-02-importer-budget-and-alerts.md).
+
 ## Test audit — research, bounded changes and publication (2026-10-19)
 
 The [research/method](superpowers/plans/2026-10-18-behavior-first-test-audit.md) and

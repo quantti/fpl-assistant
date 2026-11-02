@@ -1,6 +1,6 @@
 # Behavior-first test audit: research, method and delivery
 
-**PROGRESS:** Five bounded audits and approved changes complete; integrated 20/20 passes; publication/review handoff and remaining scope are tracked in KAR-79.
+**PROGRESS:** PR #180's five changes published; next three bounded KAR-79 slices locally complete and integrated 29/29 passes; PR publication/strict review pending, owner merges.
 
 ## Approved outcomes
 
@@ -59,6 +59,41 @@ The goal is less execution/maintenance cost for useful confidence, not a target 
 Remaining work is tracked in [KAR-79](https://linear.app/quantti/issue/KAR-79/continue-the-backend-test-audit-in-bounded-batches),
 which stays open after this publication. It names one next unit and links the actual PR/review
 handoff; neither this source inventory nor the PR completes the rest of the audit.
+
+## Continuation: collector smoke (2026-10-25)
+
+The [next bounded audit](../../diagnostics/2026-10-25-kar79-collector-smoke-audit.md),
+against fetched master `f0a04c4`, retains the full-roster collector smoke and all its assertions.
+Eight candidate decisions recommended only method-local JDBC connection reuse: 660
+page-publication transactions used a non-pooled datasource. The owner approved this change.
+The same test passes before and after (1/1 each; 15.415s → 8.074s), retaining all 21 assertions,
+660 players, triggers, SQL instrumentation and the idle cycle. The pool closes automatically;
+no shared helper, runtime or class-wide fixture changed. This is one local comparison pair,
+not a whole-suite/hosted saving. No remote publication; the rest of KAR-79 stays outside this pass.
+
+## Continuation: default-OFF contexts / S2 (2026-10-25)
+
+The [bounded S2 follow-up](../../diagnostics/2026-10-25-kar79-default-off-audit.md), against
+`5491352`, retains both startup contexts: the lean no-datasource input and the wider monitoring/
+controller selection are not equivalent. Seven decisions find no justified whole-test deletion.
+The owner approved removing the unused lean JDBC mock and the wider OFF method's unconnected
+`SAFE_CYCLES` assertion. Both method names now describe their connected bean/startup claims;
+custom-table SQL snapshots remain explicitly limited, not routed proof of default-factory
+no-writes. The two methods pass before/after (2/2 each); all absence checks and the no-datasource
+input remain. Unrelated enabled/handoff/timer cases stay unchanged. Receipt and exact selectors
+are in the follow-up report; final PR review remains separate.
+
+## Continuation: discovery execution counter (2026-10-25)
+
+The [next bounded audit/correction](../../diagnostics/2026-10-25-kar79-discovery-counter-audit.md),
+against `bb8c895`, replaces SQL-comment/preparation counting with actual discovery receipt write
+attempts classified from bound publication keys. The 501-player boundary and real-incident retry
+assertions remain unchanged. A markerless real-JDBC self-check failed first (expected 2, got 0);
+all six focused counter/batch/rollback/incident cases then passed with dummy keys and guarded
+loopback DB. No runtime SQL, source fixtures or old assertions changed. All fourteen recorder
+consumers and both startup classes passed the integrated check (29/29, no failures/errors/skips)
+at `b31d9db`; see the [delivery handoff](../../diagnostics/2026-10-25-kar79-handoff.md).
+No later test family is silently included; PR publication/review and owner merge remain separate.
 
 ## Recent discussion and evidence
 
