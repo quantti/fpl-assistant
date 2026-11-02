@@ -11,10 +11,14 @@ export interface ResetPasswordProps {
   initializationFailed: boolean;
 }
 
-export default function ResetPassword({
-  session,
-  initializationFailed,
-}: Readonly<ResetPasswordProps>) {
+export default function ResetPassword(props: Readonly<ResetPasswordProps>) {
+  const [accountId, setAccountId] = useState(props.session?.user.id);
+  // Keep success after local sign-out, but discard every old-account action on account switch.
+  if (props.session && props.session.user.id !== accountId) setAccountId(props.session.user.id);
+  return <RecoveryFlow key={accountId} {...props} />;
+}
+
+function RecoveryFlow({ session, initializationFailed }: Readonly<ResetPasswordProps>) {
   const [requesting, setRequesting] = useState(false);
   const [expired, setExpired] = useState(false);
   const [updated, setUpdated] = useState(false);
