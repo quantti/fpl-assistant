@@ -295,7 +295,21 @@ public final class OwnedSyncRequestBudget {
         MINIMUM_SPACING, LIVE_PERMITS, ATTEMPT_LIMIT, CAPACITY_RESERVED, COOLDOWN, UNSETTLED,
         DB_OPERATIONS_SATURATED, DB_OPERATIONS_CLOSED, DB_DEADLINE_EXPIRED,
         DB_INTERRUPTED, DB_ADMISSION_UNCERTAIN, NO_FETCH_UNCERTAIN, HTTP_CLIENT_CLOSED, HTTP_NOT_SUBMITTED,
-        HTTP_WORKERS_SATURATED, HTTP_TURN_QUEUE_FULL, HTTP_EXCHANGE_UNCERTAIN, SETTLEMENT_UNCERTAIN
+        HTTP_WORKERS_SATURATED, HTTP_TURN_QUEUE_FULL, HTTP_EXCHANGE_UNCERTAIN, SETTLEMENT_UNCERTAIN;
+
+        String durableMessage() { return "HTTP budget deferred: " + name(); }
+
+        boolean expectedWait() {
+            return this == ATTEMPT_LIMIT || this == CAPACITY_RESERVED || this == COOLDOWN
+                    || this == MINIMUM_SPACING || this == LIVE_PERMITS;
+        }
+
+        static DeferredReason fromDurableMessage(String message) {
+            for (var reason : values()) {
+                if (reason.durableMessage().equals(message)) return reason;
+            }
+            return null;
+        }
     }
 
     public record Permit(UUID id, Instant admittedAt, Instant expiresAt) {

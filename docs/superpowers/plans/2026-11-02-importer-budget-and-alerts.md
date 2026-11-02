@@ -1,6 +1,6 @@
 # Incremental importer: bounded collection and non-paging budget waits
 
-**PROGRESS:** Tasks 1–3/6 done locally: provisional collection and priority admission verified; monitoring and final closeout pending. No production or Kuma change made.
+**PROGRESS:** Tasks 1–4/6 done locally: collection, priority admission and non-paging capacity waits verified. Integrated verification/review and rollout pending. No production or Kuma change made.
 
 ## Goal and owner request
 
@@ -338,6 +338,20 @@ failure count. Selected pages are now labelled selected, not falsely reported as
 Connected command: `bash /tmp/fpl-focused-tests.sh --tests '*ImporterBudgetTimelineTest'
 --tests '*OwnedSyncRequestBudgetIntegrationTest' --tests '*OwnedSyncHttpClientIntegrationTest'
 --tests '*CoalescedPlayerHistoryCollectorIntegrationTest'` passed with the same isolated guards.
+
+Task 4: health and due-work regressions failed first against the old policy. Importer external
+health now excludes only the explicit budget category (including old open occurrences), retaining
+real incident and stale-heartbeat failures. Exact enum-based persisted deferral reasons prevent
+capacity retries becoming fetch failures or overdue work. More than two hours without coordinator
+progress still alerts, even if the last reason was capacity; unresolved transport admission alerts
+separately. Capacity resumes can recover a previous due-work incident without inventing data finality.
+Operator-only status adds actual rolling usage/cap, next attempt expiry and pending coordinator
+retry/reason; expiry is deliberately not mislabelled guaranteed admission. It does not expose a
+precise per-purpose next-admission instant or full outstanding population. These remain internal
+collector planning facts, avoiding new durable diagnostic schema. The alternate webhook transport
+is unchanged; this non-paging contract is for the selected external Kuma route.
+`bash /tmp/fpl-focused-tests.sh --tests '*SyncOperations*Test'
+--tests '*OwnedSyncWatchdogIntegrationTest'` passes with the same guards.
 
 ## Explicit limits
 

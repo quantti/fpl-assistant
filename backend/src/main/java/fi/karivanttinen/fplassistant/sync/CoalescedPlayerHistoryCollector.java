@@ -904,7 +904,7 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
     }
 
     private static String deferralMessage(DeferredReason reason) {
-        return "HTTP budget deferred: " + reason;
+        return reason.durableMessage();
     }
 
     private RequestResult request(Lease lease, Endpoint endpoint, Instant floor) {

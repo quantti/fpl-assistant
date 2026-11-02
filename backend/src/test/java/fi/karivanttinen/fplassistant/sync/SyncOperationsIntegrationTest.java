@@ -185,6 +185,58 @@ class SyncOperationsIntegrationTest {
     }
 
     @Test
+    void importerStatusDisclosesActualBudgetAndNextCoordinatorWithoutClaimingAdmission() {
+        jdbc.update("DELETE FROM " + TABLES.requestAttempt());
+        jdbc.update("INSERT INTO " + TABLES.requestAttempt()
+                        + "(permit_id,admitted_at,permit_expires_at,completed_at) VALUES (?::uuid,?,?,?)",
+                java.util.UUID.randomUUID().toString(), Timestamp.from(NOW.minusSeconds(10)),
+                Timestamp.from(NOW.plusSeconds(110)), Timestamp.from(NOW.minusSeconds(9)));
+        long run = failedRun(7, "ACTIVE");
+        jdbc.update("UPDATE " + TABLES.run() + " SET kind='PLAYER_HISTORY',producer_key='INCREMENTAL_CORE',"
+                + "state='PENDING',failed_at=NULL,last_error='HTTP budget deferred: CAPACITY_RESERVED' WHERE generation=?", run);
+        var importer = new SyncOperations(jdbc, tx, Clock.fixed(NOW, ZoneOffset.UTC), TABLES,
+                OwnedSyncMode.ACTIVE, false, false, true, true, null, false, 6000);
+        var status = importer.status();
+        assertThat(status.budget().attemptsLast24Hours()).isOne();
+        assertThat(status.budget().limit()).isEqualTo(6000);
+        assertThat(status.budget().nextAttemptExpiresAt()).isEqualTo(NOW.minusSeconds(10).plusSeconds(86400));
+        assertThat(status.pendingRuns()).singleElement().satisfies(pending -> {
+            assertThat(pending.generation()).isEqualTo(run);
+            assertThat(pending.reason()).isEqualTo("HTTP budget deferred: CAPACITY_RESERVED");
+            assertThat(pending.nextCoordinatorAt()).isEqualTo(NOW.minusSeconds(60));
+        });
+        jdbc.update("DELETE FROM " + TABLES.requestAttempt());
+    }
+
+    @Test
+    void importerCapacityIncidentNeverPagesButRealFailureAndStaleHeartbeatStillDo() {
+        SyncOperations importer = new SyncOperations(jdbc, tx, Clock.fixed(NOW, ZoneOffset.UTC),
+                TABLES, OwnedSyncMode.ACTIVE, false, false, true, true);
+        jdbc.update("INSERT INTO " + TABLES.plannerRuntime()
+                        + "(instance_id,started_at,heartbeat_at) VALUES (?,?,?),(?,?,?)",
+                "importer:current", Timestamp.from(NOW), Timestamp.from(NOW),
+                "watchdog:2026-27", Timestamp.from(NOW), Timestamp.from(NOW));
+        jdbc.update("INSERT INTO " + TABLES.alert()
+                        + "(incident_key,occurrence,event_type,category,severity,payload,delivery_state,created_at) "
+                        + "VALUES ('budget:2026-27',1,'INCIDENT','REQUEST_BUDGET_BLOCKED','CRITICAL','{}','EXTERNAL',?)",
+                Timestamp.from(NOW));
+        assertThat(importer.healthy()).isTrue();
+        jdbc.update("INSERT INTO " + TABLES.alert()
+                        + "(incident_key,occurrence,event_type,category,severity,payload,delivery_state,created_at) "
+                        + "VALUES ('broken',1,'INCIDENT','REPEATED_FAILURE','CRITICAL','{}','EXTERNAL',?)",
+                Timestamp.from(NOW));
+        assertThat(importer.healthy()).isFalse();
+        jdbc.update("INSERT INTO " + TABLES.alert()
+                        + "(incident_key,occurrence,event_type,category,severity,payload,delivery_state,created_at) "
+                        + "VALUES ('broken',1,'RECOVERY','REPEATED_FAILURE','INFO','{}','EXTERNAL',?)",
+                Timestamp.from(NOW));
+        assertThat(importer.healthy()).isTrue();
+        jdbc.update("UPDATE " + TABLES.plannerRuntime() + " SET heartbeat_at=? WHERE instance_id LIKE 'importer:%'",
+                Timestamp.from(NOW.minusSeconds(601)));
+        assertThat(importer.healthy()).isFalse();
+    }
+
+    @Test
     void externalMonitorHealthTracksIncidentsAndTheirExactRecoveryWithoutClaimingDelivery() {
         SyncOperations external = new SyncOperations(jdbc, tx, Clock.fixed(NOW, ZoneOffset.UTC),
                 TABLES, OwnedSyncMode.STAGING, true, false, true);
