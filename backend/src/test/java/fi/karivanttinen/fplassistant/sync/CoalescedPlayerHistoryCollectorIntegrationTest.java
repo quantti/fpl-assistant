@@ -664,6 +664,23 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
     }
 
     @Test
+    void refusedLiveEventDoesNotStarvePostMatchPagesFromAnotherEvent() throws Exception {
+        ActiveFixture active = makeFixtureInProgress(markGameweekFinished(fixtures, 4), 4);
+        int finishedFixture = fixture(active.body(), 3, true).id();
+        byte[] source = emptyFixtureStats(makeFixtureInProgress(
+                onlyFixturesFinished(fixtures, finishedFixture, active.id()), 4).body());
+        int player = firstPlayerForFixture(bootstrap, source, finishedFixture);
+        byte[] unchecked = markGameweekUnchecked(markGameweekUnchecked(markGameweekUnchecked(bootstrap, 1), 2), 3);
+        fetch.setSources(bootstrapOnlyPlayer(unchecked, player), source, eventThreeLive, eventFourLive);
+        fetch.blockedPurpose = OwnedSyncRequestBudget.Purpose.LIVE;
+        var result = collector(true).runCycle();
+        assertThat(result.state()).isEqualTo(State.RETRY_SCHEDULED);
+        assertThat(result.committedPlayerIds()).contains(player);
+        assertThat(fetch.demands).extracting(OwnedSyncRequestBudget.Demand::purpose)
+                .contains(OwnedSyncRequestBudget.Purpose.LIVE, OwnedSyncRequestBudget.Purpose.POST_MATCH);
+    }
+
+    @Test
     void capacityWaitKeepsHourlyDiscoveryAndDoesNotBecomeRepeatedFetchFailure() throws Exception {
         int fixtureId = fixtureExplainedFor(eventFourLive, 658);
         byte[] source = emptyFixtureStats(onlyCollectorFixtureFinished(fixtures, fixtureId));
