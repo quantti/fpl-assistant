@@ -273,10 +273,12 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
         finalPendingEvents.addAll(reopenedFinalizedEvents);
 
         List<FixtureRow> active = snapshot.fixtures().stream()
-                .filter(fixture -> !fixture.finished() && (fixture.started()
+                .filter(fixture -> GameweekFinality.fixtureProgress(fixture) == GameweekFinality.FixtureProgress.OPEN
+                        && (fixture.started()
                         || fixture.kickoff() != null && !fixture.kickoff().isAfter(clock.instant())))
                 .toList();
-        List<FixtureRow> finished = snapshot.fixtures().stream().filter(FixtureRow::finished)
+        List<FixtureRow> finished = snapshot.fixtures().stream()
+                .filter(fixture -> GameweekFinality.fixtureProgress(fixture) != GameweekFinality.FixtureProgress.OPEN)
                 .filter(fixture -> {
                     OwnedSyncStore.IncrementalEvent event = fixture.gameweek() == null ? null
                             : discovery.events().get(fixture.gameweek());
@@ -369,9 +371,9 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
         }
 
         for (FixtureRow fixture : finished) {
-            Instant observed = discovery.finishedObservationTimes().get(fixture.id());
+            Instant observed = discovery.postMatchObservationTimes().get(fixture.id());
             if (observed == null) {
-                return fail(lease, "Finished fixture has no durable first-observed source marker",
+                return fail(lease, "Post-match fixture has no durable first-observed source marker",
                         requestedPlayers, committedPlayers, failedPlayers, finalPendingEvents, null);
             }
             Instant floor = later(fixtureFloors.get(fixture.id()), observed.plusMillis(1));
@@ -400,7 +402,8 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
         for (FixtureRow fixture : targets) {
             if (fixture.gameweek() == null) continue;
             Instant floor = fixtureFloors.get(fixture.id());
-            boolean always = !fixture.finished() || finalPendingEvents.contains(fixture.gameweek());
+            boolean always = GameweekFinality.fixtureProgress(fixture) == GameweekFinality.FixtureProgress.OPEN
+                    || finalPendingEvents.contains(fixture.gameweek());
             Set<Integer> participantIds = new LinkedHashSet<>(sourceParticipants.getOrDefault(fixture.id(), Set.of()));
             participantIds.addAll(durableParticipants.getOrDefault(fixture.id(), Set.of()));
             boolean missingParticipantPages = participantIds.stream().anyMatch(player ->
@@ -553,7 +556,7 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
         for (FixtureRow fixture : targets) {
             Instant floor = fixtureFloors.get(fixture.id());
             int priority = priorities.get(fixture.id());
-            boolean activeFixture = !fixture.finished();
+            boolean activeFixture = GameweekFinality.fixtureProgress(fixture) == GameweekFinality.FixtureProgress.OPEN;
             for (int playerId : candidates.get(fixture.id())) {
                 PageReceipt receipt = pageReceipts.get(playerId);
                 boolean required = activeFixture

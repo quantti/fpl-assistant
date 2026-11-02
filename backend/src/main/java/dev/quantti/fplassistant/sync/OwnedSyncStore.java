@@ -53,6 +53,7 @@ public final class OwnedSyncStore {
     static final String INCREMENTAL_CORE_KEY = "incremental-core-import";
     static final String INCREMENTAL_COMPATIBILITY_PUBLICATION_KEY = "incremental-compatibility-catalogue";
     static final String FINISHED_FIXTURE_RECEIPT_PREFIX = "incremental-finished-fixture:";
+    private static final String PROVISIONAL_FIXTURE_RECEIPT_PREFIX = "incremental-provisional-fixture:";
     static final String INCREMENTAL_LIVE_EVENT_RECEIPT_PREFIX = "incremental-live-event:";
     static final String INCREMENTAL_PARTICIPANT_RECEIPT_PREFIX = "incremental-participant:fixture:";
     static final String INCREMENTAL_DISCOVERY_RECEIPT_PREFIX = "incremental-discovery:fixture:";
@@ -931,10 +932,11 @@ public final class OwnedSyncStore {
             }
 
             List<CatalogueScheduleParser.FixtureRow> finished = snapshot.fixtures().stream()
-                    .filter(CatalogueScheduleParser.FixtureRow::finished).toList();
+                    .filter(fixture -> GameweekFinality.fixtureProgress(fixture)
+                            != GameweekFinality.FixtureProgress.OPEN).toList();
             Instant recordedAt = now();
             for (CatalogueScheduleParser.FixtureRow fixture : finished) {
-                String key = finishedFixtureReceiptKey(fixture.id());
+                String key = postMatchReceiptKey(fixture);
                 jdbc.update("""
                         INSERT INTO %s(season, publication_key, latest_generation,
                             source_read_started_at, source_read_finished_at, source_pair_fingerprint, published_at)
@@ -954,9 +956,13 @@ public final class OwnedSyncStore {
             }
             List<CatalogueScheduleParser.FixtureRow> notFinished = snapshot.fixtures().stream()
                     .filter(fixture -> !fixture.finished()).toList();
-            deleteFinishedMarkers(run.season, notFinished);
-            Map<Integer, Instant> finishedFloors = readFinishedMarkers(run.season, finished);
-            return new IncrementalDiscovery(events, finishedFloors);
+            deletePostMatchMarkers(run.season, notFinished, FINISHED_FIXTURE_RECEIPT_PREFIX);
+            deletePostMatchMarkers(run.season, snapshot.fixtures().stream()
+                    .filter(fixture -> GameweekFinality.fixtureProgress(fixture)
+                            != GameweekFinality.FixtureProgress.PROVISIONAL).toList(),
+                    PROVISIONAL_FIXTURE_RECEIPT_PREFIX);
+            Map<Integer, Instant> postMatchFloors = readPostMatchMarkers(run.season, finished);
+            return new IncrementalDiscovery(events, postMatchFloors);
         });
     }
 
@@ -1056,29 +1062,35 @@ public final class OwnedSyncStore {
         return sha256(FixtureVerification.verifiedHeader(fixture) + "|" + FixtureStatsFingerprint.of(fixture));
     }
 
-    private void deleteFinishedMarkers(String season, List<CatalogueScheduleParser.FixtureRow> fixtures) {
+    private void deletePostMatchMarkers(String season, List<CatalogueScheduleParser.FixtureRow> fixtures,
+                                        String prefix) {
         if (fixtures.isEmpty()) return;
         String placeholders = String.join(",", java.util.Collections.nCopies(fixtures.size(), "?"));
         List<Object> parameters = new ArrayList<>(fixtures.size() + 1);
         parameters.add(season);
-        fixtures.stream().map(fixture -> finishedFixtureReceiptKey(fixture.id())).forEach(parameters::add);
+        fixtures.stream().map(fixture -> prefix + fixture.id()).forEach(parameters::add);
         jdbc.update("DELETE FROM %s WHERE season=? AND publication_key IN (%s)"
                 .formatted(tables.receipt(), placeholders), parameters.toArray());
     }
 
-    private Map<Integer, Instant> readFinishedMarkers(String season,
+    private static String postMatchReceiptKey(CatalogueScheduleParser.FixtureRow fixture) {
+        return fixture.finished() ? finishedFixtureReceiptKey(fixture.id())
+                : PROVISIONAL_FIXTURE_RECEIPT_PREFIX + fixture.id();
+    }
+
+    private Map<Integer, Instant> readPostMatchMarkers(String season,
             List<CatalogueScheduleParser.FixtureRow> fixtures) {
         if (fixtures.isEmpty()) return Map.of();
         String placeholders = String.join(",", java.util.Collections.nCopies(fixtures.size(), "?"));
         List<Object> parameters = new ArrayList<>(fixtures.size() + 1);
         parameters.add(season);
-        fixtures.stream().map(fixture -> finishedFixtureReceiptKey(fixture.id())).forEach(parameters::add);
+        fixtures.stream().map(OwnedSyncStore::postMatchReceiptKey).forEach(parameters::add);
         Map<Integer, Instant> result = new LinkedHashMap<>();
         jdbc.query("SELECT publication_key, source_read_finished_at FROM %s WHERE season=? "
                 .formatted(tables.receipt()) + "AND publication_key IN (" + placeholders + ")",
                 rs -> {
-                    result.put(Integer.parseInt(rs.getString("publication_key")
-                            .substring(FINISHED_FIXTURE_RECEIPT_PREFIX.length())),
+                    String key = rs.getString("publication_key");
+                    result.put(Integer.parseInt(key.substring(key.lastIndexOf(':') + 1)),
                             instant(rs, "source_read_finished_at"));
                 }, parameters.toArray());
         return Map.copyOf(result);
@@ -4365,10 +4377,10 @@ public final class OwnedSyncStore {
     }
 
     record IncrementalDiscovery(Map<Integer, IncrementalEvent> events,
-                                Map<Integer, Instant> finishedObservationTimes) {
+                                Map<Integer, Instant> postMatchObservationTimes) {
         IncrementalDiscovery {
             events = Map.copyOf(events);
-            finishedObservationTimes = Map.copyOf(finishedObservationTimes);
+            postMatchObservationTimes = Map.copyOf(postMatchObservationTimes);
         }
     }
 

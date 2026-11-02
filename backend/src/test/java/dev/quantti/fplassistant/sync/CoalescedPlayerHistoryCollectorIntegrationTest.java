@@ -664,6 +664,55 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
     }
 
     @Test
+    void provisionalFinishStopsHourlyRefetchButCorrectionAndRealFinishRefresh() throws Exception {
+        int fixtureId = fixtureExplainedFor(eventFourLive, 658);
+        byte[] finished = emptyFixtureStats(onlyCollectorFixtureFinished(fixtures, fixtureId));
+        var provisional = JSON.readTree(finished);
+        for (var row : provisional) {
+            if (row.path("id").asInt() == fixtureId) {
+                ((ObjectNode) row).put("finished", false).put("finished_provisional", true);
+            }
+        }
+        int player = firstPlayerForFixture(bootstrap, finished, fixtureId);
+        byte[] catalogue = bootstrapOnlyPlayer(bootstrap, player);
+        byte[] source = JSON.writeValueAsBytes(provisional);
+        fetch.setSources(catalogue, source, eventThreeLive, liveOnlyPlayer(eventFourLive, 658));
+        var first = collector(true).runCycle();
+        assertThat(first.state()).isEqualTo(State.COMPLETED);
+        assertThat(first.selectedPlayerIds()).containsExactly(player);
+
+        for (int hour = 0; hour < 3; hour++) {
+            clock.advance(Duration.ofHours(1));
+            fetch.clearCalls();
+            var idle = collector(true).runCycle();
+            assertThat(idle.state()).isEqualTo(State.COMPLETED);
+            assertThat(fetch.count(EndpointKind.ELEMENT_SUMMARY)).isZero();
+            assertThat(fetch.count(EndpointKind.EVENT_LIVE)).isZero();
+        }
+        assertThat(jdbc.queryForObject("SELECT state FROM " + TABLES.gameweekStatSync()
+                + " WHERE season_id=? AND gameweek=4", String.class, SEASON_ID)).isEqualTo("OPEN");
+
+        for (var row : provisional) {
+            if (row.path("id").asInt() == fixtureId) ((ObjectNode) row).put("finished_provisional", false);
+        }
+        fetch.setSources(catalogue, JSON.writeValueAsBytes(provisional), eventThreeLive,
+                liveOnlyPlayer(eventFourLive, 658));
+        for (int hour = 0; hour < 2; hour++) {
+            clock.advance(Duration.ofHours(1));
+            assertThat(collector(true).runCycle().selectedPlayerIds()).containsExactly(player);
+        }
+        fetch.setSources(catalogue, source, eventThreeLive, liveOnlyPlayer(eventFourLive, 658));
+        assertThat(collector(true).runCycle().selectedPlayerIds()).containsExactly(player);
+        assertThat(collector(true).runCycle().selectedPlayerIds()).isEmpty();
+
+        fetch.setSources(catalogue, changeFixtureScore(source, fixtureId, 3), eventThreeLive,
+                liveOnlyPlayer(eventFourLive, 658));
+        assertThat(collector(true).runCycle().selectedPlayerIds()).containsExactly(player);
+        fetch.setSources(catalogue, finished, eventThreeLive, liveOnlyPlayer(eventFourLive, 658));
+        assertThat(collector(true).runCycle().selectedPlayerIds()).containsExactly(player);
+    }
+
+    @Test
     void uncheckedFixtureHeaderCorrectionRefreshesOnlyItsPlayerPages() throws Exception {
         int affectedFixture = 31;
         int unaffectedFixture = 32;
