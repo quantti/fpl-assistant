@@ -57,7 +57,8 @@ class ImporterRequestLimitsTest {
         when(jdbc.queryForObject(contains("WHERE admitted_at > ?"), eq(Long.class), any(Timestamp.class)))
                 .thenReturn(5_000L, 5_000L, 6_000L);
         var clock = Clock.fixed(Instant.parse("2026-10-17T14:00:00Z"), java.time.ZoneOffset.UTC);
-        when(jdbc.queryForObject(contains("min(admitted_at)"), eq(Timestamp.class), any(Timestamp.class)))
+        when(jdbc.queryForObject(contains("ORDER BY admitted_at OFFSET ?"), eq(Timestamp.class),
+                any(Timestamp.class), eq(0L)))
                 .thenReturn(Timestamp.from(clock.instant().minus(Duration.ofHours(1))));
         var legacy = new OwnedSyncRequestBudget(jdbc, tx, clock, OwnedSyncTables.defaults());
         var importer = new OwnedSyncRequestBudget(jdbc, tx, clock, OwnedSyncTables.defaults(),
