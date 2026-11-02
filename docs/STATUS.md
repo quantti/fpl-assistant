@@ -1,5 +1,15 @@
 # Status — Phase 1
 
+## KAR-79 — PR #183 master integration (2026-11-02)
+
+The owner requests fixing/squash-merging PR #183 before continuing the audit. Integration
+`9774909` brings in master `baf513c`; the STATUS-only conflict preserves both histories.
+The three test-file changes remain scoped, including all seven new master collector regressions.
+Targeted disposable-DB verification passes **36/36**, zero failures/errors/skips, under unchanged
+1536 MiB/no-swap limits and the host-memory guard. No runtime edit, dropped guarantee or local
+full suite. [Exact selectors and receipt](diagnostics/2026-10-25-kar79-handoff.md#owner-authorized-integration-and-merge-2026-11-02).
+Fresh review/checks and the authorized PR merge follow; KAR-79 remains open for later batches.
+
 ## KAR-79 — discovery counter correction (2026-10-25; local)
 
 The next bounded [audit and correction](diagnostics/2026-10-25-kar79-discovery-counter-audit.md)
