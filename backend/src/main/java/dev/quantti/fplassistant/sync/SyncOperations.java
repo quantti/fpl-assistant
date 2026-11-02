@@ -29,6 +29,7 @@ public final class SyncOperations {
     private final boolean incrementalImporter;
     private final String handoffSeason;
     private final boolean handoffAllowed;
+    private final int requestLimit;
 
     public SyncOperations(JdbcTemplate jdbc, TransactionTemplate tx, Clock clock, OwnedSyncTables tables) {
         this(jdbc, tx, clock, tables, OwnedSyncMode.OFF);
@@ -66,6 +67,16 @@ public final class SyncOperations {
                    boolean alertDeliveryRequired, boolean alertDeliveryConfigured,
                    boolean externalMonitor, boolean incrementalImporter,
                    String handoffSeason, boolean handoffAllowed) {
+        this(jdbc, tx, clock, tables, localMode, alertDeliveryRequired, alertDeliveryConfigured,
+                externalMonitor, incrementalImporter, handoffSeason, handoffAllowed, 5_000);
+    }
+
+    SyncOperations(JdbcTemplate jdbc, TransactionTemplate tx, Clock clock,
+                   OwnedSyncTables tables, OwnedSyncMode localMode,
+                   boolean alertDeliveryRequired, boolean alertDeliveryConfigured,
+                   boolean externalMonitor, boolean incrementalImporter,
+                   String handoffSeason, boolean handoffAllowed, int requestLimit) {
+        this.requestLimit = requestLimit;
         this.externalMonitor = externalMonitor;
         this.incrementalImporter = incrementalImporter;
         this.handoffSeason = handoffSeason;
@@ -106,8 +117,18 @@ public final class SyncOperations {
                             + " WHERE delivery_state='FAILED' ORDER BY created_at DESC LIMIT 50",
                     (rs, row) -> new FailedAlertView(rs.getLong(1), rs.getString(2), rs.getString(3),
                             rs.getInt(4), rs.getString(5), instant(rs.getTimestamp(6))));
+            BudgetStatus budget = incrementalImporter ? jdbc.queryForObject(
+                    "SELECT count(*),min(admitted_at) FROM " + tables.requestAttempt() + " WHERE admitted_at>?",
+                    (rs, row) -> new BudgetStatus(rs.getLong(1), requestLimit,
+                            rs.getTimestamp(2) == null ? null : rs.getTimestamp(2).toInstant().plus(Duration.ofHours(24))),
+                    Timestamp.from(clock.instant().minus(Duration.ofHours(24)))) : null;
+            List<PendingRunView> pending = incrementalImporter ? jdbc.query("SELECT generation,due_at,last_error,"
+                            + "updated_at FROM " + tables.run() + " WHERE producer_key='INCREMENTAL_CORE' "
+                            + "AND state='PENDING' ORDER BY due_at LIMIT 50",
+                    (rs, row) -> new PendingRunView(rs.getLong(1), instant(rs.getTimestamp(2)), rs.getString(3),
+                            instant(rs.getTimestamp(4)))) : List.of();
             return new Status(clock.instant(), runtimes, runs, fixtures, alerts,
-                    failedRuns, receipts, failedAlerts);
+                    failedRuns, receipts, failedAlerts, budget, pending);
         } catch (DataAccessException unavailable) {
             throw new OperationsUnavailableException("Owned-sync metadata is unavailable", unavailable);
         }
@@ -128,7 +149,9 @@ public final class SyncOperations {
                 // Kuma delivers DOWN/recovery notifications. Never interpret a delivered webhook,
                 // an old recovery, or a disabled outbox as proof that the current incident cleared.
                 Long open = jdbc.queryForObject("SELECT count(*) FROM " + tables.alert() + " a "
-                        + "WHERE a.event_type='INCIDENT' AND NOT EXISTS (SELECT 1 FROM "
+                        + "WHERE a.event_type='INCIDENT' "
+                        + (incrementalImporter ? "AND a.category<>'" + OwnedSyncWatchdog.BUDGET_CATEGORY + "' " : "")
+                        + "AND NOT EXISTS (SELECT 1 FROM "
                         + tables.alert() + " r WHERE r.incident_key=a.incident_key "
                         + "AND r.occurrence=a.occurrence AND r.event_type='RECOVERY')", Long.class);
                 Instant cutoff = clock.instant().minus(HEALTH_LIMIT);
@@ -268,7 +291,10 @@ public final class SyncOperations {
     public record Status(Instant observedAt, List<RuntimeRow> runtimes, Map<String, Long> runs,
                          Map<String, Long> fixtures, Map<String, Long> alerts,
                          List<FailedRunView> failedRuns, List<ReceiptView> receipts,
-                         List<FailedAlertView> failedAlerts) { }
+                         List<FailedAlertView> failedAlerts, BudgetStatus budget,
+                         List<PendingRunView> pendingRuns) { }
+    public record BudgetStatus(long attemptsLast24Hours, int limit, Instant nextAttemptExpiresAt) { }
+    public record PendingRunView(long generation, Instant nextCoordinatorAt, String reason, Instant updatedAt) { }
     public record RuntimeRow(String instanceId, String mode, long epoch, Instant lastSuccessfulHeartbeat,
                              String lastError, Instant lastErrorAt) { }
     public record FailedRunView(long generation, String season, String kind, String publicationKey,

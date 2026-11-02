@@ -36,6 +36,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 /** Durable five-minute sync watchdog and separately drainable notification outbox. */
 public final class OwnedSyncWatchdog {
 
+    static final String BUDGET_CATEGORY = "REQUEST_BUDGET_BLOCKED";
     static final Duration HEARTBEAT_LIMIT = Duration.ofMinutes(10);
     static final Duration DUE_GRACE = Duration.ofMinutes(5);
     static final Duration DELIVERY_LEASE = Duration.ofSeconds(15);
@@ -87,7 +88,7 @@ public final class OwnedSyncWatchdog {
         Instant now = clock.instant();
         Map<String, Signal> current = new LinkedHashMap<>();
         inspectRuntime(season, now, current, incrementalImporter);
-        inspectRuns(season, now, current);
+        inspectRuns(season, now, current, incrementalImporter);
         if (incrementalImporter) {
             inspectImporterGameweeks(season, now, current);
         } else {
@@ -169,13 +170,27 @@ public final class OwnedSyncWatchdog {
         }
     }
 
-    private void inspectRuns(String season, Instant now, Map<String, Signal> signals) {
-        jdbc.query("SELECT generation, kind, state, due_at, lease_expires_at, attempt_count, last_error "
+    private void inspectRuns(String season, Instant now, Map<String, Signal> signals, boolean importer) {
+        if (importer) {
+            jdbc.query("SELECT generation,last_error FROM " + tables.run()
+                            + " WHERE season=? AND state='PENDING'", rs -> {
+                var reason = OwnedSyncRequestBudget.DeferredReason.fromDurableMessage(rs.getString("last_error"));
+                if (reason != null && !reason.expectedWait()) {
+                    put(signals, new Signal("admission:" + rs.getLong("generation"),
+                            "IMPORTER_ADMISSION_UNRESOLVED", "CRITICAL", season, null,
+                            Map.of("reason", reason.name(), "nextAction", "Inspect importer transport and durable admission")));
+                }
+            }, season);
+        }
+        jdbc.query("SELECT generation, kind, state, due_at, lease_expires_at, attempt_count, last_error, updated_at "
                         + "FROM " + tables.run() + " WHERE season=? AND ((state='PENDING' AND due_at<=?) "
                         + "OR (state='LEASED' AND lease_expires_at<=?))",
                 rs -> {
                     long generation = rs.getLong("generation");
                     boolean expired = "LEASED".equals(rs.getString("state"));
+                    var wait = OwnedSyncRequestBudget.DeferredReason.fromDurableMessage(rs.getString("last_error"));
+                    if (importer && !expired && wait != null && wait.expectedWait()
+                            && !rs.getTimestamp("updated_at").toInstant().isBefore(now.minus(Duration.ofHours(2)))) return;
                     Map<String, Object> details = new LinkedHashMap<>();
                     details.put("generation", generation);
                     details.put("kind", rs.getString("kind"));
@@ -187,7 +202,7 @@ public final class OwnedSyncWatchdog {
                     put(signals, new Signal((expired ? "expired-lease:" : "due-work:") + generation,
                             expired ? "EXPIRED_LEASE" : "DUE_WORK", expired ? "CRITICAL" : "WARNING",
                             season, null, details));
-                }, season, Timestamp.from(now.minus(DUE_GRACE)), Timestamp.from(now));
+                }, season, Timestamp.from(now.minus(importer ? Duration.ofMinutes(65) : DUE_GRACE)), Timestamp.from(now));
 
         jdbc.query("SELECT r.generation,r.kind,r.publication_key,r.consecutive_fetch_failures,r.last_error,"
                         + "p.source_read_finished_at,p.published_at FROM " + tables.run() + " r LEFT JOIN "
@@ -319,7 +334,7 @@ public final class OwnedSyncWatchdog {
         boolean exhausted = attempts != null && attempts >= requestLimits.maxAttempts();
         boolean blocked = due != null && due > 0 && cooldown != null && cooldown.toInstant().isAfter(now);
         if (exhausted || blocked) {
-            put(signals, new Signal("budget:" + season, "REQUEST_BUDGET_BLOCKED",
+            put(signals, new Signal("budget:" + season, BUDGET_CATEGORY,
                     exhausted ? "CRITICAL" : "WARNING", season, null, Map.of(
                     "attemptsLast24Hours", attempts == null ? 0 : attempts,
                     "dueWork", due == null ? 0 : due,
@@ -368,13 +383,25 @@ public final class OwnedSyncWatchdog {
         // work was planned again under the next one, so it can never complete and must not hold a
         // due-work incident (and external health) open for ever. A failure inside the live
         // activation is different and stays open.
-        Set<Long> completedRuns = Set.copyOf(queryWithArray(
+        Set<Long> completedRuns = new LinkedHashSet<>(queryWithArray(
                 "SELECT r.generation FROM " + tables.run()
                         + " r WHERE r.season=? AND r.generation=ANY(?) AND (r.state='COMPLETED' OR "
                         + "(r.state='FAILED' AND NOT EXISTS (SELECT 1 FROM " + tables.plannerRuntime()
                         + " m WHERE m.instance_id='mode:' || r.season AND m.runtime_mode=r.runtime_mode "
                         + "AND m.runtime_epoch=r.runtime_epoch)))",
                 season, "int8", runKeys.toArray(), (rs, row) -> rs.getLong(1)));
+        if (incrementalImporter && !runKeys.isEmpty()) {
+            for (var waiting : queryWithArray("SELECT generation,last_error,updated_at FROM " + tables.run()
+                            + " WHERE season=? AND generation=ANY(?) AND state='PENDING'",
+                    season, "int8", runKeys.toArray(), (rs, row) -> new WaitingRun(rs.getLong(1),
+                            rs.getString(2), rs.getTimestamp(3).toInstant()))) {
+                var reason = OwnedSyncRequestBudget.DeferredReason.fromDurableMessage(waiting.error());
+                if (reason != null && reason.expectedWait()
+                        && !waiting.updatedAt().isBefore(clock.instant().minus(Duration.ofHours(2)))) {
+                    completedRuns.add(waiting.generation());
+                }
+            }
+        }
         Set<Integer> verifiedFixtures;
         Set<Integer> finalizedGameweeks = Set.of();
         if (incrementalImporter && (!fixtureKeys.isEmpty() || !gameweekKeys.isEmpty())) {
@@ -421,6 +448,8 @@ public final class OwnedSyncWatchdog {
         return new RecoveryEvidence(completedRuns, verifiedFixtures, finalizedGameweeks, captureReads,
                 clock.instant().atZone(UK).toLocalDate().atStartOfDay(UK).toInstant());
     }
+
+    private record WaitingRun(long generation, String error, Instant updatedAt) { }
 
     private boolean verifiedRecovery(OpenIncident incident, RecoveryEvidence evidence) {
         if (incident.category().startsWith("FIXTURE_VERIFICATION")) {
