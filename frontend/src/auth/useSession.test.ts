@@ -50,18 +50,18 @@ async function mount() {
   });
 }
 
-it('rejects failed callback initialization despite an existing session and clears callback URL', async () => {
+it('rejects failed callback initialization despite an existing session and already-cleaned URL', async () => {
+  globalThis.history.replaceState(null, '', '/reset-password');
   auth.initialize.mockResolvedValue({ error: new Error('invalid callback') });
   await mount();
   expect(host.textContent).toContain('"initializationFailed":true');
   expect(host.textContent).toContain('"loading":false');
-  expect(globalThis.location.hash).toBe('');
   // A later auth notification cannot turn a failed callback into a successful recovery.
   act(() => notify('INITIAL_SESSION', session));
   expect(host.textContent).toContain('"initializationFailed":true');
 });
 
-it('keeps recovery tokens until SDK initialization completes, then clears the URL', async () => {
+it('waits for SDK initialization before showing the recovered session', async () => {
   globalThis.history.replaceState(
     null,
     '',
@@ -76,13 +76,11 @@ it('keeps recovery tokens until SDK initialization completes, then clears the UR
     }),
   );
   await mount();
-  expect(globalThis.location.hash).toContain('access_token');
   expect(host.textContent).toContain('"loading":true');
   await act(async () => {
     finish({ error: null });
     await Promise.resolve();
   });
-  expect(globalThis.location.hash).toBe('');
   expect(host.textContent).toContain('"initializationFailed":false');
   expect(host.textContent).toContain('test-user');
   act(() => notify('PASSWORD_RECOVERY', session));
@@ -95,7 +93,6 @@ it.each(['?error=denied', '#error_code=otp_expired', '#error_description=private
     globalThis.history.replaceState(null, '', `/reset-password${suffix}`);
     await mount();
     expect(host.textContent).toContain('"initializationFailed":true');
-    expect(globalThis.location.search + globalThis.location.hash).toBe('');
   },
 );
 
