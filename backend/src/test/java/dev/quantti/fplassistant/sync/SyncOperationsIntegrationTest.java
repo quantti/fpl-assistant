@@ -40,6 +40,7 @@ class SyncOperationsIntegrationTest {
 
     @BeforeEach
     void reset() {
+        jdbc.update("DELETE FROM " + TABLES.requestAttempt());
         jdbc.update("DELETE FROM " + TABLES.alert());
         jdbc.update("DELETE FROM " + TABLES.plannerSlot());
         jdbc.update("DELETE FROM " + TABLES.plannerRuntime());
@@ -182,6 +183,155 @@ class SyncOperationsIntegrationTest {
                 + " WHERE instance_id='legacy-planner'", Timestamp.from(NOW.minusSeconds(601)));
         assertThat(legacy.healthy()).isFalse();
         assertThat(importer.healthy()).isTrue();
+    }
+
+    @Test
+    void overdueFinalityIsNonPagingOnlyDuringProvedFreshFinalCapacityWait() {
+        var importer = new SyncOperations(jdbc, tx, Clock.fixed(NOW, ZoneOffset.UTC), TABLES,
+                OwnedSyncMode.ACTIVE, false, false, true, true, null, false, 6000);
+        jdbc.update("INSERT INTO " + TABLES.plannerRuntime()
+                        + "(instance_id,started_at,heartbeat_at) VALUES (?,?,?),(?,?,?)",
+                "importer:current", Timestamp.from(NOW), Timestamp.from(NOW),
+                "watchdog:2026-27", Timestamp.from(NOW), Timestamp.from(NOW));
+        long run = failedRun(7, "ACTIVE");
+        mode("ACTIVE", 7);
+        jdbc.update("INSERT INTO " + TABLES.receipt()
+                + "(season,publication_key) VALUES ('2026-27','incremental-core-import')");
+        jdbc.update("UPDATE " + TABLES.run() + " SET kind='PLAYER_HISTORY',producer_key='INCREMENTAL_CORE',"
+                + "coalescing_key='incremental-core-import',publication_key='incremental-core-import',"
+                + "state='PENDING',failed_at=NULL,last_error='HTTP budget deferred: CAPACITY_RESERVED; purpose=FINAL' "
+                + "WHERE generation=?", run);
+        jdbc.update("INSERT INTO " + TABLES.alert()
+                        + "(incident_key,occurrence,event_type,category,severity,season,payload,delivery_state,created_at) "
+                        + "VALUES ('incremental-gameweek:2026-27:9',1,'INCIDENT','INCREMENTAL_GAMEWEEK_OVERDUE',"
+                        + "'WARNING','2026-27','{}','EXTERNAL',?)", Timestamp.from(NOW));
+        assertThat(importer.healthy()).isTrue();
+        jdbc.update("UPDATE " + TABLES.run() + " SET last_error=NULL WHERE generation=?", run);
+        assertThat(importer.healthy()).isFalse();
+        jdbc.update("DELETE FROM " + TABLES.requestAttempt());
+        jdbc.update("INSERT INTO " + TABLES.requestAttempt()
+                + "(permit_id,admitted_at,permit_expires_at,completed_at) SELECT md5(i::text)::uuid,"
+                + "?::timestamptz,?::timestamptz,?::timestamptz FROM generate_series(1,5872) i",
+                Timestamp.from(NOW.minusSeconds(60)), Timestamp.from(NOW.plusSeconds(60)),
+                Timestamp.from(NOW.minusSeconds(59)));
+        assertThat(importer.healthy()).isTrue();
+        jdbc.update("DELETE FROM " + TABLES.requestAttempt());
+        assertThat(importer.healthy()).isFalse();
+        jdbc.update("UPDATE " + TABLES.run() + " SET last_error='HTTP budget deferred: CAPACITY_RESERVED' "
+                + "WHERE generation=?", run);
+        assertThat(importer.healthy()).isFalse();
+        jdbc.update("UPDATE " + TABLES.run() + " SET last_error='HTTP budget deferred: ATTEMPT_LIMIT; purpose=FINAL',"
+                + "consecutive_fetch_failures=1 WHERE generation=?", run);
+        assertThat(importer.healthy()).isFalse();
+        jdbc.update("UPDATE " + TABLES.run() + " SET consecutive_fetch_failures=0 WHERE generation=?", run);
+        assertThat(importer.healthy()).isTrue();
+        jdbc.update("UPDATE " + TABLES.plannerRuntime() + " SET runtime_epoch=8 WHERE instance_id='mode:2026-27'");
+        assertThat(importer.healthy()).isFalse();
+        jdbc.update("UPDATE " + TABLES.plannerRuntime() + " SET runtime_epoch=7 WHERE instance_id='mode:2026-27'");
+        jdbc.update("UPDATE " + TABLES.run() + " SET updated_at=? WHERE generation=?",
+                Timestamp.from(NOW.minusSeconds(7201)), run);
+        assertThat(importer.healthy()).isFalse();
+    }
+
+    @Test
+    void durableCapacityWaitSurvivesLeaseAndValidatedSupersessionButNotFaultsOrStaleEvidence() {
+        var importer = new SyncOperations(jdbc, tx, Clock.fixed(NOW, ZoneOffset.UTC), TABLES,
+                OwnedSyncMode.ACTIVE, false, false, true, true, null, false, 6000);
+        mode("ACTIVE", 7);
+        jdbc.update("INSERT INTO " + TABLES.plannerRuntime()
+                        + "(instance_id,started_at,heartbeat_at) VALUES (?,?,?),(?,?,?)",
+                "importer:current", Timestamp.from(NOW), Timestamp.from(NOW),
+                "watchdog:2026-27", Timestamp.from(NOW), Timestamp.from(NOW));
+        long run = failedRun(7, "ACTIVE");
+        jdbc.update("UPDATE " + TABLES.run() + " SET kind='PLAYER_HISTORY',producer_key='INCREMENTAL_CORE',"
+                + "state='PENDING',failed_at=NULL,last_error='HTTP budget deferred: ATTEMPT_LIMIT' WHERE generation=?", run);
+        jdbc.update("INSERT INTO " + TABLES.receipt()
+                + "(season,publication_key,latest_generation,published_at) VALUES "
+                + "('2026-27','incremental-capacity-wait',?,?)", run, Timestamp.from(NOW));
+        jdbc.update("INSERT INTO " + TABLES.alert()
+                + "(incident_key,occurrence,event_type,category,severity,season,payload,delivery_state,created_at) "
+                + "VALUES ('incremental-gameweek:2026-27:9',1,'INCIDENT','INCREMENTAL_GAMEWEEK_OVERDUE',"
+                + "'WARNING','2026-27','{}','EXTERNAL',?)", Timestamp.from(NOW));
+        assertThat(importer.healthy()).as("discovery admission is budget-blocked too").isTrue();
+        jdbc.update("UPDATE " + TABLES.run() + " SET state='LEASED',lease_owner='test',lease_token=?::uuid,"
+                + "lease_expires_at=? WHERE generation=?", java.util.UUID.randomUUID().toString(),
+                Timestamp.from(NOW.plusSeconds(300)), run);
+        assertThat(importer.healthy()).as("retry is executing").isTrue();
+        jdbc.update("UPDATE " + TABLES.run() + " SET state='SUPERSEDED',last_error=NULL,completed_at=?,"
+                + "supersede_reason='VALIDATED_CANONICAL_SOURCE_PAIR',lease_owner=NULL,lease_token=NULL,"
+                + "lease_expires_at=NULL WHERE generation=?", Timestamp.from(NOW), run);
+        assertThat(importer.healthy()).as("no successor until the next hourly tick").isTrue();
+        jdbc.update("UPDATE " + TABLES.receipt() + " SET published_at=? WHERE publication_key='incremental-capacity-wait'",
+                Timestamp.from(NOW.minusSeconds(7201)));
+        jdbc.update("UPDATE " + TABLES.run() + " SET updated_at=? WHERE generation=?",
+                Timestamp.from(NOW.minusSeconds(3601)), run);
+        assertThat(importer.healthy()).as("last hourly supersession is fresh even when the original wait is two hours old")
+                .isTrue();
+        jdbc.update("UPDATE " + TABLES.run() + " SET updated_at=? WHERE generation=?",
+                Timestamp.from(NOW.minusSeconds(7201)), run);
+        assertThat(importer.healthy()).isFalse();
+        jdbc.update("UPDATE " + TABLES.receipt() + " SET published_at=? WHERE publication_key='incremental-capacity-wait'",
+                Timestamp.from(NOW));
+        jdbc.update("UPDATE " + TABLES.plannerRuntime() + " SET runtime_epoch=8 WHERE instance_id='mode:2026-27'");
+        assertThat(importer.healthy()).isFalse();
+        jdbc.update("UPDATE " + TABLES.plannerRuntime() + " SET runtime_epoch=7 WHERE instance_id='mode:2026-27'");
+        jdbc.update("INSERT INTO " + TABLES.alert()
+                + "(incident_key,occurrence,event_type,category,severity,payload,delivery_state,created_at) "
+                + "VALUES ('real-failure',1,'INCIDENT','REPEATED_FAILURE','CRITICAL','{}','EXTERNAL',?)",
+                Timestamp.from(NOW));
+        assertThat(importer.healthy()).isFalse();
+    }
+
+    @Test
+    void importerStatusDisclosesActualBudgetAndNextCoordinatorWithoutClaimingAdmission() {
+        jdbc.update("DELETE FROM " + TABLES.requestAttempt());
+        jdbc.update("INSERT INTO " + TABLES.requestAttempt()
+                        + "(permit_id,admitted_at,permit_expires_at,completed_at) VALUES (?::uuid,?,?,?)",
+                java.util.UUID.randomUUID().toString(), Timestamp.from(NOW.minusSeconds(10)),
+                Timestamp.from(NOW.plusSeconds(110)), Timestamp.from(NOW.minusSeconds(9)));
+        long run = failedRun(7, "ACTIVE");
+        jdbc.update("UPDATE " + TABLES.run() + " SET kind='PLAYER_HISTORY',producer_key='INCREMENTAL_CORE',"
+                + "state='PENDING',failed_at=NULL,last_error='HTTP budget deferred: CAPACITY_RESERVED' WHERE generation=?", run);
+        var importer = new SyncOperations(jdbc, tx, Clock.fixed(NOW, ZoneOffset.UTC), TABLES,
+                OwnedSyncMode.ACTIVE, false, false, true, true, null, false, 6000);
+        var status = importer.status();
+        assertThat(status.budget().attemptsLast24Hours()).isOne();
+        assertThat(status.budget().limit()).isEqualTo(6000);
+        assertThat(status.budget().nextAttemptExpiresAt()).isEqualTo(NOW.minusSeconds(10).plusSeconds(86400));
+        assertThat(status.pendingRuns()).singleElement().satisfies(pending -> {
+            assertThat(pending.generation()).isEqualTo(run);
+            assertThat(pending.reason()).isEqualTo("HTTP budget deferred: CAPACITY_RESERVED");
+            assertThat(pending.nextCoordinatorAt()).isEqualTo(NOW.minusSeconds(60));
+        });
+        jdbc.update("DELETE FROM " + TABLES.requestAttempt());
+    }
+
+    @Test
+    void importerCapacityIncidentNeverPagesButRealFailureAndStaleHeartbeatStillDo() {
+        SyncOperations importer = new SyncOperations(jdbc, tx, Clock.fixed(NOW, ZoneOffset.UTC),
+                TABLES, OwnedSyncMode.ACTIVE, false, false, true, true);
+        jdbc.update("INSERT INTO " + TABLES.plannerRuntime()
+                        + "(instance_id,started_at,heartbeat_at) VALUES (?,?,?),(?,?,?)",
+                "importer:current", Timestamp.from(NOW), Timestamp.from(NOW),
+                "watchdog:2026-27", Timestamp.from(NOW), Timestamp.from(NOW));
+        jdbc.update("INSERT INTO " + TABLES.alert()
+                        + "(incident_key,occurrence,event_type,category,severity,payload,delivery_state,created_at) "
+                        + "VALUES ('budget:2026-27',1,'INCIDENT','REQUEST_BUDGET_BLOCKED','CRITICAL','{}','EXTERNAL',?)",
+                Timestamp.from(NOW));
+        assertThat(importer.healthy()).isTrue();
+        jdbc.update("INSERT INTO " + TABLES.alert()
+                        + "(incident_key,occurrence,event_type,category,severity,payload,delivery_state,created_at) "
+                        + "VALUES ('broken',1,'INCIDENT','REPEATED_FAILURE','CRITICAL','{}','EXTERNAL',?)",
+                Timestamp.from(NOW));
+        assertThat(importer.healthy()).isFalse();
+        jdbc.update("INSERT INTO " + TABLES.alert()
+                        + "(incident_key,occurrence,event_type,category,severity,payload,delivery_state,created_at) "
+                        + "VALUES ('broken',1,'RECOVERY','REPEATED_FAILURE','INFO','{}','EXTERNAL',?)",
+                Timestamp.from(NOW));
+        assertThat(importer.healthy()).isTrue();
+        jdbc.update("UPDATE " + TABLES.plannerRuntime() + " SET heartbeat_at=? WHERE instance_id LIKE 'importer:%'",
+                Timestamp.from(NOW.minusSeconds(601)));
+        assertThat(importer.healthy()).isFalse();
     }
 
     @Test
