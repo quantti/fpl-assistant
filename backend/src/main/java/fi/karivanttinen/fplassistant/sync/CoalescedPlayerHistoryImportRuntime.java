@@ -102,7 +102,7 @@ public final class CoalescedPlayerHistoryImportRuntime implements SmartLifecycle
         try {
             if (initialMaintenancePending.compareAndSet(true, false)) runPayloadMaintenance();
             CoalescedPlayerHistoryCollector.CycleResult result = runCycleWithMaintenance();
-            log.info("hourly incremental core import: {} ({} pages requested, {} committed, {} failed)",
+            log.info("hourly incremental core import: {} ({} pages selected, {} committed, {} failed)",
                     result.state(), result.selectedPlayerIds().size(), result.committedPlayerIds().size(),
                     result.failedPlayerIds().size());
         } catch (RuntimeException failure) {

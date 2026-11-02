@@ -1,6 +1,6 @@
 # Incremental importer: bounded collection and non-paging budget waits
 
-**PROGRESS:** Tasks 1–2/6 done locally: provisional regression and collection fix; remaining implementation/rollout pending. No production or Kuma change made.
+**PROGRESS:** Tasks 1–3/6 done locally: provisional collection and priority admission verified; monitoring and final closeout pending. No production or Kuma change made.
 
 ## Goal and owner request
 
@@ -126,8 +126,12 @@ required candidate/checkpoint IDs for the selected work, including departed/know
 Do not hard-code today's 611. Recompute from the validated snapshot; admission uses actual total
 attempts in the rolling window, including unsuccessful requests and other users of this ledger.
 
-Reserve **D = 128 attempts** for source discovery/validation. Reserve **F = P + 4** for one final
-pass and its source overhead, and **E = 2P** for provisional and true-finish post-match passes.
+Reserve **D = 128 attempts** for source discovery/validation. Reserve **F = P + 128** for one final
+pass and intervening source overhead, and **E = 2P + 128** for provisional and true-finish post-match
+passes and intervening source overhead. Implementation's 48-hour attempt-trace regression proved
+that the initially proposed `F=P+4, E=2P` could starve a mandatory pass after live work reached its
+ceiling: later source/live requests consume the same total ledger. The extra margins correct that
+under-reservation without increasing the hard limit.
 The following are admission ceilings, not additional quotas:
 
 | Request purpose | Maximum total rolling-window admissions before admitting this request |
@@ -143,7 +147,7 @@ cannot promise unlimited finalisations/corrections. Retain minimum-spacing/coold
 checks regardless of purpose. In particular, an unresolved transport settlement remains a real
 fault, not a harmless budget wait.
 
-For `P=670`, the live ceiling is 3,858, post-match 5,198 and final 5,872. A representative league
+For `P=670`, the live ceiling is 3,606, post-match 5,074 and final 5,872. A representative league
 round with three live refreshes plus provisional, real-finish and final passes costs approximately
 `6P = 4,020` player requests, plus coalesced source/live/validation overhead. Ordinary hourly
 source discovery costs 48 requests/day. Verify the exact overhead with the real planner tests,
@@ -322,6 +326,18 @@ The wrapper supplies only disposable `127.0.0.1:55432` credentials and dummy pro
 1536 MiB/no-swap cgroup, single Gradle unit and host-memory stop guard. Docker's working local
 socket is `/run/kurssit-docker.sock`; only the project `fpl-test-db` container was started.
 Direct diff review found no finality/reader changes; no full suite or production writes occurred.
+
+Task 3: admission regression first returned Allowed where the live reserve required Deferred.
+A 48-hour production-ceiling trace then exposed insufficient source overhead; corrected reserves
+pass for 670 and 900 players, preserve three mandatory passes per day and cap every sliding window.
+This trace checks admission arithmetic, not a full-league end-to-end collector load benchmark.
+The real-DB seam checks exact expiry across restart, low caps and priority boundaries; loopback
+HTTP proves a refused history request submits no HTTP while discovery still works. Collector
+regression proves four long capacity waits retain hourly discovery and zero consecutive-fetch
+failure count. Selected pages are now labelled selected, not falsely reported as HTTP requests.
+Connected command: `bash /tmp/fpl-focused-tests.sh --tests '*ImporterBudgetTimelineTest'
+--tests '*OwnedSyncRequestBudgetIntegrationTest' --tests '*OwnedSyncHttpClientIntegrationTest'
+--tests '*CoalescedPlayerHistoryCollectorIntegrationTest'` passed with the same isolated guards.
 
 ## Explicit limits
 

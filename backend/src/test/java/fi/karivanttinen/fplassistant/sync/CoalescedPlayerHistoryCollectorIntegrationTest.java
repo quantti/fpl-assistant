@@ -664,6 +664,36 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
     }
 
     @Test
+    void capacityWaitKeepsHourlyDiscoveryAndDoesNotBecomeRepeatedFetchFailure() throws Exception {
+        int fixtureId = fixtureExplainedFor(eventFourLive, 658);
+        byte[] source = emptyFixtureStats(onlyCollectorFixtureFinished(fixtures, fixtureId));
+        int player = firstPlayerForFixture(bootstrap, source, fixtureId);
+        fetch.setSources(bootstrapOnlyPlayer(bootstrap, player), source, eventThreeLive,
+                liveOnlyPlayer(eventFourLive, 658));
+        fetch.blockedPurpose = OwnedSyncRequestBudget.Purpose.POST_MATCH;
+        for (int hour = 0; hour < 4; hour++) {
+            fetch.clearCalls();
+            var result = collector(true).runCycle();
+            assertThat(result.state()).isEqualTo(State.RETRY_SCHEDULED);
+            assertThat(result.nextDue()).isBefore(clock.instant().plus(Duration.ofHours(2)));
+            assertThat(fetch.count(EndpointKind.BOOTSTRAP_STATIC)).isOne();
+            assertThat(fetch.count(EndpointKind.FIXTURES)).isOne();
+            assertThat(jdbc.queryForObject("SELECT max(consecutive_fetch_failures) FROM " + TABLES.run(),
+                    Integer.class)).isZero();
+            assertThat(jdbc.queryForObject("SELECT last_error FROM " + TABLES.run()
+                    + " ORDER BY generation DESC LIMIT 1", String.class))
+                    .isEqualTo("HTTP budget deferred: CAPACITY_RESERVED");
+            clock.set(result.nextDue());
+        }
+        fetch.blockedPurpose = null;
+        assertThat(collector(true).runCycle().committedPlayerIds()).containsExactly(player);
+        assertThat(fetch.demands).anySatisfy(demand -> {
+            assertThat(demand.purpose()).isEqualTo(OwnedSyncRequestBudget.Purpose.POST_MATCH);
+            assertThat(demand.players()).isPositive();
+        });
+    }
+
+    @Test
     void provisionalFinishStopsHourlyRefetchButCorrectionAndRealFinishRefresh() throws Exception {
         int fixtureId = fixtureExplainedFor(eventFourLive, 658);
         byte[] finished = emptyFixtureStats(onlyCollectorFixtureFinished(fixtures, fixtureId));
@@ -6198,6 +6228,8 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         private static final byte[] EMPTY_HISTORY = "{\"history\":[]}".getBytes(java.nio.charset.StandardCharsets.UTF_8);
         private static final byte[] EMPTY_LIVE = "{\"elements\":[]}".getBytes(java.nio.charset.StandardCharsets.UTF_8);
         private final List<Endpoint> calls = new ArrayList<>();
+        private final List<OwnedSyncRequestBudget.Demand> demands = new ArrayList<>();
+        private OwnedSyncRequestBudget.Purpose blockedPurpose;
         private final List<RecordedRequest> requests = new ArrayList<>();
         private final List<RecordedRead> successfulReads = new ArrayList<>();
         private final List<Integer> successfulBodyBytes = new ArrayList<>();
@@ -6243,6 +6275,16 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         private void setEventFourLive(byte[] body) { eventFour = body; }
         private void setPlayerPage(int playerId, byte[] body) { playerPages.put(playerId, body.clone()); }
         private void deferOnPlayerCall(int call, Instant due) { deferredPageCall = call; deferUntil = due; }
+
+        @Override
+        public OwnedSyncHttpClient.Result get(Lease lease, Endpoint endpoint, int attempt, Instant floor,
+                                              OwnedSyncRequestBudget.Demand demand) {
+            demands.add(demand);
+            if (demand.purpose() == blockedPurpose) {
+                return new DeferredResult(clock.instant().plus(Duration.ofHours(8)), DeferredReason.CAPACITY_RESERVED);
+            }
+            return get(lease, endpoint, attempt, floor);
+        }
 
         @Override
         public OwnedSyncHttpClient.Result get(Lease lease, Endpoint endpoint, int failureAttempt, Instant floor) {
