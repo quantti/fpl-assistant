@@ -234,6 +234,49 @@ class SyncOperationsIntegrationTest {
     }
 
     @Test
+    void durableCapacityWaitSurvivesLeaseAndValidatedSupersessionButNotFaultsOrStaleEvidence() {
+        var importer = new SyncOperations(jdbc, tx, Clock.fixed(NOW, ZoneOffset.UTC), TABLES,
+                OwnedSyncMode.ACTIVE, false, false, true, true, null, false, 6000);
+        mode("ACTIVE", 7);
+        jdbc.update("INSERT INTO " + TABLES.plannerRuntime()
+                        + "(instance_id,started_at,heartbeat_at) VALUES (?,?,?),(?,?,?)",
+                "importer:current", Timestamp.from(NOW), Timestamp.from(NOW),
+                "watchdog:2026-27", Timestamp.from(NOW), Timestamp.from(NOW));
+        long run = failedRun(7, "ACTIVE");
+        jdbc.update("UPDATE " + TABLES.run() + " SET kind='PLAYER_HISTORY',producer_key='INCREMENTAL_CORE',"
+                + "state='PENDING',failed_at=NULL,last_error='HTTP budget deferred: ATTEMPT_LIMIT' WHERE generation=?", run);
+        jdbc.update("INSERT INTO " + TABLES.receipt()
+                + "(season,publication_key,latest_generation,published_at) VALUES "
+                + "('2026-27','incremental-capacity-wait',?,?)", run, Timestamp.from(NOW));
+        jdbc.update("INSERT INTO " + TABLES.alert()
+                + "(incident_key,occurrence,event_type,category,severity,season,payload,delivery_state,created_at) "
+                + "VALUES ('incremental-gameweek:2026-27:9',1,'INCIDENT','INCREMENTAL_GAMEWEEK_OVERDUE',"
+                + "'WARNING','2026-27','{}','EXTERNAL',?)", Timestamp.from(NOW));
+        assertThat(importer.healthy()).as("discovery admission is budget-blocked too").isTrue();
+        jdbc.update("UPDATE " + TABLES.run() + " SET state='LEASED',lease_owner='test',lease_token=?::uuid,"
+                + "lease_expires_at=? WHERE generation=?", java.util.UUID.randomUUID().toString(),
+                Timestamp.from(NOW.plusSeconds(300)), run);
+        assertThat(importer.healthy()).as("retry is executing").isTrue();
+        jdbc.update("UPDATE " + TABLES.run() + " SET state='SUPERSEDED',last_error=NULL,completed_at=?,"
+                + "supersede_reason='VALIDATED_CANONICAL_SOURCE_PAIR',lease_owner=NULL,lease_token=NULL,"
+                + "lease_expires_at=NULL WHERE generation=?", Timestamp.from(NOW), run);
+        assertThat(importer.healthy()).as("no successor until the next hourly tick").isTrue();
+        jdbc.update("UPDATE " + TABLES.receipt() + " SET published_at=? WHERE publication_key='incremental-capacity-wait'",
+                Timestamp.from(NOW.minusSeconds(7201)));
+        assertThat(importer.healthy()).isFalse();
+        jdbc.update("UPDATE " + TABLES.receipt() + " SET published_at=? WHERE publication_key='incremental-capacity-wait'",
+                Timestamp.from(NOW));
+        jdbc.update("UPDATE " + TABLES.plannerRuntime() + " SET runtime_epoch=8 WHERE instance_id='mode:2026-27'");
+        assertThat(importer.healthy()).isFalse();
+        jdbc.update("UPDATE " + TABLES.plannerRuntime() + " SET runtime_epoch=7 WHERE instance_id='mode:2026-27'");
+        jdbc.update("INSERT INTO " + TABLES.alert()
+                + "(incident_key,occurrence,event_type,category,severity,payload,delivery_state,created_at) "
+                + "VALUES ('real-failure',1,'INCIDENT','REPEATED_FAILURE','CRITICAL','{}','EXTERNAL',?)",
+                Timestamp.from(NOW));
+        assertThat(importer.healthy()).isFalse();
+    }
+
+    @Test
     void importerStatusDisclosesActualBudgetAndNextCoordinatorWithoutClaimingAdmission() {
         jdbc.update("DELETE FROM " + TABLES.requestAttempt());
         jdbc.update("INSERT INTO " + TABLES.requestAttempt()

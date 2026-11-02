@@ -945,6 +945,11 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
         }
         OwnedSyncHttpClient.Result result = fetch.get(lease, endpoint, Math.max(1, lease.attemptCount()), floor, demand);
         if (result instanceof DeferredResult deferred) {
+            if ((demand.purpose() == Purpose.FINAL || demand.purpose() == Purpose.DISCOVERY)
+                    && (deferred.reason() == DeferredReason.ATTEMPT_LIMIT
+                        || deferred.reason() == DeferredReason.CAPACITY_RESERVED)) {
+                store.recordIncrementalCapacityWait(lease);
+            }
             return new RequestResult(lease, null, deferred.nextDue(), deferred.reason().durableMessage(demand.purpose()), deferred.reason());
         }
         if (result instanceof Failure failure) {

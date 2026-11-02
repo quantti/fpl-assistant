@@ -52,6 +52,7 @@ public final class OwnedSyncStore {
     static final String INCREMENTAL_CORE_PRODUCER = "INCREMENTAL_CORE";
     static final String INCREMENTAL_CORE_KEY = "incremental-core-import";
     static final String INCREMENTAL_COMPATIBILITY_PUBLICATION_KEY = "incremental-compatibility-catalogue";
+    static final String INCREMENTAL_CAPACITY_WAIT = "incremental-capacity-wait";
     static final String FINISHED_FIXTURE_RECEIPT_PREFIX = "incremental-finished-fixture:";
     private static final String PROVISIONAL_FIXTURE_RECEIPT_PREFIX = "incremental-provisional-fixture:";
     static final String INCREMENTAL_LIVE_EVENT_RECEIPT_PREFIX = "incremental-live-event:";
@@ -196,12 +197,37 @@ public final class OwnedSyncStore {
             requireIncrementalRun(run);
             int failures = jdbc.queryForObject("SELECT consecutive_fetch_failures FROM " + tables.run()
                     + " WHERE generation=?", Integer.class, lease.generation());
-            completeStaged(lease, interval, reads);
+            completeStaged(lease, interval, reads, true);
+            var reason = OwnedSyncRequestBudget.DeferredReason.fromDurableMessage(error);
+            if (sourceFailure || reason == null || !reason.expectedWait()) clearIncrementalCapacityWait(run);
             Run next = enqueueIncrementalCoreImport(season, dueAt);
             jdbc.update("UPDATE " + tables.run() + " SET last_error=?,consecutive_fetch_failures=?"
                             + " WHERE generation=? AND state='PENDING'",
                     boundedNullable(error, MAX_ERROR_CHARS), failures + (sourceFailure ? 1 : 0), next.generation());
         });
+    }
+
+    /** Keeps a real capacity observation across lease changes and source-pair supersession. */
+    void recordIncrementalCapacityWait(Lease lease) {
+        tx.executeWithoutResult(status -> {
+            LockedRun run = lockAndValidate(lease);
+            requireIncrementalRun(run);
+            int failures = jdbc.queryForObject("SELECT consecutive_fetch_failures FROM " + tables.run()
+                    + " WHERE generation=?", Integer.class, run.generation());
+            if (failures != 0) return;
+            jdbc.update("INSERT INTO " + tables.receipt()
+                            + "(season,publication_key,latest_generation,published_at) VALUES (?,?,?,?) "
+                            + "ON CONFLICT (season,publication_key) DO UPDATE SET "
+                            + "latest_generation=EXCLUDED.latest_generation,published_at=EXCLUDED.published_at",
+                    run.season(), INCREMENTAL_CAPACITY_WAIT, run.generation(), timestamp(now()));
+        });
+    }
+
+    private void clearIncrementalCapacityWait(LockedRun run) {
+        if (INCREMENTAL_CORE_PRODUCER.equals(run.producerKey())) {
+            jdbc.update("DELETE FROM " + tables.receipt() + " WHERE season=? AND publication_key=?",
+                    run.season(), INCREMENTAL_CAPACITY_WAIT);
+        }
     }
 
     /** Claims only this collector's active-season run; legacy dispatchers cannot see it. */
@@ -3159,6 +3185,11 @@ public final class OwnedSyncStore {
 
     /** Completes validated staging without invoking a publisher or advancing a publication receipt. */
     public void completeStaged(Lease lease, SourceRead read, List<SourceRead> demandReads) {
+        completeStaged(lease, read, demandReads, false);
+    }
+
+    private void completeStaged(Lease lease, SourceRead read, List<SourceRead> demandReads,
+                                boolean preserveCapacityWait) {
         Objects.requireNonNull(read);
         Objects.requireNonNull(demandReads);
         if (demandReads.stream().anyMatch(Objects::isNull)) {
@@ -3175,6 +3206,7 @@ public final class OwnedSyncStore {
             Instant completedAt = now();
             requireNotExpired(run, completedAt);
             requireReadNotFuture(read, completedAt);
+            if (!preserveCapacityWait) clearIncrementalCapacityWait(run);
             jdbc.update("""
                     UPDATE %s SET state = 'COMPLETED', lease_owner = NULL, lease_token = NULL,
                         lease_expires_at = NULL, source_read_started_at = ?, source_read_finished_at = ?,
@@ -3563,6 +3595,8 @@ public final class OwnedSyncStore {
             Instant failedAt = now();
             requireNotExpired(run, failedAt);
             int priority = dependencyWaiting ? SyncKind.DEPENDENCY_WAITING_PRIORITY : run.kind.priority;
+            var reason = OwnedSyncRequestBudget.DeferredReason.fromDurableMessage(error);
+            if (terminal || fetchFailure || reason == null || !reason.expectedWait()) clearIncrementalCapacityWait(run);
             jdbc.update("""
                     UPDATE %s SET state = ?, priority = ?, due_at = COALESCE(?, due_at), last_error = ?,
                         failed_at = ?, consecutive_fetch_failures = consecutive_fetch_failures + ?,

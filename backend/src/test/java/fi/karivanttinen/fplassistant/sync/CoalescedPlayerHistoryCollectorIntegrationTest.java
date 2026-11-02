@@ -664,6 +664,65 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
     }
 
     @Test
+    void finalCapacityReceiptSurvivesSourceChangeAndClearsOnlyOnCompletionOrFailure() throws Exception {
+        byte[] catalogue = markGameweekChecked(markAllGameweeksUnchecked(bootstrapOnlyPlayer(bootstrap, 1)), 3);
+        byte[] source = fixtureStatsForPlayers(onlyCollectorFixtureFinished(fixtures, 29), 29, 1, 28);
+        fetch.setSources(catalogue, source, liveForFixturePlayers(eventThreeLive, 29, Set.of(1, 28)), eventFourLive);
+        fetch.setPlayerPage(1, onlyHistoryForFixture(resource("element-summary-1.json"), 29, 1));
+        fetch.setPlayerPage(28, historyForAwayPlayer28(29));
+        fetch.blockedPurpose = OwnedSyncRequestBudget.Purpose.FINAL;
+        var wait = compatibilityCollector(true).runCycle();
+        assertThat(wait.state()).isEqualTo(State.RETRY_SCHEDULED);
+        assertThat(capacityReceipts()).isOne();
+        clock.set(wait.nextDue());
+        var changed = JSON.readTree(catalogue);
+        ObjectNode player = (ObjectNode) changed.path("elements").get(0);
+        player.put("now_cost", player.path("now_cost").asInt() + 1);
+        fetch.setSources(JSON.writeValueAsBytes(changed), source,
+                liveForFixturePlayers(eventThreeLive, 29, Set.of(1, 28)), eventFourLive);
+        var superseded = compatibilityCollector(true).runCycle();
+        assertThat(superseded.state()).isEqualTo(State.SUPERSEDED);
+        assertThat(capacityReceipts()).isOne();
+        clock.set(superseded.nextDue());
+        wait = compatibilityCollector(true).runCycle();
+        assertThat(wait.state()).isEqualTo(State.RETRY_SCHEDULED);
+        assertThat(capacityReceipts()).isOne();
+        clock.set(wait.nextDue());
+        fetch.blockedPurpose = null;
+        var complete = compatibilityCollector(true).runCycle();
+        assertThat(complete.state()).isEqualTo(State.COMPLETED);
+        assertThat(capacityReceipts()).isZero();
+
+        var run = store.enqueueIncrementalCoreImport(season, clock.instant());
+        var lease = store.acquireIncrementalCoreImport(season.code(), "capacity-failure-test", Duration.ofMinutes(5))
+                .orElseThrow();
+        store.recordIncrementalCapacityWait(lease);
+        assertThat(capacityReceipts()).isOne();
+        store.retryFetchFailure(lease, clock.instant().plusSeconds(3600), "actual upstream failure");
+        assertThat(capacityReceipts()).isZero();
+        assertThat(jdbc.queryForObject("SELECT consecutive_fetch_failures FROM " + TABLES.run()
+                + " WHERE generation=?", Integer.class, run.generation())).isOne();
+    }
+
+    private int capacityReceipts() {
+        return jdbc.queryForObject("SELECT count(*) FROM " + TABLES.receipt()
+                + " WHERE publication_key='incremental-capacity-wait'", Integer.class);
+    }
+
+    @Test
+    void discoveryCapacityWaitHasDurableProofAndRealSourceFailureClearsIt() throws Exception {
+        fetch.blockedPurpose = OwnedSyncRequestBudget.Purpose.DISCOVERY;
+        var wait = collector(true).runCycle();
+        assertThat(wait.state()).isEqualTo(State.RETRY_SCHEDULED);
+        assertThat(capacityReceipts()).isOne();
+        clock.set(wait.nextDue());
+        var lease = store.acquireIncrementalCoreImport(season.code(), "discovery-failure-test", Duration.ofMinutes(5))
+                .orElseThrow();
+        store.fail(lease, "invalid source identity");
+        assertThat(capacityReceipts()).isZero();
+    }
+
+    @Test
     void finalCapacityWaitPersistsItsPurposeWithoutClaimingCompletion() throws Exception {
         fetch.setSources(bootstrap, fixtures, eventThreeLive, eventFourLive);
         fetch.blockedPurpose = OwnedSyncRequestBudget.Purpose.FINAL;
@@ -739,6 +798,7 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
                     .isEqualTo("HTTP budget deferred: CAPACITY_RESERVED");
             clock.set(result.nextDue());
         }
+        assertThat(capacityReceipts()).as("post-match waits do not prove final-capacity exhaustion").isZero();
         fetch.blockedPurpose = null;
         assertThat(collector(true).runCycle().committedPlayerIds()).containsExactly(player);
         assertThat(fetch.demands).anySatisfy(demand -> {
