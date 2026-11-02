@@ -25,6 +25,9 @@ import dev.quantti.fplassistant.sync.OwnedSyncHttpClient.DeferredResult;
 import dev.quantti.fplassistant.sync.OwnedSyncHttpClient.Failure;
 import dev.quantti.fplassistant.sync.OwnedSyncHttpClient.Response;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.Endpoint;
+import dev.quantti.fplassistant.sync.OwnedSyncRequestBudget.Demand;
+import dev.quantti.fplassistant.sync.OwnedSyncRequestBudget.Purpose;
+import dev.quantti.fplassistant.sync.OwnedSyncRequestBudget.DeferredReason;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.Lease;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.PageReceipt;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.Run;
@@ -121,6 +124,7 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
         Set<Integer> reopenedFinalizedEvents = new HashSet<>();
         List<Integer> missingLiveEvents = new ArrayList<>();
         Instant deferredUntil = null;
+        DeferredReason deferredReason = null;
 
         Instant cycleFloor;
         try {
@@ -352,7 +356,7 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
         Map<Integer, Integer> priorities = new HashMap<>();
         for (FixtureRow fixture : active) {
             fixtureFloors.put(fixture.id(), cycleFloor);
-            priorities.put(fixture.id(), 1);
+            priorities.put(fixture.id(), 2);
         }
         for (FixtureRow fixture : targets) {
             if (changedFixtureIds.contains(fixture.id())
@@ -377,7 +381,7 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
                         requestedPlayers, committedPlayers, failedPlayers, finalPendingEvents, null);
             }
             Instant floor = later(fixtureFloors.get(fixture.id()), observed.plusMillis(1));
-            int priority = priorities.getOrDefault(fixture.id(), 2);
+            int priority = priorities.getOrDefault(fixture.id(), 1);
             OwnedSyncStore.IncrementalEvent event = fixture.gameweek() == null ? null
                     : discovery.events().get(fixture.gameweek());
             if (event != null && (event.finalPending() || reopenedFinalizedEvents.contains(event.gameweek()))) {
@@ -428,7 +432,10 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
             Instant eventFloor = entry.getValue().stream().map(fixture -> fixtureFloors.get(fixture.id()))
                     .reduce(CoalescedPlayerHistoryCollector::later).map(floor -> later(cycleFloor, floor))
                     .orElse(cycleFloor);
-            RequestResult liveResult = request(lease, Endpoint.eventLive(eventId), eventFloor);
+            int priority = entry.getValue().stream().mapToInt(fixture -> priorities.get(fixture.id()))
+                    .min().orElseThrow();
+            RequestResult liveResult = request(lease, Endpoint.eventLive(eventId), eventFloor,
+                    demand(priority, Math.max(snapshot.players().size(), basePlayerIds.size())));
             lease = liveResult.lease();
             if (liveResult.deferred()) {
                 return stop(liveResult, requestedPlayers, committedPlayers, failedPlayers, finalPendingEvents);
@@ -602,10 +609,12 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
         for (int playerId : orderedPlayers) {
             PageNeed need = needed.get(playerId);
             RequestResult pageResult = request(lease, Endpoint.elementSummary(playerId),
-                    later(cycleFloor, need.floor()));
+                    later(cycleFloor, need.floor()),
+                    demand(need.priority(), Math.max(snapshot.players().size(), allCandidateIds.size())));
             lease = pageResult.lease();
             if (pageResult.deferred()) {
                 deferredUntil = pageResult.nextDue();
+                deferredReason = pageResult.deferral();
                 break;
             }
             if (!pageResult.succeeded()) {
@@ -659,7 +668,8 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
         }
 
         Instant retryDue = deferredUntil != null || !failedPlayers.isEmpty() || !missingLiveEvents.isEmpty()
-                ? later(clock.instant().plus(CYCLE_INTERVAL), deferredUntil) : null;
+                ? deferredReason != null ? clock.instant().plus(CYCLE_INTERVAL)
+                        : later(clock.instant().plus(CYCLE_INTERVAL), deferredUntil) : null;
         if (retryDue != null) {
             Set<Integer> unfinishedPages = new HashSet<>(needed.keySet());
             unfinishedPages.removeAll(committedPlayers);
@@ -669,7 +679,8 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
                     || !entry.getValue().checkpoint().outstandingPlayerIds().isEmpty()
                     || entry.getValue().checkpoint().requiredPlayerIds().stream().anyMatch(unfinishedPages::contains));
             if (finalCheckpoints.isEmpty()) {
-                store.retry(lease, retryDue, failureSummary(failedPlayers, missingLiveEvents));
+                store.retry(lease, retryDue, deferredReason == null
+                        ? failureSummary(failedPlayers, missingLiveEvents) : deferralMessage(deferredReason));
                 return result(State.RETRY_SCHEDULED, requestedPlayers, committedPlayers, failedPlayers,
                         finalPendingEvents, retryDue);
             }
@@ -883,34 +894,53 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
                 + OwnedSyncStore.sha256(fixtures.bytes()));
     }
 
+    private static Demand demand(int priority, int players) {
+        return new Demand(switch (priority) {
+            case 0 -> Purpose.FINAL;
+            case 1 -> Purpose.POST_MATCH;
+            case 2 -> Purpose.LIVE;
+            default -> throw new IllegalArgumentException("Unknown collection priority");
+        }, players);
+    }
+
+    private static String deferralMessage(DeferredReason reason) {
+        return "HTTP budget deferred: " + reason;
+    }
+
     private RequestResult request(Lease lease, Endpoint endpoint, Instant floor) {
+        return request(lease, endpoint, floor, Demand.DISCOVERY);
+    }
+
+    private RequestResult request(Lease lease, Endpoint endpoint, Instant floor, Demand demand) {
         if (lease.expiresAt().isBefore(clock.instant().plus(RENEW_THRESHOLD))) {
             lease = store.renew(lease, LEASE);
         }
-        OwnedSyncHttpClient.Result result = fetch.get(lease, endpoint, Math.max(1, lease.attemptCount()), floor);
+        OwnedSyncHttpClient.Result result = fetch.get(lease, endpoint, Math.max(1, lease.attemptCount()), floor, demand);
         if (result instanceof DeferredResult deferred) {
-            return new RequestResult(lease, null, deferred.nextDue(), "HTTP budget deferred: " + deferred.reason(), true);
+            return new RequestResult(lease, null, deferred.nextDue(), deferralMessage(deferred.reason()), deferred.reason());
         }
         if (result instanceof Failure failure) {
-            return new RequestResult(lease, null, failure.nextDue(), failure.message(), false);
+            return new RequestResult(lease, null, failure.nextDue(), failure.message(), null);
         }
         Response response = (Response) result;
         if (response.statusCode() != 200) {
-            return new RequestResult(lease, null, response.nextDue(), "HTTP " + response.statusCode(), false);
+            return new RequestResult(lease, null, response.nextDue(), "HTTP " + response.statusCode(), null);
         }
         SourceRead sourceRead = response.read();
         if (sourceRead.startedAt().isBefore(floor) || sourceRead.finishedAt().isAfter(clock.instant())) {
-            return new RequestResult(lease, null, null, "Source read violates its required floor or clock", false);
+            return new RequestResult(lease, null, null, "Source read violates its required floor or clock", null);
         }
         SourceDocument document = new SourceDocument(response.body(),
                 new ReadInterval(sourceRead.startedAt(), sourceRead.finishedAt()));
-        return new RequestResult(lease, document, null, null, false);
+        return new RequestResult(lease, document, null, null, null);
     }
 
     private CycleResult stop(RequestResult result, List<Integer> requested, List<Integer> committed,
                              List<Integer> failed, List<Integer> finalPending) {
-        Instant due = later(clock.instant().plus(CYCLE_INTERVAL), result.nextDue());
-        store.retryFetchFailure(result.lease(), due, bounded(result.error()));
+        Instant due = result.deferred() ? clock.instant().plus(CYCLE_INTERVAL)
+                : later(clock.instant().plus(CYCLE_INTERVAL), result.nextDue());
+        if (result.deferred()) store.retry(result.lease(), due, bounded(result.error()));
+        else store.retryFetchFailure(result.lease(), due, bounded(result.error()));
         return result(State.RETRY_SCHEDULED, requested, committed, failed, finalPending, due);
     }
 
@@ -1035,13 +1065,28 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
     private static Fetch fencedFetch(OwnedSyncStore store, OwnedSyncHttpClient http) {
         Objects.requireNonNull(store);
         Objects.requireNonNull(http);
-        return (lease, endpoint, failureAttempt, floor) -> http.get(endpoint, failureAttempt,
-                () -> store.httpFence(lease, endpoint, floor));
+        return new Fetch() {
+            @Override
+            public OwnedSyncHttpClient.Result get(Lease lease, Endpoint endpoint, int attempt, Instant floor) {
+                return get(lease, endpoint, attempt, floor, Demand.DISCOVERY);
+            }
+
+            @Override
+            public OwnedSyncHttpClient.Result get(Lease lease, Endpoint endpoint, int attempt, Instant floor,
+                                                  Demand demand) {
+                return http.get(endpoint, attempt, () -> store.httpFence(lease, endpoint, floor), demand);
+            }
+        };
     }
 
     @FunctionalInterface
     interface Fetch {
         OwnedSyncHttpClient.Result get(Lease lease, Endpoint endpoint, int failureAttempt, Instant floor);
+
+        default OwnedSyncHttpClient.Result get(Lease lease, Endpoint endpoint, int attempt, Instant floor,
+                                              Demand demand) {
+            return get(lease, endpoint, attempt, floor);
+        }
     }
 
     public enum State { DISABLED, BUSY, DEFERRED, COMPLETED, RETRY_SCHEDULED, SUPERSEDED, FAILED }
@@ -1066,8 +1111,9 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
                                         RequestResult failure) { }
 
     private record RequestResult(Lease lease, SourceDocument document, Instant nextDue,
-                                 String error, boolean deferred) {
+                                 String error, DeferredReason deferral) {
         boolean succeeded() { return document != null; }
+        boolean deferred() { return deferral != null; }
     }
 
     private record PageNeed(Instant floor, int priority) { }
