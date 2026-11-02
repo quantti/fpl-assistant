@@ -688,6 +688,8 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
             }
         }
 
+        boolean sourceFailure = !failedPlayers.isEmpty() || !failedLiveEvents.isEmpty();
+        String retryError = sourceFailure ? failureSummary(failedPlayers, failedLiveEvents) : deferredError;
         Instant retryDue = deferredUntil != null || !failedPlayers.isEmpty() || !missingLiveEvents.isEmpty()
                 ? deferredReason != null ? clock.instant().plus(CYCLE_INTERVAL)
                         : later(clock.instant().plus(CYCLE_INTERVAL), deferredUntil) : null;
@@ -700,8 +702,8 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
                     || !entry.getValue().checkpoint().outstandingPlayerIds().isEmpty()
                     || entry.getValue().checkpoint().requiredPlayerIds().stream().anyMatch(unfinishedPages::contains));
             if (finalCheckpoints.isEmpty()) {
-                if (!failedPlayers.isEmpty() || !failedLiveEvents.isEmpty()) {
-                    store.retryFetchFailure(lease, retryDue, failureSummary(failedPlayers, failedLiveEvents));
+                if (sourceFailure) {
+                    store.retryFetchFailure(lease, retryDue, retryError);
                 } else {
                     store.retry(lease, retryDue, deferredReason == null
                             ? failureSummary(failedPlayers, missingLiveEvents) : deferredError);
@@ -713,7 +715,7 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
         if (!finalCheckpoints.isEmpty()) {
             return finishFinalSweeps(lease, snapshot, reads, finalCheckpoints,
                     sourceParticipants, participantEvidence, known, requestedPlayers, committedPlayers,
-                    failedPlayers, finalPendingEvents, retryDue);
+                    failedPlayers, finalPendingEvents, retryDue, retryError, sourceFailure);
         }
         return complete(lease, reads, requestedPlayers, committedPlayers, failedPlayers, finalPendingEvents);
     }
@@ -725,7 +727,7 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
                                           Map<Integer, Set<Integer>> known,
                                           List<Integer> requested, List<Integer> committed,
                                           List<Integer> failed, List<Integer> finalPending,
-                                          Instant retryDue) {
+                                          Instant retryDue, String retryError, boolean sourceFailure) {
         Instant priorFinish = max(initialSnapshot.bootstrapRead().completedAt(),
                 initialSnapshot.fixturesRead().completedAt());
         for (var progress : checkpoints.values()) {
@@ -740,7 +742,8 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
         RequestResult endBootstrapResult = request(lease, Endpoint.bootstrap(), endFloor);
         lease = endBootstrapResult.lease();
         if (!endBootstrapResult.succeeded()) {
-            return stop(endBootstrapResult, requested, committed, failed, finalPending);
+            return stop(endBootstrapResult, requested, committed, failed, finalPending,
+                    sourceFailure ? retryError : null);
         }
         SourceDocument endBootstrap = endBootstrapResult.document();
         reads.add(read(endBootstrap));
@@ -748,7 +751,8 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
         RequestResult endFixturesResult = request(lease, Endpoint.fixtures(), fixturesFloor);
         lease = endFixturesResult.lease();
         if (!endFixturesResult.succeeded()) {
-            return stop(endFixturesResult, requested, committed, failed, finalPending);
+            return stop(endFixturesResult, requested, committed, failed, finalPending,
+                    sourceFailure ? retryError : null);
         }
         SourceDocument endFixtures = endFixturesResult.document();
         reads.add(read(endFixtures));
@@ -841,22 +845,25 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
         if (blocked) {
             Instant due = later(clock.instant().plus(CYCLE_INTERVAL), retryDue);
             if (finalizedAny) {
-                return completeAndRequeue(lease, reads, requested, committed, failed, finalPending, due);
+                return completeAndRequeue(lease, reads, requested, committed, failed, finalPending, due,
+                        sourceFailure ? retryError + "; " + blockedReason : blockedReason, sourceFailure);
             }
-            store.retry(lease, due, blockedReason);
+            if (sourceFailure) store.retryFetchFailure(lease, due, bounded(retryError + "; " + blockedReason));
+            else store.retry(lease, due, blockedReason);
             return result(State.RETRY_SCHEDULED, requested, committed, failed, finalPending, due);
         }
         if (retryDue != null) {
-            return completeAndRequeue(lease, reads, requested, committed, failed, finalPending, retryDue);
+            return completeAndRequeue(lease, reads, requested, committed, failed, finalPending, retryDue,
+                    retryError, sourceFailure);
         }
         return complete(lease, reads, requested, committed, failed, finalPending);
     }
 
     private CycleResult completeAndRequeue(Lease lease, List<SourceRead> reads, List<Integer> requested,
                                            List<Integer> committed, List<Integer> failed,
-                                           List<Integer> finalPending, Instant due) {
-        complete(lease, reads, requested, committed, failed, finalPending);
-        store.enqueueIncrementalCoreImport(season, due);
+                                           List<Integer> finalPending, Instant due, String error, boolean sourceFailure) {
+        store.completeIncrementalPassAndRetry(lease, season, store.incrementalSourceInterval(lease), reads,
+                due, error, sourceFailure);
         return result(State.RETRY_SCHEDULED, requested, committed, failed, finalPending, due);
     }
 
@@ -958,11 +965,16 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
 
     private CycleResult stop(RequestResult result, List<Integer> requested, List<Integer> committed,
                              List<Integer> failed, List<Integer> finalPending) {
+        return stop(result, requested, committed, failed, finalPending,
+                failed.isEmpty() ? null : failureSummary(failed, List.of()));
+    }
+
+    private CycleResult stop(RequestResult result, List<Integer> requested, List<Integer> committed,
+                             List<Integer> failed, List<Integer> finalPending, String sourceFailure) {
         Instant due = result.deferred() ? clock.instant().plus(CYCLE_INTERVAL)
                 : later(clock.instant().plus(CYCLE_INTERVAL), result.nextDue());
-        if (!failed.isEmpty()) {
-            store.retryFetchFailure(result.lease(), due,
-                    bounded(failureSummary(failed, List.of()) + "; " + result.error()));
+        if (sourceFailure != null) {
+            store.retryFetchFailure(result.lease(), due, bounded(sourceFailure + "; " + result.error()));
         } else if (result.deferred()) {
             store.retry(result.lease(), due, bounded(result.error()));
         } else {
