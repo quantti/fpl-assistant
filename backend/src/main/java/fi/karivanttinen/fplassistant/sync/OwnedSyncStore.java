@@ -187,6 +187,23 @@ public final class OwnedSyncStore {
         });
     }
 
+    /** Ends a checked pass without losing failures in the remaining season work. */
+    void completeIncrementalPassAndRetry(Lease lease, CatalogueScheduleParser.Season season,
+                                        SourceRead interval, List<SourceRead> reads, Instant dueAt,
+                                        String error, boolean sourceFailure) {
+        tx.executeWithoutResult(status -> {
+            LockedRun run = lockAndValidate(lease);
+            requireIncrementalRun(run);
+            int failures = jdbc.queryForObject("SELECT consecutive_fetch_failures FROM " + tables.run()
+                    + " WHERE generation=?", Integer.class, lease.generation());
+            completeStaged(lease, interval, reads);
+            Run next = enqueueIncrementalCoreImport(season, dueAt);
+            jdbc.update("UPDATE " + tables.run() + " SET last_error=?,consecutive_fetch_failures=?"
+                            + " WHERE generation=? AND state='PENDING'",
+                    boundedNullable(error, MAX_ERROR_CHARS), failures + (sourceFailure ? 1 : 0), next.generation());
+        });
+    }
+
     /** Claims only this collector's active-season run; legacy dispatchers cannot see it. */
     Optional<Lease> acquireIncrementalCoreImport(String season, String owner, Duration duration) {
         String validSeason = bounded("season", season, 10);

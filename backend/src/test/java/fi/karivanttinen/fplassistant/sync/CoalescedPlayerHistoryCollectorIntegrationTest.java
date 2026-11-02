@@ -3173,6 +3173,10 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
 
         assertThat(partial.state()).isEqualTo(State.RETRY_SCHEDULED);
         assertThat(partial.failedPlayerIds()).containsExactly(uncheckedPlayer);
+        assertThat(jdbc.queryForObject("SELECT last_error FROM " + TABLES.run()
+                + " WHERE state='PENDING'", String.class)).contains("Unresolved player pages: 1");
+        assertThat(jdbc.queryForObject("SELECT consecutive_fetch_failures FROM " + TABLES.run()
+                + " WHERE state='PENDING'", Integer.class)).isOne();
         assertThat(partial.committedPlayerIds()).contains(1, 28);
         assertThat(new GameweekFinalityReader(jdbc, clock, TABLES)
                 .read(SEASON_ID, season.code(), Set.of(3)).get(3).state())
@@ -3208,6 +3212,10 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
 
         assertThat(partial.state()).isEqualTo(State.RETRY_SCHEDULED);
         assertThat(partial.failedPlayerIds()).isEmpty();
+        assertThat(jdbc.queryForObject("SELECT last_error FROM " + TABLES.run()
+                + " WHERE state='PENDING'", String.class)).contains("Unresolved event-live sources: 1");
+        assertThat(jdbc.queryForObject("SELECT consecutive_fetch_failures FROM " + TABLES.run()
+                + " WHERE state='PENDING'", Integer.class)).isOne();
         assertThat(new GameweekFinalityReader(jdbc, clock, TABLES)
                 .read(SEASON_ID, season.code(), Set.of(3)).get(3).state())
                 .isEqualTo(GameweekFinality.State.FINALIZED);
