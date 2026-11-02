@@ -263,6 +263,12 @@ class SyncOperationsIntegrationTest {
         assertThat(importer.healthy()).as("no successor until the next hourly tick").isTrue();
         jdbc.update("UPDATE " + TABLES.receipt() + " SET published_at=? WHERE publication_key='incremental-capacity-wait'",
                 Timestamp.from(NOW.minusSeconds(7201)));
+        jdbc.update("UPDATE " + TABLES.run() + " SET updated_at=? WHERE generation=?",
+                Timestamp.from(NOW.minusSeconds(3601)), run);
+        assertThat(importer.healthy()).as("last hourly supersession is fresh even when the original wait is two hours old")
+                .isTrue();
+        jdbc.update("UPDATE " + TABLES.run() + " SET updated_at=? WHERE generation=?",
+                Timestamp.from(NOW.minusSeconds(7201)), run);
         assertThat(importer.healthy()).isFalse();
         jdbc.update("UPDATE " + TABLES.receipt() + " SET published_at=? WHERE publication_key='incremental-capacity-wait'",
                 Timestamp.from(NOW));
