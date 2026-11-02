@@ -24,6 +24,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.zaxxer.hikari.HikariDataSource;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -600,43 +601,51 @@ class OwnedMatchdayEndToEndIntegrationTest {
         PlannerInputRepository input = org.mockito.Mockito.mock(PlannerInputRepository.class);
         org.mockito.Mockito.when(input.load(org.mockito.ArgumentMatchers.any())).thenReturn(
                 new PlannerInputRepository.PlannerSnapshot(allPlayers, fixtures, List.of(), true));
-        PlannerRuntimeRepository runtime = new PlannerRuntimeRepository(jdbc, tx, clock, TABLES);
-        OwnedSyncStore store = new OwnedSyncStore(jdbc, tx, clock, TABLES);
-        CatalogueScheduleDispatcher catalogue = org.mockito.Mockito.mock(CatalogueScheduleDispatcher.class);
-        HistoryFixtureDispatcher histories = org.mockito.Mockito.mock(HistoryFixtureDispatcher.class);
-        OwnedMatchdayCoordinator coordinator = new OwnedMatchdayCoordinator(SEASON,
-                new AdaptiveMatchdayPlanner(clock), input, runtime, store, catalogue, histories, "ten-matchday");
+        // Reuse connections without combining the per-slot transactions.
+        try (HikariDataSource pool = new HikariDataSource()) {
+            pool.setDataSource(dataSource);
+            pool.setMaximumPoolSize(1);
+            pool.setMinimumIdle(0);
+            JdbcTemplate jdbc = new JdbcTemplate(pool);
+            TransactionTemplate tx = new TransactionTemplate(new DataSourceTransactionManager(pool));
+            PlannerRuntimeRepository runtime = new PlannerRuntimeRepository(jdbc, tx, clock, TABLES);
+            OwnedSyncStore store = new OwnedSyncStore(jdbc, tx, clock, TABLES);
+            CatalogueScheduleDispatcher catalogue = org.mockito.Mockito.mock(CatalogueScheduleDispatcher.class);
+            HistoryFixtureDispatcher histories = org.mockito.Mockito.mock(HistoryFixtureDispatcher.class);
+            OwnedMatchdayCoordinator coordinator = new OwnedMatchdayCoordinator(SEASON,
+                    new AdaptiveMatchdayPlanner(clock), input, runtime, store, catalogue, histories, "ten-matchday");
 
-        // Ten minutes is the smallest production cadence, so this covers every planner boundary
-        // without turning the integration test into 1,440 redundant database heartbeats.
-        for (int minute = 0; minute < 24 * 60; minute += 10) {
-            clock.set(Instant.parse("2026-09-19T03:00:00Z").plusSeconds(minute * 60L));
-            coordinator.tick();
-        }
-        Map<String, Object> demand = jdbc.queryForMap("SELECT count(*) slots, sum(estimated_requests) requests,"
-                + " count(*) FILTER (WHERE kind='MATCHDAY_SOURCE') source_slots FROM " + TABLES.plannerSlot());
-        assertThat(((Number) demand.get("slots")).intValue()).isPositive();
-        // Thirty registered players per club is intentionally not just the matchday squad.
-        // Cadence demand can exceed the hard ceiling: deferral, not an impossible SLA, is expected.
-        assertThat(((Number) demand.get("requests")).intValue()).isGreaterThan(5_000);
-        assertThat(((Number) demand.get("source_slots")).intValue()).isEqualTo(92);
+            // Ten minutes is the smallest production cadence, so this covers every planner boundary
+            // without turning the integration test into 1,440 redundant database heartbeats.
+            for (int minute = 0; minute < 24 * 60; minute += 10) {
+                clock.set(Instant.parse("2026-09-19T03:00:00Z").plusSeconds(minute * 60L));
+                coordinator.tick();
+            }
+            Map<String, Object> demand = jdbc.queryForMap("SELECT count(*) slots, sum(estimated_requests) requests,"
+                    + " count(*) FILTER (WHERE kind='MATCHDAY_SOURCE') source_slots FROM " + TABLES.plannerSlot());
+            assertThat(((Number) demand.get("slots")).intValue()).isPositive();
+            // Thirty registered players per club is intentionally not just the matchday squad.
+            // Cadence demand can exceed the hard ceiling: deferral, not an impossible SLA, is expected.
+            assertThat(((Number) demand.get("requests")).intValue()).isGreaterThan(5_000);
+            assertThat(((Number) demand.get("source_slots")).intValue()).isEqualTo(92);
 
-        clock.set(Instant.parse("2026-09-20T00:00:00Z"));
-        Limits tiny = new Limits(Duration.ofSeconds(1), 2, 5, Duration.ofHours(24),
-                Duration.ofMinutes(2), Duration.ofSeconds(1), Duration.ofMinutes(1));
-        OwnedSyncRequestBudget budget = new OwnedSyncRequestBudget(jdbc, tx, clock, TABLES, tiny);
-        for (int attempt = 0; attempt < 5; attempt++) {
-            Allowed allowed = (Allowed) budget.admit();
-            budget.complete(allowed.permit(), OwnedSyncRequestBudget.Completion.success());
-            clock.advance(Duration.ofSeconds(1));
+            clock.set(Instant.parse("2026-09-20T00:00:00Z"));
+            Limits tiny = new Limits(Duration.ofSeconds(1), 2, 5, Duration.ofHours(24),
+                    Duration.ofMinutes(2), Duration.ofSeconds(1), Duration.ofMinutes(1));
+            OwnedSyncRequestBudget budget = new OwnedSyncRequestBudget(jdbc, tx, clock, TABLES, tiny);
+            for (int attempt = 0; attempt < 5; attempt++) {
+                Allowed allowed = (Allowed) budget.admit();
+                budget.complete(allowed.permit(), OwnedSyncRequestBudget.Completion.success());
+                clock.advance(Duration.ofSeconds(1));
+            }
+            assertThat(budget.admit()).isInstanceOf(Deferred.class);
+            var run = store.enqueue(SyncKind.PLAYER_HISTORY, SEASON.code(), "budget-exhausted",
+                    "budget-exhausted", clock.instant());
+            assertThat(jdbc.queryForObject("SELECT state FROM " + TABLES.run() + " WHERE generation=?",
+                    String.class, run.generation())).isEqualTo("PENDING");
+            assertThat(jdbc.queryForObject("SELECT completed_at IS NULL FROM " + TABLES.run()
+                    + " WHERE generation=?", Boolean.class, run.generation())).isTrue();
         }
-        assertThat(budget.admit()).isInstanceOf(Deferred.class);
-        var run = store.enqueue(SyncKind.PLAYER_HISTORY, SEASON.code(), "budget-exhausted",
-                "budget-exhausted", clock.instant());
-        assertThat(jdbc.queryForObject("SELECT state FROM " + TABLES.run() + " WHERE generation=?",
-                String.class, run.generation())).isEqualTo("PENDING");
-        assertThat(jdbc.queryForObject("SELECT completed_at IS NULL FROM " + TABLES.run()
-                + " WHERE generation=?", Boolean.class, run.generation())).isTrue();
     }
 
 
