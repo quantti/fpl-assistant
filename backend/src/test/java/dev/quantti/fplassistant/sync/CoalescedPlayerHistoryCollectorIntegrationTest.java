@@ -664,6 +664,199 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
     }
 
     @Test
+    void finalCapacityReceiptSurvivesSourceChangeAndClearsOnlyOnCompletionOrFailure() throws Exception {
+        byte[] catalogue = markGameweekChecked(markAllGameweeksUnchecked(bootstrapOnlyPlayer(bootstrap, 1)), 3);
+        byte[] source = fixtureStatsForPlayers(onlyCollectorFixtureFinished(fixtures, 29), 29, 1, 28);
+        fetch.setSources(catalogue, source, liveForFixturePlayers(eventThreeLive, 29, Set.of(1, 28)), eventFourLive);
+        fetch.setPlayerPage(1, onlyHistoryForFixture(resource("element-summary-1.json"), 29, 1));
+        fetch.setPlayerPage(28, historyForAwayPlayer28(29));
+        fetch.blockedPurpose = OwnedSyncRequestBudget.Purpose.FINAL;
+        var wait = compatibilityCollector(true).runCycle();
+        assertThat(wait.state()).isEqualTo(State.RETRY_SCHEDULED);
+        assertThat(capacityReceipts()).isOne();
+        clock.set(wait.nextDue());
+        var changed = JSON.readTree(catalogue);
+        ObjectNode player = (ObjectNode) changed.path("elements").get(0);
+        player.put("now_cost", player.path("now_cost").asInt() + 1);
+        fetch.setSources(JSON.writeValueAsBytes(changed), source,
+                liveForFixturePlayers(eventThreeLive, 29, Set.of(1, 28)), eventFourLive);
+        var superseded = compatibilityCollector(true).runCycle();
+        assertThat(superseded.state()).isEqualTo(State.SUPERSEDED);
+        assertThat(capacityReceipts()).isOne();
+        clock.set(superseded.nextDue());
+        wait = compatibilityCollector(true).runCycle();
+        assertThat(wait.state()).isEqualTo(State.RETRY_SCHEDULED);
+        assertThat(capacityReceipts()).isOne();
+        clock.set(wait.nextDue());
+        fetch.blockedPurpose = null;
+        var complete = compatibilityCollector(true).runCycle();
+        assertThat(complete.state()).isEqualTo(State.COMPLETED);
+        assertThat(capacityReceipts()).isZero();
+
+        var run = store.enqueueIncrementalCoreImport(season, clock.instant());
+        var lease = store.acquireIncrementalCoreImport(season.code(), "capacity-failure-test", Duration.ofMinutes(5))
+                .orElseThrow();
+        store.recordIncrementalCapacityWait(lease);
+        assertThat(capacityReceipts()).isOne();
+        store.retryFetchFailure(lease, clock.instant().plusSeconds(3600), "actual upstream failure");
+        assertThat(capacityReceipts()).isZero();
+        assertThat(jdbc.queryForObject("SELECT consecutive_fetch_failures FROM " + TABLES.run()
+                + " WHERE generation=?", Integer.class, run.generation())).isOne();
+    }
+
+    private int capacityReceipts() {
+        return jdbc.queryForObject("SELECT count(*) FROM " + TABLES.receipt()
+                + " WHERE publication_key='incremental-capacity-wait'", Integer.class);
+    }
+
+    @Test
+    void discoveryCapacityWaitHasDurableProofAndRealSourceFailureClearsIt() throws Exception {
+        fetch.blockedPurpose = OwnedSyncRequestBudget.Purpose.DISCOVERY;
+        var wait = collector(true).runCycle();
+        assertThat(wait.state()).isEqualTo(State.RETRY_SCHEDULED);
+        assertThat(capacityReceipts()).isOne();
+        clock.set(wait.nextDue());
+        var lease = store.acquireIncrementalCoreImport(season.code(), "discovery-failure-test", Duration.ofMinutes(5))
+                .orElseThrow();
+        store.fail(lease, "invalid source identity");
+        assertThat(capacityReceipts()).isZero();
+    }
+
+    @Test
+    void finalCapacityWaitPersistsItsPurposeWithoutClaimingCompletion() throws Exception {
+        fetch.setSources(bootstrap, fixtures, eventThreeLive, eventFourLive);
+        fetch.blockedPurpose = OwnedSyncRequestBudget.Purpose.FINAL;
+        var result = collector(true).runCycle();
+        assertThat(result.state()).isEqualTo(State.RETRY_SCHEDULED);
+        assertThat(result.committedPlayerIds()).isEmpty();
+        assertThat(jdbc.queryForObject("SELECT last_error FROM " + TABLES.run()
+                + " ORDER BY generation DESC LIMIT 1", String.class))
+                .isEqualTo("HTTP budget deferred: CAPACITY_RESERVED; purpose=FINAL");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.gameweekStatSync()
+                + " WHERE state='FINALIZED'", Integer.class)).isZero();
+    }
+
+    @Test
+    void realPageFailuresRemainVisibleWhenLaterPagesWaitForAdmission() throws Exception {
+        int fixtureId = fixtureExplainedFor(eventFourLive, 658);
+        byte[] source = emptyFixtureStats(onlyCollectorFixtureFinished(fixtures, fixtureId));
+        var players = sourceCandidates(source, fixtureId).stream().limit(2)
+                .collect(java.util.stream.Collectors.toSet());
+        fetch.setSources(bootstrapPlayers(bootstrap, players), source, eventThreeLive,
+                liveOnlyPlayer(eventFourLive, 658));
+        for (int cycle = 1; cycle <= 3; cycle++) {
+            fetch.clearCalls();
+            fetch.failPlayerCall(1);
+            fetch.deferOnPlayerCall(2, clock.instant().plus(Duration.ofHours(8)));
+            var result = collector(true).runCycle();
+            assertThat(result.state()).isEqualTo(State.RETRY_SCHEDULED);
+            assertThat(result.failedPlayerIds()).hasSize(1);
+            assertThat(jdbc.queryForObject("SELECT last_error FROM " + TABLES.run()
+                    + " ORDER BY generation DESC LIMIT 1", String.class)).contains("Unresolved player pages: 1");
+            assertThat(jdbc.queryForObject("SELECT consecutive_fetch_failures FROM " + TABLES.run()
+                    + " ORDER BY generation DESC LIMIT 1", Integer.class)).isEqualTo(cycle);
+            clock.set(result.nextDue());
+        }
+    }
+
+    @Test
+    void refusedLiveEventDoesNotStarvePostMatchPagesFromAnotherEvent() throws Exception {
+        ActiveFixture active = makeFixtureInProgress(markGameweekFinished(fixtures, 4), 4);
+        int finishedFixture = fixture(active.body(), 3, true).id();
+        byte[] source = emptyFixtureStats(makeFixtureInProgress(
+                onlyFixturesFinished(fixtures, finishedFixture, active.id()), 4).body());
+        int player = firstPlayerForFixture(bootstrap, source, finishedFixture);
+        byte[] unchecked = markGameweekUnchecked(markGameweekUnchecked(markGameweekUnchecked(bootstrap, 1), 2), 3);
+        fetch.setSources(bootstrapOnlyPlayer(unchecked, player), source, eventThreeLive, eventFourLive);
+        fetch.blockedPurpose = OwnedSyncRequestBudget.Purpose.LIVE;
+        var result = collector(true).runCycle();
+        assertThat(result.state()).isEqualTo(State.RETRY_SCHEDULED);
+        assertThat(result.committedPlayerIds()).contains(player);
+        assertThat(fetch.demands).extracting(OwnedSyncRequestBudget.Demand::purpose)
+                .contains(OwnedSyncRequestBudget.Purpose.LIVE, OwnedSyncRequestBudget.Purpose.POST_MATCH);
+    }
+
+    @Test
+    void capacityWaitKeepsHourlyDiscoveryAndDoesNotBecomeRepeatedFetchFailure() throws Exception {
+        int fixtureId = fixtureExplainedFor(eventFourLive, 658);
+        byte[] source = emptyFixtureStats(onlyCollectorFixtureFinished(fixtures, fixtureId));
+        int player = firstPlayerForFixture(bootstrap, source, fixtureId);
+        fetch.setSources(bootstrapOnlyPlayer(bootstrap, player), source, eventThreeLive,
+                liveOnlyPlayer(eventFourLive, 658));
+        fetch.blockedPurpose = OwnedSyncRequestBudget.Purpose.POST_MATCH;
+        for (int hour = 0; hour < 4; hour++) {
+            fetch.clearCalls();
+            var result = collector(true).runCycle();
+            assertThat(result.state()).isEqualTo(State.RETRY_SCHEDULED);
+            assertThat(result.nextDue()).isBefore(clock.instant().plus(Duration.ofHours(2)));
+            assertThat(fetch.count(EndpointKind.BOOTSTRAP_STATIC)).isOne();
+            assertThat(fetch.count(EndpointKind.FIXTURES)).isOne();
+            assertThat(jdbc.queryForObject("SELECT max(consecutive_fetch_failures) FROM " + TABLES.run(),
+                    Integer.class)).isZero();
+            assertThat(jdbc.queryForObject("SELECT last_error FROM " + TABLES.run()
+                    + " ORDER BY generation DESC LIMIT 1", String.class))
+                    .isEqualTo("HTTP budget deferred: CAPACITY_RESERVED");
+            clock.set(result.nextDue());
+        }
+        assertThat(capacityReceipts()).as("post-match waits do not prove final-capacity exhaustion").isZero();
+        fetch.blockedPurpose = null;
+        assertThat(collector(true).runCycle().committedPlayerIds()).containsExactly(player);
+        assertThat(fetch.demands).anySatisfy(demand -> {
+            assertThat(demand.purpose()).isEqualTo(OwnedSyncRequestBudget.Purpose.POST_MATCH);
+            assertThat(demand.players()).isPositive();
+        });
+    }
+
+    @Test
+    void provisionalFinishStopsHourlyRefetchButCorrectionAndRealFinishRefresh() throws Exception {
+        int fixtureId = fixtureExplainedFor(eventFourLive, 658);
+        byte[] finished = emptyFixtureStats(onlyCollectorFixtureFinished(fixtures, fixtureId));
+        var provisional = JSON.readTree(finished);
+        for (var row : provisional) {
+            if (row.path("id").asInt() == fixtureId) {
+                ((ObjectNode) row).put("finished", false).put("finished_provisional", true);
+            }
+        }
+        int player = firstPlayerForFixture(bootstrap, finished, fixtureId);
+        byte[] catalogue = bootstrapOnlyPlayer(bootstrap, player);
+        byte[] source = JSON.writeValueAsBytes(provisional);
+        fetch.setSources(catalogue, source, eventThreeLive, liveOnlyPlayer(eventFourLive, 658));
+        var first = collector(true).runCycle();
+        assertThat(first.state()).isEqualTo(State.COMPLETED);
+        assertThat(first.selectedPlayerIds()).containsExactly(player);
+
+        for (int hour = 0; hour < 3; hour++) {
+            clock.advance(Duration.ofHours(1));
+            fetch.clearCalls();
+            var idle = collector(true).runCycle();
+            assertThat(idle.state()).isEqualTo(State.COMPLETED);
+            assertThat(fetch.count(EndpointKind.ELEMENT_SUMMARY)).isZero();
+            assertThat(fetch.count(EndpointKind.EVENT_LIVE)).isZero();
+        }
+        assertThat(jdbc.queryForObject("SELECT state FROM " + TABLES.gameweekStatSync()
+                + " WHERE season_id=? AND gameweek=4", String.class, SEASON_ID)).isEqualTo("OPEN");
+
+        for (var row : provisional) {
+            if (row.path("id").asInt() == fixtureId) ((ObjectNode) row).put("finished_provisional", false);
+        }
+        fetch.setSources(catalogue, JSON.writeValueAsBytes(provisional), eventThreeLive,
+                liveOnlyPlayer(eventFourLive, 658));
+        for (int hour = 0; hour < 2; hour++) {
+            clock.advance(Duration.ofHours(1));
+            assertThat(collector(true).runCycle().selectedPlayerIds()).containsExactly(player);
+        }
+        fetch.setSources(catalogue, source, eventThreeLive, liveOnlyPlayer(eventFourLive, 658));
+        assertThat(collector(true).runCycle().selectedPlayerIds()).containsExactly(player);
+        assertThat(collector(true).runCycle().selectedPlayerIds()).isEmpty();
+
+        fetch.setSources(catalogue, changeFixtureScore(source, fixtureId, 3), eventThreeLive,
+                liveOnlyPlayer(eventFourLive, 658));
+        assertThat(collector(true).runCycle().selectedPlayerIds()).containsExactly(player);
+        fetch.setSources(catalogue, finished, eventThreeLive, liveOnlyPlayer(eventFourLive, 658));
+        assertThat(collector(true).runCycle().selectedPlayerIds()).containsExactly(player);
+    }
+
+    @Test
     void uncheckedFixtureHeaderCorrectionRefreshesOnlyItsPlayerPages() throws Exception {
         int affectedFixture = 31;
         int unaffectedFixture = 32;
@@ -3040,6 +3233,10 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
 
         assertThat(partial.state()).isEqualTo(State.RETRY_SCHEDULED);
         assertThat(partial.failedPlayerIds()).containsExactly(uncheckedPlayer);
+        assertThat(jdbc.queryForObject("SELECT last_error FROM " + TABLES.run()
+                + " WHERE state='PENDING'", String.class)).contains("Unresolved player pages: 1");
+        assertThat(jdbc.queryForObject("SELECT consecutive_fetch_failures FROM " + TABLES.run()
+                + " WHERE state='PENDING'", Integer.class)).isOne();
         assertThat(partial.committedPlayerIds()).contains(1, 28);
         assertThat(new GameweekFinalityReader(jdbc, clock, TABLES)
                 .read(SEASON_ID, season.code(), Set.of(3)).get(3).state())
@@ -3075,6 +3272,10 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
 
         assertThat(partial.state()).isEqualTo(State.RETRY_SCHEDULED);
         assertThat(partial.failedPlayerIds()).isEmpty();
+        assertThat(jdbc.queryForObject("SELECT last_error FROM " + TABLES.run()
+                + " WHERE state='PENDING'", String.class)).contains("Unresolved event-live sources: 1");
+        assertThat(jdbc.queryForObject("SELECT consecutive_fetch_failures FROM " + TABLES.run()
+                + " WHERE state='PENDING'", Integer.class)).isOne();
         assertThat(new GameweekFinalityReader(jdbc, clock, TABLES)
                 .read(SEASON_ID, season.code(), Set.of(3)).get(3).state())
                 .isEqualTo(GameweekFinality.State.FINALIZED);
@@ -6148,6 +6349,8 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         private static final byte[] EMPTY_HISTORY = "{\"history\":[]}".getBytes(java.nio.charset.StandardCharsets.UTF_8);
         private static final byte[] EMPTY_LIVE = "{\"elements\":[]}".getBytes(java.nio.charset.StandardCharsets.UTF_8);
         private final List<Endpoint> calls = new ArrayList<>();
+        private final List<OwnedSyncRequestBudget.Demand> demands = new ArrayList<>();
+        private OwnedSyncRequestBudget.Purpose blockedPurpose;
         private final List<RecordedRequest> requests = new ArrayList<>();
         private final List<RecordedRead> successfulReads = new ArrayList<>();
         private final List<Integer> successfulBodyBytes = new ArrayList<>();
@@ -6193,6 +6396,16 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         private void setEventFourLive(byte[] body) { eventFour = body; }
         private void setPlayerPage(int playerId, byte[] body) { playerPages.put(playerId, body.clone()); }
         private void deferOnPlayerCall(int call, Instant due) { deferredPageCall = call; deferUntil = due; }
+
+        @Override
+        public OwnedSyncHttpClient.Result get(Lease lease, Endpoint endpoint, int attempt, Instant floor,
+                                              OwnedSyncRequestBudget.Demand demand) {
+            demands.add(demand);
+            if (demand.purpose() == blockedPurpose) {
+                return new DeferredResult(clock.instant().plus(Duration.ofHours(8)), DeferredReason.CAPACITY_RESERVED);
+            }
+            return get(lease, endpoint, attempt, floor);
+        }
 
         @Override
         public OwnedSyncHttpClient.Result get(Lease lease, Endpoint endpoint, int failureAttempt, Instant floor) {

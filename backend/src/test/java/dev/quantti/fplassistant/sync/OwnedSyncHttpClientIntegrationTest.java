@@ -136,6 +136,28 @@ class OwnedSyncHttpClientIntegrationTest {
     }
 
     @Test
+    void reservedHistoryCapacityDoesNotSubmitHttpButDiscoveryStillWorks() throws Exception {
+        budget = new OwnedSyncRequestBudget(jdbc, tx, budgetClock, TABLES,
+                OwnedSyncRequestBudget.Limits.defaults(128));
+        AtomicInteger requests = new AtomicInteger();
+        HttpServer server = server(exchange -> {
+            requests.incrementAndGet();
+            respond(exchange, 200, new byte[0]);
+        });
+        var transport = new OwnedSyncHttpClient(budget,
+                URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/api/"),
+                Duration.ofSeconds(2), budgetClock);
+        transports.add(transport);
+        var result = transport.get(Endpoint.elementSummary(1), 1, this::readyFence,
+                new OwnedSyncRequestBudget.Demand(OwnedSyncRequestBudget.Purpose.POST_MATCH, 670));
+        assertThat(result).isInstanceOfSatisfying(DeferredResult.class,
+                wait -> assertThat(wait.reason()).isEqualTo(DeferredReason.CAPACITY_RESERVED));
+        assertThat(requests).hasValue(0);
+        assertThat(transport.get(Endpoint.bootstrap(), 1, this::readyFence)).isInstanceOf(Response.class);
+        assertThat(requests).hasValue(1);
+    }
+
+    @Test
     void selectsOnlyTheFourPublicSourcePathsAndReturnsRawReads() throws Exception {
         List<String> paths = new ArrayList<>();
         HttpServer server = server(exchange -> {

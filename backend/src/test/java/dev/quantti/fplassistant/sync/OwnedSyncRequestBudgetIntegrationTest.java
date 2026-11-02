@@ -67,6 +67,52 @@ class OwnedSyncRequestBudgetIntegrationTest {
     }
 
     @Test
+    void reservesMandatoryCapacityAndWaitsForEnoughRollingExpirations() {
+        var limits = Limits.defaults(6000);
+        budget = new OwnedSyncRequestBudget(jdbc, tx, clock, TABLES, limits);
+        Instant start = clock.instant().minus(Duration.ofHours(23));
+        jdbc.update("INSERT INTO " + TABLES.requestAttempt()
+                + "(permit_id, admitted_at, permit_expires_at, completed_at) "
+                + "SELECT md5(i::text)::uuid, ?::timestamptz+i*interval '1 second', "
+                + "?::timestamptz+i*interval '1 second'+interval '2 minutes', "
+                + "?::timestamptz+i*interval '1 second' FROM generate_series(1,4000) i",
+                Timestamp.from(start), Timestamp.from(start), Timestamp.from(start));
+        var live = new OwnedSyncRequestBudget.Demand(OwnedSyncRequestBudget.Purpose.LIVE, 670);
+        Deferred wait = deferred(budget.admit(UUID.randomUUID(), live));
+        assertThat(wait.nextDue()).isEqualTo(start.plusSeconds(395).plus(Duration.ofHours(24)));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.requestAttempt(), Integer.class))
+                .isEqualTo(4000);
+        var post = new OwnedSyncRequestBudget.Demand(OwnedSyncRequestBudget.Purpose.POST_MATCH, 670);
+        Permit permit = allowed(budget.admit(UUID.randomUUID(), post));
+        budget.complete(permit, Completion.success());
+        clock.advance(Duration.ofSeconds(1));
+        assertThat(new OwnedSyncRequestBudget(jdbc, tx, clock, TABLES, limits)
+                .admit(UUID.randomUUID(), live)).isInstanceOf(Deferred.class);
+        clock.advance(Duration.between(clock.instant(), start.plusSeconds(396).plus(Duration.ofHours(24))));
+        assertThat(budget.admit(UUID.randomUUID(), live)).isInstanceOf(Allowed.class);
+    }
+
+    @Test
+    void admissionCeilingsReserveDiscoveryThenFinalThenPostMatch() {
+        assertThat(new OwnedSyncRequestBudget.Demand(OwnedSyncRequestBudget.Purpose.LIVE, 670)
+                .ceiling(6000)).isEqualTo(3606);
+        assertThat(new OwnedSyncRequestBudget.Demand(OwnedSyncRequestBudget.Purpose.POST_MATCH, 670)
+                .ceiling(6000)).isEqualTo(5074);
+        assertThat(new OwnedSyncRequestBudget.Demand(OwnedSyncRequestBudget.Purpose.FINAL, 670)
+                .ceiling(6000)).isEqualTo(5872);
+        assertThat(OwnedSyncRequestBudget.Demand.DISCOVERY.ceiling(6000)).isEqualTo(6000);
+        assertThat(new OwnedSyncRequestBudget.Demand(OwnedSyncRequestBudget.Purpose.LIVE, 2000)
+                .ceiling(6000)).isZero();
+        assertThat(new OwnedSyncRequestBudget.Demand(OwnedSyncRequestBudget.Purpose.POST_MATCH, 670)
+                .ceiling(20)).isZero();
+        budget = new OwnedSyncRequestBudget(jdbc, tx, clock, TABLES, Limits.defaults(20));
+        assertThat(deferred(budget.admit(UUID.randomUUID(),
+                new OwnedSyncRequestBudget.Demand(OwnedSyncRequestBudget.Purpose.POST_MATCH, 670))).reason())
+                .isEqualTo(DeferredReason.CAPACITY_RESERVED);
+        assertThat(budget.admit()).isInstanceOf(Allowed.class);
+    }
+
+    @Test
     void oneSecondBoundaryIsGlobalAcrossInstancesAndLocked() throws Exception {
         Permit first = allowed(budget.admit());
         budget.complete(first, Completion.success());
