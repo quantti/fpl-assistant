@@ -2,7 +2,6 @@ package dev.quantti.fplassistant.sync;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.mock;
 
 import java.time.Duration;
 import java.util.concurrent.CountDownLatch;
@@ -12,20 +11,17 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.DefaultApplicationArguments;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
-import org.springframework.jdbc.core.JdbcTemplate;
 
 class OwnedSyncRuntimeConfigurationTest {
 
     @Test
-    void defaultOffCreatesNoOwnedRuntimeAndTouchesNoDatabase() {
-        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+    void defaultOffCreatesNoOwnedBeansWithoutDatasourceProperties() {
         new ApplicationContextRunner()
-                .withBean(JdbcTemplate.class, () -> jdbc)
                 .withUserConfiguration(OwnedSyncRuntimeConfiguration.class,
                         CoalescedPlayerHistoryImportConfiguration.class,
                         SyncOperationsConfiguration.class)
                 .run(context -> {
-                    org.assertj.core.api.Assertions.assertThat(context)
+                    assertThat(context).hasNotFailed()
                             .doesNotHaveBean("ownedSyncWorkDatabase")
                             .doesNotHaveBean(OwnedMatchdayRuntime.class)
                             .doesNotHaveBean(CoalescedPlayerHistoryImportEntrypoint.class)
