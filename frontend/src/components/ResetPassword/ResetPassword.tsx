@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Button, PasswordInput } from '@mantine/core';
 import type { Session } from '@supabase/supabase-js';
-import { supabase } from '../../auth/supabaseClient';
+import { updateRecoveryPassword } from '../../auth/supabaseClient';
 import { navigate } from '../../router';
 import PasswordResetRequest from '../SignIn/PasswordResetRequest';
 import classes from '../SignIn/SignIn.module.css';
@@ -13,7 +13,7 @@ export interface ResetPasswordProps {
 
 export default function ResetPassword(props: Readonly<ResetPasswordProps>) {
   const [accountId, setAccountId] = useState(props.session?.user.id);
-  // Keep success after local sign-out, but discard every old-account action on account switch.
+  // Discard the previous account's form and result when a replacement account arrives.
   if (props.session && props.session.user.id !== accountId) setAccountId(props.session.user.id);
   return <RecoveryFlow key={accountId} {...props} />;
 }
@@ -22,57 +22,16 @@ function RecoveryFlow({ session, initializationFailed }: Readonly<ResetPasswordP
   const [requesting, setRequesting] = useState(false);
   const [expired, setExpired] = useState(false);
   const [updated, setUpdated] = useState(false);
-  const [signingOut, setSigningOut] = useState(false);
-  const [signOutFailed, setSignOutFailed] = useState(false);
-  const pendingSignOut = useRef(false);
-
-  async function signOut() {
-    if (pendingSignOut.current) return;
-    pendingSignOut.current = true;
-    setSigningOut(true);
-    setSignOutFailed(false);
-    try {
-      const { error } = await supabase.auth.signOut({ scope: 'local' });
-      setSignOutFailed(Boolean(error));
-    } catch {
-      setSignOutFailed(true);
-    } finally {
-      pendingSignOut.current = false;
-      setSigningOut(false);
-    }
-  }
 
   let content;
   if (updated) {
-    let next = signingOut ? (
-      <p role="status">Signing out…</p>
-    ) : (
-      <a href="/login">Back to sign in</a>
-    );
-    if (signOutFailed) {
-      next = (
-        <>
-          <p className={classes.error} role="alert">
-            We could not sign out of this browser. Your password change succeeded.
-          </p>
-          <Button
-            onClick={() => {
-              void signOut();
-            }}
-            loading={signingOut}
-          >
-            Try signing out again
-          </Button>
-        </>
-      );
-    }
     content = (
       <div className={classes.card}>
         <h1 className={classes.title}>Password updated</h1>
         <p className={classes.lede} role="status">
-          Your password has been updated. Sign in with your new password.
+          Your password has been updated. Use your new password the next time you sign in.
         </p>
-        {next}
+        <a href="/app">Continue to FPL Sidekick</a>
       </div>
     );
   } else if (!session || initializationFailed || expired) {
@@ -89,11 +48,9 @@ function RecoveryFlow({ session, initializationFailed }: Readonly<ResetPasswordP
     content = (
       <PasswordForm
         key={session.user.id}
+        session={session}
         onExpired={() => setExpired(true)}
-        onUpdated={() => {
-          setUpdated(true);
-          void signOut();
-        }}
+        onUpdated={() => setUpdated(true)}
       />
     );
   }
@@ -106,9 +63,10 @@ function RecoveryFlow({ session, initializationFailed }: Readonly<ResetPasswordP
 }
 
 function PasswordForm({
+  session,
   onExpired,
   onUpdated,
-}: Readonly<{ onExpired: () => void; onUpdated: () => void }>) {
+}: Readonly<{ session: Session; onExpired: () => void; onUpdated: () => void }>) {
   const [password, setPassword] = useState('');
   const [confirmation, setConfirmation] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -133,8 +91,8 @@ function PasswordForm({
     pending.current = true;
     setBusy(true);
     try {
-      const { error: updateError } = await supabase.auth.updateUser({ password });
-      // An account change unmounts this form; its late response must not sign out the new user.
+      const { error: updateError } = await updateRecoveryPassword(session, password);
+      // An account change unmounts this form; do not show its late result for the new user.
       if (!mounted.current) return;
       if (!updateError) {
         setPassword('');

@@ -37,14 +37,6 @@
       "count": 1
     }
   },
-  "src/auth/supabaseClient.ts": {
-    "@typescript-eslint/no-unsafe-argument": {
-      "count": 2
-    },
-    "@typescript-eslint/no-unsafe-assignment": {
-      "count": 2
-    }
-  },
   "src/auth/useProfile.ts": {
     "@typescript-eslint/no-unsafe-assignment": {
       "count": 1

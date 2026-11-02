@@ -1,4 +1,4 @@
-import { createClient } from '@supabase/supabase-js';
+import { createClient, type Session } from '@supabase/supabase-js';
 
 // The project URL and the publishable key are public by design: they ship inside this bundle,
 // and anyone who opens devtools can read them. What keeps the database safe is row level
@@ -35,6 +35,27 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     detectSessionInUrl: true,
   },
 });
+
+/** SDK updates must not overwrite a shared session that changed while the request was pending. */
+export async function updateRecoveryPassword(session: Session, password: string) {
+  const isolated = createClient(supabaseUrl, supabaseAnonKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+      storageKey: `password-reset-${crypto.randomUUID()}`,
+    },
+  });
+  try {
+    const { error } = await isolated.auth.setSession({
+      access_token: session.access_token,
+      refresh_token: session.refresh_token,
+    });
+    return error ? { data: { user: null }, error } : await isolated.auth.updateUser({ password });
+  } finally {
+    await isolated.auth.dispose();
+  }
+}
 
 /** The current access token, or null when signed out. Refreshed by the client as needed. */
 export async function accessToken(): Promise<string | null> {
