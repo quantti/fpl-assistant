@@ -299,6 +299,10 @@ public final class OwnedSyncRequestBudget {
 
         String durableMessage() { return "HTTP budget deferred: " + name(); }
 
+        String durableMessage(Purpose purpose) {
+            return durableMessage() + (purpose == Purpose.FINAL ? "; purpose=FINAL" : "");
+        }
+
         boolean expectedWait() {
             return this == ATTEMPT_LIMIT || this == CAPACITY_RESERVED || this == COOLDOWN
                     || this == MINIMUM_SPACING || this == LIVE_PERMITS;
@@ -306,7 +310,8 @@ public final class OwnedSyncRequestBudget {
 
         static DeferredReason fromDurableMessage(String message) {
             for (var reason : values()) {
-                if (reason.durableMessage().equals(message)) return reason;
+                if (reason.durableMessage().equals(message)
+                        || reason.durableMessage(Purpose.FINAL).equals(message)) return reason;
             }
             return null;
         }
