@@ -572,7 +572,7 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
                 PageReceipt receipt = pageReceipts.get(playerId);
                 if (receipt != null && receipt.generation() == lease.generation()) {
                     return restartAppearanceGeneration(lease, requestedPlayers, committedPlayers, failedPlayers,
-                            finalPendingEvents);
+                            finalPendingEvents, failedLiveEvents);
                 }
             }
         }
@@ -615,7 +615,7 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
         }
         if (sameGenerationPageInvalidated) {
             return restartAppearanceGeneration(lease, requestedPlayers, committedPlayers, failedPlayers,
-                    finalPendingEvents);
+                    finalPendingEvents, failedLiveEvents);
         }
 
         List<Integer> orderedPlayers = needed.entrySet().stream()
@@ -878,11 +878,10 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
 
     private CycleResult restartAppearanceGeneration(Lease lease, List<Integer> requested,
                                                      List<Integer> committed, List<Integer> failed,
-                                                     List<Integer> finalPending) {
+                                                     List<Integer> finalPending, List<Integer> failedLiveEvents) {
         Instant due = clock.instant().plus(CYCLE_INTERVAL);
-        store.supersedeIncrementalCoreImport(lease,
-                OwnedSyncStore.IncrementalSupersedeReason.APPEARANCE_EVIDENCE_ADVANCED);
-        store.enqueueIncrementalCoreImport(season, due);
+        store.restartIncrementalAppearance(lease, season, due,
+                failed.isEmpty() && failedLiveEvents.isEmpty() ? null : failureSummary(failed, failedLiveEvents));
         return result(State.RETRY_SCHEDULED, requested, committed, failed, finalPending, due);
     }
 
