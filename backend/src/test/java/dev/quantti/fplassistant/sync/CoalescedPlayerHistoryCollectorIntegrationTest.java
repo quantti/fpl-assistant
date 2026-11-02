@@ -664,6 +664,20 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
     }
 
     @Test
+    void finalCapacityWaitPersistsItsPurposeWithoutClaimingCompletion() throws Exception {
+        fetch.setSources(bootstrap, fixtures, eventThreeLive, eventFourLive);
+        fetch.blockedPurpose = OwnedSyncRequestBudget.Purpose.FINAL;
+        var result = collector(true).runCycle();
+        assertThat(result.state()).isEqualTo(State.RETRY_SCHEDULED);
+        assertThat(result.committedPlayerIds()).isEmpty();
+        assertThat(jdbc.queryForObject("SELECT last_error FROM " + TABLES.run()
+                + " ORDER BY generation DESC LIMIT 1", String.class))
+                .isEqualTo("HTTP budget deferred: CAPACITY_RESERVED; purpose=FINAL");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.gameweekStatSync()
+                + " WHERE state='FINALIZED'", Integer.class)).isZero();
+    }
+
+    @Test
     void realPageFailuresRemainVisibleWhenLaterPagesWaitForAdmission() throws Exception {
         int fixtureId = fixtureExplainedFor(eventFourLive, 658);
         byte[] source = emptyFixtureStats(onlyCollectorFixtureFinished(fixtures, fixtureId));

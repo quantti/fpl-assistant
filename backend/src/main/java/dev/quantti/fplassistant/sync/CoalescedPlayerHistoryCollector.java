@@ -126,6 +126,8 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
         List<Integer> failedLiveEvents = new ArrayList<>();
         Instant deferredUntil = null;
         DeferredReason deferredReason = null;
+        String deferredError = null;
+        int deferredPriority = Integer.MAX_VALUE;
 
         Instant cycleFloor;
         try {
@@ -446,7 +448,11 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
                 }
                 missingLiveEvents.add(eventId);
                 deferredUntil = liveResult.nextDue();
-                deferredReason = liveResult.deferral();
+                if (priority < deferredPriority) {
+                    deferredPriority = priority;
+                    deferredReason = liveResult.deferral();
+                    deferredError = liveResult.error();
+                }
                 continue;
             }
             if (!liveResult.succeeded()) {
@@ -625,7 +631,11 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
             lease = pageResult.lease();
             if (pageResult.deferred()) {
                 deferredUntil = pageResult.nextDue();
-                deferredReason = pageResult.deferral();
+                if (need.priority() <= deferredPriority || !pageResult.deferral().expectedWait()) {
+                    deferredPriority = need.priority();
+                    deferredReason = pageResult.deferral();
+                    deferredError = pageResult.error();
+                }
                 break;
             }
             if (!pageResult.succeeded()) {
@@ -694,7 +704,7 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
                     store.retryFetchFailure(lease, retryDue, failureSummary(failedPlayers, failedLiveEvents));
                 } else {
                     store.retry(lease, retryDue, deferredReason == null
-                            ? failureSummary(failedPlayers, missingLiveEvents) : deferredReason.durableMessage());
+                            ? failureSummary(failedPlayers, missingLiveEvents) : deferredError);
                 }
                 return result(State.RETRY_SCHEDULED, requestedPlayers, committedPlayers, failedPlayers,
                         finalPendingEvents, retryDue);
@@ -928,7 +938,7 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
         }
         OwnedSyncHttpClient.Result result = fetch.get(lease, endpoint, Math.max(1, lease.attemptCount()), floor, demand);
         if (result instanceof DeferredResult deferred) {
-            return new RequestResult(lease, null, deferred.nextDue(), deferred.reason().durableMessage(), deferred.reason());
+            return new RequestResult(lease, null, deferred.nextDue(), deferred.reason().durableMessage(demand.purpose()), deferred.reason());
         }
         if (result instanceof Failure failure) {
             return new RequestResult(lease, null, failure.nextDue(), failure.message(), null);

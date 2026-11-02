@@ -150,10 +150,22 @@ public final class SyncOperations {
                 // an old recovery, or a disabled outbox as proof that the current incident cleared.
                 Long open = jdbc.queryForObject("SELECT count(*) FROM " + tables.alert() + " a "
                         + "WHERE a.event_type='INCIDENT' "
-                        + (incrementalImporter ? "AND a.category<>'" + OwnedSyncWatchdog.BUDGET_CATEGORY + "' " : "")
+                        + (incrementalImporter ? "AND a.category<>'" + OwnedSyncWatchdog.BUDGET_CATEGORY + "' "
+                            + "AND NOT (a.category='INCREMENTAL_GAMEWEEK_OVERDUE' AND EXISTS (SELECT 1 FROM "
+                            + tables.run() + " w JOIN " + tables.plannerRuntime()
+                            + " m ON m.instance_id='mode:' || w.season AND m.runtime_epoch=w.runtime_epoch "
+                            + "AND m.runtime_mode='ACTIVE' WHERE w.season=a.season AND w.runtime_mode='ACTIVE' "
+                            + "AND w.producer_key='INCREMENTAL_CORE' AND w.kind='PLAYER_HISTORY' "
+                            + "AND w.coalescing_key='incremental-core-import' AND w.publication_key='incremental-core-import' "
+                            + "AND w.state='PENDING' AND w.consecutive_fetch_failures=0 "
+                            + "AND w.last_error IN (?,?) AND w.updated_at>=?)) " : "")
                         + "AND NOT EXISTS (SELECT 1 FROM "
                         + tables.alert() + " r WHERE r.incident_key=a.incident_key "
-                        + "AND r.occurrence=a.occurrence AND r.event_type='RECOVERY')", Long.class);
+                        + "AND r.occurrence=a.occurrence AND r.event_type='RECOVERY')", Long.class,
+                        incrementalImporter ? new Object[] {
+                            OwnedSyncRequestBudget.DeferredReason.ATTEMPT_LIMIT.durableMessage(OwnedSyncRequestBudget.Purpose.FINAL),
+                            OwnedSyncRequestBudget.DeferredReason.CAPACITY_RESERVED.durableMessage(OwnedSyncRequestBudget.Purpose.FINAL),
+                            Timestamp.from(clock.instant().minus(Duration.ofHours(2))) } : new Object[0]);
                 Instant cutoff = clock.instant().minus(HEALTH_LIMIT);
                 return localMode != OwnedSyncMode.OFF && fresh(planner, cutoff)
                         && fresh(watchdog, cutoff) && open != null && open == 0;
