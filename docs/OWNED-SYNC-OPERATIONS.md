@@ -94,7 +94,7 @@ confirmed only `resendInterval` changed; delivery and a full 24-hour repeat were
 The owner chose this built-in fixed interval rather than a custom escalation scheduler.
 Public-health monitor **19** was untouched; the old monitor **18** is absent.
 
-### Importer capacity policy (implemented locally 2026-11-02; not deployed)
+### Importer capacity policy (PR #184, 2026-11-02; not deployed)
 
 The incremental collector treats provisional full time as a post-match collection state: one
 revision-scoped sweep, then only missing/stale pages or detected corrections, not hourly history
@@ -106,7 +106,13 @@ These share the existing ledger; they are not extra quotas. Failed attempts stil
 
 For the selected Kuma route, importer `/ops/sync/health` excludes the explicit
 `REQUEST_BUDGET_BLOCKED` category, including already-open occurrences. Capacity waiting alone
-therefore causes neither DOWN nor recovery mail on subsequent cycles. Authenticated operator
+therefore causes neither DOWN nor recovery mail on subsequent cycles. An overdue-finality incident
+is also non-paging while the same-season, current ACTIVE epoch has a fresh pending importer with
+zero real fetch failures and either an exact FINAL-capacity wait or no error plus a currently
+exhausted final-purpose ledger ceiling. Real failures are retained across partial finalisation and
+requeue. One review advisory remains: source supersession can change that capacity proof and may
+still re-enable an overdue alert; do not claim every transition corner has been eliminated.
+Authenticated operator
 status exposes actual usage/cap, next attempt expiry and pending run reason/next coordinator time;
 expiry or a coordinator tick is not a promise of HTTP admission. More than two hours without
 coordinator progress, unresolved admission/settlement, stale heartbeats, database failure and

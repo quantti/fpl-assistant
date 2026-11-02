@@ -1,6 +1,6 @@
 # Incremental importer: bounded collection and non-paging budget waits
 
-**PROGRESS:** Tasks 1–5/6 done locally at tested code revision `f58d610`; publication/PR review and owner-authorized rollout remain pending. No production or Kuma change made.
+**PROGRESS:** Tasks 1–5/6 done and PR #184 published/reviewed at code revision `50d71e6` (224 tests pass; quorum CLEAN, one advisory). Task 6 owner merge/rollout observation remains pending. No production or Kuma change made.
 
 ## Goal and owner request
 
@@ -378,10 +378,53 @@ returned before another event's mandatory pages were processed. A focused regres
 with zero committed required pages. The collector now orders events by priority and retains normal
 capacity waits without preventing other events' required pages; unresolved admission still stops
 immediately. The collector class rerun passed 67/67, then the integrated run above passed. Changes
-remain limited to collection, admission, operations diagnostics/health and their tests. No independent
-reviewer was delegated. Large full-league/DGW collector tests were not added; existing coalescing/DGW
+remain limited to collection, admission, operations diagnostics/health and their tests. Before publication no independent
+reviewer had been delegated; the subsequent owner-authorized PR panel is recorded below. Large full-league/DGW collector tests were not added; existing coalescing/DGW
 coverage, small collector regressions, real-DB admission seams and the lightweight 48-hour admission
 trace provide separate evidence rather than claiming a sustained full-league load test.
+
+### Publication and three-round PR review
+
+Owner explicitly authorized pushing the feature branch/opening PR, then separately authorized
+merging current `origin/master` into it without rewriting history. PR **#184** targets `master`.
+The merge preserved master's validated-supersession recovery logic and added its tests to the
+connected selection. The first post-merge integrated run passed **221/221** at `fdfc734`.
+
+Sol/Astra/Luna round 1 confirmed that later admission deferrals could overwrite real source
+failures. A new regression failed first with `HTTP budget deferred: COOLDOWN` instead of the
+real failed-page summary. Fix `681e408` preserves actual page/live failures and advances their
+failure counter while capacity-only runs remain non-failures.
+
+The owner explicitly accepted the advisory about budget-caused overdue-finality email for a fix.
+`14b608a` persists FINAL purpose on admission reasons and limits non-paging treatment to fresh,
+same-season, current-epoch pending importer work with no genuine fetch failures. Tests reject
+wrong purpose, real failures, stale progress and a stale epoch. `50d71e6` additionally recognizes
+a fresh clean successor using the **actual** rolling ledger and production final-purpose ceiling,
+not fabricated prior wait metadata; a regression first failed before that proof was added.
+
+Round 2 confirmed another failure-loss path: a completed checked gameweek caused the remaining
+run's error and failure counter to disappear. Two existing cross-event regressions failed first
+on NULL successor error. `8a67b96` completes and requeues atomically while carrying real remaining
+failures, and preserves them through final-source retry paths. Independent completed GW finality
+still succeeds, without concealing another event's real failure.
+
+Final tested/reviewed code revision **`50d71e6`**: **224/224 tests, 12 classes, zero failures/errors/
+skips**, using the exact selection and resource isolation above. PR lightweight checks passed:
+https://github.com/quantti/fpl-assistant/actions/runs/41479950637. Backend CI and deploy are deliberately
+skipped for PRs; they are not verified by that green check. The worktree was clean at verification.
+
+Round 3: **CLEAN by quorum, 0 confirmed actionable findings, 1 advisory**. All three reviewers
+completed concurrently; Sol and Luna approved, Astra retained the singleton timing concern that
+source supersession can change the proof of capacity waiting and re-enable an overdue alert.
+The bounded review stopped here; do not claim that corner eliminated. No extra implementation
+was delegated. Earlier singleton observations (optional event-live requests preceding mandatory
+pages, old pre-upgrade failure counters, alternate webhook/one rollout UP) remain follow-ups,
+not accepted scope expansions or claims of production readiness. The selected Kuma-route
+contract does not modify alternate webhook notification delivery.
+
+Measured final panel: 3m26s, 2.2M total tokens, reported cost $2.336; these are tool output, not estimates.
+Only the parent ran tests; reviewers performed read-only source/Git inspection. No merge to master,
+production write, budget reset, notification-setting change or real mail test was performed.
 
 ## Explicit limits
 
@@ -389,5 +432,6 @@ No finite cap guarantees every live refresh and arbitrary source corrections com
 This plan prioritizes post-match/final evidence and truthful delayed-data diagnostics over repeated
 live refreshes. It does not guarantee Supabase egress, memory usage, FPL availability or discovery of
 history-only corrections to players no longer fetched; existing manual reconciliation limits remain.
-No production modification, hosted CI result, independent panel review, email delivery test or
-24-hour production observation is claimed.
+No production modification, full backend CI result, email delivery test or 24-hour production
+observation is claimed. PR CI is lightweight; the independent panel's quorum result and advisory
+are recorded below.

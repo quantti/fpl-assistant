@@ -1,6 +1,6 @@
 # Status — Phase 1
 
-## Importer request budget and non-paging waits (2026-11-02; local)
+## Importer request budget and non-paging waits (2026-11-02; PR #184)
 
 Read-only Kuma/DB/Fly investigation traced hourly importer DOWN/UP mail to the 6,000-request
 rolling-day ceiling, not a network outage. Nine GW9 fixtures were provisionally finished but
@@ -17,13 +17,25 @@ budget occurrences are non-paging too. Operator-only status discloses usage/cap 
 reasons. Unresolved admission, stale heartbeats and a coordinator with no progress for over two
 hours still alert. Monitor 19, SMTP settings, raw FPL flags, finality and reader guards are unchanged.
 
-Genuine red/green regressions and the connected **211/211 tests across 12 classes** pass at code/test
-revision `f58d610`, using dummy AI keys and disposable `127.0.0.1:55432`, one Gradle unit under a
-1536 MiB/no-swap scope and host-memory guard. A 48-hour admission trace corrected insufficient
-source overhead in the original reserve estimate. Direct review fixed cross-event priority
-inversion; the final integrated rerun is green. No local full suite, independent panel, hosted CI,
-production change or mail delivery test was performed. Publication/PR review and owner-authorized
-rollout remain pending; an already DOWN monitor may send one UP notification when deployed.
+Genuine red/green regressions and the final connected **224/224 tests across 12 classes** pass at
+code/test revision `50d71e6`, using dummy AI keys and disposable `127.0.0.1:55432`, one Gradle unit
+under a 1536 MiB/no-swap scope and host-memory guard. A 48-hour admission trace corrected insufficient
+source overhead in the original reserve estimate. The owner-authorized merge of current master
+`0a37729` preserved its validated-supersession recovery fix. Review fixes retain real page/live
+failures beside capacity waits and atomically carry them into the next run when another GW finishes.
+
+The owner also explicitly approved non-paging budget-caused finality delay: a fresh current-epoch
+pending importer with no real fetch failures provides proof via its exact FINAL-capacity reason,
+or a fresh clean successor whose rolling ledger still exhausts final-purpose admission. Other
+reasons, stale progress/epochs and genuine faults remain paging-eligible; finality is never fabricated.
+
+[PR #184](https://github.com/quantti/fpl-assistant/pull/184) is published and mergeable. Its lightweight
+CI passed (backend CI and deployment deliberately skipped). Sol/Astra/Luna round 3 returned **CLEAN
+by quorum**, zero confirmed blockers, with **one singleton advisory**: source supersession may still
+re-enable an overdue alert as proof of capacity waiting changes. That timing corner is not claimed
+eliminated or production-verified. Earlier confirmed failure-loss findings are fixed and re-reviewed.
+No local full suite, production change or mail delivery test was performed. Owner merge/rollout and
+24-hour observation remain pending; an already DOWN monitor may send one UP notification on deployment.
 [Plan, exact test command and limits](superpowers/plans/2026-11-02-importer-budget-and-alerts.md).
 ## Test audit — research, bounded changes and publication (2026-10-19)
 
