@@ -108,8 +108,9 @@ public final class CoalescedPlayerHistoryCollector implements CoalescedPlayerHis
         Run run = store.enqueueIncrementalCoreImport(season, now);
         Optional<Lease> acquired = store.acquireIncrementalCoreImport(season.code(), owner, LEASE);
         if (acquired.isEmpty()) {
-            return new CycleResult(run.state() == OwnedSyncStore.RunState.LEASED
-                    ? State.BUSY : State.DEFERRED, List.of(), List.of(), List.of(), List.of(), run.dueAt());
+            Optional<Instant> leaseExpiry = store.incrementalLeaseExpiry(run.generation());
+            return new CycleResult(leaseExpiry.isPresent() ? State.BUSY : State.DEFERRED,
+                    List.of(), List.of(), List.of(), List.of(), leaseExpiry.orElse(run.dueAt()));
         }
         return collect(acquired.get());
     }

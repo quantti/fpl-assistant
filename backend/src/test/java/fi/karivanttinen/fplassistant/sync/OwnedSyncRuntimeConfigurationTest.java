@@ -4,6 +4,21 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.time.Duration;
+import java.time.Instant;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ThreadFactory;
+import org.mockito.ArgumentCaptor;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.mockStatic;
+import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -86,7 +101,63 @@ class OwnedSyncRuntimeConfigurationTest {
     }
 
     @Test
-    void hourlyRuntimeRunsOneCycleImmediatelyAndUsesAnHourlyFixedDelay() throws Exception {
+    void busyRuntimeRetriesAtLeaseExpiryThenReturnsToHourlyCadence() {
+        var scheduler = mock(ScheduledExecutorService.class);
+        try (var executors = mockStatic(Executors.class)) {
+            executors.when(() -> Executors.newSingleThreadScheduledExecutor(any(ThreadFactory.class)))
+                    .thenReturn(scheduler);
+            var entrypoint = mock(CoalescedPlayerHistoryImportEntrypoint.class);
+            when(entrypoint.runCycle()).thenReturn(
+                    new CoalescedPlayerHistoryCollector.CycleResult(CoalescedPlayerHistoryCollector.State.BUSY,
+                            java.util.List.of(), java.util.List.of(), java.util.List.of(), java.util.List.of(),
+                            Instant.now().plusSeconds(240)),
+                    new CoalescedPlayerHistoryCollector.CycleResult(CoalescedPlayerHistoryCollector.State.COMPLETED,
+                            java.util.List.of(), java.util.List.of(), java.util.List.of(), java.util.List.of(), null));
+            var runtime = new CoalescedPlayerHistoryImportRuntime(entrypoint, () -> 0);
+            try {
+                runtime.start();
+                var callbacks = ArgumentCaptor.forClass(Runnable.class);
+                var delays = ArgumentCaptor.forClass(Long.class);
+                verify(scheduler).schedule(callbacks.capture(), eq(0L), eq(TimeUnit.MILLISECONDS));
+                callbacks.getValue().run();
+                verify(scheduler, times(2)).schedule(callbacks.capture(), delays.capture(), eq(TimeUnit.MILLISECONDS));
+                assertThat(delays.getValue()).isBetween(235_000L, 241_000L);
+                callbacks.getValue().run();
+                verify(scheduler, times(3)).schedule(callbacks.capture(), delays.capture(), eq(TimeUnit.MILLISECONDS));
+                assertThat(delays.getValue()).isEqualTo(Duration.ofHours(1).toMillis());
+            } finally {
+                runtime.stop();
+            }
+        }
+    }
+
+    @Test
+    void staleBusyHintCannotSpinAndStopCancelsThePendingRetry() {
+        var scheduler = mock(ScheduledExecutorService.class);
+        var pending = mock(ScheduledFuture.class);
+        doReturn(pending).when(scheduler).schedule(any(Runnable.class), anyLong(), eq(TimeUnit.MILLISECONDS));
+        try (var executors = mockStatic(Executors.class)) {
+            executors.when(() -> Executors.newSingleThreadScheduledExecutor(any(ThreadFactory.class)))
+                    .thenReturn(scheduler);
+            var entrypoint = mock(CoalescedPlayerHistoryImportEntrypoint.class);
+            when(entrypoint.runCycle()).thenReturn(new CoalescedPlayerHistoryCollector.CycleResult(
+                    CoalescedPlayerHistoryCollector.State.BUSY, java.util.List.of(), java.util.List.of(),
+                    java.util.List.of(), java.util.List.of(), Instant.now().minusSeconds(60)));
+            var runtime = new CoalescedPlayerHistoryImportRuntime(entrypoint, () -> 0);
+            runtime.start();
+            var callbacks = ArgumentCaptor.forClass(Runnable.class);
+            verify(scheduler).schedule(callbacks.capture(), eq(0L), eq(TimeUnit.MILLISECONDS));
+            callbacks.getValue().run();
+            verify(scheduler).schedule(callbacks.capture(), eq(1_000L), eq(TimeUnit.MILLISECONDS));
+            runtime.stop();
+            verify(pending).cancel(false);
+            callbacks.getValue().run();
+            verify(scheduler, times(2)).schedule(any(Runnable.class), anyLong(), eq(TimeUnit.MILLISECONDS));
+        }
+    }
+
+    @Test
+    void hourlyRuntimeRunsOneCycleImmediatelyAndUsesAnHourlyDelay() throws Exception {
         AtomicInteger runs = new AtomicInteger();
         AtomicInteger maintenanceRuns = new AtomicInteger();
         CountDownLatch firstRun = new CountDownLatch(1);

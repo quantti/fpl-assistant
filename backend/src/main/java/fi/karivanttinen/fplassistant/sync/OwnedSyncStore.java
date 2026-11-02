@@ -230,6 +230,14 @@ public final class OwnedSyncStore {
         }
     }
 
+    /** A BUSY caller waits for the actual lease, not the run's already elapsed due time. */
+    Optional<Instant> incrementalLeaseExpiry(long generation) {
+        return jdbc.query("SELECT lease_expires_at FROM " + tables.run()
+                        + " WHERE generation=? AND producer_key=? AND state='LEASED'",
+                (rs, row) -> rs.getTimestamp(1).toInstant(), generation, INCREMENTAL_CORE_PRODUCER)
+                .stream().findFirst();
+    }
+
     /** Claims only this collector's active-season run; legacy dispatchers cannot see it. */
     Optional<Lease> acquireIncrementalCoreImport(String season, String owner, Duration duration) {
         String validSeason = bounded("season", season, 10);
