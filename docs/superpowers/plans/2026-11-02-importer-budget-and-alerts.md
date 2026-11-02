@@ -1,6 +1,6 @@
 # Incremental importer: bounded collection and non-paging budget waits
 
-**PROGRESS:** Tasks 1–5/6 done and PR #184 published/reviewed at code revision `50d71e6` (224 tests pass; quorum CLEAN, one advisory). Task 6 owner merge/rollout observation remains pending. No production or Kuma change made.
+**PROGRESS:** Tasks 1–5/6 done; PR #184 review correction verified at `94b4927` (227 tests pass; quorum CLEAN, one separate follow-up). Task 6 owner merge/rollout observation remains pending. No production or Kuma change made.
 
 ## Goal and owner request
 
@@ -425,6 +425,40 @@ contract does not modify alternate webhook notification delivery.
 Measured final panel: 3m26s, 2.2M total tokens, reported cost $2.336; these are tool output, not estimates.
 Only the parent ran tests; reviewers performed read-only source/Git inspection. No merge to master,
 production write, budget reset, notification-setting change or real mail test was performed.
+
+### Owner-requested review correction after `81a6c4f`
+
+A fresh PR review confirmed the previously singleton source-supersession timing defect with two
+independent reviewers. Parent additionally reproduced health returning DOWN for an executing retry
+and a discovery request refused at the hard cap, with fresh heartbeats and no real fault. The owner
+requested the fix. This supersedes the original source-supersession advisory above; that specific
+transition is no longer intentionally deferred.
+
+`47e0ad4` adds a compact season-qualified `incremental-capacity-wait` receipt in the existing owned
+receipt table, written only after real FINAL or discovery ATTEMPT_LIMIT/CAPACITY_RESERVED admission
+refusal with zero preceding real fetch failures. It is linked to the actual run generation/ACTIVE
+epoch, survives LEASED and validated SUPERSEDED transitions, and is removed by full completion,
+real fetch failure or terminal/non-admission error. Partial completion/requeue retains it only for
+pure continuing expected waits. No schema, generic queue, request-cap increase, finality promotion,
+notification-setting change or invented recovery event is involved.
+
+The exact health regression failed first against old behavior. Collector-level tests cover a
+real price-only source supersession followed by another wait, eventual checked completion and
+receipt deletion, real-fetch and invalid-source cleanup, discovery refusal and exclusion of ordinary
+post-match waits from final-capacity proof. Health tests cover executing leases, no pending successor,
+stale evidence/epoch and an independent real incident. A fix-review singleton exposed freshness
+being measured only from the original refusal: the second hourly retry can begin after two hours.
+Parent reproduced that assertion failure and `94b4927` now measures freshness from the later actual
+receipt/run transition, with both future-guarded; unrelated new generations cannot renew old proof.
+
+Final fix evidence at **`94b4927`**: the exact connected 12-class command above passes **227/227**,
+zero failures/errors/skips, disposable `127.0.0.1:55432`, dummy provider keys, one Gradle unit under
+the 1536 MiB/no-swap cgroup and host-memory guard. No local full suite or production probe occurred.
+Sol/Astra/Luna bounded fix re-review completed 3/3, **CLEAN by quorum**, zero confirmed actionable
+findings. One separate singleton follow-up remains: an appearance-supersession branch may preserve
+capacity proof beside a live-source failure already observed in that cycle. It was not implemented
+as another scope expansion and is not claimed eliminated. No production/mail-delivery claim follows
+from these tests or the panel. Documentation-only closeout follows the frozen tested code.
 
 ## Explicit limits
 

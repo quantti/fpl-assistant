@@ -30,12 +30,23 @@ or a fresh clean successor whose rolling ledger still exhausts final-purpose adm
 reasons, stale progress/epochs and genuine faults remain paging-eligible; finality is never fabricated.
 
 [PR #184](https://github.com/quantti/fpl-assistant/pull/184) is published and mergeable. Its lightweight
-CI passed (backend CI and deployment deliberately skipped). Sol/Astra/Luna round 3 returned **CLEAN
-by quorum**, zero confirmed blockers, with **one singleton advisory**: source supersession may still
-re-enable an overdue alert as proof of capacity waiting changes. That timing corner is not claimed
-eliminated or production-verified. Earlier confirmed failure-loss findings are fixed and re-reviewed.
-No local full suite, production change or mail delivery test was performed. Owner merge/rollout and
-24-hour observation remain pending; an already DOWN monitor may send one UP notification on deployment.
+CI passed (backend CI and deployment deliberately skipped). A fresh owner-requested review then
+confirmed that source supersession, executing retries and discovery exhaustion could still restore
+capacity-only DOWN alerts. That finding is now fixed at code revision **`94b4927`**: an epoch-linked
+`incremental-capacity-wait` receipt records actual FINAL/discovery capacity refusal, survives leases
+and validated supersession, and is cleared by full completion or real/terminal failure. Partial
+completion carries only a genuine continuing wait. Freshness follows the later real wait/run
+transition; old-epoch, future or stalled evidence still refuses non-paging treatment.
+
+The new transition regression failed first; collector tests exercise real price-only supersession,
+completion, failure cleanup and discovery refusal. The connected **227/227 tests across 12 classes**
+pass at `94b4927` under the same isolated resource guards. Sol/Astra/Luna fix re-review is **CLEAN
+by quorum**, zero confirmed blockers, one singleton follow-up: an appearance-supersession branch
+can retain a capacity receipt alongside an already observed live-source failure. That separate
+mixed-failure corner is not claimed fixed. Earlier confirmed failure-loss findings are fixed and
+re-reviewed. No local full suite, production change or mail delivery test was performed. Owner
+merge/rollout and 24-hour observation remain pending; an already DOWN monitor may send one UP
+notification on deployment.
 [Plan, exact test command and limits](superpowers/plans/2026-11-02-importer-budget-and-alerts.md).
 ## Test audit — research, bounded changes and publication (2026-10-19)
 

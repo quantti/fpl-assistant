@@ -107,11 +107,15 @@ These share the existing ledger; they are not extra quotas. Failed attempts stil
 For the selected Kuma route, importer `/ops/sync/health` excludes the explicit
 `REQUEST_BUDGET_BLOCKED` category, including already-open occurrences. Capacity waiting alone
 therefore causes neither DOWN nor recovery mail on subsequent cycles. An overdue-finality incident
-is also non-paging while the same-season, current ACTIVE epoch has a fresh pending importer with
-zero real fetch failures and either an exact FINAL-capacity wait or no error plus a currently
-exhausted final-purpose ledger ceiling. Real failures are retained across partial finalisation and
-requeue. One review advisory remains: source supersession can change that capacity proof and may
-still re-enable an overdue alert; do not claim every transition corner has been eliminated.
+is also non-paging while the same-season, current ACTIVE epoch has fresh capacity proof and no
+known real failure. Actual FINAL/discovery refusal records an `incremental-capacity-wait` receipt;
+it survives executing retries and validated source supersession, including the interval before a
+new run exists. Full completion or genuine/terminal failure clears it, while pure continuing waits
+survive partial completion/requeue. Freshness follows the latest actual wait or linked run transition;
+old-epoch, future or stalled proof is rejected. The previous pending-run/ledger checks remain for
+already-running upgrade cases. A separate review follow-up remains for an appearance-supersession
+branch that can retain proof alongside an observed live-source failure; no blanket failure-masking
+or production-readiness claim is made.
 Authenticated operator
 status exposes actual usage/cap, next attempt expiry and pending run reason/next coordinator time;
 expiry or a coordinator tick is not a promise of HTTP admission. More than two hours without
