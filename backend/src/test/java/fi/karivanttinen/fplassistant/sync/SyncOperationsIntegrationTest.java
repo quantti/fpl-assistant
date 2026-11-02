@@ -40,6 +40,7 @@ class SyncOperationsIntegrationTest {
 
     @BeforeEach
     void reset() {
+        jdbc.update("DELETE FROM " + TABLES.requestAttempt());
         jdbc.update("DELETE FROM " + TABLES.alert());
         jdbc.update("DELETE FROM " + TABLES.plannerSlot());
         jdbc.update("DELETE FROM " + TABLES.plannerRuntime());
@@ -187,7 +188,7 @@ class SyncOperationsIntegrationTest {
     @Test
     void overdueFinalityIsNonPagingOnlyDuringProvedFreshFinalCapacityWait() {
         var importer = new SyncOperations(jdbc, tx, Clock.fixed(NOW, ZoneOffset.UTC), TABLES,
-                OwnedSyncMode.ACTIVE, false, false, true, true);
+                OwnedSyncMode.ACTIVE, false, false, true, true, null, false, 6000);
         jdbc.update("INSERT INTO " + TABLES.plannerRuntime()
                         + "(instance_id,started_at,heartbeat_at) VALUES (?,?,?),(?,?,?)",
                 "importer:current", Timestamp.from(NOW), Timestamp.from(NOW),
@@ -205,6 +206,17 @@ class SyncOperationsIntegrationTest {
                         + "VALUES ('incremental-gameweek:2026-27:9',1,'INCIDENT','INCREMENTAL_GAMEWEEK_OVERDUE',"
                         + "'WARNING','2026-27','{}','EXTERNAL',?)", Timestamp.from(NOW));
         assertThat(importer.healthy()).isTrue();
+        jdbc.update("UPDATE " + TABLES.run() + " SET last_error=NULL WHERE generation=?", run);
+        assertThat(importer.healthy()).isFalse();
+        jdbc.update("DELETE FROM " + TABLES.requestAttempt());
+        jdbc.update("INSERT INTO " + TABLES.requestAttempt()
+                + "(permit_id,admitted_at,permit_expires_at,completed_at) SELECT md5(i::text)::uuid,"
+                + "?::timestamptz,?::timestamptz,?::timestamptz FROM generate_series(1,5872) i",
+                Timestamp.from(NOW.minusSeconds(60)), Timestamp.from(NOW.plusSeconds(60)),
+                Timestamp.from(NOW.minusSeconds(59)));
+        assertThat(importer.healthy()).isTrue();
+        jdbc.update("DELETE FROM " + TABLES.requestAttempt());
+        assertThat(importer.healthy()).isFalse();
         jdbc.update("UPDATE " + TABLES.run() + " SET last_error='HTTP budget deferred: CAPACITY_RESERVED' "
                 + "WHERE generation=?", run);
         assertThat(importer.healthy()).isFalse();
