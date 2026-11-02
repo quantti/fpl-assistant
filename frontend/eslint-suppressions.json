@@ -56,11 +56,6 @@
       "count": 2
     }
   },
-  "src/auth/useSession.ts": {
-    "unicorn/prefer-await": {
-      "count": 3
-    }
-  },
   "src/components/AdminPage/AdminPage.test.ts": {
     "@typescript-eslint/no-base-to-string": {
       "count": 1
