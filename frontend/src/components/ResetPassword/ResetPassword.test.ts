@@ -164,6 +164,20 @@ it.each(['returned', 'thrown'])(
     expect(host.querySelector('a[href="/login"]')).not.toBeNull();
   },
 );
+it('discards a previous account’s sign-out retry when another account arrives', async () => {
+  auth.signOut.mockResolvedValue({ error: { message: 'offline' } });
+  render();
+  passwords();
+  await submit();
+  expect(button('Try signing out again')).toBeDefined();
+  props = { ...props, session: { user: { id: 'user-b' } } as Session };
+  render();
+  expect(host.textContent).not.toContain('Try signing out again');
+  expect(host.textContent).not.toContain('Your password has been updated');
+  expect(host.querySelectorAll('input[autocomplete="new-password"]')).toHaveLength(2);
+  expect(auth.signOut).toHaveBeenCalledTimes(1);
+});
+
 it('clears password fields when the active account changes', () => {
   render();
   passwords();
