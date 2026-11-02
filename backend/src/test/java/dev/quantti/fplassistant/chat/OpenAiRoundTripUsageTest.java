@@ -27,8 +27,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -69,7 +67,6 @@ class OpenAiRoundTripUsageTest {
         assertThat(sdk.requests()).isEqualTo(3);
         assertThat(tools.firstCalls()).isOne();
         assertThat(tools.secondCalls()).isOne();
-        verify(sdk.completions(), times(3)).createStreaming(any(ChatCompletionCreateParams.class));
         assertThat(reported.getLast())
                 .as("rounds: 100/0/8 + 20/70/6 + 20/unknown/4; repeated end usage counts once")
                 .isEqualTo(new TokenUsage("fixture-model", 140, 70, null, 18));
@@ -294,10 +291,6 @@ class OpenAiRoundTripUsageTest {
 
         private OpenAIClientAsync asyncClient() {
             return asyncClient;
-        }
-
-        private ChatCompletionServiceAsync completions() {
-            return completions;
         }
 
         private int requests() {
