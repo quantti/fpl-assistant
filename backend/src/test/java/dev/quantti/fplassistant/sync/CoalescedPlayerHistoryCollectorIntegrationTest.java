@@ -227,6 +227,31 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
     }
 
     @Test
+    void busyStartupReportsActualLeaseExpiryAndTakesOverOnlyAfterItExpires() throws Exception {
+        store.enqueueIncrementalCoreImport(season, clock.instant());
+        var oldLease = store.acquireIncrementalCoreImport(season.code(), "old-process", Duration.ofMinutes(5))
+                .orElseThrow();
+        var idleSchedule = JSON.readTree(onlyFixturesFinished(fixtures));
+        ((ObjectNode) idleSchedule.get(0)).put("kickoff_time", START.plus(Duration.ofDays(1)).toString());
+        fetch.setSources(markAllGameweeksUnchecked(bootstrap), JSON.writeValueAsBytes(idleSchedule),
+                eventThreeLive, eventFourLive);
+        var collector = collector(true);
+        var busy = collector.runCycle();
+        assertThat(busy.state()).isEqualTo(State.BUSY);
+        assertThat(busy.nextDue()).isEqualTo(oldLease.expiresAt());
+        assertThat(fetch.count(EndpointKind.BOOTSTRAP_STATIC)).isZero();
+        clock.set(oldLease.expiresAt().minusMillis(1));
+        assertThat(collector.runCycle().state()).isEqualTo(State.BUSY);
+        assertThat(fetch.count(EndpointKind.BOOTSTRAP_STATIC)).isZero();
+        clock.set(oldLease.expiresAt().plusMillis(1));
+        var resumed = collector.runCycle();
+        assertThat(resumed.state()).as("cycle %s; error %s", resumed, latestRunError()).isEqualTo(State.COMPLETED);
+        assertThat(fetch.count(EndpointKind.BOOTSTRAP_STATIC)).isOne();
+        assertThatThrownBy(() -> store.retry(oldLease, clock.instant().plusSeconds(3600), "old worker"))
+                .isInstanceOf(OwnedSyncStore.LeaseLostException.class);
+    }
+
+    @Test
     void legacyAcquisitionCannotClaimEligibleIncrementalCoreWork() {
         store.enqueueIncrementalCoreImport(season, clock.instant());
 
