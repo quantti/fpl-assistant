@@ -42,6 +42,7 @@ import java.util.function.Supplier;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
+import com.zaxxer.hikari.HikariDataSource;
 
 import javax.sql.DataSource;
 
@@ -401,62 +402,74 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         fetch.setPlayerPage(1, onlyHistoryForFixture(resource("element-summary-1.json"), 29, 1));
         fetch.setPlayerPage(28, historyForAwayPlayer28(29));
 
-        SqlRecordingDataSource recording = useRecordingJdbc();
-        installUnit6WriteCounters();
-        AtomicReference<CycleResult> nested = new AtomicReference<>();
-        AtomicReference<CoalescedPlayerHistoryCollector> collectorRef = new AtomicReference<>();
-        fetch.onFirstRequest(() -> nested.set(collectorRef.get().runCycle()));
-        CoalescedPlayerHistoryCollector collector = collector(true);
-        collectorRef.set(collector);
-        CycleResult first;
-        long cycleMillis;
-        Map<String, Long> physicalWrites;
-        try {
-            long cycleStarted = System.nanoTime();
-            first = collector.runCycle();
-            cycleMillis = Duration.ofNanos(System.nanoTime() - cycleStarted).toMillis();
-            physicalWrites = unit6WriteCounts();
-        } finally {
-            removeUnit6WriteCounters();
+        // Reuse connections only for this serial full-roster smoke test.
+        try (HikariDataSource pool = new HikariDataSource()) {
+            pool.setDataSource(dataSource);
+            pool.setMaximumPoolSize(1);
+            pool.setMinimumIdle(0);
+            SqlRecordingDataSource recording = new SqlRecordingDataSource(pool);
+            JdbcTemplate pooledJdbc = new JdbcTemplate(recording);
+            TransactionTemplate pooledTx = new TransactionTemplate(new DataSourceTransactionManager(recording));
+            OwnedSyncStore pooledStore = new OwnedSyncStore(pooledJdbc, pooledTx, clock, TABLES, runtimeFence);
+            IncrementalPlayerFixturePublisher pooledPublisher = new IncrementalPlayerFixturePublisher(
+                    new IncrementalPfsRepository(pooledJdbc, clock, pooledStore, TABLES));
+            installUnit6WriteCounters();
+            AtomicReference<CycleResult> nested = new AtomicReference<>();
+            AtomicReference<CoalescedPlayerHistoryCollector> collectorRef = new AtomicReference<>();
+            fetch.onFirstRequest(() -> nested.set(collectorRef.get().runCycle()));
+            CoalescedPlayerHistoryCollector collector = new CoalescedPlayerHistoryCollector(
+                    season, true, pooledStore, pooledPublisher, fetch, clock, "collector-test");
+            collectorRef.set(collector);
+            CycleResult first;
+            long cycleMillis;
+            Map<String, Long> physicalWrites;
+            try {
+                long cycleStarted = System.nanoTime();
+                first = collector.runCycle();
+                cycleMillis = Duration.ofNanos(System.nanoTime() - cycleStarted).toMillis();
+                physicalWrites = unit6WriteCounts();
+            } finally {
+                removeUnit6WriteCounters();
+            }
+
+            assertThat(first.state()).isEqualTo(State.COMPLETED);
+            assertThat(nested.get().state()).isEqualTo(State.BUSY);
+            assertThat(first.finalPendingGameweeks()).isEmpty();
+            assertThat(first.selectedPlayerIds()).hasSize(660).contains(KNOWN_PLAYER, FINAL_PENDING_PLAYER,
+                    ACTIVE_PLAYER + 1).doesNotContain(658);
+            assertThat(new HashSet<>(first.selectedPlayerIds())).hasSize(first.selectedPlayerIds().size());
+            assertThat(first.selectedPlayerIds().indexOf(FINAL_PENDING_PLAYER))
+                    .isLessThan(first.selectedPlayerIds().indexOf(ACTIVE_PLAYER + 1));
+            assertThat(first.committedPlayerIds()).hasSize(660);
+            assertThat(fetch.count(EndpointKind.BOOTSTRAP_STATIC)).isEqualTo(1);
+            assertThat(fetch.count(EndpointKind.FIXTURES)).isEqualTo(1);
+            assertThat(fetch.count(EndpointKind.EVENT_LIVE)).isEqualTo(4);
+            assertThat(physicalWrites.getOrDefault("player_fixture_stats/INSERT", 0L)).isEqualTo(2L);
+            assertThat(fetch.playerIds()).hasSize(660);
+            assertThat(new HashSet<>(fetch.playerIds())).hasSize(660);
+            assertThat(JSON.readTree(bootstrap).path("teams").size()).isEqualTo(20);
+            assertThat(JSON.readTree(bootstrap).path("elements").size()).isEqualTo(657);
+            System.out.printf("UNIT6_RECORDED_NORMAL league={clubs:20,cataloguePlayers:657,fixtures:380} "
+                            + "selected=%d unique=%d gets={bootstrap:%d,fixtures:%d,event-live:%d,history:%d} "
+                            + "bodyBytes=%d jdbc={statements:%d,queries:%d,updates:%d,rows:%d,logicalBytes~%d} "
+                            + "physicalWrites=%s cycleWallMs=%d%n",
+                    first.selectedPlayerIds().size(), new HashSet<>(first.selectedPlayerIds()).size(),
+                    fetch.count(EndpointKind.BOOTSTRAP_STATIC), fetch.count(EndpointKind.FIXTURES),
+                    fetch.count(EndpointKind.EVENT_LIVE), fetch.count(EndpointKind.ELEMENT_SUMMARY),
+                    fetch.returnedBodyBytes(), recording.statements().size(), recording.queryExecutions(),
+                    recording.updateExecutions(), recording.returnedRows(),
+                    recording.approximateLogicalReturnedBytes(), physicalWrites, cycleMillis);
+
+            fetch.clearCalls();
+            CycleResult idle = collector.runCycle();
+
+            assertThat(idle.state()).isEqualTo(State.COMPLETED);
+            assertThat(idle.selectedPlayerIds()).isEmpty();
+            assertThat(fetch.count(EndpointKind.BOOTSTRAP_STATIC)).isEqualTo(1);
+            assertThat(fetch.count(EndpointKind.FIXTURES)).isEqualTo(1);
+            assertThat(fetch.count(EndpointKind.EVENT_LIVE)).isZero();
+            assertThat(fetch.count(EndpointKind.ELEMENT_SUMMARY)).isZero();
         }
-
-        assertThat(first.state()).isEqualTo(State.COMPLETED);
-        assertThat(nested.get().state()).isEqualTo(State.BUSY);
-        assertThat(first.finalPendingGameweeks()).isEmpty();
-        assertThat(first.selectedPlayerIds()).hasSize(660).contains(KNOWN_PLAYER, FINAL_PENDING_PLAYER,
-                ACTIVE_PLAYER + 1).doesNotContain(658);
-        assertThat(new HashSet<>(first.selectedPlayerIds())).hasSize(first.selectedPlayerIds().size());
-        assertThat(first.selectedPlayerIds().indexOf(FINAL_PENDING_PLAYER))
-                .isLessThan(first.selectedPlayerIds().indexOf(ACTIVE_PLAYER + 1));
-        assertThat(first.committedPlayerIds()).hasSize(660);
-        assertThat(fetch.count(EndpointKind.BOOTSTRAP_STATIC)).isEqualTo(1);
-        assertThat(fetch.count(EndpointKind.FIXTURES)).isEqualTo(1);
-        assertThat(fetch.count(EndpointKind.EVENT_LIVE)).isEqualTo(4);
-        assertThat(physicalWrites.getOrDefault("player_fixture_stats/INSERT", 0L)).isEqualTo(2L);
-        assertThat(fetch.playerIds()).hasSize(660);
-        assertThat(new HashSet<>(fetch.playerIds())).hasSize(660);
-        assertThat(JSON.readTree(bootstrap).path("teams").size()).isEqualTo(20);
-        assertThat(JSON.readTree(bootstrap).path("elements").size()).isEqualTo(657);
-        System.out.printf("UNIT6_RECORDED_NORMAL league={clubs:20,cataloguePlayers:657,fixtures:380} "
-                        + "selected=%d unique=%d gets={bootstrap:%d,fixtures:%d,event-live:%d,history:%d} "
-                        + "bodyBytes=%d jdbc={statements:%d,queries:%d,updates:%d,rows:%d,logicalBytes~%d} "
-                        + "physicalWrites=%s cycleWallMs=%d%n",
-                first.selectedPlayerIds().size(), new HashSet<>(first.selectedPlayerIds()).size(),
-                fetch.count(EndpointKind.BOOTSTRAP_STATIC), fetch.count(EndpointKind.FIXTURES),
-                fetch.count(EndpointKind.EVENT_LIVE), fetch.count(EndpointKind.ELEMENT_SUMMARY),
-                fetch.returnedBodyBytes(), recording.statements().size(), recording.queryExecutions(),
-                recording.updateExecutions(), recording.returnedRows(),
-                recording.approximateLogicalReturnedBytes(), physicalWrites, cycleMillis);
-
-        fetch.clearCalls();
-        CycleResult idle = collector.runCycle();
-
-        assertThat(idle.state()).isEqualTo(State.COMPLETED);
-        assertThat(idle.selectedPlayerIds()).isEmpty();
-        assertThat(fetch.count(EndpointKind.BOOTSTRAP_STATIC)).isEqualTo(1);
-        assertThat(fetch.count(EndpointKind.FIXTURES)).isEqualTo(1);
-        assertThat(fetch.count(EndpointKind.EVENT_LIVE)).isZero();
-        assertThat(fetch.count(EndpointKind.ELEMENT_SUMMARY)).isZero();
     }
 
     @Test
@@ -2456,6 +2469,41 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
 
         assertThat(recording.receiptWriteExecutions).isEqualTo(2);
         assertThat(unit6ReceiptSnapshot()).isEqualTo(before);
+    }
+
+    @Test
+    void discoveryCounterCountsExecutionsWithoutDependingOnSqlComments() throws SQLException {
+        SqlRecordingDataSource recording = new SqlRecordingDataSource(dataSource);
+        try (Connection connection = recording.getConnection();
+             PreparedStatement statement = connection.prepareStatement("INSERT INTO " + TABLES.receipt()
+                     + "(season, publication_key) VALUES (?, ?) ON CONFLICT DO NOTHING")) {
+            statement.setString(1, season.code());
+            statement.setString(2, OwnedSyncStore.INCREMENTAL_DISCOVERY_RECEIPT_PREFIX + "29:player:1");
+            statement.addBatch();
+            assertThat(discoveryCandidateBatchCount(recording)).isZero();
+
+            statement.executeBatch();
+            statement.addBatch();
+            statement.executeBatch();
+            assertThat(discoveryCandidateBatchCount(recording)).isEqualTo(2);
+
+            statement.setString(2, OwnedSyncStore.INCREMENTAL_PARTICIPANT_RECEIPT_PREFIX + "29:player:1");
+            statement.addBatch();
+            statement.executeBatch();
+            assertThat(discoveryCandidateBatchCount(recording)).isEqualTo(2);
+
+            statement.setObject(2, OwnedSyncStore.INCREMENTAL_DISCOVERY_RECEIPT_PREFIX + "29:player:2");
+            statement.addBatch();
+            statement.clearBatch();
+            statement.executeBatch();
+            assertThat(discoveryCandidateBatchCount(recording)).isEqualTo(2);
+
+            statement.executeLargeUpdate();
+            assertThat(discoveryCandidateBatchCount(recording)).isEqualTo(3);
+
+            recording.clear();
+            assertThat(discoveryCandidateBatchCount(recording)).isZero();
+        }
     }
 
     @Test
@@ -6496,10 +6544,7 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
     }
 
     private static int discoveryCandidateBatchCount(SqlRecordingDataSource recording) {
-        return (int) recording.statements().stream()
-                .map(sql -> sql.toLowerCase(java.util.Locale.ROOT))
-                .filter(sql -> sql.contains("/* incremental discovery candidate batch */"))
-                .count();
+        return recording.discoveryCandidateWriteExecutions;
     }
 
     private static final class SqlRecordingDataSource implements DataSource {
@@ -6512,6 +6557,7 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         private long approximateLogicalReturnedBytes;
         private long receiptWriteDelayNanos;
         private int receiptWriteExecutions;
+        private int discoveryCandidateWriteExecutions;
         private int failReceiptWriteAt = -1;
 
         private SqlRecordingDataSource(DataSource delegate) { this.delegate = delegate; }
@@ -6553,6 +6599,8 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
             Statement target = (Statement) value;
             Class<?> contract = target instanceof CallableStatement ? CallableStatement.class
                     : target instanceof PreparedStatement ? PreparedStatement.class : Statement.class;
+            String[] publicationKey = { null };
+            boolean[] discoveryBatch = { false };
             return (Statement) Proxy.newProxyInstance(contract.getClassLoader(), new Class<?>[] { contract },
                     (proxy, method, args) -> {
                         String name = method.getName();
@@ -6563,6 +6611,16 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
                             sql = query;
                             statements.add(query);
                         }
+                        if ((name.equals("setString") || name.equals("setObject"))
+                                && args != null && args.length > 1 && Integer.valueOf(2).equals(args[0])) {
+                            publicationKey[0] = args[1] instanceof String key ? key : null;
+                        } else if (name.equals("clearParameters")) {
+                            publicationKey[0] = null;
+                        }
+                        boolean discoveryKey = publicationKey[0] != null && publicationKey[0]
+                                .startsWith(OwnedSyncStore.INCREMENTAL_DISCOVERY_RECEIPT_PREFIX);
+                        if (name.equals("addBatch") && discoveryKey) discoveryBatch[0] = true;
+                        if (name.equals("clearBatch")) discoveryBatch[0] = false;
                         if ((name.equals("executeQuery") || name.equals("execute")) && isReadSql(sql)) {
                             queryExecutions++;
                         }
@@ -6570,6 +6628,9 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
                                 && (name.equals("executeUpdate") || name.equals("executeLargeUpdate")
                                     || name.equals("executeBatch") || name.equals("executeLargeBatch"))) {
                             receiptWriteExecutions++;
+                            boolean batch = name.equals("executeBatch") || name.equals("executeLargeBatch");
+                            if (batch ? discoveryBatch[0] : discoveryKey) discoveryCandidateWriteExecutions++;
+                            if (batch) discoveryBatch[0] = false;
                             if (receiptWriteExecutions == failReceiptWriteAt) {
                                 throw new SQLException("Injected receipt batch failure", "57014");
                             }
@@ -6639,6 +6700,7 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
             returnedRows = 0;
             approximateLogicalReturnedBytes = 0;
             receiptWriteExecutions = 0;
+            discoveryCandidateWriteExecutions = 0;
         }
     }
 
