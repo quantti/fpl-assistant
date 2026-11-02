@@ -4,6 +4,7 @@ import { supabase } from '../../auth/supabaseClient';
 import { consumeSessionEnded } from '../../auth/apiFetch';
 import { problemDetail } from '../../auth/problemDetail';
 import classes from './SignIn.module.css';
+import PasswordResetRequest from './PasswordResetRequest';
 
 /**
  * Sign in, or create an account with an invite code.
@@ -22,6 +23,7 @@ interface Props {
 
 export default function SignIn({ initialMode = 'signIn', onModeChange }: Readonly<Props>) {
   const [mode, setMode] = useState<AuthMode>(initialMode);
+  const [resetting, setResetting] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [inviteCode, setInviteCode] = useState('');
@@ -124,6 +126,8 @@ export default function SignIn({ initialMode = 'signIn', onModeChange }: Readonl
     return false;
   }
 
+  if (resetting) return <PasswordResetRequest onBack={() => setResetting(false)} />;
+
   const signingUp = mode === 'signUp';
 
   // The account exists and the person cannot sign in yet. Shown instead of the form rather than
@@ -203,6 +207,21 @@ export default function SignIn({ initialMode = 'signIn', onModeChange }: Readonl
         <Button type="submit" loading={busy} fullWidth>
           {signingUp ? 'Create account' : 'Sign in'}
         </Button>
+
+        {!signingUp && (
+          <Anchor
+            component="button"
+            type="button"
+            disabled={busy}
+            onClick={() => {
+              setPassword('');
+              setError(null);
+              setResetting(true);
+            }}
+          >
+            Forgot password?
+          </Anchor>
+        )}
 
         <p className={classes.note}>
           {signingUp ? 'Already have an account? ' : 'Have an invite code? '}
