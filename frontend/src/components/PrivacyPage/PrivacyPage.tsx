@@ -20,8 +20,12 @@ export default function PrivacyPage() {
         <section>
           <h2>Who is responsible</h2>
           <p>
-            The controller is quantti. For privacy questions or requests, email{' '}
-            <a href="mailto:quantti@users.noreply.github.com">quantti@users.noreply.github.com</a>.
+            The controller is {import.meta.env.VITE_PRIVACY_CONTROLLER_NAME}. For privacy questions
+            or requests, email{' '}
+            <a href={`mailto:${import.meta.env.VITE_PRIVACY_CONTACT_EMAIL}`}>
+              {import.meta.env.VITE_PRIVACY_CONTACT_EMAIL}
+            </a>
+            .
           </p>
         </section>
 

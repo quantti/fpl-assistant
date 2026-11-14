@@ -25,6 +25,16 @@ export default defineConfig(({ mode }) => {
     );
   }
 
+  const email = env.VITE_PRIVACY_CONTACT_EMAIL ?? '';
+  const parts = email.split('@', 3);
+  const isValidEmail =
+    parts.length === 2 && Boolean(parts[0]) && parts[1].includes('.') && !/\s/.test(email);
+  if (mode === 'production' && (!isValidEmail || !env.VITE_PRIVACY_CONTROLLER_NAME?.trim())) {
+    throw new Error(
+      'Set VITE_PRIVACY_CONTROLLER_NAME and a valid VITE_PRIVACY_CONTACT_EMAIL before building.',
+    );
+  }
+
   return {
     plugins: [react()],
     server: {

@@ -9,6 +9,10 @@ COPY frontend/ ./
 # repository. The build fails without it rather than shipping a page that cannot sign anyone in.
 ARG VITE_SUPABASE_ANON_KEY
 ENV VITE_SUPABASE_ANON_KEY=$VITE_SUPABASE_ANON_KEY
+ARG VITE_PRIVACY_CONTROLLER_NAME
+ARG VITE_PRIVACY_CONTACT_EMAIL
+ENV VITE_PRIVACY_CONTROLLER_NAME=$VITE_PRIVACY_CONTROLLER_NAME
+ENV VITE_PRIVACY_CONTACT_EMAIL=$VITE_PRIVACY_CONTACT_EMAIL
 RUN npm run build
 
 # Stage 2: Build Spring Boot (includes frontend static files)

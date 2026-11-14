@@ -46,6 +46,8 @@ jobs:
         if: steps.scope.outputs.frontend_changed == 'true'
         working-directory: frontend
         env:
+          VITE_PRIVACY_CONTROLLER_NAME: Example Operator
+          VITE_PRIVACY_CONTACT_EMAIL: privacy@example.com
           VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
         run: |
           npm ci
@@ -151,6 +153,8 @@ jobs:
         env:
           # Not committed (see frontend/src/auth/supabaseClient.ts). The build refuses to run
           # without it, so this job also proves the secret is still set before a deploy needs it.
+          VITE_PRIVACY_CONTROLLER_NAME: Example Operator
+          VITE_PRIVACY_CONTACT_EMAIL: privacy@example.com
           VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
         run: |
           npm ci
@@ -216,8 +220,14 @@ jobs:
         if: steps.current.outputs.deploy_allowed == 'true'
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          VITE_PRIVACY_CONTROLLER_NAME: ${{ secrets.VITE_PRIVACY_CONTROLLER_NAME }}
+          VITE_PRIVACY_CONTACT_EMAIL: ${{ secrets.VITE_PRIVACY_CONTACT_EMAIL }}
         run: |
+          : "${VITE_PRIVACY_CONTROLLER_NAME:?Configure the production privacy controller name}"
+          : "${VITE_PRIVACY_CONTACT_EMAIL:?Configure the production privacy contact email}"
           flyctl deploy --ha=false --remote-only \
+            --build-arg VITE_PRIVACY_CONTROLLER_NAME="$VITE_PRIVACY_CONTROLLER_NAME" \
+            --build-arg VITE_PRIVACY_CONTACT_EMAIL="$VITE_PRIVACY_CONTACT_EMAIL" \
             --build-arg VITE_SUPABASE_ANON_KEY="${{ secrets.VITE_SUPABASE_ANON_KEY }}"
 
       # An external check, deliberately: it proves the route serves, not merely that flyctl
