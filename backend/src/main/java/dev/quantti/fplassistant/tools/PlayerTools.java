@@ -65,7 +65,7 @@ public class PlayerTools implements FplTool {
         Instant asOf = clock.instant();
         try {
             // This season's squad first, from the daily capture taken out of FPL's own API. The
-            // tapas player table held zero rows for 2026-27 with the season already under way,
+            // shared player table held zero rows for 2026-27 with the season already under way,
             // so resolving a name there alone answers only for who played last season — which is
             // how a question about Konsa was answered about Konaté, a name that existed in the
             // season the resolver had fallen back to.

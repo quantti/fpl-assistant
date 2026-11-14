@@ -23,7 +23,7 @@ import org.springframework.mock.env.MockEnvironment;
 
 import dev.quantti.fplassistant.sync.AdaptiveMatchdayPlanner.RecoveryMetadata;
 import dev.quantti.fplassistant.sync.CatalogueScheduleParser.Season;
-import dev.quantti.fplassistant.testsupport.TapasSeed;
+import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
 
 class PlannerInputRepositoryIntegrationTest {
 
@@ -38,7 +38,7 @@ class PlannerInputRepositoryIntegrationTest {
     void observesLeagueSizedFixtureTransitionsAsOneBatch() {
         try (OwnedSyncMonitoringDatabase work = OwnedSyncMonitoringDatabase.work(environment())) {
             var jdbc = spy(work.jdbc());
-            TapasSeed.ensure(jdbc);
+            SharedStatsSeed.ensure(jdbc);
             new OwnedSyncSchema(jdbc, TABLES).initialize();
             createCapturedTables(jdbc);
             clearOwnedRows(jdbc);
@@ -73,7 +73,7 @@ class PlannerInputRepositoryIntegrationTest {
     void completedCorrectionsRequireTheCurrentActivePublicationSourceInterval() {
         try (OwnedSyncMonitoringDatabase work = OwnedSyncMonitoringDatabase.work(environment())) {
             var jdbc = spy(work.jdbc());
-            TapasSeed.ensure(jdbc);
+            SharedStatsSeed.ensure(jdbc);
             new OwnedSyncSchema(jdbc, TABLES).initialize();
             createCapturedTables(jdbc);
             clearOwnedRows(jdbc);
@@ -169,7 +169,7 @@ class PlannerInputRepositoryIntegrationTest {
     void recoveryProjectionUsesOneMetadataQueryAndAnExactLastActiveReceiptAfterInvalidation() {
         try (OwnedSyncMonitoringDatabase work = OwnedSyncMonitoringDatabase.work(environment())) {
             var jdbc = spy(work.jdbc());
-            TapasSeed.ensure(jdbc);
+            SharedStatsSeed.ensure(jdbc);
             new OwnedSyncSchema(jdbc, TABLES).initialize();
             createCapturedTables(jdbc);
             clearOwnedRows(jdbc);
@@ -232,7 +232,7 @@ class PlannerInputRepositoryIntegrationTest {
     void stampsTheFirstFinishedObservationWhenWeSeeIt() {
         try (OwnedSyncMonitoringDatabase work = OwnedSyncMonitoringDatabase.work(environment())) {
             var jdbc = work.jdbc();
-            TapasSeed.ensure(jdbc);
+            SharedStatsSeed.ensure(jdbc);
             new OwnedSyncSchema(jdbc, TABLES).initialize();
             createCapturedTables(jdbc);
             clearOwnedRows(jdbc);

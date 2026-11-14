@@ -19,10 +19,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@link PriceTools#getPriceHistory} against the isolated {@code fpl_daily_price_test} table.
  *
  * <p>Rewritten on 2026-08-18 when the tool moved off {@code fpl_player_price}. The old version
- * had to resolve a real player through the tapas {@code player} table so the name lookup would
+ * had to resolve a real player through the shared {@code player} table so the name lookup would
  * find someone — and that dependency is precisely what broke in production, since that table
  * held no rows at all for the new season. The daily capture carries its own names, so these
- * tests now write entirely fictitious players and never touch a tapas table.
+ * tests now write entirely fictitious players and never touch a shared table.
  *
  * <p>Element ids are above {@link FictitiousTestData#MIN_SAFE_CODE} and the season label is
  * fictitious, so nothing here can collide with real data in the shared test database.

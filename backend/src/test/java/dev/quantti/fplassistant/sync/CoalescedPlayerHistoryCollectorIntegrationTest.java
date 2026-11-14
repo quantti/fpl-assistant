@@ -74,7 +74,7 @@ import dev.quantti.fplassistant.sync.OwnedSyncStore.RuntimeFence;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.SourceRead;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.SyncKind;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.Validation;
-import dev.quantti.fplassistant.testsupport.TapasSeed;
+import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
 import dev.quantti.fplassistant.tools.PfsReadSource;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
@@ -143,15 +143,15 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
 
     static void initialize(String url, String user, String password, Supplier<JdbcTemplate> jdbcSupplier)
             throws Exception {
-        jdbc = TapasSeed.openDisposableTestJdbc(url, user, password, jdbcSupplier);
+        jdbc = SharedStatsSeed.openDisposableTestJdbc(url, user, password, jdbcSupplier);
         dataSource = jdbc.getDataSource();
         tx = new TransactionTemplate(new DataSourceTransactionManager(dataSource));
-        TapasSeed.ensureOwnedSyncCaptureSeason(jdbc);
+        SharedStatsSeed.ensureOwnedSyncCaptureSeason(jdbc);
         disposableDatabaseValidated = true;
         originalCurrentSeasons = jdbc.query("SELECT id FROM season WHERE is_current=true ORDER BY id",
                 (rs, row) -> rs.getInt(1));
         seasonBaselineCaptured = true;
-        TapasSeed.setCurrentSeason(jdbc, SEASON_ID);
+        SharedStatsSeed.setCurrentSeason(jdbc, SEASON_ID);
         seasonFlagsChanged = true;
         season = jdbc.queryForObject("SELECT id, code, start_date, end_date FROM season WHERE id=?",
                 (rs, row) -> new Season(rs.getInt("id"), rs.getString("code"),
@@ -419,7 +419,7 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         byte[] source = markGameweekFinished(fixtures, 4);
         source = addParticipant(addParticipant(source, 3, FINAL_PENDING_PLAYER), 4, ACTIVE_PLAYER + 1);
         FixtureKey knownFixture = fixture(source, 4, true);
-        TapasSeed.seedOwnedSyncKnownHistoryKey(jdbc, SEASON_ID, knownFixture.id(), knownFixture.gameweek(),
+        SharedStatsSeed.seedOwnedSyncKnownHistoryKey(jdbc, SEASON_ID, knownFixture.id(), knownFixture.gameweek(),
                 KNOWN_PLAYER, knownFixture.homeTeam(), knownFixture.awayTeam(), true, knownFixture.kickoff());
         byte[] ordinaryBootstrap = markGameweekUnchecked(
                 markGameweekUnchecked(markGameweekUnchecked(bootstrap, 1), 2), 3);
@@ -2074,7 +2074,7 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         knownOnlyRow.put("bps", 0);
         knownOnlyHistory = JSON.writeValueAsBytes(knownOnlyPage);
 
-        TapasSeed.seedOwnedSyncKnownHistoryKey(jdbc, SEASON_ID, fixtureId, fixture.gameweek(), knownOnlyPlayer,
+        SharedStatsSeed.seedOwnedSyncKnownHistoryKey(jdbc, SEASON_ID, fixtureId, fixture.gameweek(), knownOnlyPlayer,
                 fixture.homeTeam(), fixture.awayTeam(), true, fixture.kickoff());
         Lease seedLease = nextCoreLease();
         SourceRead seedRead = nextRead();
@@ -2324,7 +2324,7 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         knownRow.put("bonus", 0);
         knownRow.put("bps", 0);
         knownHistory = JSON.writeValueAsBytes(knownPage);
-        TapasSeed.seedOwnedSyncKnownHistoryKey(jdbc, SEASON_ID, setup.fixtureId(), 3, knownPlayer,
+        SharedStatsSeed.seedOwnedSyncKnownHistoryKey(jdbc, SEASON_ID, setup.fixtureId(), 3, knownPlayer,
                 1, 2, true, fixtureById(setup.fixtureSource(), setup.fixtureId()).kickoff());
         Lease seedLease = nextCoreLease();
         SourceRead seedRead = nextRead();
@@ -2886,7 +2886,7 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
     @Test
     void sameGenerationLiveRefreshForRetryKeepsCompletedFixtureProofImmutable() throws Exception {
         PairCapture capture = pairCapture();
-        TapasSeed.seedOwnedSyncFixtureIdentity(jdbc, SEASON_ID, capture.teams(),
+        SharedStatsSeed.seedOwnedSyncFixtureIdentity(jdbc, SEASON_ID, capture.teams(),
                 List.of(capture.fixtureOne(), capture.fixtureTwo()));
         fetch.setSources(capture.bootstrap(), capture.fixtures(), capture.live(), eventFourLive);
         capture.historyPages().forEach(fetch::setPlayerPage);
@@ -2959,7 +2959,7 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
     @Test
     void sameFixtureRetryKeepsEarlierSameSidePagesEligibleAcrossUnchangedLiveRefresh() throws Exception {
         SingleFixtureCapture capture = sameFixtureCapture();
-        TapasSeed.seedOwnedSyncFixtureIdentity(jdbc, SEASON_ID, capture.teams(), List.of(capture.fixture()));
+        SharedStatsSeed.seedOwnedSyncFixtureIdentity(jdbc, SEASON_ID, capture.teams(), List.of(capture.fixture()));
         fetch.setSources(capture.bootstrap(), capture.fixtures(), capture.live(), eventFourLive);
         capture.historyPages().forEach(fetch::setPlayerPage);
         fetch.failPlayer(82);
@@ -3110,7 +3110,7 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
         int playerA = 259;
         int playerB = 82;
         int playerC = 350;
-        TapasSeed.seedOwnedSyncFixtureIdentity(jdbc, SEASON_ID, capture.teams(), List.of(capture.fixture()));
+        SharedStatsSeed.seedOwnedSyncFixtureIdentity(jdbc, SEASON_ID, capture.teams(), List.of(capture.fixture()));
         fetch.setSources(capture.bootstrap(), capture.fixtures(), capture.live(), eventFourLive);
         capture.historyPages().forEach(fetch::setPlayerPage);
         fetch.failPlayer(playerB);
@@ -4651,15 +4651,15 @@ class CoalescedPlayerHistoryCollectorIntegrationTest {
     @Test
     void configuredSeasonMustStillBeTheDatabaseCurrentSeason() {
         fetch.setSources(bootstrap, fixtures, eventThreeLive, eventFourLive);
-        TapasSeed.ensure(jdbc);
-        TapasSeed.setCurrentSeason(jdbc, TapasSeed.CURRENT_SEASON_ID);
+        SharedStatsSeed.ensure(jdbc);
+        SharedStatsSeed.setCurrentSeason(jdbc, SharedStatsSeed.CURRENT_SEASON_ID);
         try {
             assertThat(org.assertj.core.api.Assertions.catchThrowable(() -> collector(true).runCycle()))
                     .isInstanceOf(OwnedSyncStore.RuntimeFenceLostException.class);
             assertThat(fetch.calls()).isEmpty();
             assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.run(), Integer.class)).isZero();
         } finally {
-            TapasSeed.setCurrentSeason(jdbc, SEASON_ID);
+            SharedStatsSeed.setCurrentSeason(jdbc, SEASON_ID);
         }
     }
 

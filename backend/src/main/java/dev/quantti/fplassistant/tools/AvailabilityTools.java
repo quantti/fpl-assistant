@@ -19,7 +19,7 @@ import org.springframework.stereotype.Component;
  * {@code news} note, and both arrive in the same {@code bootstrap-static} response as the
  * price, so the daily capture already holds them. Availability is the most perishable fact in
  * FPL — a player ruled out on Friday is worthless on Saturday — and the only other source this
- * project has is the tapas {@code player} table, which syncs weekly. A week-old status calls a
+ * project has is the shared {@code player} table, which syncs weekly. A week-old status calls a
  * ruled-out player fit, which is the specific wrong answer these tools exist to prevent.
  *
  * <p>Because the capture is dated, {@link #getPlayerAvailability} can also say <b>how long</b> a

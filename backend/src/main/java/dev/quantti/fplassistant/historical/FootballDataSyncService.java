@@ -25,7 +25,7 @@ import dev.quantti.fplassistant.tools.SeasonResolver;
  * ever writes the season the database flags {@code is_current}. The season written is derived
  * from the response itself (each match's own {@code season.startDate}), not from
  * {@link SeasonResolver}: the resolver deliberately falls back to a completed season while the
- * current one has no tapas data, and keying the guard on it kept the current season's results
+ * current one has no shared data, and keying the guard on it kept the current season's results
  * unwritten for weeks after kickoff. The guard is applied <b>per match</b>, and each row is
  * stamped with that match's own season — a response mixing two seasons (a rollover, a filtered
  * fetch) writes only the flagged-current half, so vaastav's completed seasons stay untouched.

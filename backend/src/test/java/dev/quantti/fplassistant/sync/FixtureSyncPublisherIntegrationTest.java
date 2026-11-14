@@ -44,7 +44,7 @@ import dev.quantti.fplassistant.sync.HistoryParser.HistoryRow;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.Lease;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.SyncKind;
 import dev.quantti.fplassistant.sync.SharedFixtureRecoveryPolicy.SourceStatus;
-import dev.quantti.fplassistant.testsupport.TapasSeed;
+import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
 
 class FixtureSyncPublisherIntegrationTest {
 
@@ -67,7 +67,7 @@ class FixtureSyncPublisherIntegrationTest {
         dataSource = new DriverManagerDataSource(requiredEnv("DATABASE_URL"),
                 requiredEnv("DB_USER"), requiredEnv("DB_PASSWORD"));
         jdbc = new JdbcTemplate(dataSource);
-        TapasSeed.ensureOwnedSyncFixture(jdbc);
+        SharedStatsSeed.ensureOwnedSyncFixture(jdbc);
         new DefensiveStatsSchema(jdbc).ensureColumns();
         new OwnedSyncSchema(jdbc, TABLES).initialize();
         tx = new TransactionTemplate(new DataSourceTransactionManager(dataSource));
@@ -563,7 +563,7 @@ class FixtureSyncPublisherIntegrationTest {
                     + TABLES.fixtureSync() + " WHERE fixture_id=98101", Boolean.class)).isTrue();
         } finally {
             releaseCorrection.countDown();
-            TapasSeed.ensureOwnedSyncFixture(jdbc);
+            SharedStatsSeed.ensureOwnedSyncFixture(jdbc);
             jdbc.update("UPDATE season SET is_current=false");
             previousCurrent.forEach(id ->
                     jdbc.update("UPDATE season SET is_current=true WHERE id=?", id));

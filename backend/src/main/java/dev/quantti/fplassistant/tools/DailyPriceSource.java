@@ -14,8 +14,8 @@ import org.springframework.stereotype.Component;
  * Shared reader for {@code fpl_daily_price} — the daily capture from FPL's own API — used by
  * {@link PriceTools} and {@link AvailabilityTools}.
  *
- * <p><b>Why these tools do not resolve players through the tapas {@code player} table.</b>
- * That table is synced weekly by {@code tapas-fpl-app} and, measured on 2026-08-18, held zero
+ * <p><b>Why these tools do not resolve players through the shared {@code player} table.</b>
+ * That table is synced weekly by {@code upstream-stats-app} and, measured on 2026-08-18, held zero
  * rows for season 2026-27 while the season was three days from kicking off — so a name lookup
  * against it returned "player not found" for every current-season player. {@code fpl_daily_price}
  * carries its own {@code web_name}/{@code full_name}, captured in the same request as the price,

@@ -5,7 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import org.junit.jupiter.api.Test;
 
-class TapasSeedSafetyTest {
+class SharedStatsSeedSafetyTest {
 
     @Test
     void localAndDocumentedGithubPostgresEndpointsAreTheOnlyAcceptedTestTargets() {
@@ -20,20 +20,20 @@ class TapasSeedSafetyTest {
         assertThat(allowed("jdbc:postgresql://db.example.com:6543/postgres", null, null, null, null)).isFalse();
         assertThat(allowed("jdbc:postgresql://localhost:5432/postgres", "true", "true",
                 "unknown workflow", "test")).isFalse();
-        assertThat(TapasSeed.isDisposableTestDatabase("jdbc:postgresql://localhost:55432/postgres",
+        assertThat(SharedStatsSeed.isDisposableTestDatabase("jdbc:postgresql://localhost:55432/postgres",
                 "postgres", "not-postgres", null, null, null, null)).isFalse();
     }
 
     @Test
     void preflightRejectsSharedDatabaseTargetsBeforeDatasourceConstruction() {
-        assertThatThrownBy(() -> TapasSeed.requireDisposableTestDatabase(
+        assertThatThrownBy(() -> SharedStatsSeed.requireDisposableTestDatabase(
                 "jdbc:postgresql://db.example.com:6543/postgres", "postgres", "postgres",
                 null, null, null, null)).isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("disposable test database");
     }
 
     private static boolean allowed(String url, String ci, String actions, String workflow, String job) {
-        return TapasSeed.isDisposableTestDatabase(url, "postgres", "postgres", ci,
+        return SharedStatsSeed.isDisposableTestDatabase(url, "postgres", "postgres", ci,
                 actions, workflow, job);
     }
 }

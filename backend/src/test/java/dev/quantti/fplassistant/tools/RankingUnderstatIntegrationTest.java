@@ -11,7 +11,7 @@ import java.util.Optional;
 import dev.quantti.fplassistant.teamxg.UnderstatParser;
 import dev.quantti.fplassistant.teamxg.UnderstatStore;
 import dev.quantti.fplassistant.testsupport.RankingSeed;
-import dev.quantti.fplassistant.testsupport.TapasSeed;
+import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -43,7 +43,7 @@ class RankingUnderstatIntegrationTest {
 
     @BeforeEach
     void seed() {
-        TapasSeed.ensure(jdbc);
+        SharedStatsSeed.ensure(jdbc);
         jdbc.update("DELETE FROM fpl_understat_capture_test");
         jdbc.update("DELETE FROM fpl_daily_price_test WHERE season=?", SEASON);
         RankingSeed.cleanSchedule(jdbc, "fpl_gameweek_test", "fpl_fixture_test", SEASON);
@@ -67,7 +67,7 @@ class RankingUnderstatIntegrationTest {
     }
 
     private MetricSeasons metrics() {
-        return new MetricSeasons(new SeasonContext(TapasSeed.CURRENT_SEASON_ID, SEASON, true,
+        return new MetricSeasons(new SeasonContext(SharedStatsSeed.CURRENT_SEASON_ID, SEASON, true,
                 "2026-27", LocalDate.of(2026, 8, 21)), Optional.empty(), 0, 0);
     }
 
@@ -101,7 +101,7 @@ class RankingUnderstatIntegrationTest {
 
     @Test
     void unavailableUnderstatNeverFallsBackToNumericalFplTeamSums() {
-        var played = new SeasonContext(TapasSeed.POPULATED_SEASON_ID, TapasSeed.POPULATED_SEASON_CODE,
+        var played = new SeasonContext(SharedStatsSeed.POPULATED_SEASON_ID, SharedStatsSeed.POPULATED_SEASON_CODE,
                 false, "2026-27", LocalDate.of(2026, 8, 21));
         var snapshot = ranking.load(new DailyPriceSource.Capture(SEASON, LocalDate.of(2026, 9, 9)),
                 new MetricSeasons(played, Optional.empty(), 0, 0));

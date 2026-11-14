@@ -56,7 +56,7 @@ import dev.quantti.fplassistant.sync.OwnedSyncStore.SyncKind;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.Validation;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.ValidationState;
 import dev.quantti.fplassistant.sync.SharedFixtureRecoveryPolicy.SourceStatus;
-import dev.quantti.fplassistant.testsupport.TapasSeed;
+import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
 
 class FixtureRecoveryAdmissionIntegrationTest {
 
@@ -83,8 +83,8 @@ class FixtureRecoveryAdmissionIntegrationTest {
                 required("DB_PASSWORD"));
         jdbc = new JdbcTemplate(dataSource);
         tx = new TransactionTemplate(new DataSourceTransactionManager(dataSource));
-        TapasSeed.ensureOwnedSyncCaptureSeason(jdbc);
-        TapasSeed.ensureOwnedSyncFixture(jdbc);
+        SharedStatsSeed.ensureOwnedSyncCaptureSeason(jdbc);
+        SharedStatsSeed.ensureOwnedSyncFixture(jdbc);
         new OwnedSyncSchema(jdbc, TABLES).initialize();
         createCapturedTables();
     }

@@ -42,7 +42,7 @@ import dev.quantti.fplassistant.sync.HistoryParser.Component;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.Lease;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.SyncKind;
 import dev.quantti.fplassistant.tools.PfsReadSource;
-import dev.quantti.fplassistant.testsupport.TapasSeed;
+import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
 
 class IncrementalPlayerFixturePublisherIntegrationTest {
 
@@ -89,9 +89,9 @@ class IncrementalPlayerFixturePublisherIntegrationTest {
     }
 
     static void initialize(String url, String user, String password, Supplier<JdbcTemplate> jdbcSupplier) {
-        jdbc = TapasSeed.openDisposableTestJdbc(url, user, password, jdbcSupplier);
+        jdbc = SharedStatsSeed.openDisposableTestJdbc(url, user, password, jdbcSupplier);
         tx = new TransactionTemplate(new DataSourceTransactionManager(jdbc.getDataSource()));
-        TapasSeed.ensure(jdbc);
+        SharedStatsSeed.ensure(jdbc);
         disposableDatabaseValidated = true;
         previousCurrentSeasons = jdbc.queryForList(
                 "SELECT id FROM season WHERE is_current=true ORDER BY id", Integer.class);
@@ -122,7 +122,7 @@ class IncrementalPlayerFixturePublisherIntegrationTest {
                 + TABLES.receipt() + ", " + TABLES.plannerSlot() + ", " + TABLES.plannerRuntime()
                 + " CASCADE");
         jdbc.update("DELETE FROM player_fixture_stats WHERE fixture_id IN (?, ?) AND season_id IN (?, ?)",
-                FIXTURE_HOME, FIXTURE_TRANSFER, SEASON_ID, TapasSeed.POPULATED_SEASON_ID);
+                FIXTURE_HOME, FIXTURE_TRANSFER, SEASON_ID, SharedStatsSeed.POPULATED_SEASON_ID);
         clock = new MutableClock(BASE);
         jdbc.update("INSERT INTO " + TABLES.plannerRuntime()
                 + "(instance_id, started_at, heartbeat_at, runtime_mode, runtime_epoch, activation_boundary)"
@@ -139,7 +139,7 @@ class IncrementalPlayerFixturePublisherIntegrationTest {
         if (jdbc == null || !disposableDatabaseValidated || !seasonBaselineCaptured) return;
         if (cleanupAuthorized) {
             jdbc.update("DELETE FROM player_fixture_stats WHERE fixture_id IN (?, ?) AND season_id IN (?, ?)",
-                    FIXTURE_HOME, FIXTURE_TRANSFER, SEASON_ID, TapasSeed.POPULATED_SEASON_ID);
+                    FIXTURE_HOME, FIXTURE_TRANSFER, SEASON_ID, SharedStatsSeed.POPULATED_SEASON_ID);
             jdbc.execute("TRUNCATE " + TABLES.playerFixtureCurrent() + ", "
                 + TABLES.playerFixtureEvidence() + ", " + TABLES.gameweekStatSync() + ", "
                 + TABLES.fixtureSync() + ", " + TABLES.payload() + ", " + TABLES.run() + ", "
@@ -732,7 +732,7 @@ class IncrementalPlayerFixturePublisherIntegrationTest {
         assertThat(playerPfsCount(PLAYER)).isZero();
 
         setRuntimeMode(OwnedSyncMode.ACTIVE, 1);
-        setDatabaseCurrentSeason(TapasSeed.CURRENT_SEASON_ID);
+        setDatabaseCurrentSeason(SharedStatsSeed.CURRENT_SEASON_ID);
         Lease wrongSeasonLease = newLease(PLAYER, "wrong-db-season");
         assertThatThrownBy(() -> publisher.publish(wrongSeasonLease, SEASON, PLAYER, sourcePage, FIXTURES))
                 .isInstanceOf(OwnedSyncStore.RuntimeFenceLostException.class);
@@ -906,7 +906,7 @@ class IncrementalPlayerFixturePublisherIntegrationTest {
                 INSERT INTO player_fixture_stats (fixture_id, player_id, season_id, gameweek,
                     player_team_id, opponent_team_id, was_home, minutes, total_points, value, created_at)
                 VALUES (?, ?, ?, 1, 97_001, 97_002, TRUE, 90, 55, 50, ?)
-                """, FIXTURE_HOME, PLAYER, TapasSeed.POPULATED_SEASON_ID,
+                """, FIXTURE_HOME, PLAYER, SharedStatsSeed.POPULATED_SEASON_ID,
                 java.sql.Timestamp.from(FIXED_CREATED_AT));
 
         ObjectNode beforeTransfer = row(PLAYER, FIXTURE_HOME, 3, true, "0.10");
@@ -921,9 +921,9 @@ class IncrementalPlayerFixturePublisherIntegrationTest {
         assertThat(pfsInteger(PLAYER, FIXTURE_TRANSFER, "player_team_id")).isEqualTo(97_004);
         assertThat(pfsInteger(PLAYER, FIXTURE_TRANSFER, "opponent_team_id")).isEqualTo(97_003);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM " + TABLES.fixtureSync(), Integer.class)).isZero();
-        assertThat(pfsInteger(PLAYER, FIXTURE_HOME, "total_points", TapasSeed.POPULATED_SEASON_ID))
+        assertThat(pfsInteger(PLAYER, FIXTURE_HOME, "total_points", SharedStatsSeed.POPULATED_SEASON_ID))
                 .isEqualTo(55);
-        assertThat(pfsCreatedAt(PLAYER, FIXTURE_HOME, TapasSeed.POPULATED_SEASON_ID))
+        assertThat(pfsCreatedAt(PLAYER, FIXTURE_HOME, SharedStatsSeed.POPULATED_SEASON_ID))
                 .isEqualTo(FIXED_CREATED_AT);
     }
 

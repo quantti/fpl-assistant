@@ -16,7 +16,7 @@ import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.transaction.support.TransactionTemplate;
 
-import dev.quantti.fplassistant.testsupport.TapasSeed;
+import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
 
 class HistoryEvidenceSchemaIntegrationTest {
 
@@ -35,7 +35,7 @@ class HistoryEvidenceSchemaIntegrationTest {
         refuseProduction(dataSource);
         jdbc = new JdbcTemplate(dataSource);
         tx = new TransactionTemplate(new DataSourceTransactionManager(dataSource));
-        TapasSeed.ensure(jdbc);
+        SharedStatsSeed.ensure(jdbc);
         jdbc.update("INSERT INTO season (id, code, name, start_date, is_current)"
                         + " VALUES (?, ?, 'Incremental schema test', DATE '2026-08-21', false)"
                         + " ON CONFLICT (id) DO NOTHING", ISOLATED_SEASON_ID, ISOLATED_SEASON_CODE);
@@ -46,7 +46,7 @@ class HistoryEvidenceSchemaIntegrationTest {
         new OwnedSyncSchema(jdbc, TABLES).initialize();
         jdbc.execute("TRUNCATE " + TABLES.playerFixtureCurrent() + ", "
                 + TABLES.playerFixtureEvidence() + " CASCADE");
-        generation = createRun("history-evidence-schema", TapasSeed.POPULATED_SEASON_CODE);
+        generation = createRun("history-evidence-schema", SharedStatsSeed.POPULATED_SEASON_CODE);
         incrementalGeneration = createRun("incremental-schema-test", ISOLATED_SEASON_CODE);
     }
 
@@ -558,7 +558,7 @@ class HistoryEvidenceSchemaIntegrationTest {
                             + "(season_id, season_code, fixture_id, player_id, generation,"
                             + " component_presence, source_read_started_at, source_read_finished_at)"
                             + " VALUES (?, 'wrong-code', 9102, 9201, ?, 0, now(), now())",
-                    TapasSeed.POPULATED_SEASON_ID, generation))
+                    SharedStatsSeed.POPULATED_SEASON_ID, generation))
                     .isInstanceOf(DataAccessException.class)
                     .hasMessageContaining("season id/code mismatch");
             assertThatThrownBy(() -> jdbc.update("UPDATE " + TABLES.playerFixtureEvidence()
@@ -571,7 +571,7 @@ class HistoryEvidenceSchemaIntegrationTest {
             jdbc.update("DELETE FROM " + TABLES.run() + " WHERE generation = ?", correctionGeneration);
             jdbc.update("DELETE FROM " + TABLES.receipt()
                     + " WHERE season = ? AND publication_key = 'schema-correction'",
-                    TapasSeed.POPULATED_SEASON_CODE);
+                    SharedStatsSeed.POPULATED_SEASON_CODE);
         }
     }
 
@@ -581,11 +581,11 @@ class HistoryEvidenceSchemaIntegrationTest {
                         + " source_read_started_at, source_read_finished_at)"
                         + " VALUES (?, ?, 9101, 9201, ?, ?, TIMESTAMPTZ '2025-08-16 16:00:00Z',"
                         + " TIMESTAMPTZ '2025-08-16 16:00:01Z')",
-                TapasSeed.POPULATED_SEASON_ID, TapasSeed.POPULATED_SEASON_CODE, runGeneration, mask);
+                SharedStatsSeed.POPULATED_SEASON_ID, SharedStatsSeed.POPULATED_SEASON_CODE, runGeneration, mask);
     }
 
     private static long createRun(String key) {
-        return createRun(key, TapasSeed.POPULATED_SEASON_CODE);
+        return createRun(key, SharedStatsSeed.POPULATED_SEASON_CODE);
     }
 
     private static long createRun(String key, String seasonCode) {

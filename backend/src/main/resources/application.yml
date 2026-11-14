@@ -79,11 +79,8 @@ spring:
 # Supabase Auth. SUPABASE_URL is the project URL (https://<ref>.supabase.co); it is not a
 # secret — it appears in every frontend that talks to the project.
 supabase:
-  # Defaulted, not required: an unset SUPABASE_URL took production down on 2026-08-19 —
-  # PlaceholderResolutionException at startup, every deploy since red, health check critical.
-  # The project URL is not a secret (it ships in any frontend), so the default is the honest
-  # value rather than a placeholder that fails later and less clearly.
-  url: ${SUPABASE_URL:https://itmykooxrbrdbgqwsesb.supabase.co}
+  # Required deployment configuration; the distribution does not select a production project.
+  url: ${SUPABASE_URL}
   issuer: ${supabase.url}/auth/v1
   jwks-uri: ${supabase.url}/auth/v1/.well-known/jwks.json
   # The audience Supabase puts in every access token it issues.
@@ -187,7 +184,7 @@ fpl:
     table-name: fpl_player_shortlist
   user:
     # Phase 5a. Names are properties for the same reason every other table's is: the test
-    # profile pins them to isolated copies. fpl_user_profile is NOT app_user — tapas owns that
+    # profile pins them to isolated copies. fpl_user_profile is NOT app_user — the upstream project owns that
     # name in this database.
     invite-code-table-name: fpl_invite_code
     profile-table-name: fpl_user_profile
@@ -228,9 +225,9 @@ fpl:
   defcon:
     # Defensive contribution: 2 points for a defender reaching 10 clearances, blocks,
     # interceptions and tackles in a match, or a midfielder or forward reaching 12 including
-    # recoveries. FPL added it for 2025/26; tapas' player_fixture_stats predates the field, so
+    # recoveries. FPL added it for 2025/26; the shared player_fixture_stats table predates the field, so
     # this project adds the columns and fills them. One request per player, from the same
-    # element-summary endpoint tapas reads for the rest of that table.
+    # element-summary endpoint shared reads for the rest of that table.
     element-summary-url: https://fantasy.premierleague.com/api/element-summary/{playerId}/
     # 03:00 UK, an hour after the price capture: this run takes minutes, and the price capture
     # is the one that cannot be repeated later.
@@ -251,7 +248,7 @@ fpl:
     table-name: fpl_daily_price
     # FPL's own bootstrap-static. Read-only, unauthenticated, and the only source in this
     # project that carries the price as it stands today: vaastav publishes end-of-gameweek
-    # prices, and the tapas player table is synced weekly.
+    # prices, and the shared player table is synced weekly.
     bootstrap-url: https://fantasy.premierleague.com/api/bootstrap-static/
     # FPL applies price changes once a day at 00:00 UK (moved from ~01:30 for 2026/27 —
     # premierleague.com/en/news/4680462). 02:00 UK leaves two hours for the change to settle

@@ -2,7 +2,7 @@ package dev.quantti.fplassistant.price;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpServer;
-import dev.quantti.fplassistant.testsupport.TapasSeed;
+import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -36,7 +36,7 @@ class DailyPlayingChanceIntegrationTest {
     private volatile Object chance;
 
     @BeforeEach void setup() throws Exception {
-        TapasSeed.ensure(jdbc);
+        SharedStatsSeed.ensure(jdbc);
         jdbc.execute("DROP TABLE IF EXISTS " + TABLE);
         schema = new DailyPriceSchema(jdbc, TABLE);
         schema.ensureSchema();

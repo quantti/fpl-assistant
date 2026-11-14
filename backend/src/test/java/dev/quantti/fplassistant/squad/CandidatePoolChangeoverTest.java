@@ -3,7 +3,7 @@ package dev.quantti.fplassistant.squad;
 import java.time.LocalDate;
 import java.util.List;
 
-import dev.quantti.fplassistant.testsupport.TapasSeed;
+import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
 import dev.quantti.fplassistant.tools.ExpectedPoints;
 import dev.quantti.fplassistant.tools.MetricSeasons;
 import dev.quantti.fplassistant.tools.SeasonContext;
@@ -21,7 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
 
 /**
- * {@link CandidatePool} while the daily capture has moved to the new season but tapas has not.
+ * {@link CandidatePool} while the daily capture has moved to the new season but shared has not.
  * FPL reassigns element ids every summer, so metrics from the completed season can only cross
  * this boundary through an unambiguous player name.
  */
@@ -56,14 +56,14 @@ class CandidatePoolChangeoverTest {
 
     @BeforeEach
     void seedCompletedSeasonOnly() {
-        TapasSeed.ensure(jdbc);
+        SharedStatsSeed.ensure(jdbc);
         assertThat(table).as("candidate-pool tests must use the isolated daily table")
                 .endsWith("_test");
         cleanTestRows();
 
         SeasonContext resolved = seasonResolver.resolve();
         metric = seasonResolver.metricSeasons(resolved);
-        assertThat(resolved.code()).isEqualTo(TapasSeed.POPULATED_SEASON_CODE);
+        assertThat(resolved.code()).isEqualTo(SharedStatsSeed.POPULATED_SEASON_CODE);
         assertThat(resolved.currentSeason()).isFalse();
         assertThat(metric.previous()).isEmpty();
     }
@@ -77,21 +77,21 @@ class CandidatePoolChangeoverTest {
         for (int id : DAILY_IDS) {
             jdbc.update("DELETE FROM " + table
                             + " WHERE season IN (?, ?) AND price_date = ? AND element_id = ?",
-                    TapasSeed.CURRENT_SEASON_CODE, TapasSeed.POPULATED_SEASON_CODE,
+                    SharedStatsSeed.CURRENT_SEASON_CODE, SharedStatsSeed.POPULATED_SEASON_CODE,
                     CAPTURE_DATE, id);
         }
         jdbc.update("DELETE FROM player_fixture_stats WHERE season_id = ? AND player_id = ?"
                         + " AND fixture_id IN (9101, 9103)",
-                TapasSeed.POPULATED_SEASON_ID, NO_WEEKLY_PLAYER);
+                SharedStatsSeed.POPULATED_SEASON_ID, NO_WEEKLY_PLAYER);
         jdbc.update("DELETE FROM player WHERE season_id = ? AND id = ?",
-                TapasSeed.POPULATED_SEASON_ID, METRIC_NAME_TWIN);
+                SharedStatsSeed.POPULATED_SEASON_ID, METRIC_NAME_TWIN);
     }
 
     @Test
     void swappedElementIdsStillAttachEachPlayersOwnMetricsByName() {
-        daily(TapasSeed.CURRENT_SEASON_CODE, BRAMLEY_OLD_ID, "oKaFoR", "Emeka Okafor",
+        daily(SharedStatsSeed.CURRENT_SEASON_CODE, BRAMLEY_OLD_ID, "oKaFoR", "Emeka Okafor",
                 9561, "Newbridge Athletic", "NBA", 3, 81, 7.25, "a", null);
-        daily(TapasSeed.CURRENT_SEASON_CODE, OKAFOR_OLD_ID, "BRAMLEY", "Iker Bramley",
+        daily(SharedStatsSeed.CURRENT_SEASON_CODE, OKAFOR_OLD_ID, "BRAMLEY", "Iker Bramley",
                 9562, "Summer United", "SUM", 3, 62, 1.50, "d", "75% chance of playing");
 
         List<SquadCandidate> candidates = changeoverCandidates();
@@ -131,9 +131,9 @@ class CandidatePoolChangeoverTest {
 
     @Test
     void reusedIdsDoNotGiveUnmatchedPlayersSomeoneElsesMetrics() {
-        daily(TapasSeed.CURRENT_SEASON_CODE, OKAFOR_OLD_ID, "Newarrival", "New Arrival",
+        daily(SharedStatsSeed.CURRENT_SEASON_CODE, OKAFOR_OLD_ID, "Newarrival", "New Arrival",
                 9561, "Newbridge Athletic", "NBA", 3, 50, 0.25, "a", null);
-        daily(TapasSeed.CURRENT_SEASON_CODE, BRAMLEY_OLD_ID, "Freshdoubt", "Fresh Doubt",
+        daily(SharedStatsSeed.CURRENT_SEASON_CODE, BRAMLEY_OLD_ID, "Freshdoubt", "Fresh Doubt",
                 9562, "Summer United", "SUM", 3, 45, 0.10, "d", "Knock");
 
         List<SquadCandidate> candidates = changeoverCandidates();
@@ -148,9 +148,9 @@ class CandidatePoolChangeoverTest {
 
     @Test
     void twoFitCapturedNamesakesBothRemainBodies() {
-        daily(TapasSeed.CURRENT_SEASON_CODE, CAPTURE_PLAYER_A, "Okafor", "First Okafor",
+        daily(SharedStatsSeed.CURRENT_SEASON_CODE, CAPTURE_PLAYER_A, "Okafor", "First Okafor",
                 9561, "Newbridge Athletic", "NBA", 3, 50, 0.25, "a", null);
-        daily(TapasSeed.CURRENT_SEASON_CODE, CAPTURE_PLAYER_B, "OKAFOR", "Second Okafor",
+        daily(SharedStatsSeed.CURRENT_SEASON_CODE, CAPTURE_PLAYER_B, "OKAFOR", "Second Okafor",
                 9562, "Summer United", "SUM", 3, 45, 0.10, "a", null);
 
         List<SquadCandidate> candidates = changeoverCandidates();
@@ -165,9 +165,9 @@ class CandidatePoolChangeoverTest {
 
     @Test
     void anUnavailableCapturedNamesakeStillBlocksTheFitPlayersNameBridge() {
-        daily(TapasSeed.CURRENT_SEASON_CODE, CAPTURE_PLAYER_A, "Okafor", "Fit Okafor",
+        daily(SharedStatsSeed.CURRENT_SEASON_CODE, CAPTURE_PLAYER_A, "Okafor", "Fit Okafor",
                 9561, "Newbridge Athletic", "NBA", 3, 50, 0.25, "a", null);
-        daily(TapasSeed.CURRENT_SEASON_CODE, CAPTURE_PLAYER_B, "OKAFOR", "Injured Okafor",
+        daily(SharedStatsSeed.CURRENT_SEASON_CODE, CAPTURE_PLAYER_B, "OKAFOR", "Injured Okafor",
                 9562, "Summer United", "SUM", 3, 45, 0.10, "i", "Hamstring injury");
 
         List<SquadCandidate> candidates = changeoverCandidates();
@@ -184,13 +184,13 @@ class CandidatePoolChangeoverTest {
                 INSERT INTO player (id, season_id, team_id, first_name, second_name, web_name,
                                     element_type, now_cost, status)
                 VALUES (?, ?, ?, 'Other', 'Okafor', 'OKAFOR', 3, 45, 'a')
-                """, METRIC_NAME_TWIN, TapasSeed.POPULATED_SEASON_ID, TapasSeed.TEAM_ASHFIELD);
-        daily(TapasSeed.CURRENT_SEASON_CODE, CAPTURE_PLAYER_A, "Okafor", "Current Okafor",
+                """, METRIC_NAME_TWIN, SharedStatsSeed.POPULATED_SEASON_ID, SharedStatsSeed.TEAM_ASHFIELD);
+        daily(SharedStatsSeed.CURRENT_SEASON_CODE, CAPTURE_PLAYER_A, "Okafor", "Current Okafor",
                 9561, "Newbridge Athletic", "NBA", 3, 50, 0.25, "a", null);
 
         assertThat(jdbc.queryForObject(
                 "SELECT count(*) FROM player_fixture_stats WHERE season_id = ? AND player_id = ?",
-                Integer.class, TapasSeed.POPULATED_SEASON_ID, METRIC_NAME_TWIN)).isZero();
+                Integer.class, SharedStatsSeed.POPULATED_SEASON_ID, METRIC_NAME_TWIN)).isZero();
 
         SquadCandidate candidate = changeoverCandidates().getFirst();
 
@@ -201,16 +201,16 @@ class CandidatePoolChangeoverTest {
 
     @Test
     void sameSeasonUsesIdsEvenWhenTheDisplayNameChangedOrTheWeeklyRowIsMissing() {
-        daily(TapasSeed.POPULATED_SEASON_CODE, OKAFOR_OLD_ID, "Summername", "Renamed Player",
+        daily(SharedStatsSeed.POPULATED_SEASON_CODE, OKAFOR_OLD_ID, "Summername", "Renamed Player",
                 9561, "Newbridge Athletic", "NBA", 3, 82, 8.00, "a", null);
-        daily(TapasSeed.POPULATED_SEASON_CODE, NO_WEEKLY_PLAYER, "Missingweekly",
+        daily(SharedStatsSeed.POPULATED_SEASON_CODE, NO_WEEKLY_PLAYER, "Missingweekly",
                 "Missing Weekly Row", 9562, "Summer United", "SUM", 3, 48, 0.15, "a", null);
         seedMetricsWithoutWeeklyPlayer();
 
         assertThat(jdbc.queryForObject("SELECT count(*) FROM player WHERE season_id = ? AND id = ?",
-                Integer.class, TapasSeed.POPULATED_SEASON_ID, NO_WEEKLY_PLAYER)).isZero();
+                Integer.class, SharedStatsSeed.POPULATED_SEASON_ID, NO_WEEKLY_PLAYER)).isZero();
 
-        List<SquadCandidate> candidates = candidates(TapasSeed.POPULATED_SEASON_CODE);
+        List<SquadCandidate> candidates = candidates(SharedStatsSeed.POPULATED_SEASON_CODE);
 
         assertThat(candidates).extracting(SquadCandidate::elementId)
                 .containsExactlyInAnyOrder(OKAFOR_OLD_ID, NO_WEEKLY_PLAYER);
@@ -240,10 +240,10 @@ class CandidatePoolChangeoverTest {
                     (9103, ?, ?, 2, ?, ?, false, TIMESTAMPTZ '2025-08-23 14:00:00+00',
                      90, 5, 0.40, 0.20, 0.60, 0, 1, 0.90, 48)
                 """,
-                NO_WEEKLY_PLAYER, TapasSeed.POPULATED_SEASON_ID,
-                TapasSeed.TEAM_ASHFIELD, TapasSeed.TEAM_NORTHMOOR_CITY,
-                NO_WEEKLY_PLAYER, TapasSeed.POPULATED_SEASON_ID,
-                TapasSeed.TEAM_ASHFIELD, TapasSeed.TEAM_NORTHMOOR_CITY);
+                NO_WEEKLY_PLAYER, SharedStatsSeed.POPULATED_SEASON_ID,
+                SharedStatsSeed.TEAM_ASHFIELD, SharedStatsSeed.TEAM_NORTHMOOR_CITY,
+                NO_WEEKLY_PLAYER, SharedStatsSeed.POPULATED_SEASON_ID,
+                SharedStatsSeed.TEAM_ASHFIELD, SharedStatsSeed.TEAM_NORTHMOOR_CITY);
     }
 
     private void daily(String season, int elementId, String webName, String fullName,
@@ -258,7 +258,7 @@ class CandidatePoolChangeoverTest {
     }
 
     private List<SquadCandidate> changeoverCandidates() {
-        return candidates(TapasSeed.CURRENT_SEASON_CODE);
+        return candidates(SharedStatsSeed.CURRENT_SEASON_CODE);
     }
 
     private List<SquadCandidate> candidates(String captureSeason) {

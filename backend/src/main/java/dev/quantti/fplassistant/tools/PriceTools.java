@@ -16,9 +16,9 @@ import org.springframework.stereotype.Component;
  * <b>descriptive</b> — "price has risen/fallen X over N days" — never a prediction.
  *
  * <p><b>Moved off {@code fpl_player_price} on 2026-08-18.</b> That table holds per-gameweek
- * prices from vaastav plus a snapshot copied from the tapas {@code player} table, and both of
+ * prices from vaastav plus a snapshot copied from the shared {@code player} table, and both of
  * its writers are gated on {@code SeasonContext.currentSeason()}. During the season changeover
- * the gate is shut, so the table was empty; the player lookup also went through the tapas
+ * the gate is shut, so the table was empty; the player lookup also went through the shared
  * {@code player} table, which held zero rows for 2026-27 three days before that season kicked
  * off — meaning this tool answered "player not found" for every current player. The daily
  * capture has none of those dependencies: it names its own players, its own teams and its own

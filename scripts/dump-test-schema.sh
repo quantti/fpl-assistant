@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #
-# Regenerates backend/src/test/resources/db/tapas-schema.sql: the DDL of the six tables this
-# project reads but does not own. They belong to tapas-fpl-app and have no DDL in this
+# Regenerates backend/src/test/resources/db/shared-stats-schema.sql: the DDL of the six tables this
+# project reads but does not own. They belong to upstream-stats-app and have no DDL in this
 # repository, so an empty test database has no `player` table at all — the failure is
 # `relation "player" does not exist`, not a missing row.
 #
 # The output is a GENERATED FILE. Never hand-edit it: a hand-edit is exactly the schema drift
 # this script exists to prevent (CI green, production SQL broken). Regenerate instead, and
-# re-run after any tapas migration.
+# re-run after any shared migration.
 #
 #   scripts/dump-test-schema.sh           # regenerate the committed dump
 #   scripts/dump-test-schema.sh --check   # fail if the committed dump differs from live
@@ -23,14 +23,14 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-OUTPUT="$REPO_ROOT/backend/src/test/resources/db/tapas-schema.sql"
+OUTPUT="$REPO_ROOT/backend/src/test/resources/db/shared-stats-schema.sql"
 
 TABLES=(season team player gameweek fixture player_fixture_stats)
 
 PG_IMAGE="${PG_IMAGE:-postgres:17}"
-TAPAS_DB_HOST="${TAPAS_DB_HOST:-aws-1-eu-west-1.pooler.supabase.com}"
-TAPAS_DB_PORT="${TAPAS_DB_PORT:-5432}"
-TAPAS_DB_NAME="${TAPAS_DB_NAME:-postgres}"
+SHARED_DB_HOST="${SHARED_DB_HOST:-}"
+SHARED_DB_PORT="${SHARED_DB_PORT:-5432}"
+SHARED_DB_NAME="${SHARED_DB_NAME:-postgres}"
 
 check_mode=false
 case "${1:-}" in
@@ -54,6 +54,8 @@ if [[ -z "${DB_USER:-}" || -z "${DB_PASSWORD:-}" ]]; then
     set -a; source "$env_file"; set +a
 fi
 
+: "${SHARED_DB_HOST:?Set SHARED_DB_HOST to your session pooler host}"
+
 # Trigger functions live outside the tables pg_dump -t selects, but the triggers it emits
 # reference them: without this section the dump fails to load with "function
 # public.update_pfs_updated_at() does not exist".
@@ -61,7 +63,7 @@ trigger_functions() {
     local table_list
     table_list=$(printf "'%s'," "${TABLES[@]}"); table_list="${table_list%,}"
     docker run --rm -i -e PGPASSWORD="$DB_PASSWORD" "$PG_IMAGE" \
-        psql -h "$TAPAS_DB_HOST" -p "$TAPAS_DB_PORT" -U "$DB_USER" -d "$TAPAS_DB_NAME" \
+        psql -h "$SHARED_DB_HOST" -p "$SHARED_DB_PORT" -U "$DB_USER" -d "$SHARED_DB_NAME" \
         -v ON_ERROR_STOP=1 -tA -c "
             SELECT DISTINCT pg_get_functiondef(t.tgfoid) || ';'
             FROM pg_trigger t
@@ -76,7 +78,7 @@ schema_dump() {
     local args=()
     for table in "${TABLES[@]}"; do args+=(-t "public.$table"); done
     docker run --rm -e PGPASSWORD="$DB_PASSWORD" "$PG_IMAGE" \
-        pg_dump -h "$TAPAS_DB_HOST" -p "$TAPAS_DB_PORT" -U "$DB_USER" -d "$TAPAS_DB_NAME" \
+        pg_dump -h "$SHARED_DB_HOST" -p "$SHARED_DB_PORT" -U "$DB_USER" -d "$SHARED_DB_NAME" \
         --schema-only --no-owner --no-privileges --no-tablespaces "${args[@]}" \
     | grep -v -e '^\\restrict ' -e '^\\unrestrict ' \
                -e '^-- Dumped from database version' -e '^-- Dumped by pg_dump version'
@@ -91,9 +93,9 @@ generate() {
 --
 -- GENERATED FILE — DO NOT HAND-EDIT.
 --
--- Source: tapas-fpl-app's tables in the shared Supabase database.
+-- Source: upstream-stats-app's tables in the shared Supabase database.
 -- Regenerate: scripts/dump-test-schema.sh   (verify: scripts/dump-test-schema.sh --check)
--- Re-run after any tapas migration; a stale copy means CI passes while production SQL breaks.
+-- Re-run after any shared migration; a stale copy means CI passes while production SQL breaks.
 --
 -- Contains ONLY the six tables this project reads and does not own:
 --   ${TABLES[*]}
@@ -118,9 +120,9 @@ if [[ "$check_mode" == true ]]; then
     trap 'rm -f "$tmp"' EXIT
     generate > "$tmp"
     if diff -u "$OUTPUT" "$tmp" > /dev/null; then
-        echo "OK: ${OUTPUT#"$REPO_ROOT/"} matches the live tapas schema."
+        echo "OK: ${OUTPUT#"$REPO_ROOT/"} matches the live shared schema."
     else
-        echo "DRIFT: the committed dump no longer matches the live tapas schema." >&2
+        echo "DRIFT: the committed dump no longer matches the live shared schema." >&2
         diff -u "$OUTPUT" "$tmp" >&2 || true
         echo >&2
         echo "Fix: re-run scripts/dump-test-schema.sh, review the diff, and commit it." >&2

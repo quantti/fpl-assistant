@@ -45,7 +45,7 @@ import dev.quantti.fplassistant.sync.OwnedSyncStore.Lease;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.RuntimeFence;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.SourceRead;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.SyncKind;
-import dev.quantti.fplassistant.testsupport.TapasSeed;
+import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
 import dev.quantti.fplassistant.tools.PfsReadSource;
 
 /** Task 10 regression: the real durable pipeline, with only the clock and FPL transport replaced. */
@@ -66,7 +66,7 @@ class OwnedMatchdayEndToEndIntegrationTest {
     static void initialize() {
         dataSource = new DriverManagerDataSource(required("DATABASE_URL"), required("DB_USER"), required("DB_PASSWORD"));
         jdbc = new JdbcTemplate(dataSource);
-        TapasSeed.ensure(jdbc);
+        SharedStatsSeed.ensure(jdbc);
         new DefensiveStatsSchema(jdbc).ensureColumns();
         new OwnedSyncSchema(jdbc, TABLES).initialize();
         createCapturedTables();
@@ -78,7 +78,7 @@ class OwnedMatchdayEndToEndIntegrationTest {
     @AfterAll
     static void restoreSeed() {
         cleanSeason();
-        jdbc.update("UPDATE season SET is_current=(id=?)", TapasSeed.CURRENT_SEASON_ID);
+        jdbc.update("UPDATE season SET is_current=(id=?)", SharedStatsSeed.CURRENT_SEASON_ID);
     }
 
 

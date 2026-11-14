@@ -31,14 +31,14 @@ public class SeasonResolver {
     }
 
     public SeasonContext resolve() {
-        // Named rather than left to queryForMap's own message: the table is tapas-owned, and
+        // Named rather than left to queryForMap's own message: the table is shared-owned, and
         // "Incorrect result size: expected 1, actual 2" sends whoever reads it into this code
         // instead of into the season table, which is the only place the problem can be fixed.
         List<Map<String, Object>> flagged = jdbc.queryForList(
                 "SELECT id, code, start_date FROM season WHERE is_current = true ORDER BY id");
         if (flagged.size() != 1) {
             throw new IncorrectResultSizeDataAccessException(
-                    "Exactly one season must be flagged is_current in the tapas season table;"
+                    "Exactly one season must be flagged is_current in the shared season table;"
                             + " found " + flagged.size()
                             + (flagged.isEmpty() ? ". Flag the season being played."
                                     : ": " + flagged.stream().map(row -> String.valueOf(row.get("code")))
@@ -134,7 +134,7 @@ public class SeasonResolver {
     }
 
     /**
-     * The newest gameweek the underlying data actually reaches. Printed so a stalled tapas sync
+     * The newest gameweek the underlying data actually reaches. Printed so a stalled shared sync
      * shows as visibly old data rather than ranking silently on weeks-old numbers.
      */
     public int latestGameweek(int seasonId) {

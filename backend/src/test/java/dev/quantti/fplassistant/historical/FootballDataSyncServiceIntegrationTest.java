@@ -14,7 +14,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import dev.quantti.fplassistant.testsupport.TapasSeed;
+import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
 import dev.quantti.fplassistant.tools.SeasonContext;
 import dev.quantti.fplassistant.tools.SeasonResolver;
 
@@ -96,7 +96,7 @@ class FootballDataSyncServiceIntegrationTest {
     }
 
     /**
-     * What {@code SeasonResolver} returns while tapas has not synced the new season: resolved
+     * What {@code SeasonResolver} returns while shared has not synced the new season: resolved
      * to the completed previous season, with the flagged-current season code carried alongside.
      */
     private static SeasonContext completedFallbackContext() {
@@ -105,7 +105,7 @@ class FootballDataSyncServiceIntegrationTest {
 
     @Test
     void writesFinishedMatchesEvenWhenTheResolverIsOnACompletedFallback() {
-        // Production's exact shape at the 2026-27 kickoff: the resolver has fallen back (tapas
+        // Production's exact shape at the 2026-27 kickoff: the resolver has fallen back (shared
         // has synced nothing), but the response serves the season being played — and must be
         // written, or getTeamForm reports May 2026 as the freshest match for weeks.
         int written = serviceWith(completedFallbackContext()).sync();
@@ -230,7 +230,7 @@ class FootballDataSyncServiceIntegrationTest {
     }
 
     /**
-     * The guard compares a season code derived from the payload against tapas' own
+     * The guard compares a season code derived from the payload against the upstream project’s own
      * {@code season.code}, which this project does not own. Every other test hand-writes both
      * sides, so this one runs the real resolver against a real {@code season} row: if the two
      * formats ever stop comparing equal, the sync becomes a permanent silent no-op, which is
@@ -238,7 +238,7 @@ class FootballDataSyncServiceIntegrationTest {
      */
     @Test
     void theRealResolversSeasonCodeStillComparesEqualToThePayloads() {
-        TapasSeed.ensure(jdbc);
+        SharedStatsSeed.ensure(jdbc);
 
         int written = new FootballDataSyncService(
                 () -> SAMPLE_RESPONSE, realSeasonResolver, jdbc, tableName).sync();

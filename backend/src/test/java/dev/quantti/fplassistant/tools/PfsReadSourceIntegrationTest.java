@@ -21,7 +21,7 @@ import dev.quantti.fplassistant.sync.FixtureVerification;
 import dev.quantti.fplassistant.sync.HistoryParser;
 import dev.quantti.fplassistant.sync.IncrementalAppearanceReceipt;
 import dev.quantti.fplassistant.sync.PlayerFixtureFingerprint;
-import dev.quantti.fplassistant.testsupport.TapasSeed;
+import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -38,9 +38,9 @@ class PfsReadSourceIntegrationTest {
 
     @BeforeAll
     static void setUp(@Autowired JdbcTemplate jdbc) {
-        TapasSeed.ensure(jdbc);
+        SharedStatsSeed.ensure(jdbc);
         jdbc.update("UPDATE player_fixture_stats SET expected_goals=0.55 WHERE season_id=?"
-                + " AND fixture_id=9101 AND player_id=9201", TapasSeed.POPULATED_SEASON_ID);
+                + " AND fixture_id=9101 AND player_id=9201", SharedStatsSeed.POPULATED_SEASON_ID);
         jdbc.execute("DROP TABLE IF EXISTS " + PAGE_RECEIPTS);
         jdbc.execute("DROP TABLE IF EXISTS " + CURRENT);
         jdbc.execute("DROP TABLE IF EXISTS " + EVIDENCE);
@@ -92,7 +92,7 @@ class PfsReadSourceIntegrationTest {
     void offWithoutTablesKeepsLegacyArchiveAndActiveFailsClosed() {
         assertThat(rows(new PfsReadSource(jdbc, "OFF", "", "missing_fixture_table", "missing_evidence_table",
                 "missing_current_table", "missing_page_receipt_table"), 9101)).isNotEmpty();
-        assertThat(rows(new PfsReadSource(jdbc, "ACTIVE", TapasSeed.POPULATED_SEASON_CODE,
+        assertThat(rows(new PfsReadSource(jdbc, "ACTIVE", SharedStatsSeed.POPULATED_SEASON_CODE,
                 "missing_fixture_table", "missing_evidence_table", "missing_current_table",
                 "missing_page_receipt_table"), 9101)).isEmpty();
     }
@@ -125,13 +125,13 @@ class PfsReadSourceIntegrationTest {
         fixture(9101, "WAITING_STATS", null, 1);
         fixture(9103, "VERIFIED", 12L, 2);
 
-        assertThat(source("OFF").fixtureReceipts(TapasSeed.POPULATED_SEASON_ID,
-                TapasSeed.POPULATED_SEASON_CODE, java.util.Set.of(9101, 9102, 9103)))
+        assertThat(source("OFF").fixtureReceipts(SharedStatsSeed.POPULATED_SEASON_ID,
+                SharedStatsSeed.POPULATED_SEASON_CODE, java.util.Set.of(9101, 9102, 9103)))
                 .containsEntry(9101, PfsReadSource.FixtureReceipt.UNVERIFIED_OWNED)
                 .containsEntry(9102, PfsReadSource.FixtureReceipt.LEGACY)
                 .containsEntry(9103, PfsReadSource.FixtureReceipt.VERIFIED);
-        assertThat(source("ACTIVE").fixtureReceipts(TapasSeed.POPULATED_SEASON_ID,
-                TapasSeed.POPULATED_SEASON_CODE, java.util.Set.of(9102)))
+        assertThat(source("ACTIVE").fixtureReceipts(SharedStatsSeed.POPULATED_SEASON_ID,
+                SharedStatsSeed.POPULATED_SEASON_CODE, java.util.Set.of(9102)))
                 .containsEntry(9102, PfsReadSource.FixtureReceipt.UNVERIFIED_OWNED);
     }
 
@@ -143,16 +143,16 @@ class PfsReadSourceIntegrationTest {
                         + "(season, publication_key, latest_generation, source_read_started_at,"
                         + " source_read_finished_at) VALUES (?, 'player-history:9201', 100,"
                         + " TIMESTAMPTZ '2025-08-24T00:00:00Z', TIMESTAMPTZ '2025-08-24T00:01:00Z')",
-                TapasSeed.POPULATED_SEASON_CODE);
+                SharedStatsSeed.POPULATED_SEASON_CODE);
         BigDecimal originalExpectedGoals = jdbc.queryForObject("SELECT expected_goals"
                 + " FROM player_fixture_stats WHERE season_id=? AND fixture_id=? AND player_id=?",
-                BigDecimal.class, TapasSeed.POPULATED_SEASON_ID, 9101, 9201);
+                BigDecimal.class, SharedStatsSeed.POPULATED_SEASON_ID, 9101, 9201);
 
         assertThat(rows(source("OFF"), 9101)).singleElement()
                 .extracting(row -> row.get("expected_goals")).isEqualTo(originalExpectedGoals);
         assertThat(rows(source("ACTIVE"), 9101)).singleElement()
                 .extracting(row -> row.get("expected_goals")).isEqualTo(originalExpectedGoals);
-        assertThat(source("OFF").incrementalPagePlayers(TapasSeed.POPULATED_SEASON_CODE,
+        assertThat(source("OFF").incrementalPagePlayers(SharedStatsSeed.POPULATED_SEASON_CODE,
                 java.util.Set.of(9201))).isEmpty();
     }
 
@@ -161,7 +161,7 @@ class PfsReadSourceIntegrationTest {
         fixture(9101, "VERIFIED", 99L, 1);
         current(9101, 9201, "VALID");
 
-        assertThat(source("OFF").incrementalRowsByGameweek(TapasSeed.POPULATED_SEASON_ID,
+        assertThat(source("OFF").incrementalRowsByGameweek(SharedStatsSeed.POPULATED_SEASON_ID,
                 java.util.Set.of(9101, 9102))).containsOnlyKeys(1)
                 .containsEntry(1, new PfsReadSource.IncrementalRows(1, 3));
     }
@@ -188,8 +188,8 @@ class PfsReadSourceIntegrationTest {
         // No fixture-wide legacy receipt exists for 9103; an incremental-only pointer must not raw-fallback.
         current(9103, 9201, "WITHDRAWN");
         assertThat(rows(source("OFF"), 9103)).isEmpty();
-        assertThat(source("OFF").fixtureReceipts(TapasSeed.POPULATED_SEASON_ID,
-                TapasSeed.POPULATED_SEASON_CODE, java.util.Set.of(9103)))
+        assertThat(source("OFF").fixtureReceipts(SharedStatsSeed.POPULATED_SEASON_ID,
+                SharedStatsSeed.POPULATED_SEASON_CODE, java.util.Set.of(9103)))
                 .containsEntry(9103, PfsReadSource.FixtureReceipt.INCREMENTAL);
     }
 
@@ -200,24 +200,24 @@ class PfsReadSourceIntegrationTest {
         assertThat(rows(source("OFF"), 9101)).hasSize(1);
         BigDecimal originalAssists = jdbc.queryForObject("SELECT expected_assists"
                 + " FROM player_fixture_stats WHERE season_id=? AND fixture_id=? AND player_id=?",
-                BigDecimal.class, TapasSeed.POPULATED_SEASON_ID, 9101, 9201);
+                BigDecimal.class, SharedStatsSeed.POPULATED_SEASON_ID, 9101, 9201);
         Integer originalPoints = jdbc.queryForObject("SELECT total_points"
                 + " FROM player_fixture_stats WHERE season_id=? AND fixture_id=? AND player_id=?",
-                Integer.class, TapasSeed.POPULATED_SEASON_ID, 9101, 9201);
+                Integer.class, SharedStatsSeed.POPULATED_SEASON_ID, 9101, 9201);
         try {
             jdbc.update("UPDATE player_fixture_stats SET total_points=total_points+1,"
                     + " expected_assists=expected_assists+0.01 WHERE season_id=? AND fixture_id=? AND player_id=?",
-                    TapasSeed.POPULATED_SEASON_ID, 9101, 9201);
+                    SharedStatsSeed.POPULATED_SEASON_ID, 9101, 9201);
 
             assertThat(rows(source("OFF"), 9101)).isEmpty();
             assertThat(rows(source("ACTIVE"), 9101)).isEmpty();
             assertThat(jdbc.queryForObject("WITH " + source("OFF").cte()
                     + " SELECT count(*) FROM pfs_read WHERE season_id=? AND fixture_id=? AND player_id=?",
-                    Integer.class, TapasSeed.POPULATED_SEASON_ID, 9101, 9201)).isZero();
+                    Integer.class, SharedStatsSeed.POPULATED_SEASON_ID, 9101, 9201)).isZero();
         } finally {
             jdbc.update("UPDATE player_fixture_stats SET total_points=?, expected_assists=?"
                             + " WHERE season_id=? AND fixture_id=? AND player_id=?",
-                    originalPoints, originalAssists, TapasSeed.POPULATED_SEASON_ID, 9101, 9201);
+                    originalPoints, originalAssists, SharedStatsSeed.POPULATED_SEASON_ID, 9101, 9201);
         }
     }
 
@@ -227,11 +227,11 @@ class PfsReadSourceIntegrationTest {
         current(9101, 9201, "VALID");
         BigDecimal originalGoals = jdbc.queryForObject("SELECT expected_goals"
                 + " FROM player_fixture_stats WHERE season_id=? AND fixture_id=? AND player_id=?",
-                BigDecimal.class, TapasSeed.POPULATED_SEASON_ID, 9101, 9201);
+                BigDecimal.class, SharedStatsSeed.POPULATED_SEASON_ID, 9101, 9201);
         try {
             jdbc.update("UPDATE player_fixture_stats SET expected_goals=expected_goals+0.01"
                     + " WHERE season_id=? AND fixture_id=? AND player_id=?",
-                    TapasSeed.POPULATED_SEASON_ID, 9101, 9201);
+                    SharedStatsSeed.POPULATED_SEASON_ID, 9101, 9201);
 
             assertThat(rows(source("OFF"), 9101)).singleElement().satisfies(row -> {
                 assertThat(row.get("expected_goals")).isNull();
@@ -240,7 +240,7 @@ class PfsReadSourceIntegrationTest {
         } finally {
             jdbc.update("UPDATE player_fixture_stats SET expected_goals=?"
                             + " WHERE season_id=? AND fixture_id=? AND player_id=?",
-                    originalGoals, TapasSeed.POPULATED_SEASON_ID, 9101, 9201);
+                    originalGoals, SharedStatsSeed.POPULATED_SEASON_ID, 9101, 9201);
         }
     }
 
@@ -256,21 +256,21 @@ class PfsReadSourceIntegrationTest {
         assertThat(row.get("verified_published_at")).isNull();
         String status = jdbc.queryForObject("WITH " + source("OFF").cte()
                 + " SELECT evidence_status FROM pfs_read WHERE season_id=? AND fixture_id=? AND player_id=?",
-                String.class, TapasSeed.POPULATED_SEASON_ID, 9101, 9201);
+                String.class, SharedStatsSeed.POPULATED_SEASON_ID, 9101, 9201);
         assertThat(status).isEqualTo("PROVISIONAL");
-        assertThat(source("OFF").incrementalPagePlayers(TapasSeed.POPULATED_SEASON_CODE,
+        assertThat(source("OFF").incrementalPagePlayers(SharedStatsSeed.POPULATED_SEASON_CODE,
                 java.util.Set.of(9201))).containsExactly(9201);
 
         Map<String, Object> aggregate = jdbc.queryForMap("WITH " + source("OFF").cte()
                 + " SELECT SUM(expected_goals) AS xg, COUNT(expected_goals) AS observed"
                 + " FROM pfs_read WHERE season_id=? AND fixture_id=? AND player_id=?",
-                TapasSeed.POPULATED_SEASON_ID, 9101, 9201);
+                SharedStatsSeed.POPULATED_SEASON_ID, 9101, 9201);
         assertThat(aggregate.get("xg")).isNull();
         assertThat(((Number) aggregate.get("observed")).intValue()).isZero();
 
         assertThat(jdbc.queryForObject("WITH " + source("OFF").cte()
                 + " SELECT count(*) FROM pfs_read WHERE season_id=? AND fixture_id=?",
-                Integer.class, TapasSeed.POPULATED_SEASON_ID, 9101)).isEqualTo(1);
+                Integer.class, SharedStatsSeed.POPULATED_SEASON_ID, 9101)).isEqualTo(1);
     }
 
     @Test
@@ -278,18 +278,18 @@ class PfsReadSourceIntegrationTest {
         fixture(9101, "WAITING_STATS", null, 1);
         Integer originalMinutes = jdbc.queryForObject("SELECT minutes FROM player_fixture_stats"
                 + " WHERE season_id=? AND fixture_id=9101 AND player_id=9203", Integer.class,
-                TapasSeed.POPULATED_SEASON_ID);
+                SharedStatsSeed.POPULATED_SEASON_ID);
         jdbc.update("UPDATE player_fixture_stats SET minutes=0 WHERE season_id=? AND fixture_id=9101"
-                + " AND player_id=9203", TapasSeed.POPULATED_SEASON_ID);
+                + " AND player_id=9203", SharedStatsSeed.POPULATED_SEASON_ID);
         try {
             current(9101, 9201, "VALID");
             current(9101, 9202, "VALID");
             current(9101, 9203, "VALID");
             PfsReadSource reader = source("OFF");
             Map<PfsReadSource.FixtureSide, PfsReadSource.SidePopulation> unknown =
-                    reader.fixtureSidePopulation(TapasSeed.POPULATED_SEASON_ID,
-                            TapasSeed.POPULATED_SEASON_CODE, "fixture", "season_id",
-                            TapasSeed.POPULATED_SEASON_ID, Set.of(9101),
+                    reader.fixtureSidePopulation(SharedStatsSeed.POPULATED_SEASON_ID,
+                            SharedStatsSeed.POPULATED_SEASON_CODE, "fixture", "season_id",
+                            SharedStatsSeed.POPULATED_SEASON_ID, Set.of(9101),
                             Instant.parse("2026-09-09T00:00:00Z"));
             assertThat(unknown.get(new PfsReadSource.FixtureSide(9101, 9001)))
                     .satisfies(population -> {
@@ -307,9 +307,9 @@ class PfsReadSourceIntegrationTest {
             insertAppearanceSnapshot(9101, 1, 100, evidence);
 
             Map<PfsReadSource.FixtureSide, PfsReadSource.SidePopulation> complete =
-                    reader.fixtureSidePopulation(TapasSeed.POPULATED_SEASON_ID,
-                            TapasSeed.POPULATED_SEASON_CODE, "fixture", "season_id",
-                            TapasSeed.POPULATED_SEASON_ID, Set.of(9101),
+                    reader.fixtureSidePopulation(SharedStatsSeed.POPULATED_SEASON_ID,
+                            SharedStatsSeed.POPULATED_SEASON_CODE, "fixture", "season_id",
+                            SharedStatsSeed.POPULATED_SEASON_ID, Set.of(9101),
                             Instant.parse("2026-09-09T00:00:00Z"));
             assertThat(complete.get(new PfsReadSource.FixtureSide(9101, 9001)))
                     .satisfies(population -> {
@@ -324,7 +324,7 @@ class PfsReadSourceIntegrationTest {
                     .satisfies(population -> assertThat(population.complete()).isTrue());
         } finally {
             jdbc.update("UPDATE player_fixture_stats SET minutes=? WHERE season_id=? AND fixture_id=9101"
-                    + " AND player_id=9203", originalMinutes, TapasSeed.POPULATED_SEASON_ID);
+                    + " AND player_id=9203", originalMinutes, SharedStatsSeed.POPULATED_SEASON_ID);
         }
     }
 
@@ -345,11 +345,11 @@ class PfsReadSourceIntegrationTest {
 
         PfsReadSource reader = source("OFF");
         Map<PfsReadSource.FixtureSide, PfsReadSource.SidePopulation> sides = reader.fixtureSidePopulation(
-                TapasSeed.POPULATED_SEASON_ID, TapasSeed.POPULATED_SEASON_CODE, "fixture", "season_id",
-                TapasSeed.POPULATED_SEASON_ID, Set.of(9101), Instant.parse("2026-09-09T00:00:00Z"));
+                SharedStatsSeed.POPULATED_SEASON_ID, SharedStatsSeed.POPULATED_SEASON_CODE, "fixture", "season_id",
+                SharedStatsSeed.POPULATED_SEASON_ID, Set.of(9101), Instant.parse("2026-09-09T00:00:00Z"));
 
         assertThat(rows(reader, 9101)).hasSize(1);
-        assertThat(reader.incrementalPagePlayers(TapasSeed.POPULATED_SEASON_CODE, Set.of(9201, 9202))).isEmpty();
+        assertThat(reader.incrementalPagePlayers(SharedStatsSeed.POPULATED_SEASON_CODE, Set.of(9201, 9202))).isEmpty();
         assertThat(sides.get(new PfsReadSource.FixtureSide(9101, 9001)))
                 .satisfies(side -> {
                     assertThat(side.fixtureReceipt()).isEqualTo(PfsReadSource.FixtureReceipt.INCREMENTAL);
@@ -365,7 +365,7 @@ class PfsReadSourceIntegrationTest {
     void correctedFixtureSourceRevisionInvalidatesItsPriorAppearanceSnapshot() {
         fixture(9101, "WAITING_STATS", null, 1);
         String originalStats = jdbc.queryForObject("SELECT stats::text FROM fixture"
-                + " WHERE season_id=? AND id=9101", String.class, TapasSeed.POPULATED_SEASON_ID);
+                + " WHERE season_id=? AND id=9101", String.class, SharedStatsSeed.POPULATED_SEASON_ID);
         Instant started = Instant.parse("2025-08-24T00:10:00Z").plusNanos(123_456_789);
         Instant finished = started.plusSeconds(60);
         Map<Integer, FixtureVerification.Appearance> appearances = Map.of(
@@ -378,7 +378,7 @@ class PfsReadSourceIntegrationTest {
 
         try {
             jdbc.update("UPDATE fixture SET stats=stats || '[{\"identifier\":\"revision_test\",\"h\":[],\"a\":[]}]'::jsonb"
-                    + " WHERE season_id=? AND id=9101", TapasSeed.POPULATED_SEASON_ID);
+                    + " WHERE season_id=? AND id=9101", SharedStatsSeed.POPULATED_SEASON_ID);
             FixtureRow corrected = sourceFixture(9101);
             CatalogueScheduleParser.ReadInterval correctionRead = new CatalogueScheduleParser.ReadInterval(
                     finished.plusSeconds(1), finished.plusSeconds(2));
@@ -386,8 +386,8 @@ class PfsReadSourceIntegrationTest {
                     IncrementalAppearanceReceipt.fixtureRevisionFingerprint(corrected, corrected.gameweek()));
 
             Map<PfsReadSource.FixtureSide, PfsReadSource.SidePopulation> sides = source("OFF")
-                    .fixtureSidePopulation(TapasSeed.POPULATED_SEASON_ID, TapasSeed.POPULATED_SEASON_CODE,
-                            "fixture", "season_id", TapasSeed.POPULATED_SEASON_ID, Set.of(9101),
+                    .fixtureSidePopulation(SharedStatsSeed.POPULATED_SEASON_ID, SharedStatsSeed.POPULATED_SEASON_CODE,
+                            "fixture", "season_id", SharedStatsSeed.POPULATED_SEASON_ID, Set.of(9101),
                             Instant.parse("2026-09-09T00:00:00Z"));
 
             assertThat(sides.get(new PfsReadSource.FixtureSide(9101, 9001)))
@@ -398,7 +398,7 @@ class PfsReadSourceIntegrationTest {
                     });
         } finally {
             jdbc.update("UPDATE fixture SET stats=?::jsonb WHERE season_id=? AND id=9101",
-                    originalStats, TapasSeed.POPULATED_SEASON_ID);
+                    originalStats, SharedStatsSeed.POPULATED_SEASON_ID);
         }
     }
 
@@ -417,21 +417,21 @@ class PfsReadSourceIntegrationTest {
         insertAppearanceSnapshot(9101, 1, 100, firstEvidence);
         String initialSourceFingerprint = jdbc.queryForObject("SELECT source_pair_fingerprint FROM "
                 + PAGE_RECEIPTS + " WHERE season=? AND publication_key=?", String.class,
-                TapasSeed.POPULATED_SEASON_CODE, IncrementalAppearanceReceipt.sourceFixtureKey(9101));
+                SharedStatsSeed.POPULATED_SEASON_CODE, IncrementalAppearanceReceipt.sourceFixtureKey(9101));
         refreshPageWatermark(9201, 101, firstStart.plusSeconds(120));
         refreshPageWatermark(9202, 101, firstStart.plusSeconds(120));
 
         PfsReadSource reader = source("OFF");
         Map<PfsReadSource.FixtureSide, PfsReadSource.SidePopulation> initial = reader.fixtureSidePopulation(
-                TapasSeed.POPULATED_SEASON_ID, TapasSeed.POPULATED_SEASON_CODE, "fixture", "season_id",
-                TapasSeed.POPULATED_SEASON_ID, Set.of(9101), Instant.parse("2026-09-09T00:00:00Z"));
+                SharedStatsSeed.POPULATED_SEASON_ID, SharedStatsSeed.POPULATED_SEASON_CODE, "fixture", "season_id",
+                SharedStatsSeed.POPULATED_SEASON_ID, Set.of(9101), Instant.parse("2026-09-09T00:00:00Z"));
         assertThat(initial.get(new PfsReadSource.FixtureSide(9101, 9001)).complete()).isTrue();
 
         Integer priorScore = jdbc.queryForObject("SELECT team_h_score FROM fixture WHERE season_id=? AND id=9101",
-                Integer.class, TapasSeed.POPULATED_SEASON_ID);
+                Integer.class, SharedStatsSeed.POPULATED_SEASON_ID);
         try {
             jdbc.update("UPDATE fixture SET team_h_score=COALESCE(team_h_score,0)+1"
-                    + " WHERE season_id=? AND id=9101", TapasSeed.POPULATED_SEASON_ID);
+                    + " WHERE season_id=? AND id=9101", SharedStatsSeed.POPULATED_SEASON_ID);
             FixtureRow corrected = sourceFixture(9101);
             assertThat(IncrementalAppearanceReceipt.fixtureRevisionFingerprint(corrected, 1))
                     .isNotEqualTo(initialSourceFingerprint);
@@ -442,8 +442,8 @@ class PfsReadSourceIntegrationTest {
             insertAppearanceSnapshot(9101, 1, 102, correctedEvidence);
 
             Map<PfsReadSource.FixtureSide, PfsReadSource.SidePopulation> stalePages = reader.fixtureSidePopulation(
-                    TapasSeed.POPULATED_SEASON_ID, TapasSeed.POPULATED_SEASON_CODE, "fixture", "season_id",
-                    TapasSeed.POPULATED_SEASON_ID, Set.of(9101), Instant.parse("2026-09-09T00:00:00Z"));
+                    SharedStatsSeed.POPULATED_SEASON_ID, SharedStatsSeed.POPULATED_SEASON_CODE, "fixture", "season_id",
+                    SharedStatsSeed.POPULATED_SEASON_ID, Set.of(9101), Instant.parse("2026-09-09T00:00:00Z"));
             assertThat(stalePages.get(new PfsReadSource.FixtureSide(9101, 9001)))
                     .satisfies(side -> {
                         assertThat(side.sourceRosterComplete()).isTrue();
@@ -455,13 +455,13 @@ class PfsReadSourceIntegrationTest {
             refreshPageWatermark(9201, 103, correctedStart.plusSeconds(120));
             refreshPageWatermark(9202, 103, correctedStart.plusSeconds(120));
             Map<PfsReadSource.FixtureSide, PfsReadSource.SidePopulation> revalidated = reader.fixtureSidePopulation(
-                    TapasSeed.POPULATED_SEASON_ID, TapasSeed.POPULATED_SEASON_CODE, "fixture", "season_id",
-                    TapasSeed.POPULATED_SEASON_ID, Set.of(9101), Instant.parse("2026-09-09T00:00:00Z"));
+                    SharedStatsSeed.POPULATED_SEASON_ID, SharedStatsSeed.POPULATED_SEASON_CODE, "fixture", "season_id",
+                    SharedStatsSeed.POPULATED_SEASON_ID, Set.of(9101), Instant.parse("2026-09-09T00:00:00Z"));
             assertThat(revalidated.get(new PfsReadSource.FixtureSide(9101, 9001)).complete()).isTrue();
             assertThat(revalidated.get(new PfsReadSource.FixtureSide(9101, 9002)).complete()).isTrue();
         } finally {
             jdbc.update("UPDATE fixture SET team_h_score=? WHERE season_id=? AND id=9101",
-                    priorScore, TapasSeed.POPULATED_SEASON_ID);
+                    priorScore, SharedStatsSeed.POPULATED_SEASON_ID);
         }
     }
 
@@ -470,9 +470,9 @@ class PfsReadSourceIntegrationTest {
         fixture(9101, "WAITING_STATS", null, 1);
         BigDecimal originalGoals = jdbc.queryForObject("SELECT expected_goals FROM player_fixture_stats"
                 + " WHERE season_id=? AND fixture_id=9101 AND player_id=9201", BigDecimal.class,
-                TapasSeed.POPULATED_SEASON_ID);
+                SharedStatsSeed.POPULATED_SEASON_ID);
         jdbc.update("UPDATE player_fixture_stats SET expected_goals=0 WHERE season_id=?"
-                + " AND fixture_id=9101 AND player_id=9201", TapasSeed.POPULATED_SEASON_ID);
+                + " AND fixture_id=9101 AND player_id=9201", SharedStatsSeed.POPULATED_SEASON_ID);
         evidence(9101, 9201, 100, HistoryParser.Component.EXPECTED_GOALS.bit());
         pageReceipt(9201, 100);
         String physical = physicalFingerprint(9101, 9201, HistoryParser.Component.EXPECTED_GOALS.bit());
@@ -480,7 +480,7 @@ class PfsReadSourceIntegrationTest {
                         + "source_run_generation,evidence_generation,row_fingerprint,physical_fingerprint,"
                         + "source_read_started_at,source_read_finished_at) VALUES (?,?,?,?, 'VALID',?,?,?,?,"
                         + "TIMESTAMPTZ '2025-08-24T00:05:00Z',TIMESTAMPTZ '2025-08-24T00:06:00Z')",
-                TapasSeed.POPULATED_SEASON_ID, TapasSeed.POPULATED_SEASON_CODE, 9101, 9201,
+                SharedStatsSeed.POPULATED_SEASON_ID, SharedStatsSeed.POPULATED_SEASON_CODE, 9101, 9201,
                 100, 100, "a".repeat(64), physical);
 
         try {
@@ -491,7 +491,7 @@ class PfsReadSourceIntegrationTest {
         } finally {
             jdbc.update("UPDATE player_fixture_stats SET expected_goals=? WHERE season_id=?"
                             + " AND fixture_id=9101 AND player_id=9201",
-                    originalGoals, TapasSeed.POPULATED_SEASON_ID);
+                    originalGoals, SharedStatsSeed.POPULATED_SEASON_ID);
         }
     }
 
@@ -538,7 +538,7 @@ class PfsReadSourceIntegrationTest {
         Map<String, Object> aggregate = jdbc.queryForMap("WITH " + source("OFF").cte()
                 + " SELECT SUM(expected_assists) AS xa, COUNT(expected_assists) AS valid"
                 + " FROM pfs_read WHERE season_id=? AND fixture_id=? AND player_id=?",
-                TapasSeed.POPULATED_SEASON_ID, 9101, 9201);
+                SharedStatsSeed.POPULATED_SEASON_ID, 9101, 9201);
         assertThat(aggregate.get("xa")).isNull();
         assertThat(((Number) aggregate.get("valid")).intValue()).isZero();
 
@@ -560,7 +560,7 @@ class PfsReadSourceIntegrationTest {
     }
 
     private PfsReadSource source(String mode) {
-        return new PfsReadSource(jdbc, mode, TapasSeed.POPULATED_SEASON_CODE,
+        return new PfsReadSource(jdbc, mode, SharedStatsSeed.POPULATED_SEASON_CODE,
                 FIXTURES, EVIDENCE, CURRENT, PAGE_RECEIPTS);
     }
 
@@ -568,7 +568,7 @@ class PfsReadSourceIntegrationTest {
         return jdbc.queryForList("WITH " + source.cte()
                 + " SELECT expected_goals, expected_assists, source_read_finished_at, verified_published_at"
                 + " FROM pfs_read WHERE season_id=? AND fixture_id=? AND player_id=?",
-                TapasSeed.POPULATED_SEASON_ID, fixtureId, 9201);
+                SharedStatsSeed.POPULATED_SEASON_ID, fixtureId, 9201);
     }
 
     private void fixture(int fixtureId, String state, Long generation, int hour) {
@@ -581,7 +581,7 @@ class PfsReadSourceIntegrationTest {
                         + " current_verified_generation=EXCLUDED.current_verified_generation,"
                         + " last_verified_generation=EXCLUDED.last_verified_generation,"
                         + " last_verified_at=EXCLUDED.last_verified_at",
-                TapasSeed.POPULATED_SEASON_ID, fixtureId, state, (long) hour, generation, generation, hour);
+                SharedStatsSeed.POPULATED_SEASON_ID, fixtureId, state, (long) hour, generation, generation, hour);
     }
 
     private void insertAppearanceSnapshot(int fixtureId, int eventId, long generation,
@@ -600,7 +600,7 @@ class PfsReadSourceIntegrationTest {
         insertReceipt(snapshot, generation, read, fullFingerprint);
         List<String> previousAppearanceState = jdbc.query("SELECT source_pair_fingerprint FROM " + PAGE_RECEIPTS
                         + " WHERE season=? AND publication_key=?", (rs, row) -> rs.getString(1),
-                TapasSeed.POPULATED_SEASON_CODE, IncrementalAppearanceReceipt.appearanceStateKey(fixtureId));
+                SharedStatsSeed.POPULATED_SEASON_CODE, IncrementalAppearanceReceipt.appearanceStateKey(fixtureId));
         if (previousAppearanceState.isEmpty()
                 || !fullFingerprint.equals(previousAppearanceState.getFirst())) {
             insertReceipt(IncrementalAppearanceReceipt.appearanceStateKey(fixtureId), generation, read,
@@ -619,12 +619,12 @@ class PfsReadSourceIntegrationTest {
                 FROM fixture f JOIN team h ON h.id=f.team_h AND h.season_id=f.season_id
                 JOIN team a ON a.id=f.team_a AND a.season_id=f.season_id
                 WHERE f.season_id=? AND f.id=?
-                """, TapasSeed.POPULATED_SEASON_ID, fixtureId);
+                """, SharedStatsSeed.POPULATED_SEASON_ID, fixtureId);
         Map<String, Object> fields = new java.util.HashMap<>();
         fields.put("finished_provisional", row.get("finished_provisional"));
         fields.put("minutes", ((Number) row.get("minutes")).intValue());
         fields.put("stats", row.get("stats"));
-        return new FixtureRow(TapasSeed.POPULATED_SEASON_ID, TapasSeed.POPULATED_SEASON_CODE,
+        return new FixtureRow(SharedStatsSeed.POPULATED_SEASON_ID, SharedStatsSeed.POPULATED_SEASON_CODE,
                 fixtureId, ((Number) row.get("code")).intValue(), (Integer) row.get("gameweek"),
                 ((Number) row.get("team_h")).intValue(), ((Number) row.get("team_a")).intValue(),
                 String.valueOf(row.get("home_name")), String.valueOf(row.get("home_short")),
@@ -644,7 +644,7 @@ class PfsReadSourceIntegrationTest {
                         + " source_read_started_at=EXCLUDED.source_read_started_at,"
                         + " source_read_finished_at=EXCLUDED.source_read_finished_at,"
                         + " source_pair_fingerprint=EXCLUDED.source_pair_fingerprint",
-                TapasSeed.POPULATED_SEASON_CODE, key, generation,
+                SharedStatsSeed.POPULATED_SEASON_CODE, key, generation,
                 Timestamp.from(read.startedAt()), Timestamp.from(read.completedAt()), fingerprint);
     }
 
@@ -654,7 +654,7 @@ class PfsReadSourceIntegrationTest {
                         + " ON CONFLICT (season_id, fixture_id) DO UPDATE SET state='SCHEDULED',"
                         + " observation_generation=NULL, current_verified_generation=NULL,"
                         + " last_verified_generation=NULL",
-                TapasSeed.POPULATED_SEASON_ID, fixtureId);
+                SharedStatsSeed.POPULATED_SEASON_ID, fixtureId);
     }
 
     private void current(int fixtureId, int playerId, String state) {
@@ -673,7 +673,7 @@ class PfsReadSourceIntegrationTest {
                         + " source_run_generation, evidence_generation, row_fingerprint, physical_fingerprint,"
                         + " source_read_started_at, source_read_finished_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,"
                         + " TIMESTAMPTZ '2025-08-24T00:05:00Z', TIMESTAMPTZ '2025-08-24T00:06:00Z')",
-                TapasSeed.POPULATED_SEASON_ID, TapasSeed.POPULATED_SEASON_CODE,
+                SharedStatsSeed.POPULATED_SEASON_ID, SharedStatsSeed.POPULATED_SEASON_CODE,
                 fixtureId, playerId, state, generation, state.equals("VALID") ? generation : null,
                 state.equals("VALID") ? "a".repeat(64) : null, physicalFingerprint);
     }
@@ -684,7 +684,7 @@ class PfsReadSourceIntegrationTest {
                         + " source_run_generation, evidence_generation, row_fingerprint, physical_fingerprint,"
                         + " source_read_started_at, source_read_finished_at) VALUES (?, ?, ?, ?, 'VALID', ?, ?, ?, NULL,"
                         + " TIMESTAMPTZ '2025-08-24T00:05:00Z', TIMESTAMPTZ '2025-08-24T00:06:00Z')",
-                TapasSeed.POPULATED_SEASON_ID, TapasSeed.POPULATED_SEASON_CODE,
+                SharedStatsSeed.POPULATED_SEASON_ID, SharedStatsSeed.POPULATED_SEASON_CODE,
                 fixtureId, playerId, generation, generation, "a".repeat(64));
     }
 
@@ -693,7 +693,7 @@ class PfsReadSourceIntegrationTest {
                 Long.toString(presenceMask));
         return jdbc.queryForObject("SELECT " + expression + " FROM player_fixture_stats p"
                 + " JOIN season s ON s.id=p.season_id WHERE p.season_id=? AND p.fixture_id=? AND p.player_id=?",
-                String.class, TapasSeed.POPULATED_SEASON_ID, fixtureId, playerId);
+                String.class, SharedStatsSeed.POPULATED_SEASON_ID, fixtureId, playerId);
     }
 
     private void pageReceipt(int playerId, long generation) {
@@ -702,14 +702,14 @@ class PfsReadSourceIntegrationTest {
                         + " VALUES (?, ?, ?, TIMESTAMPTZ '2025-08-24T00:05:00Z',"
                         + " TIMESTAMPTZ '2025-08-24T00:06:00Z') ON CONFLICT (season,publication_key)"
                         + " DO UPDATE SET latest_generation=EXCLUDED.latest_generation",
-                TapasSeed.POPULATED_SEASON_CODE, "incremental-page:player:" + playerId, generation);
+                SharedStatsSeed.POPULATED_SEASON_CODE, "incremental-page:player:" + playerId, generation);
     }
 
     private void refreshPageWatermark(int playerId, long generation, Instant startedAt) {
         jdbc.update("UPDATE " + PAGE_RECEIPTS + " SET latest_generation=?,source_read_started_at=?,"
                         + "source_read_finished_at=? WHERE season=? AND publication_key=?",
                 generation, Timestamp.from(startedAt), Timestamp.from(startedAt.plusSeconds(1)),
-                TapasSeed.POPULATED_SEASON_CODE, "incremental-page:player:" + playerId);
+                SharedStatsSeed.POPULATED_SEASON_CODE, "incremental-page:player:" + playerId);
     }
 
     private void evidence(int fixtureId, int playerId, long generation, long mask) {
@@ -718,7 +718,7 @@ class PfsReadSourceIntegrationTest {
                         + " source_read_started_at, source_read_finished_at)"
                         + " VALUES (?, ?, ?, ?, ?, ?, TIMESTAMPTZ '2025-08-24T00:05:00Z',"
                         + " TIMESTAMPTZ '2025-08-24T00:06:00Z') ON CONFLICT DO NOTHING",
-                TapasSeed.POPULATED_SEASON_ID, fixtureId, playerId, generation, mask,
-                TapasSeed.POPULATED_SEASON_CODE);
+                SharedStatsSeed.POPULATED_SEASON_ID, fixtureId, playerId, generation, mask,
+                SharedStatsSeed.POPULATED_SEASON_CODE);
     }
 }

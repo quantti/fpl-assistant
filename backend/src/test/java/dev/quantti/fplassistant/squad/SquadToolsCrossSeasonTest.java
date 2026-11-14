@@ -4,7 +4,7 @@ import java.time.LocalDate;
 import java.time.OffsetDateTime;
 
 import dev.quantti.fplassistant.testsupport.FictitiousTestData;
-import dev.quantti.fplassistant.testsupport.TapasSeed;
+import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
 import dev.quantti.fplassistant.tools.DataAge;
 import dev.quantti.fplassistant.tools.SeasonResolver;
 import org.junit.jupiter.api.AfterEach;
@@ -24,9 +24,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * alone, carried through here to the tool's own metric-provenance line.
  *
  * <p>Follows {@code CandidatePoolCrossSeasonTest}'s precedent exactly: a handful of rows land in
- * {@link TapasSeed#CURRENT_SEASON_ID} so {@link SeasonResolver} prefers it, and no
+ * {@link SharedStatsSeed#CURRENT_SEASON_ID} so {@link SeasonResolver} prefers it, and no
  * {@code player_fixture_stats} exist there, so {@code CandidatePool} has to bridge back to
- * {@link TapasSeed#POPULATED_SEASON_ID} by name.
+ * {@link SharedStatsSeed#POPULATED_SEASON_ID} by name.
  *
  * <p>{@link SquadToolsIntegrationTest}'s fixture can never reach this branch — it never seeds a
  * season more recent than {@code POPULATED_SEASON_ID} — which is exactly how a bug here survived:
@@ -40,7 +40,7 @@ class SquadToolsCrossSeasonTest {
 
     private static final LocalDate TODAY = LocalDate.of(2026, 8, 27);
 
-    private static final int CURRENT = TapasSeed.CURRENT_SEASON_ID;
+    private static final int CURRENT = SharedStatsSeed.CURRENT_SEASON_ID;
     private static final int GAMEWEEK = 151;
     private static final int PRESENCE_TEAM = 9001;
     private static final int PRESENCE_PLAYER = 9440;
@@ -51,7 +51,7 @@ class SquadToolsCrossSeasonTest {
     private static final String[] CLUBS = {"Season Rovers", "Changeover Town", "Bridge City",
             "Fallback Athletic", "Interim United", "Carryover FC"};
 
-    /** The metric bridge, scoped to {@link TapasSeed#POPULATED_SEASON_ID} — see {@link #insert}. */
+    /** The metric bridge, scoped to {@link SharedStatsSeed#POPULATED_SEASON_ID} — see {@link #insert}. */
     private static final int METRIC_TEAM = 9950;
     private static final int METRIC_OPPONENT = 9951;
     private static final int METRIC_FIXTURE_GW1 = 9970;
@@ -77,13 +77,13 @@ class SquadToolsCrossSeasonTest {
 
     @BeforeEach
     void seed() {
-        TapasSeed.ensure(jdbc);
+        SharedStatsSeed.ensure(jdbc);
         beginTheNewSeason();
         season = seasonResolver.resolve().code();
         FictitiousTestData.assertSafeSeason(season);
         assertThat(table).as("squad tests must use the isolated table").endsWith("_test");
         assertThat(season).as("the presence rows below must actually flip the resolver")
-                .isEqualTo(TapasSeed.CURRENT_SEASON_CODE);
+                .isEqualTo(SharedStatsSeed.CURRENT_SEASON_CODE);
         deleteTestRows();
         seedMetricScaffold();
 
@@ -104,13 +104,13 @@ class SquadToolsCrossSeasonTest {
         deleteTestRows();
         jdbc.update("DELETE FROM player_fixture_stats WHERE season_id = ?"
                         + " AND player_id BETWEEN ? AND ?",
-                TapasSeed.POPULATED_SEASON_ID, FIRST_ID, LAST_ID);
+                SharedStatsSeed.POPULATED_SEASON_ID, FIRST_ID, LAST_ID);
         jdbc.update("DELETE FROM player WHERE season_id = ? AND id BETWEEN ? AND ?",
-                TapasSeed.POPULATED_SEASON_ID, FIRST_ID, LAST_ID);
+                SharedStatsSeed.POPULATED_SEASON_ID, FIRST_ID, LAST_ID);
         jdbc.update("DELETE FROM fixture WHERE season_id = ? AND id IN (?, ?)",
-                TapasSeed.POPULATED_SEASON_ID, METRIC_FIXTURE_GW1, METRIC_FIXTURE_GW2);
+                SharedStatsSeed.POPULATED_SEASON_ID, METRIC_FIXTURE_GW1, METRIC_FIXTURE_GW2);
         jdbc.update("DELETE FROM team WHERE season_id = ? AND id IN (?, ?)",
-                TapasSeed.POPULATED_SEASON_ID, METRIC_TEAM, METRIC_OPPONENT);
+                SharedStatsSeed.POPULATED_SEASON_ID, METRIC_TEAM, METRIC_OPPONENT);
         jdbc.update("DELETE FROM player WHERE season_id = ? AND id = ?", CURRENT, PRESENCE_PLAYER);
         jdbc.update("DELETE FROM gameweek WHERE season_id = ? AND id = ?", CURRENT, GAMEWEEK);
         jdbc.update("DELETE FROM team WHERE season_id = ? AND id = ?", CURRENT, PRESENCE_TEAM);
@@ -118,7 +118,7 @@ class SquadToolsCrossSeasonTest {
 
     private void deleteTestRows() {
         jdbc.update("DELETE FROM " + table + " WHERE season = ? AND element_id BETWEEN ? AND ?",
-                TapasSeed.CURRENT_SEASON_CODE, FIRST_ID, LAST_ID);
+                SharedStatsSeed.CURRENT_SEASON_CODE, FIRST_ID, LAST_ID);
     }
 
     /**
@@ -151,25 +151,25 @@ class SquadToolsCrossSeasonTest {
 
     /**
      * One fictitious club playing itself over two finished gameweeks, scoped to
-     * {@link TapasSeed#POPULATED_SEASON_ID} — the season the bridge falls back to once
+     * {@link SharedStatsSeed#POPULATED_SEASON_ID} — the season the bridge falls back to once
      * {@link #beginTheNewSeason} has made the resolver prefer the current one.
      */
     private void seedMetricScaffold() {
         jdbc.update("INSERT INTO team (id, season_id, code, name, short_name, strength)"
                         + " VALUES (?, ?, ?, 'Bridge Town', 'BRT', 3)"
                         + " ON CONFLICT (id, season_id) DO NOTHING",
-                METRIC_TEAM, TapasSeed.POPULATED_SEASON_ID, METRIC_TEAM);
+                METRIC_TEAM, SharedStatsSeed.POPULATED_SEASON_ID, METRIC_TEAM);
         jdbc.update("INSERT INTO team (id, season_id, code, name, short_name, strength)"
                         + " VALUES (?, ?, ?, 'Bridge Rivals', 'BRR', 3)"
                         + " ON CONFLICT (id, season_id) DO NOTHING",
-                METRIC_OPPONENT, TapasSeed.POPULATED_SEASON_ID, METRIC_OPPONENT);
+                METRIC_OPPONENT, SharedStatsSeed.POPULATED_SEASON_ID, METRIC_OPPONENT);
         jdbc.update("INSERT INTO fixture (id, season_id, gameweek, code, team_h, team_a,"
                         + " team_h_score, team_a_score, team_h_difficulty, team_a_difficulty,"
                         + " kickoff_time, started, finished)"
                         + " VALUES (?, ?, 1, ?, ?, ?, 1, 1, 3, 3,"
                         + " TIMESTAMPTZ '2025-08-16 14:00:00+00', true, true)"
                         + " ON CONFLICT (id, season_id) DO NOTHING",
-                METRIC_FIXTURE_GW1, TapasSeed.POPULATED_SEASON_ID, METRIC_FIXTURE_GW1,
+                METRIC_FIXTURE_GW1, SharedStatsSeed.POPULATED_SEASON_ID, METRIC_FIXTURE_GW1,
                 METRIC_TEAM, METRIC_OPPONENT);
         jdbc.update("INSERT INTO fixture (id, season_id, gameweek, code, team_h, team_a,"
                         + " team_h_score, team_a_score, team_h_difficulty, team_a_difficulty,"
@@ -177,13 +177,13 @@ class SquadToolsCrossSeasonTest {
                         + " VALUES (?, ?, 2, ?, ?, ?, 1, 1, 3, 3,"
                         + " TIMESTAMPTZ '2025-08-23 14:00:00+00', true, true)"
                         + " ON CONFLICT (id, season_id) DO NOTHING",
-                METRIC_FIXTURE_GW2, TapasSeed.POPULATED_SEASON_ID, METRIC_FIXTURE_GW2,
+                METRIC_FIXTURE_GW2, SharedStatsSeed.POPULATED_SEASON_ID, METRIC_FIXTURE_GW2,
                 METRIC_OPPONENT, METRIC_TEAM);
     }
 
     /**
      * The daily-price row lives under this season's own code; the metric that bridges to it lives
-     * under {@link TapasSeed#POPULATED_SEASON_ID} and is matched by {@code web_name} rather than
+     * under {@link SharedStatsSeed#POPULATED_SEASON_ID} and is matched by {@code web_name} rather than
      * by id, since {@code CandidatePool} bridges by name whenever the metric season differs from
      * the pool's own — which is exactly the state this class forces.
      */
@@ -193,7 +193,7 @@ class SquadToolsCrossSeasonTest {
                         + " full_name, team_id, team_short, team_name, element_type, now_cost,"
                         + " cost_change_event, cost_change_start, selected_by_percent, status, news)"
                         + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, 'a', NULL)",
-                TapasSeed.CURRENT_SEASON_CODE, TODAY, elementId, webName, webName + " Fictitious",
+                SharedStatsSeed.CURRENT_SEASON_CODE, TODAY, elementId, webName, webName + " Fictitious",
                 club.hashCode() & 0x7fff, club.substring(0, 3).toUpperCase(java.util.Locale.ROOT),
                 club, elementType, nowCost, ownership);
 
@@ -211,7 +211,7 @@ class SquadToolsCrossSeasonTest {
                         + " form, selected_by_percent)"
                         + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'a', 12, 180, 4.0, ?)"
                         + " ON CONFLICT (id, season_id) DO NOTHING",
-                elementId, TapasSeed.POPULATED_SEASON_ID, METRIC_TEAM, webName, webName, webName,
+                elementId, SharedStatsSeed.POPULATED_SEASON_ID, METRIC_TEAM, webName, webName, webName,
                 elementType, nowCost, ownership);
         seedAppearance(elementId, METRIC_FIXTURE_GW1, 1, true, xg, xa, xgc);
         seedAppearance(elementId, METRIC_FIXTURE_GW2, 2, false, xg, xa, xgc);
@@ -226,7 +226,7 @@ class SquadToolsCrossSeasonTest {
                         + " value)"
                         + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 90, 6, ?, ?, ?, 1, ?, 50)"
                         + " ON CONFLICT (fixture_id, player_id, season_id) DO NOTHING",
-                fixtureId, elementId, TapasSeed.POPULATED_SEASON_ID, gameweek, METRIC_TEAM,
+                fixtureId, elementId, SharedStatsSeed.POPULATED_SEASON_ID, gameweek, METRIC_TEAM,
                 METRIC_OPPONENT, wasHome, OffsetDateTime.parse("2025-08-16T14:00:00Z"), xg, xa,
                 xg + xa, xgc);
     }
@@ -240,7 +240,7 @@ class SquadToolsCrossSeasonTest {
         assertThat(output).contains("complete current evidence").containsIgnoringCase("budget")
                 .as("an infeasible-XI refusal still rests on PFS metrics")
                 .contains(DataAge.RANKING_METRIC_REFRESH);
-        assertThat(output).doesNotContain("Data source: season " + TapasSeed.CURRENT_SEASON_CODE
+        assertThat(output).doesNotContain("Data source: season " + SharedStatsSeed.CURRENT_SEASON_CODE
                 + " — a COMPLETED PREVIOUS season");
     }
 

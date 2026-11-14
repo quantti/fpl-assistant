@@ -67,7 +67,7 @@ class FixtureToolsCaptureTest {
         assertThat(result).contains("GW3: vs SEL (H) | FDR: 2").contains("GW3: vs SEL (A) | FDR: 4");
         assertThat(result).doesNotContain("GW1:");
         assertThat(result).contains("Postponed, no rescheduled gameweek yet:");
-        // FPL's own capture, not Tapas rows: no stored-row age is added here.
+        // FPL's own capture, not SharedStats rows: no stored-row age is added here.
         assertThat(result).doesNotContain("Stored-data age").doesNotContain(DataAge.GAMEWEEK_CAVEAT);
     }
 
@@ -86,7 +86,7 @@ class FixtureToolsCaptureTest {
     }
 
     /**
-     * Once the gameweek being played is finished, the list starts at the next one. The tapas
+     * Once the gameweek being played is finished, the list starts at the next one. The shared
      * path shows the finished round's fixtures with their scores because it starts at
      * `is_current`; the capture path judges by deadline and finish, so a Tuesday question about
      * upcoming fixtures does not open with Saturday's result. Deliberate, and recorded in STATUS.

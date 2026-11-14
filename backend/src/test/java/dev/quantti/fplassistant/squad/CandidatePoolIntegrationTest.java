@@ -4,7 +4,7 @@ import java.time.LocalDate;
 import java.util.List;
 
 import dev.quantti.fplassistant.testsupport.FictitiousTestData;
-import dev.quantti.fplassistant.testsupport.TapasSeed;
+import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
 import dev.quantti.fplassistant.tools.SeasonResolver;
 import org.junit.jupiter.api.AfterEach;
 import dev.quantti.fplassistant.tools.ExpectedPoints;
@@ -38,9 +38,9 @@ class CandidatePoolIntegrationTest {
     private static final int DOUBTFUL_NO_RECORD = 9504;
 
     /**
-     * Tapas' own Okafor (season {@link TapasSeed#POPULATED_SEASON_ID}, 270 minutes across 3
+     * SharedStats' own Okafor (season {@link SharedStatsSeed#POPULATED_SEASON_ID}, 270 minutes across 3
      * fixtures). {@link #RANKABLE} above never actually earns {@code Tier.RANKABLE} — nothing in
-     * tapas exists at id 9501 to join to — so nothing in this class could catch the tier split
+     * shared exists at id 9501 to join to — so nothing in this class could catch the tier split
      * itself breaking without a candidate wired to a real record. This one is.
      */
     private static final int OKAFOR = 9201;
@@ -53,7 +53,7 @@ class CandidatePoolIntegrationTest {
      */
     private static final int KAMINSKI = 9206;
 
-    /** Tapas' Ferreira: a defender with two 90-minute rows, so a defcon mean can be read. */
+    /** SharedStats' Ferreira: a defender with two 90-minute rows, so a defcon mean can be read. */
     private static final int FERREIRA = 9205;
 
     /** Every element id this class writes into the daily-price table, for scoped cleanup. */
@@ -86,7 +86,7 @@ class CandidatePoolIntegrationTest {
 
     @BeforeEach
     void refuseProductionAndSeed() {
-        TapasSeed.ensure(jdbc);
+        SharedStatsSeed.ensure(jdbc);
         season = seasonResolver.resolve().code();
         FictitiousTestData.assertSafeSeason(season);
         assertThat(table).as("pool tests must use the isolated table").endsWith("_test");
@@ -116,7 +116,7 @@ class CandidatePoolIntegrationTest {
         jdbc.update("DELETE FROM " + table + " WHERE season = ?"
                         + " AND element_id IN (?, ?, ?, ?, ?, ?, ?)",
                 season, RANKABLE, BODY, INJURED, DOUBTFUL_NO_RECORD, OKAFOR, KAMINSKI, FERREIRA);
-        // TapasSeed never overwrites and the container is long-lived, so a value written by the
+        // SharedStatsSeed never overwrites and the container is long-lived, so a value written by the
         // defcon case below would otherwise outlive it and reach every other test.
         jdbc.update("UPDATE player_fixture_stats SET defensive_contribution = NULL"
                 + " WHERE season_id = 9026 AND player_id = ?", FERREIRA);
@@ -166,8 +166,8 @@ class CandidatePoolIntegrationTest {
     }
 
     @Test
-    void carriesTheClubAndPriceFromTheDailyCaptureRatherThanFromTapas() {
-        // The tapas player table is synced weekly and was measured 85 days stale. Nothing here
+    void carriesTheClubAndPriceFromTheDailyCaptureRatherThanFromSharedStats() {
+        // The shared player table is synced weekly and was measured 85 days stale. Nothing here
         // may read a price or an availability flag from it.
         SquadCandidate any = load().getFirst();
 
@@ -186,22 +186,22 @@ class CandidatePoolIntegrationTest {
     @Test
     void thePoolFollowsTheCaptureNotTheResolverAcrossTheChangeover() {
         // C1: during the changeover the daily capture already carries the new season's prices
-        // (nothing stops it — it owes nothing to tapas), but tapas has not synced the new
+        // (nothing stops it — it owes nothing to shared), but shared has not synced the new
         // season's player/gameweek rows yet, so SeasonResolver still falls back to last season.
         // A pool filtered on the resolver's season would then look for last season's code at
         // today's capture date and find nothing, even though the capture holds real players.
         assertThat(season).as("the resolver must be on the previous season for this test to prove"
-                + " anything").isEqualTo(TapasSeed.POPULATED_SEASON_CODE);
+                + " anything").isEqualTo(SharedStatsSeed.POPULATED_SEASON_CODE);
         int changeoverId = 9505;
         LocalDate tomorrow = TODAY.plusDays(1);
         jdbc.update("DELETE FROM " + table + " WHERE season = ? AND element_id = ?",
-                TapasSeed.CURRENT_SEASON_CODE, changeoverId);
+                SharedStatsSeed.CURRENT_SEASON_CODE, changeoverId);
         insert(changeoverId, "Changeovertest", 45, 2, 1.0, "a", null,
-                TapasSeed.CURRENT_SEASON_CODE, tomorrow);
+                SharedStatsSeed.CURRENT_SEASON_CODE, tomorrow);
 
         try {
             CandidatePool.Capture capture = pool.latestCapture().orElseThrow();
-            assertThat(capture.season()).isEqualTo(TapasSeed.CURRENT_SEASON_CODE);
+            assertThat(capture.season()).isEqualTo(SharedStatsSeed.CURRENT_SEASON_CODE);
             assertThat(capture.date()).isEqualTo(tomorrow);
 
             List<SquadCandidate> candidates =
@@ -211,14 +211,14 @@ class CandidatePoolIntegrationTest {
             assertThat(candidates).extracting(SquadCandidate::elementId).contains(changeoverId);
         } finally {
             jdbc.update("DELETE FROM " + table + " WHERE season = ? AND element_id = ?",
-                    TapasSeed.CURRENT_SEASON_CODE, changeoverId);
+                    SharedStatsSeed.CURRENT_SEASON_CODE, changeoverId);
         }
     }
 
     @Test
     void aPlayerWithARealMinutesRecordIsRankable() {
         // The only test in this class that can catch the tier split itself breaking: every other
-        // candidate here has no tapas record to join to, so a solver that hardcoded
+        // candidate here has no shared record to join to, so a solver that hardcoded
         // "rankable = false" and deleted the recent/windowed/metrics machinery entirely would
         // still pass every other test in this file.
         SquadCandidate okafor = candidate(OKAFOR);

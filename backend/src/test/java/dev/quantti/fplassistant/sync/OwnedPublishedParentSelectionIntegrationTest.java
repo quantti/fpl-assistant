@@ -33,7 +33,7 @@ import dev.quantti.fplassistant.sync.OwnedSyncStore.SyncKind;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.Validation;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.ValidationState;
 import dev.quantti.fplassistant.sync.SharedFixtureRecoveryPolicy.SourceStatus;
-import dev.quantti.fplassistant.testsupport.TapasSeed;
+import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -73,7 +73,7 @@ class OwnedPublishedParentSelectionIntegrationTest {
                 required("DB_PASSWORD"));
         jdbc = new JdbcTemplate(dataSource);
         tx = new TransactionTemplate(new DataSourceTransactionManager(dataSource));
-        TapasSeed.ensureOwnedSyncCaptureSeason(jdbc);
+        SharedStatsSeed.ensureOwnedSyncCaptureSeason(jdbc);
         new OwnedSyncSchema(jdbc, TABLES).initialize();
         createCapturedTables();
         bootstrap = resource("bootstrap-static.json");

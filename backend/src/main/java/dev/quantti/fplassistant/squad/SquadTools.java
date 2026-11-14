@@ -106,7 +106,7 @@ public class SquadTools implements FplTool {
 
             SeasonContext season = seasonResolver.resolve();
             // The capture's own season, not the resolver's: during the changeover the resolver
-            // still falls back to last season (tapas has not synced the new one), while the
+            // still falls back to last season (shared has not synced the new one), while the
             // daily capture already carries today's prices for it. Filtering on the resolver's
             // season here would match nothing at all — see AGENTS.md and CandidatePool.Capture.
             CandidatePool.Capture capture = pool.latestCapture().orElse(null);

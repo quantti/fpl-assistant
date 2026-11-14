@@ -37,7 +37,7 @@ import dev.quantti.fplassistant.sync.OwnedSyncStore.LeaseLostException;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.SourceRead;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.SyncKind;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.Validation;
-import dev.quantti.fplassistant.testsupport.TapasSeed;
+import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -67,7 +67,7 @@ class CatalogueScheduleDispatcherIntegrationTest {
     static void initialize() throws Exception {
         DriverManagerDataSource dataSource = new DriverManagerDataSource(required("DATABASE_URL"),
                 required("DB_USER"), required("DB_PASSWORD"));
-        TapasSeed.ensure(new JdbcTemplate(dataSource));
+        SharedStatsSeed.ensure(new JdbcTemplate(dataSource));
         jdbc = new JdbcTemplate(dataSource);
         tx = new TransactionTemplate(new DataSourceTransactionManager(dataSource));
         new OwnedSyncSchema(jdbc, OWNED).initialize();
@@ -98,7 +98,7 @@ class CatalogueScheduleDispatcherIntegrationTest {
     void restoreSeason() {
         clean();
         jdbc.update("DELETE FROM season WHERE id=27");
-        jdbc.update("UPDATE season SET is_current=(id=?)", TapasSeed.CURRENT_SEASON_ID);
+        jdbc.update("UPDATE season SET is_current=(id=?)", SharedStatsSeed.CURRENT_SEASON_ID);
     }
 
     @Test

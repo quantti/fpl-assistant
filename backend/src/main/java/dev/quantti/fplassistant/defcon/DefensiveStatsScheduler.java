@@ -17,7 +17,7 @@ import org.springframework.stereotype.Component;
  * any night.
  *
  * <p>Nightly rather than weekly because it is cheap to be current and expensive to be wrong: a
- * gameweek's rows land as tapas syncs them, and an update run that finds nothing new writes
+ * gameweek's rows land as shared syncs them, and an update run that finds nothing new writes
  * nothing.
  *
  * <p><b>Failure is logged, never thrown.</b> A missed night leaves the previous night's values

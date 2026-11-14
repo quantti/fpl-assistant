@@ -17,11 +17,11 @@ import org.springframework.web.client.RestClientException;
 
 /**
  * Fills the defensive-contribution columns on {@code player_fixture_stats} from FPL's
- * {@code element-summary} endpoint — the same endpoint tapas already reads for the rest of that
- * table, so this adds no new source, only the fields tapas' column list omits.
+ * {@code element-summary} endpoint — the same endpoint shared already reads for the rest of that
+ * table, so this adds no new source, only the fields shared' column list omits.
  *
- * <p><b>UPDATE only, never INSERT.</b> Tapas owns the rows; this owns four columns on them. A
- * player whose gameweek tapas has not synced yet simply has nothing to update, and the count in
+ * <p><b>UPDATE only, never INSERT.</b> SharedStats owns the rows; this owns four columns on them. A
+ * player whose gameweek shared has not synced yet simply has nothing to update, and the count in
  * the log says so. Creating rows here would mean inventing values for columns this class knows
  * nothing about ({@code value}, {@code selected}, the points breakdown) and would put two writers
  * on the same key.
@@ -39,7 +39,7 @@ import org.springframework.web.client.RestClientException;
  *
  * <p><b>Every write is guarded on minutes.</b> {@code history} carries whatever season FPL is
  * currently serving, which is not necessarily the one the database flags {@code is_current} —
- * FPL opens a season in July and tapas may not have flipped the row yet. Element ids are reused
+ * FPL opens a season in July and shared may not have flipped the row yet. Element ids are reused
  * across seasons, so without the guard a colliding {@code (fixture_id, player_id)} would stamp
  * one player's match onto a different player's row in a different season, on a table shared with
  * another project. Requiring the stored minutes to match makes that collision a skipped row and

@@ -30,7 +30,7 @@ import org.springframework.stereotype.Component;
 @Component
 // Disabled under the test profile: the tests construct this runner directly, and against an
 // empty test database isStale() is always true, so every Spring context start would fetch the
-// vaastav CSV over the network and read the tapas player table while the tests are running.
+// vaastav CSV over the network and read the shared player table while the tests are running.
 @ConditionalOnProperty(name = "fpl.price.startup-sync", havingValue = "true", matchIfMissing = true)
 @ConditionalOnExpression("'${fpl.owned-sync.mode:OFF}' != 'ACTIVE'")
 public class StartupPriceSyncRunner implements ApplicationListener<ApplicationReadyEvent> {

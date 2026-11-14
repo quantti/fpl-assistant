@@ -11,7 +11,7 @@ import java.util.List;
 import java.util.UUID;
 
 import dev.quantti.fplassistant.testsupport.RankingSeed;
-import dev.quantti.fplassistant.testsupport.TapasSeed;
+import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
 import dev.quantti.fplassistant.tools.RankingMetrics;
 import dev.quantti.fplassistant.tools.PfsReadSource;
 import dev.quantti.fplassistant.tools.SeasonResolver;
@@ -89,7 +89,7 @@ class ShortlistComparisonIntegrationTest {
                 + " source_read_started_at TIMESTAMPTZ, source_read_finished_at TIMESTAMPTZ,"
                 + " PRIMARY KEY(season_id,fixture_id,player_id,generation))");
         jdbc.update("INSERT INTO season(id,code,name,start_date,is_current) VALUES (?,?,'Shortlist test','2026-08-01',false)", SEASON_ID, SEASON);
-        TapasSeed.setCurrentSeason(jdbc, SEASON_ID);
+        SharedStatsSeed.setCurrentSeason(jdbc, SEASON_ID);
         RankingSeed.seedSchedule(jdbc, events, fixtures, SEASON, CAPTURED, FIRST);
         jdbc.update("UPDATE " + fixtures + " SET started=true, finished=true WHERE season=? AND gameweek<=5", SEASON);
         jdbc.update("INSERT INTO gameweek(id,season_id,name,deadline_time) VALUES(1,?,'Test',?)", SEASON_ID, Timestamp.from(FIRST));
@@ -122,7 +122,7 @@ class ShortlistComparisonIntegrationTest {
     }
 
     @AfterEach void clean() {
-        TapasSeed.ensure(jdbc);
+        SharedStatsSeed.ensure(jdbc);
         jdbc.update("DELETE FROM fpl_understat_capture_test");
         jdbc.execute("DROP TABLE IF EXISTS " + OWNED_EVIDENCE);
         jdbc.execute("DROP TABLE IF EXISTS " + OWNED_FIXTURES);
@@ -137,7 +137,7 @@ class ShortlistComparisonIntegrationTest {
         jdbc.update("DELETE FROM team WHERE season_id=?", SEASON_ID);
         jdbc.update("DELETE FROM gameweek WHERE season_id=?", SEASON_ID);
         jdbc.update("DELETE FROM season WHERE id=?", SEASON_ID);
-        TapasSeed.setCurrentSeason(jdbc, TapasSeed.CURRENT_SEASON_ID);
+        SharedStatsSeed.setCurrentSeason(jdbc, SharedStatsSeed.CURRENT_SEASON_ID);
     }
 
     @Test void marketExposesCapturedPlayingChance() {

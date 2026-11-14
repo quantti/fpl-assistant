@@ -67,7 +67,7 @@ tasks.named('test') {
     systemProperty 'spring.test.context.cache.maxSize', '2'
 
     useJUnitPlatform {
-        // Tests tagged 'realdata' assert against tapas' fully-synced production tables (a whole
+        // Tests tagged 'realdata' assert against shared' fully-synced production tables (a whole
         // season of fixtures and clubs), which the ephemeral test database deliberately does not
         // carry. Run them by hand against Supabase with -PincludeRealData.
         if (!project.hasProperty('includeRealData')) {

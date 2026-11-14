@@ -30,7 +30,7 @@ import dev.quantti.fplassistant.sync.CatalogueScheduleParser.TeamRow;
  * <p>Idempotent: every insert is {@code ON CONFLICT DO NOTHING}, so any number of test classes
  * can call {@link #ensure} in any order.
  */
-public final class TapasSeed {
+public final class SharedStatsSeed {
 
     /** Holds the data. Completed, so tools must label it historical. */
     public static final int POPULATED_SEASON_ID = 9026;
@@ -70,7 +70,7 @@ public final class TapasSeed {
     /** Ashfield plays twice in gameweek 2, so a one-gameweek window returns two fixtures. */
     public static final int DOUBLE_GAMEWEEK = 2;
 
-    private TapasSeed() {
+    private SharedStatsSeed() {
     }
 
     /** Shared capture-season parent for owned-sync staging tests; never changes current flags. */
@@ -108,7 +108,7 @@ public final class TapasSeed {
                 wasHome, java.sql.Timestamp.from(kickoff));
     }
 
-    /** Seeds the Tapas fixture identity mirror used by the owned-sync collector evidence test. */
+    /** Seeds the SharedStats fixture identity mirror used by the owned-sync collector evidence test. */
     public static void seedOwnedSyncFixtureIdentity(JdbcTemplate jdbc, int seasonId,
                                                      List<TeamRow> teams, List<FixtureRow> fixtures) {
         ensureOwnedSyncCaptureSeason(jdbc);
@@ -225,15 +225,15 @@ public final class TapasSeed {
      * Seeds the fixture league only on the local disposable test database. GitHub Actions uses
      * its documented job-scoped Postgres service on localhost:5432; local runs must use
      * backend/.env.test on localhost:55432. The manager-table check remains a second, content-based
-     * fence against the shared Tapas database.
+     * fence against the shared SharedStats database.
      */
     public static void ensure(JdbcTemplate jdbc) {
         requireDisposableTestDatabase();
-        String tapasOnlyTable = jdbc.queryForObject(
+        String sharedOnlyTable = jdbc.queryForObject(
                 "SELECT to_regclass('public.manager')::text", String.class);
-        if (tapasOnlyTable != null) {
+        if (sharedOnlyTable != null) {
             throw new IllegalStateException("""
-                    Refusing to seed: this database contains tapas-fpl-app's own 'manager' table, \
+                    Refusing to seed: this database contains upstream-stats-app's own 'manager' table, \
                     so it is the shared production database, not an ephemeral test container. \
                     Point DATABASE_URL at a disposable Postgres (see docs/DEVELOPMENT.md).""");
         }

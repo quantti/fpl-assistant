@@ -62,15 +62,15 @@ class UserSchemaTest {
 
     /**
      * The names that matter are the production ones — the test profile's `_test` copies can never
-     * collide with tapas. Bound from application.yml rather than injected, because under
+     * collide with shared. Bound from application.yml rather than injected, because under
      * {@code @ActiveProfiles("test")} the injected values are the isolated copies, and an
      * assertion on those proves nothing about the deploy. Every configured table name is checked,
-     * not the four this class happens to own: tapas develops against the same `public` schema,
+     * not the four this class happens to own: shared develops against the same `public` schema,
      * and `CREATE TABLE IF NOT EXISTS` on a name they take first binds this project to their
      * table.
      */
     @Test
-    void everyProductionTableNameIsPrefixedAndCannotCollideWithTapas() throws Exception {
+    void everyProductionTableNameIsPrefixedAndCannotCollideWithSharedStats() throws Exception {
         PropertySource<?> production = new YamlPropertySourceLoader()
                 .load("application.yml", new ClassPathResource("application.yml")).getFirst();
 
@@ -84,7 +84,7 @@ class UserSchemaTest {
         assertThat(tableNames).as("the table names should be configured in application.yml")
                 .hasSizeGreaterThanOrEqualTo(7);
         assertThat(tableNames)
-                .as("an unprefixed name is one tapas can claim — this project uses fpl_ and pl_")
+                .as("an unprefixed name is one shared can claim — this project uses fpl_ and pl_")
                 .allSatisfy(name -> assertThat(name).matches("^(fpl|pl)_.+"));
     }
 

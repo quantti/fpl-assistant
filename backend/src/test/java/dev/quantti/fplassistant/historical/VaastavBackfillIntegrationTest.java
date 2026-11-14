@@ -82,7 +82,7 @@ class VaastavBackfillIntegrationTest {
      * through team.code (fixture.team_h/team_a are season-scoped ids, not codes). Both ultimately
      * derive from the same FPL API, so any mismatch here is an import bug.
      *
-     * <p>Tagged {@code realdata} and excluded from the default test task: the oracle is tapas'
+     * <p>Tagged {@code realdata} and excluded from the default test task: the oracle is shared'
      * own fully-synced 2025-26 season, and seeding 380 fixtures and 20 clubs to reproduce it in
      * an ephemeral database would be a copy of production dressed up as a fixture. Run it by hand
      * against Supabase with {@code ./gradlew test -PincludeRealData --tests "*VaastavBackfill*"}
@@ -90,7 +90,7 @@ class VaastavBackfillIntegrationTest {
      */
     @Test
     @Tag("realdata")
-    void importedRowsMatchTheTapasFixtureTableExactly() {
+    void importedRowsMatchTheSharedStatsFixtureTableExactly() {
         backfillService.backfill(TEST_SEASONS);
 
         Integer matching = jdbc.queryForObject("""

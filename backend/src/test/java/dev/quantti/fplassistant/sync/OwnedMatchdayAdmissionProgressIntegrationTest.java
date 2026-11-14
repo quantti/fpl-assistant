@@ -69,7 +69,7 @@ import dev.quantti.fplassistant.sync.OwnedSyncHttpClient.WaitObservation;
 import dev.quantti.fplassistant.sync.OwnedSyncHttpClient.WaitPhase;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.Validation;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.ValidationState;
-import dev.quantti.fplassistant.testsupport.TapasSeed;
+import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
 import dev.quantti.fplassistant.tools.PfsReadSource;
 
 /** Failing baseline for real two-worker HTTP admission under a fixture-first backlog. */
@@ -130,7 +130,7 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
         dataSource.addDataSourceProperty("socketTimeout", "10");
         jdbc = new JdbcTemplate(dataSource);
         jdbc.setQueryTimeout(10);
-        TapasSeed.ensureOwnedSyncCaptureSeason(jdbc);
+        SharedStatsSeed.ensureOwnedSyncCaptureSeason(jdbc);
         new OwnedSyncSchema(jdbc, TABLES).initialize();
         tx = new TransactionTemplate(new DataSourceTransactionManager(dataSource));
         tx.setTimeout(30);
@@ -474,7 +474,7 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
             assertThat(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM " + otherClassTables.fixtureSync()
                     + " WHERE season_id=27 AND fixture_id=?)", Boolean.class, fixtureId)).isTrue();
             assertThat(jdbc.queryForObject("SELECT is_current FROM season WHERE id=?", Boolean.class,
-                    TapasSeed.CURRENT_SEASON_ID)).isTrue();
+                    SharedStatsSeed.CURRENT_SEASON_ID)).isTrue();
         } finally {
             try {
                 cleanActiveAcceptanceSeason();
@@ -919,13 +919,13 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
 
 
     private static void prepareActiveAcceptanceSeason() {
-        TapasSeed.ensureOwnedSyncCaptureSeason(jdbc);
+        SharedStatsSeed.ensureOwnedSyncCaptureSeason(jdbc);
         createActiveCapturedTables();
         new dev.quantti.fplassistant.schedule.ScheduleSchema(jdbc,
                 CAPTURED.gameweek(), CAPTURED.fixture()).ensureSchema();
         new DefensiveStatsSchema(jdbc).ensureColumns();
         cleanActiveAcceptanceSeason();
-        TapasSeed.setCurrentSeason(jdbc, SEASON.id());
+        SharedStatsSeed.setCurrentSeason(jdbc, SEASON.id());
     }
 
     private static void createActiveCapturedTables() {
@@ -962,7 +962,7 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
     }
 
     private static void cleanActiveAcceptanceSeason() {
-        TapasSeed.ensureOwnedSyncCaptureSeason(jdbc);
+        SharedStatsSeed.ensureOwnedSyncCaptureSeason(jdbc);
         clearOwnedRows();
         for (String table : List.of(CAPTURED.fixture(), CAPTURED.gameweek(), CAPTURED.dailyPrice())) {
             jdbc.update("DELETE FROM " + table + " WHERE season=?", SEASON.code());
@@ -972,7 +972,7 @@ class OwnedMatchdayAdmissionProgressIntegrationTest {
         jdbc.update("DELETE FROM gameweek WHERE season_id=?", SEASON.id());
         jdbc.update("DELETE FROM player WHERE season_id=?", SEASON.id());
         jdbc.update("DELETE FROM team WHERE season_id=?", SEASON.id());
-        TapasSeed.setCurrentSeason(jdbc, TapasSeed.CURRENT_SEASON_ID);
+        SharedStatsSeed.setCurrentSeason(jdbc, SharedStatsSeed.CURRENT_SEASON_ID);
     }
 
     private static Map<Integer, FixtureVerification.Decision> publishDirectFixtureBatch(Harness harness,

@@ -3,7 +3,7 @@ package dev.quantti.fplassistant.myteam;
 import java.time.Instant;
 import java.util.Set;
 
-import dev.quantti.fplassistant.testsupport.TapasSeed;
+import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
 import dev.quantti.fplassistant.tools.DataAge;
 
 import org.junit.jupiter.api.AfterEach;
@@ -48,12 +48,12 @@ class SquadEnrichmentTest {
 
     @BeforeEach
     void seed() {
-        TapasSeed.ensure(jdbc);
+        SharedStatsSeed.ensure(jdbc);
     }
 
     @AfterEach
     void removeTheCurrentSeasonsData() {
-        int season = TapasSeed.CURRENT_SEASON_ID;
+        int season = SharedStatsSeed.CURRENT_SEASON_ID;
         jdbc.update("DELETE FROM fixture WHERE season_id = ?", season);
         jdbc.update("DELETE FROM player WHERE season_id = ?", season);
         jdbc.update("DELETE FROM gameweek WHERE season_id = ?", season);
@@ -80,9 +80,9 @@ class SquadEnrichmentTest {
     void eachPlayerCarriesItsOwnRecordWriteAndANullOneKeepsItsDepth() {
         fillCurrentSeason();
         jdbc.update("UPDATE player SET updated_at = ? WHERE season_id = ? AND id = ?",
-                java.sql.Timestamp.from(SEP_01), TapasSeed.CURRENT_SEASON_ID, STRIKER);
+                java.sql.Timestamp.from(SEP_01), SharedStatsSeed.CURRENT_SEASON_ID, STRIKER);
         jdbc.update("UPDATE player SET updated_at = NULL WHERE season_id = ? AND id = ?",
-                TapasSeed.CURRENT_SEASON_ID, KEEPER);
+                SharedStatsSeed.CURRENT_SEASON_ID, KEEPER);
 
         SquadEnrichment.Enrichment result = enrichment.forElements(Set.of(STRIKER, KEEPER));
 
@@ -110,7 +110,7 @@ class SquadEnrichmentTest {
                 INSERT INTO fixture (id, season_id, code, gameweek, team_h, team_a,
                                      team_h_difficulty, team_a_difficulty, updated_at)
                 VALUES (9905, ?, 9905, 5, ?, ?, NULL, 1, ?)
-                """, TapasSeed.CURRENT_SEASON_ID, HOME_TEAM, AWAY_TEAM, java.sql.Timestamp.from(ANCIENT));
+                """, SharedStatsSeed.CURRENT_SEASON_ID, HOME_TEAM, AWAY_TEAM, java.sql.Timestamp.from(ANCIENT));
 
         SquadEnrichment.Enrichment result = enrichment.forElements(Set.of(STRIKER, KEEPER));
 
@@ -145,20 +145,20 @@ class SquadEnrichmentTest {
     void theStartingGameweekRowComesBackWithItsOwnWriteTime() {
         fillCurrentSeason();
         jdbc.update("UPDATE gameweek SET updated_at = ? WHERE season_id = ? AND id = 1",
-                java.sql.Timestamp.from(SEP_01), TapasSeed.CURRENT_SEASON_ID);
+                java.sql.Timestamp.from(SEP_01), SharedStatsSeed.CURRENT_SEASON_ID);
         jdbc.update("""
                 INSERT INTO gameweek (id, season_id, name, deadline_time, finished, data_checked,
                                       is_current, is_next, updated_at)
                 VALUES (2, ?, 'Gameweek 2', TIMESTAMPTZ '2026-08-28 17:30:00+00', false, false,
                         false, true, ?)
-                """, TapasSeed.CURRENT_SEASON_ID, java.sql.Timestamp.from(SEP_05));
+                """, SharedStatsSeed.CURRENT_SEASON_ID, java.sql.Timestamp.from(SEP_05));
 
         assertThat(enrichment.forElements(Set.of(STRIKER)).startingGameweek())
                 .as("the current row wins over a fresher next row")
                 .isEqualTo(new SquadEnrichment.StartingGameweek(1, new DataAge.Span(SEP_01, SEP_01, 1, 0)));
 
         jdbc.update("UPDATE gameweek SET is_current = false WHERE season_id = ? AND id = 1",
-                TapasSeed.CURRENT_SEASON_ID);
+                SharedStatsSeed.CURRENT_SEASON_ID);
 
         assertThat(enrichment.forElements(Set.of(STRIKER)).startingGameweek())
                 .isEqualTo(new SquadEnrichment.StartingGameweek(2, new DataAge.Span(SEP_05, SEP_05, 1, 0)));
@@ -168,7 +168,7 @@ class SquadEnrichmentTest {
     @Test
     void noFdrRunMeansNoStartingGameweekAge() {
         fillCurrentSeason();
-        jdbc.update("DELETE FROM fixture WHERE season_id = ?", TapasSeed.CURRENT_SEASON_ID);
+        jdbc.update("DELETE FROM fixture WHERE season_id = ?", SharedStatsSeed.CURRENT_SEASON_ID);
 
         SquadEnrichment.Enrichment result = enrichment.forElements(Set.of(STRIKER));
 
@@ -180,7 +180,7 @@ class SquadEnrichmentTest {
     private void setFixtureWrite(int id, Instant writtenAt) {
         jdbc.update("UPDATE fixture SET updated_at = ? WHERE season_id = ? AND id = ?",
                 writtenAt == null ? null : java.sql.Timestamp.from(writtenAt),
-                TapasSeed.CURRENT_SEASON_ID, id);
+                SharedStatsSeed.CURRENT_SEASON_ID, id);
     }
 
     @Test
@@ -220,12 +220,12 @@ class SquadEnrichmentTest {
                 INSERT INTO fixture (id, season_id, code, gameweek, team_h, team_a,
                                      team_h_difficulty, team_a_difficulty)
                 VALUES (?, ?, ?, ?, ?, ?, ?, 1)
-                """, id, TapasSeed.CURRENT_SEASON_ID, id, gameweek, HOME_TEAM, AWAY_TEAM,
+                """, id, SharedStatsSeed.CURRENT_SEASON_ID, id, gameweek, HOME_TEAM, AWAY_TEAM,
                 difficulty);
     }
 
     private void fillCurrentSeason() {
-        int season = TapasSeed.CURRENT_SEASON_ID;
+        int season = SharedStatsSeed.CURRENT_SEASON_ID;
         jdbc.update("""
                 INSERT INTO team (id, season_id, code, name, short_name, strength) VALUES
                     (?, ?, 9101, 'Current Rovers', 'CUR', 4),

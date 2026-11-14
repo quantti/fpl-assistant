@@ -107,7 +107,7 @@ new_fixture() {
         "$FIXTURE/backend/src/test/resources/db" "$FIXTURE/bin" "$FIXTURE/home"
     cp "$SOURCE_ROOT/scripts/hooks/pre-push" "$FIXTURE/scripts/hooks/pre-push"
     cp "$SOURCE_ROOT/scripts/test-db.sh" "$FIXTURE/scripts/test-db.sh"
-    : > "$FIXTURE/backend/src/test/resources/db/tapas-schema.sql"
+    : > "$FIXTURE/backend/src/test/resources/db/shared-stats-schema.sql"
     LOG="$FIXTURE/calls.log"
     : > "$LOG"
     cat > "$FIXTURE/bin/git" <<'STUB'
@@ -362,7 +362,7 @@ check_inspection_failure() {
 check_direct_schema_preflight() {
     local name="direct reset checks schema readability before container mutation"
     new_fixture reset-missing-schema
-    rm "$FIXTURE/backend/src/test/resources/db/tapas-schema.sql"
+    rm "$FIXTURE/backend/src/test/resources/db/shared-stats-schema.sql"
     run_reset DOCKER_RUNNING=1
     if [[ "$STATUS" -ne 0 ]] && ! grep -Eq '^docker (container|rm|run|exec) ' "$LOG"; then
         pass "$name"

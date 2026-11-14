@@ -11,11 +11,11 @@ import org.springframework.stereotype.Component;
  * every statement {@code IF NOT EXISTS}, table names parameterised so the test profile writes
  * to {@code _test} tables.
  *
- * <p><b>Why these exist.</b> {@code GameweekTools} and {@code FixtureTools} read tapas-owned
+ * <p><b>Why these exist.</b> {@code GameweekTools} and {@code FixtureTools} read shared-owned
  * tables that are synced weekly and empty for weeks across the season changeover, so the
- * assistant had no current-season deadline or fixture until tapas caught up. These are the
+ * assistant had no current-season deadline or fixture until shared caught up. These are the
  * schedule counterpart of {@code fpl_daily_price}: read straight from FPL, keyed by a season
- * code derived from the date, owing tapas nothing.
+ * code derived from the date, owing shared nothing.
  *
  * <p><b>Snapshot, not a series.</b> One row per gameweek and per fixture per season, overwritten
  * on every capture; a fixture FPL stops publishing is deleted in the same transaction. Prices

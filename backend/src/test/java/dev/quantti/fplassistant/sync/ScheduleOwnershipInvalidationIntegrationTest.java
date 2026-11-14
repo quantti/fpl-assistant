@@ -41,7 +41,7 @@ import dev.quantti.fplassistant.sync.HistoryParser.HistoryRow;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.Lease;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.RuntimeFence;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.SyncKind;
-import dev.quantti.fplassistant.testsupport.TapasSeed;
+import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
 import dev.quantti.fplassistant.tools.PfsReadSource;
 
 class ScheduleOwnershipInvalidationIntegrationTest {
@@ -71,7 +71,7 @@ class ScheduleOwnershipInvalidationIntegrationTest {
         dataSource = new DriverManagerDataSource(requiredEnv("DATABASE_URL"),
                 requiredEnv("DB_USER"), requiredEnv("DB_PASSWORD"));
         jdbc = new JdbcTemplate(dataSource);
-        TapasSeed.ensureOwnedSyncCaptureSeason(jdbc);
+        SharedStatsSeed.ensureOwnedSyncCaptureSeason(jdbc);
         assertThat(jdbc.queryForObject("SELECT code FROM season WHERE id=27", String.class))
                 .isEqualTo("2026-27");
         new DefensiveStatsSchema(jdbc).ensureColumns();

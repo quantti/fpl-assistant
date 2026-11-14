@@ -23,7 +23,7 @@ import org.springframework.context.annotation.Primary;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 
-import dev.quantti.fplassistant.testsupport.TapasSeed;
+import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
 
 class OwnedSyncImporterContextIntegrationTest {
 
@@ -51,10 +51,10 @@ class OwnedSyncImporterContextIntegrationTest {
     }
 
     static void initialize(String url, String user, String password, Supplier<JdbcTemplate> jdbcSupplier) {
-        jdbc = TapasSeed.openDisposableTestJdbc(url, user, password, jdbcSupplier);
-        TapasSeed.ensure(jdbc);
+        jdbc = SharedStatsSeed.openDisposableTestJdbc(url, user, password, jdbcSupplier);
+        SharedStatsSeed.ensure(jdbc);
         disposableDatabaseValidated = true;
-        TapasSeed.ensureOwnedSyncCaptureSeason(jdbc);
+        SharedStatsSeed.ensureOwnedSyncCaptureSeason(jdbc);
         originalCurrentSeasons = jdbc.queryForList(
                 "SELECT id FROM season WHERE is_current=true ORDER BY id", Integer.class);
         seasonBaselineCaptured = true;
@@ -64,7 +64,7 @@ class OwnedSyncImporterContextIntegrationTest {
 
     @BeforeEach
     void seedAlreadyActiveRuntimeAndCleanOwnedRows() {
-        TapasSeed.setCurrentSeason(jdbc, 27);
+        SharedStatsSeed.setCurrentSeason(jdbc, 27);
         seasonFlagsChanged = true;
         jdbc.execute("TRUNCATE " + TABLES.playerFixtureCurrent() + ", " + TABLES.playerFixtureEvidence() + ", "
                 + TABLES.gameweekStatSync() + ", " + TABLES.fixtureSync() + ", "

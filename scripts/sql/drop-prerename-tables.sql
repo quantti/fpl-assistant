@@ -2,12 +2,12 @@
 --
 -- PR #4 shipped `conversation`, `message` and `usage_event`; the deploy on merge created them in
 -- the shared Supabase project. The schema review that followed pointed out what the app_user
--- argument already implied — a generic name in a schema tapas-fpl-app also develops against is a
+-- argument already implied — a generic name in a schema upstream-stats-app also develops against is a
 -- name they can take first, and our ALTER TABLE ... ENABLE ROW LEVEL SECURITY would then quietly
 -- close a table they read through PostgREST. So they became fpl_conversation, fpl_message and
 -- fpl_usage_event, and the originals are now referenced by nothing.
 --
--- Leaving them is not neutral: they sit in a shared schema with RLS enabled, and tapas running
+-- Leaving them is not neutral: they sit in a shared schema with RLS enabled, and shared running
 -- `CREATE TABLE IF NOT EXISTS conversation` would bind to ours and read zero rows forever.
 --
 -- Refuses to drop a table with rows in it. They were created after auth shipped but before any

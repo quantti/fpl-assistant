@@ -16,10 +16,10 @@ import jakarta.annotation.PostConstruct;
  *
  * <p><b>Why a separate table rather than another {@code source} in {@code fpl_player_price}.</b>
  * That table is keyed by gameweek and written only when {@code SeasonContext.currentSeason()}
- * is true, because both of its writers depend on the tapas {@code player} table for the season
+ * is true, because both of its writers depend on the shared {@code player} table for the season
  * id and the player name. This one depends on nothing but the FPL API: it is keyed by calendar
  * date, it carries its own denormalised names, and it must keep working during the season
- * changeover — exactly when the tapas-backed path goes quiet. Keeping them apart means a
+ * changeover — exactly when the shared-backed path goes quiet. Keeping them apart means a
  * gap in one never silently becomes a gap in the other.
  *
  * <p><b>Grain: one row per player per UK calendar date.</b> FPL changes prices once a day at
@@ -46,7 +46,7 @@ import jakarta.annotation.PostConstruct;
  *       playing"), empty for an available player.</li>
  * </ul>
  *
- * <p>This matters as much as the price. The tapas {@code player} table is this project's only
+ * <p>This matters as much as the price. The shared {@code player} table is this project's only
  * other source for availability and is synced weekly, so a week-old {@code status} would tell
  * a user a player is fit after he has been ruled out — the kind of wrong answer that costs a
  * gameweek. Because the rows are dated, the series also answers questions a single snapshot

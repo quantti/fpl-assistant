@@ -16,7 +16,7 @@ import org.springframework.mock.env.MockEnvironment;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 
-import dev.quantti.fplassistant.testsupport.TapasSeed;
+import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
 
 class SharedFixtureRecoveryPolicySchemaIntegrationTest {
 
@@ -35,7 +35,7 @@ class SharedFixtureRecoveryPolicySchemaIntegrationTest {
                 .withProperty("spring.datasource.username", required("DB_USER"))
                 .withProperty("spring.datasource.password", required("DB_PASSWORD")));
         jdbc = database.jdbc();
-        TapasSeed.ensure(jdbc);
+        SharedStatsSeed.ensure(jdbc);
         new OwnedSyncSchema(jdbc, TABLES).initialize();
     }
 
@@ -63,8 +63,8 @@ class SharedFixtureRecoveryPolicySchemaIntegrationTest {
                 INSERT INTO %s(season_id, season_code, fixture_id, state, first_finished_observed_at,
                     next_due_at, attempt_count, last_error, alert_state, updated_at)
                 VALUES (?, ?, 30001, 'VERIFYING', ?, ?, 7, 'legacy transport marker', 'DAILY_ONLY', ?)
-                """.formatted(TABLES.fixtureSync()), TapasSeed.POPULATED_SEASON_ID,
-                TapasSeed.POPULATED_SEASON_CODE, timestamp(firstFinished), timestamp(legacyDue), timestamp(updated));
+                """.formatted(TABLES.fixtureSync()), SharedStatsSeed.POPULATED_SEASON_ID,
+                SharedStatsSeed.POPULATED_SEASON_CODE, timestamp(firstFinished), timestamp(legacyDue), timestamp(updated));
 
         new OwnedSyncSchema(jdbc, TABLES).initialize();
 
@@ -102,8 +102,8 @@ class SharedFixtureRecoveryPolicySchemaIntegrationTest {
         jdbc.update("""
                 INSERT INTO %s(season_id, season_code, fixture_id, state, updated_at)
                 VALUES (?, ?, 30003, 'VERIFYING', ?)
-                """.formatted(TABLES.fixtureSync()), TapasSeed.POPULATED_SEASON_ID,
-                TapasSeed.POPULATED_SEASON_CODE, timestamp(start));
+                """.formatted(TABLES.fixtureSync()), SharedStatsSeed.POPULATED_SEASON_ID,
+                SharedStatsSeed.POPULATED_SEASON_CODE, timestamp(start));
 
         jdbc.update("UPDATE " + TABLES.fixtureSync()
                         + " SET recovery_day=?, recovery_started_at=?, recovery_until=? WHERE fixture_id=30003",
@@ -121,8 +121,8 @@ class SharedFixtureRecoveryPolicySchemaIntegrationTest {
         jdbc.update("""
                 INSERT INTO %s(season_id, season_code, fixture_id, state, updated_at)
                 VALUES (?, ?, 30002, 'VERIFYING', ?)
-                """.formatted(TABLES.fixtureSync()), TapasSeed.POPULATED_SEASON_ID,
-                TapasSeed.POPULATED_SEASON_CODE, timestamp(Instant.parse("2026-09-20T02:00:00Z")));
+                """.formatted(TABLES.fixtureSync()), SharedStatsSeed.POPULATED_SEASON_ID,
+                SharedStatsSeed.POPULATED_SEASON_CODE, timestamp(Instant.parse("2026-09-20T02:00:00Z")));
 
         jdbc.update("UPDATE " + TABLES.fixtureSync() + " SET due_reason='POLICY', transport_retry_at=?, "
                         + "recovery_day=?, recovery_started_at=?, recovery_until=? WHERE fixture_id=30002",

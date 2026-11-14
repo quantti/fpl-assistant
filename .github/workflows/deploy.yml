@@ -3,7 +3,7 @@
 # The test database is a container GitHub Actions creates empty at job start and destroys at job
 # end: nothing persists between runs, which is the whole point (see
 # docs/superpowers/plans/2026-08-18-cicd-ephemeral-test-db.md). The production Supabase project
-# is never touched by tests — TapasSeed refuses to seed a database that carries tapas' own
+# is never touched by tests — SharedStatsSeed refuses to seed a database that carries the upstream project’s own
 # tables, so pointing this job at Supabase by accident fails loudly instead of writing there.
 name: test and deploy
 
@@ -46,6 +46,7 @@ jobs:
         if: steps.scope.outputs.frontend_changed == 'true'
         working-directory: frontend
         env:
+          VITE_SUPABASE_URL: http://127.0.0.1:1
           VITE_PRIVACY_CONTROLLER_NAME: Example Operator
           VITE_PRIVACY_CONTACT_EMAIL: privacy@example.com
           VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
@@ -86,10 +87,8 @@ jobs:
       DB_USER: postgres
       DB_PASSWORD: postgres
       SPRING_AI_PROVIDER: anthropic
-      # The project URL, not a secret — it ships in any frontend that talks to the project. The
-      # tests verify tokens against a local key, but the property has to resolve or no Spring
-      # context starts at all.
-      SUPABASE_URL: https://itmykooxrbrdbgqwsesb.supabase.co
+      # Tests verify tokens against local signing keys, never a production project.
+      SUPABASE_URL: http://127.0.0.1:1
       # No test calls a chat model, but the autoconfiguration needs the property non-empty.
       ANTHROPIC_API_KEY: not-used-no-test-calls-a-chat-model
       # Real, and genuinely used: the RAG tests embed for real (see IngestionIntegrationTest).
@@ -116,18 +115,18 @@ jobs:
           python3 scripts/tests/ci-workflow-test.py
           bash scripts/tests/pre-push-test.sh
 
-      - name: Create the vector extension and load the tapas schema
+      - name: Create the vector extension and load the shared schema
         if: steps.scope.outputs.docs_only != 'true'
         # Spring AI's PgVectorStore creates the extension itself at context start, so the first
         # statement is belt-and-braces. The dump is the six tables this project reads but does
-        # not own; regenerate it with scripts/dump-test-schema.sh after any tapas migration.
+        # not own; regenerate it with scripts/dump-test-schema.sh after any shared migration.
         env:
           PGPASSWORD: postgres
         run: |
           psql -h localhost -U postgres -d postgres -v ON_ERROR_STOP=1 \
             -c "CREATE EXTENSION IF NOT EXISTS vector"
           psql -h localhost -U postgres -d postgres -v ON_ERROR_STOP=1 -q \
-            -f backend/src/test/resources/db/tapas-schema.sql
+            -f backend/src/test/resources/db/shared-stats-schema.sql
 
       - uses: actions/setup-java@v5
         if: steps.scope.outputs.docs_only != 'true'
@@ -153,6 +152,7 @@ jobs:
         env:
           # Not committed (see frontend/src/auth/supabaseClient.ts). The build refuses to run
           # without it, so this job also proves the secret is still set before a deploy needs it.
+          VITE_SUPABASE_URL: http://127.0.0.1:1
           VITE_PRIVACY_CONTROLLER_NAME: Example Operator
           VITE_PRIVACY_CONTACT_EMAIL: privacy@example.com
           VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
@@ -220,12 +220,15 @@ jobs:
         if: steps.current.outputs.deploy_allowed == 'true'
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           VITE_PRIVACY_CONTROLLER_NAME: ${{ secrets.VITE_PRIVACY_CONTROLLER_NAME }}
           VITE_PRIVACY_CONTACT_EMAIL: ${{ secrets.VITE_PRIVACY_CONTACT_EMAIL }}
         run: |
+          : "${VITE_SUPABASE_URL:?Configure the production Supabase project URL}"
           : "${VITE_PRIVACY_CONTROLLER_NAME:?Configure the production privacy controller name}"
           : "${VITE_PRIVACY_CONTACT_EMAIL:?Configure the production privacy contact email}"
           flyctl deploy --ha=false --remote-only \
+            --build-arg VITE_SUPABASE_URL="$VITE_SUPABASE_URL" \
             --build-arg VITE_PRIVACY_CONTROLLER_NAME="$VITE_PRIVACY_CONTROLLER_NAME" \
             --build-arg VITE_PRIVACY_CONTACT_EMAIL="$VITE_PRIVACY_CONTACT_EMAIL" \
             --build-arg VITE_SUPABASE_ANON_KEY="${{ secrets.VITE_SUPABASE_ANON_KEY }}"

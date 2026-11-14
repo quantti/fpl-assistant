@@ -58,7 +58,7 @@ public class FixtureTools implements FplTool {
                 return fromCapture(captured.get(), teamName, pattern, gwLimit);
             }
 
-            // The Tapas fallback: one instant for every stored-row age in this reply (KAR-9).
+            // The SharedStats fallback: one instant for every stored-row age in this reply (KAR-9).
             Instant asOf = clock.instant();
             SeasonContext season = seasonResolver.resolve();
 
@@ -122,7 +122,7 @@ public class FixtureTools implements FplTool {
     /**
      * The capture path. The team is resolved from the capture's own denormalised names, the
      * starting gameweek by {@link ScheduleSource#startGameweek} (deadlines against the clock),
-     * and the rows carry the same aliases the tapas query produces so {@link #window} and
+     * and the rows carry the same aliases the shared query produces so {@link #window} and
      * {@link #formatFixture} serve both paths.
      */
     private String fromCapture(ScheduleSource.Snapshot snapshot, String teamName, String pattern, int gwLimit) {
@@ -170,7 +170,7 @@ public class FixtureTools implements FplTool {
 
     /**
      * One reply shape for both paths, so the postponed block and the empty answer cannot drift.
-     * {@code ages} is the Tapas path's stored-row age lines, and empty on the capture path.
+     * {@code ages} is the SharedStats path's stored-row age lines, and empty on the capture path.
      */
     private String render(String provenance, String header, String resolvedName,
                           String resolvedShort, FixtureWindow window, String ages) {
@@ -191,7 +191,7 @@ public class FixtureTools implements FplTool {
     }
 
     /**
-     * The KAR-9 age lines of a Tapas fixture reply, shared with {@link FixtureDifficultyTools}.
+     * The KAR-9 age lines of a SharedStats fixture reply, shared with {@link FixtureDifficultyTools}.
      * The gameweek row that chose the starting boundary and the fixture rows actually shown are
      * dated separately, so a fresh fixture cannot hide an old selection flag. With no gameweek
      * row the selection has no age, and an empty listing never borrows the gameweek's.

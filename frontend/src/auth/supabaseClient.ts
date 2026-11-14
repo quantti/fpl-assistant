@@ -11,12 +11,8 @@ import { createClient } from '@supabase/supabase-js';
 // vite.config.ts refuses to build without it, so a missing key fails the deploy rather than
 // shipping a bundle that throws on first paint.
 //
-// The project URL keeps a default. It is not a credential — it is already written into
-// application.yml and the deploy workflow — and a required placeholder for it bought an outage
-// once already (see docs/STATUS.md, 2026-08-19).
-// `||` rather than `??`, as in vite.config.ts: an empty VITE_SUPABASE_URL is not a project URL,
-// and createClient throws on it at module load — a blank page and a console message.
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || 'https://itmykooxrbrdbgqwsesb.supabase.co';
+// Deployment configuration selects the operator's project; Vite refuses a missing URL.
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 // Auth only. This client must never be used to query the database directly: authorization lives

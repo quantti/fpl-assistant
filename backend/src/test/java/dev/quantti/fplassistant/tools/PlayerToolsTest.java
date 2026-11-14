@@ -8,7 +8,7 @@ import java.time.ZoneOffset;
 import java.util.List;
 
 import dev.quantti.fplassistant.testsupport.DataAgeClock;
-import dev.quantti.fplassistant.testsupport.TapasSeed;
+import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -50,14 +50,14 @@ class PlayerToolsTest {
 
     private static final String CURRENT_SEASON = "2099-00";
 
-    /** Ids this class inserts into the (tapas-owned) current season, and removes again. */
+    /** Ids this class inserts into the (shared-owned) current season, and removes again. */
     private static final int FLIP_GAMEWEEK_ID = 101;
     private static final int FLIP_TEAM_ID = 9001;
     private static final List<Integer> FLIP_PLAYER_IDS = List.of(9301, 9302);
 
     @BeforeEach
     void seed() {
-        TapasSeed.ensure(jdbc);
+        SharedStatsSeed.ensure(jdbc);
         assertThat(dailyTable).as("must use the isolated table").endsWith("_test");
         clearDaily();
         // Also before, not only after: a hard abort mid-class would otherwise leave the flip in
@@ -72,8 +72,8 @@ class PlayerToolsTest {
 
     /**
      * Undoes {@link #flipToCurrentSeason} so every other test still sees the fallback. Deletes
-     * only the rows this class inserts, by id: the current season is tapas-owned and shared with
-     * {@link TapasSeed}, and a blanket delete on {@code season_id} would silently wipe another
+     * only the rows this class inserts, by id: the current season is shared-owned and shared with
+     * {@link SharedStatsSeed}, and a blanket delete on {@code season_id} would silently wipe another
      * class's rows the day one of them seeds that season.
      */
     @AfterEach
@@ -81,12 +81,12 @@ class PlayerToolsTest {
         // The transferred player's current-season row goes with them: it references the flipped
         // team, so it must be gone before that team is.
         jdbc.update("DELETE FROM player WHERE season_id = ? AND id IN (?, ?, ?)",
-                TapasSeed.CURRENT_SEASON_ID, FLIP_PLAYER_IDS.get(0), FLIP_PLAYER_IDS.get(1),
+                SharedStatsSeed.CURRENT_SEASON_ID, FLIP_PLAYER_IDS.get(0), FLIP_PLAYER_IDS.get(1),
                 TRANSFERRED_CURRENT_ID);
         jdbc.update("DELETE FROM gameweek WHERE season_id = ? AND id = ?",
-                TapasSeed.CURRENT_SEASON_ID, FLIP_GAMEWEEK_ID);
+                SharedStatsSeed.CURRENT_SEASON_ID, FLIP_GAMEWEEK_ID);
         jdbc.update("DELETE FROM team WHERE season_id = ? AND id = ?",
-                TapasSeed.CURRENT_SEASON_ID, FLIP_TEAM_ID);
+                SharedStatsSeed.CURRENT_SEASON_ID, FLIP_TEAM_ID);
     }
 
     /**
@@ -138,36 +138,36 @@ class PlayerToolsTest {
     @Test
     void afterTheFlipBothSeasonsAreShownSideBySide() {
         flipToCurrentSeason(true);
-        captureToday(TapasSeed.PLAYER_WEB_NAME, TapasSeed.PLAYER_FULL_NAME);
+        captureToday(SharedStatsSeed.PLAYER_WEB_NAME, SharedStatsSeed.PLAYER_FULL_NAME);
 
-        String result = playerTools.getPlayerStats(TapasSeed.PLAYER_WEB_NAME);
+        String result = playerTools.getPlayerStats(SharedStatsSeed.PLAYER_WEB_NAME);
 
-        assertThat(result).contains("Data source: season " + TapasSeed.CURRENT_SEASON_CODE
+        assertThat(result).contains("Data source: season " + SharedStatsSeed.CURRENT_SEASON_CODE
                 + " (the season currently being played)");
         assertThat(result).contains("Price: £8.0m"); // this season's plain label
         assertThat(result).contains("Minutes: 180"); // this season's small sample
-        assertThat(result).contains("Data source: season " + TapasSeed.POPULATED_SEASON_CODE
+        assertThat(result).contains("Data source: season " + SharedStatsSeed.POPULATED_SEASON_CODE
                 + " — a COMPLETED PREVIOUS season");
         assertThat(result).contains("is under way");
         assertThat(result).contains("Minutes: 265"); // last season's evidence still on the card
-        assertThat(result).contains("Price (" + TapasSeed.POPULATED_SEASON_CODE + ", historical)");
+        assertThat(result).contains("Price (" + SharedStatsSeed.POPULATED_SEASON_CODE + ", historical)");
     }
 
     @Test
     void afterTheFlipAPlayerWithNoCurrentSeasonRowIsStillAnsweredFromLastSeason() {
         flipToCurrentSeason(false); // Vasquez populates the current season; Okafor is not in it
-        captureToday(TapasSeed.PLAYER_WEB_NAME, TapasSeed.PLAYER_FULL_NAME);
+        captureToday(SharedStatsSeed.PLAYER_WEB_NAME, SharedStatsSeed.PLAYER_FULL_NAME);
 
-        String result = playerTools.getPlayerStats(TapasSeed.PLAYER_WEB_NAME);
+        String result = playerTools.getPlayerStats(SharedStatsSeed.PLAYER_WEB_NAME);
 
-        assertThat(result).contains("Data source: season " + TapasSeed.POPULATED_SEASON_CODE
+        assertThat(result).contains("Data source: season " + SharedStatsSeed.POPULATED_SEASON_CODE
                 + " — a COMPLETED PREVIOUS season");
         assertThat(result).contains("Minutes: 265");
         assertThat(result).doesNotContain("(the season currently being played)");
         // The season being played holds data, but none of it is on this card: saying it "is
         // under way" beside numbers that are not there implies a comparison the reply cannot make.
         assertThat(result).doesNotContain("is under way");
-        assertThat(result).contains("No " + TapasSeed.CURRENT_SEASON_CODE
+        assertThat(result).contains("No " + SharedStatsSeed.CURRENT_SEASON_CODE
                 + " numbers accompany these");
     }
 
@@ -181,7 +181,7 @@ class PlayerToolsTest {
         flipToCurrentSeason(true); // Okafor has a current-season row
         captureToday("Someoneelse", "Someone Else Fictitious"); // ...but is not in today's capture
 
-        String result = playerTools.getPlayerStats(TapasSeed.PLAYER_WEB_NAME);
+        String result = playerTools.getPlayerStats(SharedStatsSeed.PLAYER_WEB_NAME);
 
         assertThat(result).doesNotContain("NOT IN THIS SEASON'S FPL GAME");
         assertThat(result).contains("NOT CONFIRMED IN THIS SEASON'S FPL GAME");
@@ -205,15 +205,15 @@ class PlayerToolsTest {
 
     @Test
     void getPlayerStatsByWebName() {
-        String result = playerTools.getPlayerStats(TapasSeed.PLAYER_WEB_NAME);
+        String result = playerTools.getPlayerStats(SharedStatsSeed.PLAYER_WEB_NAME);
 
-        assertThat(result).containsIgnoringCase(TapasSeed.PLAYER_WEB_NAME);
+        assertThat(result).containsIgnoringCase(SharedStatsSeed.PLAYER_WEB_NAME);
         assertThat(result).doesNotContain("not found");
     }
 
     @Test
     void everyAnswerNamesTheSeasonItCameFrom() {
-        String result = playerTools.getPlayerStats(TapasSeed.PLAYER_WEB_NAME);
+        String result = playerTools.getPlayerStats(SharedStatsSeed.PLAYER_WEB_NAME);
         SeasonContext season = seasonResolver.resolve();
 
         assertThat(result).contains("Data source: season " + season.code());
@@ -225,7 +225,7 @@ class PlayerToolsTest {
      */
     @Test
     void theSeasonIsNamedOnceNotTwice() {
-        String result = playerTools.getPlayerStats(TapasSeed.PLAYER_WEB_NAME);
+        String result = playerTools.getPlayerStats(SharedStatsSeed.PLAYER_WEB_NAME);
         SeasonContext season = seasonResolver.resolve();
 
         assertThat(result).containsOnlyOnce("Data source: season " + season.code());
@@ -235,9 +235,9 @@ class PlayerToolsTest {
     void fullNameMatchesPlayer() {
         // LLMs pass full names despite the description saying "web name or surname";
         // no single column contains "Emeka Okafor", so this needs the concatenated match.
-        String result = playerTools.getPlayerStats(TapasSeed.PLAYER_FULL_NAME);
+        String result = playerTools.getPlayerStats(SharedStatsSeed.PLAYER_FULL_NAME);
 
-        assertThat(result).containsIgnoringCase(TapasSeed.PLAYER_WEB_NAME);
+        assertThat(result).containsIgnoringCase(SharedStatsSeed.PLAYER_WEB_NAME);
         assertThat(result).doesNotContain("not found");
     }
 
@@ -250,16 +250,16 @@ class PlayerToolsTest {
     }
 
     /**
-     * This season's squad comes from FPL's own daily capture, not from the tapas table — which
+     * This season's squad comes from FPL's own daily capture, not from the shared table — which
      * held no rows at all for the season being played. Answering only from there is what let a
      * question about one player be answered about another who happened to exist in the season
      * the resolver had fallen back to.
      */
     @Test
     void aPlayerInThisSeasonsSquadIsAnsweredFromTheDailyCapture() {
-        captureToday(TapasSeed.PLAYER_WEB_NAME, TapasSeed.PLAYER_FULL_NAME);
+        captureToday(SharedStatsSeed.PLAYER_WEB_NAME, SharedStatsSeed.PLAYER_FULL_NAME);
 
-        String result = playerTools.getPlayerStats(TapasSeed.PLAYER_WEB_NAME);
+        String result = playerTools.getPlayerStats(SharedStatsSeed.PLAYER_WEB_NAME);
 
         assertThat(result).startsWith("Data source: FPL live prices for season " + CURRENT_SEASON);
         assertThat(result).contains("this season: £5.5m");
@@ -277,10 +277,10 @@ class PlayerToolsTest {
         // it. That is what makes the claim safe to make.
         captureToday("Someoneelse", "Someone Else Fictitious");
 
-        String result = playerTools.getPlayerStats(TapasSeed.PLAYER_WEB_NAME);
+        String result = playerTools.getPlayerStats(SharedStatsSeed.PLAYER_WEB_NAME);
 
         assertThat(result).contains("NOT IN THIS SEASON'S FPL GAME");
-        assertThat(result).containsIgnoringCase(TapasSeed.PLAYER_WEB_NAME);
+        assertThat(result).containsIgnoringCase(SharedStatsSeed.PLAYER_WEB_NAME);
     }
 
     /**
@@ -290,11 +290,11 @@ class PlayerToolsTest {
      */
     @Test
     void withNoCaptureAtAllNoClaimIsMadeAboutThisSeason() {
-        String result = playerTools.getPlayerStats(TapasSeed.PLAYER_WEB_NAME);
+        String result = playerTools.getPlayerStats(SharedStatsSeed.PLAYER_WEB_NAME);
 
         assertThat(result).contains("squad list is unavailable");
         assertThat(result).doesNotContain("NOT IN THIS SEASON'S FPL GAME");
-        assertThat(result).containsIgnoringCase(TapasSeed.PLAYER_WEB_NAME);
+        assertThat(result).containsIgnoringCase(SharedStatsSeed.PLAYER_WEB_NAME);
     }
 
     /** Sets one player row's write time; the player table has no update trigger, so it sticks. */
@@ -313,16 +313,16 @@ class PlayerToolsTest {
     @Transactional
     void eachSeasonBlockCarriesItsOwnRowWriteAge() {
         flipToCurrentSeason(true);
-        captureToday(TapasSeed.PLAYER_WEB_NAME, TapasSeed.PLAYER_FULL_NAME);
-        writtenAt(9301, TapasSeed.CURRENT_SEASON_ID, AS_OF.minus(Duration.ofHours(2)));
-        writtenAt(9201, TapasSeed.POPULATED_SEASON_ID, Instant.parse("2026-08-01T12:00:00Z"));
+        captureToday(SharedStatsSeed.PLAYER_WEB_NAME, SharedStatsSeed.PLAYER_FULL_NAME);
+        writtenAt(9301, SharedStatsSeed.CURRENT_SEASON_ID, AS_OF.minus(Duration.ofHours(2)));
+        writtenAt(9201, SharedStatsSeed.POPULATED_SEASON_ID, Instant.parse("2026-08-01T12:00:00Z"));
 
-        String result = playerTools.getPlayerStats(TapasSeed.PLAYER_WEB_NAME);
+        String result = playerTools.getPlayerStats(SharedStatsSeed.PLAYER_WEB_NAME);
 
-        String currentAge = "Stored-data age: player record for Okafor, season " + TapasSeed.CURRENT_SEASON_CODE
+        String currentAge = "Stored-data age: player record for Okafor, season " + SharedStatsSeed.CURRENT_SEASON_CODE
                 + ", last recorded write 2026-09-10 11:00 UK (2 hours ago)."
                 + " This is a database record time, not a live FPL check.";
-        String previousAge = "Stored-data age: player record for Okafor, season " + TapasSeed.POPULATED_SEASON_CODE
+        String previousAge = "Stored-data age: player record for Okafor, season " + SharedStatsSeed.POPULATED_SEASON_CODE
                 + ", last recorded write 2026-08-01 13:00 UK (40 days ago).";
         assertThat(result).containsOnlyOnce(currentAge).containsOnlyOnce(previousAge);
         int currentBanner = result.indexOf("(the season currently being played)");
@@ -331,36 +331,36 @@ class PlayerToolsTest {
         assertThat(result.indexOf(previousAge)).isGreaterThan(previousBanner);
         // Values and banners are unchanged by the age lines.
         assertThat(result).contains("Minutes: 180").contains("Minutes: 265")
-                .contains("Price (" + TapasSeed.POPULATED_SEASON_CODE + ", historical)");
+                .contains("Price (" + SharedStatsSeed.POPULATED_SEASON_CODE + ", historical)");
     }
 
     /** Today's daily capture dates the identity block only; it does not freshen old statistics. */
     @Test
     @Transactional
     void aFreshDailyCaptureDoesNotRefreshOldPlayerStatistics() {
-        captureToday(TapasSeed.PLAYER_WEB_NAME, TapasSeed.PLAYER_FULL_NAME);
-        writtenAt(9201, TapasSeed.POPULATED_SEASON_ID, Instant.parse("2026-06-17T12:00:00Z"));
+        captureToday(SharedStatsSeed.PLAYER_WEB_NAME, SharedStatsSeed.PLAYER_FULL_NAME);
+        writtenAt(9201, SharedStatsSeed.POPULATED_SEASON_ID, Instant.parse("2026-06-17T12:00:00Z"));
 
-        String result = playerTools.getPlayerStats(TapasSeed.PLAYER_WEB_NAME);
+        String result = playerTools.getPlayerStats(SharedStatsSeed.PLAYER_WEB_NAME);
 
         assertThat(result).startsWith("Data source: FPL live prices for season " + CURRENT_SEASON);
         String dailyBlock = result.substring(0, result.indexOf("Data source: season "));
         assertThat(dailyBlock).contains("this season: £5.5m").doesNotContain("Stored-data age");
         assertThat(result).containsOnlyOnce("Stored-data age: player record for Okafor, season "
-                + TapasSeed.POPULATED_SEASON_CODE + ", last recorded write 2026-06-17 13:00 UK (85 days ago).");
+                + SharedStatsSeed.POPULATED_SEASON_CODE + ", last recorded write 2026-06-17 13:00 UK (85 days ago).");
     }
 
     @Test
     @Transactional
     void nullAndFutureWriteTimesStayUnknown() {
-        writtenAt(9201, TapasSeed.POPULATED_SEASON_ID, null);
-        assertThat(playerTools.getPlayerStats(TapasSeed.PLAYER_WEB_NAME))
-                .contains("Stored-data age: player record for Okafor, season " + TapasSeed.POPULATED_SEASON_CODE
+        writtenAt(9201, SharedStatsSeed.POPULATED_SEASON_ID, null);
+        assertThat(playerTools.getPlayerStats(SharedStatsSeed.PLAYER_WEB_NAME))
+                .contains("Stored-data age: player record for Okafor, season " + SharedStatsSeed.POPULATED_SEASON_CODE
                         + ", write time unavailable.")
                 .doesNotContain("ago");
 
-        writtenAt(9201, TapasSeed.POPULATED_SEASON_ID, Instant.parse("2026-09-15T12:00:00Z"));
-        assertThat(playerTools.getPlayerStats(TapasSeed.PLAYER_WEB_NAME))
+        writtenAt(9201, SharedStatsSeed.POPULATED_SEASON_ID, Instant.parse("2026-09-15T12:00:00Z"));
+        assertThat(playerTools.getPlayerStats(SharedStatsSeed.PLAYER_WEB_NAME))
                 .contains("last recorded write 2026-09-15 13:00 UK (future-dated anomaly; age unavailable).")
                 .doesNotContain("ago");
     }
@@ -378,14 +378,14 @@ class PlayerToolsTest {
                 VALUES (9391, 9026, 9002, 'Chidi', 'Okaforo', 'Okaforo', 3, 60, 'a', 99, 900,
                         TIMESTAMPTZ '2026-09-10 11:30:00+00')
                 """);
-        writtenAt(9201, TapasSeed.POPULATED_SEASON_ID, Instant.parse("2026-08-11T12:00:00Z"));
-        captureToday(TapasSeed.PLAYER_WEB_NAME, TapasSeed.PLAYER_FULL_NAME);
+        writtenAt(9201, SharedStatsSeed.POPULATED_SEASON_ID, Instant.parse("2026-08-11T12:00:00Z"));
+        captureToday(SharedStatsSeed.PLAYER_WEB_NAME, SharedStatsSeed.PLAYER_FULL_NAME);
 
-        String result = playerTools.getPlayerStats(TapasSeed.PLAYER_WEB_NAME);
+        String result = playerTools.getPlayerStats(SharedStatsSeed.PLAYER_WEB_NAME);
 
         assertThat(result).doesNotContain("Okaforo").doesNotContain("<1 hour ago");
         assertThat(result).containsOnlyOnce("Stored-data age:")
-                .contains("player record for Okafor, season " + TapasSeed.POPULATED_SEASON_CODE
+                .contains("player record for Okafor, season " + SharedStatsSeed.POPULATED_SEASON_CODE
                         + ", last recorded write 2026-08-11 13:00 UK (30 days ago).");
     }
 
@@ -408,13 +408,13 @@ class PlayerToolsTest {
                 VALUES (9311, ?, ?, 'Tarik', 'Muharemović', 'Muharemović', 2, 45, 'a', 20, 360,
                         0, 0, 3.0, 1.5)
                 ON CONFLICT (id, season_id) DO NOTHING
-                """, TapasSeed.POPULATED_SEASON_ID, TapasSeed.TEAM_ASHFIELD);
+                """, SharedStatsSeed.POPULATED_SEASON_ID, SharedStatsSeed.TEAM_ASHFIELD);
     }
 
     @AfterEach
     void deleteAccentedPlayer() {
         jdbc.update("DELETE FROM player WHERE season_id = ? AND id = ?",
-                TapasSeed.POPULATED_SEASON_ID, ACCENTED_PLAYER_ID);
+                SharedStatsSeed.POPULATED_SEASON_ID, ACCENTED_PLAYER_ID);
     }
 
     @Test
@@ -440,7 +440,7 @@ class PlayerToolsTest {
     @AfterEach
     void deleteTransferredAndNullNamedPlayers() {
         jdbc.update("DELETE FROM player WHERE season_id = ? AND id IN (?, ?)",
-                TapasSeed.POPULATED_SEASON_ID, TRANSFERRED_PREVIOUS_ID, NULL_NAMED_PLAYER_ID);
+                SharedStatsSeed.POPULATED_SEASON_ID, TRANSFERRED_PREVIOUS_ID, NULL_NAMED_PLAYER_ID);
     }
 
     /** One player, one web name, two clubs: Northmoor City last season, Ashfield this one. */
@@ -452,7 +452,7 @@ class PlayerToolsTest {
                 VALUES (9321, ?, ?, 'Owen', 'Trevelyan', 'Trevelyan', 3, 70, 'a', 44, 2700,
                         7, 4, 5.0, 9.0)
                 ON CONFLICT (id, season_id) DO NOTHING
-                """, TapasSeed.POPULATED_SEASON_ID, TapasSeed.TEAM_NORTHMOOR_CITY);
+                """, SharedStatsSeed.POPULATED_SEASON_ID, SharedStatsSeed.TEAM_NORTHMOOR_CITY);
         jdbc.update("""
                 INSERT INTO player (id, season_id, team_id, first_name, second_name, web_name,
                                     element_type, now_cost, status, total_points, minutes,
@@ -460,7 +460,7 @@ class PlayerToolsTest {
                 VALUES (9322, ?, ?, 'Owen', 'Trevelyan', 'Trevelyan', 3, 75, 'a', 9, 175,
                         1, 0, 3.0, 4.0)
                 ON CONFLICT (id, season_id) DO NOTHING
-                """, TapasSeed.CURRENT_SEASON_ID, FLIP_TEAM_ID);
+                """, SharedStatsSeed.CURRENT_SEASON_ID, FLIP_TEAM_ID);
     }
 
     /**
@@ -473,20 +473,20 @@ class PlayerToolsTest {
         flipToCurrentSeason(true);
         seedTransferredPlayer();
         captureToday(TRANSFERRED_WEB_NAME, "Owen Trevelyan",
-                TapasSeed.ASHFIELD_SHORT, TapasSeed.ASHFIELD);
+                SharedStatsSeed.ASHFIELD_SHORT, SharedStatsSeed.ASHFIELD);
 
         String result = playerTools.getPlayerStats(
-                TRANSFERRED_WEB_NAME + " " + TapasSeed.ASHFIELD_SHORT);
+                TRANSFERRED_WEB_NAME + " " + SharedStatsSeed.ASHFIELD_SHORT);
 
-        assertThat(result).contains("Data source: season " + TapasSeed.CURRENT_SEASON_CODE
+        assertThat(result).contains("Data source: season " + SharedStatsSeed.CURRENT_SEASON_CODE
                 + " (the season currently being played)");
         assertThat(result).contains("Minutes: 175"); // this season, at the new club
-        assertThat(result).contains("Data source: season " + TapasSeed.POPULATED_SEASON_CODE
+        assertThat(result).contains("Data source: season " + SharedStatsSeed.POPULATED_SEASON_CODE
                 + " — a COMPLETED PREVIOUS season");
         assertThat(result).contains("Minutes: 2700"); // last season, at the old one
     }
 
-    /** Both name columns are nullable in the tapas schema, and one NULL nulls the whole chain. */
+    /** Both name columns are nullable in the shared schema, and one NULL nulls the whole chain. */
     @Test
     void aPlayerWithNoStoredFirstNameIsStillFoundByWebName() {
         jdbc.update("""
@@ -496,7 +496,7 @@ class PlayerToolsTest {
                 VALUES (9331, ?, ?, NULL, NULL, 'Pendlebury', 2, 45, 'a', 11, 450,
                         0, 1, 2.0, 0.8)
                 ON CONFLICT (id, season_id) DO NOTHING
-                """, TapasSeed.POPULATED_SEASON_ID, TapasSeed.TEAM_ASHFIELD);
+                """, SharedStatsSeed.POPULATED_SEASON_ID, SharedStatsSeed.TEAM_ASHFIELD);
 
         assertThat(playerTools.getPlayerStats("Pendlebury"))
                 .contains("Pendlebury").doesNotContain("No player matched");

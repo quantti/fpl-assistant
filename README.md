@@ -19,7 +19,14 @@ Frontend verification: `npm test`, `npm run lint`, `npm run format:check`, `npm 
 Run one build/test process at a time. Production and account/email operations need separate
 operator approval; local mocked tests do not establish production delivery or data freshness.
 
-## Public privacy contact configuration
+## Deployment configuration
+
+Set backend `SUPABASE_URL` and frontend `VITE_SUPABASE_URL` to your own Supabase project.
+Neither has a production fallback. Docker builds accept `VITE_SUPABASE_URL` as a build argument;
+the retained deployment workflow reads the GitHub secret of the same name. Configure both
+before starting the application or re-enabling deployment. Tests use a loopback-only URL.
+For schema exports, set `SHARED_DB_HOST` to your own session-pooler host; the export script
+never selects a production host by default.
 
 Production frontend builds require `VITE_PRIVACY_CONTROLLER_NAME` and
 `VITE_PRIVACY_CONTACT_EMAIL`. Supply the real controller and working mailbox through deployment
@@ -41,8 +48,9 @@ not update the live dashboard automatically.
 
 Internal incident reports, account evidence, agent instructions and operational plans are not
 part of the public distribution. Maintain deployment records and private backups separately.
-GitHub Actions performs production verification and deployment from reviewed `master` changes;
-never push directly to `master` or use a manual deployment to bypass verification.
+GitHub Actions is currently disabled, including automatic deployment. Workflow definitions are
+retained but do not run until an operator explicitly re-enables Actions. Run the local checks
+above before publication; never push directly to `master`.
 
 A repository visibility change does not erase old Git objects, PR comments, Actions artifacts,
 clones or caches. Before making a repository public, finish the separately controlled history

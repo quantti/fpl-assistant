@@ -29,7 +29,7 @@ spring:
 # startup-sync / scheduled are off here because background work must not run behind the suite.
 # The startup runners fire on ApplicationReadyEvent in every Spring context the suite builds,
 # and against an empty database their staleness check always says "stale" — so each context
-# start would fetch the vaastav CSV over the network and read the tapas player table while the
+# start would fetch the vaastav CSV over the network and read the shared player table while the
 # tests are running. The daily-price scheduler is off for the same reason: a suite that happens
 # to run at 02:00 UK would otherwise call FPL's API for real. All three classes are covered by
 # tests that construct them directly.

@@ -43,7 +43,7 @@ import org.springframework.stereotype.Component;
  * comes from the FPL schedule capture and carries
  * {@link dev.quantti.fplassistant.schedule.ScheduleSource#provenance}. The third line is a
  * <em>source</em> line, not a second season banner: historical metrics stay labelled historical
- * even when prices and future fixtures are the season being played. The weekly tapas
+ * even when prices and future fixtures are the season being played. The weekly shared
  * {@code player} table — measured 85
  * days stale — supplies neither (KAR-32). Metrics attach by element id while the capture and the
  * resolved season are the same season, and by unique {@code web_name} when they are not: during
@@ -87,7 +87,7 @@ import org.springframework.stereotype.Component;
  * <p>The metrics blend the season being played with the previous one, per player, on the ramp
  * {@link SeasonBlend} holds: a player's own matches this season decide how much of his record is
  * this season's. Across the season boundary players are bridged by name — {@code player.id} is
- * FPL's element id and is reassigned every season, and tapas keeps no stable player code. A name
+ * FPL's element id and is reassigned every season, and shared keeps no stable player code. A name
  * that is not unique in either season loses the previous-season side rather than being guessed —
  * a wrong metric attached to a recommendation is the failure this class exists to prevent.
  *

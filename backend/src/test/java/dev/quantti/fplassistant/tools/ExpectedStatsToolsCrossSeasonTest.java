@@ -4,7 +4,7 @@ import java.time.Instant;
 
 import dev.quantti.fplassistant.testsupport.DataAgeClock;
 import dev.quantti.fplassistant.testsupport.NewSeasonSeed;
-import dev.quantti.fplassistant.testsupport.TapasSeed;
+import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -49,7 +49,7 @@ class ExpectedStatsToolsCrossSeasonTest {
 
     @BeforeEach
     void seed() {
-        TapasSeed.ensure(jdbc);
+        SharedStatsSeed.ensure(jdbc);
         NewSeasonSeed.begin(jdbc);
         NewSeasonSeed.giveFerreiraTwoMatches(jdbc);
     }
@@ -67,25 +67,25 @@ class ExpectedStatsToolsCrossSeasonTest {
     void fewerCurrentFixturesThanAskedForAreFilledFromLastSeasonAndLabelled() {
         String result = tools.getPlayerExpectedStats("Ferreira", 5);
 
-        assertThat(result).contains("Data source: season " + TapasSeed.CURRENT_SEASON_CODE
+        assertThat(result).contains("Data source: season " + SharedStatsSeed.CURRENT_SEASON_CODE
                 + " (the season currently being played)");
-        assertThat(result).contains("Data source: season " + TapasSeed.POPULATED_SEASON_CODE
+        assertThat(result).contains("Data source: season " + SharedStatsSeed.POPULATED_SEASON_CODE
                 + " — a COMPLETED PREVIOUS season");
-        assertThat(result).contains("last 4 fixtures: 2 from " + TapasSeed.CURRENT_SEASON_CODE
-                + ", 2 from " + TapasSeed.POPULATED_SEASON_CODE);
-        assertThat(result).contains("  " + TapasSeed.CURRENT_SEASON_CODE + " GW101");
-        assertThat(result).contains("  " + TapasSeed.POPULATED_SEASON_CODE + " GW");
+        assertThat(result).contains("last 4 fixtures: 2 from " + SharedStatsSeed.CURRENT_SEASON_CODE
+                + ", 2 from " + SharedStatsSeed.POPULATED_SEASON_CODE);
+        assertThat(result).contains("  " + SharedStatsSeed.CURRENT_SEASON_CODE + " GW101");
+        assertThat(result).contains("  " + SharedStatsSeed.POPULATED_SEASON_CODE + " GW");
 
         // KAR-9: each season carries its own coverage range; the two never share one.
-        String current = "Stored match coverage: Ferreira, season " + TapasSeed.CURRENT_SEASON_CODE
+        String current = "Stored match coverage: Ferreira, season " + SharedStatsSeed.CURRENT_SEASON_CODE
                 + " (2 returned fixture rows), known match dates from 2026-08-15 15:00 UK (25 days ago)"
                 + " to 2026-08-16 15:00 UK (24 days ago).";
-        String previous = "Stored match coverage: Ferreira, season " + TapasSeed.POPULATED_SEASON_CODE
+        String previous = "Stored match coverage: Ferreira, season " + SharedStatsSeed.POPULATED_SEASON_CODE
                 + " (2 returned fixture rows), known match dates from 2025-08-16 17:30 UK (389 days ago)"
                 + " to 2025-08-23 17:30 UK (382 days ago).";
-        String currentRefresh = "Metric refresh: season " + TapasSeed.CURRENT_SEASON_CODE
+        String currentRefresh = "Metric refresh: season " + SharedStatsSeed.CURRENT_SEASON_CODE
                 + ", returned sample;";
-        String previousRefresh = "Metric refresh: season " + TapasSeed.POPULATED_SEASON_CODE
+        String previousRefresh = "Metric refresh: season " + SharedStatsSeed.POPULATED_SEASON_CODE
                 + ", returned sample;";
         assertThat(result).containsOnlyOnce(currentRefresh).containsOnlyOnce(previousRefresh)
                 .containsOnlyOnce(current).containsOnlyOnce(previous);
@@ -102,10 +102,10 @@ class ExpectedStatsToolsCrossSeasonTest {
         String result = tools.getPlayerExpectedStats("Ferreira", 5);
 
         assertThat(result)
-                .containsOnlyOnce("Defensive contribution, season " + TapasSeed.CURRENT_SEASON_CODE)
-                .containsOnlyOnce("Defensive contribution, season " + TapasSeed.POPULATED_SEASON_CODE);
-        assertThat(result.indexOf("Defensive contribution, season " + TapasSeed.CURRENT_SEASON_CODE))
-                .isLessThan(result.indexOf("Defensive contribution, season " + TapasSeed.POPULATED_SEASON_CODE));
+                .containsOnlyOnce("Defensive contribution, season " + SharedStatsSeed.CURRENT_SEASON_CODE)
+                .containsOnlyOnce("Defensive contribution, season " + SharedStatsSeed.POPULATED_SEASON_CODE);
+        assertThat(result.indexOf("Defensive contribution, season " + SharedStatsSeed.CURRENT_SEASON_CODE))
+                .isLessThan(result.indexOf("Defensive contribution, season " + SharedStatsSeed.POPULATED_SEASON_CODE));
     }
 
     @Test
@@ -114,9 +114,9 @@ class ExpectedStatsToolsCrossSeasonTest {
 
         assertThat(result).doesNotContain("COMPLETED PREVIOUS");
         assertThat(result).contains("(last 2 fixtures):");
-        assertThat(result).doesNotContain("from " + TapasSeed.POPULATED_SEASON_CODE);
+        assertThat(result).doesNotContain("from " + SharedStatsSeed.POPULATED_SEASON_CODE);
         assertThat(result).containsOnlyOnce("Stored match coverage:")
-                .contains("Stored match coverage: Ferreira, season " + TapasSeed.CURRENT_SEASON_CODE + " (")
+                .contains("Stored match coverage: Ferreira, season " + SharedStatsSeed.CURRENT_SEASON_CODE + " (")
                 .doesNotContain("2025-");
     }
 
@@ -129,6 +129,6 @@ class ExpectedStatsToolsCrossSeasonTest {
         String result = tools.getPlayerExpectedStats("Rask", 5);
 
         assertThat(result).doesNotContain("COMPLETED PREVIOUS");
-        assertThat(result).doesNotContain("from " + TapasSeed.POPULATED_SEASON_CODE);
+        assertThat(result).doesNotContain("from " + SharedStatsSeed.POPULATED_SEASON_CODE);
     }
 }

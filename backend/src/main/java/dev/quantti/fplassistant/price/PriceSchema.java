@@ -14,8 +14,8 @@ import jakarta.annotation.PostConstruct;
  * statement is {@code IF NOT EXISTS}.
  *
  * <p>Tracks only the season currently being played. The key is the season-scoped FPL element
- * id (vaastav's {@code element} / tapas {@code player.id}), <b>not</b> the persistent FPL
- * {@code code}: the tapas {@code player} table does not carry {@code code}, and since this
+ * id (vaastav's {@code element} / shared {@code player.id}), <b>not</b> the persistent FPL
+ * {@code code}: the shared {@code player} table does not carry {@code code}, and since this
  * table only ever holds one season, cross-season identity is not needed. {@code gameweek = 0}
  * is the latest live snapshot of {@code player.now_cost}; {@code gameweek = 1..38} are the
  * official end-of-GW prices from vaastav's {@code merged_gw.csv}.

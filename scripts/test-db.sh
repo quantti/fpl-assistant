@@ -12,7 +12,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SCHEMA="$REPO_ROOT/backend/src/test/resources/db/tapas-schema.sql"
+SCHEMA="$REPO_ROOT/backend/src/test/resources/db/shared-stats-schema.sql"
 
 CONTAINER="${TEST_DB_CONTAINER:-fpl-test-db}"
 IMAGE="${TEST_DB_IMAGE:-pgvector/pgvector:pg17}"

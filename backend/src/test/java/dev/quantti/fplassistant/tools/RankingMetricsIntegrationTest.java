@@ -22,7 +22,7 @@ import dev.quantti.fplassistant.sync.HistoryParser;
 import dev.quantti.fplassistant.sync.IncrementalAppearanceReceipt;
 import dev.quantti.fplassistant.sync.PlayerFixtureFingerprint;
 import dev.quantti.fplassistant.testsupport.RankingSeed;
-import dev.quantti.fplassistant.testsupport.TapasSeed;
+import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -83,7 +83,7 @@ class RankingMetricsIntegrationTest {
 
     @BeforeEach
     void setUp() {
-        TapasSeed.ensure(jdbc);
+        SharedStatsSeed.ensure(jdbc);
         cleanUp();
         jdbc.update("DELETE FROM fpl_understat_capture_test");
         jdbc.update("""
@@ -97,7 +97,7 @@ class RankingMetricsIntegrationTest {
 
     @AfterEach
     void cleanUp() {
-        TapasSeed.ensure(jdbc);
+        SharedStatsSeed.ensure(jdbc);
         jdbc.execute("DROP TABLE IF EXISTS " + READER_RECEIPT);
         jdbc.execute("DROP TABLE IF EXISTS " + READER_CURRENT);
         jdbc.execute("DROP TABLE IF EXISTS " + READER_EVIDENCE);

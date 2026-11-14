@@ -32,7 +32,7 @@ import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.transaction.support.TransactionTemplate;
 
-import dev.quantti.fplassistant.testsupport.TapasSeed;
+import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
 
 class OwnedSyncWatchdogIntegrationTest {
 
@@ -47,7 +47,7 @@ class OwnedSyncWatchdogIntegrationTest {
         dataSource = new DriverManagerDataSource(required("DATABASE_URL"),
                 required("DB_USER"), required("DB_PASSWORD"));
         jdbc = new JdbcTemplate(dataSource);
-        TapasSeed.ensureOwnedSyncFixture(jdbc);
+        SharedStatsSeed.ensureOwnedSyncFixture(jdbc);
         new OwnedSyncSchema(jdbc, TABLES).initialize();
         tx = new TransactionTemplate(new DataSourceTransactionManager(dataSource));
     }

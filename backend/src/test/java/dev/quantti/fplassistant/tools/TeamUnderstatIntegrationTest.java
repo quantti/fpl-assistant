@@ -8,7 +8,7 @@ import java.util.List;
 
 import dev.quantti.fplassistant.teamxg.UnderstatParser;
 import dev.quantti.fplassistant.teamxg.UnderstatStore;
-import dev.quantti.fplassistant.testsupport.TapasSeed;
+import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -36,7 +36,7 @@ class TeamUnderstatIntegrationTest {
 
     @BeforeEach
     void seed() {
-        TapasSeed.ensure(jdbc);
+        SharedStatsSeed.ensure(jdbc);
         jdbc.update("DELETE FROM fpl_understat_capture_test");
         source.replace(List.of(new UnderstatStore.Capture("2026-27", NOW.minusSeconds(10), List.of(
                 new UnderstatParser.Match(1, NOW.minusSeconds(86400), "MCI", "LEE", 2, 0,

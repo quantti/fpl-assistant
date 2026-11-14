@@ -12,7 +12,7 @@ import java.util.List;
 import dev.quantti.fplassistant.schedule.ScheduleSource;
 import dev.quantti.fplassistant.testsupport.FictitiousTestData;
 import dev.quantti.fplassistant.testsupport.RankingSeed;
-import dev.quantti.fplassistant.testsupport.TapasSeed;
+import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -41,8 +41,8 @@ class PickToolsIntegrationTest {
     private static final Instant CAPTURED_AT = Instant.parse("2026-09-09T10:00:00Z");
     private static final Instant FIRST_DEADLINE = Instant.parse("2026-08-22T17:30:00Z");
     private static final LocalDate CAPTURE_DATE = LocalDate.of(2026, 9, 9);
-    private static final int SEASON_ID = TapasSeed.CURRENT_SEASON_ID;
-    private static final String SEASON = TapasSeed.CURRENT_SEASON_CODE;
+    private static final int SEASON_ID = SharedStatsSeed.CURRENT_SEASON_ID;
+    private static final String SEASON = SharedStatsSeed.CURRENT_SEASON_CODE;
     private static final int PRESENCE_GAMEWEEK = 152;
     private static final int FIRST_ID = 13_000;
     private static final int LAST_ID = 13_099;
@@ -91,7 +91,7 @@ class PickToolsIntegrationTest {
 
     @BeforeEach
     void seed() {
-        TapasSeed.ensure(jdbc);
+        SharedStatsSeed.ensure(jdbc);
         FictitiousTestData.assertSafeSeason(SEASON);
         cleanUp();
         RankingSeed.seedSchedule(jdbc, scheduleSource.gameweekTable(),
@@ -160,7 +160,7 @@ class PickToolsIntegrationTest {
         if (jdbc == null) {
             return;
         }
-        TapasSeed.ensure(jdbc);
+        SharedStatsSeed.ensure(jdbc);
         jdbc.update("DELETE FROM player_fixture_stats WHERE season_id = ?"
                 + " AND player_id BETWEEN ? AND ?", SEASON_ID, FIRST_ID, LAST_ID);
         jdbc.update("DELETE FROM player WHERE season_id = ? AND id BETWEEN ? AND ?",
@@ -347,14 +347,14 @@ class PickToolsIntegrationTest {
     }
 
     /**
-     * Row-write timestamps are not evidence about football: a fresh {@code player} or tapas
+     * Row-write timestamps are not evidence about football: a fresh {@code player} or shared
      * {@code fixture} write, and a DefCon-only UPDATE that fires {@code trg_pfs_updated_at}
      * without changing a value, must leave both replies byte-for-byte the same — order, Scores,
      * eligibility and every printed date.
      */
     @Test
     void rowWriteTimestampsAloneChangeNeitherTheRankingNorItsText() {
-        seedTapasFixtureMirrors(Timestamp.from(Instant.parse("2025-01-01T00:00:00Z")));
+        seedSharedStatsFixtureMirrors(Timestamp.from(Instant.parse("2025-01-01T00:00:00Z")));
         String differentials = tools.getDifferentialPicks("any", 100, 5);
         String captains = tools.getCaptainCandidates(5);
         Instant pfsWrittenBefore = pfsWrite(RELIABLE_MID);
@@ -601,8 +601,8 @@ class PickToolsIntegrationTest {
                 .doesNotContain(" Reliable (").doesNotContain("horizon expected points");
     }
 
-    /** Tapas {@code fixture} rows for the seeded schedule's finished fixtures, written at a known time. */
-    private void seedTapasFixtureMirrors(Timestamp writtenAt) {
+    /** SharedStats {@code fixture} rows for the seeded schedule's finished fixtures, written at a known time. */
+    private void seedSharedStatsFixtureMirrors(Timestamp writtenAt) {
         for (ScheduleSource.FixtureRow row : RankingSeed.fixtures(CAPTURED_AT, FIRST_DEADLINE)) {
             if (row.gameweek() <= 3) {
                 jdbc.update("""

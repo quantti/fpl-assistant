@@ -1,6 +1,6 @@
 package dev.quantti.fplassistant.tools;
 
-import dev.quantti.fplassistant.testsupport.TapasSeed;
+import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -15,7 +15,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * What the resolver says when the tapas {@code season} table is in a state it cannot resolve.
+ * What the resolver says when the shared {@code season} table is in a state it cannot resolve.
  *
  * <p>It threw before this test existed too — but with {@code queryForMap}'s own words
  * ("Incorrect result size: expected 1, actual 2"), which send whoever reads the log into this
@@ -35,25 +35,25 @@ class SeasonResolverGuardTest {
 
     @BeforeEach
     void seed() {
-        TapasSeed.ensure(jdbc);
+        SharedStatsSeed.ensure(jdbc);
     }
 
     /** The fixture league's own arrangement: exactly one current season, and it is 9027. */
     @AfterEach
     void restoreTheFlags() {
-        jdbc.update("UPDATE season SET is_current = (id = ?)", TapasSeed.CURRENT_SEASON_ID);
+        jdbc.update("UPDATE season SET is_current = (id = ?)", SharedStatsSeed.CURRENT_SEASON_ID);
     }
 
     @Test
     void twoCurrentSeasonsAreNamedRatherThanCounted() {
         jdbc.update("UPDATE season SET is_current = true WHERE id IN (?, ?)",
-                TapasSeed.POPULATED_SEASON_ID, TapasSeed.CURRENT_SEASON_ID);
+                SharedStatsSeed.POPULATED_SEASON_ID, SharedStatsSeed.CURRENT_SEASON_ID);
 
         assertThatThrownBy(resolver::resolve)
                 .isInstanceOf(IncorrectResultSizeDataAccessException.class)
                 .hasMessageContaining("Exactly one season must be flagged is_current")
-                .hasMessageContaining(TapasSeed.POPULATED_SEASON_CODE)
-                .hasMessageContaining(TapasSeed.CURRENT_SEASON_CODE)
+                .hasMessageContaining(SharedStatsSeed.POPULATED_SEASON_CODE)
+                .hasMessageContaining(SharedStatsSeed.CURRENT_SEASON_CODE)
                 .hasMessageContaining("Clear the flag on all but one");
     }
 
@@ -70,6 +70,6 @@ class SeasonResolverGuardTest {
     @Test
     void theOrdinaryCaseStillResolves() {
         assertThat(resolver.resolve().currentSeasonCode())
-                .isEqualTo(TapasSeed.CURRENT_SEASON_CODE);
+                .isEqualTo(SharedStatsSeed.CURRENT_SEASON_CODE);
     }
 }

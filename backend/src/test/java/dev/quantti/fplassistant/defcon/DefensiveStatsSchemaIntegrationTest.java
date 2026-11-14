@@ -2,7 +2,7 @@ package dev.quantti.fplassistant.defcon;
 
 import java.util.List;
 
-import dev.quantti.fplassistant.testsupport.TapasSeed;
+import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -13,7 +13,7 @@ import org.springframework.test.context.ActiveProfiles;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * The columns this project adds to a table tapas owns.
+ * The columns this project adds to a table shared owns.
  *
  * <p>Asserted against the schema rather than assumed, because the DDL runs once at boot and a
  * silent failure would only show up as every defensive number being null months later.
@@ -27,7 +27,7 @@ class DefensiveStatsSchemaIntegrationTest {
 
     @BeforeEach
     void seed() {
-        TapasSeed.ensure(jdbc);
+        SharedStatsSeed.ensure(jdbc);
     }
 
     @Test
@@ -61,7 +61,7 @@ class DefensiveStatsSchemaIntegrationTest {
         });
     }
 
-    /** The write path the sync uses: UPDATE on an existing tapas row, never INSERT. */
+    /** The write path the sync uses: UPDATE on an existing shared row, never INSERT. */
     @Test
     void theSyncsUpdateStatementReachesASeededRow() {
         int updated = jdbc.update("""
@@ -69,12 +69,12 @@ class DefensiveStatsSchemaIntegrationTest {
                    SET defensive_contribution = ?, clearances_blocks_interceptions = ?,
                        recoveries = ?, tackles = ?
                  WHERE fixture_id = ? AND player_id = ? AND season_id = ?
-                """, 2, 6, 9, 4, 9101, 9201, TapasSeed.POPULATED_SEASON_ID);
+                """, 2, 6, 9, 4, 9101, 9201, SharedStatsSeed.POPULATED_SEASON_ID);
 
         assertThat(updated).isOne();
         assertThat(jdbc.queryForObject("""
                 SELECT defensive_contribution FROM player_fixture_stats
                 WHERE fixture_id = 9101 AND player_id = 9201 AND season_id = ?
-                """, Integer.class, TapasSeed.POPULATED_SEASON_ID)).isEqualTo(2);
+                """, Integer.class, SharedStatsSeed.POPULATED_SEASON_ID)).isEqualTo(2);
     }
 }

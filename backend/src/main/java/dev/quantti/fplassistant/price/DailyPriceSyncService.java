@@ -28,7 +28,7 @@ import java.net.http.HttpClient;
  * {@code fpl_daily_price}.
  *
  * <p><b>Why this exists.</b> Nothing else in the project knows today's price. vaastav
- * publishes prices only once a gameweek has been played, and the tapas {@code player} table
+ * publishes prices only once a gameweek has been played, and the shared {@code player} table
  * this project reads is synced weekly by the other project — measured at 85 days stale on
  * 2026-08-18, with the 2026/27 season not yet loaded at all. FPL moves prices every day at
  * 00:00 UK, so a weekly source can be up to seven price changes behind, and price movement is
@@ -134,7 +134,7 @@ public class DailyPriceSyncService {
      * Maps the decoded {@code bootstrap-static} body to upsert argument arrays.
      *
      * <p>Team names are resolved from the response's own {@code teams} block rather than the
-     * tapas {@code team} table — the whole point of this path is to owe nothing to a source
+     * shared {@code team} table — the whole point of this path is to owe nothing to a source
      * that may not have been synced yet.
      */
     static List<Object[]> toRows(Map<String, Object> body, LocalDate priceDate, String season) {

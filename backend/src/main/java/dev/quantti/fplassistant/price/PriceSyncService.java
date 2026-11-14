@@ -30,13 +30,13 @@ import dev.quantti.fplassistant.tools.SeasonResolver;
  * </ol>
  *
  * <p>Both upsert on {@code (season, gameweek, element_id, source)} so re-runs never duplicate.
- * The player name is denormalised from the tapas {@code player} table, falling back to
- * vaastav's {@code name} column for a player no longer in the tapas snapshot.
+ * The player name is denormalised from the shared {@code player} table, falling back to
+ * vaastav's {@code name} column for a player no longer in the shared snapshot.
  *
  * <p>Writes are batched, and the vaastav path is incremental. A full season's
  * {@code merged_gw.csv} carries about 30,000 rows (one per player per gameweek); re-upserting
  * all of them one statement at a time on every sync would hold a background thread against the
- * pooled database this project shares with {@code tapas-fpl-app} for minutes at a time. Only
+ * pooled database this project shares with {@code upstream-stats-app} for minutes at a time. Only
  * gameweeks at or after the highest already stored are rewritten — the latest stored gameweek is
  * included because it may have been captured while still in progress, and every earlier one is
  * frozen and cannot change.
@@ -74,7 +74,7 @@ public class PriceSyncService {
             return 0;
         }
 
-        // One name lookup for both writers: element_id -> display name from the tapas player table.
+        // One name lookup for both writers: element_id -> display name from the shared player table.
         Map<Integer, String> namesById = loadPlayerNames(season.seasonId());
 
         int snapshot = snapshot(season, namesById);

@@ -1,9 +1,9 @@
 --
 -- GENERATED FILE — DO NOT HAND-EDIT.
 --
--- Source: tapas-fpl-app's tables in the shared Supabase database.
+-- Source: upstream-stats-app's tables in the shared Supabase database.
 -- Regenerate: scripts/dump-test-schema.sh   (verify: scripts/dump-test-schema.sh --check)
--- Re-run after any tapas migration; a stale copy means CI passes while production SQL breaks.
+-- Re-run after any shared migration; a stale copy means CI passes while production SQL breaks.
 --
 -- Contains ONLY the six tables this project reads and does not own:
 --   season team player gameweek fixture player_fixture_stats

@@ -13,7 +13,7 @@ import org.apache.commons.csv.CSVRecord;
 /**
  * Parses vaastav {@code gws/merged_gw.csv} content into {@link MergedGwRow}s. The file has
  * dozens of columns; only {@code element}, {@code round} (the gameweek), {@code value} (the
- * price in 0.1m units) and {@code name} (web name, kept as a fallback when the tapas
+ * price in 0.1m units) and {@code name} (web name, kept as a fallback when the shared
  * {@code player} join has no row for a departed player) are read, by header name.
  *
  * <p>Uses the same RFC 4180 reader as {@code VaastavFixtureParser}: a hand-rolled split would

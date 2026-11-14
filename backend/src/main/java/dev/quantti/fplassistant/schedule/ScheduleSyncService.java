@@ -27,7 +27,7 @@ import org.springframework.web.client.RestClient;
  *
  * <p>The schedule counterpart of {@code DailyPriceSyncService}, and built on the same three
  * rules: the season code comes from the UK date, not from the database; team names come from
- * the payload's own {@code teams} block, not from tapas; and the response is refused when it
+ * the payload's own {@code teams} block, not from shared; and the response is refused when it
  * still describes a finished season. The mapping methods are static and package-private so
  * they are unit-tested from captured payloads without a network.
  */

@@ -28,7 +28,7 @@ import dev.quantti.fplassistant.sync.CatalogueScheduleWriter.PublicationDeferred
 import dev.quantti.fplassistant.sync.CatalogueScheduleWriter.SourceRegressionException;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.Lease;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.SyncKind;
-import dev.quantti.fplassistant.testsupport.TapasSeed;
+import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -57,7 +57,7 @@ class CatalogueScheduleWriterIntegrationTest {
     static void initialize() throws Exception {
         DriverManagerDataSource dataSource = new DriverManagerDataSource(required("DATABASE_URL"),
                 required("DB_USER"), required("DB_PASSWORD"));
-        TapasSeed.ensure(new JdbcTemplate(dataSource)); // safety guard must run before shared-table seeding
+        SharedStatsSeed.ensure(new JdbcTemplate(dataSource)); // safety guard must run before shared-table seeding
         jdbc = new JdbcTemplate(dataSource);
         tx = new TransactionTemplate(new DataSourceTransactionManager(dataSource));
         new OwnedSyncSchema(jdbc, OWNED).initialize();
@@ -88,7 +88,7 @@ class CatalogueScheduleWriterIntegrationTest {
     void restoreSeedSeason() {
         cleanWriterRows();
         jdbc.update("DELETE FROM season WHERE id = 27");
-        jdbc.update("UPDATE season SET is_current = (id = ?)", TapasSeed.CURRENT_SEASON_ID);
+        jdbc.update("UPDATE season SET is_current = (id = ?)", SharedStatsSeed.CURRENT_SEASON_ID);
     }
 
     @Test
@@ -290,13 +290,13 @@ class CatalogueScheduleWriterIntegrationTest {
                 docs.bootstrap, docs.fixtures)).isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("exactly one");
 
-        jdbc.update("UPDATE season SET is_current=true WHERE id IN (27, ?)", TapasSeed.CURRENT_SEASON_ID);
+        jdbc.update("UPDATE season SET is_current=true WHERE id IN (27, ?)", SharedStatsSeed.CURRENT_SEASON_ID);
         assertThatThrownBy(() -> writer.publishSchedule(
                 lease("multiple", CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY), SEASON,
                 docs.bootstrap, docs.fixtures)).isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("exactly one");
 
-        jdbc.update("UPDATE season SET is_current=(id=?)", TapasSeed.CURRENT_SEASON_ID);
+        jdbc.update("UPDATE season SET is_current=(id=?)", SharedStatsSeed.CURRENT_SEASON_ID);
         assertThatThrownBy(() -> writer.publishSchedule(
                 lease("mismatch", CatalogueScheduleWriter.SCHEDULE_PUBLICATION_KEY), SEASON,
                 docs.bootstrap, docs.fixtures)).isInstanceOf(IllegalStateException.class)

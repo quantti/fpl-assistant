@@ -13,8 +13,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * 9421-9422, fixtures 9121-9122) and is left alone — merging the two would be a refactor rather
  * than this work.
  *
- * <p>Ids are scoped so {@link #end} removes exactly these rows: the current season is tapas-owned
- * and shared with {@link TapasSeed}, and a blanket delete on {@code season_id} would wipe another
+ * <p>Ids are scoped so {@link #end} removes exactly these rows: the current season is shared-owned
+ * and shared with {@link SharedStatsSeed}, and a blanket delete on {@code season_id} would wipe another
  * class's rows the day one of them seeds it.
  */
 public final class NewSeasonSeed {

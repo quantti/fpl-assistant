@@ -6,7 +6,7 @@ import java.time.OffsetDateTime;
 import java.util.Map;
 
 import dev.quantti.fplassistant.testsupport.DataAgeClock;
-import dev.quantti.fplassistant.testsupport.TapasSeed;
+import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -51,12 +51,12 @@ class ExpectedStatsToolsIntegrationTest {
 
     @BeforeEach
     void seed() {
-        TapasSeed.ensure(jdbc);
+        SharedStatsSeed.ensure(jdbc);
     }
 
     @Test
     void getPlayerExpectedStatsReturnsAggregatesForAKnownPlayer() {
-        String result = tools.getPlayerExpectedStats(TapasSeed.PLAYER_WEB_NAME, 5);
+        String result = tools.getPlayerExpectedStats(SharedStatsSeed.PLAYER_WEB_NAME, 5);
 
         assertThat(result).contains("Expected stats for");
         assertThat(result).contains("xG");
@@ -81,13 +81,13 @@ class ExpectedStatsToolsIntegrationTest {
                 VALUES (9311, ?, ?, 'Tarik', 'Muharemović', 'Muharemović', 2, 45, 'a', 20, 360,
                         0, 0, 3.0, 1.5)
                 ON CONFLICT (id, season_id) DO NOTHING
-                """, TapasSeed.POPULATED_SEASON_ID, TapasSeed.TEAM_ASHFIELD);
+                """, SharedStatsSeed.POPULATED_SEASON_ID, SharedStatsSeed.TEAM_ASHFIELD);
     }
 
     @AfterEach
     void deleteAccentedPlayer() {
         jdbc.update("DELETE FROM player WHERE season_id = ? AND id = ?",
-                TapasSeed.POPULATED_SEASON_ID, ACCENTED_PLAYER_ID);
+                SharedStatsSeed.POPULATED_SEASON_ID, ACCENTED_PLAYER_ID);
     }
 
     @Test
@@ -111,32 +111,32 @@ class ExpectedStatsToolsIntegrationTest {
     private static final String STORED_ROWS_ONLY =
             " Stored rows only; this does not show that every match through that date is present.";
     private static final String METRIC_REFRESH = "Metric refresh: season "
-            + TapasSeed.POPULATED_SEASON_CODE + ", returned sample;";
+            + SharedStatsSeed.POPULATED_SEASON_CODE + ", returned sample;";
 
     /** The notice and coverage sit after the season banner and before the first numeric row. */
     @Test
     void playerCoverageNamesTheReturnedMatchDatesBeforeTheRows() {
-        String result = tools.getPlayerExpectedStats(TapasSeed.PLAYER_WEB_NAME, 5);
+        String result = tools.getPlayerExpectedStats(SharedStatsSeed.PLAYER_WEB_NAME, 5);
 
-        String coverage = "Stored match coverage: Okafor, season " + TapasSeed.POPULATED_SEASON_CODE
+        String coverage = "Stored match coverage: Okafor, season " + SharedStatsSeed.POPULATED_SEASON_CODE
                 + " (3 returned fixture rows), known match dates from 2025-08-16 15:00 UK (389 days ago)"
                 + " to 2025-08-24 15:00 UK (381 days ago)." + STORED_ROWS_ONLY;
         assertThat(result).containsOnlyOnce(METRIC_REFRESH).containsOnlyOnce(coverage);
-        int banner = result.indexOf("Data source: season " + TapasSeed.POPULATED_SEASON_CODE);
+        int banner = result.indexOf("Data source: season " + SharedStatsSeed.POPULATED_SEASON_CODE);
         assertThat(banner).isZero();
         assertThat(result.indexOf(METRIC_REFRESH)).isGreaterThan(banner)
                 .isLessThan(result.indexOf(coverage));
         assertThat(result.indexOf(coverage)).isLessThan(result.indexOf("Expected stats for"));
         assertThat(result).doesNotContain("Stored-data age").doesNotContain("Data source: season "
-                + TapasSeed.CURRENT_SEASON_CODE);
+                + SharedStatsSeed.CURRENT_SEASON_CODE);
     }
 
     /** Coverage describes the limited window that was returned, not the player's whole history. */
     @Test
     void coverageDescribesOnlyTheReturnedWindow() {
-        String result = tools.getPlayerExpectedStats(TapasSeed.PLAYER_WEB_NAME, 2);
+        String result = tools.getPlayerExpectedStats(SharedStatsSeed.PLAYER_WEB_NAME, 2);
 
-        assertThat(result).contains("Stored match coverage: Okafor, season " + TapasSeed.POPULATED_SEASON_CODE
+        assertThat(result).contains("Stored match coverage: Okafor, season " + SharedStatsSeed.POPULATED_SEASON_CODE
                 + " (2 returned fixture rows), known match dates from 2025-08-23 15:00 UK (382 days ago)"
                 + " to 2025-08-24 15:00 UK (381 days ago).");
         assertThat(result).doesNotContain("2025-08-16");
@@ -144,9 +144,9 @@ class ExpectedStatsToolsIntegrationTest {
 
     @Test
     void noStoredRowsIsNotAZeroDayOldRecord() {
-        String player = tools.getPlayerExpectedStats(TapasSeed.PLAYER_WITHOUT_UNDERLYING, 5);
+        String player = tools.getPlayerExpectedStats(SharedStatsSeed.PLAYER_WITHOUT_UNDERLYING, 5);
         assertThat(player).contains("No fixture-level expected stats yet")
-                .contains("Stored match coverage: Novak, season " + TapasSeed.POPULATED_SEASON_CODE
+                .contains("Stored match coverage: Novak, season " + SharedStatsSeed.POPULATED_SEASON_CODE
                         + ", no stored rows used; age unavailable.")
                 .doesNotContain(" ago");
     }
@@ -190,7 +190,7 @@ class ExpectedStatsToolsIntegrationTest {
         assertThat(result).contains("GW4 vs ASH (H): 90 min, xG 0.05 xA 0.02 (G0 A0) | DefCon actions 12")
                 .contains("GW5 vs ASH (H): 90 min, xG 0.05 xA 0.02 (G0 A0) | DefCon actions 8")
                 .contains("(G0 A0) | DefCon actions n/a")
-                .contains("Defensive contribution, season " + TapasSeed.POPULATED_SEASON_CODE + " (DEF: 2 pts at 10+ CBIT):"
+                .contains("Defensive contribution, season " + SharedStatsSeed.POPULATED_SEASON_CODE + " (DEF: 2 pts at 10+ CBIT):"
                         + " reached in 1 of 2 appearances with a reading (1 of 2 at 60+ min)"
                         + " | 10.00 actions per 90 | 1 appearance without a reading.");
     }
@@ -205,7 +205,7 @@ class ExpectedStatsToolsIntegrationTest {
 
         String result = tools.getPlayerExpectedStats("Lindqvist", 5);
 
-        assertThat(result).contains("Defensive contribution, season " + TapasSeed.POPULATED_SEASON_CODE + " (MID: 2 pts at 12+ CBIRT):"
+        assertThat(result).contains("Defensive contribution, season " + SharedStatsSeed.POPULATED_SEASON_CODE + " (MID: 2 pts at 12+ CBIRT):"
                 + " reached in 1 of 2 appearances with a reading (0 of 1 at 60+ min) | 16.00 actions per 90.");
     }
 
@@ -217,7 +217,7 @@ class ExpectedStatsToolsIntegrationTest {
 
         String result = tools.getPlayerExpectedStats("Lindqvist", 5);
 
-        assertThat(result).contains("Defensive contribution, season " + TapasSeed.POPULATED_SEASON_CODE + " (DEF: 2 pts at 10+ CBIT):"
+        assertThat(result).contains("Defensive contribution, season " + SharedStatsSeed.POPULATED_SEASON_CODE + " (DEF: 2 pts at 10+ CBIT):"
                 + " no reading in this window — unknown, not zero.");
     }
 
@@ -229,7 +229,7 @@ class ExpectedStatsToolsIntegrationTest {
 
         String result = tools.getPlayerExpectedStats("Lindqvist", 5);
 
-        assertThat(result).contains("Defensive contribution, season " + TapasSeed.POPULATED_SEASON_CODE + ": not awarded to goalkeepers.")
+        assertThat(result).contains("Defensive contribution, season " + SharedStatsSeed.POPULATED_SEASON_CODE + ": not awarded to goalkeepers.")
                 .doesNotContain("DefCon actions");
     }
 
@@ -278,7 +278,7 @@ class ExpectedStatsToolsIntegrationTest {
         assertThat(after).contains("DefCon actions 7").contains("reached in 0 of 1 appearance with a reading");
         assertThat(withoutDefcon(after)).isEqualTo(withoutDefcon(before));
         assertThat(after).contains(METRIC_REFRESH)
-                .contains("Stored match coverage: Lindqvist, season " + TapasSeed.POPULATED_SEASON_CODE
+                .contains("Stored match coverage: Lindqvist, season " + SharedStatsSeed.POPULATED_SEASON_CODE
                         + " (1 returned fixture row), known match date 2025-09-01 15:00 UK (373 days ago).")
                 .contains("77 min, xG 0.42");
         String restamped = UkTime.format(((java.sql.Timestamp) row.get("updated_at")).toInstant(), null);

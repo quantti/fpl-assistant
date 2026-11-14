@@ -49,7 +49,7 @@ public class GameweekTools implements FplTool {
             if (captured.isPresent()) {
                 return fromCapture(captured.get());
             }
-            // The Tapas fallback: one instant for every stored-row age in this reply (KAR-9).
+            // The SharedStats fallback: one instant for every stored-row age in this reply (KAR-9).
             Instant asOf = clock.instant();
             SeasonContext season = seasonResolver.resolve();
 
@@ -130,7 +130,7 @@ public class GameweekTools implements FplTool {
                 r.get("most_captained"), r.get("most_transferred_in"));
     }
 
-    /** A Tapas row, dated by its own {@code updated_at}; the capture path adds no such line. */
+    /** A SharedStats row, dated by its own {@code updated_at}; the capture path adds no such line. */
     private String formatGameweek(Map<String, Object> r, SeasonContext season, Instant asOf) {
         return formatCaptured(r, status(r))
                 + DataAge.storedDataAge("gameweek row " + r.get("name") + " (id=" + r.get("id")

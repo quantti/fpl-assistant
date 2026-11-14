@@ -8,7 +8,7 @@ import java.util.Collection;
 import java.util.Collections;
 
 /**
- * Renders the age of stored Tapas rows (KAR-9): recorded write times, the dates of a stored
+ * Renders the age of stored SharedStats rows (KAR-9): recorded write times, the dates of a stored
  * match sample, and the fixed notice that the core-stat refresh time of
  * {@code player_fixture_stats} is unknowable.
  *
@@ -64,7 +64,7 @@ public final class DataAge {
         return UkTime.format(span.oldest(), null) + " to " + UkTime.format(span.newest(), null);
     }
 
-    /** Tapas can insert a placeholder gameweek row locally, so its write time is not an FPL fetch. */
+    /** SharedStats can insert a placeholder gameweek row locally, so its write time is not an FPL fetch. */
     public static final String GAMEWEEK_CAVEAT =
             "A gameweek row can be created locally, so its write time does not certify an FPL refresh.";
 

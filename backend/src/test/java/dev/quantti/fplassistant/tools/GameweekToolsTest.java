@@ -6,7 +6,7 @@ import java.time.ZoneOffset;
 
 import dev.quantti.fplassistant.schedule.ScheduleSource;
 import dev.quantti.fplassistant.testsupport.DataAgeClock;
-import dev.quantti.fplassistant.testsupport.TapasSeed;
+import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -44,8 +44,8 @@ class GameweekToolsTest {
 
     @BeforeEach
     void seed() {
-        TapasSeed.ensure(jdbc);
-        // The tapas path is what this class tests; it is taken only while no schedule capture
+        SharedStatsSeed.ensure(jdbc);
+        // The shared path is what this class tests; it is taken only while no schedule capture
         // exists. This project's own _test table, so clearing it is allowed.
         jdbc.update("DELETE FROM " + scheduleTable);
     }
@@ -80,11 +80,11 @@ class GameweekToolsTest {
     void fallbackToAPreviousSeasonIsLabelledAsHistorical() {
         SeasonContext season = seasonResolver.resolve();
 
-        assertThat(season.code()).isEqualTo(TapasSeed.POPULATED_SEASON_CODE);
+        assertThat(season.code()).isEqualTo(SharedStatsSeed.POPULATED_SEASON_CODE);
         assertThat(season.currentSeason()).isFalse();
         assertThat(season.provenance())
                 .contains("COMPLETED PREVIOUS season")
-                .contains(TapasSeed.CURRENT_SEASON_CODE);
+                .contains(SharedStatsSeed.CURRENT_SEASON_CODE);
     }
 
     /** Each returned row is dated by its own write; the gameweek table has no update trigger. */
@@ -96,10 +96,10 @@ class GameweekToolsTest {
 
         String result = gameweekTools.getGameweekInfo();
 
-        String current = "Stored-data age: gameweek row Gameweek 2 (id=2), season " + TapasSeed.POPULATED_SEASON_CODE
+        String current = "Stored-data age: gameweek row Gameweek 2 (id=2), season " + SharedStatsSeed.POPULATED_SEASON_CODE
                 + ", last recorded write 2026-09-07 13:00 UK (3 days ago)."
                 + " This is a database record time, not a live FPL check.";
-        String next = "Stored-data age: gameweek row Gameweek 3 (id=3), season " + TapasSeed.POPULATED_SEASON_CODE
+        String next = "Stored-data age: gameweek row Gameweek 3 (id=3), season " + SharedStatsSeed.POPULATED_SEASON_CODE
                 + ", last recorded write 2026-07-12 13:00 UK (60 days ago).";
         assertThat(result).containsOnlyOnce(current).containsOnlyOnce(next);
         int separator = result.indexOf("\n---\n");
@@ -120,16 +120,16 @@ class GameweekToolsTest {
         String result = gameweekTools.getGameweekInfo();
 
         assertThat(result).contains("Stored-data age: gameweek row Gameweek 3 (id=3), season "
-                + TapasSeed.POPULATED_SEASON_CODE + ", write time unavailable.");
+                + SharedStatsSeed.POPULATED_SEASON_CODE + ", write time unavailable.");
     }
 
     private void writtenAt(int gameweekId, Instant at) {
         OffsetDateTime value = at == null ? null : OffsetDateTime.ofInstant(at, ZoneOffset.UTC);
         int updated = jdbc.update("UPDATE gameweek SET updated_at = ? WHERE id = ? AND season_id = ?",
-                value, gameweekId, TapasSeed.POPULATED_SEASON_ID);
+                value, gameweekId, SharedStatsSeed.POPULATED_SEASON_ID);
         assertThat(updated).isOne();
         assertThat(jdbc.queryForObject("SELECT updated_at FROM gameweek WHERE id = ? AND season_id = ?",
-                OffsetDateTime.class, gameweekId, TapasSeed.POPULATED_SEASON_ID))
+                OffsetDateTime.class, gameweekId, SharedStatsSeed.POPULATED_SEASON_ID))
                 .as("the seeded write time must stick").isEqualTo(value);
     }
 }

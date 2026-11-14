@@ -16,7 +16,7 @@ import org.springframework.test.context.ActiveProfiles;
 
 import dev.quantti.fplassistant.historical.VaastavSource;
 import dev.quantti.fplassistant.testsupport.FictitiousTestData;
-import dev.quantti.fplassistant.testsupport.TapasSeed;
+import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
 import dev.quantti.fplassistant.tools.SeasonContext;
 import dev.quantti.fplassistant.tools.SeasonResolver;
 
@@ -33,7 +33,7 @@ import static org.mockito.Mockito.when;
  * {@link FictitiousTestData} certifies cannot collide with real data:
  *
  * <ul>
- *   <li>{@link #FICTITIOUS_SEASON_ID} — no tapas {@code player} rows, so only the vaastav writer
+ *   <li>{@link #FICTITIOUS_SEASON_ID} — no shared {@code player} rows, so only the vaastav writer
  *       produces anything. Used for the vaastav-path assertions.</li>
  *   <li>{@link #populatedSeasonId()} — a real season id, so the snapshot writer sees real
  *       players and actually writes. The rows still land under the fictitious season label, so
@@ -45,7 +45,7 @@ import static org.mockito.Mockito.when;
 class PriceSyncServiceIntegrationTest {
 
     private static final String TEST_SEASON = "test-price";
-    private static final int FICTITIOUS_SEASON_ID = 990027; // no tapas player rows for this id
+    private static final int FICTITIOUS_SEASON_ID = 990027; // no shared player rows for this id
 
     static {
         FictitiousTestData.assertSafeSeason(TEST_SEASON);
@@ -62,9 +62,9 @@ class PriceSyncServiceIntegrationTest {
         assertThat(tableName)
                 .as("price sync tests must be pinned to the isolated table; check @ActiveProfiles(\"test\")")
                 .endsWith("_test");
-        // The snapshot writer copies from the tapas player table, so the seeded league is what
+        // The snapshot writer copies from the shared player table, so the seeded league is what
         // populatedSeasonId() below resolves to.
-        TapasSeed.ensure(jdbc);
+        SharedStatsSeed.ensure(jdbc);
         deleteTestRows();
     }
 
@@ -121,7 +121,7 @@ class PriceSyncServiceIntegrationTest {
     @Test
     void writesVaastavRowsWhenTheResolvedSeasonIsCurrent() {
         int written = serviceWith(true, FICTITIOUS_SEASON_ID, vaastavReturning(MERGED_GW_CSV)).sync();
-        // snapshot writes 0 (no tapas players for the fictitious season id), vaastav writes 3.
+        // snapshot writes 0 (no shared players for the fictitious season id), vaastav writes 3.
         assertThat(written).isEqualTo(3);
 
         List<Map<String, Object>> rows = jdbc.queryForList(
@@ -132,7 +132,7 @@ class PriceSyncServiceIntegrationTest {
         assertThat(rows.getFirst().get("element_id")).isEqualTo(9101);
         assertThat(rows.getFirst().get("price")).isEqualTo(55);
         assertThat(rows.getFirst().get("source")).isEqualTo("vaastav");
-        // name falls back to the CSV's name column because the element id is not in the tapas player table
+        // name falls back to the CSV's name column because the element id is not in the shared player table
         assertThat(jdbc.queryForObject("SELECT player_name FROM " + tableName
                         + " WHERE season = ? AND element_id = 9101 AND gameweek = 1",
                 String.class, TEST_SEASON)).isEqualTo("Test Player A");
@@ -209,7 +209,7 @@ class PriceSyncServiceIntegrationTest {
     }
 
     @Test
-    void snapshotCopiesTheCurrentPriceAndDenormalisedNameFromTheTapasPlayerTable() {
+    void snapshotCopiesTheCurrentPriceAndDenormalisedNameFromTheSharedStatsPlayerTable() {
         int seasonId = populatedSeasonId();
         Map<String, Object> player = jdbc.queryForMap("""
                 SELECT id, now_cost, first_name, second_name FROM player

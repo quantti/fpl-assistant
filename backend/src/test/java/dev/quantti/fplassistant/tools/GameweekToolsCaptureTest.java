@@ -14,7 +14,7 @@ import org.springframework.test.context.ActiveProfiles;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/** {@link GameweekTools} with a schedule capture present: it wins over tapas, and status is derived from the clock. */
+/** {@link GameweekTools} with a schedule capture present: it wins over shared, and status is derived from the clock. */
 @SpringBootTest
 @ActiveProfiles("test")
 class GameweekToolsCaptureTest {
@@ -58,7 +58,7 @@ class GameweekToolsCaptureTest {
         assertThat(result).contains("Gameweek 3 (id=3)").contains("Status: NEXT");
         assertThat(result).doesNotContain("Gameweek 1 (id=1)");
         assertThat(result).doesNotContain("Data source: season");
-        // FPL's own capture, not a Tapas row: no stored-row age is added here.
+        // FPL's own capture, not a SharedStats row: no stored-row age is added here.
         assertThat(result).doesNotContain("Stored-data age").doesNotContain(DataAge.GAMEWEEK_CAVEAT);
     }
 

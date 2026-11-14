@@ -9,7 +9,7 @@ import java.util.regex.Pattern;
 
 import dev.quantti.fplassistant.schedule.ScheduleSource;
 import dev.quantti.fplassistant.testsupport.DataAgeClock;
-import dev.quantti.fplassistant.testsupport.TapasSeed;
+import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -27,7 +27,7 @@ class FixtureToolsTest {
     /** An hour before {@link #AS_OF}: every row nobody should be reading is written this recently. */
     static final Instant FRESH = Instant.parse("2026-09-10T11:00:00Z");
 
-    private static final int SEASON = TapasSeed.POPULATED_SEASON_ID;
+    private static final int SEASON = SharedStatsSeed.POPULATED_SEASON_ID;
 
     /** Built with the fixed clock rather than autowired; see {@link DataAgeClock}. */
     FixtureTools fixtureTools;
@@ -54,8 +54,8 @@ class FixtureToolsTest {
 
     @BeforeEach
     void seed() {
-        TapasSeed.ensure(jdbc);
-        // The tapas path is what this class tests; it is taken only while no schedule capture
+        SharedStatsSeed.ensure(jdbc);
+        // The shared path is what this class tests; it is taken only while no schedule capture
         // exists. This project's own _test tables, so clearing them is allowed.
         jdbc.update("DELETE FROM " + scheduleFixtureTable);
         jdbc.update("DELETE FROM " + scheduleGameweekTable);
@@ -63,16 +63,16 @@ class FixtureToolsTest {
 
     @Test
     void getUpcomingFixturesForKnownTeam() {
-        String result = fixtureTools.getUpcomingFixtures(TapasSeed.ASHFIELD, 5);
+        String result = fixtureTools.getUpcomingFixtures(SharedStatsSeed.ASHFIELD, 5);
 
-        assertThat(result).contains(TapasSeed.ASHFIELD);
+        assertThat(result).contains(SharedStatsSeed.ASHFIELD);
         assertThat(result).doesNotContain("not found");
         assertThat(result).containsPattern("GW\\d+:");
     }
 
     @Test
     void everyAnswerNamesTheSeasonItCameFrom() {
-        String result = fixtureTools.getUpcomingFixtures(TapasSeed.ASHFIELD, 5);
+        String result = fixtureTools.getUpcomingFixtures(SharedStatsSeed.ASHFIELD, 5);
         SeasonContext season = seasonResolver.resolve();
 
         assertThat(result).startsWith("Data source: season " + season.code());
@@ -100,7 +100,7 @@ class FixtureToolsTest {
      */
     @Test
     void nextNBoundsDistinctGameweeksNotFixtureRows() {
-        String result = fixtureTools.getUpcomingFixtures(TapasSeed.ASHFIELD, 1);
+        String result = fixtureTools.getUpcomingFixtures(SharedStatsSeed.ASHFIELD, 1);
 
         // Guard against a vacuous pass: an empty result would also satisfy the size bound.
         assertThat(result).doesNotContain("not found");
@@ -108,7 +108,7 @@ class FixtureToolsTest {
         assertThat(gameweeksListed(result))
                 .as("a double gameweek is two fixture lines, but still one gameweek")
                 .hasSize(2)
-                .containsOnly(String.valueOf(TapasSeed.DOUBLE_GAMEWEEK));
+                .containsOnly(String.valueOf(SharedStatsSeed.DOUBLE_GAMEWEEK));
     }
 
     /**
@@ -133,18 +133,18 @@ class FixtureToolsTest {
                 INSERT INTO fixture (id, season_id, gameweek, code, team_h, team_a, team_h_difficulty,
                                      team_a_difficulty, kickoff_time, started, finished, updated_at)
                 VALUES (9195, ?, 3, 9195, 9001, 9004, 2, 4, NULL, false, false, ?)
-                """, TapasSeed.CURRENT_SEASON_ID, utc(FRESH));
+                """, SharedStatsSeed.CURRENT_SEASON_ID, utc(FRESH));
 
-        String result = fixtureTools.getUpcomingFixtures(TapasSeed.ASHFIELD, 2);
+        String result = fixtureTools.getUpcomingFixtures(SharedStatsSeed.ASHFIELD, 2);
 
         assertThat(gameweeksListed(result)).containsExactly("2", "2", "3");
         assertThat(result).contains("GW3: vs NMU (H) | FDR: 2 | 2027-08-21 15:00 UK");
         assertThat(result).containsOnlyOnce("Stored-data age: starting-gameweek selection (gameweek row id=2),"
-                + " season " + TapasSeed.POPULATED_SEASON_CODE
+                + " season " + SharedStatsSeed.POPULATED_SEASON_CODE
                 + ", last recorded write 2026-07-12 13:00 UK (60 days ago)."
                 + " This is a database record time, not a live FPL check.");
         assertThat(result).containsOnlyOnce("Stored-data age: fixture records listed for Ashfield Rovers,"
-                + " season " + TapasSeed.POPULATED_SEASON_CODE
+                + " season " + SharedStatsSeed.POPULATED_SEASON_CODE
                 + ", record writes from 2026-08-01 13:00 UK (40 days ago) to 2026-08-21 13:00 UK (20 days ago)."
                 + " This is a database record time, not a live FPL check.");
         assertThat(result).doesNotContain("future-dated");
@@ -163,12 +163,12 @@ class FixtureToolsTest {
         fixtureWrittenAt(9105, null);
         postponed(SEASON, 9190, Instant.parse("2026-06-02T12:00:00Z"));
 
-        String result = fixtureTools.getUpcomingFixtures(TapasSeed.ASHFIELD, 2);
+        String result = fixtureTools.getUpcomingFixtures(SharedStatsSeed.ASHFIELD, 2);
 
         assertThat(gameweeksListed(result)).containsExactly("2", "2", "3");
         assertThat(result).contains("Postponed, no rescheduled gameweek yet:\nPostponed: vs SEL (H) | FDR: 2 | kickoff TBD");
         assertThat(result).containsOnlyOnce("Stored-data age: fixture records listed for Ashfield Rovers,"
-                + " season " + TapasSeed.POPULATED_SEASON_CODE
+                + " season " + SharedStatsSeed.POPULATED_SEASON_CODE
                 + ", record writes from 2026-06-02 13:00 UK (100 days ago) to 2026-08-11 13:00 UK (30 days ago);"
                 + " 1 of 4 fixture records has no write timestamp."
                 + " This is a database record time, not a live FPL check.");
@@ -183,19 +183,19 @@ class FixtureToolsTest {
         gameweekWrittenAt(1, Instant.parse("2026-05-03T12:00:00Z"));
         jdbc.update("UPDATE gameweek SET is_current = false WHERE season_id = ? AND id = 2", SEASON);
 
-        String next = fixtureTools.getUpcomingFixtures(TapasSeed.ASHFIELD, 1);
+        String next = fixtureTools.getUpcomingFixtures(SharedStatsSeed.ASHFIELD, 1);
 
         assertThat(gameweeksListed(next)).containsExactly("3");
         assertThat(next).contains("Stored-data age: starting-gameweek selection (gameweek row id=3), season "
-                + TapasSeed.POPULATED_SEASON_CODE + ", last recorded write 2026-08-31 13:00 UK (10 days ago).");
+                + SharedStatsSeed.POPULATED_SEASON_CODE + ", last recorded write 2026-08-31 13:00 UK (10 days ago).");
 
         jdbc.update("UPDATE gameweek SET is_next = false WHERE season_id = ? AND id = 3", SEASON);
 
-        String minimum = fixtureTools.getUpcomingFixtures(TapasSeed.ASHFIELD, 1);
+        String minimum = fixtureTools.getUpcomingFixtures(SharedStatsSeed.ASHFIELD, 1);
 
         assertThat(gameweeksListed(minimum)).containsExactly("1");
         assertThat(minimum).contains("Stored-data age: starting-gameweek selection (gameweek row id=1), season "
-                + TapasSeed.POPULATED_SEASON_CODE + ", last recorded write 2026-05-03 13:00 UK (130 days ago).");
+                + SharedStatsSeed.POPULATED_SEASON_CODE + ", last recorded write 2026-05-03 13:00 UK (130 days ago).");
     }
 
     /** No gameweek row at all: the selection has no age, and none is borrowed from the season or a fixture. */
@@ -204,16 +204,16 @@ class FixtureToolsTest {
     void withoutAGameweekTheSelectionHasNoAge() {
         jdbc.update("DELETE FROM gameweek WHERE season_id = ?", SEASON);
         otherSeasonClubs();
-        postponed(TapasSeed.CURRENT_SEASON_ID, 9191, Instant.parse("2026-08-01T12:00:00Z"));
+        postponed(SharedStatsSeed.CURRENT_SEASON_ID, 9191, Instant.parse("2026-08-01T12:00:00Z"));
 
-        String result = fixtureTools.getUpcomingFixtures(TapasSeed.ASHFIELD, 5);
+        String result = fixtureTools.getUpcomingFixtures(SharedStatsSeed.ASHFIELD, 5);
 
-        assertThat(result).startsWith("Data source: season " + TapasSeed.CURRENT_SEASON_CODE);
+        assertThat(result).startsWith("Data source: season " + SharedStatsSeed.CURRENT_SEASON_CODE);
         assertThat(result).contains("Postponed: vs SEL (H) | FDR: 2 | kickoff TBD");
         assertThat(result).containsOnlyOnce("Stored-data age: starting-gameweek selection, season "
-                + TapasSeed.CURRENT_SEASON_CODE + ", no stored rows used; age unavailable.");
+                + SharedStatsSeed.CURRENT_SEASON_CODE + ", no stored rows used; age unavailable.");
         assertThat(result).containsOnlyOnce("Stored-data age: fixture records listed for Ashfield Rovers, season "
-                + TapasSeed.CURRENT_SEASON_CODE + ", last recorded write 2026-08-01 13:00 UK (40 days ago).");
+                + SharedStatsSeed.CURRENT_SEASON_CODE + ", last recorded write 2026-08-01 13:00 UK (40 days ago).");
         assertThat(result).doesNotContain(DataAge.GAMEWEEK_CAVEAT);
     }
 
@@ -224,13 +224,13 @@ class FixtureToolsTest {
         everyRowWrittenFresh();
         gameweekWrittenAt(2, Instant.parse("2026-07-12T12:00:00Z"));
 
-        String result = fixtureTools.getUpcomingFixtures(TapasSeed.TEAM_WITHOUT_FIXTURES, 5);
+        String result = fixtureTools.getUpcomingFixtures(SharedStatsSeed.TEAM_WITHOUT_FIXTURES, 5);
 
         assertThat(result).contains("No upcoming fixtures found for Woodbridge Athletic");
         assertThat(result).containsOnlyOnce("Stored-data age: starting-gameweek selection (gameweek row id=2), season "
-                + TapasSeed.POPULATED_SEASON_CODE + ", last recorded write 2026-07-12 13:00 UK (60 days ago).");
+                + SharedStatsSeed.POPULATED_SEASON_CODE + ", last recorded write 2026-07-12 13:00 UK (60 days ago).");
         assertThat(result).containsOnlyOnce("Stored-data age: fixture records listed for Woodbridge Athletic, season "
-                + TapasSeed.POPULATED_SEASON_CODE + ", no stored rows used; age unavailable.");
+                + SharedStatsSeed.POPULATED_SEASON_CODE + ", no stored rows used; age unavailable.");
     }
 
     private static List<String> gameweeksListed(String result) {
@@ -277,7 +277,7 @@ class FixtureToolsTest {
                     (9001, ?, 9001, 'Ashfield Rovers', 'ASH'),
                     (9004, ?, 9004, 'Selby Town', 'SEL')
                 ON CONFLICT (id, season_id) DO NOTHING
-                """, TapasSeed.CURRENT_SEASON_ID, TapasSeed.CURRENT_SEASON_ID);
+                """, SharedStatsSeed.CURRENT_SEASON_ID, SharedStatsSeed.CURRENT_SEASON_ID);
     }
 
     private static OffsetDateTime utc(Instant at) {

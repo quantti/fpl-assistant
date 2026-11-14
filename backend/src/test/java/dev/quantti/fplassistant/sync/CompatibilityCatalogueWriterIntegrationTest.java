@@ -25,7 +25,7 @@ import dev.quantti.fplassistant.sync.OwnedSyncStore.Lease;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.RuntimeFence;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.SourceRead;
 import dev.quantti.fplassistant.sync.OwnedSyncStore.Validation;
-import dev.quantti.fplassistant.testsupport.TapasSeed;
+import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -75,11 +75,11 @@ class CompatibilityCatalogueWriterIntegrationTest {
 
     static void initialize(String url, String user, String password, Supplier<JdbcTemplate> jdbcSupplier)
             throws Exception {
-        jdbc = TapasSeed.openDisposableTestJdbc(url, user, password, jdbcSupplier);
-        TapasSeed.ensure(jdbc);
+        jdbc = SharedStatsSeed.openDisposableTestJdbc(url, user, password, jdbcSupplier);
+        SharedStatsSeed.ensure(jdbc);
         disposableDatabaseValidated = true;
-        TapasSeed.ensureOwnedSyncCaptureSeason(jdbc);
-        TapasSeed.ensureOwnedSyncFixture(jdbc);
+        SharedStatsSeed.ensureOwnedSyncCaptureSeason(jdbc);
+        SharedStatsSeed.ensureOwnedSyncFixture(jdbc);
         originalCurrentSeasons = jdbc.query("SELECT id FROM season WHERE is_current=true ORDER BY id",
                 (rs, row) -> rs.getInt(1));
         seasonBaselineCaptured = true;
@@ -96,7 +96,7 @@ class CompatibilityCatalogueWriterIntegrationTest {
     @BeforeEach
     void setUp() {
         cleanRows();
-        TapasSeed.setCurrentSeason(jdbc, SEASON.id());
+        SharedStatsSeed.setCurrentSeason(jdbc, SEASON.id());
         seasonFlagsChanged = true;
         clock = new MutableClock(BASE);
         runtimeFence = new PlannerRuntimeRepository(jdbc, tx, clock, TABLES)
@@ -351,7 +351,7 @@ class CompatibilityCatalogueWriterIntegrationTest {
         Documents valid = documents(bootstrap, fixtures, BASE.plusSeconds(16));
         Lease wrongSeasonLease = newLease(BASE.plusSeconds(15));
         stage(wrongSeasonLease, valid);
-        TapasSeed.setCurrentSeason(jdbc, originalCurrentSeasons.getFirst());
+        SharedStatsSeed.setCurrentSeason(jdbc, originalCurrentSeasons.getFirst());
         assertThatThrownBy(() -> writer.publish(wrongSeasonLease, SEASON, valid.bootstrap(), valid.fixtures()))
                 .isInstanceOf(RuntimeException.class).hasMessageContaining("playing");
         assertCoreRowsEmpty();

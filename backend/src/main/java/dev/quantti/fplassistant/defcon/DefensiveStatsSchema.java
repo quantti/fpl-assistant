@@ -12,23 +12,23 @@ import jakarta.annotation.PostConstruct;
 /**
  * Adds the defensive-contribution columns to {@code player_fixture_stats}.
  *
- * <p><b>This is the one place the project alters a tapas table, on the owner's explicit
+ * <p><b>This is the one place the project alters a shared table, on the owner's explicit
  * instruction (2026-08-26), and the rule in {@code AGENTS.md} otherwise stands.</b> The columns
  * cannot live anywhere else without being worse: defensive contribution is per player per
  * fixture, which is exactly this table's grain, and a parallel {@code fpl_}-prefixed table would
- * duplicate the key, need its own join in every query, and drift the moment tapas re-syncs a
+ * duplicate the key, need its own join in every query, and drift the moment shared re-syncs a
  * gameweek.
  *
  * <p><b>Why the columns are missing in the first place.</b> FPL introduced defensive
  * contribution for 2025/26 — 2 points for a defender reaching 10 clearances, blocks,
  * interceptions and tackles in a match, or a midfielder or forward reaching 12 including
- * recoveries. Tapas' schema predates the field, and its sync writes a named column list, so the
+ * recoveries. SharedStats' schema predates the field, and its sync writes a named column list, so the
  * values have been arriving in the {@code element-summary} payload and being dropped ever since.
  *
- * <p><b>Safe against tapas' own writes.</b> Every column is nullable with no default, and tapas
+ * <p><b>Safe against the upstream project’s own writes.</b> Every column is nullable with no default, and shared
  * upserts a named column list; a column it does not know about is neither written nor cleared by
  * it. The reverse also holds — {@link DefensiveStatsSyncService} only ever UPDATEs these four
- * columns, so it cannot disturb a value tapas owns.
+ * columns, so it cannot disturb a value shared owns.
  *
  * <p>Nullable rather than {@code DEFAULT 0} deliberately. Zero is a real value here — a striker
  * who made no defensive actions — and a default would make "not yet fetched" indistinguishable

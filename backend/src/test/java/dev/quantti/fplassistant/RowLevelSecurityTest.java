@@ -45,11 +45,11 @@ class RowLevelSecurityTest {
      * Derived, not listed. A hand-maintained list is green precisely for the table nobody
      * remembered to add — which is how `fpl_embeddings` (created by Spring AI's PgVectorStore,
      * not by any DDL in this project) went uncovered while the test claimed to cover everything.
-     * Anything in `public` that the tapas schema dump does not define belongs to this project.
+     * Anything in `public` that the shared schema dump does not define belongs to this project.
      */
     @Test
     void everyTableThisProjectCreatesHasRowLevelSecurityEnabled() throws Exception {
-        Set<String> tapasTables = tablesDefinedBy("db/tapas-schema.sql");
+        Set<String> sharedTables = tablesDefinedBy("db/shared-stats-schema.sql");
 
         // relkind covers ordinary, partitioned and materialised tables. Views cannot carry RLS
         // at all — they run with their owner's privileges and walk past it, which is why
@@ -62,7 +62,7 @@ class RowLevelSecurityTest {
                 ORDER BY c.relname
                 """, String.class)
                 .stream()
-                .filter(table -> !tapasTables.contains(table))
+                .filter(table -> !sharedTables.contains(table))
                 .toList();
 
         assertThat(unprotected)
@@ -83,7 +83,7 @@ class RowLevelSecurityTest {
                   AND coalesce(array_to_string(c.reloptions, ','), '') NOT LIKE '%security_invoker=on%'
                 ORDER BY c.relname
                 """, String.class)
-                .stream().filter(view -> !tapasTables.contains(view)).toList())
+                .stream().filter(view -> !sharedTables.contains(view)).toList())
                 .as("a view runs with its owner's privileges and walks straight past RLS")
                 .isEmpty();
     }
@@ -96,7 +96,7 @@ class RowLevelSecurityTest {
         while (matcher.find()) {
             tables.add(matcher.group(1));
         }
-        assertThat(tables).as("the tapas schema dump should define the tables we do not own")
+        assertThat(tables).as("the shared schema dump should define the tables we do not own")
                 .isNotEmpty();
         return tables;
     }

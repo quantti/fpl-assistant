@@ -14,11 +14,11 @@ import org.springframework.stereotype.Component;
  * {@code HistoricalSchema} and {@code PriceSchema} use, since this project has no migration tool.
  *
  * <p><b>Every table here is {@code fpl_}-prefixed.</b> The shared database already carries
- * {@code tapas-fpl-app}'s own {@code app_user} and {@code manager}, so a
+ * {@code upstream-stats-app}'s own {@code app_user} and {@code manager}, so a
  * {@code CREATE TABLE IF NOT EXISTS app_user} would find that table, do nothing, and then write
  * our rows into it — the one failure mode "IF NOT EXISTS everywhere" cannot protect against.
  * That argument does not depend on the name: {@code conversation}, {@code message} and
- * {@code usage_event} are just as available for tapas to claim, and our
+ * {@code usage_event} are just as available for shared to claim, and our
  * {@code ALTER TABLE ... ENABLE ROW LEVEL SECURITY} would then quietly close a table they read
  * through PostgREST. The prefix is what the existing {@code fpl_embeddings},
  * {@code fpl_daily_price} and {@code fpl_player_price} already do.

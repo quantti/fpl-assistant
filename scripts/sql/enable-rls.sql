@@ -7,7 +7,7 @@
 -- /rest/v1). The key is public by design — Phase 5a Task 6 ships it in the frontend bundle —
 -- so this has to be closed before that lands.
 --
--- Neither application loses anything: fpl-assistant and tapas-fpl-app both connect as `postgres`,
+-- Neither application loses anything: fpl-assistant and upstream-stats-app both connect as `postgres`,
 -- which has rolbypassrls = true. RLS with no policies is deny-all for the PostgREST roles and a
 -- no-op for us.
 --
@@ -40,7 +40,7 @@ END $$;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON TABLES FROM anon, authenticated;
 
 -- 3. chip_usage was the one table that already had RLS, carrying a policy that granted PUBLIC
---    — so, the anon key — an unrestricted read of all 75 rows. Nothing reads it that way: tapas'
+--    — so, the anon key — an unrestricted read of all 75 rows. Nothing reads it that way: shared'
 --    frontend talks to its own backend, and that backend connects to Postgres directly. Removed
 --    on the owner's decision 2026-08-19: an unexplained hole in an otherwise closed wall reads
 --    as an oversight a year from now. Reinstating it is one CREATE POLICY.

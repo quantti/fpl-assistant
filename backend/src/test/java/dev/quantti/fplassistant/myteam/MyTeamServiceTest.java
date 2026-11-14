@@ -20,7 +20,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.web.client.RestClient;
 
-import dev.quantti.fplassistant.testsupport.TapasSeed;
+import dev.quantti.fplassistant.testsupport.SharedStatsSeed;
 import dev.quantti.fplassistant.tools.DataAge;
 import dev.quantti.fplassistant.user.UserProfileService;
 
@@ -68,7 +68,7 @@ class MyTeamServiceTest {
     /** Appended to this gameweek's picks array; empty by default. */
     private String extraPick = "";
 
-    /** Tapas club ids for the stub's LIV and NFO, which Tapas numbers independently of FPL. */
+    /** SharedStats club ids for the stub's LIV and NFO, which SharedStats numbers independently of FPL. */
     private static final int CLUB_LIV = 9111;
     private static final int CLUB_NFO = 9112;
 
@@ -107,13 +107,13 @@ class MyTeamServiceTest {
     void stopStubAndClearProfile() {
         server.stop(0);
         jdbc.update("DELETE FROM " + profileTable + " WHERE user_id = ?", USER);
-        int season = TapasSeed.CURRENT_SEASON_ID;
+        int season = SharedStatsSeed.CURRENT_SEASON_ID;
         jdbc.update("DELETE FROM fixture WHERE season_id = ?", season);
         jdbc.update("DELETE FROM player WHERE season_id = ?", season);
         jdbc.update("DELETE FROM gameweek WHERE season_id = ?", season);
         jdbc.update("DELETE FROM team WHERE season_id = ?", season);
         jdbc.update("DELETE FROM player WHERE season_id = ? AND id = 302",
-                TapasSeed.POPULATED_SEASON_ID);
+                SharedStatsSeed.POPULATED_SEASON_ID);
     }
 
     @Test
@@ -313,14 +313,14 @@ class MyTeamServiceTest {
      */
     @Test
     void aSeasonTheDatabaseHasNotLoadedYetLeavesOutTheDeeperNumbers() {
-        TapasSeed.ensure(jdbc);
+        SharedStatsSeed.ensure(jdbc);
         jdbc.update("""
                 INSERT INTO player (id, season_id, team_id, first_name, second_name, web_name,
                                     element_type, now_cost, status, total_points,
                                     expected_goals, expected_assists, updated_at)
                 VALUES (302, ?, ?, 'Old', 'Namesake', 'Namesake', 3, 80, 'a', 90, 9.99, 8.88,
                         now() - interval '400 days')
-                """, TapasSeed.POPULATED_SEASON_ID, TapasSeed.TEAM_ASHFIELD);
+                """, SharedStatsSeed.POPULATED_SEASON_ID, SharedStatsSeed.TEAM_ASHFIELD);
         storeTeamId(ENTRY);
         MyTeamService service = service();
 
@@ -359,7 +359,7 @@ class MyTeamServiceTest {
                 .doesNotContain("7.77")
                 .contains("xG/xA and next-5 FDR are stored database values")
                 .contains("Stored-data age: starting-gameweek selection for the FDR run"
-                        + " (gameweek row id=1), season " + TapasSeed.CURRENT_SEASON_CODE
+                        + " (gameweek row id=1), season " + SharedStatsSeed.CURRENT_SEASON_CODE
                         + ", last recorded write ")
                 .contains("(30 days ago). This is a database record time")
                 .contains(DataAge.GAMEWEEK_CAVEAT)
@@ -395,8 +395,8 @@ class MyTeamServiceTest {
 
     /** The current season, loaded, with element ids matching the stub's picks. */
     private void fillCurrentSeason() {
-        TapasSeed.ensure(jdbc);
-        int season = TapasSeed.CURRENT_SEASON_ID;
+        SharedStatsSeed.ensure(jdbc);
+        int season = SharedStatsSeed.CURRENT_SEASON_ID;
         jdbc.update("""
                 INSERT INTO team (id, season_id, code, name, short_name, strength) VALUES
                     (?, ?, 9111, 'Liverpool', 'LIV', 5),
