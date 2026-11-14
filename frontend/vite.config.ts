@@ -18,6 +18,9 @@ export default defineConfig(({ mode }) => {
   // bundle that throws on first paint — a blank page nobody sees until it is deployed. Failing
   // here makes it a build error instead, where the message can say what to do.
   const env = loadEnv(mode, process.cwd(), 'VITE_');
+  if (!env.VITE_SUPABASE_URL) {
+    throw new Error('VITE_SUPABASE_URL is not set. Configure your own Supabase project URL.');
+  }
   if (!env.VITE_SUPABASE_ANON_KEY) {
     throw new Error(
       'VITE_SUPABASE_ANON_KEY is not set. Copy frontend/.env.example to frontend/.env.local for' +

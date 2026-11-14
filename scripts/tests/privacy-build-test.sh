@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Check that production builds cannot silently omit the privacy contact.
+# Check that production builds cannot omit the operator's project or privacy contact.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 LOG="$(mktemp)"
@@ -11,14 +11,18 @@ export VITE_PRIVACY_CONTROLLER_NAME='Example Operator'
 export VITE_PRIVACY_CONTACT_EMAIL=privacy@example.com
 
 expect_refusal() {
+    local expected="$1"
+    shift
     if "$@" >"$LOG" 2>&1; then
-        echo 'Expected a missing/invalid privacy configuration to refuse the build.' >&2
+        echo 'Expected a missing/invalid build configuration to refuse the build.' >&2
         exit 1
     fi
-    grep -q 'Set VITE_PRIVACY_CONTROLLER_NAME and a valid VITE_PRIVACY_CONTACT_EMAIL' "$LOG"
+    grep -q "$expected" "$LOG"
 }
-expect_refusal env -u VITE_PRIVACY_CONTROLLER_NAME npm exec -- vite build
-expect_refusal env -u VITE_PRIVACY_CONTACT_EMAIL npm exec -- vite build
-expect_refusal env VITE_PRIVACY_CONTACT_EMAIL=invalid npm exec -- vite build
+privacy_error='Set VITE_PRIVACY_CONTROLLER_NAME and a valid VITE_PRIVACY_CONTACT_EMAIL'
+expect_refusal 'VITE_SUPABASE_URL is not set' env -u VITE_SUPABASE_URL npm exec -- vite build
+expect_refusal "$privacy_error" env -u VITE_PRIVACY_CONTROLLER_NAME npm exec -- vite build
+expect_refusal "$privacy_error" env -u VITE_PRIVACY_CONTACT_EMAIL npm exec -- vite build
+expect_refusal "$privacy_error" env VITE_PRIVACY_CONTACT_EMAIL=invalid npm exec -- vite build
 npm run build >"$LOG" 2>&1
-echo 'Privacy build checks: 3 refusals and a valid production build passed.'
+echo 'Public build checks: 4 refusals and a valid production build passed.'
