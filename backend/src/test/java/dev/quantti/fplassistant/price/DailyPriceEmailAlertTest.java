@@ -88,7 +88,7 @@ class DailyPriceEmailAlertTest {
         assertThat(request.contentType()).startsWith("application/json");
         var body = JsonMapper.builder().build().readTree(request.body());
         assertThat(body.get("from").asText()).isEqualTo("FPL Sidekick <noreply@fpl-sidekick.com>");
-        assertThat(body.get("to").get(0).asText()).isEqualTo("quantti@users.noreply.github.com");
+        assertThat(body.get("to").get(0).asText()).isEqualTo("operator@example.com");
         assertThat(body.get("subject").asText()).contains("FPL Sidekick", "2026-10-13");
         assertThat(body.get("text").asText()).contains("2026-10-12", "2026-10-13", "Europe/London")
                 .doesNotContain("--sync-prices");
@@ -108,7 +108,7 @@ class DailyPriceEmailAlertTest {
         sender(false, "test-key", Duration.ofSeconds(2)).send(null, expected);
         assertThat(messages()).isEmpty();
         sender(true, " ", Duration.ofSeconds(2)).send(null, expected);
-        new DailyPriceEmailAlert(RestClient.builder(), true, "test-key", "", "quantti@users.noreply.github.com",
+        new DailyPriceEmailAlert(RestClient.builder(), true, "test-key", "", "operator@example.com",
                 baseUrl(), Duration.ofSeconds(2)).send(null, expected);
         new DailyPriceEmailAlert(RestClient.builder(), true, "test-key", "noreply@fpl-sidekick.com", " ",
                 baseUrl(), Duration.ofSeconds(2)).send(null, expected);
@@ -165,7 +165,7 @@ class DailyPriceEmailAlertTest {
 
     private DailyPriceEmailAlert sender(boolean enabled, String key, Duration timeout) {
         return new DailyPriceEmailAlert(RestClient.builder(), enabled, key,
-                "FPL Sidekick <noreply@fpl-sidekick.com>", "quantti@users.noreply.github.com", baseUrl(), timeout);
+                "FPL Sidekick <noreply@fpl-sidekick.com>", "operator@example.com", baseUrl(), timeout);
     }
 
     private String baseUrl() {

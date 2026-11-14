@@ -267,7 +267,7 @@ fpl:
       enabled: ${DAILY_PRICE_ALERT_EMAIL_ENABLED:false}
       api-key: ${DAILY_PRICE_ALERT_RESEND_API_KEY:}
       from: "${DAILY_PRICE_ALERT_EMAIL_FROM:FPL Sidekick <noreply@fpl-sidekick.com>}"
-      to: ${DAILY_PRICE_ALERT_EMAIL_TO:quantti@users.noreply.github.com}
+      to: ${DAILY_PRICE_ALERT_EMAIL_TO:}
     # Enabled 2026-08-18. Depends on the Fly machine staying up (min_machines_running = 1,
     # auto_stop_machines = false in fly.toml): a stop-when-idle machine has nothing running at
     # 02:00 to fire the cron, so reverting that setting stops the price capture — loudly now,

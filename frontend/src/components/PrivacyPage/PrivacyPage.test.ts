@@ -2,7 +2,7 @@
 
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { afterEach, beforeAll, expect, it } from 'vitest';
+import { afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import PrivacyPage from './PrivacyPage';
 
 let root: ReturnType<typeof createRoot> | undefined;
@@ -11,7 +11,13 @@ beforeAll(() => {
   Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true);
 });
 
+beforeEach(() => {
+  vi.stubEnv('VITE_PRIVACY_CONTROLLER_NAME', 'Example Operator');
+  vi.stubEnv('VITE_PRIVACY_CONTACT_EMAIL', 'privacy@example.com');
+});
+
 afterEach(() => {
+  vi.unstubAllEnvs();
   if (root) act(() => root!.unmount());
   root = undefined;
   document.body.replaceChildren();
@@ -29,8 +35,8 @@ it('states the controller, purposes, storage and processing boundaries accuratel
   const page = renderPage();
   const text = page.textContent ?? '';
 
-  expect(text).toContain('quantti');
-  expect(page.querySelector('a[href="mailto:quantti@users.noreply.github.com"]')).not.toBeNull();
+  expect(text).toContain('Example Operator');
+  expect(page.querySelector('a[href="mailto:privacy@example.com"]')).not.toBeNull();
   expect(text).not.toContain('admin@fpl-sidekick.com');
   expect(text).toContain('Supabase Authentication handles your email and password');
   expect(text).toContain('We rely on performance of our contract');

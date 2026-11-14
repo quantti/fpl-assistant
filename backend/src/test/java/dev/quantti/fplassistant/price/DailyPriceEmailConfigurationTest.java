@@ -31,7 +31,7 @@ class DailyPriceEmailConfigurationTest {
             DailyPriceEmailAlert sender = application.getBean(DailyPriceEmailAlert.class);
             assertThat(ReflectionTestUtils.getField(sender, "enabled")).isEqualTo(false);
             assertThat(ReflectionTestUtils.getField(sender, "apiKey")).isEqualTo("");
-            assertThat(ReflectionTestUtils.getField(sender, "to")).isEqualTo("quantti@users.noreply.github.com");
+            assertThat(ReflectionTestUtils.getField(sender, "to")).isEqualTo("");
             assertThat(ReflectionTestUtils.getField(sender, "from"))
                     .isEqualTo("FPL Sidekick <noreply@fpl-sidekick.com>");
         });
