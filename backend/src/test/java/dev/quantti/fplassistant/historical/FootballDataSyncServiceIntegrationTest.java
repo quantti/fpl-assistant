@@ -230,7 +230,7 @@ class FootballDataSyncServiceIntegrationTest {
     }
 
     /**
-     * The guard compares a season code derived from the payload against shared' own
+     * The guard compares a season code derived from the payload against the upstream project’s own
      * {@code season.code}, which this project does not own. Every other test hand-writes both
      * sides, so this one runs the real resolver against a real {@code season} row: if the two
      * formats ever stop comparing equal, the sync becomes a permanent silent no-op, which is

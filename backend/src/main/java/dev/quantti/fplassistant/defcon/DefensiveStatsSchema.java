@@ -25,7 +25,7 @@ import jakarta.annotation.PostConstruct;
  * recoveries. SharedStats' schema predates the field, and its sync writes a named column list, so the
  * values have been arriving in the {@code element-summary} payload and being dropped ever since.
  *
- * <p><b>Safe against shared' own writes.</b> Every column is nullable with no default, and shared
+ * <p><b>Safe against the upstream project’s own writes.</b> Every column is nullable with no default, and shared
  * upserts a named column list; a column it does not know about is neither written nor cleared by
  * it. The reverse also holds — {@link DefensiveStatsSyncService} only ever UPDATEs these four
  * columns, so it cannot disturb a value shared owns.

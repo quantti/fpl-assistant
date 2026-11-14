@@ -28,7 +28,7 @@ OUTPUT="$REPO_ROOT/backend/src/test/resources/db/shared-stats-schema.sql"
 TABLES=(season team player gameweek fixture player_fixture_stats)
 
 PG_IMAGE="${PG_IMAGE:-postgres:17}"
-SHARED_DB_HOST="${SHARED_DB_HOST:-aws-1-eu-west-1.pooler.supabase.com}"
+SHARED_DB_HOST="${SHARED_DB_HOST:-}"
 SHARED_DB_PORT="${SHARED_DB_PORT:-5432}"
 SHARED_DB_NAME="${SHARED_DB_NAME:-postgres}"
 
@@ -53,6 +53,8 @@ if [[ -z "${DB_USER:-}" || -z "${DB_PASSWORD:-}" ]]; then
     fi
     set -a; source "$env_file"; set +a
 fi
+
+: "${SHARED_DB_HOST:?Set SHARED_DB_HOST to your session pooler host}"
 
 # Trigger functions live outside the tables pg_dump -t selects, but the triggers it emits
 # reference them: without this section the dump fails to load with "function
